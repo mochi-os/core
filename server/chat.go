@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"strings"
+)
+
 func init() {
 	app_register_internal("chat", "Chat", []string{"chat"})
 	app_register_function_display("chat", chat_display)
@@ -43,7 +47,12 @@ func chat_display(u *User, p app_parameters, format string) string {
 
 	} else {
 		// List existing chats
-		return app_template("chat/"+format+"/list", instances_by_service(u.ID, "chat", "updated desc"))
+		var chats []Instance
+		for _, c := range *instances_by_service(u.ID, "chat", "updated desc") {
+			c.ID = strings.TrimLeft(c.ID, "chat-")
+			chats = append(chats, c)
+		}
+		return app_template("chat/"+format+"/list", chats)
 	}
 }
 
@@ -62,7 +71,7 @@ func chat_event(u *User, e *Event) {
 			instance_create(u.ID, instance, f.Name, "chat")
 		}
 		data_append(u.ID, "chat", instance, "messages", "\n"+f.Name+": "+e.Content)
-		service(u, "notifications", "create", instance, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
+		service(u, "notifications", "create/instance", instance, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
 
 	} else {
 		log_info("Dropping received event due to unknown action '%s'", e.Action)

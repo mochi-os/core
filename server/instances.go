@@ -25,7 +25,6 @@ func instances_by_service(user int, service string, sort string) *[]Instance {
 	return &i
 }
 
-//TODO Consider making instances per-service
 func instance_create(user int, id string, name string, service string) error {
 	log_debug("Creating instance: user='%d', id='%s', name='%s', service='%s'", user, id, name, service)
 

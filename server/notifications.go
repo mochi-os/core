@@ -29,7 +29,7 @@ func notifications_call(u *User, service string, function string, values ...any)
 			db_exec("notifications", "delete from notifications where user=? and instance=?", u.ID, values[0].(string))
 		}
 
-	} else if function == "create" && len(values) == 3 {
+	} else if (function == "create" || function == "create/instance") && len(values) == 3 {
 		instance := values[0].(string)
 		content := values[1].(string)
 		link := values[2].(string)
@@ -39,7 +39,16 @@ func notifications_call(u *User, service string, function string, values ...any)
 			return ""
 		}
 
-		id := uid()
+		var id string
+		if function == "create/instance" {
+			var n Notification
+			if db_struct(&n, "notifications", "select * from notifications where user=? and instance=? limit 1", u.ID, instance) {
+				id = n.ID
+			}
+		} else {
+			id = uid()
+		}
+
 		db_exec("notifications", "replace into notifications ( id, user, instance, content, link, updated ) values ( ?, ?, ?, ?, ?, ? )", id, u.ID, instance, content, link, time_unix())
 		return id
 	}

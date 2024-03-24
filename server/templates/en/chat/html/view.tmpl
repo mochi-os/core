@@ -2,8 +2,7 @@
 
 <pre>{{.Messages}}</pre>
 
-<form action="?app=chat&action=view&friend={{.Friend.ID}}">
-	<!--TODO Remove?-->
+<form>
 	<input type="hidden" name="app" value="chat"/>
 	<input type="hidden" name="action" value="view"/>
 	<input type="hidden" name="friend" value="{{.Friend.ID}}"/>

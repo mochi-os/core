@@ -63,7 +63,6 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 			parameters := make(app_parameters)
 			referrer, err := url.Parse(r.Referer())
 			if err == nil && referrer.Host == r.Host {
-				parameters := make(app_parameters)
 				for p, v := range r.URL.Query() {
 					parameters[p] = v
 				}

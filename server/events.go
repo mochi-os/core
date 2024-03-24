@@ -40,7 +40,7 @@ func event_receive(e *Event) {
 		return
 	}
 
-	if !valid(e.Instance, "uid") {
+	if !valid(e.Instance, "id") {
 		log_info("Dropping received event due to invalid instance ID '%s'", e.Instance)
 		return
 	}

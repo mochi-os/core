@@ -33,6 +33,7 @@ func app_by_service(service string) *App {
 }
 
 func app_display(u *User, app string, parameters app_parameters, format string) (string, error) {
+	log_debug("Displaying app: user='%d', app='%s', parameters='%#v', format='%s'", u.ID, app, parameters, format)
 	a, ok := apps_by_name[app]
 	if !ok {
 		return "", error_message("App not installed")

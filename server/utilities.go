@@ -102,6 +102,9 @@ func valid(s string, match string) bool {
 	if match == "constant" {
 		match = "^[0-9a-z-]{1,100}$"
 
+	} else if match == "id" {
+		match = "^[\\w-=]{1,1000}$"
+
 	} else if match == "name" {
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
 

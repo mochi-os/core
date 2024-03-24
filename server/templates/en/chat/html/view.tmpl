@@ -2,10 +2,11 @@
 
 <pre>{{.Messages}}</pre>
 
-<form action="?app=chat&action=view&id={{.Instance}}">
+<form action="?app=chat&action=view&friend={{.Friend.ID}}">
+	<!--TODO Remove?-->
 	<input type="hidden" name="app" value="chat"/>
 	<input type="hidden" name="action" value="view"/>
-	<input type="hidden" name="id" value="{{.Instance}}"/>
+	<input type="hidden" name="friend" value="{{.Friend.ID}}"/>
 	<label for="message">Send message:</label>
 	<input type="text" name="message" autofocus/>
 	<input type="submit" value="Send"/>

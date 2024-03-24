@@ -5,7 +5,6 @@
 	Encrypt and sign events
 	Decide app registration scheme
 	Decide web path scheme
-	Github
 	Public release
 
 0.2

@@ -1,0 +1,12 @@
+{{define "title"}}Comms login{{end}}
+{{template "head" .}}
+
+<h2>Enter security code</h2>
+
+<form action="/login/">
+	<label for="email">Code you received via email at {{.}}:</label>
+	<input type="text" name="code" autofocus/><br/>
+	<input type="submit" value="Log in" />
+</form>
+
+{{template "foot" .}}

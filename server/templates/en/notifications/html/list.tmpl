@@ -1,0 +1,5 @@
+{{if len .}}<h2>Notifications:</h2>
+<p>{{end}}
+{{range .}}{{if len .Link}}<a href="{{.Link}}">{{.Content}}</a>{{else}}{{.Content}}{{end}}<br/>{{end}}
+{{if len .}}</p>
+<p><a href="?action=clear">Clear notifications</a></p>{{end}}

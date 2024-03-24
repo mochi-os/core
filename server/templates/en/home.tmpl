@@ -1,0 +1,15 @@
+{{define "title"}}Comms{{end}}
+{{template "head" .}}
+
+<h2>Comms: {{.User.Username}}</a></h2>
+
+{{.Notifications}}
+
+{{if len .Apps}}<h2>Apps:</h2>
+<p>{{end}}
+{{range .Apps}}<a href="/?app={{.Name}}">{{.Label}}</a><br/>{{end}}
+{{if len .Apps}}</p>{{end}}
+
+<a href="?action=logout">Log out</a></p>
+
+{{template "foot" .}}

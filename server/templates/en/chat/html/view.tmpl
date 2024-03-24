@@ -1,0 +1,12 @@
+<h2>Chat with {{.Friend.Name}}</h2>
+
+<pre>{{.Messages}}</pre>
+
+<form action="?app=chat&action=view&id={{.Instance}}">
+	<input type="hidden" name="app" value="chat"/>
+	<input type="hidden" name="action" value="view"/>
+	<input type="hidden" name="id" value="{{.Instance}}"/>
+	<label for="message">Send message:</label>
+	<input type="text" name="message" autofocus/>
+	<input type="submit" value="Send"/>
+</form>

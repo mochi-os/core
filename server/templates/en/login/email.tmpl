@@ -1,0 +1,12 @@
+{{define "title"}}Comms login{{end}}
+{{template "head" .}}
+
+<h2>Log in</h2>
+
+<form action="/login/">
+	<label for="email">Your email address:</label>
+	<input type="text" name="email" placeholder="user@example.com" autofocus/><br/>
+	<input type="submit" value="Send email with login link" />
+</form>
+
+{{template "foot" .}}

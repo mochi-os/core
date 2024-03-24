@@ -1,0 +1,10 @@
+<h2>Your friends</h2>
+
+{{if len .Friends}}{{range .Friends}}<p>Name '{{.Name}}', public key '{{.ID}}', <a href="?app=friends&action=delete&id={{.ID}}">Delete</a></p>{{end}}
+{{else}}<p>You have no friends.</p>{{end}}
+
+<p><a href="?app=friends&action=new">Add a new friend</a></p>
+
+{{if len .Invitations}}<p>Or click on a received invitation:</p>
+
+<p>{{range .Invitations}}{{.Name}}&nbsp;<a href="?app=friends&action=accept&id={{.ID}}">Accept</a>&nbsp;<a href="?app=friends&action=ignore&id={{.ID}}">Ignore</a><br/>{{end}}</p>{{end}}

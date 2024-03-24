@@ -1,0 +1,48 @@
+0.1
+	WASM apps
+	Directory between servers
+	Events between servers
+	Encrypt and sign events
+	Decide app registration scheme
+	Decide web path scheme
+	Github
+	Public release
+
+0.2
+	Broadcasts between apps
+	Users choose which apps run which service
+	HTTPS using Letsencrypt
+	Client API
+	Command line client
+	Auctions (commercial service by Alistair Cunningham)
+
+0.3
+	File and media storage
+	Apps can access files
+	Apps can create own sqlite databases
+	App publishing
+	App updates
+	Paid apps (commercial service by Alistair Cunningham)
+	Advertising in apps (commercial service by Alistair Cunningham)
+
+0.4 or later
+	Push notifications to Android and iOS apps
+	Users can categorise updates into feeds
+	Users can configure hooks (via HTTP?) to have thier own code control feeds
+	Read external RSS feeds
+	Provide RSS feeds for feeds
+	Inbound email into feeds
+	Outbound email from feeds
+	Oauth server
+	.deb and .rpm packages
+
+Ideas for services
+	Bug tracker
+	Chat/group chat
+	Chess
+	Forums
+	Kanban
+	News feed
+	Scrabble playalike
+	Social media
+	Wiki

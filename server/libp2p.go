@@ -35,7 +35,7 @@ func libp2p_read(r *bufio.ReadWriter) {
 	}
 }
 
-func libp2p_start(port int) {
+func libp2p_start(listen string, port int) {
 	var private crypto.PrivKey
 	var err error
 
@@ -52,11 +52,11 @@ func libp2p_start(port int) {
 		file_write("libp2p/private.key", p)
 	}
 
-	addr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port))
+	addr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", listen, port))
 	host, err := libp2p.New(libp2p.ListenAddrs(addr), libp2p.Identity(private))
 	fatal(err)
 	host.SetStreamHandler("/comms/1.0.0", libp2p_handle)
-	log_info("libp2p listening on '/ip4/0.0.0.0/tcp/%d/p2p/%s'", port, host.ID())
+	log_info("libp2p listening on '/ip4/%s/tcp/%d/p2p/%s'", listen, port, host.ID())
 }
 
 /*func libp2p_write(w *bufio.ReadWriter) {

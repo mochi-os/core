@@ -9,12 +9,13 @@ import (
 
 func main() {
 	log_info("Starting")
-	port := flag.Int("libp2p", 20443, "libp2p port to listen on")
+	listen := flag.String("listen", "0.0.0.0", "libp2p IP address to listen on")
+	port := flag.Int("port", 1443, "libp2p port to listen on")
 	flag.Parse()
 
 	db_init()
 
-	libp2p_start(*port)
+	libp2p_start(*listen, *port)
 	log_info("Web listening on ':8080'")
 	go web_start(":8080")
 

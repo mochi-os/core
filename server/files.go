@@ -8,16 +8,14 @@ import (
 	"os"
 )
 
-const base_dir = "/var/lib/comms/"
-
 func file_create(path string) {
-	f, err := os.Create(base_dir + path)
+	f, err := os.Create(data_dir + "/" + path)
 	fatal(err)
 	f.Close()
 }
 
 func file_exists(path string) bool {
-	_, err := os.Stat(base_dir + path)
+	_, err := os.Stat(data_dir + "/" + path)
 	if err == nil {
 		return true
 	} else if errors.Is(err, os.ErrNotExist) {
@@ -28,17 +26,17 @@ func file_exists(path string) bool {
 }
 
 func file_mkdir(path string) {
-	err := os.MkdirAll(base_dir+path, 0755)
+	err := os.MkdirAll(data_dir+"/"+path, 0755)
 	fatal(err)
 }
 
 func file_read(path string) []byte {
-	data, err := os.ReadFile(base_dir + path)
+	data, err := os.ReadFile(data_dir + "/" + path)
 	fatal(err)
 	return data
 }
 
 func file_write(path string, data []byte) {
-	err := os.WriteFile(base_dir+path, data, 0644)
+	err := os.WriteFile(data_dir+"/"+path, data, 0644)
 	fatal(err)
 }

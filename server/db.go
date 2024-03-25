@@ -103,7 +103,7 @@ func db_open(file string) *sqlx.DB {
 	}
 
 	var err error
-	db_handles[file], err = sqlx.Open("sqlite3", base_dir+path)
+	db_handles[file], err = sqlx.Open("sqlite3", data_dir+"/"+path)
 	fatal(err)
 	return db_handles[file]
 }

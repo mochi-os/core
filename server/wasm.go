@@ -11,7 +11,7 @@ import (
 )
 
 func wasm_run(file string, function string, values ...any) {
-	file = base_dir + file
+	file = data_dir + "/" + file
 	wasm, err := ioutil.ReadFile(file)
 	if err != nil {
 		log_warn("Unable to read file '%s': %v", file, err)
@@ -20,7 +20,7 @@ func wasm_run(file string, function string, values ...any) {
 
 	store := wasmer.NewStore(wasmer.NewEngine())
 	module, _ := wasmer.NewModule(store, wasm)
-	wasi, _ := wasmer.NewWasiStateBuilder("comms").PreopenDirectory(base_dir + "data").Finalize()
+	wasi, _ := wasmer.NewWasiStateBuilder("comms").PreopenDirectory(data_dir + "/data").Finalize()
 	io, err := wasi.GenerateImportObject(store, module)
 	fatal(err)
 

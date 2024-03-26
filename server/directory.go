@@ -3,17 +3,25 @@
 
 package main
 
+import (
+	"encoding/json"
+)
+
 type Directory struct {
-	ID          string
+	ID          string `json:"id"`
 	Fingerprint string
-	Name        string
-	Class       string
-	Location    string
+	Name        string `json:"name"`
+	Class       string `json:"class"`
+	Location    string `json:"location"`
 	Updated     int
 }
 
 func directory_create(id string, name string, class string, location string) {
 	db_exec("directory", "insert into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, time_unix())
+	d := Directory{ID: id, Name: name, Class: class, Location: location}
+	j, err := json.Marshal(d)
+	fatal(err)
+	libp2p_directory_subscription.Publish(libp2p_context, j)
 }
 
 func directory_delete(id string) {

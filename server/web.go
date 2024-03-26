@@ -5,6 +5,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ var (
 	templates embed.FS
 )
 
+var web_port int
 var web_paths = map[string]func(w http.ResponseWriter, r *http.Request){}
 
 func web_auth(w http.ResponseWriter, r *http.Request) *User {
@@ -156,7 +158,7 @@ func web_name(w http.ResponseWriter, r *http.Request) {
 		}
 		u.Name = name
 		db_exec("users", "update users set name=? where id=?", name, u.ID)
-		directory_create(u.Public, name, "person", "")
+		directory_create(u.Public, name, "person", libp2p_address)
 		web_redirect(w, "/")
 	}
 }
@@ -171,12 +173,12 @@ func web_register_path(path string, f func(w http.ResponseWriter, r *http.Reques
 	http.HandleFunc(path, f)
 }
 
-func web_start(listen string) {
+func web_start() {
 	web_register_path("/", web_home)
 	web_register_path("/login/", web_login)
 	web_register_path("/login/name/", web_name)
 
-	err := http.ListenAndServe(listen, nil)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
 	fatal(err)
 }
 

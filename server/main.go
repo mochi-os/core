@@ -12,15 +12,16 @@ var data_dir string
 func main() {
 	log_info("Starting")
 	flag.StringVar(&data_dir, "directory", "/var/lib/comms", "Directory to store data in")
-	listen := flag.String("listen", "0.0.0.0", "libp2p IP address to listen on")
-	port := flag.Int("port", 1443, "libp2p port to listen on")
+	flag.StringVar(&libp2p_listen, "listen", "0.0.0.0", "libp2p IP address to listen on")
+	flag.IntVar(&libp2p_port, "port", 1443, "libp2p port to listen on")
+	flag.IntVar(&web_port, "web", 8080, "Web port to listen on")
 	flag.Parse()
 
 	db_init()
 
-	libp2p_start(*listen, *port)
-	log_info("Web listening on ':8080'")
-	go web_start(":8080")
+	libp2p_start()
+	log_info("Web listening on ':%d'", web_port)
+	go web_start()
 
 	log_info("Ready")
 	select {}

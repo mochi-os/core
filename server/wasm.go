@@ -4,13 +4,13 @@
 package main
 
 import (
-	"fmt"
-	"io/ioutil"
-
-	wasmer "github.com/wasmerio/wasmer-go/wasmer"
+//	"fmt"
+//	"io/ioutil"
+//	wasmer "github.com/wasmerio/wasmer-go/wasmer"
 )
 
 func wasm_run(file string, function string, values ...any) {
+/*
 	file = data_dir + "/" + file
 	wasm, err := ioutil.ReadFile(file)
 	if err != nil {
@@ -33,4 +33,5 @@ func wasm_run(file string, function string, values ...any) {
 	fatal(err)
 	result, _ := f(values...)
 	fmt.Printf("Result='%v'\n", result)
+*/
 }

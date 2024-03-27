@@ -21,7 +21,7 @@ func directory_create(id string, name string, class string, location string) {
 	d := Directory{ID: id, Name: name, Class: class, Location: location}
 	j, err := json.Marshal(d)
 	fatal(err)
-	libp2p_directory_subscription.Publish(libp2p_context, j)
+	libp2p_topics["directory"].Publish(libp2p_context, j)
 }
 
 func directory_delete(id string) {

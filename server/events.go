@@ -8,13 +8,14 @@ import (
 )
 
 type Event struct {
-	ID       string `json:"id"`
-	From     string `json:"from"`
-	To       string `json:"to"`
-	Service  string `json:"service"`
-	Instance string `json:"instance"`
-	Action   string `json:"action"`
-	Content  string `json:"content"`
+	ID        string `json:"id"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Service   string `json:"service"`
+	Instance  string `json:"instance"`
+	Action    string `json:"action"`
+	Content   string `json:"content"`
+	Signature string `json:"signature"`
 }
 
 func event(from string, to string, service string, instance string, action string, content string) (*Event, error) {
@@ -27,22 +28,26 @@ func event(from string, to string, service string, instance string, action strin
 		return &e, nil
 	}
 
+	//TODO Set signature
+	//TODO Send via libp2p
+
 	log_debug("No destination found for event")
 	return &e, error_message("No destination")
 }
 
 func event_receive(e *Event) {
-	log_debug("Event received: id='%s', from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s'", e.ID, e.From, e.To, e.Service, e.Instance, e.Action, e.Content)
-
-	var u User
-	if !db_struct(&u, "users", "select id from users where public=?", e.To) {
-		log_info("Dropping received event due to unknown local identity '%s'", e.To)
-		return
-	}
+	log_debug("Event received: id='%s', from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.Service, e.Instance, e.Action, e.Content, e.Signature)
 
 	if !valid(e.Instance, "id") {
 		log_info("Dropping received event due to invalid instance ID '%s'", e.Instance)
 		return
+	}
+
+	//TODO Check signature if from external
+
+	var u *User = nil
+	if e.To != "" {
+		db_struct(u, "users", "select id from users where public=?", e.To)
 	}
 
 	a := app_by_service(e.Service)
@@ -50,13 +55,22 @@ func event_receive(e *Event) {
 		log_info("Dropping received event due to unknown service '%s'", e.Service)
 		return
 	}
-	a.Event(&u, e)
+	_, found := a.Events[e.Action]
+	if found {
+		a.Events[e.Action](u, e)
+	} else {
+		_, found := a.Events[""]
+		if found {
+			a.Events[""](u, e)
+		}
+	}
+	log_info("Dropping received event due to unknown action '%s' for service '%s'", e.Action, e.Service)
 }
 
-func event_receive_json(event string) {
+func event_receive_json(event []byte) {
 	log_debug("Event received: '%s'", event)
 	var e Event
-	err := json.Unmarshal([]byte(event), &e)
+	err := json.Unmarshal(event, &e)
 	if err != nil {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return

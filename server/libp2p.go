@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -20,102 +21,97 @@ import (
 	"time"
 )
 
-type Peer struct {
-	Address string
-	Seen    int64
-}
-
-type discovery_notifee struct {
-	h host.Host
+type mdns_notifee struct {
+	H host.Host
 }
 
 var libp2p_listen string
 var libp2p_port int
 var libp2p_address string
 var libp2p_context context.Context
-var libp2p_directory_subscription *pubsub.Topic
-var libp2p_peers_subscription *pubsub.Topic
-var libp2p_peers map[string]Peer = map[string]Peer{}
+var libp2p_host host.Host
+var libp2p_id string
+var libp2p_topics map[string]*pubsub.Topic = map[string]*pubsub.Topic{}
 
-func (n *discovery_notifee) HandlePeerFound(p peer.AddrInfo) {
+// Peer discovered using mDNS
+func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		address := pa.String() + "/p2p/" + p.ID.String()
-		if pf, found := libp2p_peers[address]; found {
-			log_debug("Re-discovered existing peer '%s'", address)
+		if pf, found := peers[address]; found {
+			log_debug("Re-discovered existing multicast DNS peer '%s'", address)
 			pf.Seen = time_unix()
-			libp2p_peers[address] = pf
-
+			peers[address] = pf
 		} else {
-			log_debug("Discovered new peer '%s', and connecting to it", address)
-			err := n.h.Connect(context.Background(), p)
-			fatal(err)
-			log_debug("Connected to peer at '%s'", address)
-			libp2p_peers[address] = Peer{Address: address, Seen: time_unix()}
+			log_debug("Discovered new multicast DNS peer '%s'", address)
+			libp2p_connect(address)
 		}
 	}
 }
 
-func libp2p_connect(h host.Host, address string) {
+// Connect to a peer
+func libp2p_connect(address string) {
 	log_debug("Connecting to peer at '%s'", address)
 	ai, err := peer.AddrInfoFromString(address)
 	fatal(err)
-	err = h.Connect(context.Background(), *ai)
+	err = libp2p_host.Connect(context.Background(), *ai)
 	if err != nil {
 		log_info("Error connecting to peer at '%s': %s\n", address, err)
 	}
-	libp2p_peers[address] = Peer{Address: address, Seen: time_unix()}
+	peers[address] = Peer{Address: address, Seen: time_unix()}
 	log_debug("Connected to peer at '%s'", address)
 }
 
-func libp2p_directory_listen(h host.Host, d *pubsub.Subscription) {
+// Listen for updates to the directory service
+// TODO Generalise
+func libp2p_directory_listen(s *pubsub.Subscription, h host.Host) {
 	for {
-		msg, err := d.Next(libp2p_context)
+		msg, err := s.Next(libp2p_context)
 		fatal(err)
 		if msg.ReceivedFrom != h.ID() {
-			log_debug("Got directory update '%s' from '%s'", string(msg.Data), msg.ReceivedFrom)
+			log_debug("Got directory event '%s' from '%s'", string(msg.Data), msg.ReceivedFrom)
 			//TODO
 		}
 	}
 }
 
+// Handle peer connecting to us
 func libp2p_handle(s network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String()
 	log_debug("Peer connected from libp2p '%s'", address)
 	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-	if p, found := libp2p_peers[address]; found {
+	if p, found := peers[address]; found {
 		p.Seen = time_unix()
-		libp2p_peers[address] = p
+		peers[address] = p
 	} else {
-		libp2p_peers[address] = Peer{Address: address, Seen: time_unix()}
+		peers[address] = Peer{Address: address, Seen: time_unix()}
 	}
 	go libp2p_read(rw)
 	go libp2p_write(rw)
 }
 
-func libp2p_peers_publish(myself string) {
+// Listen for peer updates on the peers pubsub
+// TODO Generalise
+func libp2p_peers_listen(s *pubsub.Subscription, h host.Host) {
 	for {
-		libp2p_peers_subscription.Publish(libp2p_context, []byte(myself))
-		time.Sleep(time.Hour)
-	}
-}
-
-func libp2p_peers_listen(h host.Host, p *pubsub.Subscription) {
-	for {
-		m, err := p.Next(libp2p_context)
+		m, err := s.Next(libp2p_context)
 		fatal(err)
 		if m.ReceivedFrom != h.ID() {
-			address := string(m.Data)
-			log_debug("Got peers update '%s' from '%s'", address, m.ReceivedFrom)
-			if p, found := libp2p_peers[address]; found {
-				p.Seen = time_unix()
-			} else {
-				libp2p_connect(h, address)
-				libp2p_peers[address] = Peer{Address: address, Seen: time_unix()}
-			}
+			event_receive_json(m.Data)
 		}
 	}
 }
 
+// Publish our own peer information to the peers pubsub once an hour
+func libp2p_peers_publish(t *pubsub.Topic, id string, address string) {
+	for {
+		j, err := json.Marshal(Event{ID: uid(), From: id, Service: "peers", Instance: id, Action: "update", Content: address})
+		fatal(err)
+		t.Publish(libp2p_context, j)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// Read from a newly connected peer
 func libp2p_read(r *bufio.ReadWriter) {
 	for {
 		in, _ := r.ReadString('\n')
@@ -124,11 +120,12 @@ func libp2p_read(r *bufio.ReadWriter) {
 		}
 		if in != "\n" {
 			in = strings.TrimSuffix(in, "\n")
-			event_receive_json(in)
+			event_receive_json([]byte(in))
 		}
 	}
 }
 
+// Start libp2p
 func libp2p_start() {
 	var private crypto.PrivKey
 	var err error
@@ -149,38 +146,44 @@ func libp2p_start() {
 	libp2p_context = context.Background()
 	ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", libp2p_listen, libp2p_port))
 	fatal(err)
-	h, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
+	libp2p_host, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
 	fatal(err)
-	h.SetStreamHandler("/comms/1.0.0", libp2p_handle)
-	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", libp2p_listen, libp2p_port, h.ID())
+	libp2p_id = libp2p_host.ID().String()
+	libp2p_host.SetStreamHandler("/comms/1.0.0", libp2p_handle)
+	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", libp2p_listen, libp2p_port, libp2p_id)
 	log_info("libp2p listening on '%s'", libp2p_address)
 
-	dns := mdns.NewMdnsService(h, "comms", &discovery_notifee{h: h})
+	dns := mdns.NewMdnsService(libp2p_host, "comms", &mdns_notifee{H: libp2p_host})
 	err = dns.Start()
 	fatal(err)
 
 	//TODO
 	//for _, peer := range libp2p_well_known_peers {
-	//	libp2p_connect(h, peer)
+	//	libp2p_connect(peer)
 	//}
 
-	gs, err := pubsub.NewGossipSub(libp2p_context, h)
+	gs, err := pubsub.NewGossipSub(libp2p_context, libp2p_host)
 	fatal(err)
 
-	libp2p_directory_subscription, err = gs.Join("directory")
+	//TODO Move to service
+	t, err := gs.Join("directory")
 	fatal(err)
-	d, err := libp2p_directory_subscription.Subscribe()
+	s, err := t.Subscribe()
 	fatal(err)
-	go libp2p_directory_listen(h, d)
+	go libp2p_directory_listen(s, libp2p_host)
+	libp2p_topics["directory"] = t
 
-	libp2p_peers_subscription, err = gs.Join("peers")
+	//TODO Make service?
+	t, err = gs.Join("peers")
 	fatal(err)
-	p, err := libp2p_peers_subscription.Subscribe()
+	s, err = t.Subscribe()
 	fatal(err)
-	go libp2p_peers_listen(h, p)
-	go libp2p_peers_publish(libp2p_address)
+	go libp2p_peers_listen(s, libp2p_host)
+	go libp2p_peers_publish(t, libp2p_id, libp2p_address)
+	libp2p_topics["peers"] = t
 }
 
+// Write to a newly connected peer. Currently not used.
 func libp2p_write(w *bufio.ReadWriter) {
 	//TODO Send it a list of current peers
 	//for {

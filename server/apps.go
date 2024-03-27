@@ -8,15 +8,14 @@ import (
 	"html/template"
 )
 
-// TODO app_register_service()?
-// TODO Register for each call, display action, and event?
+// TODO Register for each display action?
 type App struct {
-	Name     string
-	Label    string
-	Services []string
-	Call     func(*User, string, string, ...any) any
-	Display  func(*User, app_parameters, string) string
-	Event    func(*User, *Event)
+	Name      string
+	Label     string
+	Display   func(*User, app_parameters, string) string
+	Events    map[string]func(*User, *Event)
+	Functions map[string]func(*User, string, string, ...any) any
+	Services  []string
 }
 
 type app_parameters map[string][]string
@@ -57,45 +56,52 @@ func app_parameter(p map[string][]string, key string, def string) string {
 	return values[0]
 }
 
-func app_register_function_call(name string, f func(*User, string, string, ...any) any) {
-	log_debug("App register function call: name='%s', function='%v'", name, f)
-	a, ok := apps_by_name[name]
-	if !ok {
-		log_warn("app_register_function_call() called for non-installed app '%s'", name)
-		return
-	}
-	a.Call = f
+func app_register(name string, label string) {
+	log_debug("App register internal: name='%s', label='%s'", name, label)
+	a := App{Name: name, Label: label, Display: nil, Events: make(map[string]func(*User, *Event)), Functions: make(map[string]func(*User, string, string, ...any) any), Services: make([]string, 1)}
+	apps_by_name[name] = &a
 }
 
-func app_register_function_display(name string, f func(*User, app_parameters, string) string) {
-	log_debug("App register function display: name='%s', function='%v'", name, f)
-	a, ok := apps_by_name[name]
-	if !ok {
-		log_warn("app_register_function_display() called for non-installed app '%s'", name)
+func app_register_display(name string, f func(*User, app_parameters, string) string) {
+	log_debug("App register function display: name='%s'", name)
+	a, found := apps_by_name[name]
+	if !found {
+		log_warn("app_register_display() called for non-installed app '%s'", name)
 		return
 	}
 	a.Display = f
 }
 
-func app_register_function_event(name string, f func(*User, *Event)) {
-	log_debug("App register function event: name='%s', function='%v'", name, f)
+func app_register_event(name string, action string, f func(*User, *Event)) {
+	log_debug("App register function event: name='%s', action='%s'", name, action)
 	a, ok := apps_by_name[name]
 	if !ok {
-		log_warn("app_register_function_event() called for non-installed app '%s'", name)
+		log_warn("app_register_event() called for non-installed app '%s'", name)
 		return
 	}
-	a.Event = f
+	a.Events[action] = f
 }
 
-func app_register_internal(name string, label string, services []string) {
-	log_debug("App register internal: name='%s', label='%s', services='%v'", name, label, services)
-	a := App{Name: name, Label: label, Services: services, Display: nil}
-
-	apps_by_name[name] = &a
-	for _, s := range services {
-		//TODO Handle multiple apps for same service
-		apps_by_service[s] = &a
+func app_register_function(name string, function string, f func(*User, string, string, ...any) any) {
+	log_debug("App register function: name='%s', function='%s'", name, function)
+	a, ok := apps_by_name[name]
+	if !ok {
+		log_warn("app_register_function() called for non-installed app '%s'", name)
+		return
 	}
+	a.Functions[function] = f
+}
+
+func app_register_service(name string, service string) {
+	log_debug("App register service: name='%s', service='%s'", name, service)
+	a, found := apps_by_name[name]
+	if !found {
+		log_warn("app_register_service() called for non-installed app '%s'", name)
+		return
+	}
+	a.Services = append(a.Services, service)
+	//TODO Handle multiple apps for same service
+	apps_by_service[service] = a
 }
 
 func app_template(file string, values ...any) string {

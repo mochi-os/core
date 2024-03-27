@@ -12,10 +12,12 @@ type Friend struct {
 }
 
 func init() {
-	app_register_internal("comms/friends", "Friends", []string{"friends"})
-	app_register_function_call("comms/friends", friends_call)
-	app_register_function_display("comms/friends", friends_display)
-	app_register_function_event("comms/friends", friends_event)
+	app_register("comms/friends", "Friends")
+	app_register_display("comms/friends", friends_display)
+	app_register_event("comms/friends", "", friends_events)
+	app_register_function("comms/friends", "get", friends_get)
+	app_register_function("comms/friends", "list", friends_list)
+	app_register_service("comms/friends", "friends")
 }
 
 func friend_accept(u *User, instance string) {
@@ -44,21 +46,6 @@ func friends_by_user(u *User) *[]Friend {
 	var c []Friend
 	db_structs(&c, "users", "select * from friends where user=? order by name, id", u.ID)
 	return &c
-}
-
-func friends_call(u *User, service string, function string, values ...any) any {
-	if function == "get" {
-		if len(values) == 0 {
-			return nil
-		}
-		return friend_by_id(u, values[0].(string))
-
-	} else if function == "list" {
-		return friends_by_user(u)
-
-	} else {
-		return nil
-	}
 }
 
 func friend_create(u *User, id string, name string, class string, invite bool) error {
@@ -148,7 +135,8 @@ func friends_display(u *User, p app_parameters, format string) string {
 	return app_template("friends/"+format+"/list", map[string]any{"Friends": friends_by_user(u), "Invitations": friend_invitations_received(u)})
 }
 
-func friends_event(u *User, e *Event) {
+// TODO Split?
+func friends_events(u *User, e *Event) {
 	i := instance_by_id(u.ID, e.Instance)
 	id := data_get(u.ID, "comms/friends", e.Instance, "id", "")
 	if i != nil && e.From != id {
@@ -204,6 +192,17 @@ func friend_ignore(u *User, instance string) {
 	if i != nil {
 		instance_delete(u.ID, instance)
 	}
+}
+
+func friends_get(u *User, service string, function string, values ...any) any {
+	if len(values) == 1 {
+		return friend_by_id(u, values[0].(string))
+	}
+	return nil
+}
+
+func friends_list(u *User, service string, function string, values ...any) any {
+	return friends_by_user(u)
 }
 
 func friend_previous_invite(u *User, id string, direction string) *Instance {

@@ -8,9 +8,10 @@ import (
 )
 
 func init() {
-	app_register_internal("chat", "Chat", []string{"chat"})
-	app_register_function_display("chat", chat_display)
-	app_register_function_event("chat", chat_event)
+	app_register("chat", "Chat")
+	app_register_display("chat", chat_display)
+	app_register_event("chat", "message", chat_message_receive)
+	app_register_service("chat", "chat")
 }
 
 // Display app
@@ -57,7 +58,7 @@ func chat_display(u *User, p app_parameters, format string) string {
 }
 
 // Received a chat event from another user
-func chat_event(u *User, e *Event) {
+func chat_message_receive(u *User, e *Event) {
 	f := service(u, "friends", "get", e.From).(*Friend)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
@@ -65,15 +66,10 @@ func chat_event(u *User, e *Event) {
 		return
 	}
 
-	if e.Action == "message" {
-		instance := "chat-" + f.ID
-		if instance_by_id(u.ID, instance) == nil {
-			instance_create(u.ID, instance, f.Name, "chat")
-		}
-		data_append(u.ID, "chat", instance, "messages", "\n"+f.Name+": "+e.Content)
-		service(u, "notifications", "create/instance", instance, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
-
-	} else {
-		log_info("Dropping received event due to unknown action '%s'", e.Action)
+	instance := "chat-" + f.ID
+	if instance_by_id(u.ID, instance) == nil {
+		instance_create(u.ID, instance, f.Name, "chat")
 	}
+	data_append(u.ID, "chat", instance, "messages", "\n"+f.Name+": "+e.Content)
+	service(u, "notifications", "create/instance", instance, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
 }

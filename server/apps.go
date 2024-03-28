@@ -58,7 +58,7 @@ func app_parameter(p map[string][]string, key string, def string) string {
 }
 
 func app_register(name string, labels map[string]string) {
-	log_debug("App register internal: name='%s', label='%s'", name, label)
+	log_debug("App register internal: name='%s', labels='%v'", name, labels)
 	a := App{Name: name, Labels: labels, Display: nil, Events: make(map[string]func(*User, *Event)), Functions: make(map[string]func(*User, string, string, ...any) any), Services: make([]string, 1)}
 	apps_by_name[name] = &a
 }
@@ -95,7 +95,7 @@ func app_register_function(name string, function string, f func(*User, string, s
 
 func app_register_pubsub(name string, topic string) {
 	log_debug("App register pubsub: name='%s', topic='%s'", name, topic)
-	a, found := apps_by_name[name]
+	_, found := apps_by_name[name]
 	if !found {
 		log_warn("app_register_pubsub() called for non-installed app '%s'", name)
 		return

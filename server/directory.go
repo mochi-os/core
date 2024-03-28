@@ -16,7 +16,7 @@ type Directory struct {
 	Updated     int
 }
 
-func init {
+func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
 	app_register_pubsub("directory", "directory")
 }

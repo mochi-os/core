@@ -12,7 +12,7 @@ type Peer struct {
 var peers map[string]Peer = map[string]Peer{}
 
 func init() {
-	app_register("peers", map[string]string{"en": "Peers")
+	app_register("peers", map[string]string{"en": "Peers"})
 	app_register_event("peers", "update", peer_update)
 	app_register_pubsub("peers", "peers")
 	app_register_service("peers", "peers")
@@ -26,7 +26,7 @@ func peer_update(u *User, e *Event) {
 		peers[e.Instance] = p
 	} else {
 		//TODO Validate everything
-		//TODO libp2p_connect(e.Content)
+		libp2p_connect(e.Content, libp2p_host)
 		peers[e.Instance] = Peer{ID: e.Instance, Address: e.Content, Seen: time_unix()}
 	}
 }

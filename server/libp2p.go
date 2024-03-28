@@ -29,6 +29,7 @@ var libp2p_listen string
 var libp2p_port int
 var libp2p_address string
 var libp2p_context context.Context
+var libp2p_host host.Host
 var libp2p_id string
 var libp2p_topics map[string]*pubsub.Topic = map[string]*pubsub.Topic{}
 
@@ -52,7 +53,6 @@ func libp2p_connect(address string, h host.Host) {
 	log_debug("Connecting to peer at '%s'", address)
 	ai, err := peer.AddrInfoFromString(address)
 	fatal(err)
-	log_debug("host='%#v'", h)
 	err = h.Connect(context.Background(), *ai)
 	if err != nil {
 		log_info("Error connecting to peer at '%s': %s\n", address, err)
@@ -78,13 +78,13 @@ func libp2p_handle(s network.Stream) {
 
 // Listen for updates on a pubsub
 func libp2p_pubsub_listen(s *pubsub.Subscription) {
-    for {
-        m, err := s.Next(libp2p_context)
-        fatal(err)
-        if m.ReceivedFrom.String() != libp2p_id {
-            event_receive_json(m.Data)
-        }
-    }
+	for {
+		m, err := s.Next(libp2p_context)
+		fatal(err)
+		if m.ReceivedFrom.String() != libp2p_id {
+			event_receive_json(m.Data)
+		}
+	}
 }
 
 // Publish our own peer information to the peers pubsub once an hour
@@ -153,15 +153,19 @@ func libp2p_start() {
 	fatal(err)
 
 	for _, topic := range app_pubsubs {
-		t, err := gs.Join("topic")
+		t, err := gs.Join(topic)
 		fatal(err)
 		s, err := t.Subscribe()
 		fatal(err)
 		go libp2p_pubsub_listen(s)
 		libp2p_topics[topic] = t
+
+		if topic == "peers" {
+			go libp2p_peers_publish(t)
+		}
 	}
 
-	go libp2p_peers_publish(t)
+	libp2p_host = h
 }
 
 // Write to a newly connected peer. Currently not used.

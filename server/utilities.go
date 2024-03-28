@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"math/big"
 	"os"
@@ -48,8 +49,8 @@ func base64_encode(b []byte) string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func error_message(message string) error {
-	return errors.New(message)
+func error_message(message string, values ...any) error {
+	return errors.New(fmt.Sprintf(message, values...))
 }
 
 func fatal(err error) {

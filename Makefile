@@ -11,3 +11,6 @@ comms-server: clean
 
 format:
 	go fmt server/*.go
+
+static: clean
+	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o comms-server server/*.go

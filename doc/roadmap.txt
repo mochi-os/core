@@ -1,9 +1,9 @@
 0.1
-	WASM apps
-	Peer discovery
-	Directory between servers
+	Sign events
 	Events between servers
-	Encrypt and sign events
+	WASM apps
+	Directory between servers
+	Chat in WASM
 	Decide web path scheme
 	Decide apps, service, instances, and data
 	Public release

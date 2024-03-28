@@ -18,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	db_init()
-
+	go peers_manager()
 	libp2p_start()
 	log_info("Web listening on ':%d'", web_port)
 	go web_start()

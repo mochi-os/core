@@ -58,7 +58,7 @@ func app_parameter(p map[string][]string, key string, def string) string {
 }
 
 func app_register(name string, labels map[string]string) {
-	log_debug("App register internal: name='%s', labels='%v'", name, labels)
+	log_debug("App register internal: name='%s', label='%s'", name, labels["en"])
 	a := App{Name: name, Labels: labels, Display: nil, Events: make(map[string]func(*User, *Event)), Functions: make(map[string]func(*User, string, string, ...any) any), Services: make([]string, 1)}
 	apps_by_name[name] = &a
 }

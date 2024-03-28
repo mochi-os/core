@@ -29,7 +29,6 @@ var libp2p_listen string
 var libp2p_port int
 var libp2p_address string
 var libp2p_context context.Context
-var libp2p_host host.Host
 var libp2p_id string
 var libp2p_topics map[string]*pubsub.Topic = map[string]*pubsub.Topic{}
 
@@ -43,17 +42,18 @@ func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 			peers[address] = pf
 		} else {
 			log_debug("Discovered new multicast DNS peer '%s'", address)
-			libp2p_connect(address)
+			libp2p_connect(address, n.H)
 		}
 	}
 }
 
 // Connect to a peer
-func libp2p_connect(address string) {
+func libp2p_connect(address string, h host.Host) {
 	log_debug("Connecting to peer at '%s'", address)
 	ai, err := peer.AddrInfoFromString(address)
 	fatal(err)
-	err = libp2p_host.Connect(context.Background(), *ai)
+	log_debug("host='%#v'", h)
+	err = h.Connect(context.Background(), *ai)
 	if err != nil {
 		log_info("Error connecting to peer at '%s': %s\n", address, err)
 	}
@@ -63,13 +63,12 @@ func libp2p_connect(address string) {
 
 // Listen for updates to the directory service
 // TODO Generalise
-func libp2p_directory_listen(s *pubsub.Subscription, h host.Host) {
+func libp2p_directory_listen(s *pubsub.Subscription) {
 	for {
-		msg, err := s.Next(libp2p_context)
+		m, err := s.Next(libp2p_context)
 		fatal(err)
-		if msg.ReceivedFrom != h.ID() {
-			log_debug("Got directory event '%s' from '%s'", string(msg.Data), msg.ReceivedFrom)
-			//TODO
+		if m.ReceivedFrom.String() != libp2p_id {
+			event_receive_json(m.Data)
 		}
 	}
 }
@@ -91,22 +90,23 @@ func libp2p_handle(s network.Stream) {
 
 // Listen for peer updates on the peers pubsub
 // TODO Generalise
-func libp2p_peers_listen(s *pubsub.Subscription, h host.Host) {
+func libp2p_peers_listen(s *pubsub.Subscription) {
 	for {
 		m, err := s.Next(libp2p_context)
 		fatal(err)
-		if m.ReceivedFrom != h.ID() {
+		if m.ReceivedFrom.String() != libp2p_id {
 			event_receive_json(m.Data)
 		}
 	}
 }
 
 // Publish our own peer information to the peers pubsub once an hour
-func libp2p_peers_publish(t *pubsub.Topic, id string, address string) {
+func libp2p_peers_publish(t *pubsub.Topic) {
 	for {
-		j, err := json.Marshal(Event{ID: uid(), From: id, Service: "peers", Instance: id, Action: "update", Content: address})
+		j, err := json.Marshal(Event{ID: uid(), From: libp2p_id, Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
+		//TODO Increase interval
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -146,14 +146,14 @@ func libp2p_start() {
 	libp2p_context = context.Background()
 	ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", libp2p_listen, libp2p_port))
 	fatal(err)
-	libp2p_host, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
+	h, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
 	fatal(err)
-	libp2p_id = libp2p_host.ID().String()
-	libp2p_host.SetStreamHandler("/comms/1.0.0", libp2p_handle)
+	libp2p_id = h.ID().String()
+	h.SetStreamHandler("/comms/1.0.0", libp2p_handle)
 	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", libp2p_listen, libp2p_port, libp2p_id)
 	log_info("libp2p listening on '%s'", libp2p_address)
 
-	dns := mdns.NewMdnsService(libp2p_host, "comms", &mdns_notifee{H: libp2p_host})
+	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{H: h})
 	err = dns.Start()
 	fatal(err)
 
@@ -162,7 +162,7 @@ func libp2p_start() {
 	//	libp2p_connect(peer)
 	//}
 
-	gs, err := pubsub.NewGossipSub(libp2p_context, libp2p_host)
+	gs, err := pubsub.NewGossipSub(libp2p_context, h)
 	fatal(err)
 
 	//TODO Move to service
@@ -170,7 +170,7 @@ func libp2p_start() {
 	fatal(err)
 	s, err := t.Subscribe()
 	fatal(err)
-	go libp2p_directory_listen(s, libp2p_host)
+	go libp2p_directory_listen(s)
 	libp2p_topics["directory"] = t
 
 	//TODO Make service?
@@ -178,8 +178,8 @@ func libp2p_start() {
 	fatal(err)
 	s, err = t.Subscribe()
 	fatal(err)
-	go libp2p_peers_listen(s, libp2p_host)
-	go libp2p_peers_publish(t, libp2p_id, libp2p_address)
+	go libp2p_peers_listen(s)
+	go libp2p_peers_publish(t)
 	libp2p_topics["peers"] = t
 }
 

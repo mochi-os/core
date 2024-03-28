@@ -19,11 +19,13 @@ func init() {
 
 func peer_update(u *User, e *Event) {
 	log_debug("Got peer event from '%s'", e.From)
-	if p, found := peers[e.Instance]; found {
+	p, found := peers[e.Instance]
+	if found {
 		p.Seen = time_unix()
+		peers[e.Instance] = p
 	} else {
 		//TODO Validate everything
-		libp2p_connect(e.Content)
+		//TODO libp2p_connect(e.Content)
 		peers[e.Instance] = Peer{ID: e.Instance, Address: e.Content, Seen: time_unix()}
 	}
 }

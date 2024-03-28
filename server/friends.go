@@ -14,7 +14,9 @@ type Friend struct {
 func init() {
 	app_register("comms/friends", "Friends")
 	app_register_display("comms/friends", friends_display)
-	app_register_event("comms/friends", "", friends_events)
+	app_register_event("comms/friends", "accept", friends_event_accept)
+	app_register_event("comms/friends", "cancel", friends_event_cancel)
+	app_register_event("comms/friends", "invite", friends_event_invite)
 	app_register_function("comms/friends", "get", friends_get)
 	app_register_function("comms/friends", "list", friends_list)
 	app_register_service("comms/friends", "friends")
@@ -135,45 +137,37 @@ func friends_display(u *User, p app_parameters, format string) string {
 	return app_template("friends/"+format+"/list", map[string]any{"Friends": friends_by_user(u), "Invitations": friend_invitations_received(u)})
 }
 
-// TODO Split?
-func friends_events(u *User, e *Event) {
+// Remote party accepted our invitation
+func friends_event_accept(u *User, e *Event) {
 	i := instance_by_id(u.ID, e.Instance)
 	id := data_get(u.ID, "comms/friends", e.Instance, "id", "")
-	if i != nil && e.From != id {
-		log_info("Dropping received friend event due to incorrect sender")
-		return
+	if i != nil && e.From == id {
+		service(u, "notification", "create", i.ID, i.Name+" accepted your friend invitation", "?app=friends")
+		instance_delete(u.ID, i.ID)
 	}
+}
 
-	if e.Action == "accept" {
-		// Remote party accepted our invitation
-		if i != nil {
-			service(u, "notification", "create", i.ID, i.Name+" accepted your friend invitation", "?app=friends")
-			instance_delete(u.ID, i.ID)
-		}
+// Remote party cancelled their existing invitation
+func friends_event_cancel(u *User, e *Event) {
+	id := data_get(u.ID, "comms/friends", e.Instance, "id", "")
+	if e.From == id {
+		instance_delete(u.ID, e.Instance)
+	}
+}
 
-	} else if e.Action == "cancel" {
-		// Remote party cancelled their existing invitation
-		if i != nil {
-			instance_delete(u.ID, i.ID)
-		}
-
-	} else if e.Action == "invite" {
-		// Remote party sent us a new invitation
-		p := friend_previous_invite(u, e.From, "send")
-		if p != nil {
-			// We have an existing invitation to them, so accept theirs automatically, and cancel ours
-			friend_accept(u, e.From)
-			event(e.To, e.From, "friends", p.ID, "cancel", "")
-			instance_delete(u.ID, p.ID)
-		} else {
-			// Store the invitation, but don't notify the user so we don't have notification spam
-			instance_create(u.ID, e.Instance, e.Content, "friends")
-			data_set(u.ID, "comms/friends", e.Instance, "id", e.From)
-			data_set(u.ID, "comms/friends", e.Instance, "direction", "receive")
-		}
-
+// Remote party sent us a new invitation
+func friends_event_invite(u *User, e *Event) {
+	p := friend_previous_invite(u, e.From, "send")
+	if p != nil {
+		// We have an existing invitation to them, so accept theirs automatically, and cancel ours
+		friend_accept(u, e.From)
+		event(e.To, e.From, "friends", p.ID, "cancel", "")
+		instance_delete(u.ID, p.ID)
 	} else {
-		log_info("Dropping received event due to unknown action '%s'", e.Action)
+		// Store the invitation, but don't notify the user so we don't have notification spam
+		instance_create(u.ID, e.Instance, e.Content, "friends")
+		data_set(u.ID, "comms/friends", e.Instance, "id", e.From)
+		data_set(u.ID, "comms/friends", e.Instance, "direction", "receive")
 	}
 }
 

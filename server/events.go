@@ -58,17 +58,18 @@ func event_receive(e *Event) {
 	_, found := a.Events[e.Action]
 	if found {
 		a.Events[e.Action](u, e)
+		return
 	} else {
 		_, found := a.Events[""]
 		if found {
 			a.Events[""](u, e)
+			return
 		}
 	}
 	log_info("Dropping received event due to unknown action '%s' for service '%s'", e.Action, e.Service)
 }
 
 func event_receive_json(event []byte) {
-	log_debug("Event received: '%s'", event)
 	var e Event
 	err := json.Unmarshal(event, &e)
 	if err != nil {

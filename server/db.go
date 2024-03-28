@@ -21,6 +21,7 @@ func db_create() {
 	db_exec("settings", "insert into settings ( name, value ) values ( 'schema', ? )", latest_schema)
 
 	// Users
+	//TODO Language?
 	db_exec("users", "create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null )")
 	db_exec("users", "create unique index users_username on users( username )")
 	db_exec("users", "create unique index users_private on users( private )")

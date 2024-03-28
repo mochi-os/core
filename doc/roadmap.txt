@@ -1,14 +1,15 @@
 0.1
 	WASM apps
+	Peer discovery
 	Directory between servers
 	Events between servers
 	Encrypt and sign events
-	Decide app registration scheme
 	Decide web path scheme
+	Decide apps, service, instances, and data
 	Public release
 
 0.2
-	Broadcasts between apps
+	Broadcasts between apps within a user
 	Users choose which apps run which service
 	HTTPS using Letsencrypt
 	Client API

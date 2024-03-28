@@ -13,7 +13,7 @@ type Notification struct {
 }
 
 func init() {
-	app_register("comms/notifications", "Notifications")
+	app_register("comms/notifications", map[string]string{"en": "Notifications"})
 	app_register_display("comms/notifications", notifications_display)
 	app_register_function("comms/notifications", "clear", notifications_clear)
 	app_register_function("comms/notifications", "clear/instance", notifications_clear_instance)

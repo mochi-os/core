@@ -61,18 +61,6 @@ func libp2p_connect(address string, h host.Host) {
 	log_debug("Connected to peer at '%s'", address)
 }
 
-// Listen for updates to the directory service
-// TODO Generalise
-func libp2p_directory_listen(s *pubsub.Subscription) {
-	for {
-		m, err := s.Next(libp2p_context)
-		fatal(err)
-		if m.ReceivedFrom.String() != libp2p_id {
-			event_receive_json(m.Data)
-		}
-	}
-}
-
 // Handle peer connecting to us
 func libp2p_handle(s network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String()
@@ -88,16 +76,15 @@ func libp2p_handle(s network.Stream) {
 	go libp2p_write(rw)
 }
 
-// Listen for peer updates on the peers pubsub
-// TODO Generalise
-func libp2p_peers_listen(s *pubsub.Subscription) {
-	for {
-		m, err := s.Next(libp2p_context)
-		fatal(err)
-		if m.ReceivedFrom.String() != libp2p_id {
-			event_receive_json(m.Data)
-		}
-	}
+// Listen for updates on a pubsub
+func libp2p_pubsub_listen(s *pubsub.Subscription) {
+    for {
+        m, err := s.Next(libp2p_context)
+        fatal(err)
+        if m.ReceivedFrom.String() != libp2p_id {
+            event_receive_json(m.Data)
+        }
+    }
 }
 
 // Publish our own peer information to the peers pubsub once an hour
@@ -165,22 +152,16 @@ func libp2p_start() {
 	gs, err := pubsub.NewGossipSub(libp2p_context, h)
 	fatal(err)
 
-	//TODO Move to service
-	t, err := gs.Join("directory")
-	fatal(err)
-	s, err := t.Subscribe()
-	fatal(err)
-	go libp2p_directory_listen(s)
-	libp2p_topics["directory"] = t
+	for _, topic := range app_pubsubs {
+		t, err := gs.Join("topic")
+		fatal(err)
+		s, err := t.Subscribe()
+		fatal(err)
+		go libp2p_pubsub_listen(s)
+		libp2p_topics[topic] = t
+	}
 
-	//TODO Make service?
-	t, err = gs.Join("peers")
-	fatal(err)
-	s, err = t.Subscribe()
-	fatal(err)
-	go libp2p_peers_listen(s)
 	go libp2p_peers_publish(t)
-	libp2p_topics["peers"] = t
 }
 
 // Write to a newly connected peer. Currently not used.

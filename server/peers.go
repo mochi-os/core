@@ -12,8 +12,9 @@ type Peer struct {
 var peers map[string]Peer = map[string]Peer{}
 
 func init() {
-	app_register("peers", "Peers")
+	app_register("peers", map[string]string{"en": "Peers")
 	app_register_event("peers", "update", peer_update)
+	app_register_pubsub("peers", "peers")
 	app_register_service("peers", "peers")
 }
 

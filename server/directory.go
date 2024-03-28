@@ -16,6 +16,11 @@ type Directory struct {
 	Updated     int
 }
 
+func init {
+	app_register("directory", map[string]string{"en": "Directory"})
+	app_register_pubsub("directory", "directory")
+}
+
 func directory_create(id string, name string, class string, location string) {
 	db_exec("directory", "insert into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, time_unix())
 	d := Directory{ID: id, Name: name, Class: class, Location: location}

@@ -8,7 +8,7 @@ import (
 )
 
 func init() {
-	app_register("chat", "Chat")
+	app_register("chat", map[string]string{"en": "Chat"})
 	app_register_display("chat", chat_display)
 	app_register_event("chat", "message", chat_message_receive)
 	app_register_service("chat", "chat")

@@ -12,7 +12,7 @@ type Friend struct {
 }
 
 func init() {
-	app_register("comms/friends", "Friends")
+	app_register("comms/friends", map[string]string{"en": "Friends"})
 	app_register_display("comms/friends", friends_display)
 	app_register_event("comms/friends", "accept", friends_event_accept)
 	app_register_event("comms/friends", "cancel", friends_event_cancel)

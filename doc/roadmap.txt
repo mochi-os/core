@@ -14,6 +14,7 @@
 	HTTPS using Letsencrypt
 	Client API
 	Command line client
+	Don't connect to every known peer
 	Auctions (commercial service by Alistair Cunningham)
 
 0.3

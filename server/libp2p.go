@@ -28,37 +28,45 @@ type mdns_notifee struct {
 var libp2p_listen string
 var libp2p_port int
 var libp2p_address string
+var libp2p_connect_chan = make(chan Peer)
 var libp2p_context context.Context
 var libp2p_host host.Host
 var libp2p_id string
-var libp2p_topics map[string]*pubsub.Topic = map[string]*pubsub.Topic{}
+var libp2p_topics = map[string]*pubsub.Topic{}
 
-// Peer discovered using mDNS
+// Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		address := pa.String() + "/p2p/" + p.ID.String()
-		if pf, found := peers[address]; found {
-			log_debug("Re-discovered existing multicast DNS peer '%s'", address)
-			pf.Seen = time_unix()
-			peers[address] = pf
-		} else {
-			log_debug("Discovered new multicast DNS peer '%s'", address)
-			libp2p_connect(address, n.H)
-		}
+		log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		libp2p_connect_chan <- Peer{ID: p.ID.String(), Address: pa.String() + "/p2p/" + p.ID.String()}
 	}
 }
 
-// Connect to a peer
-func libp2p_connect(address string, h host.Host) {
-	log_debug("Connecting to peer at '%s'", address)
-	ai, err := peer.AddrInfoFromString(address)
-	fatal(err)
-	err = h.Connect(context.Background(), *ai)
-	if err != nil {
-		log_info("Error connecting to peer at '%s': %s\n", address, err)
+// Connect to peers, using a channel to prevent race conditions
+func libp2p_connecter() {
+	for p := range libp2p_connect_chan {
+		p.Seen = time_unix()
+		_, found := peers[p.ID]
+		if found {
+			log_debug("Already connected to peer '%s' at '%s'", p.ID, p.Address)
+			peers[p.ID] = p
+			continue
+		}
+
+		ai, err := peer.AddrInfoFromString(p.Address)
+		if err != nil {
+			log_info("Invalid peer address '%s'", p.Address)
+			continue
+		}
+		log_debug("Connecting to peer '%s' at '%s'", p.ID, p.Address)
+		err = libp2p_host.Connect(context.Background(), *ai)
+		if err != nil {
+			log_info("Error connecting to peer '%s' at '%s': %s\n", p.ID, p.Address, err)
+			continue
+		}
+		log_debug("Connected to peer '%s' at '%s'", p.ID, p.Address)
+		peers[p.ID] = p
 	}
-	peers[address] = Peer{Address: address, Seen: time_unix()}
-	log_debug("Connected to peer at '%s'", address)
 }
 
 // Handle peer connecting to us
@@ -166,6 +174,7 @@ func libp2p_start() {
 	}
 
 	libp2p_host = h
+	go libp2p_connecter()
 }
 
 // Write to a newly connected peer. Currently not used.

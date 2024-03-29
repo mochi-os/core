@@ -39,9 +39,11 @@ func atoi(s string, def int) int {
 	return i
 }
 
-func base64_decode(s string) []byte {
+func base64_decode(s string, def string) []byte {
 	bytes, err := base64.URLEncoding.DecodeString(s)
-	fatal(err)
+	if err != nil {
+		return []byte(def)
+	}
 	return bytes
 }
 

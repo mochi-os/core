@@ -1,5 +1,4 @@
 0.1
-	Sign events
 	Events between servers
 	WASM apps
 	Directory between servers

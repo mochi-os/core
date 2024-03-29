@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 )
 
@@ -18,36 +19,47 @@ type Event struct {
 	Signature string `json:"signature"`
 }
 
-func event(from string, to string, service string, instance string, action string, content string) (*Event, error) {
-	log_debug("Sending event: from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s'", from, to, service, instance, action, content)
-	e := Event{ID: uid(), From: from, To: to, Service: service, Instance: instance, Action: action, Content: content}
+func event(u *User, to string, service string, instance string, action string, content string) (*Event, error) {
+	log_debug("Sending event: from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s'", u.Public, to, service, instance, action, content)
+	e := Event{ID: uid(), From: u.Public, To: to, Service: service, Instance: instance, Action: action, Content: content}
 
 	// Check if local recipient
 	if db_exists("users", "select id from users where public=?", e.To) {
-		go event_receive(&e)
+		go event_receive(&e, false)
 		return &e, nil
 	}
 
-	//TODO Set signature
+	// Send externally
+	private := base64_decode(u.Private, "")
+	if string(private) == "" {
+		log_warn("Dropping event due to invalid private key")
+		return &e, error_message("Invalid private key")
+	}
+	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.Service+e.Instance+e.Action+e.Content)))
 	//TODO Send via libp2p
 
 	log_debug("No destination found for event")
 	return &e, error_message("No destination")
 }
 
-func event_receive(e *Event) {
+func event_receive(e *Event, external bool) {
 	log_debug("Event received: id='%s', from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.Service, e.Instance, e.Action, e.Content, e.Signature)
+
+	if external && e.From != "" {
+		public := base64_decode(e.From, "")
+		if len(public) != ed25519.PublicKeySize {
+			log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
+			return
+		}
+		if !ed25519.Verify(public, []byte(e.From+e.To+e.Service+e.Instance+e.Action+e.Content), base64_decode(e.Signature, "")) {
+			log_info("Dropping received event due to invalid sender signature")
+			return
+		}
+	}
 
 	if !valid(e.Instance, "id") {
 		log_info("Dropping received event due to invalid instance ID '%s'", e.Instance)
 		return
-	}
-
-	//TODO Check signature if from external
-
-	var u *User = nil
-	if e.To != "" {
-		db_struct(u, "users", "select id from users where public=?", e.To)
 	}
 
 	a := app_by_service(e.Service)
@@ -55,26 +67,32 @@ func event_receive(e *Event) {
 		log_info("Dropping received event due to unknown service '%s'", e.Service)
 		return
 	}
+
+	var u User
+	if e.To != "" {
+		db_struct(&u, "users", "select id from users where public=?", e.To)
+	}
+
 	_, found := a.Events[e.Action]
 	if found {
-		a.Events[e.Action](u, e)
+		a.Events[e.Action](&u, e)
 		return
 	} else {
 		_, found := a.Events[""]
 		if found {
-			a.Events[""](u, e)
+			a.Events[""](&u, e)
 			return
 		}
 	}
 	log_info("Dropping received event due to unknown action '%s' for service '%s'", e.Action, e.Service)
 }
 
-func event_receive_json(event []byte) {
+func event_receive_json(event []byte, external bool) {
 	var e Event
 	err := json.Unmarshal(event, &e)
 	if err != nil {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}
-	event_receive(&e)
+	event_receive(&e, external)
 }

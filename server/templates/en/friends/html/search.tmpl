@@ -2,5 +2,5 @@
 
 {{if len .}}<p>Click on a friend to add them:</p>
 
-<p>{{range .}}<a href="?app=friends&action=create&id={{.ID}}&name={{.Name}}">{{.Name}}</a><br/>{{end}}</p>
+<p>{{range .}}<a href="?app=comms/friends&action=create&id={{.ID}}&name={{.Name}}">{{.Name}}</a><br/>{{end}}</p>
 {{else}}<p>No matches found.</p>{{end}}

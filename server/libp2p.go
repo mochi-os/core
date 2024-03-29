@@ -73,7 +73,7 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 		fatal(err)
 		if m.ReceivedFrom.String() != libp2p_id {
 			log_debug("Got event from pubsub: %s", string(m.Data))
-			event_receive_json(m.Data)
+			event_receive_json(m.Data, true)
 		}
 	}
 }
@@ -81,7 +81,7 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 // Publish our own peer information to the peers pubsub regularly
 func libp2p_peers_publish(t *pubsub.Topic) {
 	for {
-		j, err := json.Marshal(Event{ID: uid(), From: libp2p_id, Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
+		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
 		time.Sleep(time.Minute)
@@ -99,7 +99,7 @@ func libp2p_read(r *bufio.ReadWriter) {
 		if in != "\n" {
 			in = strings.TrimSuffix(in, "\n")
 			log_debug("Got event from read peer: %s", in)
-			event_receive_json([]byte(in))
+			event_receive_json([]byte(in), true)
 		}
 	}
 }

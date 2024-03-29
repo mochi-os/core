@@ -32,7 +32,7 @@ func friend_accept(u *User, instance string) {
 	if friend_by_id(u, id) == nil {
 		friend_create(u, id, i.Name, "person", false)
 	}
-	event(u.Public, id, "friends", instance, "accept", "")
+	event(u, id, "friends", instance, "accept", "")
 	instance_delete(u.ID, instance)
 }
 
@@ -69,7 +69,7 @@ func friend_create(u *User, id string, name string, class string, invite bool) e
 	p := friend_previous_invite(u, id, "receive")
 	if p != nil {
 		// We have an existing invitation from them, so accept it automatically
-		event(u.Public, id, "friends", p.ID, "accept", "")
+		event(u, id, "friends", p.ID, "accept", "")
 		instance_delete(u.ID, p.ID)
 
 	} else if invite {
@@ -78,7 +78,7 @@ func friend_create(u *User, id string, name string, class string, invite bool) e
 		instance_create(u.ID, instance, name, "friends")
 		data_set(u.ID, "comms/friends", instance, "id", id)
 		data_set(u.ID, "comms/friends", instance, "direction", "send")
-		event(u.Public, id, "friends", instance, "invite", u.Name)
+		event(u, id, "friends", instance, "invite", u.Name)
 	}
 
 	return nil
@@ -161,7 +161,7 @@ func friends_event_invite(u *User, e *Event) {
 	if p != nil {
 		// We have an existing invitation to them, so accept theirs automatically, and cancel ours
 		friend_accept(u, e.From)
-		event(e.To, e.From, "friends", p.ID, "cancel", "")
+		event(u, e.From, "friends", p.ID, "cancel", "")
 		instance_delete(u.ID, p.ID)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam

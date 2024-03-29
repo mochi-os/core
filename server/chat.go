@@ -39,7 +39,7 @@ func chat_display(u *User, p app_parameters, format string) string {
 		message := app_parameter(p, "message", "")
 		if message != "" {
 			// User sent a message
-			event(u.Public, f.ID, "chat", instance, "message", message)
+			event(u, f.ID, "chat", instance, "message", message)
 			data_append(u.ID, "chat", instance, "messages", "\n"+u.Name+": "+message)
 			messages = messages + "\n" + u.Name + ": " + message
 		}
@@ -62,7 +62,7 @@ func chat_message_receive(u *User, e *Event) {
 	f := service(u, "friends", "get", e.From).(*Friend)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event(u.Public, e.From, "chat", e.Instance, "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
+		event(u, e.From, "chat", e.Instance, "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
 		return
 	}
 

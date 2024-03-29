@@ -24,18 +24,20 @@ func init() {
 }
 
 func peer_add_by_address(address string) {
-	log_debug("Adding peer by address '%s'", address)
 	peer_add_chan <- Peer{ID: strings.TrimLeft(address, "/"), Address: address}
 }
 
 func peers_manager() {
-	log_debug("Peers manager running")
 	for p := range peer_add_chan {
 		if p.ID == libp2p_id {
 			continue
 		}
-		log_debug("Adding new peer '%s' at '%s'", p.ID, p.Address)
 		p.Seen = time_unix()
+		_, found := peers[p.ID]
+		if found {
+			peers[p.ID] = p
+			continue
+		}
 		err := libp2p_connect(p.Address)
 		if err != nil {
 			log_info(err.Error())
@@ -52,6 +54,6 @@ func peer_update(u *User, e *Event) {
 		}
 		peer_add_chan <- Peer{ID: e.Instance, Address: e.Content}
 	} else {
-		log_debug("Invalid peer update")
+		log_info("Invalid peer update")
 	}
 }

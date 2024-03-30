@@ -96,3 +96,19 @@ func user_from_code(code string) *User {
 	log_warn("Unable to create user")
 	return nil
 }
+
+func user_location(user string) (string, string) {
+	// Check if user is local
+	var u User
+	if db_struct(&u, "select location from users where public=?", user) {
+		return "local", u.Public
+	}
+
+	// Check in directory
+	var d Directory
+	if db_struct(&d, "select location from directory where id=?", user) {
+		return "libp2p", d.Location
+	}
+
+	return "", ""
+}

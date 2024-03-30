@@ -1,29 +1,27 @@
 0.1
 	Events between servers
 	WASM apps
-	Directory between servers
+	Apps can access files
+	Apps can create own sqlite databases
+	Directory pubsub
 	Chat in WASM
-	Decide web path scheme
-	Decide apps, service, instances, and data
-	Public release
+	Finalise relationships between apps, services, instances, and data
+	Web path scheme
+	First public release
 
 0.2
-	Broadcasts between apps within a user
+	Choose a name
 	Users choose which apps run which service
 	HTTPS using Letsencrypt
 	Client API
 	Command line client
 	Don't connect to every known peer
-	Auctions (commercial service by Alistair Cunningham)
+	Broadcasts between apps within a user
 
 0.3
 	File and media storage
-	Apps can access files
-	Apps can create own sqlite databases
 	App publishing
 	App updates
-	Paid apps (commercial service by Alistair Cunningham)
-	Advertising in apps (commercial service by Alistair Cunningham)
 
 0.4 or later
 	Push notifications to Android and iOS apps

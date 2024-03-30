@@ -23,22 +23,26 @@ func event(u *User, to string, service string, instance string, action string, c
 	log_debug("Sending event: from='%s', to='%s', service='%s', instance='%s', action='%s', content='%s'", u.Public, to, service, instance, action, content)
 	e := Event{ID: uid(), From: u.Public, To: to, Service: service, Instance: instance, Action: action, Content: content}
 
-	// Check if local recipient
-	if db_exists("users", "select id from users where public=?", e.To) {
+	method, location := user_location(e.To)
+
+	if method == "local" {
 		go event_receive(&e, false)
+		return &e, nil
+
+	} else if method == "libp2p" {
+		private := base64_decode(u.Private, "")
+		if string(private) == "" {
+			log_warn("Dropping event due to invalid private key")
+			return &e, error_message("Invalid private key")
+		}
+		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.Service+e.Instance+e.Action+e.Content)))
+		j, err := json.Marshal(e)
+		fatal(err)
+		libp2p_send(location, j)
 		return &e, nil
 	}
 
-	// Send externally
-	private := base64_decode(u.Private, "")
-	if string(private) == "" {
-		log_warn("Dropping event due to invalid private key")
-		return &e, error_message("Invalid private key")
-	}
-	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.Service+e.Instance+e.Action+e.Content)))
-	//TODO Send via libp2p
-
-	log_debug("No destination found for event")
+	log_debug("No destination found for event to '%s'", e.To)
 	return &e, error_message("No destination")
 }
 

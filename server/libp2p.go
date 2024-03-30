@@ -79,6 +79,7 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 }
 
 // Publish our own peer information to the peers pubsub regularly
+// TODO Generalise
 func libp2p_peers_publish(t *pubsub.Topic) {
 	for {
 		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
@@ -102,6 +103,10 @@ func libp2p_read(r *bufio.ReadWriter) {
 			event_receive_json([]byte(in), true)
 		}
 	}
+}
+
+// Send a message to an address
+func libp2p_send(to string, content []byte) {
 }
 
 // Start libp2p
@@ -147,6 +152,7 @@ func libp2p_start() {
 		go libp2p_pubsub_listen(s)
 		libp2p_topics[topic] = t
 
+		//TODO Make an app registry for publish?
 		if topic == "peers" {
 			go libp2p_peers_publish(t)
 		}

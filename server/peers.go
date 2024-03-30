@@ -4,7 +4,10 @@
 package main
 
 import (
+	"encoding/json"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"strings"
+	"time"
 )
 
 type Peer struct {
@@ -19,7 +22,7 @@ var peer_add_chan = make(chan Peer)
 func init() {
 	app_register("peers", map[string]string{"en": "Peers"})
 	app_register_event("peers", "update", peer_update)
-	app_register_pubsub("peers", "peers")
+	app_register_pubsub("peers", "peers", peers_publish)
 	app_register_service("peers", "peers")
 }
 
@@ -44,6 +47,16 @@ func peers_manager() {
 			continue
 		}
 		peers[p.ID] = p
+	}
+}
+
+// Publish our own information to the pubsub regularly
+func peers_publish(t *pubsub.Topic) {
+	for {
+		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
+		fatal(err)
+		t.Publish(libp2p_context, j)
+		time.Sleep(time.Minute)
 	}
 }
 

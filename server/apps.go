@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"html/template"
 )
 
@@ -18,11 +19,17 @@ type App struct {
 	Services  []string
 }
 
+type AppPubSub struct {
+	Name    string
+	Topic   string
+	Publish func(*pubsub.Topic)
+}
+
 type app_parameters map[string][]string
 
 var apps_by_name = map[string]*App{}
 var apps_by_service = map[string]*App{}
-var app_pubsubs []string
+var app_pubsubs = map[string]*AppPubSub{}
 
 func app_by_service(service string) *App {
 	a, found := apps_by_service[service]
@@ -59,8 +66,7 @@ func app_parameter(p map[string][]string, key string, def string) string {
 
 func app_register(name string, labels map[string]string) {
 	log_debug("App register internal: name='%s', label='%s'", name, labels["en"])
-	a := App{Name: name, Labels: labels, Display: nil, Events: make(map[string]func(*User, *Event)), Functions: make(map[string]func(*User, string, string, ...any) any), Services: make([]string, 1)}
-	apps_by_name[name] = &a
+	apps_by_name[name] = &App{Name: name, Labels: labels, Display: nil, Events: make(map[string]func(*User, *Event)), Functions: make(map[string]func(*User, string, string, ...any) any), Services: make([]string, 1)}
 }
 
 func app_register_display(name string, f func(*User, app_parameters, string) string) {
@@ -93,14 +99,14 @@ func app_register_function(name string, function string, f func(*User, string, s
 	a.Functions[function] = f
 }
 
-func app_register_pubsub(name string, topic string) {
+func app_register_pubsub(name string, topic string, publish func(*pubsub.Topic)) {
 	log_debug("App register pubsub: name='%s', topic='%s'", name, topic)
 	_, found := apps_by_name[name]
 	if !found {
 		log_warn("app_register_pubsub() called for non-installed app '%s'", name)
 		return
 	}
-	app_pubsubs = append(app_pubsubs, topic)
+	app_pubsubs[name] = &AppPubSub{Name: name, Topic: topic, Publish: publish}
 }
 
 func app_register_service(name string, service string) {

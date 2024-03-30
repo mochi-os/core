@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -18,7 +17,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
 	"strings"
-	"time"
 )
 
 type mdns_notifee struct {
@@ -78,17 +76,6 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 	}
 }
 
-// Publish our own peer information to the peers pubsub regularly
-// TODO Generalise
-func libp2p_peers_publish(t *pubsub.Topic) {
-	for {
-		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
-		fatal(err)
-		t.Publish(libp2p_context, j)
-		time.Sleep(time.Minute)
-	}
-}
-
 // Read from a connected peer
 func libp2p_read(r *bufio.ReadWriter) {
 	log_debug("Reading events from new peer")
@@ -144,17 +131,16 @@ func libp2p_start() {
 
 	gs, err := pubsub.NewGossipSub(libp2p_context, h)
 	fatal(err)
-	for _, topic := range app_pubsubs {
-		t, err := gs.Join(topic)
+	for _, ps := range app_pubsubs {
+		t, err := gs.Join(ps.Topic)
 		fatal(err)
+		libp2p_topics[ps.Topic] = t
 		s, err := t.Subscribe()
 		fatal(err)
 		go libp2p_pubsub_listen(s)
-		libp2p_topics[topic] = t
 
-		//TODO Make an app registry for publish?
-		if topic == "peers" {
-			go libp2p_peers_publish(t)
+		if ps.Publish != nil {
+			go ps.Publish(t)
 		}
 	}
 

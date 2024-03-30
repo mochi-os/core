@@ -19,7 +19,8 @@ type Directory struct {
 func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
 	//TODO Directory update event
-	app_register_pubsub("directory", "directory")
+	//TODO Directory publish
+	app_register_pubsub("directory", "directory", nil)
 }
 
 func directory_create(id string, name string, class string, location string) {

@@ -4,15 +4,16 @@
 	WASM apps
 	Apps can access files
 	Apps can create own sqlite databases
+	Web paths
 	Chat in WASM
 	Finalise relationships between apps and services
-	Web path scheme
 	First public release
 
 0.2
 	Choose a name
+	Feeds service
 	Directory global search
-	Users choose which apps run which service
+	Users choose which apps get which web path
 	HTTPS using Letsencrypt
 	Client API
 	Command line client

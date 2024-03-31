@@ -4,12 +4,12 @@
 package main
 
 func init() {
-	app_register("comms/notifications", map[string]string{"en": "Notifications"})
-	app_register_display("comms/notifications", notifications_display)
-	app_register_function("comms/notifications", "clear", notifications_clear)
-	app_register_function("comms/notifications", "clear/object", notifications_clear_object)
-	app_register_function("comms/notifications", "create", notification_create)
-	app_register_service("comms/notifications", "notifications")
+	app_register("notifications", map[string]string{"en": "Notifications"})
+	app_register_display("notifications", notifications_display)
+	app_register_function("notifications", "clear", notifications_clear)
+	app_register_function("notifications", "clear/object", notifications_clear_object)
+	app_register_function("notifications", "create", notification_create)
+	app_register_service("notifications", "notifications")
 }
 
 func notifications_clear(u *User, service string, function string, values ...any) any {

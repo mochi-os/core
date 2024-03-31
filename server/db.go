@@ -36,6 +36,7 @@ func db_create() {
 	db_exec("users", "create index logins_expires on logins( expires )")
 
 	// Directory
+	//TODO Peer
 	db_exec("directory", "create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer )")
 	db_exec("directory", "create index directory_fingerprint on directory( fingerprint )")
 	db_exec("directory", "create index directory_name on directory( name )")

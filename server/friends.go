@@ -3,14 +3,6 @@
 
 package main
 
-type Friend struct {
-	User     int
-	ID       string
-	Name     string
-	Class    string
-	Location string
-}
-
 func init() {
 	app_register("comms/friends", map[string]string{"en": "Friends"})
 	app_register_display("comms/friends", friends_display)
@@ -22,39 +14,37 @@ func init() {
 	app_register_service("comms/friends", "friends")
 }
 
-func friend_accept(u *User, instance string) {
-	i := instance_by_id(u.ID, instance)
+// Accept a friend's invitation
+func friend_accept(u *User, friend string) {
+	i := object_by_path(u, "comms/friends", "invites/from/"+friend)
 	if i == nil {
 		return
 	}
-
-	id := data_get(u.ID, "comms/friends", instance, "id", "")
-	if friend_by_id(u, id) == nil {
-		friend_create(u, id, i.Name, "person", false)
+	f := object_by_path(u, "comms/friends", "friends/"+friend)
+	if f == nil {
+		friend_create(u, friend, i.Name, "person", false)
 	}
-	event(u, id, "friends", instance, "accept", "")
-	instance_delete(u.ID, instance)
+	event(u, friend, "friends", "", "accept", "")
+	object_delete_by_id(u, i.ID)
+
+	// Cancel any invitation we had sent to them
+	i = object_by_path(u, "comms/friends", "invites/to/"+friend)
+	if i != nil {
+		event(u, friend, "friends", "", "cancel", "")
+		object_delete_by_id(u, i.ID)
+	}
 }
 
-func friend_by_id(u *User, id string) *Friend {
-	var c Friend
-	if db_struct(&c, "users", "select * from friends where user=? and id=?", u.ID, id) {
-		return &c
-	}
-	return nil
+func friend_by_id(u *User, friend string) *Object {
+	return object_by_path(u, "comms/friends", "friends/"+friend)
 }
 
-func friends_by_user(u *User) *[]Friend {
-	var c []Friend
-	db_structs(&c, "users", "select * from friends where user=? order by name, id", u.ID)
-	return &c
+func friends_by_user(u *User) *[]Object {
+	return objects_by_parent(u, "comms/friends", "friends", "name")
 }
 
-func friend_create(u *User, id string, name string, class string, invite bool) error {
-	if db_exists("users", "select id from friends where user=? and id=?", u.ID, id) {
-		return error_message("You are already friends")
-	}
-	if !valid(id, "public") {
+func friend_create(u *User, friend string, name string, class string, invite bool) error {
+	if !valid(friend, "public") {
 		return error_message("Invalid ID")
 	}
 	if !valid(name, "name") {
@@ -64,33 +54,31 @@ func friend_create(u *User, id string, name string, class string, invite bool) e
 		return error_message("Invalid class")
 	}
 
-	db_exec("users", "insert into friends ( user, id, name, class ) values ( ?, ?, ?, ? )", u.ID, id, name, class)
+	if object_by_path(u, "comms/friends", "friends/"+friend) != nil {
+		return error_message("You are already friends")
+	}
+	f := object_create(u, "comms/friends", "friends/"+friend, "friends", name)
+	if f == nil {
+		return error_message("Unable to create friend")
+	}
 
-	p := friend_previous_invite(u, id, "receive")
-	if p != nil {
+	i := object_by_path(u, "comms/friends", "invites/from/"+friend)
+	if i != nil {
 		// We have an existing invitation from them, so accept it automatically
-		event(u, id, "friends", p.ID, "accept", "")
-		instance_delete(u.ID, p.ID)
+		event(u, friend, "friends", "", "accept", "")
+		object_delete_by_id(u, i.ID)
 
 	} else if invite {
 		// Send invitation
-		instance := uid()
-		instance_create(u.ID, instance, name, "friends")
-		data_set(u.ID, "comms/friends", instance, "id", id)
-		data_set(u.ID, "comms/friends", instance, "direction", "send")
-		event(u, id, "friends", instance, "invite", u.Name)
+		object_create(u, "comms/friends", "invites/to/"+friend, "invites/to", name)
+		event(u, friend, "friends", "", "invite", u.Name)
 	}
 
 	return nil
 }
 
-func friend_delete(u *User, id string) error {
-	if !db_exists("users", "select id from friends where user=? and id=?", u.ID, id) {
-		return error_message("friend not found")
-	}
-
-	db_exec("users", "delete from friends where user=? and id=?", u.ID, id)
-	return nil
+func friend_delete(u *User, friend string) {
+	object_delete_by_path(u, "comms/friends", "friends/"+friend)
 }
 
 func friends_display(u *User, p app_parameters, format string) string {
@@ -111,10 +99,7 @@ func friends_display(u *User, p app_parameters, format string) string {
 
 	} else if action == "delete" {
 		// Delete friend
-		err := friend_delete(u, app_parameter(p, "id", ""))
-		if err != nil {
-			return app_error(err)
-		}
+		friend_delete(u, app_parameter(p, "id", ""))
 		return app_template("friends/" + format + "/deleted")
 
 	} else if action == "ignore" {
@@ -134,57 +119,45 @@ func friends_display(u *User, p app_parameters, format string) string {
 		return app_template("friends/"+format+"/search", directory_search(search))
 	}
 
-	return app_template("friends/"+format+"/list", map[string]any{"Friends": friends_by_user(u), "Invitations": friend_invitations_received(u)})
+	return app_template("friends/"+format+"/list", map[string]any{"Friends": friends_by_user(u), "Invitations": objects_by_parent(u, "comms/friends", "invites/from", "updated desc")})
 }
 
 // Remote party accepted our invitation
 func friends_event_accept(u *User, e *Event) {
-	i := instance_by_id(u.ID, e.Instance)
-	id := data_get(u.ID, "comms/friends", e.Instance, "id", "")
-	if i != nil && e.From == id {
-		service(u, "notification", "create", i.ID, i.Name+" accepted your friend invitation", "?app=friends")
-		instance_delete(u.ID, i.ID)
+	i := object_by_path(u, "comms/friends", "invites/to/"+e.From)
+	if i != nil {
+		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "?app=friends")
+		object_delete_by_id(u, i.ID)
 	}
 }
 
 // Remote party cancelled their existing invitation
 func friends_event_cancel(u *User, e *Event) {
-	id := data_get(u.ID, "comms/friends", e.Instance, "id", "")
-	if e.From == id {
-		instance_delete(u.ID, e.Instance)
+	i := object_by_path(u, "comms/friends", "invites/from/"+e.From)
+	if i != nil {
+		object_delete_by_id(u, i.ID)
 	}
 }
 
 // Remote party sent us a new invitation
 func friends_event_invite(u *User, e *Event) {
-	p := friend_previous_invite(u, e.From, "send")
+	p := object_by_path(u, "comms/friends", "invites/to/"+e.From)
 	if p != nil {
 		// We have an existing invitation to them, so accept theirs automatically, and cancel ours
 		friend_accept(u, e.From)
-		event(u, e.From, "friends", p.ID, "cancel", "")
-		instance_delete(u.ID, p.ID)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
-		instance_create(u.ID, e.Instance, e.Content, "friends")
-		data_set(u.ID, "comms/friends", e.Instance, "id", e.From)
-		data_set(u.ID, "comms/friends", e.Instance, "direction", "receive")
-	}
-}
-
-func friend_invitations_received(u *User) *[]Instance {
-	var invitations []Instance
-	for _, i := range *instances_by_service(u.ID, "friends", "updated desc") {
-		if data_get(u.ID, "comms/friends", i.ID, "direction", "") == "receive" {
-			invitations = append(invitations, i)
+		i := object_create(u, "comms/friends", "invites/from/"+e.From, "invites/from", e.Content)
+		if i != nil {
+			object_value_set(u, i.ID, "name", e.Content)
 		}
 	}
-	return &invitations
 }
 
-func friend_ignore(u *User, instance string) {
-	i := instance_by_id(u.ID, instance)
+func friend_ignore(u *User, id string) {
+	i := object_by_path(u, "comms/friends", "invites/from/"+id)
 	if i != nil {
-		instance_delete(u.ID, instance)
+		object_delete_by_id(u, i.ID)
 	}
 }
 
@@ -197,14 +170,4 @@ func friends_get(u *User, service string, function string, values ...any) any {
 
 func friends_list(u *User, service string, function string, values ...any) any {
 	return friends_by_user(u)
-}
-
-func friend_previous_invite(u *User, id string, direction string) *Instance {
-	for _, i := range *instances_by_service(u.ID, "friends", "id") {
-		r := data_get(u.ID, "comms/friends", i.ID, "id", "")
-		if r == id {
-			return &i
-		}
-	}
-	return nil
 }

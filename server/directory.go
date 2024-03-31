@@ -18,13 +18,12 @@ type Directory struct {
 
 func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
-	//TODO Directory update event
-	//TODO Directory publish
+	//TODO Directory receive event
 	app_register_pubsub("directory", "directory", nil)
 }
 
 func directory_create(id string, name string, class string, location string) {
-	db_exec("directory", "insert into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, time_unix())
+	db_exec("directory", "replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, time_unix())
 	d := Directory{ID: id, Name: name, Class: class, Location: location}
 	j, err := json.Marshal(d)
 	fatal(err)

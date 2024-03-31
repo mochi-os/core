@@ -18,12 +18,10 @@ func db_create() {
 
 	// Settings
 	db_exec("settings", "create table settings ( name text not null primary key, value text not null )")
-	db_exec("settings", "insert into settings ( name, value ) values ( 'schema', ? )", latest_schema)
+	db_exec("settings", "replace into settings ( name, value ) values ( 'schema', ? )", latest_schema)
 
 	// Users
-	//TODO Use public key as id?
-	//TODO Language?
-	db_exec("users", "create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null )")
+	db_exec("users", "create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en' )")
 	db_exec("users", "create unique index users_username on users( username )")
 	db_exec("users", "create unique index users_private on users( private )")
 	db_exec("users", "create unique index users_public on users( public )")
@@ -37,12 +35,6 @@ func db_create() {
 	db_exec("users", "create unique index logins_code on logins( code )")
 	db_exec("users", "create index logins_expires on logins( expires )")
 
-	// Friends
-	db_exec("users", "create table friends ( user references users( id ), id text not null, name text not null, class text not null, location text not null default '', primary key ( user, id ) )")
-	db_exec("users", "create index friends_id on friends( id )")
-	db_exec("users", "create index friends_name on friends( name )")
-	db_exec("users", "create index friends_class on friends( class )")
-
 	// Directory
 	db_exec("directory", "create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer )")
 	db_exec("directory", "create index directory_fingerprint on directory( fingerprint )")
@@ -50,20 +42,15 @@ func db_create() {
 	db_exec("directory", "create index directory_class on directory( class )")
 	db_exec("directory", "create index directory_updated on directory( updated )")
 
-	// Instances
-	db_exec("data", "create table instances ( user integer not null, id text not null, name text not null default '', service text not null default '', updated integer not null, primary key ( user, id ) )")
-	db_exec("data", "create index instances_name on instances( name )")
-	db_exec("data", "create index instances_service on instances( service )")
-	db_exec("data", "create index instances_updated on instances( updated )")
+	// App data objects
+	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, path text not null, parent text not null default '', name text not null default '', updated integer not null )")
+	db_exec("data", "create unique index objects_user_app_path on objects( user, app, path )")
+	db_exec("data", "create index objects_parent on objects( parent )")
+	db_exec("data", "create index objects_name on objects( name )")
+	db_exec("data", "create index objects_updated on objects( updated )")
 
-	// User data
-	db_exec("data", "create table data ( user integer not null, app text not null, instance text not null default '', name text not null, value text not null, primary key ( user, app, instance, name ) )")
-	db_exec("data", "create index data_instance on data( instance )")
-
-	// Notifications
-	db_exec("notifications", "create table notifications ( id text not null primary key, user integer not null, instance text not null default '', content text not null, link text not null default '', updated integer not null )")
-	db_exec("notifications", "create index notifications_user_instance on notifications( user, instance )")
-	db_exec("notifications", "create index notifications_updated on notifications( updated )")
+	// App data key/values
+	db_exec("data", "create table object_values ( object references objects( id ), name text not null, value text not null, primary key ( object, name ) )")
 }
 
 func db_exec(file string, query string, values ...any) {

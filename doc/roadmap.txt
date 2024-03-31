@@ -1,16 +1,17 @@
 0.1
 	Events between servers
+	Directory pubsub
 	WASM apps
 	Apps can access files
 	Apps can create own sqlite databases
-	Directory pubsub
 	Chat in WASM
-	Finalise relationships between apps, services, instances, and data
+	Finalise relationships between apps and services
 	Web path scheme
 	First public release
 
 0.2
 	Choose a name
+	Directory global search
 	Users choose which apps run which service
 	HTTPS using Letsencrypt
 	Client API

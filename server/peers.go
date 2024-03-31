@@ -53,7 +53,7 @@ func peers_manager() {
 // Publish our own information to the pubsub regularly
 func peers_publish(t *pubsub.Topic) {
 	for {
-		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Instance: libp2p_id, Action: "update", Content: libp2p_address})
+		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Entity: libp2p_id, Action: "update", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
 		time.Sleep(time.Minute)
@@ -61,11 +61,11 @@ func peers_publish(t *pubsub.Topic) {
 }
 
 func peer_update(u *User, e *Event) {
-	if valid(e.Instance, "^[\\w]{1,100}$") && valid(e.Content, "^[\\w/.]{1,100}$") {
-		if e.Instance == libp2p_id {
+	if valid(e.Entity, "^[\\w]{1,100}$") && valid(e.Content, "^[\\w/.]{1,100}$") {
+		if e.Entity == libp2p_id {
 			return
 		}
-		peer_add_chan <- Peer{ID: e.Instance, Address: e.Content}
+		peer_add_chan <- Peer{ID: e.Entity, Address: e.Content}
 	} else {
 		log_info("Invalid peer update")
 	}

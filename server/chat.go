@@ -3,10 +3,6 @@
 
 package main
 
-import (
-	"strings"
-)
-
 func init() {
 	app_register("chat", map[string]string{"en": "Chat"})
 	app_register_display("chat", chat_display)
@@ -23,24 +19,27 @@ func chat_display(u *User, p app_parameters, format string) string {
 		return app_template("chat/"+format+"/new", service(u, "friends", "list"))
 
 	} else if action == "view" {
-		f := service(u, "friends", "get", app_parameter(p, "friend", "")).(*Friend)
+		f := service(u, "friends", "get", app_parameter(p, "friend", "")).(*Object)
 		if f == nil {
 			return "Friend not found"
 		}
-		instance := "chat-" + f.ID
-		if instance_by_id(u.ID, instance) == nil {
-			instance_create(u.ID, instance, f.Name, "chat")
+		c := object_by_path(u, "chat", "friends/"+f.ID)
+		if c == nil {
+			c = object_create(u, "chat", "friends/"+f.ID, "friends", f.Name)
+			if c == nil {
+				return "Unable to creat chat"
+			}
 		} else {
-			instance_touch(u.ID, instance)
-			service(u, "notifications", "clear/instance", instance)
+			object_touch(u, c.ID)
+			service(u, "notifications", "clear/object", c.ID)
 		}
 
-		messages := data_get(u.ID, "chat", instance, "messages", "")
+		messages := object_value_get(u, c.ID, "messages", "")
 		message := app_parameter(p, "message", "")
 		if message != "" {
 			// User sent a message
-			event(u, f.ID, "chat", instance, "message", message)
-			data_append(u.ID, "chat", instance, "messages", "\n"+u.Name+": "+message)
+			event(u, f.ID, "chat", "", "message", message)
+			object_value_append(u, c.ID, "messages", "\n"+u.Name+": "+message)
 			messages = messages + "\n" + u.Name + ": " + message
 		}
 
@@ -48,28 +47,26 @@ func chat_display(u *User, p app_parameters, format string) string {
 
 	} else {
 		// List existing chats
-		var chats []Instance
-		for _, c := range *instances_by_service(u.ID, "chat", "updated desc") {
-			c.ID = strings.TrimLeft(c.ID, "chat-")
-			chats = append(chats, c)
-		}
-		return app_template("chat/"+format+"/list", chats)
+		return app_template("chat/"+format+"/list", objects_by_parent(u, "chat", "friends", "updated desc"))
 	}
 }
 
 // Received a chat event from another user
 func chat_message_receive(u *User, e *Event) {
-	f := service(u, "friends", "get", e.From).(*Friend)
+	f := service(u, "friends", "get", e.From).(*Object)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event(u, e.From, "chat", e.Instance, "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
+		event(u, e.From, "chat", "", "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
 		return
 	}
 
-	instance := "chat-" + f.ID
-	if instance_by_id(u.ID, instance) == nil {
-		instance_create(u.ID, instance, f.Name, "chat")
+	c := object_by_path(u, "chat", "friends/"+f.ID)
+	if c == nil {
+		c = object_create(u, "chat", "friends/"+f.ID, "friends", f.Name)
+		if c == nil {
+			return
+		}
 	}
-	data_append(u.ID, "chat", instance, "messages", "\n"+f.Name+": "+e.Content)
-	service(u, "notifications", "create/instance", instance, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
+	object_value_append(u, c.ID, "messages", "\n"+f.Name+": "+e.Content)
+	service(u, "notifications", "create/object", c.ID, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.ID)
 }

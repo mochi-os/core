@@ -28,6 +28,7 @@ type User struct {
 	Role     string
 	Private  string
 	Public   string
+	Language string
 }
 
 func code_send(email string) bool {
@@ -35,14 +36,14 @@ func code_send(email string) bool {
 		return false
 	}
 	code := random_alphanumeric(12)
-	db_exec("users", "insert into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
+	db_exec("users", "replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
 	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	return true
 }
 
 func login_create(user int) string {
 	code := random_alphanumeric(20)
-	db_exec("users", "insert into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
+	db_exec("users", "replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
 	return code
 }
 
@@ -87,7 +88,7 @@ func user_from_code(code string) *User {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	fatal(err)
 
-	db_exec("users", "insert into users ( username, name, role, public, private ) values ( ?, '', 'user', ?, ? )", c.Username, base64_encode(public), base64_encode(private))
+	db_exec("users", "replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
 
 	if db_struct(&u, "users", "select * from users where username=?", c.Username) {
 		return &u

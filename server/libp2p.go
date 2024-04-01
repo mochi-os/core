@@ -94,6 +94,7 @@ func libp2p_read(r *bufio.ReadWriter) {
 
 // Send a message to an address
 func libp2p_send(to string, content []byte) {
+	//TODO Send event via libp2p
 }
 
 // Start libp2p

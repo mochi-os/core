@@ -111,6 +111,7 @@ func user_location(user string) (string, string) {
 	var d Directory
 	if db_struct(&d, "users", "select location from directory where id=?", user) {
 		log_debug("User is in directory")
+		//TODO Look up peer
 		return "libp2p", d.Location
 	}
 

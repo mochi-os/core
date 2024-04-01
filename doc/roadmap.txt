@@ -4,7 +4,6 @@
 	WASM apps
 	Apps can access files
 	Apps can create own sqlite databases
-	Web paths
 	Chat in WASM
 	First public release
 

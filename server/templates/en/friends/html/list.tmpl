@@ -1,10 +1,10 @@
 <h2>Your friends</h2>
 
-{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="?app=friends&action=delete&id={{.Tag}}">Delete</a></p>{{end}}
+{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="/friends/delete/?id={{.Tag}}">Delete</a></p>{{end}}
 {{else}}<p>You have no friends.</p>{{end}}
 
-<p><a href="?app=friends&action=new">Add a new friend</a></p>
+<p><a href="/friends/new/">Add a new friend</a></p>
 
 {{if len .Invites}}<p>Or click on a received invitation:</p>
 
-<p>{{range .Invites}}{{.Name}} | <a href="?app=friends&action=accept&id={{.Tag}}">Accept</a> | <a href="?app=friends&action=ignore&id={{.Tag}}">Ignore</a><br/>{{end}}</p>{{end}}
+<p>{{range .Invites}}{{.Name}} | <a href="/friends/accept/?id={{.Tag}}">Accept</a> | <a href="/friends/ignore/?id={{.Tag}}">Ignore</a><br/>{{end}}</p>{{end}}

@@ -1,6 +1,6 @@
 <h2>Chats</h2>
 
-<p>{{if len .}}{{range .}}<a href="/?app=chat&action=view&friend={{.Tag}}">Chat with {{.Name}}</a><br/>{{end}}
+<p>{{if len .}}{{range .}}<a href="/chat/view/?friend={{.Tag}}">Chat with {{.Name}}</a><br/>{{end}}
 {{else}}You have no chats{{end}}</p>
 
-<p><a href="?app=chat&action=new">New chat</a></p>
+<p><a href="/chat/new/">New chat</a></p>

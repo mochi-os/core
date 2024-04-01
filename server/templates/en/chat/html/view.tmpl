@@ -2,9 +2,7 @@
 
 <pre>{{.Messages}}</pre>
 
-<form>
-	<input type="hidden" name="app" value="chat"/>
-	<input type="hidden" name="action" value="view"/>
+<form action="/chat/view/">
 	<input type="hidden" name="friend" value="{{.Friend.Tag}}"/>
 	<label for="message">Send message:</label>
 	<input type="text" name="message" autofocus/>

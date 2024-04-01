@@ -7,7 +7,7 @@
 
 {{if len .Apps}}<h2>Apps:</h2>
 <p>{{end}}
-{{range .Apps}}<a href="/?app={{.Name}}">{{.Labels.en}}</a><br/>{{end}}
+{{range .Apps}}<a href="/{{.Path}}/">{{.Labels.en}}</a><br/>{{end}}
 {{if len .Apps}}</p>{{end}}
 
 <a href="?action=logout">Log out</a></p>

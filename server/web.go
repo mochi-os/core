@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 var (
@@ -17,7 +18,6 @@ var (
 )
 
 var web_port int
-var web_paths = map[string]func(w http.ResponseWriter, r *http.Request){}
 
 func web_auth(w http.ResponseWriter, r *http.Request) *User {
 	login := web_cookie_get(r, "login", "")
@@ -60,8 +60,15 @@ func web_error(w http.ResponseWriter, data any) {
 func web_home(w http.ResponseWriter, r *http.Request) {
 	u := web_auth(w, r)
 	if u != nil {
-		app := r.FormValue("app")
-		if app != "" {
+		paths := strings.SplitN(strings.Trim(r.URL.Path, "/"), "/", 2)
+
+		if len(paths) > 0 && paths[0] != "" {
+			app := paths[0]
+			action := ""
+			if len(paths) > 1 {
+				action = paths[1]
+			}
+
 			parameters := make(app_parameters)
 			referrer, err := url.Parse(r.Referer())
 			log_debug("XSS check: referrer host='%s', our host = '%s'", referrer.Host, r.Host)
@@ -76,7 +83,7 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			out, err := app_display(u, app, parameters, "html")
+			out, err := app_display(u, app, action, "html", parameters)
 			if err != nil {
 				web_error(w, err)
 				return
@@ -88,7 +95,7 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 
 			if action == "clear" {
 				service(u, "notifications", "clear")
-				web_redirect(w, "?")
+				web_redirect(w, "/")
 				return
 
 			} else if action == "logout" {
@@ -102,12 +109,12 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 			}
 
 			a := apps_by_name["notifications"]
-			n, err := app_display(u, a.Name, app_parameters{}, "html")
+			n, err := app_display(u, a.Name, "display", "html", app_parameters{})
 			if err != nil {
 				web_error(w, err)
 				return
 			}
-			web_template(w, "home", map[string]any{"User": u, "Apps": apps_by_name, "Notifications": template.HTML(n)})
+			web_template(w, "home", map[string]any{"User": u, "Apps": apps_by_path, "Notifications": template.HTML(n)})
 		}
 	}
 }
@@ -163,17 +170,10 @@ func web_redirect(w http.ResponseWriter, url string) {
 	web_template(w, "redirect", url)
 }
 
-func web_register_path(path string, f func(w http.ResponseWriter, r *http.Request)) {
-	//TODO Handle conflicts
-	web_paths[path] = f
-	http.HandleFunc(path, f)
-}
-
 func web_start() {
-	web_register_path("/", web_home)
-	web_register_path("/login/", web_login)
-	web_register_path("/login/name/", web_name)
-
+	http.HandleFunc("/", web_home)
+	http.HandleFunc("/login/", web_login)
+	http.HandleFunc("/login/name/", web_name)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
 	fatal(err)
 }

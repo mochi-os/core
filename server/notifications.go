@@ -5,7 +5,7 @@ package main
 
 func init() {
 	app_register("notifications", map[string]string{"en": "Notifications"})
-	app_register_display("notifications", notifications_display)
+	app_register_action("notifications", "", notifications_display)
 	app_register_service("notifications", "clear", notifications_clear)
 	app_register_service("notifications", "clear/object", notifications_clear_object)
 	app_register_service("notifications", "create", notification_create)
@@ -49,7 +49,7 @@ func notification_create(u *User, service string, values ...any) any {
 	return n
 }
 
-func notifications_display(u *User, p app_parameters, format string) string {
+func notifications_display(u *User, action string, format string, p app_parameters) string {
 	var notifications []map[string]string
 	for _, n := range *objects_by_category(u, "notifications", "notification", "updated") {
 		notifications = append(notifications, map[string]string{"ID": n.ID, "Content": object_value_get(u, n.ID, "content", ""), "Link": object_value_get(u, n.ID, "link", "")})

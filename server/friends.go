@@ -5,12 +5,66 @@ package main
 
 func init() {
 	app_register("friends", map[string]string{"en": "Friends"})
-	app_register_display("friends", friends_display)
+	app_register_action("friends", "", friends_action_list)
+	app_register_action("friends", "accept", friends_action_accept)
+	app_register_action("friends", "create", friends_action_create)
+	app_register_action("friends", "delete", friends_action_delete)
+	app_register_action("friends", "ignore", friends_action_ignore)
+	app_register_action("friends", "list", friends_action_list)
+	app_register_action("friends", "new", friends_action_new)
+	app_register_action("friends", "search", friends_action_search)
 	app_register_event("friends", "accept", friends_event_accept)
 	app_register_event("friends", "cancel", friends_event_cancel)
 	app_register_event("friends", "invite", friends_event_invite)
-	app_register_service("friends", "get", friends_get)
-	app_register_service("friends", "list", friends_list)
+	app_register_path("friends", "friends")
+	app_register_service("friends", "get", friends_service_get)
+	app_register_service("friends", "list", friends_service_list)
+}
+
+// Accept friend invitation
+func friends_action_accept(u *User, action string, format string, p app_parameters) string {
+	friend_accept(u, app_parameter(p, "id", ""))
+	return app_template("friends/" + format + "/accepted")
+}
+
+// Create new friend
+func friends_action_create(u *User, action string, format string, p app_parameters) string {
+	err := friend_create(u, app_parameter(p, "id", ""), app_parameter(p, "name", ""), "person", true)
+	if err != nil {
+		return app_error(err)
+	}
+	return app_template("friends/" + format + "/created")
+}
+
+// Delete friend
+func friends_action_delete(u *User, action string, format string, p app_parameters) string {
+	friend_delete(u, app_parameter(p, "id", ""))
+	return app_template("friends/" + format + "/deleted")
+}
+
+// Ignore friend invitation
+func friends_action_ignore(u *User, action string, format string, p app_parameters) string {
+	friend_ignore(u, app_parameter(p, "id", ""))
+	return app_template("friends/" + format + "/ignored")
+}
+
+// Show list of friends
+func friends_action_list(u *User, action string, format string, p app_parameters) string {
+	return app_template("friends/"+format+"/list", map[string]any{"Friends": objects_by_category(u, "friends", "friend", "name"), "Invites": objects_by_category(u, "friends", "invite/from", "updated desc")})
+}
+
+// New friend selector
+func friends_action_new(u *User, action string, format string, p app_parameters) string {
+	return app_template("friends/" + format + "/new")
+}
+
+// Search the directory for potential friends
+func friends_action_search(u *User, action string, format string, p app_parameters) string {
+	search := app_parameter(p, "search", "")
+	if search == "" {
+		return "No search terms entered"
+	}
+	return app_template("friends/"+format+"/search", directory_search(search))
 }
 
 // Accept a friend's invitation
@@ -34,6 +88,7 @@ func friend_accept(u *User, friend string) {
 	}
 }
 
+// Create new friend
 func friend_create(u *User, friend string, name string, class string, invite bool) error {
 	if !valid(friend, "public") {
 		return error_message("Invalid ID")
@@ -68,6 +123,7 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 	return nil
 }
 
+// Delete friend
 func friend_delete(u *User, friend string) {
 	log_debug("Deleting friend '%s'", friend)
 
@@ -86,53 +142,11 @@ func friend_delete(u *User, friend string) {
 	object_delete_by_tag(u, "friends", "friend", friend)
 }
 
-func friends_display(u *User, p app_parameters, format string) string {
-	action := app_parameter(p, "action", "")
-
-	if action == "accept" {
-		// Accept friend invitation
-		friend_accept(u, app_parameter(p, "id", ""))
-		return app_template("friends/" + format + "/accepted")
-
-	} else if action == "create" {
-		// Create new friend
-		err := friend_create(u, app_parameter(p, "id", ""), app_parameter(p, "name", ""), "person", true)
-		if err != nil {
-			return app_error(err)
-		}
-		return app_template("friends/" + format + "/created")
-
-	} else if action == "delete" {
-		// Delete friend
-		friend_delete(u, app_parameter(p, "id", ""))
-		return app_template("friends/" + format + "/deleted")
-
-	} else if action == "ignore" {
-		friend_ignore(u, app_parameter(p, "id", ""))
-		return app_template("friends/" + format + "/ignored")
-
-	} else if action == "new" {
-		// New friend selector
-		return app_template("friends/" + format + "/new")
-
-	} else if action == "search" {
-		// Search the directory for potential friends
-		search := app_parameter(p, "search", "")
-		if search == "" {
-			return "No search terms entered"
-		}
-		return app_template("friends/"+format+"/search", directory_search(search))
-	}
-
-	// No action specified; show list of friends
-	return app_template("friends/"+format+"/list", map[string]any{"Friends": objects_by_category(u, "friends", "friend", "name"), "Invites": objects_by_category(u, "friends", "invite/from", "updated desc")})
-}
-
 // Remote party accepted our invitation
 func friends_event_accept(u *User, e *Event) {
 	i := object_by_tag(u, "friends", "invite/to", e.From)
 	if i != nil {
-		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "?app=friends")
+		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
 		object_delete_by_id(u, i.ID)
 	}
 }
@@ -160,6 +174,7 @@ func friends_event_invite(u *User, e *Event) {
 	}
 }
 
+// Ignore a friend invitation
 func friend_ignore(u *User, friend string) {
 	i := object_by_tag(u, "friends", "invite/from", friend)
 	if i != nil {
@@ -167,13 +182,15 @@ func friend_ignore(u *User, friend string) {
 	}
 }
 
-func friends_get(u *User, service string, values ...any) any {
+// Get a friend
+func friends_service_get(u *User, service string, values ...any) any {
 	if len(values) == 1 {
 		return object_by_tag(u, "friends", "friend", values[0].(string))
 	}
 	return nil
 }
 
-func friends_list(u *User, service string, values ...any) any {
+// List friends
+func friends_service_list(u *User, service string, values ...any) any {
 	return objects_by_category(u, "friends", "friend", "name")
 }

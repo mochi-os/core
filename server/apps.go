@@ -9,11 +9,11 @@ import (
 	"html/template"
 )
 
-// TODO Register for each display action?
 type App struct {
 	Name     string
 	Labels   map[string]string
-	Display  func(*User, app_parameters, string) string
+	Path     string
+	Actions  map[string]func(*User, string, string, app_parameters) string
 	Events   map[string]func(*User, *Event)
 	Services map[string]func(*User, string, ...any) any
 }
@@ -27,19 +27,24 @@ type AppPubSub struct {
 type app_parameters map[string][]string
 
 var apps_by_name = map[string]*App{}
+var apps_by_path = map[string]*App{}
 var app_pubsubs = map[string]*AppPubSub{}
 
-func app_display(u *User, app string, parameters app_parameters, format string) (string, error) {
-	log_debug("Displaying app: user='%d', app='%s', parameters='%#v', format='%s'", u.ID, app, parameters, format)
+func app_display(u *User, app string, action string, format string, parameters app_parameters) (string, error) {
+	log_debug("Displaying app: user='%d', app='%s', action='%s', format='%s', parameters='%#v'", u.ID, app, action, format, parameters)
 	a, found := apps_by_name[app]
 	if !found {
 		return "", error_message("App not installed")
 	}
-	if a.Display == nil {
-		return "", error_message("App has no web display handler")
+
+	if a.Actions[action] != nil {
+		return a.Actions[action](u, action, format, parameters), nil
+	}
+	if a.Actions[""] != nil {
+		return a.Actions[""](u, action, format, parameters), nil
 	}
 
-	return a.Display(u, parameters, format), nil
+	return "", error_message("App has no path action")
 }
 
 func app_error(e error) string {
@@ -56,17 +61,17 @@ func app_parameter(p map[string][]string, key string, def string) string {
 
 func app_register(name string, labels map[string]string) {
 	log_debug("App register internal: name='%s', label='%s'", name, labels["en"])
-	apps_by_name[name] = &App{Name: name, Labels: labels, Display: nil, Events: make(map[string]func(*User, *Event)), Services: make(map[string]func(*User, string, ...any) any)}
+	apps_by_name[name] = &App{Name: name, Labels: labels, Path: "", Actions: make(map[string]func(*User, string, string, app_parameters) string), Events: make(map[string]func(*User, *Event)), Services: make(map[string]func(*User, string, ...any) any)}
 }
 
-func app_register_display(name string, f func(*User, app_parameters, string) string) {
-	log_debug("App register display: name='%s'", name)
+func app_register_action(name string, action string, f func(*User, string, string, app_parameters) string) {
+	log_debug("App register action: name='%s', action='%s'", name, action)
 	a, found := apps_by_name[name]
 	if !found {
-		log_warn("app_register_display() called for non-installed app '%s'", name)
+		log_warn("app_register_action() called for non-installed app '%s'", name)
 		return
 	}
-	a.Display = f
+	a.Actions[action] = f
 }
 
 func app_register_event(name string, action string, f func(*User, *Event)) {
@@ -77,6 +82,29 @@ func app_register_event(name string, action string, f func(*User, *Event)) {
 		return
 	}
 	a.Events[action] = f
+}
+
+func app_register_path(name string, path string) {
+	log_debug("App register path: name='%s', path='%s'", name, path)
+	if !valid(path, "id") {
+		log_warn("Invalid path '%s'", path)
+		return
+	}
+
+	a, found := apps_by_name[name]
+	if !found {
+		log_warn("app_register_path() called for non-installed app '%s'", name)
+		return
+	}
+
+	e, found := apps_by_path[path]
+	if found {
+		log_warn("Path conflict for '%s' between apps '%s' and '%s'", path, e.Name, name)
+		return
+	}
+
+	a.Path = path
+	apps_by_path[path] = a
 }
 
 func app_register_pubsub(name string, topic string, publish func(*pubsub.Topic)) {

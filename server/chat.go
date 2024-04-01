@@ -5,49 +5,17 @@ package main
 
 func init() {
 	app_register("chat", map[string]string{"en": "Chat"})
-	app_register_display("chat", chat_display)
+	app_register_action("chat", "", chat_list)
+	app_register_action("chat", "list", chat_list)
+	app_register_action("chat", "new", chat_new)
+	app_register_action("chat", "view", chat_view)
 	app_register_event("chat", "message", chat_message_receive)
+	app_register_path("chat", "chat")
 }
 
-// Display app
-func chat_display(u *User, p app_parameters, format string) string {
-	action := app_parameter(p, "action", "")
-
-	if action == "new" {
-		// Ask user who they'd like to chat with
-		return app_template("chat/"+format+"/new", service(u, "friends", "list"))
-
-	} else if action == "view" {
-		f := service(u, "friends", "get", app_parameter(p, "friend", "")).(*Object)
-		if f == nil {
-			return "Friend not found"
-		}
-		c := object_by_tag(u, "chat", "friend", f.Tag)
-		if c == nil {
-			c = object_create(u, "chat", "friend", f.Tag, f.Name)
-			if c == nil {
-				return "Unable to creat chat"
-			}
-		} else {
-			object_touch(u, c.ID)
-			service(u, "notifications", "clear/object", c.ID)
-		}
-
-		messages := object_value_get(u, c.ID, "messages", "")
-		message := app_parameter(p, "message", "")
-		if message != "" {
-			// User sent a message
-			event(u, f.Tag, "chat", "", "message", message)
-			object_value_append(u, c.ID, "messages", "\n"+u.Name+": "+message)
-			messages = messages + "\n" + u.Name + ": " + message
-		}
-
-		return app_template("chat/"+format+"/view", map[string]any{"Friend": f, "Messages": messages})
-
-	} else {
-		// List existing chats
-		return app_template("chat/"+format+"/list", objects_by_category(u, "chat", "friend", "updated desc"))
-	}
+// List existing chats
+func chat_list(u *User, action string, format string, p app_parameters) string {
+	return app_template("chat/"+format+"/list", objects_by_category(u, "chat", "friend", "updated desc"))
 }
 
 // Received a chat event from another user
@@ -67,5 +35,39 @@ func chat_message_receive(u *User, e *Event) {
 		}
 	}
 	object_value_append(u, c.ID, "messages", "\n"+f.Name+": "+e.Content)
-	service(u, "notifications", "create", c.ID, f.Name+": "+e.Content, "?app=chat&action=view&friend="+f.Tag)
+	service(u, "notifications", "create", c.ID, f.Name+": "+e.Content, "/chat/view/?friend="+f.Tag)
+}
+
+// Ask user who they'd like to chat with
+func chat_new(u *User, action string, format string, p app_parameters) string {
+	return app_template("chat/"+format+"/new", service(u, "friends", "list"))
+}
+
+// View a chat
+func chat_view(u *User, action string, format string, p app_parameters) string {
+	f := service(u, "friends", "get", app_parameter(p, "friend", "")).(*Object)
+	if f == nil {
+		return "Friend not found"
+	}
+	c := object_by_tag(u, "chat", "friend", f.Tag)
+	if c == nil {
+		c = object_create(u, "chat", "friend", f.Tag, f.Name)
+		if c == nil {
+			return "Unable to creat chat"
+		}
+	} else {
+		object_touch(u, c.ID)
+		service(u, "notifications", "clear/object", c.ID)
+	}
+
+	messages := object_value_get(u, c.ID, "messages", "")
+	message := app_parameter(p, "message", "")
+	if message != "" {
+		// User sent a message
+		event(u, f.Tag, "chat", "", "message", message)
+		object_value_append(u, c.ID, "messages", "\n"+u.Name+": "+message)
+		messages = messages + "\n" + u.Name + ": " + message
+	}
+
+	return app_template("chat/"+format+"/view", map[string]any{"Friend": f, "Messages": messages})
 }

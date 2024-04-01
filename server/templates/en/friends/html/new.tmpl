@@ -2,9 +2,7 @@
 
 <h3>Search for friends:</h3>
 
-<form>
-	<input type="hidden" name="app" value="friends"/>
-	<input type="hidden" name="action" value="search"/>
+<form action="/friends/search/">
     <label for="search">Name or part of your friend's name:</label>
     <input type="text" name="search"/><br/>
     <input type="submit" value="Search"/>
@@ -12,9 +10,7 @@
 
 <h3>Or manually enter your friend's details:</h3>
 
-<form>
-	<input type="hidden" name="app" value="friends"/>
-	<input type="hidden" name="action" value="create"/>
+<form action="/friends/create/">
 	<label for="name">Your friend's name:</label>
 	<input type="text" name="name"/><br/>
 	<label for="id">Your friend's public key:</label>

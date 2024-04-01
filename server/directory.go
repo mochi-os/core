@@ -19,6 +19,7 @@ type Directory struct {
 func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
 	//TODO Directory receive event
+	//TODO Check queue to see if destination became available
 	app_register_pubsub("directory", "directory", nil)
 }
 

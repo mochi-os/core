@@ -19,7 +19,7 @@ type Event struct {
 	Signature string `json:"signature"`
 }
 
-func event(u *User, to string, app string, entity string, action string, content string) (*Event, error) {
+func event(u *User, to string, app string, entity string, action string, content string) *Event {
 	log_debug("Sending event: from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s'", u.Public, to, app, entity, action, content)
 	e := Event{ID: uid(), From: u.Public, To: to, App: app, Entity: entity, Action: action, Content: content}
 
@@ -28,24 +28,26 @@ func event(u *User, to string, app string, entity string, action string, content
 
 	if method == "local" {
 		go event_receive(&e, false)
-		return &e, nil
-
-	} else if method == "libp2p" {
-		private := base64_decode(u.Private, "")
-		if string(private) == "" {
-			log_warn("Dropping event due to invalid private key")
-			return &e, error_message("Invalid private key")
-		}
-		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
-		j, err := json.Marshal(e)
-		fatal(err)
-		log_debug("Sending event '%s' to '%s' via libp2p", string(j), location)
-		libp2p_send(location, j)
-		return &e, nil
+		return &e
 	}
 
-	log_debug("No destination found for event to '%s'", e.To)
-	return &e, error_message("No destination")
+	// Add signature
+	private := base64_decode(u.Private, "")
+	if string(private) == "" {
+		log_warn("Dropping event due to invalid private key")
+		return &e, error_message("Invalid private key")
+	}
+	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
+	j, err := json.Marshal(e)
+	fatal(err)
+
+	if method == "libp2p" && libp2p_send(location, j) {
+		return &e
+	}
+
+	log_debug("No destination found for event to '%s', adding to queue", e.To)
+	//TODO Queue event
+	return &e
 }
 
 func event_receive(e *Event, external bool) {

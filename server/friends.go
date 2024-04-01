@@ -163,7 +163,7 @@ func friends_event_cancel(u *User, e *Event) {
 func friends_event_invite(u *User, e *Event) {
 	p := object_by_tag(u, "friends", "invite/to", e.From)
 	if p != nil {
-		// We have an existing invitation to them, so accept theirs automatically, and cancel ours
+		// We have an existing invitation to them, so accept theirs automatically and cancel ours
 		friend_accept(u, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam

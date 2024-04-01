@@ -24,6 +24,7 @@ func event(u *User, to string, app string, entity string, action string, content
 	e := Event{ID: uid(), From: u.Public, To: to, App: app, Entity: entity, Action: action, Content: content}
 
 	method, location := user_location(e.To)
+	log_debug("Routing event to '%s:%s'", method, location)
 
 	if method == "local" {
 		go event_receive(&e, false)
@@ -38,6 +39,7 @@ func event(u *User, to string, app string, entity string, action string, content
 		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
 		j, err := json.Marshal(e)
 		fatal(err)
+		log_debug("Sending event '%s' to '%s' via libp2p", string(j), location)
 		libp2p_send(location, j)
 		return &e, nil
 	}
@@ -61,7 +63,7 @@ func event_receive(e *Event, external bool) {
 		}
 	}
 
-	if !valid(e.Entity, "id") {
+	if e.Entity != "" && !valid(e.Entity, "id") {
 		log_info("Dropping received event due to invalid entity '%s'", e.Entity)
 		return
 	}

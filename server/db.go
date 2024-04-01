@@ -36,18 +36,24 @@ func db_create() {
 	db_exec("users", "create index logins_expires on logins( expires )")
 
 	// Directory
-	//TODO Peer
-	db_exec("directory", "create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer )")
+	db_exec("directory", "create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer not null )")
 	db_exec("directory", "create index directory_fingerprint on directory( fingerprint )")
 	db_exec("directory", "create index directory_name on directory( name )")
 	db_exec("directory", "create index directory_class on directory( class )")
+	db_exec("directory", "create index directory_location on directory( location )")
 	db_exec("directory", "create index directory_updated on directory( updated )")
 
+	// Peers
+	db_exec("peers", "create table peers ( id text not null primary key, location text not null, updated integer not null )")
+
+	// Queued outbound events
+	db_exec("queue", "create table queue ( id text not null primary key, event text not null, peer text not null, time integer not null )")
+	db_exec("queue", "create index queue_peer on queue( peer )")
+	db_exec("queue", "create index queue_time on queue( time )")
+
 	// App data objects
-	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, path text not null, parent text not null default '', name text not null default '', updated integer not null )")
-	db_exec("data", "create unique index objects_user_app_path on objects( user, app, path )")
-	db_exec("data", "create index objects_parent on objects( parent )")
-	db_exec("data", "create index objects_name on objects( name )")
+	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, category text not null default '', tag text not null, name text not null default '', updated integer not null )")
+	db_exec("data", "create unique index objects_user_app_category_tag on objects( user, app, category, tag )")
 	db_exec("data", "create index objects_updated on objects( updated )")
 
 	// App data key/values

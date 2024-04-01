@@ -11,7 +11,7 @@
 0.2
 	Choose a name
 	Feeds service
-	Directory global search
+	Directory broadcast search
 	Users choose which apps get which web path
 	HTTPS using Letsencrypt
 	Client API

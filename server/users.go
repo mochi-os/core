@@ -99,17 +99,21 @@ func user_from_code(code string) *User {
 }
 
 func user_location(user string) (string, string) {
+	log_debug("Looking up location for user '%s'", user)
 	// Check if user is local
 	var u User
-	if db_struct(&u, "select location from users where public=?", user) {
+	if db_struct(&u, "users", "select * from users where public=?", user) {
+		log_debug("User is local")
 		return "local", u.Public
 	}
 
 	// Check in directory
 	var d Directory
-	if db_struct(&d, "select location from directory where id=?", user) {
+	if db_struct(&d, "users", "select location from directory where id=?", user) {
+		log_debug("User is in directory")
 		return "libp2p", d.Location
 	}
 
+	log_debug("User not found")
 	return "", ""
 }

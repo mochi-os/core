@@ -13,7 +13,7 @@ func init() {
 
 func notifications_clear(u *User, service string, values ...any) any {
 	log_debug("Clearing notifications for user '%d'", u.ID)
-	objects_delete_by_parent(u, "notifications", "")
+	objects_delete_by_category(u, "notifications", "notification")
 	return nil
 }
 
@@ -21,7 +21,7 @@ func notifications_clear_object(u *User, service string, values ...any) any {
 	if len(values) > 0 {
 		object := values[0].(string)
 		log_debug("Clearing notifications for user '%d', object '%s'", u.ID, object)
-		object_delete_by_path(u, "notifications", object)
+		object_delete_by_tag(u, "notifications", "notification", object)
 	}
 	return nil
 }
@@ -36,9 +36,9 @@ func notification_create(u *User, service string, values ...any) any {
 		return ""
 	}
 
-	n := object_by_path(u, "notifications", object)
+	n := object_by_tag(u, "notifications", "notification", object)
 	if n == nil {
-		n := object_create(u, "notifications", object, "notifications", "")
+		n = object_create(u, "notifications", "notification", object, "")
 		if n == nil {
 			log_warn("Unable to create notification")
 			return nil
@@ -51,7 +51,7 @@ func notification_create(u *User, service string, values ...any) any {
 
 func notifications_display(u *User, p app_parameters, format string) string {
 	var notifications []map[string]string
-	for _, n := range *objects_by_parent(u, "notifications", "", "updated") {
+	for _, n := range *objects_by_category(u, "notifications", "notification", "updated") {
 		notifications = append(notifications, map[string]string{"ID": n.ID, "Content": object_value_get(u, n.ID, "content", ""), "Link": object_value_get(u, n.ID, "link", "")})
 	}
 	return app_template("notifications/"+format+"/list", notifications)

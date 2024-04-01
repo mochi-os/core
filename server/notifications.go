@@ -6,19 +6,18 @@ package main
 func init() {
 	app_register("notifications", map[string]string{"en": "Notifications"})
 	app_register_display("notifications", notifications_display)
-	app_register_function("notifications", "clear", notifications_clear)
-	app_register_function("notifications", "clear/object", notifications_clear_object)
-	app_register_function("notifications", "create", notification_create)
-	app_register_service("notifications", "notifications")
+	app_register_service("notifications", "clear", notifications_clear)
+	app_register_service("notifications", "clear/object", notifications_clear_object)
+	app_register_service("notifications", "create", notification_create)
 }
 
-func notifications_clear(u *User, service string, function string, values ...any) any {
+func notifications_clear(u *User, service string, values ...any) any {
 	log_debug("Clearing notifications for user '%d'", u.ID)
 	objects_delete_by_parent(u, "notifications", "")
 	return nil
 }
 
-func notifications_clear_object(u *User, service string, function string, values ...any) any {
+func notifications_clear_object(u *User, service string, values ...any) any {
 	if len(values) > 0 {
 		object := values[0].(string)
 		log_debug("Clearing notifications for user '%d', object '%s'", u.ID, object)
@@ -27,7 +26,7 @@ func notifications_clear_object(u *User, service string, function string, values
 	return nil
 }
 
-func notification_create(u *User, service string, function string, values ...any) any {
+func notification_create(u *User, service string, values ...any) any {
 	object := values[0].(string)
 	content := values[1].(string)
 	link := values[2].(string)

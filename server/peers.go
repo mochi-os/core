@@ -23,7 +23,6 @@ func init() {
 	app_register("peers", map[string]string{"en": "Peers"})
 	app_register_event("peers", "update", peer_update)
 	app_register_pubsub("peers", "peers", peers_publish)
-	app_register_service("peers", "peers")
 }
 
 func peer_add_by_address(address string) {
@@ -53,7 +52,7 @@ func peers_manager() {
 // Publish our own information to the pubsub regularly
 func peers_publish(t *pubsub.Topic) {
 	for {
-		j, err := json.Marshal(Event{ID: uid(), Service: "peers", Entity: libp2p_id, Action: "update", Content: libp2p_address})
+		j, err := json.Marshal(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "update", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
 		time.Sleep(time.Minute)

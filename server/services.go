@@ -3,22 +3,22 @@
 
 package main
 
-func service(u *User, service string, function string, values ...any) any {
-	log_debug("Service call: user='%d', service='%s', function='%s', values='%v'", u.ID, service, function, values)
-	a := app_by_service(service)
+func service(u *User, app string, service string, values ...any) any {
+	log_debug("Service call: user='%d', app='%s', service='%s', values='%v'", u.ID, app, service, values)
+	a := apps_by_name[app]
 	if a == nil {
-		log_info("Call to service '%s' without handler app", service)
+		log_info("Service call to unnkown app '%s'", service)
 		return nil
 	}
-	_, found := a.Functions[function]
+	_, found := a.Services[service]
 	if found {
-		return a.Functions[function](u, service, function, values...)
+		return a.Services[service](u, service, values...)
 	} else {
-		_, found := a.Functions[""]
+		_, found := a.Services[""]
 		if found {
-			return a.Functions[""](u, service, function, values...)
+			return a.Services[""](u, service, values...)
 		}
 	}
-	log_info("Call to service '%s' without handler for function '%s'", service, function)
+	log_info("Call to app '%s' without handler for service '%s'", app, service)
 	return nil
 }

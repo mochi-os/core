@@ -101,17 +101,13 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			a := app_by_service("notifications")
-			if a != nil {
-				n, err := app_display(u, a.Name, app_parameters{}, "html")
-				if err != nil {
-					web_error(w, err)
-					return
-				}
-				web_template(w, "home", map[string]any{"User": u, "Apps": apps_by_name, "Notifications": template.HTML(n)})
-			} else {
-				web_template(w, "home", map[string]any{"User": u, "Apps": apps_by_name})
+			a := apps_by_name["notifications"]
+			n, err := app_display(u, a.Name, app_parameters{}, "html")
+			if err != nil {
+				web_error(w, err)
+				return
 			}
+			web_template(w, "home", map[string]any{"User": u, "Apps": apps_by_name, "Notifications": template.HTML(n)})
 		}
 	}
 }

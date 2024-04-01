@@ -1,4 +1,4 @@
-// Comms sample internal service: Chat
+// Comms sample internal app: Chat
 // Copyright Alistair Cunningham 2024
 
 package main
@@ -7,7 +7,6 @@ func init() {
 	app_register("chat", map[string]string{"en": "Chat"})
 	app_register_display("chat", chat_display)
 	app_register_event("chat", "message", chat_message_receive)
-	app_register_service("chat", "chat")
 }
 
 // Display app

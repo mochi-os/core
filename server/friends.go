@@ -1,4 +1,4 @@
-// Comms server: Friends service
+// Comms server: Friends
 // Copyright Alistair Cunningham 2024
 
 package main
@@ -9,9 +9,8 @@ func init() {
 	app_register_event("friends", "accept", friends_event_accept)
 	app_register_event("friends", "cancel", friends_event_cancel)
 	app_register_event("friends", "invite", friends_event_invite)
-	app_register_function("friends", "get", friends_get)
-	app_register_function("friends", "list", friends_list)
-	app_register_service("friends", "friends")
+	app_register_service("friends", "get", friends_get)
+	app_register_service("friends", "list", friends_list)
 }
 
 // Accept a friend's invitation
@@ -161,13 +160,13 @@ func friend_ignore(u *User, id string) {
 	}
 }
 
-func friends_get(u *User, service string, function string, values ...any) any {
+func friends_get(u *User, service string, values ...any) any {
 	if len(values) == 1 {
 		return friend_by_id(u, values[0].(string))
 	}
 	return nil
 }
 
-func friends_list(u *User, service string, function string, values ...any) any {
+func friends_list(u *User, service string, values ...any) any {
 	return friends_by_user(u)
 }

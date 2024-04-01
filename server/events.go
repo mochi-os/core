@@ -12,16 +12,16 @@ type Event struct {
 	ID        string `json:"id"`
 	From      string `json:"from"`
 	To        string `json:"to"`
-	Service   string `json:"service"`
+	App       string `json:"app"`
 	Entity    string `json:"entity"`
 	Action    string `json:"action"`
 	Content   string `json:"content"`
 	Signature string `json:"signature"`
 }
 
-func event(u *User, to string, service string, entity string, action string, content string) (*Event, error) {
-	log_debug("Sending event: from='%s', to='%s', service='%s', entity='%s', action='%s', content='%s'", u.Public, to, service, entity, action, content)
-	e := Event{ID: uid(), From: u.Public, To: to, Service: service, Entity: entity, Action: action, Content: content}
+func event(u *User, to string, app string, entity string, action string, content string) (*Event, error) {
+	log_debug("Sending event: from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s'", u.Public, to, app, entity, action, content)
+	e := Event{ID: uid(), From: u.Public, To: to, App: app, Entity: entity, Action: action, Content: content}
 
 	method, location := user_location(e.To)
 
@@ -35,7 +35,7 @@ func event(u *User, to string, service string, entity string, action string, con
 			log_warn("Dropping event due to invalid private key")
 			return &e, error_message("Invalid private key")
 		}
-		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.Service+e.Entity+e.Action+e.Content)))
+		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
 		j, err := json.Marshal(e)
 		fatal(err)
 		libp2p_send(location, j)
@@ -47,7 +47,7 @@ func event(u *User, to string, service string, entity string, action string, con
 }
 
 func event_receive(e *Event, external bool) {
-	log_debug("Event received: id='%s', from='%s', to='%s', service='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.Service, e.Entity, e.Action, e.Content, e.Signature)
+	log_debug("Event received: id='%s', from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.App, e.Entity, e.Action, e.Content, e.Signature)
 
 	if external && e.From != "" {
 		public := base64_decode(e.From, "")
@@ -55,7 +55,7 @@ func event_receive(e *Event, external bool) {
 			log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
 			return
 		}
-		if !ed25519.Verify(public, []byte(e.From+e.To+e.Service+e.Entity+e.Action+e.Content), base64_decode(e.Signature, "")) {
+		if !ed25519.Verify(public, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content), base64_decode(e.Signature, "")) {
 			log_info("Dropping received event due to invalid sender signature")
 			return
 		}
@@ -66,9 +66,9 @@ func event_receive(e *Event, external bool) {
 		return
 	}
 
-	a := app_by_service(e.Service)
+	a := apps_by_name[e.App]
 	if a == nil {
-		log_info("Dropping received event due to unknown service '%s'", e.Service)
+		log_info("Dropping received event due to unknown app '%s'", e.App)
 		return
 	}
 
@@ -88,7 +88,7 @@ func event_receive(e *Event, external bool) {
 			return
 		}
 	}
-	log_info("Dropping received event due to unknown action '%s' for service '%s'", e.Action, e.Service)
+	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
 }
 
 func event_receive_json(event []byte, external bool) {

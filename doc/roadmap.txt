@@ -6,7 +6,6 @@
 	Apps can create own sqlite databases
 	Web paths
 	Chat in WASM
-	Finalise relationships between apps and services
 	First public release
 
 0.2

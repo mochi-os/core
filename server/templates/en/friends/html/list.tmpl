@@ -1,7 +1,7 @@
 <h2>Your friends</h2>
 
-{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="/friends/delete/?id={{.Tag}}">Delete</a></p>{{end}}
-{{else}}<p>You have no friends.</p>{{end}}
+<p>{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="/friends/delete/?id={{.Tag}}">Delete</a><br/>{{end}}
+{{else}}You have no friends.{{end}}</p>
 
 <p><a href="/friends/new/">Add a new friend</a></p>
 

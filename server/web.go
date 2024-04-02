@@ -161,7 +161,7 @@ func web_name(w http.ResponseWriter, r *http.Request) {
 		}
 		u.Name = name
 		db_exec("users", "update users set name=? where id=?", name, u.ID)
-		directory_create(u.Public, name, "person", libp2p_address)
+		directory_create(u, libp2p_id)
 		web_redirect(w, "/")
 	}
 }

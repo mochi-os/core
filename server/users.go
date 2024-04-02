@@ -100,6 +100,12 @@ func user_from_code(code string) *User {
 
 func user_location(user string) (string, string) {
 	log_debug("Looking up location for user '%s'", user)
+
+	// If no user, return none
+	if user == "" {
+		return "none", user
+	}
+
 	// Check if user is local
 	var u User
 	if db_struct(&u, "users", "select * from users where public=?", user) {
@@ -109,12 +115,19 @@ func user_location(user string) (string, string) {
 
 	// Check in directory
 	var d Directory
-	if db_struct(&d, "users", "select location from directory where id=?", user) {
-		log_debug("User is in directory")
-		//TODO Look up peer
-		return "libp2p", d.Location
+	if db_struct(&d, "directory", "select location from directory where id=?", user) {
+		log_debug("User is in directory, location='%s'", d.Location)
+		var p Peer
+		if db_struct(&p, "peers", "select address from peers where id=?", d.Location) {
+			log_debug("Peer found at address '%s'", p.Address)
+			return "libp2p", p.Address
+		}
+		//TODO Ask pubsub to update peer
+		log_debug("Peer not found")
+		return "peer", d.Location
 	}
+	//TODO Ask pubsub to update directory
 
 	log_debug("User not found")
-	return "", ""
+	return "user", user
 }

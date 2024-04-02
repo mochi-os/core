@@ -36,18 +36,18 @@ var libp2p_topics = map[string]*pubsub.Topic{}
 func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_add_chan <- Peer{ID: p.ID.String(), Address: pa.String() + "/p2p/" + p.ID.String()}
+		peer_add(pa.String()+"/p2p/"+p.ID.String(), true)
 	}
 }
 
 // Connect to a peer
 func libp2p_connect(address string) error {
-	ai, err := peer.AddrInfoFromString(address)
+	info, err := peer.AddrInfoFromString(address)
 	if err != nil {
-		return error_message("Invalid peer address '%s': %s", address, err)
+		return error_message("Invalid peer address when connecting '%s': %s", address, err)
 	}
 	log_debug("Connecting to peer at '%s'", address)
-	err = libp2p_host.Connect(context.Background(), *ai)
+	err = libp2p_host.Connect(context.Background(), *info)
 	if err != nil {
 		return error_message("Error connecting to peer at '%s': %s", address, err)
 	}
@@ -55,13 +55,13 @@ func libp2p_connect(address string) error {
 	return nil
 }
 
-// Handle connected peer
+// Peer connected to us
 func libp2p_handle(s network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String()
 	log_debug("Peer connected from libp2p '%s'", address)
-	peer_add_by_address(address)
-	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-	go libp2p_read(rw)
+	peer_add(address, false)
+	r := bufio.NewReader(bufio.NewReader(s))
+	go libp2p_read(r)
 }
 
 // Listen for updates on a pubsub
@@ -77,7 +77,7 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 }
 
 // Read from a connected peer
-func libp2p_read(r *bufio.ReadWriter) {
+func libp2p_read(r *bufio.Reader) {
 	log_debug("Reading events from new peer")
 	for {
 		in, _ := r.ReadString('\n')
@@ -93,10 +93,26 @@ func libp2p_read(r *bufio.ReadWriter) {
 }
 
 // Send a message to an address
-func libp2p_send(to string, content []byte) bool {
-	log_debug("Sending '%s' to '%s' via libp2p", string(content), to)
-	//TODO Send event via libp2p
-	return false
+func libp2p_send(address string, content []byte) bool {
+	log_debug("Sending '%s' to '%s' via libp2p", string(content), address)
+
+	info, err := peer.AddrInfoFromString(address)
+	if err != nil {
+		log_warn("Invalid peer address when sending '%s': %s", address, err)
+		return false
+	}
+	s, err := libp2p_host.NewStream(context.Background(), info.ID, "/comms/1.0.0")
+	if err != nil {
+		log_warn("Unable to create libp2p stream to '%s': %s'", address, err)
+		return false
+	}
+	w := bufio.NewWriter(bufio.NewWriter(s))
+	log_debug("Writing event")
+	w.Write(content)
+	w.WriteRune('\n')
+	w.Flush()
+	log_debug("Event sent")
+	return true
 }
 
 // Start libp2p
@@ -149,7 +165,7 @@ func libp2p_start() {
 
 	for _, address := range libp2p_known_addresses {
 		if address != libp2p_id {
-			peer_add_by_address(address)
+			peer_add(address, true)
 		}
 	}
 }

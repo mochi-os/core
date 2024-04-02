@@ -44,12 +44,12 @@ func db_create() {
 	db_exec("directory", "create index directory_updated on directory( updated )")
 
 	// Peers
-	db_exec("peers", "create table peers ( id text not null primary key, location text not null, updated integer not null )")
+	db_exec("peers", "create table peers ( id text not null primary key, address text not null, updated integer not null )")
 
 	// Queued outbound events
-	db_exec("queue", "create table queue ( id text not null primary key, event text not null, peer text not null, time integer not null )")
-	db_exec("queue", "create index queue_peer on queue( peer )")
-	db_exec("queue", "create index queue_time on queue( time )")
+	db_exec("queue", "create table queue ( id text not null primary key, event text not null, method text not null, location text not null, updated integer not null )")
+	db_exec("queue", "create index queue_method_location on queue( method, location )")
+	db_exec("queue", "create index queue_updated on queue( updated )")
 
 	// App data objects
 	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, category text not null default '', tag text not null, name text not null default '', updated integer not null )")

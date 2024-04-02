@@ -24,7 +24,7 @@ func event(u *User, to string, app string, entity string, action string, content
 	e := Event{ID: uid(), From: u.Public, To: to, App: app, Entity: entity, Action: action, Content: content}
 
 	method, location := user_location(e.To)
-	log_debug("Routing event to '%s:%s'", method, location)
+	log_debug("Routing event to %s '%s'", method, location)
 
 	if method == "local" {
 		go event_receive(&e, false)
@@ -35,7 +35,7 @@ func event(u *User, to string, app string, entity string, action string, content
 	private := base64_decode(u.Private, "")
 	if string(private) == "" {
 		log_warn("Dropping event due to invalid private key")
-		return &e, error_message("Invalid private key")
+		return nil
 	}
 	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
 	j, err := json.Marshal(e)
@@ -45,8 +45,12 @@ func event(u *User, to string, app string, entity string, action string, content
 		return &e
 	}
 
-	log_debug("No destination found for event to '%s', adding to queue", e.To)
-	//TODO Queue event
+	if method == "none" {
+		return &e
+	}
+
+	log_debug("Unable to send event to '%s', adding to queue", e.To)
+	db_exec("queue", "replace into queue ( id, event, method, location, updated ) values ( ?, ?, ?, ?, ? )", e.ID, j, method, location, time_unix())
 	return &e
 }
 
@@ -76,19 +80,20 @@ func event_receive(e *Event, external bool) {
 		return
 	}
 
-	var u User
+	var u *User = nil
 	if e.To != "" {
-		db_struct(&u, "users", "select id from users where public=?", e.To)
+		u = &User{}
+		db_struct(u, "users", "select id from users where public=?", e.To)
 	}
 
 	_, found := a.Events[e.Action]
 	if found {
-		a.Events[e.Action](&u, e)
+		a.Events[e.Action](u, e)
 		return
 	} else {
 		_, found := a.Events[""]
 		if found {
-			a.Events[""](&u, e)
+			a.Events[""](u, e)
 			return
 		}
 	}

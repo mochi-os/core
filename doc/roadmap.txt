@@ -1,18 +1,14 @@
 0.1
-	Directory broadcast search
-
+	Directory global search
 	WASM apps
-	Apps can access files
-	Apps can create own sqlite databases
+	WASM apps can access files and sqlite databases
 	Chat in WASM
-
-	Install documentation
-	First public release
 
 0.2
 	Choose a product name
-	Feeds service
-	Users change their settings
+	Feeds app
+	Forums app
+	Users can change their settings
 	Users choose which apps get which web path
 	HTTPS using Letsencrypt
 	Client API
@@ -41,9 +37,6 @@ Ideas for services
 	Bug tracker
 	Chat/group chat
 	Chess
-	Forums
 	Kanban
-	News feed
 	Scrabble playalike
-	Social media
 	Wiki

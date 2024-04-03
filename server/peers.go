@@ -36,6 +36,15 @@ func peer_add(address string, connect bool) {
 	}
 }
 
+// Add some peers we already know about from the database
+func peers_add_from_db(limit int) {
+	var peers []Peer
+	db_structs(&peers, "peers", "select * from peers order by updated desc limit ?", limit)
+	for _, p := range peers {
+		peer_add(p.Address, true)
+	}
+}
+
 // Reply to a peer request if for us
 func peer_event_request(u *User, e *Event) {
 	if e.Content == libp2p_id {

@@ -160,7 +160,7 @@ func libp2p_start() {
 		}
 	}
 
-	//TODO Connect to some of the peers in the database
+	peers_add_from_db(10)
 
 	for _, address := range libp2p_known_addresses {
 		if address != libp2p_id {

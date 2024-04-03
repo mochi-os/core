@@ -1,0 +1,9 @@
+To install on Linux:
+
+1. Ensure that the machine can send email from the command line using the "mail" command or similar.
+2. git clone git@github.com:comms-project/core.git
+3. cd core
+4. make
+5. ./comms-server -listen <IP address> -web <web server port, 8080 by default>
+6. In a web browser, go to http://localhost:<web server port>/
+7. Follow the instructions in your web browser.

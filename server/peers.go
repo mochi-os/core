@@ -28,7 +28,10 @@ func init() {
 
 // Add a (possibly existing) peer
 func peer_add(address string, connect bool) {
-	peer_add_chan <- Peer{ID: strings.TrimLeft(address, "/"), Address: address, Connect: connect}
+	parts := strings.Split(address, "/")
+	if len(parts) > 1 {
+		peer_add_chan <- Peer{ID: parts[len(parts)-1], Address: address, Connect: connect}
+	}
 }
 
 // Peer event received
@@ -68,8 +71,7 @@ func peers_manager() {
 			}
 			peers_connected[p.ID] = p
 			db_exec("peers", "replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
-
-			// TODO Check queue for events to this peer
+			go events_check_queue("peer", p.ID)
 		}
 	}
 }
@@ -80,6 +82,6 @@ func peers_publish(t *pubsub.Topic) {
 		j, err := json.Marshal(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
-		time.Sleep(time.Minute)
+		time.Sleep(time.Hour)
 	}
 }

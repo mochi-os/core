@@ -57,7 +57,7 @@ func libp2p_connect(address string) error {
 
 // Peer connected to us
 func libp2p_handle(s network.Stream) {
-	address := s.Conn().RemoteMultiaddr().String()
+	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + s.Conn().RemotePeer().String()
 	log_debug("Peer connected from libp2p '%s'", address)
 	peer_add(address, false)
 	r := bufio.NewReader(bufio.NewReader(s))
@@ -81,11 +81,8 @@ func libp2p_read(r *bufio.Reader) {
 	log_debug("Reading events from new peer")
 	for {
 		in, _ := r.ReadString('\n')
-		if in == "" {
-			return
-		}
-		if in != "\n" {
-			in = strings.TrimSuffix(in, "\n")
+		in = strings.TrimSuffix(in, "\n")
+		if in != "" {
 			log_debug("Got event from read peer: %s", in)
 			event_receive_json([]byte(in), true)
 		}
@@ -163,6 +160,9 @@ func libp2p_start() {
 		}
 	}
 
+	//TODO Connect to some of the peers in the database
+
+	//TODO Only connect to known peers if we don't have enough peers already
 	for _, address := range libp2p_known_addresses {
 		if address != libp2p_id {
 			peer_add(address, true)

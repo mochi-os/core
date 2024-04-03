@@ -47,7 +47,7 @@ func db_create() {
 	db_exec("peers", "create table peers ( id text not null primary key, address text not null, updated integer not null )")
 
 	// Queued outbound events
-	db_exec("queue", "create table queue ( id text not null primary key, event text not null, method text not null, location text not null, updated integer not null )")
+	db_exec("queue", "create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
 	db_exec("queue", "create index queue_method_location on queue( method, location )")
 	db_exec("queue", "create index queue_updated on queue( updated )")
 

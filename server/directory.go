@@ -18,28 +18,34 @@ type Directory struct {
 
 func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
-	app_register_event("directory", "publish", directory_event)
+	app_register_event("directory", "request", directory_event_request)
+	app_register_event("directory", "publish", directory_event_publish)
 	app_register_pubsub("directory", "directory", nil)
 }
 
-func directory_create(u *User, location string) {
-	db_exec("directory", "replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, 'person', ?, ? )", u.Public, fingerprint(u.Public), u.Name, location, time_unix())
-	jd, err := json.Marshal(map[string]string{"id": u.Public, "name": u.Name, "class": "person", "location": location})
-	fatal(err)
-	e := event(u, "", "directory", "", "publish", string(jd))
-	je, err := json.Marshal(e)
-	fatal(err)
-	libp2p_topics["directory"].Publish(libp2p_context, je)
-
-	//TODO Check queue for events to this user
+// Create a new directory entry for a local user
+func directory_create(u *User) {
+	db_exec("directory", "replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, 'person', ?, ? )", u.Public, fingerprint(u.Public), u.Name, libp2p_id, time_unix())
+	go events_check_queue("user", u.Public)
 }
 
+// Delete a directory entry
 func directory_delete(id string) {
 	db_exec("directory", "delete from directory where id=?", id)
 }
 
-func directory_event(u *User, e *Event) {
-	log_debug("Received directory event '%#v'", e)
+// Reply to a directory request if we have the requested user
+func directory_event_request(u *User, e *Event) {
+	log_debug("Received directory request event '%#v'", e)
+	var r User
+	if db_struct(&r, "users", "select * from users where public=?", e.Content) {
+		directory_publish(&r)
+	}
+}
+
+// Received a directory publish event from another server
+func directory_event_publish(u *User, e *Event) {
+	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
 	err := json.Unmarshal([]byte(e.Content), &d)
 	if err != nil {
@@ -53,9 +59,26 @@ func directory_event(u *User, e *Event) {
 
 	db_exec("directory", "replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, time_unix())
 
-	//TODO Check queue for events to this user
+	go events_check_queue("user", d.ID)
 }
 
+// Publish a directory entry on the libp2p pubsub
+func directory_publish(u *User) {
+	jd, err := json.Marshal(map[string]string{"id": u.Public, "name": u.Name, "class": "person", "location": libp2p_id})
+	fatal(err)
+	je, err := json.Marshal(event(u, "", "directory", "", "publish", string(jd)))
+	fatal(err)
+	libp2p_topics["directory"].Publish(libp2p_context, je)
+}
+
+// Request that another server publish a directory event
+func directory_request(user string) {
+	j, err := json.Marshal(event(nil, "", "directory", "", "request", user))
+	fatal(err)
+	libp2p_topics["directory"].Publish(libp2p_context, j)
+}
+
+// Search the directory
 func directory_search(search string) *[]Directory {
 	var d []Directory
 	db_structs(&d, "directory", "select * from directory where name like ? order by name", "%"+search+"%")

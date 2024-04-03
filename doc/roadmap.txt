@@ -1,17 +1,20 @@
 0.1
-	Events between servers
+	Peers broadcast search
 	Directory broadcast search
+	Queued events
+
 	WASM apps
 	Apps can access files
 	Apps can create own sqlite databases
 	Chat in WASM
+
 	Install documentation
 	First public release
 
 0.2
 	Choose a product name
 	Feeds service
-	User settings
+	Users change their settings
 	Users choose which apps get which web path
 	HTTPS using Letsencrypt
 	Client API
@@ -19,6 +22,7 @@
 	Broadcasts between apps within a user
 
 0.3
+	User management
 	Resource usage limits
 	File and media storage
 	App publishing

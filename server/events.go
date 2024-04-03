@@ -19,11 +19,23 @@ type Event struct {
 	Signature string `json:"signature"`
 }
 
-func event(u *User, to string, app string, entity string, action string, content string) *Event {
-	log_debug("Sending event: from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s'", u.Public, to, app, entity, action, content)
-	e := Event{ID: uid(), From: u.Public, To: to, App: app, Entity: entity, Action: action, Content: content}
+type Queue struct {
+	ID       string
+	Method   string
+	Location string
+	Event    string
+	Updated  string
+}
 
-	method, location := user_location(e.To)
+func event(u *User, to string, app string, entity string, action string, content string) *Event {
+	from := ""
+	if u != nil {
+		from = u.Public
+	}
+	e := Event{ID: uid(), From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
+	log_debug("Sending event: from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s'", from, to, app, entity, action, content)
+
+	method, location, queue_method, queue_location := user_location(e.To)
 	log_debug("Routing event to %s '%s'", method, location)
 
 	if method == "local" {
@@ -31,13 +43,15 @@ func event(u *User, to string, app string, entity string, action string, content
 		return &e
 	}
 
-	// Add signature
-	private := base64_decode(u.Private, "")
-	if string(private) == "" {
-		log_warn("Dropping event due to invalid private key")
-		return nil
+	if u != nil {
+		private := base64_decode(u.Private, "")
+		if string(private) == "" {
+			log_warn("Dropping event due to invalid private key")
+			return nil
+		}
+		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
 	}
-	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
+
 	j, err := json.Marshal(e)
 	fatal(err)
 
@@ -50,8 +64,40 @@ func event(u *User, to string, app string, entity string, action string, content
 	}
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
-	db_exec("queue", "replace into queue ( id, event, method, location, updated ) values ( ?, ?, ?, ?, ? )", e.ID, j, method, location, time_unix())
+	db_exec("queue", "replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
 	return &e
+}
+
+func events_check_queue(method string, location string) {
+	log_debug("Checking queue for queued events to %s '%s'", method, location)
+	var queue []Queue
+	db_structs(&queue, "queue", "select * from queue where method=? and location=?", method, location)
+	for _, q := range queue {
+		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
+		success := false
+
+		if q.Method == "peer" {
+			var p Peer
+			if db_struct(&p, "peers", "select address from peers where id=?", q.Location) {
+				if libp2p_send(p.Address, []byte(q.Event)) {
+					success = true
+				}
+			}
+
+		} else if q.Method == "user" {
+			method, location, _, _ := user_location(location)
+			if method == "libp2p" && libp2p_send(location, []byte(q.Event)) {
+				success = true
+			}
+		}
+
+		if success {
+			log_debug("Queue event sent")
+			db_exec("queue", "delete from queue where id=?", q.ID)
+		} else {
+			log_debug("Still unable to send queued event, keeping in queue")
+		}
+	}
 }
 
 func event_receive(e *Event, external bool) {

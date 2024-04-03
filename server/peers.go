@@ -47,8 +47,9 @@ func peers_add_from_db(limit int) {
 
 // Reply to a peer request if for us
 func peer_event_request(u *User, e *Event) {
+	log_debug("Received peer request event '%#v'", e)
 	if e.Content == libp2p_id {
-		log_debug("Received peer request event '%#v'", e)
+		log_debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}
 }

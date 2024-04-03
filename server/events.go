@@ -34,10 +34,8 @@ func event(u *User, to string, app string, entity string, action string, content
 		from = u.Public
 	}
 	e := Event{ID: uid(), From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
-	log_debug("Sending event: from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s'", from, to, app, entity, action, content)
-
 	method, location, queue_method, queue_location := user_location(e.To)
-	log_debug("Routing event to %s '%s'", method, location)
+	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
 
 	if method == "local" {
 		go event_receive(&e, false)
@@ -102,7 +100,7 @@ func events_check_queue(method string, location string) {
 }
 
 func event_receive(e *Event, external bool) {
-	log_debug("Event received: id='%s', from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.App, e.Entity, e.Action, e.Content, e.Signature)
+	//log_debug("Event received: id='%s', from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.App, e.Entity, e.Action, e.Content, e.Signature)
 
 	if external && e.From != "" {
 		public := base64_decode(e.From, "")

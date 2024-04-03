@@ -1,5 +1,4 @@
 0.1
-	Peers broadcast search
 	Directory broadcast search
 
 	WASM apps

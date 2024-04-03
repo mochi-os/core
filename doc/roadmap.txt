@@ -1,7 +1,6 @@
 0.1
 	Peers broadcast search
 	Directory broadcast search
-	Queued events
 
 	WASM apps
 	Apps can access files

@@ -162,7 +162,6 @@ func libp2p_start() {
 
 	//TODO Connect to some of the peers in the database
 
-	//TODO Only connect to known peers if we don't have enough peers already
 	for _, address := range libp2p_known_addresses {
 		if address != libp2p_id {
 			peer_add(address, true)

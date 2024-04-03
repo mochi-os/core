@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"time"
 )
 
 type Event struct {
@@ -154,4 +155,15 @@ func event_receive_json(event []byte, external bool) {
 		return
 	}
 	event_receive(&e, external)
+}
+
+func queue_helper() {
+	for {
+		time.Sleep(time.Minute)
+		var q Queue
+		if db_struct(&q, "queue", "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
+			log_debug("Queue helper nudging events to %s '%s'", q.Method, q.Location)
+			events_check_queue(q.Method, q.Location)
+		}
+	}
 }

@@ -22,6 +22,7 @@ func main() {
 	libp2p_start()
 	log_info("Web listening on ':%d'", web_port)
 	go web_start()
+	go queue_helper()
 
 	log_info("Ready")
 	select {}

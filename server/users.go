@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"time"
 )
 
 type Code struct {
@@ -22,13 +23,14 @@ type Login struct {
 }
 
 type User struct {
-	ID       int
-	Username string
-	Name     string
-	Role     string
-	Private  string
-	Public   string
-	Language string
+	ID        int
+	Username  string
+	Name      string
+	Role      string
+	Private   string
+	Public    string
+	Language  string
+	Published string
 }
 
 func code_send(email string) bool {
@@ -99,8 +101,6 @@ func user_from_code(code string) *User {
 }
 
 func user_location(user string) (string, string, string, string) {
-	log_debug("Looking up location for user '%s'", user)
-
 	// If no user, return none
 	if user == "" {
 		return "none", user, "user", user
@@ -109,25 +109,33 @@ func user_location(user string) (string, string, string, string) {
 	// Check if user is local
 	var u User
 	if db_struct(&u, "users", "select * from users where public=?", user) {
-		log_debug("User is local")
 		return "local", u.Public, "user", u.Public
 	}
 
 	// Check in directory
 	var d Directory
 	if db_struct(&d, "directory", "select location from directory where id=?", user) {
-		log_debug("User is in directory, location='%s'", d.Location)
 		var p Peer
 		if db_struct(&p, "peers", "select address from peers where id=?", d.Location) {
-			log_debug("Peer found at address '%s'", p.Address)
 			return "libp2p", p.Address, "peer", d.Location
 		}
 		peer_request(d.Location)
-		log_debug("Peer not found")
 		return "peer", d.Location, "peer", d.Location
 	}
 
-	log_debug("User not found, sending boardcast request")
 	directory_request(user)
 	return "user", user, "user", user
+}
+
+// Re-publish all our users every 30 days so the network knows they're still active
+func users_manager() {
+	for {
+		time.Sleep(time.Minute)
+		var users []User
+		db_structs(&users, "users", "select * from users where published<?", time_unix()-30*86400)
+		for _, u := range users {
+			db_exec("users", "update users set published=? where id=?", time_unix(), u.ID)
+			directory_publish(&u)
+		}
+	}
 }

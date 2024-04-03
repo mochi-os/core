@@ -21,10 +21,11 @@ func db_create() {
 	db_exec("settings", "replace into settings ( name, value ) values ( 'schema', ? )", latest_schema)
 
 	// Users
-	db_exec("users", "create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en' )")
+	db_exec("users", "create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en', published integer not null default 0 )")
 	db_exec("users", "create unique index users_username on users( username )")
 	db_exec("users", "create unique index users_private on users( private )")
 	db_exec("users", "create unique index users_public on users( public )")
+	db_exec("users", "create index users_published on users( published )")
 
 	// Login codes
 	db_exec("users", "create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")

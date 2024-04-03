@@ -155,7 +155,7 @@ func event_receive_json(event []byte, external bool) {
 	event_receive(&e, external)
 }
 
-func queue_helper() {
+func queue_manager() {
 	for {
 		time.Sleep(time.Minute)
 		var q Queue

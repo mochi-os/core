@@ -19,10 +19,12 @@ type Peer struct {
 
 var peers_connected map[string]Peer = map[string]Peer{}
 var peer_add_chan = make(chan Peer)
+var peer_publish_chan = make(chan bool)
 
 func init() {
 	app_register("peers", map[string]string{"en": "Peers"})
-	app_register_event("peers", "publish", peer_event)
+	app_register_event("peers", "request", peer_event_request)
+	app_register_event("peers", "publish", peer_event_publish)
 	app_register_pubsub("peers", "peers", peers_publish)
 }
 
@@ -34,8 +36,16 @@ func peer_add(address string, connect bool) {
 	}
 }
 
-// Peer event received
-func peer_event(u *User, e *Event) {
+// Reply to a peer request if for us
+func peer_event_request(u *User, e *Event) {
+	if e.Content == libp2p_id {
+		log_debug("Received peer request event '%#v'", e)
+		peer_publish_chan <- true
+	}
+}
+
+// Received a peer publish event from another server
+func peer_event_publish(u *User, e *Event) {
 	if valid(e.Entity, "^[\\w]{1,100}$") && valid(e.Content, "^[\\w/.]{1,100}$") {
 		if e.Entity == libp2p_id {
 			return
@@ -76,12 +86,27 @@ func peers_manager() {
 	}
 }
 
-// Publish our own information to the pubsub regularly
+// Publish our own information to the pubsub regularly or when requested
 func peers_publish(t *pubsub.Topic) {
+	after := time.After(time.Hour)
 	for {
+		select {
+		case <-peer_publish_chan:
+			log_debug("Peer publish requested")
+		case <-after:
+			log_debug("Peer routine publish")
+		}
+		log_debug("Publishing peer")
 		j, err := json.Marshal(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})
 		fatal(err)
 		t.Publish(libp2p_context, j)
-		time.Sleep(time.Hour)
 	}
+}
+
+// Ask the peers pubsub for a peer
+func peer_request(peer string) {
+	log_debug("Requesting peer '%s' via pubsub", peer)
+	j, err := json.Marshal(event(nil, "", "peers", "", "request", peer))
+	fatal(err)
+	libp2p_topics["peers"].Publish(libp2p_context, j)
 }

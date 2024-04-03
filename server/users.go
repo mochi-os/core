@@ -122,7 +122,7 @@ func user_location(user string) (string, string, string, string) {
 			log_debug("Peer found at address '%s'", p.Address)
 			return "libp2p", p.Address, "peer", d.Location
 		}
-		//TODO Ask pubsub to update peer
+		peer_request(d.Location)
 		log_debug("Peer not found")
 		return "peer", d.Location, "peer", d.Location
 	}

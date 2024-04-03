@@ -73,6 +73,7 @@ func directory_publish(u *User) {
 
 // Request that another server publish a directory event
 func directory_request(user string) {
+	log_debug("Requesting directory user '%s' via pubsub", user)
 	j, err := json.Marshal(event(nil, "", "directory", "", "request", user))
 	fatal(err)
 	libp2p_topics["directory"].Publish(libp2p_context, j)

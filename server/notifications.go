@@ -21,7 +21,7 @@ func notifications_clear_object(u *User, service string, values ...any) any {
 	if len(values) > 0 {
 		object := values[0].(string)
 		log_debug("Clearing notifications for user '%d', object '%s'", u.ID, object)
-		object_delete_by_tag(u, "notifications", "notification", object)
+		object_delete_by_name(u, "notifications", "notification", object)
 	}
 	return nil
 }
@@ -36,7 +36,7 @@ func notification_create(u *User, service string, values ...any) any {
 		return ""
 	}
 
-	n := object_by_tag(u, "notifications", "notification", object)
+	n := object_by_name(u, "notifications", "notification", object)
 	if n == nil {
 		n = object_create(u, "notifications", "notification", object, "")
 		if n == nil {

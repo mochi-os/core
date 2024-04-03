@@ -69,11 +69,11 @@ func friends_action_search(u *User, action string, format string, p app_paramete
 
 // Accept a friend's invitation
 func friend_accept(u *User, friend string) {
-	i := object_by_tag(u, "friends", "invite/from", friend)
+	i := object_by_name(u, "friends", "invite/from", friend)
 	if i == nil {
 		return
 	}
-	f := object_by_tag(u, "friends", "friend", friend)
+	f := object_by_name(u, "friends", "friend", friend)
 	if f == nil {
 		friend_create(u, friend, i.Name, "person", false)
 	}
@@ -81,7 +81,7 @@ func friend_accept(u *User, friend string) {
 	object_delete_by_id(u, i.ID)
 
 	// Cancel any invitation we had sent to them
-	i = object_by_tag(u, "friends", "invite/to", friend)
+	i = object_by_name(u, "friends", "invite/to", friend)
 	if i != nil {
 		event(u, friend, "friends", "", "cancel", "")
 		object_delete_by_id(u, i.ID)
@@ -99,7 +99,7 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 	if !valid(class, "^person$") {
 		return error_message("Invalid class")
 	}
-	if object_by_tag(u, "friends", "friend", friend) != nil {
+	if object_by_name(u, "friends", "friend", friend) != nil {
 		return error_message("You are already friends")
 	}
 
@@ -108,7 +108,7 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 		return error_message("Unable to create friend")
 	}
 
-	i := object_by_tag(u, "friends", "invite/from", friend)
+	i := object_by_name(u, "friends", "invite/from", friend)
 	if i != nil {
 		// We have an existing invitation from them, so accept it automatically
 		event(u, friend, "friends", "", "accept", "")
@@ -127,24 +127,24 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 func friend_delete(u *User, friend string) {
 	log_debug("Deleting friend '%s'", friend)
 
-	i := object_by_tag(u, "friends", "invite/from", friend)
+	i := object_by_name(u, "friends", "invite/from", friend)
 	if i != nil {
 		event(u, friend, "friends", "", "ignore", "")
 		object_delete_by_id(u, i.ID)
 	}
 
-	i = object_by_tag(u, "friends", "invite/to", friend)
+	i = object_by_name(u, "friends", "invite/to", friend)
 	if i != nil {
 		event(u, friend, "friends", "", "cancel", "")
 		object_delete_by_id(u, i.ID)
 	}
 
-	object_delete_by_tag(u, "friends", "friend", friend)
+	object_delete_by_name(u, "friends", "friend", friend)
 }
 
 // Remote party accepted our invitation
 func friends_event_accept(u *User, e *Event) {
-	i := object_by_tag(u, "friends", "invite/to", e.From)
+	i := object_by_name(u, "friends", "invite/to", e.From)
 	if i != nil {
 		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
 		object_delete_by_id(u, i.ID)
@@ -153,7 +153,7 @@ func friends_event_accept(u *User, e *Event) {
 
 // Remote party cancelled their existing invitation
 func friends_event_cancel(u *User, e *Event) {
-	i := object_by_tag(u, "friends", "invite/from", e.From)
+	i := object_by_name(u, "friends", "invite/from", e.From)
 	if i != nil {
 		object_delete_by_id(u, i.ID)
 	}
@@ -161,7 +161,7 @@ func friends_event_cancel(u *User, e *Event) {
 
 // Remote party sent us a new invitation
 func friends_event_invite(u *User, e *Event) {
-	p := object_by_tag(u, "friends", "invite/to", e.From)
+	p := object_by_name(u, "friends", "invite/to", e.From)
 	if p != nil {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
 		friend_accept(u, e.From)
@@ -176,7 +176,7 @@ func friends_event_invite(u *User, e *Event) {
 
 // Ignore a friend invitation
 func friend_ignore(u *User, friend string) {
-	i := object_by_tag(u, "friends", "invite/from", friend)
+	i := object_by_name(u, "friends", "invite/from", friend)
 	if i != nil {
 		object_delete_by_id(u, i.ID)
 	}
@@ -185,7 +185,7 @@ func friend_ignore(u *User, friend string) {
 // Get a friend
 func friends_service_get(u *User, service string, values ...any) any {
 	if len(values) == 1 {
-		return object_by_tag(u, "friends", "friend", values[0].(string))
+		return object_by_name(u, "friends", "friend", values[0].(string))
 	}
 	return nil
 }

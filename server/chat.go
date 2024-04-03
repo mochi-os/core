@@ -27,15 +27,15 @@ func chat_message_receive(u *User, e *Event) {
 		return
 	}
 
-	c := object_by_tag(u, "chat", "friend", f.Tag)
+	c := object_by_name(u, "chat", "friend", f.Name)
 	if c == nil {
-		c = object_create(u, "chat", "friend", f.Tag, f.Name)
+		c = object_create(u, "chat", "friend", f.Name, f.Name)
 		if c == nil {
 			return
 		}
 	}
 	object_value_append(u, c.ID, "messages", "\n"+f.Name+": "+e.Content)
-	service(u, "notifications", "create", c.ID, f.Name+": "+e.Content, "/chat/view/?friend="+f.Tag)
+	service(u, "notifications", "create", c.ID, f.Name+": "+e.Content, "/chat/view/?friend="+f.Name)
 }
 
 // Ask user who they'd like to chat with
@@ -49,9 +49,9 @@ func chat_view(u *User, action string, format string, p app_parameters) string {
 	if f == nil {
 		return "Friend not found"
 	}
-	c := object_by_tag(u, "chat", "friend", f.Tag)
+	c := object_by_name(u, "chat", "friend", f.Name)
 	if c == nil {
-		c = object_create(u, "chat", "friend", f.Tag, f.Name)
+		c = object_create(u, "chat", "friend", f.Name, f.Name)
 		if c == nil {
 			return "Unable to creat chat"
 		}
@@ -64,7 +64,7 @@ func chat_view(u *User, action string, format string, p app_parameters) string {
 	message := app_parameter(p, "message", "")
 	if message != "" {
 		// User sent a message
-		event(u, f.Tag, "chat", "", "message", message)
+		event(u, f.Name, "chat", "", "message", message)
 		object_value_append(u, c.ID, "messages", "\n"+u.Name+": "+message)
 		messages = messages + "\n" + u.Name + ": " + message
 	}

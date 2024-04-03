@@ -8,8 +8,8 @@ type Object struct {
 	User     int
 	App      string
 	Category string
-	Tag      string
 	Name     string
+	Label    string
 	Updated  int64
 }
 
@@ -27,10 +27,10 @@ func object_by_id(u *User, id string) *Object {
 	return nil
 }
 
-func object_by_tag(u *User, app string, category string, tag string) *Object {
-	log_debug("Getting object app '%s', category '%s', tag '%s'", app, category, tag)
+func object_by_name(u *User, app string, category string, name string) *Object {
+	log_debug("Getting object app '%s', category '%s', name '%s'", app, category, name)
 	var o Object
-	if db_struct(&o, "data", "select * from objects where user=? and app=? and category=? and tag=?", u.ID, app, category, tag) {
+	if db_struct(&o, "data", "select * from objects where user=? and app=? and category=? and name=?", u.ID, app, category, name) {
 		log_debug("Object found")
 		return &o
 	}
@@ -44,7 +44,7 @@ func objects_by_category(u *User, app string, category string, sort string) *[]O
 	return &o
 }
 
-func object_create(u *User, app string, category string, tag string, name string) *Object {
+func object_create(u *User, app string, category string, name string, label string) *Object {
 	_, found := apps_by_name[app]
 	if !found {
 		log_warn("App '%s' not found when creating object", app)
@@ -54,17 +54,17 @@ func object_create(u *User, app string, category string, tag string, name string
 		log_warn("Category '%s' not valid when creating object", category)
 		return nil
 	}
-	if !valid(tag, "name") {
-		log_warn("Tag '%s' not valid when creating object", tag)
+	if !valid(name, "name") {
+		log_warn("Name '%s' not valid when creating object", name)
 		return nil
 	}
-	if name != "" && !valid(name, "name") {
-		log_warn("Name '%s' not valid when creating object", name)
+	if label != "" && !valid(label, "name") {
+		log_warn("Label '%s' not valid when creating object", label)
 		return nil
 	}
 
 	id := uid()
-	db_exec("data", "replace into objects ( id, user, app, category, tag, name, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", id, u.ID, app, category, tag, name, time_unix())
+	db_exec("data", "replace into objects ( id, user, app, category, name, label, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", id, u.ID, app, category, name, label, time_unix())
 	return object_by_id(u, id)
 }
 
@@ -80,9 +80,9 @@ func object_delete_by_id(u *User, id string) {
 	db_exec("data", "delete from objects where id=?", id)
 }
 
-func object_delete_by_tag(u *User, app string, category string, tag string) {
-	log_debug("Deleting object app '%s', category '%s', tag '%s'", app, category, tag)
-	o := object_by_tag(u, app, category, tag)
+func object_delete_by_name(u *User, app string, category string, name string) {
+	log_debug("Deleting object app '%s', category '%s', name '%s'", app, category, name)
+	o := object_by_name(u, app, category, name)
 	if o != nil {
 		object_delete_by_id(u, o.ID)
 	}

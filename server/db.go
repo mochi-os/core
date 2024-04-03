@@ -53,8 +53,8 @@ func db_create() {
 	db_exec("queue", "create index queue_updated on queue( updated )")
 
 	// App data objects
-	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, category text not null default '', tag text not null, name text not null default '', updated integer not null )")
-	db_exec("data", "create unique index objects_user_app_category_tag on objects( user, app, category, tag )")
+	db_exec("data", "create table objects ( id text not null primary key, user integer not null, app text not null, category text not null default '', name text not null, label text not null default '', updated integer not null )")
+	db_exec("data", "create unique index objects_user_app_category_name on objects( user, app, category, name )")
 	db_exec("data", "create index objects_updated on objects( updated )")
 
 	// App data key/values

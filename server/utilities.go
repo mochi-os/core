@@ -102,28 +102,23 @@ func valid(s string, match string) bool {
 		return false
 	}
 
-	if match == "constant" {
+	switch match {
+	case "constant":
 		match = "^[0-9a-z-]{1,100}$"
-
-	} else if match == "id" {
+	case "id":
 		match = "^[\\w-=]{1,1000}$"
-
-	} else if match == "name" {
+	case "name":
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
-
-	} else if match == "public" {
+	case "public":
 		match = "^[\\w-=]{44}$"
-
-	} else if match == "text" {
+	case "text":
 		if len(s) > 10000 {
 			return false
 		}
 		return true
-
-	} else if match == "uid" {
+	case "uid":
 		match = "^[0-9a-z]{32}"
-
-	} else if match == "url" {
+	case "url":
 		if len(s) > 10000 {
 			return false
 		}

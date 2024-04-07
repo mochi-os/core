@@ -36,6 +36,10 @@ func db_create() {
 	db_exec("users", "create unique index logins_code on logins( code )")
 	db_exec("users", "create index logins_expires on logins( expires )")
 
+	// User apps
+	db_exec("users", "create table user_apps ( user references users( id ), app text not null, track text not null, path text not null default '', installed integer not null default 0, primary key ( user, app ) )")
+	db_exec("users", "create index user_apps_app on user_apps( app )")
+
 	// Directory
 	db_exec("directory", "create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer not null )")
 	db_exec("directory", "create index directory_fingerprint on directory( fingerprint )")
@@ -79,14 +83,6 @@ func db_exists(file string, query string, values ...any) bool {
 	return false
 }
 
-func db_init() {
-	if file_exists("db/users.db") {
-		db_upgrade()
-	} else {
-		db_create()
-	}
-}
-
 func db_open(file string) *sqlx.DB {
 	h, open := db_handles[file]
 	if open {
@@ -103,6 +99,14 @@ func db_open(file string) *sqlx.DB {
 	db_handles[file], err = sqlx.Open("sqlite3", data_dir+"/"+path)
 	fatal(err)
 	return db_handles[file]
+}
+
+func db_start() {
+	if file_exists("db/users.db") {
+		db_upgrade()
+	} else {
+		db_create()
+	}
 }
 
 func db_struct(out any, file string, query string, values ...any) bool {

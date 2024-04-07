@@ -17,13 +17,16 @@ func main() {
 	flag.IntVar(&web_port, "web", 8080, "Web port to listen on")
 	flag.Parse()
 
-	db_init()
+	//wasm_run(&User{ID: 1}, "sample", "dev", "sample", "Hello world")
+
+	db_start()
+	apps_start()
 	go peers_manager()
 	libp2p_start()
-	log_info("Web listening on ':%d'", web_port)
-	go web_start()
 	go queue_manager()
 	go users_manager()
+	log_info("Web listening on ':%d'", web_port)
+	go web_start()
 
 	log_info("Ready")
 	select {}

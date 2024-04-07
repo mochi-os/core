@@ -80,7 +80,11 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 func libp2p_read(r *bufio.Reader) {
 	log_debug("Reading events from new peer")
 	for {
-		in, _ := r.ReadString('\n')
+		in, err := r.ReadString('\n')
+		if err != nil {
+			log_info("Error reading from peer: %s", err)
+			return
+		}
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
 			log_debug("Received event from peer: %s", in)

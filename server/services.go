@@ -10,15 +10,22 @@ func service(u *User, app string, service string, values ...any) any {
 		log_info("Service call to unnkown app '%s'", service)
 		return nil
 	}
-	_, found := a.Services[service]
-	if found {
-		return a.Services[service](u, service, values...)
-	} else {
-		_, found := a.Services[""]
+
+	switch a.Type {
+	case "internal":
+		_, found := a.Internal.Services[service]
 		if found {
-			return a.Services[""](u, service, values...)
+			return a.Internal.Services[service](u, service, values...)
+		} else {
+			_, found := a.Internal.Services[""]
+			if found {
+				return a.Internal.Services[""](u, service, values...)
+			}
 		}
+	case "wasm":
+		//TODO
 	}
+
 	log_info("Call to app '%s' without handler for service '%s'", app, service)
 	return nil
 }

@@ -131,17 +131,23 @@ func event_receive(e *Event, external bool) {
 		db_struct(u, "users", "select id from users where public=?", e.To)
 	}
 
-	_, found := a.Events[e.Action]
-	if found {
-		a.Events[e.Action](u, e)
-		return
-	} else {
-		_, found := a.Events[""]
+	switch a.Type {
+	case "internal":
+		_, found := a.Internal.Events[e.Action]
 		if found {
-			a.Events[""](u, e)
+			a.Internal.Events[e.Action](u, e)
 			return
+		} else {
+			_, found := a.Internal.Events[""]
+			if found {
+				a.Internal.Events[""](u, e)
+				return
+			}
 		}
+	case "wasm":
+		//TODO
 	}
+
 	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
 }
 

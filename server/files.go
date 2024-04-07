@@ -6,12 +6,22 @@ package main
 import (
 	"errors"
 	"os"
+	"syscall"
 )
 
 func file_create(path string) {
 	f, err := os.Create(data_dir + "/" + path)
 	fatal(err)
 	f.Close()
+}
+
+func files_dir(path string) []string {
+	var files []string
+	found, _ := os.ReadDir(data_dir + "/" + path)
+	for _, f := range found {
+		files = append(files, f.Name())
+	}
+	return files
 }
 
 func file_exists(path string) bool {
@@ -27,6 +37,11 @@ func file_exists(path string) bool {
 
 func file_mkdir(path string) {
 	err := os.MkdirAll(data_dir+"/"+path, 0755)
+	fatal(err)
+}
+
+func file_mkfifo(path string) {
+	err := syscall.Mkfifo(data_dir+"/"+path, 0600)
 	fatal(err)
 }
 

@@ -81,17 +81,31 @@ func app_display(u *User, app string, action string, format string, parameters a
 
 	switch a.Type {
 	case "internal":
-		if a.Internal.Actions[action] != nil {
-			return a.Internal.Actions[action](u, action, format, parameters), nil
+		f, found := a.Internal.Actions[action]
+		if found {
+			return f(u, action, format, parameters), nil
 		}
-		if a.Internal.Actions[""] != nil {
-			return a.Internal.Actions[""](u, action, format, parameters), nil
+		f, found = a.Internal.Actions[""]
+		if found {
+			return f(u, action, format, parameters), nil
 		}
+
 	case "wasm":
-		//TODO
+		ji, err := json.Marshal(map[string]any{"action": action, "format": format, "parameters": parameters})
+		if err != nil {
+			log_warn("Unable to marshal app data: %s", err)
+			return "", error_message("Unable to marshal app data: %s", err)
+		}
+		log_debug("App parameters in JSON='%s'", string(ji))
+		for _, try := range []string{action, ""} {
+			function, found := a.WASM.Actions[try]
+			if found {
+				return wasm_run(u, a, function, map[string]any{"action": action, "format": format, "parameters": parameters})
+			}
+		}
 	}
 
-	return "", error_message("App has no path action")
+	return "", error_message("App '%s' has no '%s' action or default action", a.Name, action)
 }
 
 func app_error(e error) string {
@@ -188,6 +202,7 @@ func apps_start() {
 		for _, version := range files_dir("apps/" + app) {
 			log_debug("Found installed app '%s' version '%s'", app, version)
 			base := "apps/" + app + "/" + version
+
 			if !file_exists(base + "/manifest.json") {
 				log_debug("App '%s' version '%s' has no manifest.json file; ignoring app", app, version)
 				continue

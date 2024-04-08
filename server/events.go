@@ -133,19 +133,34 @@ func event_receive(e *Event, external bool) {
 
 	switch a.Type {
 	case "internal":
-		_, found := a.Internal.Events[e.Action]
+		f, found := a.Internal.Events[e.Action]
 		if found {
-			a.Internal.Events[e.Action](u, e)
+			f(u, e)
 			return
 		} else {
-			_, found := a.Internal.Events[""]
+			f, found = a.Internal.Events[""]
 			if found {
-				a.Internal.Events[""](u, e)
+				f(u, e)
 				return
 			}
 		}
+
 	case "wasm":
-		//TODO
+		ji, err := json.Marshal(map[string]any{"event": e})
+		if err != nil {
+			log_warn("Unable to marshal app data: %s", err)
+			return
+		}
+		for _, try := range []string{e.Action, ""} {
+			function, found := a.WASM.Events[try]
+			if found {
+				_, err := wasm_run(u, a, function, ji)
+				if err != nil {
+					log_info("Event handler returned error: %s", err)
+					return
+				}
+			}
+		}
 	}
 
 	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)

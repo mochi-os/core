@@ -94,7 +94,7 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 			action := r.FormValue("action")
 
 			if action == "clear" {
-				service(u, "notifications", "clear")
+				service[string](u, "notifications", "clear")
 				web_redirect(w, "/")
 				return
 

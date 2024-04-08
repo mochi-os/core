@@ -4,13 +4,13 @@
 package main
 
 type Object struct {
-	ID       string
-	User     int
-	App      string
-	Category string
-	Name     string
-	Label    string
-	Updated  int64
+	ID       string `json:"id"`
+	User     int    `json:"user"`
+	App      string `json:"app"`
+	Category string `json:"category"`
+	Name     string `json:"name"`
+	Label    string `json:"label"`
+	Updated  int64  `json:"updated"`
 }
 
 type ObjectValue struct {

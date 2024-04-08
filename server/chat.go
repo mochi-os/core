@@ -20,7 +20,7 @@ func chat_list(u *User, action string, format string, p app_parameters) string {
 
 // Received a chat event from another user
 func chat_message_receive(u *User, e *Event) {
-	f := service(u, "friends", "get", e.From).(*Object)
+	f, _ := service[Object](u, "friends", "get", e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
 		event(u, e.From, "chat", "", "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
@@ -35,17 +35,18 @@ func chat_message_receive(u *User, e *Event) {
 		}
 	}
 	object_value_append(u, c.ID, "messages", "\n"+f.Name+": "+e.Content)
-	service(u, "notifications", "create", c.ID, f.Name+": "+e.Content, "/chat/view/?friend="+f.Name)
+	service[string](u, "notifications", "create", c.ID, f.Name+": "+e.Content, "/chat/view/?friend="+f.Name)
 }
 
 // Ask user who they'd like to chat with
 func chat_new(u *User, action string, format string, p app_parameters) string {
-	return app_template("chat/"+format+"/new", service(u, "friends", "list"))
+	friends, _ := service[[]Object](u, "friends", "list")
+	return app_template("chat/"+format+"/new", friends)
 }
 
 // View a chat
 func chat_view(u *User, action string, format string, p app_parameters) string {
-	f := service(u, "friends", "get", app_parameter(p, "friend", "")).(*Object)
+	f, _ := service[Object](u, "friends", "get", app_parameter(p, "friend", ""))
 	if f == nil {
 		return "Friend not found"
 	}
@@ -57,7 +58,7 @@ func chat_view(u *User, action string, format string, p app_parameters) string {
 		}
 	} else {
 		object_touch(u, c.ID)
-		service(u, "notifications", "clear/object", c.ID)
+		service[string](u, "notifications", "clear/object", c.ID)
 	}
 
 	messages := object_value_get(u, c.ID, "messages", "")

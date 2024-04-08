@@ -1,8 +1,7 @@
 0.1
-	Directory global search
 	WASM apps
-	WASM apps can access files and sqlite databases
 	Chat in WASM
+	Directory global search
 
 0.2
 	Choose a product name
@@ -19,6 +18,7 @@
 	User management
 	Resource usage limits
 	File and media storage
+	Apps with multiple installed versions
 	App publishing
 	App updates
 

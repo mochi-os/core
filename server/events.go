@@ -146,15 +146,10 @@ func event_receive(e *Event, external bool) {
 		}
 
 	case "wasm":
-		ji, err := json.Marshal(map[string]any{"event": e})
-		if err != nil {
-			log_warn("Unable to marshal app data: %s", err)
-			return
-		}
 		for _, try := range []string{e.Action, ""} {
 			function, found := a.WASM.Events[try]
 			if found {
-				_, err := wasm_run(u, a, function, ji)
+				_, err := wasm_run(u, a, function, e)
 				if err != nil {
 					log_info("Event handler returned error: %s", err)
 					return

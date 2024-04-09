@@ -6,11 +6,14 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"github.com/wasmerio/wasmer-go/wasmer"
 	"os"
 	"strconv"
 	"strings"
 )
+
+var wasm_instances = map[string]*wasmer.Instance{}
 
 func wasm_invoke(f func(...any) (any, error), out *os.File) {
 	log_debug("WASM calling function")
@@ -64,22 +67,31 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 	defer out.Close()
 	r := bufio.NewReader(out)
 
-	//TODO Cache Wasmer instance
-	store := wasmer.NewStore(wasmer.NewEngine())
-	module, _ := wasmer.NewModule(store, wasm)
-	wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
-	io, err := wasi.GenerateImportObject(store, module)
-	fatal(err)
-	instance, err := wasmer.NewInstance(module, io)
-	fatal(err)
-	start, err := instance.Exports.GetWasiStartFunction()
-	fatal(err)
-	start()
+	key := fmt.Sprintf("%d-%s", u.ID, a.ID)
+	i, found := wasm_instances[key]
+	if !found {
+		store := wasmer.NewStore(wasmer.NewEngine())
+		module, _ := wasmer.NewModule(store, wasm)
+		wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
+		io, err := wasi.GenerateImportObject(store, module)
+		fatal(err)
+		i, err = wasmer.NewInstance(module, io)
+		fatal(err)
+		start, err := i.Exports.GetWasiStartFunction()
+		fatal(err)
+		start()
+		wasm_instances[key] = i
+	}
 
-	f, err := instance.Exports.GetFunction(function)
+	f, err := i.Exports.GetFunction(function)
 	fatal(err)
 	go wasm_invoke(f, out)
-	wasm_write(w, input)
+
+	ji, err := json.Marshal(input)
+	if err != nil {
+		log_warn("WASM unable to marshal JSON for app input: %s", err)
+	}
+	wasm_write(w, string(ji))
 
 	var run_return string
 	for {
@@ -103,7 +115,7 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 			//TODO Check for recursion
 			splits := strings.SplitN(output, " ", 3)
 			if len(splits) >= 2 {
-				var service_return string
+				var service_return []byte
 				var err error
 				if len(splits) > 2 {
 					service_return, err = service_json(u, splits[0], splits[1], splits[2])
@@ -113,7 +125,7 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 				if err != nil {
 					log_info("WASM call to service returned error: %s", err)
 				}
-				wasm_write(w, service_return)
+				wasm_write(w, string(service_return))
 			} else {
 				log_info("WASM app called service without app and service; ignoring service request")
 			}
@@ -126,11 +138,9 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 	return run_return, nil
 }
 
-func wasm_write(w *bufio.Writer, data any) {
-	j, err := json.Marshal(data)
-	fatal(err)
-	log_debug("Writing to app '%s'", j)
-	w.Write(j)
+func wasm_write(w *bufio.Writer, data string) {
+	log_debug("Writing to app '%s'", data)
+	w.WriteString(data)
 	w.WriteRune('\n')
 	w.Flush()
 }

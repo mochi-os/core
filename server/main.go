@@ -17,8 +17,6 @@ func main() {
 	flag.IntVar(&web_port, "web", 8080, "Web port to listen on")
 	flag.Parse()
 
-	//wasm_run(&User{ID: 1}, "sample", "dev", "sample", "Hello world")
-
 	db_start()
 	apps_start()
 	go peers_manager()

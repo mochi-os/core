@@ -11,6 +11,7 @@ import (
 )
 
 type App struct {
+	ID       string            `json:"id"`
 	Name     string            `json:"name"`
 	Version  string            `json:"version"`
 	Track    string            `json:"track"`
@@ -81,21 +82,14 @@ func app_display(u *User, app string, action string, format string, parameters a
 
 	switch a.Type {
 	case "internal":
-		f, found := a.Internal.Actions[action]
-		if found {
-			return f(u, action, format, parameters), nil
-		}
-		f, found = a.Internal.Actions[""]
-		if found {
-			return f(u, action, format, parameters), nil
+		for _, try := range []string{action, ""} {
+			f, found := a.Internal.Actions[try]
+			if found {
+				return f(u, action, format, parameters), nil
+			}
 		}
 
 	case "wasm":
-		ji, err := json.Marshal(map[string]any{"action": action, "format": format, "parameters": parameters})
-		if err != nil {
-			log_warn("Unable to marshal app data: %s", err)
-			return "", error_message("Unable to marshal app data: %s", err)
-		}
 		for _, try := range []string{action, ""} {
 			function, found := a.WASM.Actions[try]
 			if found {
@@ -122,7 +116,7 @@ func app_parameter(p map[string][]string, key string, def string) string {
 // Register internal functions
 func app_register(name string, labels map[string]string) {
 	//log_debug("App register internal: name='%s', label='%s'", name, labels["en"])
-	a := App{Name: name, Labels: labels, Path: "", Type: "internal"}
+	a := App{ID: name, Name: name, Labels: labels, Path: "", Type: "internal"}
 	a.Internal.Actions = make(map[string]func(*User, string, string, app_parameters) string)
 	a.Internal.Events = make(map[string]func(*User, *Event))
 	a.Internal.Services = make(map[string]func(*User, string, ...any) any)
@@ -197,13 +191,13 @@ func app_register_service(name string, service string, f func(*User, string, ...
 }
 
 func apps_start() {
-	for _, app := range files_dir("apps") {
-		for _, version := range files_dir("apps/" + app) {
-			log_debug("Found installed app '%s' version '%s'", app, version)
-			base := "apps/" + app + "/" + version
+	for _, id := range files_dir("apps") {
+		for _, version := range files_dir("apps/" + id) {
+			log_debug("Found installed app ID '%s' version '%s'", id, version)
+			base := "apps/" + id + "/" + version
 
 			if !file_exists(base + "/manifest.json") {
-				log_debug("App '%s' version '%s' has no manifest.json file; ignoring app", app, version)
+				log_debug("App ID '%s' version '%s' has no manifest.json file; ignoring app", id, version)
 				continue
 			}
 			var a App
@@ -212,6 +206,7 @@ func apps_start() {
 				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app: %s", base, err)
 				continue
 			}
+			a.ID = id
 			apps_by_name[a.Name] = &a
 
 			if a.Path != "" {

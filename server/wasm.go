@@ -33,7 +33,7 @@ func wasm_read(r *bufio.Reader) string {
 	return output
 }
 
-func wasm_run(u *User, a *App, function string, input any) (string, error) {
+func wasm_run(u *User, a *App, function string, depth int, input any) (string, error) {
 	log_debug("WASM running app '%s', version '%s', function '%s'", a.Name, a.Version, function)
 
 	file := data_dir + "/apps/" + a.Name + "/" + a.Version + "/" + a.WASM.File
@@ -112,15 +112,14 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 
 		case "service":
 			log_debug("WASM app asked for a service")
-			//TODO Check for recursion
 			splits := strings.SplitN(output, " ", 3)
 			if len(splits) >= 2 {
 				var service_return []byte
 				var err error
 				if len(splits) > 2 {
-					service_return, err = service_json(u, splits[0], splits[1], splits[2])
+					service_return, err = service_json(u, splits[0], splits[1], depth+1, splits[2])
 				} else {
-					service_return, err = service_json(u, splits[0], splits[1])
+					service_return, err = service_json(u, splits[0], splits[1], depth+1)
 				}
 				if err != nil {
 					log_info("WASM call to service returned error: %s", err)

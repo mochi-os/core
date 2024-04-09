@@ -149,7 +149,7 @@ func event_receive(e *Event, external bool) {
 		for _, try := range []string{e.Action, ""} {
 			function, found := a.WASM.Events[try]
 			if found {
-				_, err := wasm_run(u, a, function, e)
+				_, err := wasm_run(u, a, function, 0, e)
 				if err != nil {
 					log_info("Event handler returned error: %s", err)
 					return

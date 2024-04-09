@@ -30,7 +30,7 @@ func service(u *User, app string, s string, parameters ...any) {
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				_, err := wasm_run(u, a, function, map[string]any{"service": s, "parameters": parameters})
+				_, err := wasm_run(u, a, function, 0, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return
@@ -68,7 +68,7 @@ func service_generic[T any](u *User, app string, s string, parameters ...any) (*
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				jo, err := wasm_run(u, a, function, map[string]any{"service": s, "parameters": parameters})
+				jo, err := wasm_run(u, a, function, 0, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return &out, err
@@ -87,8 +87,13 @@ func service_generic[T any](u *User, app string, s string, parameters ...any) (*
 	return &out, nil
 }
 
-func service_json(u *User, app string, s string, parameters ...any) ([]byte, error) {
+func service_json(u *User, app string, s string, depth int, parameters ...any) ([]byte, error) {
 	log_debug("Service call JSON: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
+
+	if depth > 1000 {
+		log_warn("Service recursion detected; stopping at 1000 iterations")
+		return []byte{}, error_message("Service recursion detected; stopping at 1000 iterations")
+	}
 
 	a := apps_by_name[app]
 	if a == nil {
@@ -115,7 +120,7 @@ func service_json(u *User, app string, s string, parameters ...any) ([]byte, err
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				jo, err := wasm_run(u, a, function, map[string]any{"service": s, "parameters": parameters})
+				jo, err := wasm_run(u, a, function, depth, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return []byte{}, err

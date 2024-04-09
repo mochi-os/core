@@ -93,7 +93,7 @@ func app_display(u *User, app string, action string, format string, parameters a
 		for _, try := range []string{action, ""} {
 			function, found := a.WASM.Actions[try]
 			if found {
-				return wasm_run(u, a, function, map[string]any{"action": action, "format": format, "parameters": parameters})
+				return wasm_run(u, a, function, 0, map[string]any{"action": action, "format": format, "parameters": parameters})
 			}
 		}
 	}

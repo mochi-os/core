@@ -81,7 +81,7 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 	go wasm_invoke(f, out)
 	wasm_write(w, input)
 
-	var ret string
+	var run_return string
 	for {
 		read := wasm_read(r)
 		splits := strings.SplitN(read, " ", 2)
@@ -95,22 +95,35 @@ func wasm_run(u *User, a *App, function string, input any) (string, error) {
 		}
 
 		switch action {
-		case "":
-			continue
-
 		case "finish":
-			return ret, nil
+			return run_return, nil
 
 		case "service":
 			log_debug("WASM app asked for a service")
-			//TODO Implement service requests and returns
+			//TODO Check for recursion
+			splits := strings.SplitN(output, " ", 3)
+			if len(splits) >= 2 {
+				var service_return string
+				var err error
+				if len(splits) > 2 {
+					service_return, err = service_json(u, splits[0], splits[1], splits[2])
+				} else {
+					service_return, err = service_json(u, splits[0], splits[1])
+				}
+				if err != nil {
+					log_info("WASM call to service returned error: %s", err)
+				}
+				wasm_write(w, service_return)
+			} else {
+				log_info("WASM app called service without app and service; ignoring service request")
+			}
 
 		case "return":
-			ret = output
+			run_return = output
 		}
 	}
 
-	return ret, nil
+	return run_return, nil
 }
 
 func wasm_write(w *bufio.Writer, data any) {

@@ -96,7 +96,6 @@ func app_display(u *User, app string, action string, format string, parameters a
 			log_warn("Unable to marshal app data: %s", err)
 			return "", error_message("Unable to marshal app data: %s", err)
 		}
-		log_debug("App parameters in JSON='%s'", string(ji))
 		for _, try := range []string{action, ""} {
 			function, found := a.WASM.Actions[try]
 			if found {

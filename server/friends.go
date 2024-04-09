@@ -146,7 +146,7 @@ func friend_delete(u *User, friend string) {
 func friends_event_accept(u *User, e *Event) {
 	i := object_by_name(u, "friends", "invite/to", e.From)
 	if i != nil {
-		service[string](u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
+		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
 		object_delete_by_id(u, i.ID)
 	}
 }

@@ -15,6 +15,10 @@ func file_create(path string) {
 	f.Close()
 }
 
+func file_delete(path string) {
+	os.Remove(data_dir + "/" + path)
+}
+
 func files_dir(path string) []string {
 	var files []string
 	found, _ := os.ReadDir(data_dir + "/" + path)

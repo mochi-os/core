@@ -71,7 +71,6 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 
 			parameters := make(app_parameters)
 			referrer, err := url.Parse(r.Referer())
-			log_debug("XSS check: referrer host='%s', our host = '%s'", referrer.Host, r.Host)
 			if err == nil && (referrer.Host == "" || referrer.Host == r.Host) {
 				for p, v := range r.URL.Query() {
 					parameters[p] = v

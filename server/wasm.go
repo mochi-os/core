@@ -14,10 +14,21 @@ import (
 )
 
 var wasm_instances = map[string]*wasmer.Instance{}
+var wasm_invoke_id int64 = 0
 
-func wasm_invoke(f func(...any) (any, error), out *os.File) {
+func wasm_cleanup(storage string, id int64) {
+	file_delete(fmt.Sprintf("%s/.in-%d", storage, wasm_invoke_id))
+	file_delete(fmt.Sprintf("%s/.out-%d", storage, wasm_invoke_id))
+}
+
+func wasm_invoke(f func(...any) (any, error), out *os.File, id int64) {
+	defer wasm_finish(out, id)
 	log_debug("WASM calling function")
-	f()
+	f(id)
+}
+
+func wasm_finish(out *os.File, id int64) {
+	recover()
 	log_debug("WASM function finished")
 	out.Write([]byte("\nfinish\n"))
 }
@@ -43,12 +54,18 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 		return "", error_message("WASM unable to read file '%s': %v", file, err)
 	}
 
-	storage := "users/" + strconv.Itoa(u.ID) + "/apps/" + a.Name
-	file_mkdir(storage)
-	if !file_exists(storage + "/.in") {
-		file_mkfifo(storage + "/.in")
+	storage := "users/" + strconv.Itoa(u.ID) + "/apps/" + a.ID
+	if !file_exists(storage) {
+		file_mkdir(storage)
 	}
-	in, err := os.OpenFile(data_dir+"/"+storage+"/.in", os.O_RDWR, 0600)
+	wasm_invoke_id = wasm_invoke_id + 1
+	defer wasm_cleanup(storage, wasm_invoke_id)
+
+	in_fifo := fmt.Sprintf("%s/.in-%d", storage, wasm_invoke_id)
+	if !file_exists(in_fifo) {
+		file_mkfifo(in_fifo)
+	}
+	in, err := os.OpenFile(data_dir+"/"+in_fifo, os.O_RDWR, 0600)
 	if err != nil {
 		log_warn("WASM unable to open input pipe for writing: %s", err)
 		return "", error_message("WASM unable to open input pipe for writing: %s", err)
@@ -56,10 +73,11 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 	defer in.Close()
 	w := bufio.NewWriter(in)
 
-	if !file_exists(storage + "/.out") {
-		file_mkfifo(storage + "/.out")
+	out_fifo := fmt.Sprintf("%s/.out-%d", storage, wasm_invoke_id)
+	if !file_exists(out_fifo) {
+		file_mkfifo(out_fifo)
 	}
-	out, err := os.OpenFile(data_dir+"/"+storage+"/.out", os.O_RDWR, 0600)
+	out, err := os.OpenFile(data_dir+"/"+out_fifo, os.O_RDWR, 0600)
 	if err != nil {
 		log_warn("WASM unable to open output pipe for reading: %s", err)
 		return "", error_message("WASM unable to open output pipe for reading: %s", err)
@@ -67,29 +85,34 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 	defer out.Close()
 	r := bufio.NewReader(out)
 
-	key := fmt.Sprintf("%d-%s", u.ID, a.ID)
-	i, found := wasm_instances[key]
-	if !found {
+//	key := fmt.Sprintf("%d-%s", u.ID, a.ID)
+//	i, found := wasm_instances[key]
+//	if !found {
 		store := wasmer.NewStore(wasmer.NewEngine())
 		module, _ := wasmer.NewModule(store, wasm)
 		wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
 		io, err := wasi.GenerateImportObject(store, module)
 		fatal(err)
-		i, err = wasmer.NewInstance(module, io)
+		//TODO Fix
+		i, err := wasmer.NewInstance(module, io)
 		fatal(err)
 		start, err := i.Exports.GetWasiStartFunction()
 		fatal(err)
 		start()
-		wasm_instances[key] = i
-	}
+//		wasm_instances[key] = i
+//	}
 
 	f, err := i.Exports.GetFunction(function)
-	fatal(err)
-	go wasm_invoke(f, out)
+	if err != nil {
+		log_info("WASM unable to find function '%s': %s", function, err)
+		return "", error_message("WASM unable to find function '%s': %s", function, err)
+	}
+	go wasm_invoke(f, out, wasm_invoke_id)
 
 	ji, err := json.Marshal(input)
 	if err != nil {
 		log_warn("WASM unable to marshal JSON for app input: %s", err)
+		return "", error_message("WASM unable to marshal JSON for app input: %s", err)
 	}
 	wasm_write(w, string(ji))
 
@@ -138,7 +161,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 }
 
 func wasm_write(w *bufio.Writer, data string) {
-	log_debug("Writing to app '%s'", data)
+	log_debug("WASM writing to app '%s'", data)
 	w.WriteString(data)
 	w.WriteRune('\n')
 	w.Flush()

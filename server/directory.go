@@ -36,22 +36,20 @@ func directory_delete(id string) {
 	db_exec("directory", "delete from directory where id=?", id)
 }
 
-// Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to peers
+// Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
 func directory_download() {
 	time.Sleep(10 * time.Second)
-	log_debug("Requesting directory download")
 	j, err := json.Marshal(event(nil, "", "directory", libp2p_id, "download", ""))
 	check(err)
-	libp2p_topics["directory"].Publish(libp2p_context, j)
+	for _, peer := range peers_known {
+		log_debug("Requesting directory download from peer '%s'", peer)
+		peer_send(peer, j)
+	}
 }
 
-// Reply to a directory download request, but only from immediate peers
+// Reply to a directory download request
 func directory_event_download(u *User, e *Event) {
 	log_debug("Received directory download event '%#v'", e)
-	if e.Entity != e.Source {
-		return
-	}
-	log_debug("Directory download request is from immediate peer; sending directory entries")
 	time.Sleep(time.Second)
 
 	var results []Directory
@@ -86,8 +84,8 @@ func directory_event_publish(u *User, e *Event) {
 	}
 	if e.From == "" {
 		found := false
-		for _, trusted := range peers_trusted {
-			if e.Source == trusted {
+		for _, known := range peers_known {
+			if e.Source == known {
 				found = true
 				break
 			}

@@ -17,7 +17,7 @@ type Peer struct {
 	Updated int64
 }
 
-var peers_trusted = []string{"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", "12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs"}
+var peers_known = []string{"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", "12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs"}
 var peers_connected map[string]Peer = map[string]Peer{}
 var peer_add_chan = make(chan Peer)
 var peer_publish_chan = make(chan bool)

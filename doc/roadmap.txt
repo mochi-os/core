@@ -2,16 +2,16 @@
 	Chat app
 	Feeds app
 	Forums app
+	Choose a product name
+	Introducer server
 
 0.2
-	Choose a product name
 	Users can change their settings
 	HTTPS using Letsencrypt
 	Client API
 	Command line client
 	Broadcasts between apps within a user
 	Users can set public URLs to publish data
-	Initial directory download only from trusted peers
 	Wiki app
 
 0.3

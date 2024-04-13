@@ -85,9 +85,19 @@ func directory_event_publish(u *User, e *Event) {
 		return
 	}
 	if e.From == "" {
-		log_info("Directory update from untrusted source; consider forbidding in future")
+		found := false
+		for _, trusted := range peers_trusted {
+			if e.Source == trusted {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log_info("Dropping unsigned directory event from untrusted peer")
+			return
+		}
 	} else if e.From != d.ID {
-		log_info("Dropping directory event with incorrect ID: '%s'!='%s'", d.ID, e.From)
+		log_info("Dropping directory event from incorrect sender: '%s'!='%s'", d.ID, e.From)
 		return
 	}
 

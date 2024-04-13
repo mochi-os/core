@@ -68,13 +68,13 @@ func db_create() {
 func db_exec(file string, query string, values ...any) {
 	//log_debug("db_exec('%s', ...)", query)
 	_, err := db_open(file).Exec(query, values...)
-	fatal(err)
+	check(err)
 }
 
 func db_exists(file string, query string, values ...any) bool {
 	//log_debug("db_exists('%s', ...)", query)
 	r, err := db_open(file).Query(query, values...)
-	fatal(err)
+	check(err)
 	defer r.Close()
 
 	for r.Next() {
@@ -97,16 +97,18 @@ func db_open(file string) *sqlx.DB {
 
 	var err error
 	db_handles[file], err = sqlx.Open("sqlite3", data_dir+"/"+path)
-	fatal(err)
+	check(err)
 	return db_handles[file]
 }
 
-func db_start() {
+func db_start() bool {
 	if file_exists("db/users.db") {
 		db_upgrade()
 	} else {
 		db_create()
+		return true
 	}
+	return false
 }
 
 func db_struct(out any, file string, query string, values ...any) bool {
@@ -116,7 +118,7 @@ func db_struct(out any, file string, query string, values ...any) bool {
 		if err == sql.ErrNoRows {
 			return false
 		}
-		fatal(err)
+		check(err)
 	}
 	return true
 }
@@ -124,7 +126,7 @@ func db_struct(out any, file string, query string, values ...any) bool {
 func db_structs(out any, file string, query string, values ...any) {
 	//log_debug("db_structs('%s', ...)", query)
 	err := db_open(file).Select(out, query, values...)
-	fatal(err)
+	check(err)
 }
 
 func db_upgrade() {

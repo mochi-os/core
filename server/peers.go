@@ -45,6 +45,15 @@ func peers_add_from_db(limit int) {
 	}
 }
 
+// Get address of peer
+func peer_address(peer string) string {
+	var p Peer
+	if db_struct(&p, "peers", "select address from peers where id=?", peer) {
+		return p.Address
+	}
+	return ""
+}
+
 // Reply to a peer request if for us
 func peer_event_request(u *User, e *Event) {
 	log_debug("Received peer request event '%#v'", e)
@@ -108,7 +117,7 @@ func peers_publish(t *pubsub.Topic) {
 		}
 		log_debug("Publishing peer")
 		j, err := json.Marshal(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})
-		fatal(err)
+		check(err)
 		t.Publish(libp2p_context, j)
 	}
 }
@@ -117,6 +126,15 @@ func peers_publish(t *pubsub.Topic) {
 func peer_request(peer string) {
 	log_debug("Requesting peer '%s' via pubsub", peer)
 	j, err := json.Marshal(event(nil, "", "peers", "", "request", peer))
-	fatal(err)
+	check(err)
 	libp2p_topics["peers"].Publish(libp2p_context, j)
+}
+
+// Send a message to a peer
+func peer_send(peer string, content []byte) bool {
+	address := peer_address(peer)
+	if address != "" {
+		return libp2p_send(address, content)
+	}
+	return false
 }

@@ -76,7 +76,7 @@ func web_home(w http.ResponseWriter, r *http.Request) {
 					parameters[p] = v
 				}
 				err := r.ParseForm()
-				fatal(err)
+				check(err)
 				for p, v := range r.Form {
 					parameters[p] = v
 				}
@@ -175,7 +175,7 @@ func web_start() {
 	http.HandleFunc("/login/", web_login)
 	http.HandleFunc("/login/name/", web_name)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
-	fatal(err)
+	check(err)
 }
 
 func web_template(w http.ResponseWriter, file string, values ...any) {

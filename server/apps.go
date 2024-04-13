@@ -191,6 +191,9 @@ func app_register_service(name string, service string, f func(*User, string, ...
 }
 
 func apps_start() {
+	// Not used for now
+	return
+
 	for _, id := range files_dir("apps") {
 		for _, version := range files_dir("apps/" + id) {
 			log_debug("Found installed app ID '%s' version '%s'", id, version)

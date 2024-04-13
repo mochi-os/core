@@ -1,22 +1,24 @@
 0.1
-	Chat in WASM
-	Directory global search
+	Chat app
+	Feeds app
+	Forums app
 
 0.2
 	Choose a product name
-	Feeds app
-	Forums app
 	Users can change their settings
-	Users choose which apps get which web path
 	HTTPS using Letsencrypt
 	Client API
 	Command line client
 	Broadcasts between apps within a user
+	Users can set public URLs to publish data
+	Initial directory download only from trusted peers
+	Wiki app
 
 0.3
 	User management
 	Resource usage limits
 	File and media storage
+	Users choose which apps get which web path
 	Apps with multiple installed versions
 	App publishing
 	App updates
@@ -32,10 +34,8 @@
 	Oauth server
 	.deb and .rpm packages
 
-Ideas for services
+Ideas for apps
 	Bug tracker
-	Chat/group chat
 	Chess
 	Kanban
 	Scrabble playalike
-	Wiki

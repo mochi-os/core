@@ -88,7 +88,7 @@ func user_from_code(code string) *User {
 	}
 
 	public, private, err := ed25519.GenerateKey(rand.Reader)
-	fatal(err)
+	check(err)
 
 	db_exec("users", "replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
 
@@ -115,9 +115,9 @@ func user_location(user string) (string, string, string, string) {
 	// Check in directory
 	var d Directory
 	if db_struct(&d, "directory", "select location from directory where id=?", user) {
-		var p Peer
-		if db_struct(&p, "peers", "select address from peers where id=?", d.Location) {
-			return "libp2p", p.Address, "peer", d.Location
+		address := peer_address(d.Location)
+		if address != "" {
+			return "libp2p", address, "peer", d.Location
 		}
 		peer_request(d.Location)
 		return "peer", d.Location, "peer", d.Location

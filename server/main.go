@@ -17,7 +17,7 @@ func main() {
 	flag.IntVar(&web_port, "web", 8080, "Web port to listen on")
 	flag.Parse()
 
-	db_start()
+	new_install := db_start()
 	apps_start()
 	go peers_manager()
 	libp2p_start()
@@ -25,6 +25,10 @@ func main() {
 	go users_manager()
 	log_info("Web listening on ':%d'", web_port)
 	go web_start()
+
+	if new_install {
+		go directory_download()
+	}
 
 	log_info("Ready")
 	select {}

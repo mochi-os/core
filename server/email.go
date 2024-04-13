@@ -14,7 +14,7 @@ func email_send(to string, subject string, body string) {
 	message := fmt.Sprintf("From: comms-server@localhost\r\nTo: %s\r\nSubject: %s\r\n\r\n%s", to, subject, body)
 
 	err := smtp.SendMail("127.0.0.1:25", nil, "comms-server@localhost", []string{to}, []byte(message))
-	fatal(err)
+	check(err)
 	log_debug("Email sent")
 }
 

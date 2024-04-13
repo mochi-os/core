@@ -13,7 +13,6 @@ import (
 	"strings"
 )
 
-var wasm_instances = map[string]*wasmer.Instance{}
 var wasm_invoke_id int64 = 0
 
 func wasm_cleanup(storage string, id int64) {
@@ -85,22 +84,16 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 	defer out.Close()
 	r := bufio.NewReader(out)
 
-//	key := fmt.Sprintf("%d-%s", u.ID, a.ID)
-//	i, found := wasm_instances[key]
-//	if !found {
-		store := wasmer.NewStore(wasmer.NewEngine())
-		module, _ := wasmer.NewModule(store, wasm)
-		wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
-		io, err := wasi.GenerateImportObject(store, module)
-		fatal(err)
-		//TODO Fix
-		i, err := wasmer.NewInstance(module, io)
-		fatal(err)
-		start, err := i.Exports.GetWasiStartFunction()
-		fatal(err)
-		start()
-//		wasm_instances[key] = i
-//	}
+	store := wasmer.NewStore(wasmer.NewEngine())
+	module, _ := wasmer.NewModule(store, wasm)
+	wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
+	io, err := wasi.GenerateImportObject(store, module)
+	check(err)
+	i, err := wasmer.NewInstance(module, io)
+	check(err)
+	start, err := i.Exports.GetWasiStartFunction()
+	check(err)
+	start()
 
 	f, err := i.Exports.GetFunction(function)
 	if err != nil {

@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"time"
 )
 
 type Directory struct {
@@ -18,6 +19,7 @@ type Directory struct {
 
 func init() {
 	app_register("directory", map[string]string{"en": "Directory"})
+	app_register_event("directory", "download", directory_event_download)
 	app_register_event("directory", "request", directory_event_request)
 	app_register_event("directory", "publish", directory_event_publish)
 	app_register_pubsub("directory", "directory", nil)
@@ -32,6 +34,36 @@ func directory_create(u *User) {
 // Delete a directory entry
 func directory_delete(id string) {
 	db_exec("directory", "delete from directory where id=?", id)
+}
+
+// Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to peers
+func directory_download() {
+	time.Sleep(10 * time.Second)
+	log_debug("Requesting directory download")
+	j, err := json.Marshal(event(nil, "", "directory", libp2p_id, "download", ""))
+	check(err)
+	libp2p_topics["directory"].Publish(libp2p_context, j)
+}
+
+// Reply to a directory download request, but only from immediate peers
+func directory_event_download(u *User, e *Event) {
+	log_debug("Received directory download event '%#v'", e)
+	if e.Entity != e.Source {
+		return
+	}
+	log_debug("Directory download request is from immediate peer; sending directory entries")
+	time.Sleep(time.Second)
+
+	var results []Directory
+	db_structs(&results, "directory", "select * from directory order by id")
+	for _, d := range results {
+		jd, err := json.Marshal(d)
+		check(err)
+		je, err := json.Marshal(event(u, "", "directory", "", "publish", string(jd)))
+		check(err)
+		peer_send(e.Source, je)
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // Reply to a directory request if we have the requested user
@@ -52,7 +84,9 @@ func directory_event_publish(u *User, e *Event) {
 		log_info("Dropping directory event with malformed directory JSON '%s': %s", e.Content, err.Error())
 		return
 	}
-	if d.ID != e.From {
+	if e.From == "" {
+		log_info("Directory update from untrusted source; consider forbidding in future")
+	} else if e.From != d.ID {
 		log_info("Dropping directory event with incorrect ID: '%s'!='%s'", d.ID, e.From)
 		return
 	}
@@ -65,9 +99,9 @@ func directory_event_publish(u *User, e *Event) {
 // Publish a directory entry on the libp2p pubsub
 func directory_publish(u *User) {
 	jd, err := json.Marshal(map[string]string{"id": u.Public, "name": u.Name, "class": "person", "location": libp2p_id})
-	fatal(err)
+	check(err)
 	je, err := json.Marshal(event(u, "", "directory", "", "publish", string(jd)))
-	fatal(err)
+	check(err)
 	libp2p_topics["directory"].Publish(libp2p_context, je)
 }
 
@@ -75,7 +109,7 @@ func directory_publish(u *User) {
 func directory_request(user string) {
 	log_debug("Requesting directory user '%s' via pubsub", user)
 	j, err := json.Marshal(event(nil, "", "directory", "", "request", user))
-	fatal(err)
+	check(err)
 	libp2p_topics["directory"].Publish(libp2p_context, j)
 }
 

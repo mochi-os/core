@@ -1,6 +1,8 @@
 // Comms server: libp2p
 // Copyright Alistair Cunningham 2024
 
+// The code in this file and peers.go could probably be improved by someone highly familiar with libp2p
+
 package main
 
 import (
@@ -57,28 +59,30 @@ func libp2p_connect(address string) error {
 
 // Peer connected to us
 func libp2p_handle(s network.Stream) {
+	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + s.Conn().RemotePeer().String()
 	log_debug("Peer connected from libp2p '%s'", address)
 	peer_add(address, false)
 	r := bufio.NewReader(bufio.NewReader(s))
-	go libp2p_read(r)
+	go libp2p_read(r, peer)
 }
 
 // Listen for updates on a pubsub
 func libp2p_pubsub_listen(s *pubsub.Subscription) {
 	for {
 		m, err := s.Next(libp2p_context)
-		fatal(err)
-		if m.ReceivedFrom.String() != libp2p_id {
+		check(err)
+		peer := m.ReceivedFrom.String()
+		if peer != libp2p_id {
 			log_debug("Received event from pubsub: %s", string(m.Data))
-			event_receive_json(m.Data, true)
+			event_receive_json(m.Data, peer)
 		}
 	}
 }
 
 // Read from a connected peer
-func libp2p_read(r *bufio.Reader) {
-	log_debug("Reading events from new peer")
+func libp2p_read(r *bufio.Reader, peer string) {
+	log_debug("Reading events from new peer '%s'", peer)
 	for {
 		in, err := r.ReadString('\n')
 		if err != nil {
@@ -88,7 +92,7 @@ func libp2p_read(r *bufio.Reader) {
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
 			log_debug("Received event from peer: %s", in)
-			event_receive_json([]byte(in), true)
+			event_receive_json([]byte(in), peer)
 		}
 	}
 }
@@ -123,22 +127,22 @@ func libp2p_start() {
 
 	if file_exists("libp2p/private.key") {
 		private, err = crypto.UnmarshalPrivateKey(file_read("libp2p/private.key"))
-		fatal(err)
+		check(err)
 	} else {
 		private, _, err = crypto.GenerateKeyPairWithReader(crypto.Ed25519, 256, rand.Reader)
-		fatal(err)
+		check(err)
 		var p []byte
 		p, err = crypto.MarshalPrivateKey(private)
-		fatal(err)
+		check(err)
 		file_mkdir("libp2p")
 		file_write("libp2p/private.key", p)
 	}
 
 	libp2p_context = context.Background()
 	ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", libp2p_listen, libp2p_port))
-	fatal(err)
+	check(err)
 	h, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
-	fatal(err)
+	check(err)
 	libp2p_host = h
 	libp2p_id = h.ID().String()
 	h.SetStreamHandler("/comms/1.0.0", libp2p_handle)
@@ -147,16 +151,16 @@ func libp2p_start() {
 
 	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{H: h})
 	err = dns.Start()
-	fatal(err)
+	check(err)
 
 	gs, err := pubsub.NewGossipSub(libp2p_context, h)
-	fatal(err)
+	check(err)
 	for _, ps := range app_pubsubs {
 		t, err := gs.Join(ps.Topic)
-		fatal(err)
+		check(err)
 		libp2p_topics[ps.Topic] = t
 		s, err := t.Subscribe()
-		fatal(err)
+		check(err)
 		go libp2p_pubsub_listen(s)
 
 		if ps.Publish != nil {

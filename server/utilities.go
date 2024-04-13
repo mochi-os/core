@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"math/big"
-	"os"
 	"regexp"
 	"strconv"
 	"time"
@@ -51,15 +50,14 @@ func base64_encode(b []byte) string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func error_message(message string, values ...any) error {
-	return errors.New(fmt.Sprintf(message, values...))
+func check(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
-func fatal(err error) {
-	if err != nil {
-		log_error(err.Error())
-		os.Exit(1)
-	}
+func error_message(message string, values ...any) error {
+	return errors.New(fmt.Sprintf(message, values...))
 }
 
 func fingerprint(in string) string {
@@ -74,7 +72,7 @@ func random_alphanumeric(length int) string {
 	l := big.NewInt(int64(len(alphanumeric)))
 	for i := range out {
 		index, err := rand.Int(rand.Reader, l)
-		fatal(err)
+		check(err)
 		out[i] = rune(alphanumeric[index.Int64()])
 	}
 	return string(out)
@@ -92,7 +90,7 @@ func time_unix() int64 {
 
 func uid() string {
 	u, err := uuid.NewV7()
-	fatal(err)
+	check(err)
 	return match_hyphens.ReplaceAllLiteralString(u.String(), "")
 }
 
@@ -126,7 +124,7 @@ func valid(s string, match string) bool {
 	}
 
 	m, err := regexp.MatchString(match, s)
-	fatal(err)
+	check(err)
 	if !m {
 		return false
 	}

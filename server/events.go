@@ -11,6 +11,7 @@ import (
 
 type Event struct {
 	ID        string `json:"id"`
+	Source    string
 	From      string `json:"from"`
 	To        string `json:"to"`
 	App       string `json:"app"`
@@ -33,12 +34,14 @@ func event(u *User, to string, app string, entity string, action string, content
 	if u != nil {
 		from = u.Public
 	}
-	e := Event{ID: uid(), From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
+	e := Event{ID: uid(), Source: "", From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
 	method, location, queue_method, queue_location := user_location(e.To)
-	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
+	if method != "none" {
+		log_debug("Sending event '%#v' to %s '%s'", e, method, location)
+	}
 
 	if method == "local" {
-		go event_receive(&e, false)
+		go event_receive(&e)
 		return &e
 	}
 
@@ -52,7 +55,7 @@ func event(u *User, to string, app string, entity string, action string, content
 	}
 
 	j, err := json.Marshal(e)
-	fatal(err)
+	check(err)
 
 	if method == "libp2p" && libp2p_send(location, j) {
 		return &e
@@ -78,7 +81,7 @@ func events_check_queue(method string, location string) {
 		if q.Method == "peer" {
 			var p Peer
 			if db_struct(&p, "peers", "select address from peers where id=?", q.Location) {
-				if libp2p_send(p.Address, []byte(q.Event)) {
+				if peer_send(p.Address, []byte(q.Event)) {
 					success = true
 				}
 			}
@@ -99,10 +102,10 @@ func events_check_queue(method string, location string) {
 	}
 }
 
-func event_receive(e *Event, external bool) {
+func event_receive(e *Event) {
 	//log_debug("Event received: id='%s', from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.App, e.Entity, e.Action, e.Content, e.Signature)
 
-	if external && e.From != "" {
+	if e.Source != "" && e.From != "" {
 		public := base64_decode(e.From, "")
 		if len(public) != ed25519.PublicKeySize {
 			log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
@@ -161,14 +164,15 @@ func event_receive(e *Event, external bool) {
 	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
 }
 
-func event_receive_json(event []byte, external bool) {
+func event_receive_json(event []byte, source string) {
 	var e Event
 	err := json.Unmarshal(event, &e)
 	if err != nil {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}
-	event_receive(&e, external)
+	e.Source = source
+	event_receive(&e)
 }
 
 func queue_manager() {

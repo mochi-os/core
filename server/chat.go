@@ -54,7 +54,7 @@ func chat_view(u *User, action string, format string, p app_parameters) string {
 	if c == nil {
 		c = object_create(u, "chat", "friend", f.Name, f.Name)
 		if c == nil {
-			return "Unable to creat chat"
+			return "Unable to create chat"
 		}
 	} else {
 		object_touch(u, c.ID)

@@ -10,7 +10,6 @@
 	HTTPS using Letsencrypt
 	Client API
 	Command line client
-	Broadcasts between apps within a user
 	Users can set public URLs to publish data
 	Wiki app
 

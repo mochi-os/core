@@ -86,6 +86,8 @@ func friend_accept(u *User, friend string) {
 		event(u, friend, "friends", "", "cancel", "")
 		object_delete_by_id(u, i.ID)
 	}
+
+	broadcast(u, "friends", "accept", friend, "")
 }
 
 // Create new friend
@@ -120,6 +122,7 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 		event(u, friend, "friends", "", "invite", u.Name)
 	}
 
+	broadcast(u, "friends", "create", friend, "")
 	return nil
 }
 
@@ -140,6 +143,7 @@ func friend_delete(u *User, friend string) {
 	}
 
 	object_delete_by_name(u, "friends", "friend", friend)
+	broadcast(u, "friends", "delete", friend, "")
 }
 
 // Remote party accepted our invitation
@@ -149,6 +153,7 @@ func friends_event_accept(u *User, e *Event) {
 		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
 		object_delete_by_id(u, i.ID)
 	}
+	broadcast(u, "friends", "accepted", e.From, "")
 }
 
 // Remote party cancelled their existing invitation
@@ -157,6 +162,7 @@ func friends_event_cancel(u *User, e *Event) {
 	if i != nil {
 		object_delete_by_id(u, i.ID)
 	}
+	broadcast(u, "friends", "cancelled", e.From, "")
 }
 
 // Remote party sent us a new invitation
@@ -172,6 +178,7 @@ func friends_event_invite(u *User, e *Event) {
 			object_value_set(u, i.ID, "name", e.Content)
 		}
 	}
+	broadcast(u, "friends", "invited", e.From, "")
 }
 
 // Ignore a friend invitation
@@ -180,6 +187,7 @@ func friend_ignore(u *User, friend string) {
 	if i != nil {
 		object_delete_by_id(u, i.ID)
 	}
+	broadcast(u, "friends", "ignore", friend, "")
 }
 
 // Get a friend

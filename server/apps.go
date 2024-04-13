@@ -134,6 +134,19 @@ func app_register_action(name string, action string, f func(*User, string, strin
 	a.Internal.Actions[action] = f
 }
 
+// Register broadcast receiver for internal app
+func app_register_broadcast(name string, sender string, action string, f func(*User, string, string, string, string)) {
+	log_debug("App register broadcast: name='%s', sender='%s', action='%s'", name, sender, action)
+	s, found := broadcasts_by_sender[sender]
+	if found {
+		s[action] = f
+	} else {
+		s = make(broadcast_map)
+		s[action] = f
+		broadcasts_by_sender[sender] = s
+	}
+}
+
 // Register event for internal app
 func app_register_event(name string, action string, f func(*User, *Event)) {
 	//log_debug("App register event: name='%s', action='%s'", name, action)

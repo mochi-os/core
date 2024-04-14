@@ -98,8 +98,8 @@ func libp2p_read(r *bufio.Reader, peer string) {
 }
 
 // Send a message to an address
-func libp2p_send(address string, content []byte) bool {
-	log_debug("Sending '%s' to '%s' via libp2p", string(content), address)
+func libp2p_send(address string, content string) bool {
+	log_debug("Sending '%s' to '%s' via libp2p", content, address)
 
 	info, err := peer.AddrInfoFromString(address)
 	if err != nil {
@@ -113,7 +113,7 @@ func libp2p_send(address string, content []byte) bool {
 	}
 	w := bufio.NewWriter(bufio.NewWriter(s))
 	log_debug("Writing event")
-	w.Write(content)
+	w.WriteString(content)
 	w.WriteRune('\n')
 	w.Flush()
 	log_debug("Event sent")

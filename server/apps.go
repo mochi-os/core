@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"html/template"
 )
@@ -217,9 +216,8 @@ func apps_start() {
 				continue
 			}
 			var a App
-			err := json.Unmarshal(file_read(base+"/manifest.json"), &a)
-			if err != nil {
-				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app: %s", base, err)
+			if !json_decode(file_read(base+"/manifest.json"), &a) {
+				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
 				continue
 			}
 			a.ID = id

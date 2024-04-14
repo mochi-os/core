@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"github.com/wasmerio/wasmer-go/wasmer"
 	"os"
@@ -101,13 +100,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 		return "", error_message("WASM unable to find function '%s': %s", function, err)
 	}
 	go wasm_invoke(f, out, wasm_invoke_id)
-
-	ji, err := json.Marshal(input)
-	if err != nil {
-		log_warn("WASM unable to marshal JSON for app input: %s", err)
-		return "", error_message("WASM unable to marshal JSON for app input: %s", err)
-	}
-	wasm_write(w, string(ji))
+	wasm_write(w, json_encode(input))
 
 	var run_return string
 	for {
@@ -130,7 +123,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 			log_debug("WASM app asked for a service")
 			splits := strings.SplitN(output, " ", 3)
 			if len(splits) >= 2 {
-				var service_return []byte
+				var service_return string
 				var err error
 				if len(splits) > 2 {
 					service_return, err = service_json(u, splits[0], splits[1], depth+1, splits[2])

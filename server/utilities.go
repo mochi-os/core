@@ -8,6 +8,7 @@ import (
 	sha "crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
@@ -65,6 +66,20 @@ func fingerprint(in string) string {
 	s.Write([]byte(in))
 	b64 := base64_encode(s.Sum(nil))
 	return b64[0:10]
+}
+
+func json_decode(in any, out any) bool {
+	err := json.Unmarshal(in.([]byte), out)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
+func json_encode(in any) string {
+	j, err := json.Marshal(in)
+	check(err)
+	return string(j)
 }
 
 func random_alphanumeric(length int) string {

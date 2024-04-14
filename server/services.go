@@ -3,10 +3,6 @@
 
 package main
 
-import (
-	"encoding/json"
-)
-
 func service(u *User, app string, s string, parameters ...any) {
 	log_debug("Service call: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
 
@@ -73,8 +69,7 @@ func service_generic[T any](u *User, app string, s string, parameters ...any) (*
 					log_info("Service returned error: %s", err)
 					return &out, err
 				}
-				err = json.Unmarshal([]byte(jo), &out)
-				if err != nil {
+				if !json_decode(jo, &out) {
 					log_info("Unable to parse JSON from service: %s", err)
 					return &out, err
 				}
@@ -87,18 +82,18 @@ func service_generic[T any](u *User, app string, s string, parameters ...any) (*
 	return &out, nil
 }
 
-func service_json(u *User, app string, s string, depth int, parameters ...any) ([]byte, error) {
+func service_json(u *User, app string, s string, depth int, parameters ...any) (string, error) {
 	log_debug("Service call JSON: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
 
 	if depth > 1000 {
 		log_warn("Service recursion detected; stopping at 1000 iterations")
-		return []byte{}, error_message("Service recursion detected; stopping at 1000 iterations")
+		return "", error_message("Service recursion detected; stopping at 1000 iterations")
 	}
 
 	a := apps_by_name[app]
 	if a == nil {
 		log_info("Service call to unknown app '%s'", app)
-		return []byte{}, error_message("Service call to unknown app '%s'", app)
+		return "", error_message("Service call to unknown app '%s'", app)
 	}
 
 	switch a.Type {
@@ -106,13 +101,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		for _, try := range []string{s, ""} {
 			f, found := a.Internal.Services[try]
 			if found {
-				out := f(u, s, parameters...)
-				jo, err := json.Marshal(out)
-				if err != nil {
-					log_warn("Unable to marshal app return data: %s", err)
-					return jo, error_message("Unable to marshal app return data: %s", err)
-				}
-				return jo, nil
+				return json_encode(f(u, s, parameters...)), nil
 			}
 		}
 
@@ -123,13 +112,13 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 				jo, err := wasm_run(u, a, function, depth, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
-					return []byte{}, err
+					return "", err
 				}
-				return []byte(jo), nil
+				return jo, nil
 			}
 		}
 	}
 
 	log_info("Call to app '%s' without handler for service '%s'", app, s)
-	return []byte{}, nil
+	return "", nil
 }

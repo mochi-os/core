@@ -4,7 +4,6 @@
 package main
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -39,8 +38,7 @@ func directory_delete(id string) {
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
 func directory_download() {
 	time.Sleep(10 * time.Second)
-	j, err := json.Marshal(event(nil, "", "directory", libp2p_id, "download", ""))
-	check(err)
+	j := json_encode(event(nil, "", "directory", libp2p_id, "download", ""))
 	for _, peer := range peers_known {
 		log_debug("Requesting directory download from peer '%s'", peer)
 		peer_send(peer, j)
@@ -55,11 +53,7 @@ func directory_event_download(u *User, e *Event) {
 	var results []Directory
 	db_structs(&results, "directory", "select * from directory order by id")
 	for _, d := range results {
-		jd, err := json.Marshal(d)
-		check(err)
-		je, err := json.Marshal(event(u, "", "directory", "", "publish", string(jd)))
-		check(err)
-		peer_send(e.Source, je)
+		peer_send(e.Source, json_encode(event(u, "", "directory", "", "publish", json_encode(d))))
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -77,9 +71,8 @@ func directory_event_request(u *User, e *Event) {
 func directory_event_publish(u *User, e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
-	err := json.Unmarshal([]byte(e.Content), &d)
-	if err != nil {
-		log_info("Dropping directory event with malformed directory JSON '%s': %s", e.Content, err.Error())
+	if !json_decode(e.Content, &d) {
+		log_info("Dropping directory event with malformed directory JSON '%s'", e.Content)
 		return
 	}
 	if e.From == "" {
@@ -106,19 +99,12 @@ func directory_event_publish(u *User, e *Event) {
 
 // Publish a directory entry on the libp2p pubsub
 func directory_publish(u *User) {
-	jd, err := json.Marshal(map[string]string{"id": u.Public, "name": u.Name, "class": "person", "location": libp2p_id})
-	check(err)
-	je, err := json.Marshal(event(u, "", "directory", "", "publish", string(jd)))
-	check(err)
-	libp2p_topics["directory"].Publish(libp2p_context, je)
+	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(event(u, "", "directory", "", "publish", json_encode(map[string]string{"id": u.Public, "name": u.Name, "class": "person", "location": libp2p_id})))))
 }
 
 // Request that another server publish a directory event
 func directory_request(user string) {
-	log_debug("Requesting directory user '%s' via pubsub", user)
-	j, err := json.Marshal(event(nil, "", "directory", "", "request", user))
-	check(err)
-	libp2p_topics["directory"].Publish(libp2p_context, j)
+	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(event(nil, "", "directory", "", "request", user))))
 }
 
 // Search the directory

@@ -5,7 +5,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/json"
 	"time"
 )
 
@@ -54,8 +53,7 @@ func event(u *User, to string, app string, entity string, action string, content
 		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
 	}
 
-	j, err := json.Marshal(e)
-	check(err)
+	j := json_encode(e)
 
 	if method == "libp2p" && libp2p_send(location, j) {
 		return &e
@@ -81,14 +79,14 @@ func events_check_queue(method string, location string) {
 		if q.Method == "peer" {
 			var p Peer
 			if db_struct(&p, "peers", "select address from peers where id=?", q.Location) {
-				if peer_send(p.Address, []byte(q.Event)) {
+				if peer_send(p.Address, q.Event) {
 					success = true
 				}
 			}
 
 		} else if q.Method == "user" {
 			method, location, _, _ := user_location(location)
-			if method == "libp2p" && libp2p_send(location, []byte(q.Event)) {
+			if method == "libp2p" && libp2p_send(location, q.Event) {
 				success = true
 			}
 		}
@@ -166,8 +164,7 @@ func event_receive(e *Event) {
 
 func event_receive_json(event []byte, source string) {
 	var e Event
-	err := json.Unmarshal(event, &e)
-	if err != nil {
+	if !json_decode(event, &e) {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}

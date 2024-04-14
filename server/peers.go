@@ -4,7 +4,6 @@
 package main
 
 import (
-	"encoding/json"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"strings"
 	"time"
@@ -117,22 +116,17 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		j, err := json.Marshal(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})
-		check(err)
-		t.Publish(libp2p_context, j)
+		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})))
 	}
 }
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	log_debug("Requesting peer '%s' via pubsub", peer)
-	j, err := json.Marshal(event(nil, "", "peers", "", "request", peer))
-	check(err)
-	libp2p_topics["peers"].Publish(libp2p_context, j)
+	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(event(nil, "", "peers", "", "request", peer))))
 }
 
 // Send a message to a peer
-func peer_send(peer string, content []byte) bool {
+func peer_send(peer string, content string) bool {
 	address := peer_address(peer)
 	if address != "" {
 		return libp2p_send(address, content)

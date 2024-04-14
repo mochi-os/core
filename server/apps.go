@@ -134,15 +134,18 @@ func app_register_action(name string, action string, f func(*User, string, strin
 }
 
 // Register broadcast receiver for internal app
-func app_register_broadcast(name string, sender string, action string, f func(*User, string, string, string, string)) {
+func app_register_broadcast(name string, sender string, action string, f func(*User, string, string, string, any)) {
 	log_debug("App register broadcast: name='%s', sender='%s', action='%s'", name, sender, action)
-	s, found := broadcasts_by_sender[sender]
-	if found {
-		s[action] = f
+	s, sender_found := broadcasts_by_sender[sender]
+	if sender_found {
+		_, action_found := s[action]
+		if action_found {
+			s[action] = append(s[action], f)
+		} else {
+			s[action] = broadcast_action_functions{f}
+		}
 	} else {
-		s = make(broadcast_map)
-		s[action] = f
-		broadcasts_by_sender[sender] = s
+		broadcasts_by_sender[sender] = broadcast_actions{action: broadcast_action_functions{f}}
 	}
 }
 

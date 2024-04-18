@@ -68,8 +68,8 @@ func fingerprint(in string) string {
 	return b64[0:10]
 }
 
-func json_decode(in any, out any) bool {
-	err := json.Unmarshal(in.([]byte), out)
+func json_decode(in []byte, out any) bool {
+	err := json.Unmarshal(in, out)
 	if err != nil {
 		return false
 	}
@@ -101,6 +101,10 @@ func sha1(in []byte) string {
 
 func time_unix() int64 {
 	return time.Now().Unix()
+}
+
+func time_unix_string() string {
+	return strconv.FormatInt(time.Now().Unix(), 10)
 }
 
 func uid() string {

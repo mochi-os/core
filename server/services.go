@@ -69,7 +69,7 @@ func service_generic[T any](u *User, app string, s string, parameters ...any) (*
 					log_info("Service returned error: %s", err)
 					return &out, err
 				}
-				if !json_decode(jo, &out) {
+				if !json_decode([]byte(jo), &out) {
 					log_info("Unable to parse JSON from service: %s", err)
 					return &out, err
 				}

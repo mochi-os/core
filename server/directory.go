@@ -9,11 +9,11 @@ import (
 
 type Directory struct {
 	ID          string `json:"id"`
-	Fingerprint string
+	Fingerprint string `json:"fingerprint"`
 	Name        string `json:"name"`
 	Class       string `json:"class"`
 	Location    string `json:"location"`
-	Updated     int
+	Updated     int    `json:"updated"`
 }
 
 func init() {
@@ -39,9 +39,11 @@ func directory_delete(id string) {
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	j := json_encode(event(nil, "", "directory", libp2p_id, "download", ""))
-	for _, peer := range peers_known {
-		log_debug("Requesting directory download from peer '%s'", peer)
-		peer_send(peer, j)
+	for peer, _ := range peers_known {
+		if peer != libp2p_id {
+			log_debug("Requesting directory download from peer '%s'", peer)
+			peer_send(peer, j)
+		}
 	}
 }
 
@@ -71,14 +73,14 @@ func directory_event_request(u *User, e *Event) {
 func directory_event_publish(u *User, e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
-	if !json_decode(e.Content, &d) {
-		log_info("Dropping directory event with malformed directory JSON '%s'", e.Content)
+	if !json_decode([]byte(e.Content), &d) {
+		log_info("Dropping directory event '%s' with malformed JSON", e.Content)
 		return
 	}
 	if e.From == "" {
 		found := false
-		for _, known := range peers_known {
-			if e.Source == known {
+		for peer, _ := range peers_known {
+			if e.Source == peer {
 				found = true
 				break
 			}
@@ -108,8 +110,12 @@ func directory_request(user string) {
 }
 
 // Search the directory
-func directory_search(search string) *[]Directory {
+func directory_search(u *User, search string, include_self bool) *[]Directory {
 	var d []Directory
-	db_structs(&d, "directory", "select * from directory where name like ? order by name", "%"+search+"%")
+	if u == nil || include_self {
+		db_structs(&d, "directory", "select * from directory where name like ? order by name", "%"+search+"%")
+	} else {
+		db_structs(&d, "directory", "select * from directory where name like ? and id!=? order by name", "%"+search+"%", u.Public)
+	}
 	return &d
 }

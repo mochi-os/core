@@ -64,7 +64,7 @@ func friends_action_search(u *User, action string, format string, p app_paramete
 	if search == "" {
 		return "No search terms entered"
 	}
-	return app_template("friends/"+format+"/search", directory_search(search))
+	return app_template("friends/"+format+"/search", directory_search(u, search, false))
 }
 
 // Accept a friend's invitation
@@ -75,7 +75,7 @@ func friend_accept(u *User, friend string) {
 	}
 	f := object_by_name(u, "friends", "friend", friend)
 	if f == nil {
-		friend_create(u, friend, i.Name, "person", false)
+		friend_create(u, friend, i.Label, "person", false)
 	}
 	event(u, friend, "friends", "", "accept", "")
 	object_delete_by_id(u, i.ID)
@@ -150,7 +150,7 @@ func friend_delete(u *User, friend string) {
 func friends_event_accept(u *User, e *Event) {
 	i := object_by_name(u, "friends", "invite/to", e.From)
 	if i != nil {
-		service(u, "notification", "create", e.From, object_value_get(u, i.ID, "name", "Unknown person")+" accepted your friend invitation", "/friends/")
+		service(u, "notifications", "create", i.ID, i.Label+" accepted your friend invitation", "/friends/")
 		object_delete_by_id(u, i.ID)
 	}
 	broadcast(u, "friends", "accepted", e.From, nil)

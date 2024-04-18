@@ -25,7 +25,6 @@ type mdns_notifee struct {
 	H host.Host
 }
 
-var libp2p_known_addresses = []string{"/ip4/145.239.9.209/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"}
 var libp2p_listen string
 var libp2p_port int
 var libp2p_address string
@@ -170,9 +169,9 @@ func libp2p_start() {
 
 	peers_add_from_db(10)
 
-	for _, address := range libp2p_known_addresses {
-		if address != libp2p_id {
-			peer_add(address, true)
+	for peer, location := range peers_known {
+		if peer != libp2p_id {
+			peer_add(location+"/p2p/"+peer, true)
 		}
 	}
 }

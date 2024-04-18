@@ -32,8 +32,13 @@ func notification_create(u *User, service string, values ...any) any {
 	link := values[2].(string)
 	log_debug("Creating notification: user='%d', object='%s', content='%s', link='%s'", u.ID, object, content, link)
 
-	if object_by_id(u, object) == nil || !valid(content, "text") || !valid(link, "url") {
-		return ""
+	if object_by_id(u, object) == nil {
+		log_info("Notification object not found")
+		return nil
+	}
+	if !valid(content, "text") || !valid(link, "url") {
+		log_info("Notification data not valid")
+		return nil
 	}
 
 	n := object_by_name(u, "notifications", "notification", object)

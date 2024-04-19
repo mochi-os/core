@@ -93,15 +93,8 @@ func peers_manager() {
 			peers_connected[p.ID] = p
 			db_exec("peers", "update peers set updated=? where id=?", p.Updated, p.ID)
 
-		} else {
-			// New peer, peer not seen since we started, or peer changed address
-			if p.Connect {
-				err := libp2p_connect(p.Address)
-				if err != nil {
-					log_info(err.Error())
-					continue
-				}
-			}
+		} else if p.Connect && libp2p_connect(p.Address) {
+			// New peer
 			peers_connected[p.ID] = p
 			db_exec("peers", "replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 			go events_check_queue("peer", p.ID)

@@ -23,14 +23,10 @@ func main() {
 	libp2p_start()
 	go queue_manager()
 	go users_manager()
-	log_info("Web listening on ':%d'", web_port)
 	go web_start()
-
 	if new_install {
 		go directory_download()
 	}
 
-	log_info("Ready")
 	select {}
-	log_info("Terminating")
 }

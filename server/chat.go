@@ -20,7 +20,7 @@ func chat_list(u *User, action string, format string, p app_parameters) string {
 
 // Received a chat event from another user
 func chat_message_receive(u *User, e *Event) {
-	//TODO Fix pointers
+	//TODO Sort out pointers
 	fp, _ := service_generic[*Object](u, "friends", "get", e.From)
 	f := *fp
 	if f == nil {
@@ -54,13 +54,14 @@ func chat_message_receive(u *User, e *Event) {
 
 // Ask user who they'd like to chat with
 func chat_new(u *User, action string, format string, p app_parameters) string {
+	//TODO Sort out pointers
 	friends, _ := service_generic[*[]Object](u, "friends", "list")
 	return app_template("chat/"+format+"/new", friends)
 }
 
 // View a chat
 func chat_view(u *User, action string, format string, p app_parameters) string {
-	//TODO Fix pointers
+	//TODO Sort out pointers
 	fp, _ := service_generic[*Object](u, "friends", "get", app_parameter(p, "friend", ""))
 	f := *fp
 	if f == nil {

@@ -174,6 +174,7 @@ func web_start() {
 	http.HandleFunc("/", web_home)
 	http.HandleFunc("/login/", web_login)
 	http.HandleFunc("/login/name/", web_name)
+	log_info("Web listening on ':%d'", web_port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
 	check(err)
 }

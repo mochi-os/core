@@ -42,6 +42,7 @@ var apps_by_name = map[string]*App{}
 var apps_by_path = map[string]*App{}
 var app_pubsubs = map[string]*AppPubSub{}
 
+/* Not used for now
 func init() {
 	app_register("apps", map[string]string{"en": "Apps"})
 	app_register_action("apps", "", apps_action_list)
@@ -70,7 +71,7 @@ func apps_action_list(u *User, action string, format string, p app_parameters) s
 // New app selector
 func apps_action_new(u *User, action string, format string, p app_parameters) string {
 	return app_template("apps/" + format + "/new")
-}
+} */
 
 func app_display(u *User, app string, action string, format string, parameters app_parameters) (string, error) {
 	//log_debug("Displaying app: user='%d', app='%s', action='%s', format='%s', parameters='%#v'", u.ID, app, action, format, parameters)

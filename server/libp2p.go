@@ -36,31 +36,33 @@ var libp2p_topics = map[string]*pubsub.Topic{}
 // Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		//log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_add(pa.String()+"/p2p/"+p.ID.String(), true)
 	}
 }
 
 // Connect to a peer
-func libp2p_connect(address string) error {
+func libp2p_connect(address string) bool {
 	info, err := peer.AddrInfoFromString(address)
 	if err != nil {
-		return error_message("Invalid peer address when connecting '%s': %s", address, err)
+		log_warn("libp2p invalid peer address '%s': %s", address, err)
+		return false
 	}
-	log_debug("Connecting to peer at '%s'", address)
+	log_debug("libp2p connecting to '%s'", address)
 	err = libp2p_host.Connect(context.Background(), *info)
 	if err != nil {
-		return error_message("Error connecting to peer at '%s': %s", address, err)
+		log_info("libp2p error connecting to '%s': %s", address, err)
+		return false
 	}
-	log_debug("Connected to peer at '%s'", address)
-	return nil
+	log_debug("libp2p connected to '%s'", address)
+	return true
 }
 
 // Peer connected to us
 func libp2p_handle(s network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + s.Conn().RemotePeer().String()
-	log_debug("Peer connected from libp2p '%s'", address)
+	log_debug("libp2p peer connected from '%s'", address)
 	peer_add(address, false)
 	r := bufio.NewReader(bufio.NewReader(s))
 	go libp2p_read(r, peer)
@@ -73,7 +75,7 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 		check(err)
 		peer := m.ReceivedFrom.String()
 		if peer != libp2p_id {
-			log_debug("Received event from pubsub: %s", string(m.Data))
+			log_debug("libp2p received pubsub event: %s", string(m.Data))
 			event_receive_json(m.Data, peer)
 		}
 	}
@@ -81,16 +83,16 @@ func libp2p_pubsub_listen(s *pubsub.Subscription) {
 
 // Read from a connected peer
 func libp2p_read(r *bufio.Reader, peer string) {
-	log_debug("Reading events from new peer '%s'", peer)
+	log_debug("libp2p reading events from new peer '%s'", peer)
 	for {
 		in, err := r.ReadString('\n')
 		if err != nil {
-			log_info("Error reading from peer: %s", err)
+			log_info("libp2p error reading from peer: %s", err)
 			return
 		}
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
-			log_debug("Received event from peer: %s", in)
+			log_debug("libp2p received event from peer: %s", in)
 			event_receive_json([]byte(in), peer)
 		}
 	}
@@ -98,24 +100,24 @@ func libp2p_read(r *bufio.Reader, peer string) {
 
 // Send a message to an address
 func libp2p_send(address string, content string) bool {
-	log_debug("Sending '%s' to '%s' via libp2p", content, address)
+	log_debug("libp2p sending '%s' to '%s'", content, address)
 
 	info, err := peer.AddrInfoFromString(address)
 	if err != nil {
-		log_warn("Invalid peer address when sending '%s': %s", address, err)
+		log_warn("libp2p invalid peer address when sending '%s': %s", address, err)
 		return false
 	}
 	s, err := libp2p_host.NewStream(context.Background(), info.ID, "/comms/1.0.0")
 	if err != nil {
-		log_warn("Unable to create libp2p stream to '%s': %s'", address, err)
+		log_warn("libp2p unable to create stream to '%s': %s'", address, err)
 		return false
 	}
 	w := bufio.NewWriter(bufio.NewWriter(s))
-	log_debug("Writing event")
+	log_debug("libp2p writing event")
 	w.WriteString(content)
 	w.WriteRune('\n')
 	w.Flush()
-	log_debug("Event sent")
+	log_debug("libp2p event sent")
 	return true
 }
 

@@ -23,7 +23,7 @@ var web_port int
 var websockets = map[int]map[string]*websocket.Conn{}
 
 func web_auth(w http.ResponseWriter, r *http.Request) *User {
-	login := web_cookie_get(r, "login", "KHl6EF6nVrbmYYfFmL5O")
+	login := web_cookie_get(r, "login", "")
 	if login == "" {
 		web_template(w, "login/email")
 		return nil
@@ -181,7 +181,7 @@ func web_start() {
 	http.HandleFunc("/", web_home)
 	http.HandleFunc("/login/", web_login)
 	http.HandleFunc("/login/name/", web_name)
-	http.HandleFunc("/websocket/", websocket_connect)
+	http.HandleFunc("/websocket/", websocket_connection)
 	log_info("Web listening on ':%d'", web_port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
 	check(err)
@@ -205,7 +205,7 @@ func web_template(w http.ResponseWriter, file string, values ...any) {
 	}
 }
 
-func websocket_connect(w http.ResponseWriter, r *http.Request) {
+func websocket_connection(w http.ResponseWriter, r *http.Request) {
 	log_debug("Websocket new connection")
 	u := web_auth(w, r)
 	if u == nil {

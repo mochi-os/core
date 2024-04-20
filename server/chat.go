@@ -49,6 +49,7 @@ func chat_message_receive(u *User, e *Event) {
 
 	j := json_encode(map[string]string{"from": e.From, "name": f.Label, "time": time_unix_string(), "body": body})
 	object_value_append(u, c.ID, "messages", "\n"+j)
+	websockets_send(u, "chat", j)
 	service(u, "notifications", "create", c.ID, f.Label+": "+body, "/chat/view/?friend="+f.Name)
 }
 
@@ -86,6 +87,7 @@ func chat_view(u *User, action string, format string, p app_parameters) string {
 		j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
 		object_value_append(u, c.ID, "messages", "\n"+j)
 		messages = messages + "\n" + j
+		websockets_send(u, "chat", j)
 	}
 
 	return app_template("chat/"+format+"/view", map[string]any{"Friend": f, "Messages": messages})

@@ -1,10 +1,34 @@
-<h2>Chat with {{.Friend.Label}}</h2>
+<p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | Chat with {{.Friend.Label}}</p>
 
-<pre>{{.Messages}}</pre>
+<p id="messages">{{.Messages}}</p>
+<input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
+<input type="button" value="Send" onclick="send()"/>
 
-<form action="/chat/view/">
-	<input type="hidden" name="friend" value="{{.Friend.Name}}"/>
-	<label for="message">Send message:</label>
-	<input type="text" name="message" autofocus/>
-	<input type="submit" value="Send"/>
-</form>
+<script>
+const ws = new WebSocket( 'ws://' + window.location.host + '/websocket/' );
+window.scrollTo( 0, document.body.scrollHeight );
+
+ws.addEventListener( 'message', (event) => {
+  const m = JSON.parse(event.data);
+  const c = JSON.parse(m.content);
+  const messages = document.getElementById( 'messages' );
+  messages.innerHTML = messages.innerHTML + '<br/>';
+  messages.innerText = messages.innerText + c.name + ': ' + c.body
+  window.scrollTo( 0, document.body.scrollHeight );
+});
+
+function keypress( event ) {
+	if ( event.key === 'Enter') {
+		event.preventDefault();
+		send();
+	}
+}
+
+function send( to ) {
+	const b = new URLSearchParams();
+	b.append( 'friend', '{{.Friend.Name}}' );
+	b.append( 'message', document.getElementById('message').value );
+	fetch( window.location.origin + '/chat/send/', { method: 'post', body: b });
+	document.getElementById( 'message' ).value = '';
+}
+</script>

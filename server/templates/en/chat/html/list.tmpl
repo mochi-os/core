@@ -1,4 +1,4 @@
-<h2>Chats</h2>
+<p class="header"><a href="/">Home</a> | Chat</p>
 
 <p>{{if len .}}{{range .}}<a href="/chat/view/?friend={{.Name}}">Chat with {{.Label}}</a><br/>{{end}}
 {{else}}You have no chats{{end}}</p>

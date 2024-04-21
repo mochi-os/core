@@ -1,4 +1,4 @@
-<h2>Your friends</h2>
+<p class="header"><a href="/">Home</a> | Friends</p>
 
 <p>{{if len .Friends}}{{range .Friends}}<p>{{.Label}} | <a href="/friends/delete/?id={{.Name}}">Delete</a><br/>{{end}}
 {{else}}You have no friends.{{end}}</p>

@@ -6,10 +6,12 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
 func file_create(path string) {
+	file_mkdir(filepath.Dir(path))
 	f, err := os.Create(data_dir + "/" + path)
 	check(err)
 	f.Close()

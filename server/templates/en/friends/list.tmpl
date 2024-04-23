@@ -1,0 +1,10 @@
+<p class="header"><a href="/">Home</a> | Friends</p>
+
+<p>{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="/friends/delete/?id={{.ID}}">Delete</a><br/>{{end}}
+{{else}}You have no friends.{{end}}</p>
+
+<p><a href="/friends/new/">Add a new friend</a></p>
+
+{{if len .Invites}}<p>Or click on a received invitation:</p>
+
+<p>{{range .Invites}}{{.Name}} | <a href="/friends/accept/?id={{.ID}}">Accept</a> | <a href="/friends/ignore/?id={{.ID}}">Ignore</a><br/>{{end}}</p>{{end}}

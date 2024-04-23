@@ -10,12 +10,12 @@ type Setting struct {
 
 func setting_get(name string, def string) string {
 	var s Setting
-	if db_struct(&s, "settings", "select * from settings where name=?", name) {
+	if db_struct(&s, "db/settings.db", "select * from settings where name=?", name) {
 		return s.Value
 	}
 	return def
 }
 
 func setting_set(name string, value string) {
-	db_exec("settings", "replace into settings ( name, value ) values ( ?, ? )", name, value)
+	db_exec("db/settings.db", "replace into settings ( name, value ) values ( ?, ? )", name, value)
 }

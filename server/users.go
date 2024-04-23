@@ -38,24 +38,24 @@ func code_send(email string) bool {
 		return false
 	}
 	code := random_alphanumeric(12)
-	db_exec("users", "replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
+	db_exec("db/users.db", "replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
 	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	return true
 }
 
 func login_create(user int) string {
 	code := random_alphanumeric(20)
-	db_exec("users", "replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
+	db_exec("db/users.db", "replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
 	return code
 }
 
 func login_delete(code string) {
-	db_exec("users", "delete from logins where code=?", code)
+	db_exec("db/users.db", "delete from logins where code=?", code)
 }
 
 func user_by_id(id int) *User {
 	var u User
-	if db_struct(&u, "users", "select * from users where id=?", id) {
+	if db_struct(&u, "db/users.db", "select * from users where id=?", id) {
 		return &u
 	}
 	return nil
@@ -63,12 +63,12 @@ func user_by_id(id int) *User {
 
 func user_by_login(login string) *User {
 	var l Login
-	if !db_struct(&l, "users", "select * from logins where code=? and expires>=?", login, time_unix()) {
+	if !db_struct(&l, "db/users.db", "select * from logins where code=? and expires>=?", login, time_unix()) {
 		return nil
 	}
 
 	var u User
-	if db_struct(&u, "users", "select * from users where id=?", l.User) {
+	if db_struct(&u, "db/users.db", "select * from users where id=?", l.User) {
 		return &u
 	}
 
@@ -77,22 +77,22 @@ func user_by_login(login string) *User {
 
 func user_from_code(code string) *User {
 	var c Code
-	if !db_struct(&c, "users", "select * from codes where code=? and expires>=?", code, time_unix()) {
+	if !db_struct(&c, "db/users.db", "select * from codes where code=? and expires>=?", code, time_unix()) {
 		return nil
 	}
-	db_exec("users", "delete from codes where code=?", code)
+	db_exec("db/users.db", "delete from codes where code=?", code)
 
 	var u User
-	if db_struct(&u, "users", "select * from users where username=?", c.Username) {
+	if db_struct(&u, "db/users.db", "select * from users where username=?", c.Username) {
 		return &u
 	}
 
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	check(err)
 
-	db_exec("users", "replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
+	db_exec("db/users.db", "replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
 
-	if db_struct(&u, "users", "select * from users where username=?", c.Username) {
+	if db_struct(&u, "db/users.db", "select * from users where username=?", c.Username) {
 		return &u
 	}
 
@@ -108,13 +108,13 @@ func user_location(user string) (string, string, string, string) {
 
 	// Check if user is local
 	var u User
-	if db_struct(&u, "users", "select * from users where public=?", user) {
+	if db_struct(&u, "db/users.db", "select * from users where public=?", user) {
 		return "local", u.Public, "user", u.Public
 	}
 
 	// Check in directory
 	var d Directory
-	if db_struct(&d, "directory", "select location from directory where id=?", user) {
+	if db_struct(&d, "db/directory.db", "select location from directory where id=?", user) {
 		address := peer_address(d.Location)
 		if address != "" {
 			return "libp2p", address, "peer", d.Location
@@ -132,9 +132,9 @@ func users_manager() {
 	for {
 		time.Sleep(time.Minute)
 		var users []User
-		db_structs(&users, "users", "select * from users where published<?", time_unix()-30*86400)
+		db_structs(&users, "db/users.db", "select * from users where published<?", time_unix()-30*86400)
 		for _, u := range users {
-			db_exec("users", "update users set published=? where id=?", time_unix(), u.ID)
+			db_exec("db/users.db", "update users set published=? where id=?", time_unix(), u.ID)
 			directory_publish(&u)
 		}
 	}

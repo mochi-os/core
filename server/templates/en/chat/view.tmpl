@@ -1,6 +1,6 @@
-<p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | Chat with {{.Friend.Label}}</p>
+<p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
 
-<p id="messages">{{.Messages}}</p>
+<p id="messages"/>
 <input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
 <input type="button" value="Send" onclick="send()"/>
 
@@ -26,7 +26,7 @@ function keypress( event ) {
 
 function send( to ) {
 	const b = new URLSearchParams();
-	b.append( 'friend', '{{.Friend.Name}}' );
+	b.append( 'friend', '{{.Friend}}' );
 	b.append( 'message', document.getElementById('message').value );
 	fetch( window.location.origin + '/chat/send/', { method: 'post', body: b });
 	document.getElementById( 'message' ).value = '';

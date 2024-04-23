@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
+	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl
 	templates embed.FS
 )
 
@@ -167,7 +167,7 @@ func web_name(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.Name = name
-	db_exec("users", "update users set name=? where id=?", name, u.ID)
+	db_exec("db/users.db", "update users set name=? where id=?", name, u.ID)
 	directory_create(u)
 	directory_publish(u)
 	web_redirect(w, "/")

@@ -1,30 +1,47 @@
 <p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
 
-<p id="messages"/>
+<p id="messages"></p>
 <input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
-<input type="button" value="Send" onclick="send()"/>
+<input type="button" value="Send" onclick="message_send()"/>
 
 <script>
+const r = new XMLHttpRequest();
+r.onload = function() { messages_receive(this.responseText) }
+r.open("GET", "/chat/messages/?friend={{.Friend}}");
+r.send();
 const ws = new WebSocket( 'ws://' + window.location.host + '/websocket/' );
-window.scrollTo( 0, document.body.scrollHeight );
+ws.addEventListener( 'message', (event) => { message_receive( event.data ) } );
 
-ws.addEventListener( 'message', (event) => {
-  const m = JSON.parse(event.data);
-  const c = JSON.parse(m.content);
-  const messages = document.getElementById( 'messages' );
-  messages.innerHTML = messages.innerHTML + '<br/>';
-  messages.innerText = messages.innerText + c.name + ': ' + c.body
-  window.scrollTo( 0, document.body.scrollHeight );
-});
+function event_receive( e ) {
+	const m = JSON.parse( e )
+}
 
 function keypress( event ) {
 	if ( event.key === 'Enter') {
 		event.preventDefault();
-		send();
+		message_send();
 	}
 }
 
-function send( to ) {
+function message_receive( j ) {
+	const m = JSON.parse( j )
+	const c = JSON.parse( m.content );
+	const messages = document.getElementById( 'messages' );
+	messages.innerHTML = messages.innerHTML + '<br/>';
+	messages.innerText = messages.innerText + c.name + ': ' + c.body
+	window.scrollTo( 0, document.body.scrollHeight );
+}
+
+function messages_receive( j ) {
+	const messages = document.getElementById( 'messages' );
+	for ( c in JSON.parse( j ) ) { 
+		messages.innerHTML = messages.innerHTML + '<br/>';
+		messages.innerText = messages.innerText + c.name + ': ' + c.body
+	}
+	window.scrollTo( 0, document.body.scrollHeight );
+}
+
+function message_send( to ) {
 	const b = new URLSearchParams();
 	b.append( 'friend', '{{.Friend}}' );
 	b.append( 'message', document.getElementById('message').value );

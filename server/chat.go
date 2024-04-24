@@ -17,18 +17,19 @@ type ChatMember struct {
 }
 
 type ChatMessage struct {
-	ID   string
-	Chat string
-	Time int64
-	From string
-	Name string
-	Body string
+	ID     string `json:"id"`
+	Chat   string `json:"chat"`
+	Time   int64  `json:"time"`
+	Sender string `json:"from"`
+	Name   string `json:"name"`
+	Body   string `json:"body"`
 }
 
 func init() {
 	app_register("chat", map[string]string{"en": "Chat"})
 	app_register_action("chat", "", chat_list)
 	app_register_action("chat", "list", chat_list)
+	app_register_action("chat", "messages", chat_messages)
 	app_register_action("chat", "new", chat_new)
 	app_register_action("chat", "send", chat_send)
 	app_register_action("chat", "view", chat_view)
@@ -96,6 +97,20 @@ func chat_message_receive(u *User, e *Event) {
 	service(u, "notifications", "create", "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
 }
 
+// Send list of messages to client
+func chat_messages(u *User, action string, format string, p app_parameters) string {
+	db := db_app(u, "chat", "data.db", chat_db_create)
+	f := friend(u, app_parameter(p, "friend", ""))
+	if f == nil {
+		return "Friend not found"
+	}
+	c := chat_for_friend(u, f)
+
+	var m []ChatMessage
+	db_structs(&m, db, "select * from messages where chat=? order by id", c.ID)
+	return json_encode(m)
+}
+
 // Ask user who they'd like to chat with
 func chat_new(u *User, action string, format string, p app_parameters) string {
 	return app_template("chat/new", friends(u))
@@ -113,7 +128,7 @@ func chat_send(u *User, action string, format string, p app_parameters) string {
 
 	message := app_parameter(p, "message", "")
 	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
-	event(u, f.Name, "chat", "", "message", json_encode(map[string]string{"body": message}))
+	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message}))
 	j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
 	websockets_send(u, "chat", j)
 	return ""

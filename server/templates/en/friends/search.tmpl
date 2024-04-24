@@ -1,6 +1,10 @@
+{{define "title"}}Comms: Search for friends{{end}}
+{{template "head" .}}
 <p class="header"><a href="/">Home</a> | <a href="/friends/">Friends</a> | Friends found</p>
 
 {{if len .}}<p>Click on a friend to add them:</p>
 
 <p>{{range .}}<a href="/friends/create/?id={{.ID}}&name={{.Name}}">{{.Name}}</a><br/>{{end}}</p>
 {{else}}<p>No matches found.</p>{{end}}
+
+{{template "foot" .}}

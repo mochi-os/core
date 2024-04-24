@@ -3,10 +3,20 @@
 
 package main
 
+func register_service(name string, service string, f func(*User, string, ...any) any) {
+	//log_debug("App register service: name='%s', service='%s'", name, service)
+	a, found := apps[name]
+	if !found || a.Type != "internal" {
+		log_warn("register_service() called for non-installed or non-internal app '%s'", name)
+		return
+	}
+	a.Internal.Services[service] = f
+}
+
 func service(u *User, app string, s string, parameters ...any) {
 	log_debug("Service: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
 
-	a := apps_by_name[app]
+	a := apps[app]
 	if a == nil {
 		log_info("Service call to unknown app '%s'", app)
 		return
@@ -48,7 +58,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		return "", error_message("Service recursion detected; stopping at 1000 iterations")
 	}
 
-	a := apps_by_name[app]
+	a := apps[app]
 	if a == nil {
 		log_info("Service call to unknown app '%s'", app)
 		return "", error_message("Service call to unknown app '%s'", app)

@@ -1,3 +1,5 @@
+{{define "title"}}Comms: New friend{{end}}
+{{template "head" .}}
 <p class="header"><a href="/">Home</a> | <a href="/friends/">Friends</a> | New</p>
 
 <h3>Search for friends:</h3>
@@ -17,3 +19,5 @@
 	<input type="text" name="id"/><br/>
 	<input type="submit" value="Add friend"/>
 </form>
+
+{{template "foot" .}}

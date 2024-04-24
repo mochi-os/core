@@ -117,7 +117,7 @@ func event_receive(e *Event) {
 		return
 	}
 
-	a := apps_by_name[e.App]
+	a := apps[e.App]
 	if a == nil {
 		log_info("Dropping received event due to unknown app '%s'", e.App)
 		return
@@ -178,4 +178,14 @@ func queue_manager() {
 			events_check_queue(q.Method, q.Location)
 		}
 	}
+}
+
+func register_event(name string, action string, f func(*User, *Event)) {
+	//log_debug("App register event: name='%s', action='%s'", name, action)
+	a, found := apps[name]
+	if !found || a.Type != "internal" {
+		log_warn("register_event() called for non-installed or non-internal app '%s'", name)
+		return
+	}
+	a.Internal.Events[action] = f
 }

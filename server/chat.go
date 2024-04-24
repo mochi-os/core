@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"net/http"
+)
+
 type Chat struct {
 	ID      string
 	Name    string
@@ -26,15 +30,14 @@ type ChatMessage struct {
 }
 
 func init() {
-	app_register("chat", map[string]string{"en": "Chat"})
-	app_register_action("chat", "", chat_list)
-	app_register_action("chat", "list", chat_list)
-	app_register_action("chat", "messages", chat_messages)
-	app_register_action("chat", "new", chat_new)
-	app_register_action("chat", "send", chat_send)
-	app_register_action("chat", "view", chat_view)
-	app_register_event("chat", "message", chat_message_receive)
-	app_register_path("chat", "chat")
+	register_app("chat")
+	register_home("chat", "chat", map[string]string{"en": "Chat"})
+	register_action("chat", "chat", chat_list, true)
+	register_action("chat", "chat/messages", chat_messages, true)
+	register_action("chat", "chat/new", chat_new, true)
+	register_action("chat", "chat/send", chat_send, true)
+	register_action("chat", "chat/view", chat_view, true)
+	register_event("chat", "message", chat_receive)
 }
 
 // Create app database
@@ -61,15 +64,15 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 }
 
 // List existing chats
-func chat_list(u *User, action string, format string, p app_parameters) string {
+func chat_list(u *User, w http.ResponseWriter, r *http.Request) {
 	var chats []Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
 	db_structs(&chats, db, "select * from chats order by updated desc")
-	return app_template("chat/list", chats)
+	app_write(w, r.FormValue("format"), "chat/list", chats)
 }
 
 // Received a chat event from another user
-func chat_message_receive(u *User, e *Event) {
+func chat_receive(u *User, e *Event) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
 
 	var m map[string]string
@@ -94,51 +97,55 @@ func chat_message_receive(u *User, e *Event) {
 	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), e.From, f.Name, body)
 	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": time_unix_string(), "body": body})
 	websockets_send(u, "chat", j)
-	service(u, "notifications", "create", "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
+	notification_create(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
 }
 
 // Send list of messages to client
-func chat_messages(u *User, action string, format string, p app_parameters) string {
+func chat_messages(u *User, w http.ResponseWriter, r *http.Request) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
-	f := friend(u, app_parameter(p, "friend", ""))
+	f := friend(u, r.FormValue("friend"))
 	if f == nil {
-		return "Friend not found"
+		app_error(w, 404, "Friend not found")
+		return
 	}
 	c := chat_for_friend(u, f)
 
 	var m []ChatMessage
 	db_structs(&m, db, "select * from messages where chat=? order by id", c.ID)
-	return json_encode(m)
+	app_write(w, "json", "", m)
 }
 
 // Ask user who they'd like to chat with
-func chat_new(u *User, action string, format string, p app_parameters) string {
-	return app_template("chat/new", friends(u))
+func chat_new(u *User, w http.ResponseWriter, r *http.Request) {
+	app_write(w, "html", "chat/list", friends(u))
 }
 
 // Send a chat message
-func chat_send(u *User, action string, format string, p app_parameters) string {
+func chat_send(u *User, w http.ResponseWriter, r *http.Request) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
 
-	f := friend(u, app_parameter(p, "friend", ""))
+	f := friend(u, r.FormValue("friend"))
 	if f == nil {
-		return "Friend not found"
+		app_error(w, 404, "Friend not found")
+		return
 	}
 	c := chat_for_friend(u, f)
 
-	message := app_parameter(p, "message", "")
+	message := r.FormValue("message")
 	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
 	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message}))
 	j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
 	websockets_send(u, "chat", j)
-	return ""
 }
 
 // View a chat
-func chat_view(u *User, action string, format string, p app_parameters) string {
-	f := friend(u, app_parameter(p, "friend", ""))
+func chat_view(u *User, w http.ResponseWriter, r *http.Request) {
+	f := friend(u, r.FormValue("friend"))
 	if f == nil {
-		return "Friend not found"
+		app_error(w, 404, "Friend not found")
+		return
 	}
-	return app_template("chat/view", chat_for_friend(u, f))
+	c := chat_for_friend(u, f)
+	notifications_clear_entity(u, "chat", c.ID)
+	app_write(w, "html", "chat/view", c)
 }

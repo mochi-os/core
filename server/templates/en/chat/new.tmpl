@@ -1,5 +1,9 @@
+{{define "title"}}Comms: New chat{{end}}
+{{template "head" .}}
 <p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | New
 
 <p>Choose who you want to chat with:</p>
 
 <p>{{range .}}<a href="/chat/view/?friend={{.ID}}">{{.Name}}</a><br/>{{end}}</p>
+
+{{template "foot" .}}

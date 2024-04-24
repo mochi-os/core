@@ -156,7 +156,7 @@ func libp2p_start() {
 
 	gs, err := pubsub.NewGossipSub(libp2p_context, h)
 	check(err)
-	for _, ps := range app_pubsubs {
+	for _, ps := range pubsubs {
 		t, err := gs.Join(ps.Topic)
 		check(err)
 		libp2p_topics[ps.Topic] = t

@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"net/http"
+)
+
 type Friend struct {
 	ID    string
 	Name  string
@@ -17,19 +21,18 @@ type FriendInvite struct {
 }
 
 func init() {
-	app_register("friends", map[string]string{"en": "Friends"})
-	app_register_action("friends", "", friends_action_list)
-	app_register_action("friends", "accept", friends_action_accept)
-	app_register_action("friends", "create", friends_action_create)
-	app_register_action("friends", "delete", friends_action_delete)
-	app_register_action("friends", "ignore", friends_action_ignore)
-	app_register_action("friends", "list", friends_action_list)
-	app_register_action("friends", "new", friends_action_new)
-	app_register_action("friends", "search", friends_action_search)
-	app_register_event("friends", "accept", friends_event_accept)
-	app_register_event("friends", "cancel", friends_event_cancel)
-	app_register_event("friends", "invite", friends_event_invite)
-	app_register_path("friends", "friends")
+	register_app("friends")
+	register_home("friends", "friends", map[string]string{"en": "Friends"})
+	register_action("friends", "friends", friends_action_list, true)
+	register_action("friends", "friends/accept", friends_action_accept, true)
+	register_action("friends", "friends/create", friends_action_create, true)
+	register_action("friends", "friends/delete", friends_action_delete, true)
+	register_action("friends", "friends/ignore", friends_action_ignore, true)
+	register_action("friends", "friends/new", friends_action_new, true)
+	register_action("friends", "friends/search", friends_action_search, true)
+	register_event("friends", "accept", friends_event_accept)
+	register_event("friends", "cancel", friends_event_cancel)
+	register_event("friends", "invite", friends_event_invite)
 }
 
 // Create app database
@@ -59,55 +62,57 @@ func friends(u *User) *[]Friend {
 }
 
 // Accept friend invitation
-func friends_action_accept(u *User, action string, format string, p app_parameters) string {
-	friend_accept(u, app_parameter(p, "id", ""))
-	return app_template("friends/accepted")
+func friends_action_accept(u *User, w http.ResponseWriter, r *http.Request) {
+	friend_accept(u, r.FormValue("id"))
+	app_write(w, "html", "friends/accepted")
 }
 
 // Create new friend
-func friends_action_create(u *User, action string, format string, p app_parameters) string {
-	err := friend_create(u, app_parameter(p, "id", ""), app_parameter(p, "name", ""), "person", true)
+func friends_action_create(u *User, w http.ResponseWriter, r *http.Request) {
+	err := friend_create(u, r.FormValue("id"), r.FormValue("name"), "person", true)
 	if err != nil {
-		return app_error(err)
+		app_error(w, 500, "Unable to create friend: %s", err)
+		return
 	}
-	return app_template("friends/created")
+	app_write(w, "html", "friends/created")
 }
 
 // Delete friend
-func friends_action_delete(u *User, action string, format string, p app_parameters) string {
-	friend_delete(u, app_parameter(p, "id", ""))
-	return app_template("friends/deleted")
+func friends_action_delete(u *User, w http.ResponseWriter, r *http.Request) {
+	friend_delete(u, r.FormValue("id"))
+	app_write(w, "html", "friends/deleted")
 }
 
 // Ignore friend invitation
-func friends_action_ignore(u *User, action string, format string, p app_parameters) string {
-	friend_ignore(u, app_parameter(p, "id", ""))
-	return app_template("friends/ignored")
+func friends_action_ignore(u *User, w http.ResponseWriter, r *http.Request) {
+	friend_ignore(u, r.FormValue("id"))
+	app_write(w, "html", "friends/ignored")
 }
 
 // Show list of friends
-func friends_action_list(u *User, action string, format string, p app_parameters) string {
+func friends_action_list(u *User, w http.ResponseWriter, r *http.Request) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var f []Friend
 	db_structs(&f, db, "select * from friends order by name")
 	var i []FriendInvite
 	db_structs(&i, db, "select * from invites where direction='from' order by updated desc")
 
-	return app_template("friends/list", map[string]any{"Friends": f, "Invites": i})
+	app_write(w, r.FormValue("format"), "friends/list", map[string]any{"Friends": f, "Invites": i})
 }
 
 // New friend selector
-func friends_action_new(u *User, action string, format string, p app_parameters) string {
-	return app_template("friends/new")
+func friends_action_new(u *User, w http.ResponseWriter, r *http.Request) {
+	app_write(w, "html", "friends/new")
 }
 
 // Search the directory for potential friends
-func friends_action_search(u *User, action string, format string, p app_parameters) string {
-	search := app_parameter(p, "search", "")
+func friends_action_search(u *User, w http.ResponseWriter, r *http.Request) {
+	search := r.FormValue("search")
 	if search == "" {
-		return "No search terms entered"
+		app_error(w, 400, "No search entered")
+		return
 	}
-	return app_template("friends/search", directory_search(u, search, false))
+	app_write(w, "html", "friends/search", directory_search(u, search, false))
 }
 
 // Accept a friend's invitation
@@ -184,7 +189,7 @@ func friends_event_accept(u *User, e *Event) {
 	var i FriendInvite
 	db_struct(&i, db, "select * from invites where id=? and direction='to'", e.From)
 	if i.ID != "" {
-		service(u, "notifications", "create", "friends", "accept", i.ID, i.Name+" accepted your friend invitation", "/friends/")
+		notification_create(u, "friends", "accept", i.ID, i.Name+" accepted your friend invitation", "/friends/")
 		db_exec(db, "delete from invites where id=? and direction='to'", e.From)
 		broadcast(u, "friends", "accepted", e.From, nil)
 	}

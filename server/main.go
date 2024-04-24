@@ -18,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	new_install := db_start()
-	apps_start()
+	//apps_start()
 	go peers_manager()
 	libp2p_start()
 	go queue_manager()

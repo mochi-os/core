@@ -17,11 +17,11 @@ type Directory struct {
 }
 
 func init() {
-	app_register("directory", map[string]string{"en": "Directory"})
-	app_register_event("directory", "download", directory_event_download)
-	app_register_event("directory", "request", directory_event_request)
-	app_register_event("directory", "publish", directory_event_publish)
-	app_register_pubsub("directory", "directory", nil)
+	register_app("directory")
+	register_event("directory", "download", directory_event_download)
+	register_event("directory", "request", directory_event_request)
+	register_event("directory", "publish", directory_event_publish)
+	register_pubsub("directory", "directory", nil)
 }
 
 // Create a new directory entry for a local user

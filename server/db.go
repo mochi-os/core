@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
+	"sync"
 )
 
 const latest_schema = 1
 
 // TODO Clean up stale handles
 var db_handles = map[string]*sqlx.DB{}
+var db_handles_lock sync.Mutex
 
 func db_create() {
 	log_info("Creating new database")
@@ -86,9 +88,10 @@ func db_exists(file string, query string, values ...any) bool {
 	return false
 }
 
-// TODO Make thread safe
 func db_open(path string) *sqlx.DB {
+	db_handles_lock.Lock()
 	h, open := db_handles[path]
+	db_handles_lock.Unlock()
 	if open {
 		return h
 	}
@@ -98,9 +101,12 @@ func db_open(path string) *sqlx.DB {
 	}
 
 	var err error
-	db_handles[path], err = sqlx.Open("sqlite3", data_dir+"/"+path)
+	h, err = sqlx.Open("sqlite3", data_dir+"/"+path)
 	check(err)
-	return db_handles[path]
+	db_handles_lock.Lock()
+	db_handles[path] = h
+	db_handles_lock.Unlock()
+	return h
 }
 
 func db_start() bool {

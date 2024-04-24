@@ -1,3 +1,5 @@
+{{define "title"}}Comms: {{.Name}}{{end}}
+{{template "head" .}}
 <p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
 
 <p id="messages"></p>
@@ -34,9 +36,10 @@ function message_receive( j ) {
 
 function messages_receive( j ) {
 	const messages = document.getElementById( 'messages' );
-	for ( c in JSON.parse( j ) ) { 
+	const ms = JSON.parse( j )
+	for ( var i in ms ) { 
 		messages.innerHTML = messages.innerHTML + '<br/>';
-		messages.innerText = messages.innerText + c.name + ': ' + c.body
+		messages.innerText = messages.innerText + ms[i].name + ': ' + ms[i].body
 	}
 	window.scrollTo( 0, document.body.scrollHeight );
 }
@@ -49,3 +52,5 @@ function message_send( to ) {
 	document.getElementById( 'message' ).value = '';
 }
 </script>
+
+{{template "foot" .}}

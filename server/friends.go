@@ -103,7 +103,12 @@ func friends_action_list(u *User, a *Action) {
 	var i []FriendInvite
 	db.scans(&i, "select * from invites where direction='from' order by updated desc")
 
-	a.write_format(a.input("format"), "friends/list", map[string]any{"Friends": f, "Invites": i})
+	switch a.input("format") {
+	case "json":
+		a.write_json(f)
+	default:
+		a.write_template("friends/list", map[string]any{"Friends": f, "Invites": i})
+	}
 }
 
 // New friend selector

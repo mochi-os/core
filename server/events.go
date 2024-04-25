@@ -39,7 +39,6 @@ func event(u *User, to string, app string, entity string, action string, content
 }
 
 func events_check_queue(method string, location string) {
-	log_debug("Checking queue for queued events to %s '%s'", method, location)
 	var queue []Queue
 	db := db_open("db/queue.db")
 	db.scans(&queue, "select * from queue where method=? and location=?", method, location)

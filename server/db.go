@@ -9,16 +9,17 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"sync"
+	"time"
 )
 
 type DB struct {
 	path   string
 	handle *sqlx.DB
+	closed int64
 }
 
 const latest_schema = 1
 
-// TODO Clean up stale handles
 var databases = map[string]*DB{}
 var databases_lock sync.Mutex
 
@@ -82,19 +83,25 @@ func db_app(u *User, app string, file string, create func(*DB)) *DB {
 	return db
 }
 
-func (db *DB) exec(query string, values ...any) {
-	_, err := db.handle.Exec(query, values...)
-	check(err)
-}
+func db_manager() {
+	for {
+		time.Sleep(time.Minute)
+		now := time_unix()
+		var closers []*sqlx.DB
 
-func (db *DB) exists(query string, values ...any) bool {
-	r, err := db.handle.Query(query, values...)
-	check(err)
+		databases_lock.Lock()
+		for _, db := range databases {
+			if db.closed > 0 && db.closed < now-60 {
+				closers = append(closers, db.handle)
+				delete(databases, db.path)
+			}
+		}
+		databases_lock.Unlock()
 
-	for r.Next() {
-		return true
+		for _, h := range closers {
+			h.Close()
+		}
 	}
-	return false
 }
 
 func db_open(path string) *DB {
@@ -102,6 +109,7 @@ func db_open(path string) *DB {
 	db, found := databases[path]
 	databases_lock.Unlock()
 	if found {
+		db.closed = 0
 		return db
 	}
 
@@ -111,7 +119,7 @@ func db_open(path string) *DB {
 
 	h, err := sqlx.Open("sqlite3", data_dir+"/"+path)
 	check(err)
-	db = &DB{path: path, handle: h}
+	db = &DB{path: path, handle: h, closed: 0}
 
 	databases_lock.Lock()
 	databases[path] = db
@@ -123,8 +131,42 @@ func db_open(path string) *DB {
 func db_start() bool {
 	if file_exists("db/users.db") {
 		db_upgrade()
+		go db_manager()
 	} else {
 		db_create()
+		go db_manager()
+		return true
+	}
+	return false
+}
+
+// Does nothing yet
+func db_upgrade() {
+	schema := atoi(setting_get("schema", ""), 1)
+	for schema < latest_schema {
+		schema++
+		log_info("Upgrading database schema to version %d", schema)
+		if schema == 2 {
+		} else if schema == 3 {
+		}
+		setting_set("schema", string(schema))
+	}
+}
+
+func (db *DB) close() {
+	db.closed = time_unix()
+}
+
+func (db *DB) exec(query string, values ...any) {
+	_, err := db.handle.Exec(query, values...)
+	check(err)
+}
+
+func (db *DB) exists(query string, values ...any) bool {
+	r, err := db.handle.Query(query, values...)
+	check(err)
+
+	for r.Next() {
 		return true
 	}
 	return false
@@ -144,17 +186,4 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 func (db *DB) scans(out any, query string, values ...any) {
 	err := db.handle.Select(out, query, values...)
 	check(err)
-}
-
-// Does nothing yet
-func db_upgrade() {
-	schema := atoi(setting_get("schema", ""), 1)
-	for schema < latest_schema {
-		schema++
-		log_info("Upgrading database schema to version %d", schema)
-		if schema == 2 {
-		} else if schema == 3 {
-		}
-		setting_set("schema", string(schema))
-	}
 }

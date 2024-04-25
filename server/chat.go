@@ -54,8 +54,9 @@ func chat_db_create(db *DB) {
 
 // Find best chat for friend
 func chat_for_friend(u *User, f *Friend) *Chat {
-	var c Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
+
+	var c Chat
 	if db.scan(&c, "select * from chats where friend=? order by updated desc", f.ID) {
 		db.exec("update chats set updated=? where id=?", time_unix_string(), c.ID)
 	} else {
@@ -67,15 +68,18 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 
 // List existing chats
 func chat_list(u *User, a *Action) {
-	var chats []Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
-	db.scans(&chats, "select * from chats order by updated desc")
-	a.write_format(a.input("format"), "chat/list", chats)
+	defer db.close()
+
+	var c []Chat
+	db.scans(&c, "select * from chats order by updated desc")
+	a.write_format(a.input("format"), "chat/list", c)
 }
 
 // Received a chat event from another user
 func chat_receive(u *User, e *Event) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
 
 	var m map[string]string
 	if !json_decode([]byte(e.Content), &m) {
@@ -105,6 +109,8 @@ func chat_receive(u *User, e *Event) {
 // Send list of messages to client
 func chat_messages(u *User, a *Action) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
+
 	f := friend(u, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
@@ -125,6 +131,7 @@ func chat_new(u *User, a *Action) {
 // Send a chat message
 func chat_send(u *User, a *Action) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
 
 	f := friend(u, a.input("friend"))
 	if f == nil {

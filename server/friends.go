@@ -46,6 +46,8 @@ func friends_db_create(db *DB) {
 // Get a friend
 func friend(u *User, id string) *Friend {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	var f Friend
 	if db.scan(&f, "select * from friends where id=?", id) {
 		return &f
@@ -56,6 +58,8 @@ func friend(u *User, id string) *Friend {
 // List friends
 func friends(u *User) *[]Friend {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	var f []Friend
 	db.scans(&f, "select * from friends order by name")
 	return &f
@@ -92,6 +96,8 @@ func friends_action_ignore(u *User, a *Action) {
 // Show list of friends
 func friends_action_list(u *User, a *Action) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	var f []Friend
 	db.scans(&f, "select * from friends order by name")
 	var i []FriendInvite
@@ -118,6 +124,7 @@ func friends_action_search(u *User, a *Action) {
 // Accept a friend's invitation
 func friend_accept(u *User, friend string) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
 
 	var i FriendInvite
 	db.scan(&i, "select * from invites where id=? and direction='from'", friend)
@@ -143,6 +150,7 @@ func friend_accept(u *User, friend string) {
 // Create new friend
 func friend_create(u *User, friend string, name string, class string, invite bool) error {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
 
 	if !valid(friend, "public") {
 		return error_message("Invalid ID")
@@ -176,8 +184,9 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 
 // Delete friend
 func friend_delete(u *User, friend string) {
-	log_debug("Deleting friend '%s'", friend)
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	db.exec("delete from invites where id=?", friend)
 	db.exec("delete from friends where id=?", friend)
 	broadcast(u, "friends", "delete", friend, nil)
@@ -186,6 +195,8 @@ func friend_delete(u *User, friend string) {
 // Remote party accepted our invitation
 func friends_event_accept(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	var i FriendInvite
 	db.scan(&i, "select * from invites where id=? and direction='to'", e.From)
 	if i.ID != "" {
@@ -198,6 +209,8 @@ func friends_event_accept(u *User, e *Event) {
 // Remote party cancelled their existing invitation
 func friends_event_cancel(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	db.exec("delete from invites where id=? and direction='from'", e.From)
 	broadcast(u, "friends", "cancelled", e.From, nil)
 }
@@ -205,6 +218,8 @@ func friends_event_cancel(u *User, e *Event) {
 // Remote party sent us a new invitation
 func friends_event_invite(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	if db.exists("select id from invites where id=? and direction='to'", e.From) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
 		friend_accept(u, e.From)
@@ -218,6 +233,8 @@ func friends_event_invite(u *User, e *Event) {
 // Ignore a friend invitation
 func friend_ignore(u *User, friend string) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
+	defer db.close()
+
 	db.exec("delete from invites where id=? and direction='from'", friend)
 	broadcast(u, "friends", "ignore", friend, nil)
 }

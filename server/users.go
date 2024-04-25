@@ -107,11 +107,6 @@ func user_from_code(code string) *User {
 }
 
 func user_location(user string) (string, string, string, string) {
-	// If no user, return none
-	if user == "" {
-		return "none", user, "user", user
-	}
-
 	// Check if user is local
 	var u User
 	dbu := db_open("db/users.db")

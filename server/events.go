@@ -9,8 +9,9 @@ import (
 )
 
 type Event struct {
+	User      *User  `json:"-"`
 	ID        string `json:"id"`
-	Source    string
+	Source    string `json:"-"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	App       string `json:"app"`
@@ -33,39 +34,7 @@ func event(u *User, to string, app string, entity string, action string, content
 	if u != nil {
 		from = u.Public
 	}
-	e := Event{ID: uid(), Source: "", From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
-	method, location, queue_method, queue_location := user_location(e.To)
-	if method != "none" {
-		log_debug("Sending event '%#v' to %s '%s'", e, method, location)
-	}
-
-	if method == "local" {
-		go event_receive(&e)
-		return &e
-	}
-
-	if u != nil {
-		private := base64_decode(u.Private, "")
-		if string(private) == "" {
-			log_warn("Dropping event due to invalid private key")
-			return nil
-		}
-		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
-	}
-
-	j := json_encode(e)
-
-	if method == "libp2p" && libp2p_send(location, j) {
-		return &e
-	}
-
-	if method == "none" {
-		return &e
-	}
-
-	log_debug("Unable to send event to '%s', adding to queue", e.To)
-	db := db_open("db/queue.db")
-	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
+	e := Event{User: u, ID: uid(), Source: "", From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
 	return &e
 }
 
@@ -188,4 +157,32 @@ func queue_manager() {
 
 func (a *App) register_event(event string, f func(*User, *Event)) {
 	a.Internal.Events[event] = f
+}
+
+func (e *Event) send() {
+	method, location, queue_method, queue_location := user_location(e.To)
+
+	if method == "local" {
+		go event_receive(e)
+		return
+	}
+
+	if e.User != nil {
+		private := base64_decode(e.User.Private, "")
+		if string(private) == "" {
+			log_warn("Dropping event due to invalid private key")
+			return
+		}
+		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
+	}
+
+	j := json_encode(e)
+
+	if method == "libp2p" && libp2p_send(location, j) {
+		return
+	}
+
+	log_debug("Unable to send event to '%s', adding to queue", e.To)
+	db := db_open("db/queue.db")
+	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
 }

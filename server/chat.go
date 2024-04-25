@@ -91,7 +91,7 @@ func chat_receive(u *User, e *Event) {
 	f := friend(u, e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event(u, e.From, "chat", "", "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.")
+		event(u, e.From, "chat", "", "message", "The person you have contacted has not yet added you as a friend, so your message has not been delivered.").send()
 		return
 	}
 	c := chat_for_friend(u, f)
@@ -119,7 +119,7 @@ func chat_messages(u *User, a *Action) {
 
 // Ask user who they'd like to chat with
 func chat_new(u *User, a *Action) {
-	a.write_template("chat/list", friends(u))
+	a.write_template("chat/new", friends(u))
 }
 
 // Send a chat message
@@ -135,7 +135,7 @@ func chat_send(u *User, a *Action) {
 
 	message := a.input("message")
 	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
-	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message}))
+	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message})).send()
 	j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
 	websockets_send(u, "chat", j)
 }

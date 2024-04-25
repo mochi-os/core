@@ -128,12 +128,12 @@ func friend_accept(u *User, friend string) {
 	if !db.exists("select id from friends where id=?", friend) {
 		friend_create(u, friend, i.Name, "person", false)
 	}
-	event(u, friend, "friends", "", "accept", "")
+	event(u, friend, "friends", "", "accept", "").send()
 	db.exec("delete from invites where id=? and direction='from'", friend)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where id=? and direction='to'", friend) {
-		event(u, friend, "friends", "", "cancel", "")
+		event(u, friend, "friends", "", "cancel", "").send()
 		db.exec("delete from invites where id=? and direction='to'", friend)
 	}
 
@@ -161,12 +161,12 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 
 	if db.exists("select id from invites where id=? and direction='from'", friend) {
 		// We have an existing invitation from them, so accept it automatically
-		event(u, friend, "friends", "", "accept", "")
+		event(u, friend, "friends", "", "accept", "").send()
 		db.exec("delete from invites where id=? and direction='from'", friend)
 
 	} else if invite {
 		// Send invitation
-		event(u, friend, "friends", "", "invite", u.Name)
+		event(u, friend, "friends", "", "invite", u.Name).send()
 		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
 	}
 

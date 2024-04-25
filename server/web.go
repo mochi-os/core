@@ -25,13 +25,11 @@ var websockets = map[int]map[string]*websocket.Conn{}
 func web_auth(w http.ResponseWriter, r *http.Request) *User {
 	login := web_cookie_get(r, "login", "")
 	if login == "" {
-		web_template(w, "login/email")
 		return nil
 	}
 
 	u := user_by_login(login)
 	if u == nil {
-		web_template(w, "login/email")
 		return nil
 	}
 
@@ -74,7 +72,7 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u == nil && actions_authenticated[action] {
-		app_error(w, 401, "Not logged in")
+		web_login(w, r)
 		return
 	}
 

@@ -3,12 +3,6 @@
 
 package main
 
-import (
-	"fmt"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"net/http"
-)
-
 type App struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -16,7 +10,7 @@ type App struct {
 	Track    string `json:"track"`
 	Type     string `json:"type"`
 	Internal struct {
-		Actions  map[string]func(*User, http.ResponseWriter, *http.Request)
+		Actions  map[string]func(*User, *Action)
 		Events   map[string]func(*User, *Event)
 		Services map[string]func(*User, string, ...any) any
 	}
@@ -28,21 +22,7 @@ type App struct {
 	} `json:"wasm"`
 }
 
-type AppPubSub struct {
-	Name    string
-	Topic   string
-	Publish func(*pubsub.Topic)
-}
-
 var apps = map[string]*App{}
-var actions = map[string]func(*User, http.ResponseWriter, *http.Request){}
-var actions_authenticated = map[string]bool{}
-var pubsubs = map[string]*AppPubSub{}
-
-func app_error(w http.ResponseWriter, code int, message string, values ...any) {
-	w.WriteHeader(code)
-	fmt.Fprintf(w, message, values...)
-}
 
 /* Not used for now
 func apps_start() {
@@ -75,42 +55,11 @@ func apps_start() {
 	}
 } */
 
-func app_write(w http.ResponseWriter, format string, template string, values ...any) {
-	switch format {
-	case "json":
-		fmt.Fprintf(w, json_encode(values[0]))
-	default:
-		web_template(w, template, values...)
-	}
-}
-
 func register_app(name string) {
 	//log_debug("Register app '%s'", name)
 	a := App{ID: name, Name: name, Type: "internal"}
-	a.Internal.Actions = make(map[string]func(*User, http.ResponseWriter, *http.Request))
+	a.Internal.Actions = make(map[string]func(*User, *Action))
 	a.Internal.Events = make(map[string]func(*User, *Event))
 	a.Internal.Services = make(map[string]func(*User, string, ...any) any)
 	apps[name] = &a
-}
-
-func register_action(name string, action string, f func(*User, http.ResponseWriter, *http.Request), authenticated bool) {
-	//log_debug("Register action: name='%s', action='%s'", name, action)
-	a, found := apps[name]
-	if !found || a.Type != "internal" {
-		log_warn("register_action() called for non-installed or non-internal app '%s'", name)
-		return
-	}
-	a.Internal.Actions[action] = f
-	actions[action] = f
-	actions_authenticated[action] = authenticated
-}
-
-func register_pubsub(name string, topic string, publish func(*pubsub.Topic)) {
-	//log_debug("App register pubsub: name='%s', topic='%s'", name, topic)
-	_, found := apps[name]
-	if !found {
-		log_warn("register_pubsub() called for non-installed app '%s'", name)
-		return
-	}
-	pubsubs[name] = &AppPubSub{Name: name, Topic: topic, Publish: publish}
 }

@@ -3,10 +3,6 @@
 
 package main
 
-import (
-	"net/http"
-)
-
 type Friend struct {
 	ID    string
 	Name  string
@@ -62,57 +58,57 @@ func friends(u *User) *[]Friend {
 }
 
 // Accept friend invitation
-func friends_action_accept(u *User, w http.ResponseWriter, r *http.Request) {
-	friend_accept(u, r.FormValue("id"))
-	app_write(w, "html", "friends/accepted")
+func friends_action_accept(u *User, a *Action) {
+	friend_accept(u, a.Input("id"))
+	a.WriteTemplate("friends/accepted")
 }
 
 // Create new friend
-func friends_action_create(u *User, w http.ResponseWriter, r *http.Request) {
-	err := friend_create(u, r.FormValue("id"), r.FormValue("name"), "person", true)
+func friends_action_create(u *User, a *Action) {
+	err := friend_create(u, a.Input("id"), a.Input("name"), "person", true)
 	if err != nil {
-		app_error(w, 500, "Unable to create friend: %s", err)
+		a.Error(500, "Unable to create friend: %s", err)
 		return
 	}
-	app_write(w, "html", "friends/created")
+	a.WriteTemplate("friends/created")
 }
 
 // Delete friend
-func friends_action_delete(u *User, w http.ResponseWriter, r *http.Request) {
-	friend_delete(u, r.FormValue("id"))
-	app_write(w, "html", "friends/deleted")
+func friends_action_delete(u *User, a *Action) {
+	friend_delete(u, a.Input("id"))
+	a.WriteTemplate("friends/deleted")
 }
 
 // Ignore friend invitation
-func friends_action_ignore(u *User, w http.ResponseWriter, r *http.Request) {
-	friend_ignore(u, r.FormValue("id"))
-	app_write(w, "html", "friends/ignored")
+func friends_action_ignore(u *User, a *Action) {
+	friend_ignore(u, a.Input("id"))
+	a.WriteTemplate("friends/ignored")
 }
 
 // Show list of friends
-func friends_action_list(u *User, w http.ResponseWriter, r *http.Request) {
+func friends_action_list(u *User, a *Action) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var f []Friend
 	db_structs(&f, db, "select * from friends order by name")
 	var i []FriendInvite
 	db_structs(&i, db, "select * from invites where direction='from' order by updated desc")
 
-	app_write(w, r.FormValue("format"), "friends/list", map[string]any{"Friends": f, "Invites": i})
+	a.WriteFormat(a.Input("format"), "friends/list", map[string]any{"Friends": f, "Invites": i})
 }
 
 // New friend selector
-func friends_action_new(u *User, w http.ResponseWriter, r *http.Request) {
-	app_write(w, "html", "friends/new")
+func friends_action_new(u *User, a *Action) {
+	a.WriteTemplate("friends/new")
 }
 
 // Search the directory for potential friends
-func friends_action_search(u *User, w http.ResponseWriter, r *http.Request) {
-	search := r.FormValue("search")
+func friends_action_search(u *User, a *Action) {
+	search := a.Input("search")
 	if search == "" {
-		app_error(w, 400, "No search entered")
+		a.Error(400, "No search entered")
 		return
 	}
-	app_write(w, "html", "friends/search", directory_search(u, search, false))
+	a.WriteTemplate("friends/search", directory_search(u, search, false))
 }
 
 // Accept a friend's invitation

@@ -3,10 +3,6 @@
 
 package main
 
-import (
-	"net/http"
-)
-
 type Chat struct {
 	ID      string
 	Name    string
@@ -64,11 +60,11 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 }
 
 // List existing chats
-func chat_list(u *User, w http.ResponseWriter, r *http.Request) {
+func chat_list(u *User, a *Action) {
 	var chats []Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
 	db_structs(&chats, db, "select * from chats order by updated desc")
-	app_write(w, r.FormValue("format"), "chat/list", chats)
+	a.WriteFormat(a.Input("format"), "chat/list", chats)
 }
 
 // Received a chat event from another user
@@ -101,37 +97,37 @@ func chat_receive(u *User, e *Event) {
 }
 
 // Send list of messages to client
-func chat_messages(u *User, w http.ResponseWriter, r *http.Request) {
+func chat_messages(u *User, a *Action) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
-	f := friend(u, r.FormValue("friend"))
+	f := friend(u, a.Input("friend"))
 	if f == nil {
-		app_error(w, 404, "Friend not found")
+		a.Error(404, "Friend not found")
 		return
 	}
 	c := chat_for_friend(u, f)
 
 	var m []ChatMessage
 	db_structs(&m, db, "select * from messages where chat=? order by id", c.ID)
-	app_write(w, "json", "", m)
+	a.WriteJSON(m)
 }
 
 // Ask user who they'd like to chat with
-func chat_new(u *User, w http.ResponseWriter, r *http.Request) {
-	app_write(w, "html", "chat/list", friends(u))
+func chat_new(u *User, a *Action) {
+	a.WriteTemplate("chat/list", friends(u))
 }
 
 // Send a chat message
-func chat_send(u *User, w http.ResponseWriter, r *http.Request) {
+func chat_send(u *User, a *Action) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
 
-	f := friend(u, r.FormValue("friend"))
+	f := friend(u, a.Input("friend"))
 	if f == nil {
-		app_error(w, 404, "Friend not found")
+		a.Error(404, "Friend not found")
 		return
 	}
 	c := chat_for_friend(u, f)
 
-	message := r.FormValue("message")
+	message := a.Input("message")
 	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
 	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message}))
 	j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
@@ -139,13 +135,13 @@ func chat_send(u *User, w http.ResponseWriter, r *http.Request) {
 }
 
 // View a chat
-func chat_view(u *User, w http.ResponseWriter, r *http.Request) {
-	f := friend(u, r.FormValue("friend"))
+func chat_view(u *User, a *Action) {
+	f := friend(u, a.Input("friend"))
 	if f == nil {
-		app_error(w, 404, "Friend not found")
+		a.Error(404, "Friend not found")
 		return
 	}
 	c := chat_for_friend(u, f)
 	notifications_clear_entity(u, "chat", c.ID)
-	app_write(w, "html", "chat/view", c)
+	a.WriteTemplate("chat/view", c)
 }

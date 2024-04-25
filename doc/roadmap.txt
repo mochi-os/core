@@ -1,7 +1,7 @@
 0.1
 	Chat app
-	Feeds app
 	Forums app
+	Feeds app
 	Choose a product name
 	Introducer server
 

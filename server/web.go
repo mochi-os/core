@@ -54,8 +54,9 @@ func web_cookie_unset(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &c)
 }
 
-func web_error(w http.ResponseWriter, data any) {
-	web_template(w, "error", data)
+func web_error(w http.ResponseWriter, code int, message string, values ...any) {
+	w.WriteHeader(code)
+	web_template(w, "error", fmt.Sprintf(message, values...))
 }
 
 func web_action(w http.ResponseWriter, r *http.Request) {
@@ -68,15 +69,14 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 	action := strings.Trim(r.URL.Path, "/")
 	f, found := actions[action]
 	if !found {
-		app_error(w, 404, "Not found")
+		web_error(w, 404, "Not found")
 		return
 	}
 	if u == nil && actions_authenticated[action] {
 		web_login(w, r)
 		return
 	}
-
-	f(u, w, r)
+	f(u, &Action{r: r, w: w})
 }
 
 func web_login(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +84,7 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 	if code != "" {
 		u := user_from_code(code)
 		if u == nil {
-			web_error(w, "Invalid code")
+			web_error(w, 400, "Invalid code")
 			return
 		}
 		web_cookie_set(w, "login", login_create(u.ID))
@@ -101,7 +101,7 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	if email != "" {
 		if !code_send(email) {
-			web_error(w, "Invalid email address")
+			web_error(w, 400, "Invalid email address")
 			return
 		}
 		web_template(w, "login/code", email)
@@ -119,7 +119,7 @@ func web_name(w http.ResponseWriter, r *http.Request) {
 
 	name := r.FormValue("name")
 	if !valid(name, "name") {
-		web_error(w, "Invalid name")
+		web_error(w, 400, "Invalid name")
 		return
 	}
 	u.Name = name

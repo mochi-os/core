@@ -17,18 +17,18 @@ type FriendInvite struct {
 }
 
 func init() {
-	register_app("friends")
-	register_home("friends", "friends", map[string]string{"en": "Friends"})
-	register_action("friends", "friends", friends_action_list, true)
-	register_action("friends", "friends/accept", friends_action_accept, true)
-	register_action("friends", "friends/create", friends_action_create, true)
-	register_action("friends", "friends/delete", friends_action_delete, true)
-	register_action("friends", "friends/ignore", friends_action_ignore, true)
-	register_action("friends", "friends/new", friends_action_new, true)
-	register_action("friends", "friends/search", friends_action_search, true)
-	register_event("friends", "accept", friends_event_accept)
-	register_event("friends", "cancel", friends_event_cancel)
-	register_event("friends", "invite", friends_event_invite)
+	a := register_app("friends")
+	a.register_home("friends", map[string]string{"en": "Friends"})
+	a.register_action("friends", friends_action_list, true)
+	a.register_action("friends/accept", friends_action_accept, true)
+	a.register_action("friends/create", friends_action_create, true)
+	a.register_action("friends/delete", friends_action_delete, true)
+	a.register_action("friends/ignore", friends_action_ignore, true)
+	a.register_action("friends/new", friends_action_new, true)
+	a.register_action("friends/search", friends_action_search, true)
+	a.register_event("accept", friends_event_accept)
+	a.register_event("cancel", friends_event_cancel)
+	a.register_event("invite", friends_event_invite)
 }
 
 // Create app database

@@ -29,8 +29,7 @@ func broadcast(u *User, sender string, action string, entity string, content any
 	}
 }
 
-func register_broadcast(name string, sender string, action string, f func(*User, string, string, string, any)) {
-	//log_debug("App register broadcast: name='%s', sender='%s', action='%s'", name, sender, action)
+func (a *App) register_broadcast(sender string, action string, f func(*User, string, string, string, any)) {
 	s, sender_found := broadcasts_by_sender[sender]
 	if sender_found {
 		_, action_found := s[action]

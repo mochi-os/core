@@ -15,12 +15,6 @@ type AppPubSub struct {
 
 var pubsubs = map[string]*AppPubSub{}
 
-func register_pubsub(name string, topic string, publish func(*pubsub.Topic)) {
-	//log_debug("App register pubsub: name='%s', topic='%s'", name, topic)
-	_, found := apps[name]
-	if !found {
-		log_warn("register_pubsub() called for non-installed app '%s'", name)
-		return
-	}
-	pubsubs[name] = &AppPubSub{Name: name, Topic: topic, Publish: publish}
+func (a *App) register_pubsub(topic string, publish func(*pubsub.Topic)) {
+	pubsubs[a.Name] = &AppPubSub{Name: a.Name, Topic: topic, Publish: publish}
 }

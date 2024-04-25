@@ -180,12 +180,6 @@ func queue_manager() {
 	}
 }
 
-func register_event(name string, action string, f func(*User, *Event)) {
-	//log_debug("App register event: name='%s', action='%s'", name, action)
-	a, found := apps[name]
-	if !found || a.Type != "internal" {
-		log_warn("register_event() called for non-installed or non-internal app '%s'", name)
-		return
-	}
-	a.Internal.Events[action] = f
+func (a *App) register_event(event string, f func(*User, *Event)) {
+	a.Internal.Events[event] = f
 }

@@ -26,14 +26,14 @@ type ChatMessage struct {
 }
 
 func init() {
-	register_app("chat")
-	register_home("chat", "chat", map[string]string{"en": "Chat"})
-	register_action("chat", "chat", chat_list, true)
-	register_action("chat", "chat/messages", chat_messages, true)
-	register_action("chat", "chat/new", chat_new, true)
-	register_action("chat", "chat/send", chat_send, true)
-	register_action("chat", "chat/view", chat_view, true)
-	register_event("chat", "message", chat_receive)
+	a := register_app("chat")
+	a.register_home("chat", map[string]string{"en": "Chat"})
+	a.register_action("chat", chat_list, true)
+	a.register_action("chat/messages", chat_messages, true)
+	a.register_action("chat/new", chat_new, true)
+	a.register_action("chat/send", chat_send, true)
+	a.register_action("chat/view", chat_view, true)
+	a.register_event("message", chat_receive)
 }
 
 // Create app database

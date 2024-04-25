@@ -55,11 +55,11 @@ func apps_start() {
 	}
 } */
 
-func register_app(name string) {
-	//log_debug("Register app '%s'", name)
+func register_app(name string) *App {
 	a := App{ID: name, Name: name, Type: "internal"}
 	a.Internal.Actions = make(map[string]func(*User, *Action))
 	a.Internal.Events = make(map[string]func(*User, *Event))
 	a.Internal.Services = make(map[string]func(*User, string, ...any) any)
 	apps[name] = &a
+	return &a
 }

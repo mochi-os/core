@@ -45,13 +45,7 @@ func (a *Action) WriteTemplate(template string, values ...any) {
 	web_template(a.w, template, values...)
 }
 
-func register_action(name string, action string, f func(*User, *Action), authenticated bool) {
-	//log_debug("Register action: name='%s', action='%s'", name, action)
-	a, found := apps[name]
-	if !found || a.Type != "internal" {
-		log_warn("register_action() called for non-installed or non-internal app '%s'", name)
-		return
-	}
+func (a *App) register_action(action string, f func(*User, *Action), authenticated bool) {
 	a.Internal.Actions[action] = f
 	actions[action] = f
 	actions_authenticated[action] = authenticated

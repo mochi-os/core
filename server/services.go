@@ -3,13 +3,7 @@
 
 package main
 
-func register_service(name string, service string, f func(*User, string, ...any) any) {
-	//log_debug("App register service: name='%s', service='%s'", name, service)
-	a, found := apps[name]
-	if !found || a.Type != "internal" {
-		log_warn("register_service() called for non-installed or non-internal app '%s'", name)
-		return
-	}
+func (a *App) register_service(service string, f func(*User, string, ...any) any) {
 	a.Internal.Services[service] = f
 }
 

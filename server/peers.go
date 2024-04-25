@@ -26,10 +26,10 @@ var peer_add_chan = make(chan Peer)
 var peer_publish_chan = make(chan bool)
 
 func init() {
-	register_app("peers")
-	register_event("peers", "request", peer_event_request)
-	register_event("peers", "publish", peer_event_publish)
-	register_pubsub("peers", "peers", peers_publish)
+	a := register_app("peers")
+	a.register_event("request", peer_event_request)
+	a.register_event("publish", peer_event_publish)
+	a.register_pubsub("peers", peers_publish)
 }
 
 // Add a (possibly existing) peer

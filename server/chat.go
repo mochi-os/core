@@ -37,24 +37,29 @@ func init() {
 }
 
 // Create app database
-func chat_db_create(db string) {
-	db_exec(db, "create table chats ( id text not null primary key, name text not null, friend text not null default '', updated integer not null )")
-	db_exec(db, "create index chats_friend on chats( friend )")
-	db_exec(db, "create index chats_updated on chats( updated )")
-	db_exec(db, "create table members ( chat references chats( id ), member text not null, role text not null default 'talker' )")
-	db_exec(db, "create table messages ( id text not null primary key, chat references chats( id ), time integer not null, sender text not null, name text not null, body text not null )")
-	db_exec(db, "create index messages_chat_time on messages( chat, time )")
+func chat_db_create(db *DB) {
+	db.Exec("create table settings ( name text not null primary key, value text not null )")
+	db.Exec("replace into settings ( name, value ) values ( 'schema', 1 )")
+
+	db.Exec("create table chats ( id text not null primary key, name text not null, friend text not null default '', updated integer not null )")
+	db.Exec("create index chats_friend on chats( friend )")
+	db.Exec("create index chats_updated on chats( updated )")
+
+	db.Exec("create table members ( chat references chats( id ), member text not null, role text not null default 'talker' )")
+
+	db.Exec("create table messages ( id text not null primary key, chat references chats( id ), time integer not null, sender text not null, name text not null, body text not null )")
+	db.Exec("create index messages_chat_time on messages( chat, time )")
 }
 
 // Find best chat for friend
 func chat_for_friend(u *User, f *Friend) *Chat {
 	var c Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
-	if db_struct(&c, db, "select * from chats where friend=? order by updated desc", f.ID) {
-		db_exec(db, "update chats set updated=? where id=?", time_unix_string(), c.ID)
+	if db.Struct(&c, "select * from chats where friend=? order by updated desc", f.ID) {
+		db.Exec("update chats set updated=? where id=?", time_unix_string(), c.ID)
 	} else {
 		c = Chat{ID: uid(), Name: f.Name, Friend: f.ID, Updated: time_unix()}
-		db_exec(db, "replace into chats ( id, name, friend, updated ) values ( ?, ?, ?, ? )", c.ID, c.Name, c.Friend, c.Updated)
+		db.Exec("replace into chats ( id, name, friend, updated ) values ( ?, ?, ?, ? )", c.ID, c.Name, c.Friend, c.Updated)
 	}
 	return &c
 }
@@ -63,7 +68,7 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 func chat_list(u *User, a *Action) {
 	var chats []Chat
 	db := db_app(u, "chat", "data.db", chat_db_create)
-	db_structs(&chats, db, "select * from chats order by updated desc")
+	db.Structs(&chats, "select * from chats order by updated desc")
 	a.WriteFormat(a.Input("format"), "chat/list", chats)
 }
 
@@ -90,7 +95,7 @@ func chat_receive(u *User, e *Event) {
 	}
 	c := chat_for_friend(u, f)
 
-	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), e.From, f.Name, body)
+	db.Exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), e.From, f.Name, body)
 	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": time_unix_string(), "body": body})
 	websockets_send(u, "chat", j)
 	notification_create(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
@@ -107,7 +112,7 @@ func chat_messages(u *User, a *Action) {
 	c := chat_for_friend(u, f)
 
 	var m []ChatMessage
-	db_structs(&m, db, "select * from messages where chat=? order by id", c.ID)
+	db.Structs(&m, "select * from messages where chat=? order by id", c.ID)
 	a.WriteJSON(m)
 }
 
@@ -128,7 +133,7 @@ func chat_send(u *User, a *Action) {
 	c := chat_for_friend(u, f)
 
 	message := a.Input("message")
-	db_exec(db, "replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
+	db.Exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), u.Public, u.Name, message)
 	event(u, f.ID, "chat", "", "message", json_encode(map[string]string{"body": message}))
 	j := json_encode(map[string]string{"from": u.Public, "name": u.Name, "time": time_unix_string(), "body": message})
 	websockets_send(u, "chat", j)

@@ -64,14 +64,16 @@ func event(u *User, to string, app string, entity string, action string, content
 	}
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
-	db_exec("db/queue.db", "replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
+	db := db_open("db/queue.db")
+	db.Exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
 	return &e
 }
 
 func events_check_queue(method string, location string) {
 	log_debug("Checking queue for queued events to %s '%s'", method, location)
 	var queue []Queue
-	db_structs(&queue, "db/queue.db", "select * from queue where method=? and location=?", method, location)
+	db := db_open("db/queue.db")
+	db.Structs(&queue, "select * from queue where method=? and location=?", method, location)
 	for _, q := range queue {
 		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
 		success := false
@@ -90,7 +92,8 @@ func events_check_queue(method string, location string) {
 
 		if success {
 			log_debug("Queue event sent")
-			db_exec("db/queue.db", "delete from queue where id=?", q.ID)
+			db := db_open("db/queue.db")
+			db.Exec("delete from queue where id=?", q.ID)
 		} else {
 			log_debug("Still unable to send queued event; keeping in queue")
 		}
@@ -126,7 +129,8 @@ func event_receive(e *Event) {
 	var u *User = nil
 	if e.To != "" {
 		u = &User{}
-		db_struct(u, "db/users.db", "select id from users where public=?", e.To)
+		db := db_open("db/users.db")
+		db.Struct(u, "select id from users where public=?", e.To)
 	}
 
 	switch a.Type {
@@ -170,10 +174,12 @@ func event_receive_json(event []byte, source string) {
 }
 
 func queue_manager() {
+	db := db_open("db/queue.db")
+
 	for {
 		time.Sleep(time.Minute)
 		var q Queue
-		if db_struct(&q, "db/queue.db", "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
+		if db.Struct(&q, "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
 			log_debug("Queue helper nudging events to %s '%s'", q.Method, q.Location)
 			events_check_queue(q.Method, q.Location)
 		}

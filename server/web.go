@@ -123,7 +123,7 @@ func web_name(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.Name = name
-	db_exec("db/users.db", "update users set name=? where id=?", name, u.ID)
+	user_set_name(u, name)
 	directory_create(u)
 	directory_publish(u)
 	web_redirect(w, "/")

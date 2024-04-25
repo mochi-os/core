@@ -32,18 +32,22 @@ func init() {
 }
 
 // Create app database
-func friends_db_create(db string) {
-	db_exec(db, "create table friends ( id text not null primary key, name text not null, class text not null )")
-	db_exec(db, "create index friends_name on friends( name )")
-	db_exec(db, "create table invites ( id text not null, direction text not null, name text not null, updated integer not null, primary key ( id, direction ) )")
-	db_exec(db, "create index invites_direction on invites( direction )")
+func friends_db_create(db *DB) {
+	db.Exec("create table settings ( name text not null primary key, value text not null )")
+	db.Exec("replace into settings ( name, value ) values ( 'schema', 1 )")
+
+	db.Exec("create table friends ( id text not null primary key, name text not null, class text not null )")
+	db.Exec("create index friends_name on friends( name )")
+
+	db.Exec("create table invites ( id text not null, direction text not null, name text not null, updated integer not null, primary key ( id, direction ) )")
+	db.Exec("create index invites_direction on invites( direction )")
 }
 
 // Get a friend
 func friend(u *User, id string) *Friend {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var f Friend
-	if db_struct(&f, db, "select * from friends where id=?", id) {
+	if db.Struct(&f, "select * from friends where id=?", id) {
 		return &f
 	}
 	return nil
@@ -53,7 +57,7 @@ func friend(u *User, id string) *Friend {
 func friends(u *User) *[]Friend {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var f []Friend
-	db_structs(&f, db, "select * from friends order by name")
+	db.Structs(&f, "select * from friends order by name")
 	return &f
 }
 
@@ -89,9 +93,9 @@ func friends_action_ignore(u *User, a *Action) {
 func friends_action_list(u *User, a *Action) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var f []Friend
-	db_structs(&f, db, "select * from friends order by name")
+	db.Structs(&f, "select * from friends order by name")
 	var i []FriendInvite
-	db_structs(&i, db, "select * from invites where direction='from' order by updated desc")
+	db.Structs(&i, "select * from invites where direction='from' order by updated desc")
 
 	a.WriteFormat(a.Input("format"), "friends/list", map[string]any{"Friends": f, "Invites": i})
 }
@@ -116,21 +120,21 @@ func friend_accept(u *User, friend string) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 
 	var i FriendInvite
-	db_struct(&i, db, "select * from invites where id=? and direction='from'", friend)
+	db.Struct(&i, "select * from invites where id=? and direction='from'", friend)
 	if i.ID == "" {
 		return
 	}
 
-	if !db_exists(db, "select id from friends where id=?", friend) {
+	if !db.Exists("select id from friends where id=?", friend) {
 		friend_create(u, friend, i.Name, "person", false)
 	}
 	event(u, friend, "friends", "", "accept", "")
-	db_exec(db, "delete from invites where id=? and direction='from'", friend)
+	db.Exec("delete from invites where id=? and direction='from'", friend)
 
 	// Cancel any invitation we had sent to them
-	if db_exists(db, "select id from invites where id=? and direction='to'", friend) {
+	if db.Exists("select id from invites where id=? and direction='to'", friend) {
 		event(u, friend, "friends", "", "cancel", "")
-		db_exec(db, "delete from invites where id=? and direction='to'", friend)
+		db.Exec("delete from invites where id=? and direction='to'", friend)
 	}
 
 	broadcast(u, "friends", "accept", friend, nil)
@@ -149,21 +153,21 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 	if !valid(class, "^person$") {
 		return error_message("Invalid class")
 	}
-	if db_exists(db, "select id from friends where id=?", friend) {
+	if db.Exists("select id from friends where id=?", friend) {
 		return error_message("You are already friends")
 	}
 
-	db_exec(db, "replace into friends ( id, name, class ) values ( ?, ?, ? )", friend, name, class)
+	db.Exec("replace into friends ( id, name, class ) values ( ?, ?, ? )", friend, name, class)
 
-	if db_exists(db, "select id from invites where id=? and direction='from'", friend) {
+	if db.Exists("select id from invites where id=? and direction='from'", friend) {
 		// We have an existing invitation from them, so accept it automatically
 		event(u, friend, "friends", "", "accept", "")
-		db_exec(db, "delete from invites where id=? and direction='from'", friend)
+		db.Exec("delete from invites where id=? and direction='from'", friend)
 
 	} else if invite {
 		// Send invitation
 		event(u, friend, "friends", "", "invite", u.Name)
-		db_exec(db, "replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
+		db.Exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
 	}
 
 	broadcast(u, "friends", "create", friend, nil)
@@ -174,8 +178,8 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 func friend_delete(u *User, friend string) {
 	log_debug("Deleting friend '%s'", friend)
 	db := db_app(u, "friends", "data.db", friends_db_create)
-	db_exec(db, "delete from invites where id=?", friend)
-	db_exec(db, "delete from friends where id=?", friend)
+	db.Exec("delete from invites where id=?", friend)
+	db.Exec("delete from friends where id=?", friend)
 	broadcast(u, "friends", "delete", friend, nil)
 }
 
@@ -183,10 +187,10 @@ func friend_delete(u *User, friend string) {
 func friends_event_accept(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
 	var i FriendInvite
-	db_struct(&i, db, "select * from invites where id=? and direction='to'", e.From)
+	db.Struct(&i, "select * from invites where id=? and direction='to'", e.From)
 	if i.ID != "" {
 		notification_create(u, "friends", "accept", i.ID, i.Name+" accepted your friend invitation", "/friends/")
-		db_exec(db, "delete from invites where id=? and direction='to'", e.From)
+		db.Exec("delete from invites where id=? and direction='to'", e.From)
 		broadcast(u, "friends", "accepted", e.From, nil)
 	}
 }
@@ -194,19 +198,19 @@ func friends_event_accept(u *User, e *Event) {
 // Remote party cancelled their existing invitation
 func friends_event_cancel(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
-	db_exec(db, "delete from invites where id=? and direction='from'", e.From)
+	db.Exec("delete from invites where id=? and direction='from'", e.From)
 	broadcast(u, "friends", "cancelled", e.From, nil)
 }
 
 // Remote party sent us a new invitation
 func friends_event_invite(u *User, e *Event) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
-	if db_exists(db, "select id from invites where id=? and direction='to'", e.From) {
+	if db.Exists("select id from invites where id=? and direction='to'", e.From) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
 		friend_accept(u, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
-		db_exec(db, "replace into invites ( id, direction, name, updated ) values ( ?, 'from', ?, ? )", e.From, e.Content, time_unix_string())
+		db.Exec("replace into invites ( id, direction, name, updated ) values ( ?, 'from', ?, ? )", e.From, e.Content, time_unix_string())
 	}
 	broadcast(u, "friends", "invited", e.From, nil)
 }
@@ -214,6 +218,6 @@ func friends_event_invite(u *User, e *Event) {
 // Ignore a friend invitation
 func friend_ignore(u *User, friend string) {
 	db := db_app(u, "friends", "data.db", friends_db_create)
-	db_exec(db, "delete from invites where id=? and direction='from'", friend)
+	db.Exec("delete from invites where id=? and direction='from'", friend)
 	broadcast(u, "friends", "ignore", friend, nil)
 }

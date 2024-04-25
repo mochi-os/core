@@ -90,7 +90,6 @@ func (db *DB) exec(query string, values ...any) {
 func (db *DB) exists(query string, values ...any) bool {
 	r, err := db.handle.Query(query, values...)
 	check(err)
-	defer r.Close()
 
 	for r.Next() {
 		return true

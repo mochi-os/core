@@ -11,11 +11,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	libp2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
+	libp2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
 	"strings"
@@ -31,10 +31,10 @@ var libp2p_address string
 var libp2p_context context.Context
 var libp2p_host host.Host
 var libp2p_id string
-var libp2p_topics = map[string]*pubsub.Topic{}
+var libp2p_topics = map[string]*libp2p_pubsub.Topic{}
 
 // Peer discovered using multicast DNS
-func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
+func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		//log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_add(pa.String()+"/p2p/"+p.ID.String(), true)
@@ -43,7 +43,7 @@ func (n *mdns_notifee) HandlePeerFound(p peer.AddrInfo) {
 
 // Connect to a peer
 func libp2p_connect(address string) bool {
-	info, err := peer.AddrInfoFromString(address)
+	info, err := libp2p_peer.AddrInfoFromString(address)
 	if err != nil {
 		log_warn("libp2p invalid peer address '%s': %s", address, err)
 		return false
@@ -69,7 +69,7 @@ func libp2p_handle(s network.Stream) {
 }
 
 // Listen for updates on a pubsub
-func libp2p_pubsub_listen(s *pubsub.Subscription) {
+func libp2p_pubsub_listen(s *libp2p_pubsub.Subscription) {
 	for {
 		m, err := s.Next(libp2p_context)
 		check(err)
@@ -102,7 +102,7 @@ func libp2p_read(r *bufio.Reader, peer string) {
 func libp2p_send(address string, content string) bool {
 	log_debug("libp2p sending '%s' to '%s'", content, address)
 
-	info, err := peer.AddrInfoFromString(address)
+	info, err := libp2p_peer.AddrInfoFromString(address)
 	if err != nil {
 		log_warn("libp2p invalid peer address when sending '%s': %s", address, err)
 		return false
@@ -154,7 +154,7 @@ func libp2p_start() {
 	err = dns.Start()
 	check(err)
 
-	gs, err := pubsub.NewGossipSub(libp2p_context, h)
+	gs, err := libp2p_pubsub.NewGossipSub(libp2p_context, h)
 	check(err)
 	for _, ps := range pubsubs {
 		t, err := gs.Join(ps.Topic)

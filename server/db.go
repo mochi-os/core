@@ -27,48 +27,48 @@ func db_create() {
 
 	// Settings
 	settings := db_open("db/settings.db")
-	settings.Exec("create table settings ( name text not null primary key, value text not null )")
-	settings.Exec("replace into settings ( name, value ) values ( 'schema', ? )", latest_schema)
+	settings.exec("create table settings ( name text not null primary key, value text not null )")
+	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", latest_schema)
 
 	// Users
 	users := db_open("db/users.db")
-	users.Exec("create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en', published integer not null default 0 )")
-	users.Exec("create unique index users_username on users( username )")
-	users.Exec("create unique index users_private on users( private )")
-	users.Exec("create unique index users_public on users( public )")
-	users.Exec("create index users_published on users( published )")
+	users.exec("create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en', published integer not null default 0 )")
+	users.exec("create unique index users_username on users( username )")
+	users.exec("create unique index users_private on users( private )")
+	users.exec("create unique index users_public on users( public )")
+	users.exec("create index users_published on users( published )")
 
 	// Login codes
-	users.Exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
-	users.Exec("create index codes_expires on codes( expires )")
+	users.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
+	users.exec("create index codes_expires on codes( expires )")
 
 	// Logins
-	users.Exec("create table logins ( user references users( id ), code text not null, name text not null default '', expires integer not null, primary key ( user, code ) )")
-	users.Exec("create unique index logins_code on logins( code )")
-	users.Exec("create index logins_expires on logins( expires )")
+	users.exec("create table logins ( user references users( id ), code text not null, name text not null default '', expires integer not null, primary key ( user, code ) )")
+	users.exec("create unique index logins_code on logins( code )")
+	users.exec("create index logins_expires on logins( expires )")
 
 	// User apps
-	users.Exec("create table user_apps ( user references users( id ), app text not null, track text not null, path text not null default '', installed integer not null default 0, primary key ( user, app ) )")
-	users.Exec("create index user_apps_app on user_apps( app )")
+	users.exec("create table user_apps ( user references users( id ), app text not null, track text not null, path text not null default '', installed integer not null default 0, primary key ( user, app ) )")
+	users.exec("create index user_apps_app on user_apps( app )")
 
 	// Directory
 	directory := db_open("db/directory.db")
-	directory.Exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer not null )")
-	directory.Exec("create index directory_fingerprint on directory( fingerprint )")
-	directory.Exec("create index directory_name on directory( name )")
-	directory.Exec("create index directory_class on directory( class )")
-	directory.Exec("create index directory_location on directory( location )")
-	directory.Exec("create index directory_updated on directory( updated )")
+	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer not null )")
+	directory.exec("create index directory_fingerprint on directory( fingerprint )")
+	directory.exec("create index directory_name on directory( name )")
+	directory.exec("create index directory_class on directory( class )")
+	directory.exec("create index directory_location on directory( location )")
+	directory.exec("create index directory_updated on directory( updated )")
 
 	// Peers
 	peers := db_open("db/peers.db")
-	peers.Exec("create table peers ( id text not null primary key, address text not null, updated integer not null )")
+	peers.exec("create table peers ( id text not null primary key, address text not null, updated integer not null )")
 
 	// Queued outbound events
 	queue := db_open("db.queue.db")
-	queue.Exec("db/queue.db", "create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
-	queue.Exec("db/queue.db", "create index queue_method_location on queue( method, location )")
-	queue.Exec("db/queue.db", "create index queue_updated on queue( updated )")
+	queue.exec("db/queue.db", "create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
+	queue.exec("db/queue.db", "create index queue_method_location on queue( method, location )")
+	queue.exec("db/queue.db", "create index queue_updated on queue( updated )")
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
@@ -82,12 +82,12 @@ func db_app(u *User, app string, file string, create func(*DB)) *DB {
 	return db
 }
 
-func (db *DB) Exec(query string, values ...any) {
+func (db *DB) exec(query string, values ...any) {
 	_, err := db.handle.Exec(query, values...)
 	check(err)
 }
 
-func (db *DB) Exists(query string, values ...any) bool {
+func (db *DB) exists(query string, values ...any) bool {
 	r, err := db.handle.Query(query, values...)
 	check(err)
 	defer r.Close()
@@ -131,7 +131,7 @@ func db_start() bool {
 	return false
 }
 
-func (db *DB) Struct(out any, query string, values ...any) bool {
+func (db *DB) scan(out any, query string, values ...any) bool {
 	err := db.handle.QueryRowx(query, values...).StructScan(out)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -142,7 +142,7 @@ func (db *DB) Struct(out any, query string, values ...any) bool {
 	return true
 }
 
-func (db *DB) Structs(out any, query string, values ...any) {
+func (db *DB) scans(out any, query string, values ...any) {
 	err := db.handle.Select(out, query, values...)
 	check(err)
 }

@@ -11,7 +11,7 @@ type Setting struct {
 func setting_get(name string, def string) string {
 	var s Setting
 	db := db_open("db/settings.db")
-	if db.Struct(&s, "select * from settings where name=?", name) {
+	if db.scan(&s, "select * from settings where name=?", name) {
 		return s.Value
 	}
 	return def
@@ -19,5 +19,5 @@ func setting_get(name string, def string) string {
 
 func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
-	db.Exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
+	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
 }

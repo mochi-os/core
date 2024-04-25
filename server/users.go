@@ -39,7 +39,7 @@ func code_send(email string) bool {
 	}
 	code := random_alphanumeric(12)
 	db := db_open("db/users.db")
-	db.Exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
+	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
 	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	return true
 }
@@ -47,19 +47,19 @@ func code_send(email string) bool {
 func login_create(user int) string {
 	code := random_alphanumeric(20)
 	db := db_open("db/users.db")
-	db.Exec("replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
+	db.exec("replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
 	return code
 }
 
 func login_delete(code string) {
 	db := db_open("db/users.db")
-	db.Exec("delete from logins where code=?", code)
+	db.exec("delete from logins where code=?", code)
 }
 
 func user_by_id(id int) *User {
 	var u User
 	db := db_open("db/users.db")
-	if db.Struct(&u, "select * from users where id=?", id) {
+	if db.scan(&u, "select * from users where id=?", id) {
 		return &u
 	}
 	return nil
@@ -68,12 +68,12 @@ func user_by_id(id int) *User {
 func user_by_login(login string) *User {
 	var l Login
 	db := db_open("db/users.db")
-	if !db.Struct(&l, "select * from logins where code=? and expires>=?", login, time_unix()) {
+	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, time_unix()) {
 		return nil
 	}
 
 	var u User
-	if db.Struct(&u, "select * from users where id=?", l.User) {
+	if db.scan(&u, "select * from users where id=?", l.User) {
 		return &u
 	}
 
@@ -83,22 +83,22 @@ func user_by_login(login string) *User {
 func user_from_code(code string) *User {
 	var c Code
 	db := db_open("db/users.db")
-	if !db.Struct(&c, "select * from codes where code=? and expires>=?", code, time_unix()) {
+	if !db.scan(&c, "select * from codes where code=? and expires>=?", code, time_unix()) {
 		return nil
 	}
-	db.Exec("delete from codes where code=?", code)
+	db.exec("delete from codes where code=?", code)
 
 	var u User
-	if db.Struct(&u, "select * from users where username=?", c.Username) {
+	if db.scan(&u, "select * from users where username=?", c.Username) {
 		return &u
 	}
 
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	check(err)
 
-	db.Exec("replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
+	db.exec("replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
 
-	if db.Struct(&u, "select * from users where username=?", c.Username) {
+	if db.scan(&u, "select * from users where username=?", c.Username) {
 		return &u
 	}
 
@@ -115,14 +115,14 @@ func user_location(user string) (string, string, string, string) {
 	// Check if user is local
 	var u User
 	dbu := db_open("db/users.db")
-	if dbu.Struct(&u, "select * from users where public=?", user) {
+	if dbu.scan(&u, "select * from users where public=?", user) {
 		return "local", u.Public, "user", u.Public
 	}
 
 	// Check in directory
 	var d Directory
 	dbd := db_open("db/directory.db")
-	if dbd.Struct(&d, "select location from directory where id=?", user) {
+	if dbd.scan(&d, "select location from directory where id=?", user) {
 		address := peer_address(d.Location)
 		if address != "" {
 			return "libp2p", address, "peer", d.Location
@@ -142,9 +142,9 @@ func users_manager() {
 	for {
 		time.Sleep(time.Minute)
 		var users []User
-		db.Structs(&users, "select * from users where published<?", time_unix()-30*86400)
+		db.scans(&users, "select * from users where published<?", time_unix()-30*86400)
 		for _, u := range users {
-			db.Exec("update users set published=? where id=?", time_unix(), u.ID)
+			db.exec("update users set published=? where id=?", time_unix(), u.ID)
 			directory_publish(&u)
 		}
 	}
@@ -152,5 +152,5 @@ func users_manager() {
 
 func user_set_name(u *User, name string) {
 	db := db_open("db/users.db")
-	db.Exec("update users set name=? where id=?", name, u.ID)
+	db.exec("update users set name=? where id=?", name, u.ID)
 }

@@ -79,6 +79,7 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 	f(u, &Action{r: r, w: w})
 }
 
+// TODO Move to login.go?
 func web_login(w http.ResponseWriter, r *http.Request) {
 	code := r.FormValue("code")
 	if code != "" {
@@ -111,6 +112,7 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 	web_template(w, "login/email")
 }
 
+// TODO Move to login.go?
 func web_name(w http.ResponseWriter, r *http.Request) {
 	u := web_auth(w, r)
 	if u == nil {

@@ -27,14 +27,14 @@ func init() {
 // Create a new directory entry for a local user
 func directory_create(u *User) {
 	db := db_open("db/directory.db")
-	db.Exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, 'person', ?, ? )", u.Public, fingerprint(u.Public), u.Name, libp2p_id, time_unix())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, 'person', ?, ? )", u.Public, fingerprint(u.Public), u.Name, libp2p_id, time_unix())
 	go events_check_queue("user", u.Public)
 }
 
 // Delete a directory entry
 func directory_delete(id string) {
 	db := db_open("db/directory.db")
-	db.Exec("delete from directory where id=?", id)
+	db.exec("delete from directory where id=?", id)
 }
 
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
@@ -56,7 +56,7 @@ func directory_event_download(u *User, e *Event) {
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	db.Structs(&results, "select * from directory order by id")
+	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
 		peer_send(e.Source, json_encode(event(u, "", "directory", "", "publish", json_encode(d))))
 		time.Sleep(time.Millisecond)
@@ -68,7 +68,7 @@ func directory_event_request(u *User, e *Event) {
 	log_debug("Received directory request event '%#v'", e)
 	var r User
 	db := db_open("db/users.db")
-	if db.Struct(&r, "select * from users where public=?", e.Content) {
+	if db.scan(&r, "select * from users where public=?", e.Content) {
 		directory_publish(&r)
 	}
 }
@@ -99,7 +99,7 @@ func directory_event_publish(u *User, e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.Exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, time_unix())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, time_unix())
 
 	go events_check_queue("user", d.ID)
 }
@@ -119,9 +119,9 @@ func directory_search(u *User, search string, include_self bool) *[]Directory {
 	var d []Directory
 	db := db_open("db/directory.db")
 	if u == nil || include_self {
-		db.Structs(&d, "select * from directory where name like ? order by name", "%"+search+"%")
+		db.scans(&d, "select * from directory where name like ? order by name", "%"+search+"%")
 	} else {
-		db.Structs(&d, "select * from directory where name like ? and id!=? order by name", "%"+search+"%", u.Public)
+		db.scans(&d, "select * from directory where name like ? and id!=? order by name", "%"+search+"%", u.Public)
 	}
 	return &d
 }

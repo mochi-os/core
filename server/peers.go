@@ -44,7 +44,7 @@ func peer_add(address string, connect bool) {
 func peers_add_from_db(limit int) {
 	var peers []Peer
 	db := db_open("db/peers.db")
-	db.Structs(&peers, "select * from peers order by updated desc limit ?", limit)
+	db.scans(&peers, "select * from peers order by updated desc limit ?", limit)
 	for _, p := range peers {
 		peer_add(p.Address, true)
 	}
@@ -54,7 +54,7 @@ func peers_add_from_db(limit int) {
 func peer_address(peer string) string {
 	var p Peer
 	db := db_open("db/peers.db")
-	if db.Struct(&p, "select address from peers where id=?", peer) {
+	if db.scan(&p, "select address from peers where id=?", peer) {
 		return p.Address
 	}
 	return ""
@@ -95,12 +95,12 @@ func peers_manager() {
 		if found && p.Address == e.Address {
 			// We're already connected to this peer and it's at the same address as before, so just update its updated time
 			peers_connected[p.ID] = p
-			db.Exec("update peers set updated=? where id=?", p.Updated, p.ID)
+			db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
 
 		} else if p.Connect && libp2p_connect(p.Address) {
 			// New peer
 			peers_connected[p.ID] = p
-			db.Exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
+			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 			go events_check_queue("peer", p.ID)
 		}
 	}

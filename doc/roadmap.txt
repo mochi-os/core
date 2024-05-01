@@ -1,12 +1,13 @@
 0.1
-	Chat app
 	Forums app
 	Feeds app
+	Chat app
 	Choose a product name
 	Introducer server
 
 0.2
 	Users can change their settings
+	Users can have multiple identities
 	HTTPS using Letsencrypt
 	Client API
 	Command line client

@@ -1,0 +1,16 @@
+{{define "title"}}Comms: Set your public details{{end}}
+{{template "head" .}}
+<h2>Set how others see you</h2>
+
+<form action="/login/identity/">
+	<label for="name">Your name, as you'd like others to see it:</label>
+	<input type="text" name="name" autofocus/><br/>
+	<label for="privacy">Allow others to search for you:</label>
+	<select name="privacy">
+		<option value="public">Yes</option>
+		<option value="private">No</option>
+	</select><br/>
+	<input type="submit" value="Set"/>
+</form>
+
+{{template "foot" .}}

@@ -27,8 +27,8 @@ var peer_publish_chan = make(chan bool)
 
 func init() {
 	a := register_app("peers")
-	a.register_event("request", peer_event_request)
-	a.register_event("publish", peer_event_publish)
+	a.register_event("request", peer_event_request, false)
+	a.register_event("publish", peer_event_publish, false)
 	a.register_pubsub("peers", peers_publish)
 }
 
@@ -61,7 +61,7 @@ func peer_address(peer string) string {
 }
 
 // Reply to a peer request if for us
-func peer_event_request(u *User, e *Event) {
+func peer_event_request(i *Identity, e *Event) {
 	log_debug("Received peer request event '%#v'", e)
 	if e.Content == libp2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")
@@ -70,12 +70,13 @@ func peer_event_request(u *User, e *Event) {
 }
 
 // Received a peer publish event from another server
-func peer_event_publish(u *User, e *Event) {
-	if valid(e.Entity, "^[\\w]{1,100}$") && valid(e.Content, "^[\\w/.]{1,100}$") {
-		if e.Entity == libp2p_id {
+func peer_event_publish(i *Identity, e *Event) {
+	var m map[string]string
+	if json_decode([]byte(e.Content), &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
+		if m["id"] == libp2p_id {
 			return
 		}
-		peer_add(e.Content, true)
+		peer_add(m["address"], true)
 	} else {
 		log_info("Invalid peer update")
 	}
@@ -108,6 +109,7 @@ func peers_manager() {
 
 // Publish our own information to the pubsub regularly or when requested
 func peers_publish(t *pubsub.Topic) {
+	jc := json_encode(map[string]string{"id": libp2p_id, "address": libp2p_address})
 	after := time.After(time.Hour)
 	for {
 		select {
@@ -117,13 +119,13 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Entity: libp2p_id, Action: "publish", Content: libp2p_address})))
+		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "publish", Content: jc})))
 	}
 }
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(event(nil, "", "peers", "", "request", peer))))
+	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "request", Content: peer})))
 }
 
 // Send a message to a peer

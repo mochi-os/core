@@ -3,12 +3,12 @@
 
 package main
 
-func (a *App) register_service(service string, f func(*User, string, ...any) any) {
+func (a *App) register_service(service string, f func(int, string, string, string, ...any) any) {
 	a.Internal.Services[service] = f
 }
 
-func service(u *User, app string, s string, parameters ...any) {
-	log_debug("Service: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
+func service(user int, identity string, app string, s string, parameters ...any) {
+	log_debug("Service: user='%d', app='%s', service='%s', parameters='%v'", user, app, s, parameters)
 
 	a := apps[app]
 	if a == nil {
@@ -21,7 +21,7 @@ func service(u *User, app string, s string, parameters ...any) {
 		for _, try := range []string{s, ""} {
 			f, found := a.Internal.Services[try]
 			if found {
-				f(u, s, parameters...)
+				f(user, identity, app, s, parameters...)
 				return
 			}
 		}
@@ -30,7 +30,7 @@ func service(u *User, app string, s string, parameters ...any) {
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				_, err := wasm_run(u, a, function, 0, map[string]any{"service": s, "parameters": parameters})
+				_, err := wasm_run(user, identity, a, function, 0, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return
@@ -44,8 +44,8 @@ func service(u *User, app string, s string, parameters ...any) {
 	return
 }
 
-func service_json(u *User, app string, s string, depth int, parameters ...any) (string, error) {
-	log_debug("Service JSON: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
+func service_json(user int, identity string, app string, s string, depth int, parameters ...any) (string, error) {
+	log_debug("Service JSON: user='%d', app='%s', service='%s', parameters='%v'", user, app, s, parameters)
 
 	if depth > 1000 {
 		log_warn("Service recursion detected; stopping at 1000 iterations")
@@ -63,7 +63,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		for _, try := range []string{s, ""} {
 			f, found := a.Internal.Services[try]
 			if found {
-				return json_encode(f(u, s, parameters...)), nil
+				return json_encode(f(user, identity, app, s, parameters...)), nil
 			}
 		}
 
@@ -71,7 +71,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				jo, err := wasm_run(u, a, function, depth, map[string]any{"service": s, "parameters": parameters})
+				jo, err := wasm_run(user, identity, a, function, depth, map[string]any{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return "", err

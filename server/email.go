@@ -10,7 +10,7 @@ import (
 )
 
 func email_send(to string, subject string, body string) {
-	log_debug("Sending email, to='%s', subject='%s', body='%s'", to, subject, body)
+	//log_debug("Sending email, to='%s', subject='%s', body='%s'", to, subject, body)
 	message := fmt.Sprintf("From: comms-server@localhost\r\nTo: %s\r\nSubject: %s\r\n\r\n%s", to, subject, body)
 
 	err := smtp.SendMail("127.0.0.1:25", nil, "comms-server@localhost", []string{to}, []byte(message))

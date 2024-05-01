@@ -87,7 +87,6 @@ func libp2p_read(r *bufio.Reader, peer string) {
 	for {
 		in, err := r.ReadString('\n')
 		if err != nil {
-			log_info("libp2p error reading from peer: %s", err)
 			return
 		}
 		in = strings.TrimSuffix(in, "\n")
@@ -104,7 +103,7 @@ func libp2p_send(address string, content string) bool {
 
 	info, err := libp2p_peer.AddrInfoFromString(address)
 	if err != nil {
-		log_warn("libp2p invalid peer address when sending '%s': %s", address, err)
+		log_warn("libp2p invalid peer address '%s': %s", address, err)
 		return false
 	}
 	s, err := libp2p_host.NewStream(context.Background(), info.ID, "/comms/1.0.0")
@@ -113,11 +112,16 @@ func libp2p_send(address string, content string) bool {
 		return false
 	}
 	w := bufio.NewWriter(bufio.NewWriter(s))
-	log_debug("libp2p writing event")
-	w.WriteString(content)
-	w.WriteRune('\n')
-	w.Flush()
-	log_debug("libp2p event sent")
+	_, err = w.WriteString(content + "\n")
+	if err != nil {
+		log_debug("libp2p unable to write event: %s", err)
+		return false
+	}
+	err = w.Flush()
+	if err != nil {
+		log_debug("libp2p unable to flush event: %s", err)
+		return false
+	}
 	return true
 }
 

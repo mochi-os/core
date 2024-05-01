@@ -1,0 +1,31 @@
+{{define "title"}}Comms: Create new forum{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | <a href="/forums/">Forums</a> | New
+
+<form action="/forums/create/">
+    <label for="name">Forum name:</label>
+    <input type="text" name="name"/><br/>
+	<label for="privacy">Privacy:</label>
+	<select name="privacy" id="privacy">
+		<option value="public">Public: Published in directory</option>
+		<option value="private">Private: Not published in directory</option>
+	</select><br/>
+	<label for="joining">Joining:</label>
+	<select name="joining" id="joining">
+		<option value="anyone">Anyone may join</option>
+		<option value="moderated">New members must be approved by moderator</option>
+	</select><br/>
+    <label for="viewing">Viewing:</label>
+	<select name="viewing" id="viewing">
+		<option value="anyone">Anyone may view</option>
+		<option value="members">Members may view posts</option>
+	</select><br/>
+	<label for="privacy">Posting:</label>
+	<select name="posting" id="posting">
+		<option value="members">Members may post</option>
+		<option value="moderated">Posts must be approved by a moderator</option>
+	</select><br/>
+    <input type="submit" value="Create"/>
+</form>
+
+{{template "foot" .}}

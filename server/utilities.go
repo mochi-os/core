@@ -126,6 +126,8 @@ func valid(s string, match string) bool {
 		match = "^[\\w-=]{1,1000}$"
 	case "name":
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
+	case "privacy":
+		match = "^(public|private)$"
 	case "public":
 		match = "^[\\w-=]{44}$"
 	case "text":

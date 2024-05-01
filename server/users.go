@@ -3,12 +3,6 @@
 
 package main
 
-import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"time"
-)
-
 type Code struct {
 	Code     string
 	Username string
@@ -23,14 +17,12 @@ type Login struct {
 }
 
 type User struct {
-	ID        int
-	Username  string
-	Name      string
-	Role      string
-	Private   string
-	Public    string
-	Language  string
-	Published string
+	ID       int
+	Username string
+	Identity string
+	Role     string
+	Language string
+	Timezone string
 }
 
 func code_send(email string) bool {
@@ -41,7 +33,17 @@ func code_send(email string) bool {
 	db := db_open("db/users.db")
 	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
 	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
+	log_debug("Code: %s", code)
 	return true
+}
+
+func (u *User) identity() *Identity {
+	db := db_open("db/users.db")
+	var i Identity
+	if db.scan(&i, "select * from identities where id=?", u.Identity) {
+		return &i
+	}
+	return nil
 }
 
 func login_create(user int) string {
@@ -93,10 +95,7 @@ func user_from_code(code string) *User {
 		return &u
 	}
 
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	check(err)
-
-	db.exec("replace into users ( username, name, role, public, private, language ) values ( ?, '', 'user', ?, ?, 'en' )", c.Username, base64_encode(public), base64_encode(private))
+	db.exec("replace into users ( username, identity, role, language, timezone ) values ( ?, '', 'user', 'en', '' )", c.Username)
 
 	if db.scan(&u, "select * from users where username=?", c.Username) {
 		return &u
@@ -104,48 +103,4 @@ func user_from_code(code string) *User {
 
 	log_warn("Unable to create user")
 	return nil
-}
-
-func user_location(user string) (string, string, string, string) {
-	// Check if user is local
-	var u User
-	dbu := db_open("db/users.db")
-	if dbu.scan(&u, "select * from users where public=?", user) {
-		return "local", u.Public, "user", u.Public
-	}
-
-	// Check in directory
-	var d Directory
-	dbd := db_open("db/directory.db")
-	if dbd.scan(&d, "select location from directory where id=?", user) {
-		address := peer_address(d.Location)
-		if address != "" {
-			return "libp2p", address, "peer", d.Location
-		}
-		peer_request(d.Location)
-		return "peer", d.Location, "peer", d.Location
-	}
-
-	directory_request(user)
-	return "user", user, "user", user
-}
-
-// Re-publish all our users every 30 days so the network knows they're still active
-func users_manager() {
-	db := db_open("db/users.db")
-
-	for {
-		time.Sleep(time.Minute)
-		var users []User
-		db.scans(&users, "select * from users where published<?", time_unix()-30*86400)
-		for _, u := range users {
-			db.exec("update users set published=? where id=?", time_unix(), u.ID)
-			directory_publish(&u)
-		}
-	}
-}
-
-func user_set_name(u *User, name string) {
-	db := db_open("db/users.db")
-	db.exec("update users set name=? where id=?", name, u.ID)
 }

@@ -18,7 +18,7 @@ func init() {
 func home(u *User, a *Action) {
 	switch a.input("action") {
 	case "clear":
-		notifications_clear(u)
+		notifications_clear(u.ID)
 		a.redirect("/")
 		return
 
@@ -32,7 +32,7 @@ func home(u *User, a *Action) {
 		return
 	}
 
-	a.write_template("home", map[string]any{"User": u, "Actions": home_actions, "Notifications": notifications_list(u)})
+	a.write_template("home", map[string]any{"User": u, "Actions": home_actions, "Notifications": notifications_list(u.ID)})
 }
 
 func (a *App) register_home(action string, labels map[string]string) {

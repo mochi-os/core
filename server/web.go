@@ -89,8 +89,8 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 		}
 		web_cookie_set(w, "login", login_create(u.ID))
 
-		if u.Name == "" {
-			web_template(w, "login/name")
+		if u.Identity == "" {
+			web_template(w, "login/identity")
 			return
 		}
 
@@ -111,21 +111,20 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 	web_template(w, "login/email")
 }
 
-func web_name(w http.ResponseWriter, r *http.Request) {
+func web_identity(w http.ResponseWriter, r *http.Request) {
 	u := web_auth(w, r)
 	if u == nil {
 		return
 	}
 
-	name := r.FormValue("name")
-	if !valid(name, "name") {
-		web_error(w, 400, "Invalid name")
+	i, err := identity_create(r.FormValue("name"), u.ID, "person", r.FormValue("privacy"))
+	if err != nil {
+		web_error(w, 400, "Unable to create identity: %s", err)
 		return
 	}
-	u.Name = name
-	user_set_name(u, name)
-	directory_create(u)
-	directory_publish(u)
+	db := db_open("db/users.db")
+	db.exec("update users set identity=? where id=?", i.ID, u.ID)
+
 	web_redirect(w, "/")
 }
 
@@ -135,9 +134,9 @@ func web_redirect(w http.ResponseWriter, url string) {
 
 func web_start() {
 	http.HandleFunc("/", web_action)
-	//TODO Decide what to do with fixed URLs
+	//TODO Decide what to do with these URL paths
 	http.HandleFunc("/login/", web_login)
-	http.HandleFunc("/login/name/", web_name)
+	http.HandleFunc("/login/identity/", web_identity)
 	http.HandleFunc("/websocket/", websocket_connection)
 	log_info("Web listening on ':%d'", web_port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
@@ -173,7 +172,7 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uid()
-	defer websocket_terminate(c, u, id)
+	defer websocket_terminate(c, u.ID, id)
 
 	_, found := websockets[u.ID]
 	if !found {
@@ -185,7 +184,7 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 	for {
 		t, j, err := c.Read(ctx)
 		if err != nil {
-			websocket_terminate(c, u, id)
+			websocket_terminate(c, u.ID, id)
 			return
 		}
 		if t != websocket.MessageText {
@@ -196,22 +195,22 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func websockets_send(u *User, app string, content string) {
+func websockets_send(user int, app string, content string) {
 	ctx := context.Background()
 	j := ""
 
-	for id, c := range websockets[u.ID] {
+	for id, c := range websockets[user] {
 		if j == "" {
 			j = json_encode(map[string]string{"app": app, "content": content})
 		}
 		err := c.Write(ctx, websocket.MessageText, []byte(j))
 		if err != nil {
-			websocket_terminate(c, u, id)
+			websocket_terminate(c, user, id)
 		}
 	}
 }
 
-func websocket_terminate(c *websocket.Conn, u *User, id string) {
+func websocket_terminate(c *websocket.Conn, user int, id string) {
 	c.CloseNow()
-	delete(websockets[u.ID], id)
+	delete(websockets[user], id)
 }

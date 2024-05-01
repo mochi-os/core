@@ -26,9 +26,9 @@ func init() {
 	a.register_action("friends/ignore", friends_action_ignore, true)
 	a.register_action("friends/new", friends_action_new, true)
 	a.register_action("friends/search", friends_action_search, true)
-	a.register_event("accept", friends_event_accept)
-	a.register_event("cancel", friends_event_cancel)
-	a.register_event("invite", friends_event_invite)
+	a.register_event("accept", friends_event_accept, true)
+	a.register_event("cancel", friends_event_cancel, true)
+	a.register_event("invite", friends_event_invite, true)
 }
 
 // Create app database
@@ -44,8 +44,8 @@ func friends_db_create(db *DB) {
 }
 
 // Get a friend
-func friend(u *User, id string) *Friend {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friend(user int, identity string, id string) *Friend {
+	db := db_app(user, identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	var f Friend
@@ -56,8 +56,8 @@ func friend(u *User, id string) *Friend {
 }
 
 // List friends
-func friends(u *User) *[]Friend {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friends(user int, identity string) *[]Friend {
+	db := db_app(user, identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	var f []Friend
@@ -67,13 +67,13 @@ func friends(u *User) *[]Friend {
 
 // Accept friend invitation
 func friends_action_accept(u *User, a *Action) {
-	friend_accept(u, a.input("id"))
+	friend_accept(u.ID, u.Identity, a.input("id"))
 	a.write_template("friends/accepted")
 }
 
 // Create new friend
 func friends_action_create(u *User, a *Action) {
-	err := friend_create(u, a.input("id"), a.input("name"), "person", true)
+	err := friend_create(u.ID, u.Identity, a.input("id"), a.input("name"), "person", true)
 	if err != nil {
 		a.error(500, "Unable to create friend: %s", err)
 		return
@@ -95,7 +95,7 @@ func friends_action_ignore(u *User, a *Action) {
 
 // Show list of friends
 func friends_action_list(u *User, a *Action) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+	db := db_app(u.ID, u.Identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	var f []Friend
@@ -127,34 +127,36 @@ func friends_action_search(u *User, a *Action) {
 }
 
 // Accept a friend's invitation
-func friend_accept(u *User, friend string) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friend_accept(user int, identity string, friend string) {
+	db := db_app(user, identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
-	var i FriendInvite
-	db.scan(&i, "select * from invites where id=? and direction='from'", friend)
-	if i.ID == "" {
+	var fi FriendInvite
+	db.scan(&fi, "select * from invites where id=? and direction='from'", friend)
+	if fi.ID == "" {
 		return
 	}
 
 	if !db.exists("select id from friends where id=?", friend) {
-		friend_create(u, friend, i.Name, "person", false)
+		friend_create(user, identity, friend, fi.Name, "person", false)
 	}
-	event(u, friend, "friends", "", "accept", "").send()
+	event := Event{ID: uid(), From: identity, To: friend, App: "friends", Action: "accept"}
+	event.send()
 	db.exec("delete from invites where id=? and direction='from'", friend)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where id=? and direction='to'", friend) {
-		event(u, friend, "friends", "", "cancel", "").send()
+		event := Event{ID: uid(), From: identity, To: friend, App: "friends", Action: "cancel"}
+		event.send()
 		db.exec("delete from invites where id=? and direction='to'", friend)
 	}
 
-	broadcast(u, "friends", "accept", friend, nil)
+	broadcast(user, "friends", "accept", friend, nil)
 }
 
 // Create new friend
-func friend_create(u *User, friend string, name string, class string, invite bool) error {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friend_create(user int, identity string, friend string, name string, class string, invite bool) error {
+	db := db_app(user, identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	if !valid(friend, "public") {
@@ -174,72 +176,77 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 
 	if db.exists("select id from invites where id=? and direction='from'", friend) {
 		// We have an existing invitation from them, so accept it automatically
-		event(u, friend, "friends", "", "accept", "").send()
+		event := Event{ID: uid(), From: identity, To: friend, App: "friends", Action: "accept"}
+		event.send()
 		db.exec("delete from invites where id=? and direction='from'", friend)
 
 	} else if invite {
 		// Send invitation
-		event(u, friend, "friends", "", "invite", u.Name).send()
-		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
+		i := identity_by_id(identity)
+		if i != nil {
+			event := Event{ID: uid(), From: identity, To: friend, App: "friends", Action: "invite", Content: i.Name}
+			event.send()
+			db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
+		}
 	}
 
-	broadcast(u, "friends", "create", friend, nil)
+	broadcast(user, "friends", "create", friend, nil)
 	return nil
 }
 
 // Delete friend
 func friend_delete(u *User, friend string) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+	db := db_app(u.ID, u.Identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	db.exec("delete from invites where id=?", friend)
 	db.exec("delete from friends where id=?", friend)
-	broadcast(u, "friends", "delete", friend, nil)
+	broadcast(u.ID, "friends", "delete", friend, nil)
 }
 
 // Remote party accepted our invitation
-func friends_event_accept(u *User, e *Event) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friends_event_accept(i *Identity, e *Event) {
+	db := db_app(i.User, i.ID, "friends", "data.db", friends_db_create)
 	defer db.close()
 
-	var i FriendInvite
-	db.scan(&i, "select * from invites where id=? and direction='to'", e.From)
-	if i.ID != "" {
-		notification_create(u, "friends", "accept", i.ID, i.Name+" accepted your friend invitation", "/friends/")
+	var fi FriendInvite
+	db.scan(&fi, "select * from invites where id=? and direction='to'", e.From)
+	if fi.ID != "" {
+		notification_create(i.User, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends/")
 		db.exec("delete from invites where id=? and direction='to'", e.From)
-		broadcast(u, "friends", "accepted", e.From, nil)
+		broadcast(i.User, "friends", "accepted", e.From, nil)
 	}
 }
 
 // Remote party cancelled their existing invitation
-func friends_event_cancel(u *User, e *Event) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friends_event_cancel(i *Identity, e *Event) {
+	db := db_app(i.User, i.ID, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	db.exec("delete from invites where id=? and direction='from'", e.From)
-	broadcast(u, "friends", "cancelled", e.From, nil)
+	broadcast(i.User, "friends", "cancelled", e.From, nil)
 }
 
 // Remote party sent us a new invitation
-func friends_event_invite(u *User, e *Event) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+func friends_event_invite(i *Identity, e *Event) {
+	db := db_app(i.User, i.ID, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	if db.exists("select id from invites where id=? and direction='to'", e.From) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
-		friend_accept(u, e.From)
+		friend_accept(i.User, i.ID, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
 		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'from', ?, ? )", e.From, e.Content, time_unix_string())
 	}
-	broadcast(u, "friends", "invited", e.From, nil)
+	broadcast(i.User, "friends", "invited", e.From, nil)
 }
 
 // Ignore a friend invitation
 func friend_ignore(u *User, friend string) {
-	db := db_app(u, "friends", "data.db", friends_db_create)
+	db := db_app(u.ID, u.Identity, "friends", "data.db", friends_db_create)
 	defer db.close()
 
 	db.exec("delete from invites where id=? and direction='from'", friend)
-	broadcast(u, "friends", "ignore", friend, nil)
+	broadcast(u.ID, "friends", "ignore", friend, nil)
 }

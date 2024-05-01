@@ -9,16 +9,14 @@ import (
 )
 
 type Event struct {
-	User      *User  `json:"-"`
 	ID        string `json:"id"`
-	Source    string `json:"-"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	App       string `json:"app"`
-	Entity    string `json:"entity"`
 	Action    string `json:"action"`
 	Content   string `json:"content"`
 	Signature string `json:"signature"`
+	Source    string `json:"-"`
 }
 
 type Queue struct {
@@ -27,15 +25,6 @@ type Queue struct {
 	Location string
 	Event    string
 	Updated  string
-}
-
-func event(u *User, to string, app string, entity string, action string, content string) *Event {
-	from := ""
-	if u != nil {
-		from = u.Public
-	}
-	e := Event{User: u, ID: uid(), Source: "", From: from, To: to, App: app, Entity: entity, Action: action, Content: content}
-	return &e
 }
 
 func events_check_queue(method string, location string) {
@@ -51,8 +40,8 @@ func events_check_queue(method string, location string) {
 				success = true
 			}
 
-		} else if q.Method == "user" {
-			method, location, _, _ := user_location(location)
+		} else if q.Method == "identity" {
+			method, location, _, _ := identity_location(location)
 			if method == "libp2p" && libp2p_send(location, q.Event) {
 				success = true
 			}
@@ -69,48 +58,53 @@ func events_check_queue(method string, location string) {
 }
 
 func event_receive(e *Event) {
-	//log_debug("Event received: id='%s', from='%s', to='%s', app='%s', entity='%s', action='%s', content='%s', signature='%s'", e.ID, e.From, e.To, e.App, e.Entity, e.Action, e.Content, e.Signature)
-
-	if e.Source != "" && e.From != "" {
-		public := base64_decode(e.From, "")
-		if len(public) != ed25519.PublicKeySize {
-			log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
+	if e.From != "" {
+		if !valid(e.From, "id") {
+			log_info("Dropping received event due to invalid 'from' field '%s'", e.From)
 			return
 		}
-		if !ed25519.Verify(public, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content), base64_decode(e.Signature, "")) {
-			log_info("Dropping received event due to invalid sender signature")
-			return
+
+		if e.Source != "" {
+			public := base64_decode(e.From, "")
+			if len(public) != ed25519.PublicKeySize {
+				log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
+				return
+			}
+			if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.App+e.Action+e.Content), base64_decode(e.Signature, "")) {
+				log_info("Dropping received event due to invalid sender signature")
+				return
+			}
 		}
 	}
 
-	if e.Entity != "" && !valid(e.Entity, "id") {
-		log_info("Dropping received event due to invalid entity '%s'", e.Entity)
-		return
+	var i *Identity = nil
+	if e.To != "" {
+		i = &Identity{}
+		db := db_open("db/users.db")
+		db.scan(i, "select * from identities where id=?", e.To)
 	}
 
+	//TODO Route on destination identity class, rather than app? If so, remove app field from event?
 	a := apps[e.App]
 	if a == nil {
 		log_info("Dropping received event due to unknown app '%s'", e.App)
 		return
 	}
 
-	var u *User = nil
-	if e.To != "" {
-		u = &User{}
-		db := db_open("db/users.db")
-		db.scan(u, "select id from users where public=?", e.To)
-	}
-
 	switch a.Type {
 	case "internal":
-		f, found := a.Internal.Events[e.Action]
+		ae, found := a.Internal.Events[e.Action]
+		if i == nil && ae.Addressed {
+			log_info("Dropping received event due to no matching identity")
+			return
+		}
 		if found {
-			f(u, e)
+			ae.Function(i, e)
 			return
 		} else {
-			f, found = a.Internal.Events[""]
+			ae, found = a.Internal.Events[""]
 			if found {
-				f(u, e)
+				ae.Function(i, e)
 				return
 			}
 		}
@@ -119,7 +113,12 @@ func event_receive(e *Event) {
 		for _, try := range []string{e.Action, ""} {
 			function, found := a.WASM.Events[try]
 			if found {
-				_, err := wasm_run(u, a, function, 0, e)
+				var err error
+				if i == nil {
+					_, err = wasm_run(0, "", a, function, 0, e)
+				} else {
+					_, err = wasm_run(i.User, i.ID, a, function, 0, e)
+				}
 				if err != nil {
 					log_info("Event handler returned error: %s", err)
 					return
@@ -154,27 +153,19 @@ func queue_manager() {
 	}
 }
 
-func (a *App) register_event(event string, f func(*User, *Event)) {
-	a.Internal.Events[event] = f
+func (a *App) register_event(event string, f func(*Identity, *Event), addressed bool) {
+	a.Internal.Events[event] = &AppEvent{Function: f, Addressed: addressed}
 }
 
 func (e *Event) send() {
-	method, location, queue_method, queue_location := user_location(e.To)
+	method, location, queue_method, queue_location := identity_location(e.To)
 
 	if method == "local" {
 		go event_receive(e)
 		return
 	}
 
-	if e.User != nil {
-		private := base64_decode(e.User.Private, "")
-		if string(private) == "" {
-			log_warn("Dropping event due to invalid private key")
-			return
-		}
-		e.Signature = base64_encode(ed25519.Sign(private, []byte(e.From+e.To+e.App+e.Entity+e.Action+e.Content)))
-	}
-
+	e.sign()
 	j := json_encode(e)
 
 	if method == "libp2p" && libp2p_send(location, j) {
@@ -184,4 +175,23 @@ func (e *Event) send() {
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
 	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
+}
+
+func (e *Event) sign() {
+	if e.From == "" {
+		return
+	}
+
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select private from identities where id=?", e.From) {
+		log_warn("Not signing event due unknown sending identity")
+		return
+	}
+	private := base64_decode(i.Private, "")
+	if string(private) == "" {
+		log_warn("Not signing event due to invalid private key")
+		return
+	}
+	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.App+e.Action+e.Content)))
 }

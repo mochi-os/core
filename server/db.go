@@ -33,11 +33,8 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users ( id integer primary key, username text not null, name text not null, role text not null default 'user', private text not null, public text not null, language text not null default 'en', published integer not null default 0 )")
+	users.exec("create table users ( id integer primary key, username text not null, identity text not null default '', role text not null default 'user', language text not null default 'en', timezone text not null default 'system' )")
 	users.exec("create unique index users_username on users( username )")
-	users.exec("create unique index users_private on users( private )")
-	users.exec("create unique index users_public on users( public )")
-	users.exec("create index users_published on users( published )")
 
 	// Login codes
 	users.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
@@ -48,9 +45,14 @@ func db_create() {
 	users.exec("create unique index logins_code on logins( code )")
 	users.exec("create index logins_expires on logins( expires )")
 
-	// User apps
-	users.exec("create table user_apps ( user references users( id ), app text not null, track text not null, path text not null default '', installed integer not null default 0, primary key ( user, app ) )")
-	users.exec("create index user_apps_app on user_apps( app )")
+	// Identities
+	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, name text not null, user references users( id ), class text not null, privacy text not null default 'public', published integer not null default 0 )")
+	users.exec("create index identities_fingerprint on identities( fingerprint )")
+	users.exec("create index identities_name on identities( name )")
+	users.exec("create index identities_user on identities( user )")
+	users.exec("create index identities_class on identities( class )")
+	users.exec("create index identities_privacy on identities( privacy )")
+	users.exec("create index identities_published on identities( published )")
 
 	// Directory
 	directory := db_open("db/directory.db")
@@ -66,14 +68,14 @@ func db_create() {
 	peers.exec("create table peers ( id text not null primary key, address text not null, updated integer not null )")
 
 	// Queued outbound events
-	queue := db_open("db.queue.db")
-	queue.exec("db/queue.db", "create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
-	queue.exec("db/queue.db", "create index queue_method_location on queue( method, location )")
-	queue.exec("db/queue.db", "create index queue_updated on queue( updated )")
+	queue := db_open("db/queue.db")
+	queue.exec("create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
+	queue.exec("create index queue_method_location on queue( method, location )")
+	queue.exec("create index queue_updated on queue( updated )")
 }
 
-func db_app(u *User, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/apps/%s/%s", u.ID, app, file)
+func db_app(user int, identity string, app string, file string, create func(*DB)) *DB {
+	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", user, identity, app, file)
 	if file_exists(path) {
 		return db_open(path)
 	}
@@ -125,6 +127,7 @@ func db_open(path string) *DB {
 	databases[path] = db
 	databases_lock.Unlock()
 
+	db.exec("PRAGMA journal_mode=WAL")
 	return db
 }
 
@@ -151,6 +154,17 @@ func db_upgrade() {
 		}
 		setting_set("schema", string(schema))
 	}
+}
+
+func db_user(user int, file string, create func(*DB)) *DB {
+	path := fmt.Sprintf("users/%d/%s", user, file)
+	if file_exists(path) {
+		return db_open(path)
+	}
+
+	db := db_open(path)
+	create(db)
+	return db
 }
 
 func (db *DB) close() {

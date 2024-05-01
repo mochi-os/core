@@ -19,11 +19,11 @@ func main() {
 
 	new_install := db_start()
 	//apps_start()
+	go web_start()
 	go peers_manager()
 	libp2p_start()
+	go identities_manager()
 	go queue_manager()
-	go users_manager()
-	go web_start()
 	if new_install {
 		go directory_download()
 	}

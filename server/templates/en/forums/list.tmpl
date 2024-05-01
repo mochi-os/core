@@ -1,0 +1,11 @@
+{{define "title"}}Comms: Forums{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | Forums</p>
+
+<p>{{if len .}}{{range .}}<a href="/forums/view/?id={{.ID}}">{{.Name}}</a><br/>{{end}}
+{{else}}You are not subscribed to any forums{{end}}</p>
+
+<p><a href="/forums/subscribe/">Subscribe to a forum</a><br/>
+<a href="/forums/new/">Create a forum</a></p>
+
+{{template "foot" .}}

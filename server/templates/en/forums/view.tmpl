@@ -1,5 +1,9 @@
 {{define "title"}}Comms: {{.Name}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Home</a> | <a href="/forums/">Forums</a> | {{.Name}}</p>
+<p class="header"><a href="/">Home</a> | <a href="/forums/">Forums</a> | {{.Forum.Name}}</p>
+
+<a href="../post/new/?forum={{.Forum.ID}}">New post</a>
+
+<p>{{range .Posts}}<a href="../post/view/?forum={{$.Forum.ID}}&post={{.ID}}">{{.Title}}</a><br/>{{end}}</p>
 
 {{template "foot" .}}

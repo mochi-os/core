@@ -15,21 +15,15 @@ import (
 	"math/big"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const alphanumeric = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-var match_non_controls = regexp.MustCompile("^[\\P{Cc}\\n]*$")
+// TODO Forbid \r?
+var match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 var match_hyphens = regexp.MustCompile(`-`)
-
-func append_space(sp *string, s string) {
-	if *sp == "" {
-		*sp = s
-	} else {
-		*sp = *sp + " " + s
-	}
-}
 
 func atoi(s string, def int) int {
 	i, err := strconv.Atoi(s)
@@ -40,15 +34,20 @@ func atoi(s string, def int) int {
 }
 
 func base64_decode(s string, def string) []byte {
+	pad := 4 - len(s)%4
+	if pad < 4 {
+		s = s + strings.Repeat("=", pad)
+	}
 	bytes, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
+		log_info("Base64 decoding error for '%s'; returning default '%s': %s", s, def, err)
 		return []byte(def)
 	}
 	return bytes
 }
 
 func base64_encode(b []byte) string {
-	return base64.URLEncoding.EncodeToString(b)
+	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
 }
 
 func check(err error) {
@@ -114,7 +113,7 @@ func uid() string {
 }
 
 func valid(s string, match string) bool {
-	//log_debug("valid( '%s', '%s' )", s, match)
+	//log_debug("Validating '%s' (%#v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
 		return false
 	}
@@ -124,6 +123,8 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-z-]{1,100}$"
 	case "id":
 		match = "^[\\w-=]{1,1000}$"
+	case "line":
+		match = "^[^\r\n]{1,1000}$"
 	case "name":
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
 	case "privacy":

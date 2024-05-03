@@ -41,7 +41,7 @@ func wasm_read(r *bufio.Reader) string {
 	return output
 }
 
-func wasm_run(user int, identity string, a *App, function string, depth int, input any) (string, error) {
+func wasm_run(u *User, a *App, function string, depth int, input any) (string, error) {
 	log_debug("WASM running app '%s', version '%s', function '%s'", a.Name, a.Version, function)
 
 	file := data_dir + "/apps/" + a.Name + "/" + a.Version + "/" + a.WASM.File
@@ -51,7 +51,7 @@ func wasm_run(user int, identity string, a *App, function string, depth int, inp
 		return "", error_message("WASM unable to read file '%s': %v", file, err)
 	}
 
-	storage := fmt.Sprintf("users/%d/identities/%s/apps/%d", user, identity, a.ID)
+	storage := fmt.Sprintf("users/%d/identities/%s/apps/%d", u.ID, u.Identity.ID, a.ID)
 	if !file_exists(storage) {
 		file_mkdir(storage)
 	}
@@ -125,9 +125,9 @@ func wasm_run(user int, identity string, a *App, function string, depth int, inp
 				var service_return string
 				var err error
 				if len(splits) > 2 {
-					service_return, err = service_json(user, identity, splits[0], splits[1], depth+1, splits[2])
+					service_return, err = service_json(u, splits[0], splits[1], depth+1, splits[2])
 				} else {
-					service_return, err = service_json(user, identity, splits[0], splits[1], depth+1)
+					service_return, err = service_json(u, splits[0], splits[1], depth+1)
 				}
 				if err != nil {
 					log_info("WASM call to service returned error: %s", err)

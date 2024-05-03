@@ -23,7 +23,7 @@ func main() {
 	go peers_manager()
 	libp2p_start()
 	go identities_manager()
-	go queue_manager()
+	go events_manager()
 	if new_install {
 		go directory_download()
 	}

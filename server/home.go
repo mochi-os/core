@@ -18,21 +18,21 @@ func init() {
 func home(u *User, a *Action) {
 	switch a.input("action") {
 	case "clear":
-		notifications_clear(u.ID)
+		notifications_clear(u)
 		a.redirect("/")
 		return
 
 	case "logout":
-		login := web_cookie_get(a.r, "login", "")
+		login := web_cookie_get(a.R, "login", "")
 		if login != "" {
 			login_delete(login)
 		}
-		web_cookie_unset(a.w, "login")
-		a.write_template("login/logout")
+		web_cookie_unset(a.W, "login")
+		a.template("login/logout")
 		return
 	}
 
-	a.write_template("home", map[string]any{"User": u, "Actions": home_actions, "Notifications": notifications_list(u.ID)})
+	a.template("home", map[string]any{"User": u, "Actions": home_actions, "Notifications": notifications_list(u)})
 }
 
 func (a *App) register_home(action string, labels map[string]string) {

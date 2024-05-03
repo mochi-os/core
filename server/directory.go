@@ -50,7 +50,7 @@ func directory_download() {
 }
 
 // Reply to a directory download request
-func directory_event_download(i *Identity, e *Event) {
+func directory_event_download(u *User, e *Event) {
 	log_debug("Received directory download event '%#v'", e)
 	time.Sleep(time.Second)
 
@@ -64,7 +64,7 @@ func directory_event_download(i *Identity, e *Event) {
 }
 
 // Reply to a directory request if we have the requested identity
-func directory_event_request(i *Identity, e *Event) {
+func directory_event_request(u *User, e *Event) {
 	log_debug("Received directory request event '%#v'", e)
 	var r Identity
 	db := db_open("db/users.db")
@@ -74,7 +74,7 @@ func directory_event_request(i *Identity, e *Event) {
 }
 
 // Received a directory publish event from another server
-func directory_event_publish(i *Identity, e *Event) {
+func directory_event_publish(u *User, e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
 	if !json_decode([]byte(e.Content), &d) {
@@ -108,6 +108,7 @@ func directory_event_publish(i *Identity, e *Event) {
 func directory_publish(i *Identity) {
 	e := Event{ID: uid(), From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
 	e.sign()
+	//TODO Queue publish if we're not connected to any/enough peers
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
 }
 

@@ -19,7 +19,7 @@ type Login struct {
 type User struct {
 	ID       int
 	Username string
-	Identity string
+	Identity *Identity
 	Role     string
 	Language string
 	Timezone string
@@ -40,7 +40,7 @@ func code_send(email string) bool {
 func (u *User) identity() *Identity {
 	db := db_open("db/users.db")
 	var i Identity
-	if db.scan(&i, "select * from identities where id=?", u.Identity) {
+	if db.scan(&i, "select * from identities where user=? and class='person' order by id limit 1", u.ID) {
 		return &i
 	}
 	return nil
@@ -59,15 +59,41 @@ func login_delete(code string) {
 }
 
 func user_by_id(id int) *User {
-	var u User
 	db := db_open("db/users.db")
-	if db.scan(&u, "select * from users where id=?", id) {
-		return &u
+	var u User
+	if !db.scan(&u, "select * from users where id=?", id) {
+		return nil
 	}
-	return nil
+
+	u.Identity = u.identity()
+	if u.Identity == nil {
+		return nil
+	}
+
+	return &u
+}
+
+func user_by_identity(id string) *User {
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select * from identities where id=?", id) {
+		return nil
+	}
+
+	var u User
+	if !db.scan(u, "select * from users where id=?", i.User) {
+		return nil
+	}
+
+	u.Identity = &i
+	return &u
 }
 
 func user_by_login(login string) *User {
+	if login == "" {
+		return nil
+	}
+
 	var l Login
 	db := db_open("db/users.db")
 	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, time_unix()) {
@@ -75,11 +101,12 @@ func user_by_login(login string) *User {
 	}
 
 	var u User
-	if db.scan(&u, "select * from users where id=?", l.User) {
-		return &u
+	if !db.scan(&u, "select * from users where id=?", l.User) {
+		return nil
 	}
 
-	return nil
+	u.Identity = u.identity()
+	return &u
 }
 
 func user_from_code(code string) *User {
@@ -92,10 +119,11 @@ func user_from_code(code string) *User {
 
 	var u User
 	if db.scan(&u, "select * from users where username=?", c.Username) {
+		u.Identity = u.identity()
 		return &u
 	}
 
-	db.exec("replace into users ( username, identity, role, language, timezone ) values ( ?, '', 'user', 'en', '' )", c.Username)
+	db.exec("replace into users ( username, role, language, timezone ) values ( ?, 'user', 'en', '' )", c.Username)
 
 	if db.scan(&u, "select * from users where username=?", c.Username) {
 		return &u

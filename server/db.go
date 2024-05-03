@@ -33,7 +33,7 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users ( id integer primary key, username text not null, identity text not null default '', role text not null default 'user', language text not null default 'en', timezone text not null default 'system' )")
+	users.exec("create table users ( id integer primary key, username text not null, role text not null default 'user', language text not null default 'en', timezone text not null default 'system' )")
 	users.exec("create unique index users_username on users( username )")
 
 	// Login codes
@@ -46,11 +46,11 @@ func db_create() {
 	users.exec("create index logins_expires on logins( expires )")
 
 	// Identities
-	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, name text not null, user references users( id ), class text not null, privacy text not null default 'public', published integer not null default 0 )")
+	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), class text not null, name text not null, privacy text not null default 'public', published integer not null default 0 )")
 	users.exec("create index identities_fingerprint on identities( fingerprint )")
-	users.exec("create index identities_name on identities( name )")
 	users.exec("create index identities_user on identities( user )")
 	users.exec("create index identities_class on identities( class )")
+	users.exec("create index identities_name on identities( name )")
 	users.exec("create index identities_privacy on identities( privacy )")
 	users.exec("create index identities_published on identities( published )")
 
@@ -74,8 +74,9 @@ func db_create() {
 	queue.exec("create index queue_updated on queue( updated )")
 }
 
-func db_app(user int, identity string, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", user, identity, app, file)
+// TODO Replace with something else?
+func db_app(u *User, app string, file string, create func(*DB)) *DB {
+	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.ID, app, file)
 	if file_exists(path) {
 		return db_open(path)
 	}
@@ -156,8 +157,9 @@ func db_upgrade() {
 	}
 }
 
-func db_user(user int, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/%s", user, file)
+// TODO Replace with something else?
+func db_user(u *User, file string, create func(*DB)) *DB {
+	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(path) {
 		return db_open(path)
 	}

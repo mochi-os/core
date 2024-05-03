@@ -57,7 +57,30 @@ func events_check_queue(method string, location string) {
 	}
 }
 
-func event_receive(e *Event) {
+func events_manager() {
+	db := db_open("db/queue.db")
+
+	for {
+		time.Sleep(time.Minute)
+		var q Queue
+		if db.scan(&q, "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
+			log_debug("Queue helper nudging events to %s '%s'", q.Method, q.Location)
+			events_check_queue(q.Method, q.Location)
+		}
+	}
+}
+
+func event_receive_json(event []byte, source string) {
+	var e Event
+	if !json_decode(event, &e) {
+		log_info("Dropping event with malformed JSON: '%s'", event)
+		return
+	}
+	e.Source = source
+	e.receive()
+}
+
+func (e *Event) receive() {
 	if e.From != "" {
 		if !valid(e.From, "id") {
 			log_info("Dropping received event due to invalid 'from' field '%s'", e.From)
@@ -77,12 +100,7 @@ func event_receive(e *Event) {
 		}
 	}
 
-	var i *Identity = nil
-	if e.To != "" {
-		i = &Identity{}
-		db := db_open("db/users.db")
-		db.scan(i, "select * from identities where id=?", e.To)
-	}
+	u := user_by_identity(e.To)
 
 	//TODO Route on destination identity class, rather than app? If so, remove app field from event?
 	a := apps[e.App]
@@ -94,17 +112,17 @@ func event_receive(e *Event) {
 	switch a.Type {
 	case "internal":
 		ae, found := a.Internal.Events[e.Action]
-		if i == nil && ae.Addressed {
+		if u == nil && ae.Addressed {
 			log_info("Dropping received event due to no matching identity")
 			return
 		}
 		if found {
-			ae.Function(i, e)
+			ae.Function(u, e)
 			return
 		} else {
 			ae, found = a.Internal.Events[""]
 			if found {
-				ae.Function(i, e)
+				ae.Function(u, e)
 				return
 			}
 		}
@@ -113,12 +131,7 @@ func event_receive(e *Event) {
 		for _, try := range []string{e.Action, ""} {
 			function, found := a.WASM.Events[try]
 			if found {
-				var err error
-				if i == nil {
-					_, err = wasm_run(0, "", a, function, 0, e)
-				} else {
-					_, err = wasm_run(i.User, i.ID, a, function, 0, e)
-				}
+				_, err := wasm_run(u, a, function, 0, e)
 				if err != nil {
 					log_info("Event handler returned error: %s", err)
 					return
@@ -130,30 +143,7 @@ func event_receive(e *Event) {
 	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
 }
 
-func event_receive_json(event []byte, source string) {
-	var e Event
-	if !json_decode(event, &e) {
-		log_info("Dropping event with malformed JSON: '%s'", event)
-		return
-	}
-	e.Source = source
-	event_receive(&e)
-}
-
-func queue_manager() {
-	db := db_open("db/queue.db")
-
-	for {
-		time.Sleep(time.Minute)
-		var q Queue
-		if db.scan(&q, "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
-			log_debug("Queue helper nudging events to %s '%s'", q.Method, q.Location)
-			events_check_queue(q.Method, q.Location)
-		}
-	}
-}
-
-func (a *App) register_event(event string, f func(*Identity, *Event), addressed bool) {
+func (a *App) register_event(event string, f func(*User, *Event), addressed bool) {
 	a.Internal.Events[event] = &AppEvent{Function: f, Addressed: addressed}
 }
 
@@ -161,7 +151,7 @@ func (e *Event) send() {
 	method, location, queue_method, queue_location := identity_location(e.To)
 
 	if method == "local" {
-		go event_receive(e)
+		go e.receive()
 		return
 	}
 

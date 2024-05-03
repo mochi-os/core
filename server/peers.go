@@ -61,7 +61,7 @@ func peer_address(peer string) string {
 }
 
 // Reply to a peer request if for us
-func peer_event_request(i *Identity, e *Event) {
+func peer_event_request(u *User, e *Event) {
 	log_debug("Received peer request event '%#v'", e)
 	if e.Content == libp2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")
@@ -70,7 +70,7 @@ func peer_event_request(i *Identity, e *Event) {
 }
 
 // Received a peer publish event from another server
-func peer_event_publish(i *Identity, e *Event) {
+func peer_event_publish(u *User, e *Event) {
 	var m map[string]string
 	if json_decode([]byte(e.Content), &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
 		if m["id"] == libp2p_id {

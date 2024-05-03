@@ -15,25 +15,15 @@ import (
 )
 
 var (
-	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl
+	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
 	templates embed.FS
 )
 
 var web_port int
 var websockets = map[int]map[string]*websocket.Conn{}
 
-func web_auth(w http.ResponseWriter, r *http.Request) *User {
-	login := web_cookie_get(r, "login", "")
-	if login == "" {
-		return nil
-	}
-
-	u := user_by_login(login)
-	if u == nil {
-		return nil
-	}
-
-	return u
+func web_auth(r *http.Request) *User {
+	return user_by_login(web_cookie_get(r, "login", ""))
 }
 
 func web_cookie_get(r *http.Request, name string, def string) string {
@@ -60,10 +50,14 @@ func web_error(w http.ResponseWriter, code int, message string, values ...any) {
 }
 
 func web_action(w http.ResponseWriter, r *http.Request) {
-	var u *User
+	var u *User = nil
 	referrer, err := url.Parse(r.Referer())
 	if err == nil && (referrer.Host == "" || referrer.Host == r.Host) {
-		u = web_auth(w, r)
+		u = web_auth(r)
+		if u != nil && u.Identity == nil {
+			web_template(w, "login/identity")
+			return
+		}
 	}
 
 	action := strings.Trim(r.URL.Path, "/")
@@ -76,7 +70,9 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 		web_login(w, r)
 		return
 	}
-	f(u, &Action{r: r, w: w})
+	a := Action{App: actions_apps[action], Databases: make(map[string]*DB), Owner: u, R: r, W: w}
+	defer a.cleanup()
+	f(u, &a)
 }
 
 func web_login(w http.ResponseWriter, r *http.Request) {
@@ -88,11 +84,6 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		web_cookie_set(w, "login", login_create(u.ID))
-
-		if u.Identity == "" {
-			web_template(w, "login/identity")
-			return
-		}
 
 		web_redirect(w, "/")
 		return
@@ -112,18 +103,16 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 }
 
 func web_identity(w http.ResponseWriter, r *http.Request) {
-	u := web_auth(w, r)
+	u := web_auth(r)
 	if u == nil {
 		return
 	}
 
-	i, err := identity_create(r.FormValue("name"), u.ID, "person", r.FormValue("privacy"))
+	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"))
 	if err != nil {
 		web_error(w, 400, "Unable to create identity: %s", err)
 		return
 	}
-	db := db_open("db/users.db")
-	db.exec("update users set identity=? where id=?", i.ID, u.ID)
 
 	web_redirect(w, "/")
 }
@@ -162,7 +151,7 @@ func web_template(w http.ResponseWriter, file string, values ...any) {
 }
 
 func websocket_connection(w http.ResponseWriter, r *http.Request) {
-	u := web_auth(w, r)
+	u := web_auth(r)
 	if u == nil {
 		return
 	}
@@ -172,7 +161,7 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uid()
-	defer websocket_terminate(c, u.ID, id)
+	defer websocket_terminate(c, u, id)
 
 	_, found := websockets[u.ID]
 	if !found {
@@ -184,7 +173,7 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 	for {
 		t, j, err := c.Read(ctx)
 		if err != nil {
-			websocket_terminate(c, u.ID, id)
+			websocket_terminate(c, u, id)
 			return
 		}
 		if t != websocket.MessageText {
@@ -195,22 +184,22 @@ func websocket_connection(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func websockets_send(user int, app string, content string) {
+func websockets_send(u *User, app string, content string) {
 	ctx := context.Background()
 	j := ""
 
-	for id, c := range websockets[user] {
+	for id, c := range websockets[u.ID] {
 		if j == "" {
 			j = json_encode(map[string]string{"app": app, "content": content})
 		}
 		err := c.Write(ctx, websocket.MessageText, []byte(j))
 		if err != nil {
-			websocket_terminate(c, user, id)
+			websocket_terminate(c, u, id)
 		}
 	}
 }
 
-func websocket_terminate(c *websocket.Conn, user int, id string) {
+func websocket_terminate(c *websocket.Conn, u *User, id string) {
 	c.CloseNow()
-	delete(websockets[user], id)
+	delete(websockets[u.ID], id)
 }

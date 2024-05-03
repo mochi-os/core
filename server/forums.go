@@ -33,16 +33,17 @@ type ForumPost struct {
 }
 
 type ForumComment struct {
-	ID     string
-	Forum  string
-	Post   string
-	Parent string
-	Time   int64
-	Author string
-	Name   string
-	Body   string
-	Up     int
-	Down   int
+	ID       string
+	Forum    string
+	Post     string
+	Parent   string
+	Time     int64
+	Author   string
+	Name     string
+	Body     string
+	Up       int
+	Down     int
+	Children *[]ForumComment
 }
 
 type ForumVote struct {
@@ -146,6 +147,24 @@ func forums_comment_new(u *User, a *Action) {
 	a.template("forums/comment/new", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
+// Get comments recursively
+func forum_comments(db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
+	if depth > 1000 {
+		return nil
+	}
+
+	id := ""
+	if parent != nil {
+		id = parent.ID
+	}
+	var cs []ForumComment
+	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by time desc", f.ID, p.ID, id)
+	for j, c := range cs {
+		cs[j].Children = forum_comments(db, f, p, &c, depth+1)
+	}
+	return &cs
+}
+
 // Create new forum
 func forums_create(u *User, a *Action) {
 	name := a.input("name")
@@ -233,11 +252,7 @@ func forums_post_view(u *User, a *Action) {
 		return
 	}
 
-	//TODO Nested comments
-	var c []ForumComment
-	db.scans(&c, "select * from comments where forum=? and post=? order by time desc", f.ID, a.input("post"))
-
-	a.template("forums/post/view", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": p, "Comments": c})
+	a.template("forums/post/view", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": p, "Comments": forum_comments(db, f, &p, nil, 0)})
 }
 
 // Enter details of forums to be subscribed to

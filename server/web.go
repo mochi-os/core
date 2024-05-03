@@ -133,7 +133,7 @@ func web_start() {
 }
 
 func web_template(w http.ResponseWriter, file string, values ...any) {
-	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include/head.tmpl", "templates/en/include/foot.tmpl")
+	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {
 		log_warn(err.Error())
 		http.Error(w, "Web template error", http.StatusInternalServerError)

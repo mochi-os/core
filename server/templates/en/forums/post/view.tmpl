@@ -1,0 +1,12 @@
+{{define "title"}}Comms: {{.Post.Title}}{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | <a href="/forums/">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | {{.Post.Title}}</p>
+
+<h3>{{.Post.Title}}</h3>
+<pre>{{.Post.Body}}</pre>
+
+<a href="../../comment/new/?forum={{.Forum.ID}}&post={{.Post.ID}}">New comment</a>
+
+<p>{{range .Comments}}<pre>{{.Body}}</pre>{{end}}</p>
+
+{{template "foot" .}}

@@ -1,0 +1,13 @@
+{{define "title"}}Comms: New comment{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | <a href="/forums/">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | New comment
+
+<form action="../create/">
+	<textarea name="body" rows="20" cols="100"></textarea><br/>
+	<input type="hidden" name="forum" value="{{.Forum.ID}}"/>
+	<input type="hidden" name="post" value="{{.Post}}"/>
+	<input type="hidden" name="parent" value="{{.Parent}}"/>
+    <input type="submit" value="Post"/>
+</form>
+
+{{template "foot" .}}

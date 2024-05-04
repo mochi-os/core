@@ -20,30 +20,32 @@ type ForumMember struct {
 }
 
 type ForumPost struct {
-	ID     string
-	Forum  string
-	Time   int64
-	Status string
-	Author string
-	Name   string
-	Title  string
-	Body   string
-	Up     int
-	Down   int
+	ID         string
+	Forum      string
+	Time       int64
+	TimeString string
+	Status     string
+	Author     string
+	Name       string
+	Title      string
+	Body       string
+	Up         int
+	Down       int
 }
 
 type ForumComment struct {
-	ID       string
-	Forum    string
-	Post     string
-	Parent   string
-	Time     int64
-	Author   string
-	Name     string
-	Body     string
-	Up       int
-	Down     int
-	Children *[]ForumComment
+	ID         string
+	Forum      string
+	Post       string
+	Parent     string
+	Time       int64
+	TimeString string
+	Author     string
+	Name       string
+	Body       string
+	Up         int
+	Down       int
+	Children   *[]ForumComment
 }
 
 type ForumVote struct {
@@ -148,7 +150,7 @@ func forums_comment_new(u *User, a *Action) {
 }
 
 // Get comments recursively
-func forum_comments(db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
+func forum_comments(u *User, db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
 	if depth > 1000 {
 		return nil
 	}
@@ -160,7 +162,8 @@ func forum_comments(db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth 
 	var cs []ForumComment
 	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by time desc", f.ID, p.ID, id)
 	for j, c := range cs {
-		cs[j].Children = forum_comments(db, f, p, &c, depth+1)
+		cs[j].TimeString = u.time_local(c.Time)
+		cs[j].Children = forum_comments(u, db, f, p, &c, depth+1)
 	}
 	return &cs
 }
@@ -251,8 +254,9 @@ func forums_post_view(u *User, a *Action) {
 		a.error(404, "Post not found")
 		return
 	}
+	p.TimeString = u.time_local(p.Time)
 
-	a.template("forums/post/view", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": p, "Comments": forum_comments(db, f, &p, nil, 0)})
+	a.template("forums/post/view", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
 }
 
 // Enter details of forums to be subscribed to

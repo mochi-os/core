@@ -33,7 +33,7 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users ( id integer primary key, username text not null, role text not null default 'user', language text not null default 'en', timezone text not null default 'system' )")
+	users.exec("create table users ( id integer primary key, username text not null, role text not null default 'user', language text not null default 'en', timezone text not null default 'UTC' )")
 	users.exec("create unique index users_username on users( username )")
 
 	// Login codes

@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"time"
+)
+
 type Code struct {
 	Code     string
 	Username string
@@ -56,6 +60,15 @@ func login_create(user int) string {
 func login_delete(code string) {
 	db := db_open("db/users.db")
 	db.exec("delete from logins where code=?", code)
+}
+
+func (u *User) time_local(t int64) string {
+	l, err := time.LoadLocation(u.Timezone)
+	if err == nil {
+		return time.Unix(t, 0).In(l).Format(time.DateTime)
+	} else {
+		return time.Unix(t, 0).Format(time.DateTime)
+	}
 }
 
 func user_by_id(id int) *User {

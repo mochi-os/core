@@ -26,6 +26,7 @@ func init() {
 
 // Create a new directory entry for a local identity
 func directory_create(i *Identity) {
+	log_debug("Creating directory entry '%s' (%s)", i.ID, i.Name)
 	db := db_open("db/directory.db")
 	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, time_unix())
 	go events_check_queue("identity", i.ID)
@@ -106,7 +107,8 @@ func directory_event_publish(u *User, e *Event) {
 
 // Publish a directory entry on the libp2p pubsub
 func directory_publish(i *Identity) {
-	e := Event{ID: uid(), From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
+	log_debug("Publishing identity '%s' (%s) to pubsub", i.ID, i.Name)
+	e := Event{From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
 	e.sign()
 	//TODO Queue publish if we're not connected to any/enough peers
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
@@ -114,17 +116,17 @@ func directory_publish(i *Identity) {
 
 // Request that another server publish a directory event
 func directory_request(id string) {
-	e := Event{ID: uid(), App: "directory", Action: "request", Content: id}
+	e := Event{App: "directory", Action: "request", Content: id}
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
 }
 
 // Search the directory
-func directory_search(u *User, search string, include_self bool) *[]Directory {
+func directory_search(u *User, class string, search string, include_self bool) *[]Directory {
 	dbd := db_open("db/directory.db")
 	var ds []Directory
-	dbd.scans(&ds, "select * from directory where name like ? order by name", "%"+search+"%")
+	dbd.scans(&ds, "select * from directory where class=? and name like ? order by name", class, "%"+search+"%")
 
-	if include_self {
+	if include_self || class != "person" {
 		return &ds
 	}
 

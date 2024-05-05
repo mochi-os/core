@@ -23,10 +23,10 @@ type Identity struct {
 func identity_by_id(id string) *Identity {
 	db := db_open("db/users.db")
 	var i Identity
-	if db.scan(&i, "select * from identities where id=?", id) {
-		return &i
+	if !db.scan(&i, "select * from identities where id=?", id) {
+		return nil
 	}
-	return nil
+	return &i
 }
 
 func identity_create(u *User, class string, name string, privacy string) (*Identity, error) {

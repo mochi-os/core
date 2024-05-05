@@ -67,6 +67,7 @@ func (u *User) time_local(t int64) string {
 	if err == nil {
 		return time.Unix(t, 0).In(l).Format(time.DateTime)
 	} else {
+		log_warn("Invalid time zone '%s':", err)
 		return time.Unix(t, 0).Format(time.DateTime)
 	}
 }
@@ -94,7 +95,7 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(u, "select * from users where id=?", i.User) {
+	if !db.scan(&u, "select * from users where id=?", i.User) {
 		return nil
 	}
 
@@ -144,4 +145,24 @@ func user_from_code(code string) *User {
 
 	log_warn("Unable to create user")
 	return nil
+}
+
+func user_owning_identity(id string) *User {
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select * from identities where id=?", id) {
+		return nil
+	}
+
+	var u User
+	if !db.scan(&u, "select * from users where id=?", i.User) {
+		return nil
+	}
+
+	u.Identity = u.identity()
+	if u.Identity == nil {
+		return nil
+	}
+
+	return &u
 }

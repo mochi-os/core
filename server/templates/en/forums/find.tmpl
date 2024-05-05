@@ -1,0 +1,11 @@
+{{define "title"}}Comms: Find a forum{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | <a href="../">Forums</a> | Find a forum</p>
+
+<form action="../search/">
+    <label for="search">Forum name or part of name:</label>
+    <input type="text" name="search"/><br/>
+    <input type="submit" value="Search"/>
+</form>
+
+{{template "foot" .}}

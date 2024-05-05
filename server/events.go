@@ -100,7 +100,7 @@ func (e *Event) receive() {
 		}
 	}
 
-	u := user_by_identity(e.To)
+	u := user_owning_identity(e.To)
 
 	//TODO Route on destination identity class, rather than app? If so, remove app field from event?
 	a := apps[e.App]
@@ -148,6 +148,10 @@ func (a *App) register_event(event string, f func(*User, *Event), addressed bool
 }
 
 func (e *Event) send() {
+	if e.ID == "" {
+		e.ID = uid()
+	}
+
 	method, location, queue_method, queue_location := identity_location(e.To)
 
 	if method == "local" {
@@ -170,6 +174,10 @@ func (e *Event) send() {
 func (e *Event) sign() {
 	if e.From == "" {
 		return
+	}
+
+	if e.ID == "" {
+		e.ID = uid()
 	}
 
 	db := db_open("db/users.db")

@@ -119,13 +119,13 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "publish", Content: jc})))
+		t.Publish(libp2p_context, []byte(json_encode(Event{App: "peers", Action: "publish", Content: jc})))
 	}
 }
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "request", Content: peer})))
+	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{App: "peers", Action: "request", Content: peer})))
 }
 
 // Send a message to a peer

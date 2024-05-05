@@ -63,7 +63,7 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 	action := strings.Trim(r.URL.Path, "/")
 	f, found := actions[action]
 	if !found {
-		web_error(w, 404, "Not found")
+		web_error(w, 404, "Web path not found")
 		return
 	}
 	if u == nil && actions_authenticated[action] {

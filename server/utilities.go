@@ -98,10 +98,12 @@ func sha1(in []byte) string {
 	return hex.EncodeToString(s.Sum(nil))
 }
 
+// TODO Rename to now()?
 func time_unix() int64 {
 	return time.Now().Unix()
 }
 
+// TODO Rename to now_string()?
 func time_unix_string() string {
 	return strconv.FormatInt(time.Now().Unix(), 10)
 }
@@ -130,7 +132,7 @@ func valid(s string, match string) bool {
 	case "privacy":
 		match = "^(public|private)$"
 	case "public":
-		match = "^[\\w-=]{44}$"
+		match = "^[\\w-=]{43,44}$"
 	case "text":
 		if len(s) > 10000 {
 			return false

@@ -68,13 +68,19 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 
 // List existing chats
 func chat_list(u *User, a *Action) {
+	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
+
 	var c []Chat
-	a.db("data.db").scans(&c, "select * from chats order by updated desc")
+	db.scans(&c, "select * from chats order by updated desc")
 	a.write(a.input("format"), "chat/list", c)
 }
 
 // Send list of messages to client
 func chat_messages(u *User, a *Action) {
+	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
+
 	f := friend(u, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
@@ -83,7 +89,7 @@ func chat_messages(u *User, a *Action) {
 	c := chat_for_friend(u, f)
 
 	var m []ChatMessage
-	a.db("data.db").scans(&m, "select * from messages where chat=? order by id", c.ID)
+	db.scans(&m, "select * from messages where chat=? order by id", c.ID)
 	a.json(m)
 }
 
@@ -110,7 +116,7 @@ func chat_receive(u *User, e *Event) {
 	f := friend(u, e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event := Event{ID: uid(), From: u.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
+		event := Event{From: u.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
 		event.send()
 		return
 	}
@@ -124,6 +130,9 @@ func chat_receive(u *User, e *Event) {
 
 // Send a chat message
 func chat_send(u *User, a *Action) {
+	db := db_app(u, "chat", "data.db", chat_db_create)
+	defer db.close()
+
 	f := friend(u, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
@@ -138,8 +147,8 @@ func chat_send(u *User, a *Action) {
 	}
 
 	message := a.input("message")
-	a.db("data.db").exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), i.ID, i.Name, message)
-	event := Event{ID: uid(), From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
+	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), i.ID, i.Name, message)
+	event := Event{From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
 	event.send()
 
 	j := json_encode(map[string]string{"from": i.ID, "name": i.Name, "time": time_unix_string(), "body": message})

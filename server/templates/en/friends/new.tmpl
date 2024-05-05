@@ -1,10 +1,10 @@
 {{define "title"}}Comms: New friend{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Home</a> | <a href="/friends/">Friends</a> | New</p>
+<p class="header"><a href="/">Home</a> | <a href="../">Friends</a> | New</p>
 
 <h3>Search for friends:</h3>
 
-<form action="/friends/search/">
+<form action="../search/">
     <label for="search">Name or part of your friend's name:</label>
     <input type="text" name="search"/><br/>
     <input type="submit" value="Search"/>
@@ -12,7 +12,7 @@
 
 <h3>Or manually enter your friend's details:</h3>
 
-<form action="/friends/create/">
+<form action="../create/">
 	<label for="name">Your friend's name:</label>
 	<input type="text" name="name"/><br/>
 	<label for="id">Your friend's public key:</label>

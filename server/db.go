@@ -74,14 +74,15 @@ func db_create() {
 	queue.exec("create index queue_updated on queue( updated )")
 }
 
-// TODO Replace with something else?
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.ID, app, file)
+	//log_debug("Database opening app file '%s'", path)
 	if file_exists(path) {
 		return db_open(path)
 	}
 
 	db := db_open(path)
+	//log_debug("Database creating new app file schema")
 	create(db)
 	return db
 }

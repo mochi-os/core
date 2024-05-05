@@ -4,19 +4,19 @@
 package main
 
 type Forum struct {
-	ID      string
-	Master  string
-	Name    string
-	Joining string
-	Viewing string
-	Posting string
-	Updated int64
+	ID        string
+	Name      string
+	View      string
+	Subscribe string
+	Post      string
+	Updated   int64
+	Identity  *Identity
 }
 
-type ForumMember struct {
-	Forum  string
-	Member string
-	Role   string
+type ForumSubscriber struct {
+	Forum string
+	ID    string
+	Role  string
 }
 
 type ForumPost struct {
@@ -63,13 +63,15 @@ func init() {
 	a.register_action("forums/new", forums_new, true)
 	a.register_action("forums/comment/create", forums_comment_create, true)
 	a.register_action("forums/comment/new", forums_comment_new, true)
+	a.register_action("forums/find", forums_find, false)
 	a.register_action("forums/post/create", forums_post_create, true)
 	a.register_action("forums/post/new", forums_post_new, true)
 	a.register_action("forums/post/view", forums_post_view, true)
+	a.register_action("forums/search", forums_search, false)
 	a.register_action("forums/subscribe", forums_subscribe, true)
-	a.register_action("forums/subscribed", forums_subscribed, true)
 	a.register_action("forums/view", forums_view, true)
 	a.register_event("post", forums_event_post, true)
+	a.register_event("subscribe", forums_event_subscribe, true)
 }
 
 // Create app database
@@ -77,7 +79,7 @@ func forums_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")
 	db.exec("replace into settings ( name, value ) values ( 'schema', 1 )")
 
-	db.exec("create table forums ( id text not null primary key, master text not null, name text not null, joining text not null, viewing text not null, posting text not null, updated integer not null )")
+	db.exec("create table forums ( id text not null primary key, name text not null, view text not null default '', subscribe text not null default '', post text not null default '', updated integer not null )")
 	db.exec("create index forums_name on forums( name )")
 	db.exec("create index forums_updated on forums( updated )")
 
@@ -98,20 +100,31 @@ func forums_db_create(db *DB) {
 	db.exec("create table votes ( voter text not null, id text not null, vote integer not null, primary key ( voter, id ) )")
 }
 
-func forum_by_id(u *User, id string) *Forum {
+func forum_by_id(u *User, id string, owner bool) *Forum {
+	log_debug("Getting forum '%s' (%t)", id, owner)
 	db := db_app(u, "forums", "data.db", forums_db_create)
+
 	var f Forum
-	if db.scan(&f, "select * from forums where id=?", id) {
-		return &f
+	if !db.scan(&f, "select * from forums where id=?", id) {
+		log_debug("Forum not found")
+		return nil
 	}
-	return nil
+
+	f.Identity = identity_by_id(f.ID)
+	if f.Identity == nil && owner {
+		log_debug("Forum identity not found and owner required")
+		return nil
+	}
+
+	return &f
 }
 
 // New comment
 func forums_comment_create(u *User, a *Action) {
-	db := a.db("data.db")
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
 
-	f := forum_by_id(u, a.input("forum"))
+	f := forum_by_id(u, a.input("forum"), false)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -133,20 +146,22 @@ func forums_comment_create(u *User, a *Action) {
 		return
 	}
 
-	if f.Master == "" {
-		id := uid()
-		db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, time_unix(), u.Identity.ID, u.Identity.Name, body)
-	} else {
-		e := Event{ID: uid(), From: u.Identity.ID, To: f.Master, App: "forums", Action: "comment/create", Content: json_encode(map[string]string{"body": body})}
+	id := uid()
+	db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, time_unix(), u.Identity.ID, u.Identity.Name, body)
+	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
+
+	if f.Identity == nil {
+		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "comment/create", Content: json_encode(map[string]string{"body": body})}
 		e.send()
 	}
 
+	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
 	a.template("forums/comment/create", map[string]any{"Forum": f, "Post": post})
 }
 
 // Enter details for new comment
 func forums_comment_new(u *User, a *Action) {
-	a.template("forums/comment/new", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", map[string]any{"Forum": forum_by_id(u, a.input("forum"), false), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Get comments recursively
@@ -170,12 +185,15 @@ func forum_comments(u *User, db *DB, f *Forum, p *ForumPost, parent *ForumCommen
 
 // Create new forum
 func forums_create(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
 	name := a.input("name")
 	if !valid(name, "name") {
 		a.error(400, "Invalid name")
 		return
 	}
-	if !valid(a.input("privacy"), "^(public|private)$") || !valid(a.input("joining"), "^(anyone|moderated)$") || !valid(a.input("viewing"), "^(anyone|members)$") || !valid(a.input("posting"), "^(members|moderated)$") {
+	if !valid(a.input("privacy"), "^(public|private)$") || !valid(a.input("view"), "^(anyone|members)$") || !valid(a.input("subscribe"), "^(anyone|moderated)$") || !valid(a.input("post"), "^(members|moderated)$") {
 		a.error(400, "Invalid input")
 		return
 	}
@@ -185,15 +203,24 @@ func forums_create(u *User, a *Action) {
 		a.error(500, "Unable to create identity: %s", err)
 		return
 	}
-	a.db("data.db").exec("replace into forums ( id, master, name, joining, viewing, posting, updated ) values ( ?, '', ?, ?, ?, ?, ? )", i.ID, name, a.input("joining"), a.input("viewing"), a.input("posting"), time_unix())
+	db.exec("replace into forums ( id, name, view, subscribe, post, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, name, a.input("view"), a.input("subscribe"), a.input("post"), time_unix())
+	db.exec("replace into members ( forum, member, role ) values ( ?, ?, 'owner' )", i.ID, u.Identity.ID)
 
 	a.template("forums/create", i.ID)
 }
 
+// Enter details of forums to be subscribed to
+func forums_find(u *User, a *Action) {
+	a.template("forums/find")
+}
+
 // List existing forums
 func forums_list(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
 	var f []Forum
-	a.db("data.db").scans(&f, "select * from forums order by name")
+	db.scans(&f, "select * from forums order by updated desc")
 	a.write(a.input("format"), "forums/list", f)
 }
 
@@ -204,9 +231,10 @@ func forums_new(u *User, a *Action) {
 
 // New post
 func forums_post_create(u *User, a *Action) {
-	db := a.db("data.db")
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
 
-	f := forum_by_id(u, a.input("forum"))
+	f := forum_by_id(u, a.input("forum"), false)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -223,11 +251,12 @@ func forums_post_create(u *User, a *Action) {
 		return
 	}
 
-	if f.Master == "" {
-		id := uid()
-		db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, time_unix(), u.Identity.ID, u.Identity.Name, title, body)
-	} else {
-		e := Event{ID: uid(), From: u.Identity.ID, To: f.Master, App: "forums", Action: "post/create", Content: json_encode(map[string]string{"title": title, "body": body})}
+	id := uid()
+	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, time_unix(), u.Identity.ID, u.Identity.Name, title, body)
+	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
+
+	if f.Identity == nil {
+		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/create", Content: json_encode(map[string]string{"title": title, "body": body})}
 		e.send()
 	}
 
@@ -236,14 +265,15 @@ func forums_post_create(u *User, a *Action) {
 
 // Enter details for new post
 func forums_post_new(u *User, a *Action) {
-	a.template("forums/post/new", forum_by_id(u, a.input("forum")))
+	a.template("forums/post/new", forum_by_id(u, a.input("forum"), false))
 }
 
 // View a post
 func forums_post_view(u *User, a *Action) {
-	db := a.db("data.db")
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
 
-	f := forum_by_id(u, a.input("forum"))
+	f := forum_by_id(u, a.input("forum"), false)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -256,39 +286,90 @@ func forums_post_view(u *User, a *Action) {
 	}
 	p.TimeString = u.time_local(p.Time)
 
-	a.template("forums/post/view", map[string]any{"Forum": forum_by_id(u, a.input("forum")), "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
+	a.template("forums/post/view", map[string]any{"Forum": f, "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
 }
 
-// Enter details of forums to be subscribed to
-func forums_subscribe(u *User, a *Action) {
-	//TODO
-	a.template("forums/subscribe")
+// Search for a forum
+func forums_search(u *User, a *Action) {
+	search := a.input("search")
+	if search == "" {
+		a.error(400, "No search entered")
+		return
+	}
+	a.template("forums/search", directory_search(u, "forum", search, false))
 }
 
 // Subscribe to a forum
-func forums_subscribed(u *User, a *Action) {
-	f := forum_by_id(u, a.input("forum"))
+func forums_subscribe(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	id := a.input("id")
+	if !valid(id, "public") {
+		a.error(400, "Invalid ID")
+		return
+	}
+	f := forum_by_id(u, a.input("id"), false)
+	if f != nil {
+		a.error(400, "You are already subscribed to this forum")
+		return
+	}
+	name := a.input("name")
+	if !valid(name, "name") {
+		a.error(400, "Invalid name")
+		return
+	}
+
+	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, time_unix())
+	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: id}
+	e.send()
+
+	a.template("forums/subscribe", id)
+}
+
+// Unsubscribe from forum
+func forums_unsubscribe(u *User, a *Action) {
+	//TODO
+}
+
+// View a forum
+func forums_view(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, a.input("id"), false)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
-	if f.Master == "" {
-	} else {
-	}
-
-	//TODO
-	a.template("forums/subscribed")
-}
-
-// View a forum
-func forums_view(u *User, a *Action) {
-	db := a.db("data.db")
 	var p []ForumPost
-	db.scans(&p, "select * from posts where forum=? order by time desc", a.input("id"))
-	a.template("forums/view", map[string]any{"Forum": forum_by_id(u, a.input("id")), "Posts": &p})
+	db.scans(&p, "select * from posts where forum=? order by time desc", f.ID)
+
+	a.template("forums/view", map[string]any{"Forum": f, "Posts": &p})
 }
 
 // Received a forum post from another user
 func forums_event_post(u *User, e *Event) {
+	log_debug("Forum receieved post event '%#v'", e)
+	// TODO
+}
+
+// Received a subscribe from another user
+func forums_event_subscribe(u *User, e *Event) {
+	log_debug("Forum receieved subscribe event '%#v'", e)
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, e.To, true)
+	if f == nil {
+		return
+	}
+
+	role := "member"
+	if f.Subscribe != "anyone" {
+		role = "pending"
+	}
+
+	db.exec("insert or ignore into members ( forum, member, role ) values ( ?, ?, ? )", f.ID, e.From, role)
 }

@@ -26,22 +26,6 @@ func (a *Action) cleanup() {
 	}
 }
 
-func (a *Action) db(file string) *DB {
-	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", a.Owner.ID, a.Owner.Identity.ID, a.App.Name, file)
-	if file_exists(path) {
-		a.Databases[path] = db_open(path)
-		return a.Databases[path]
-	}
-
-	f, found := a.App.AppCreate[file]
-	if !found {
-		log_error("App '%s' has no database creator for '%s'", a.App.Name, file)
-	}
-	db := db_open(path)
-	f(db)
-	return db
-}
-
 func (a *Action) error(code int, message string, values ...any) {
 	web_error(a.W, code, message, values...)
 }

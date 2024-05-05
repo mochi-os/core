@@ -70,8 +70,12 @@ func init() {
 	a.register_action("forums/search", forums_search, false)
 	a.register_action("forums/subscribe", forums_subscribe, true)
 	a.register_action("forums/view", forums_view, true)
+	a.register_event("comment", forums_event_comment, true)
+	a.register_event("comment/vote", forums_event_comment_vote, true)
 	a.register_event("post", forums_event_post, true)
+	a.register_event("post/vote", forums_event_post_vote, true)
 	a.register_event("subscribe", forums_event_subscribe, true)
+	a.register_event("unsubscribe", forums_event_unsubscribe, true)
 }
 
 // Create app database
@@ -325,12 +329,14 @@ func forums_subscribe(u *User, a *Action) {
 	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: id}
 	e.send()
 
+	//TODO Send posts to new subscriber?
+
 	a.template("forums/subscribe", id)
 }
 
 // Unsubscribe from forum
 func forums_unsubscribe(u *User, a *Action) {
-	//TODO
+	//TODO Unsubscribe from forum
 }
 
 // View a forum
@@ -350,10 +356,28 @@ func forums_view(u *User, a *Action) {
 	a.template("forums/view", map[string]any{"Forum": f, "Posts": &p})
 }
 
+// Received a forum comment from another user
+func forums_event_comment(u *User, e *Event) {
+	log_debug("Forum receieved comment event '%#v'", e)
+	// TODO Receive forum comment
+}
+
+// Received a forum comment vote from another user
+func forums_event_comment_vote(u *User, e *Event) {
+	log_debug("Forum receieved comment vote event '%#v'", e)
+	// TODO Receive forum comment vote
+}
+
 // Received a forum post from another user
 func forums_event_post(u *User, e *Event) {
 	log_debug("Forum receieved post event '%#v'", e)
-	// TODO
+	// TODO Receive forum post
+}
+
+// Received a forum post vote from another user
+func forums_event_post_vote(u *User, e *Event) {
+	log_debug("Forum receieved post vote event '%#v'", e)
+	// TODO Receive forum post vote
 }
 
 // Received a subscribe from another user
@@ -373,4 +397,10 @@ func forums_event_subscribe(u *User, e *Event) {
 	}
 
 	db.exec("insert or ignore into members ( forum, member, role ) values ( ?, ?, ? )", f.ID, e.From, role)
+}
+
+// Received an unsubscribe from another user
+func forums_event_unsubscribe(u *User, e *Event) {
+	log_debug("Forum receieved unsubscribe event '%#v'", e)
+	// TODO Receive forum unsubscribe
 }

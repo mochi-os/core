@@ -95,9 +95,9 @@ func identities_manager() {
 	for {
 		time.Sleep(time.Minute)
 		var identities []Identity
-		db.scans(&identities, "select * from identities where privacy='public' and published<?", time_unix()-30*86400)
+		db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-30*86400)
 		for _, i := range identities {
-			db.exec("update identities set published=? where id=?", time_unix(), i.ID)
+			db.exec("update identities set published=? where id=?", now(), i.ID)
 			directory_publish(&i)
 		}
 	}

@@ -81,6 +81,14 @@ func json_encode(in any) string {
 	return string(j)
 }
 
+func now() int64 {
+	return time.Now().Unix()
+}
+
+func now_string() string {
+	return strconv.FormatInt(time.Now().Unix(), 10)
+}
+
 func random_alphanumeric(length int) string {
 	out := make([]rune, length)
 	l := big.NewInt(int64(len(alphanumeric)))
@@ -96,16 +104,6 @@ func sha1(in []byte) string {
 	s := sha.New()
 	s.Write(in)
 	return hex.EncodeToString(s.Sum(nil))
-}
-
-// TODO Rename to now()?
-func time_unix() int64 {
-	return time.Now().Unix()
-}
-
-// TODO Rename to now_string()?
-func time_unix_string() string {
-	return strconv.FormatInt(time.Now().Unix(), 10)
 }
 
 func uid() string {

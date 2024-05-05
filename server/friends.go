@@ -185,7 +185,7 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 		// Send invitation
 		event := Event{From: u.Identity.ID, To: friend, App: "friends", Action: "invite", Content: u.Identity.Name}
 		event.send()
-		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, time_unix_string())
+		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, now_string())
 	}
 
 	broadcast(u, "friends", "create", friend, nil)
@@ -233,7 +233,7 @@ func friends_event_invite(u *User, e *Event) {
 		friend_accept(u, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
-		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'from', ?, ? )", e.From, e.Content, time_unix_string())
+		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'from', ?, ? )", e.From, e.Content, now_string())
 	}
 	broadcast(u, "friends", "invited", e.From, nil)
 }

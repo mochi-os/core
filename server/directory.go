@@ -28,7 +28,7 @@ func init() {
 func directory_create(i *Identity) {
 	log_debug("Creating directory entry '%s' (%s)", i.ID, i.Name)
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, time_unix())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, now())
 	go events_check_queue("identity", i.ID)
 }
 
@@ -100,7 +100,7 @@ func directory_event_publish(u *User, e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, time_unix())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, now())
 
 	go events_check_queue("identity", d.ID)
 }

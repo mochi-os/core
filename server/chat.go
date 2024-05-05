@@ -58,9 +58,9 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 	db := db_app(u, "chat", "data.db", chat_db_create)
 	var c Chat
 	if db.scan(&c, "select * from chats where friend=? order by updated desc", f.ID) {
-		db.exec("update chats set updated=? where id=?", time_unix_string(), c.ID)
+		db.exec("update chats set updated=? where id=?", now_string(), c.ID)
 	} else {
-		c = Chat{ID: uid(), Name: f.Name, Friend: f.ID, Updated: time_unix()}
+		c = Chat{ID: uid(), Name: f.Name, Friend: f.ID, Updated: now()}
 		db.exec("replace into chats ( id, name, friend, updated ) values ( ?, ?, ?, ? )", c.ID, c.Name, c.Friend, c.Updated)
 	}
 	return &c
@@ -122,8 +122,8 @@ func chat_receive(u *User, e *Event) {
 	}
 	c := chat_for_friend(u, f)
 
-	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), e.From, f.Name, body)
-	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": time_unix_string(), "body": body})
+	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), e.From, f.Name, body)
+	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": now_string(), "body": body})
 	websockets_send(u, "chat", j)
 	notification_create(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
 }
@@ -147,11 +147,11 @@ func chat_send(u *User, a *Action) {
 	}
 
 	message := a.input("message")
-	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, time_unix_string(), i.ID, i.Name, message)
+	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), i.ID, i.Name, message)
 	event := Event{From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
 	event.send()
 
-	j := json_encode(map[string]string{"from": i.ID, "name": i.Name, "time": time_unix_string(), "body": message})
+	j := json_encode(map[string]string{"from": i.ID, "name": i.Name, "time": now_string(), "body": message})
 	websockets_send(u, "chat", j)
 }
 

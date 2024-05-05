@@ -35,7 +35,7 @@ func code_send(email string) bool {
 	}
 	code := random_alphanumeric(12)
 	db := db_open("db/users.db")
-	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, time_unix()+3600)
+	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	log_debug("Code: %s", code)
 	return true
@@ -53,7 +53,7 @@ func (u *User) identity() *Identity {
 func login_create(user int) string {
 	code := random_alphanumeric(20)
 	db := db_open("db/users.db")
-	db.exec("replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, time_unix()+365*86400)
+	db.exec("replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, now()+365*86400)
 	return code
 }
 
@@ -110,7 +110,7 @@ func user_by_login(login string) *User {
 
 	var l Login
 	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, time_unix()) {
+	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, now()) {
 		return nil
 	}
 
@@ -126,7 +126,7 @@ func user_by_login(login string) *User {
 func user_from_code(code string) *User {
 	var c Code
 	db := db_open("db/users.db")
-	if !db.scan(&c, "select * from codes where code=? and expires>=?", code, time_unix()) {
+	if !db.scan(&c, "select * from codes where code=? and expires>=?", code, now()) {
 		return nil
 	}
 	db.exec("delete from codes where code=?", code)

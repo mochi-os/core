@@ -90,7 +90,7 @@ func db_app(u *User, app string, file string, create func(*DB)) *DB {
 func db_manager() {
 	for {
 		time.Sleep(time.Minute)
-		now := time_unix()
+		now := now()
 		var closers []*sqlx.DB
 
 		databases_lock.Lock()
@@ -158,7 +158,6 @@ func db_upgrade() {
 	}
 }
 
-// TODO Replace with something else?
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(path) {
@@ -171,7 +170,7 @@ func db_user(u *User, file string, create func(*DB)) *DB {
 }
 
 func (db *DB) close() {
-	db.closed = time_unix()
+	db.closed = now()
 }
 
 func (db *DB) exec(query string, values ...any) {

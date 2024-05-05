@@ -91,7 +91,7 @@ func peers_manager() {
 			continue
 		}
 
-		p.Updated = time_unix()
+		p.Updated = now()
 		e, found := peers_connected[p.ID]
 		if found && p.Address == e.Address {
 			// We're already connected to this peer and it's at the same address as before, so just update its updated time

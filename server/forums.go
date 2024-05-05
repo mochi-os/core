@@ -147,15 +147,15 @@ func forums_comment_create(u *User, a *Action) {
 	}
 
 	id := uid()
-	db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, time_unix(), u.Identity.ID, u.Identity.Name, body)
-	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
+	db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now(), u.Identity.ID, u.Identity.Name, body)
+	db.exec("update forums set updated=? where id=?", now(), f.ID)
 
 	if f.Identity == nil {
 		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "comment/create", Content: json_encode(map[string]string{"body": body})}
 		e.send()
 	}
 
-	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
+	db.exec("update forums set updated=? where id=?", now(), f.ID)
 	a.template("forums/comment/create", map[string]any{"Forum": f, "Post": post})
 }
 
@@ -203,7 +203,7 @@ func forums_create(u *User, a *Action) {
 		a.error(500, "Unable to create identity: %s", err)
 		return
 	}
-	db.exec("replace into forums ( id, name, view, subscribe, post, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, name, a.input("view"), a.input("subscribe"), a.input("post"), time_unix())
+	db.exec("replace into forums ( id, name, view, subscribe, post, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, name, a.input("view"), a.input("subscribe"), a.input("post"), now())
 	db.exec("replace into members ( forum, member, role ) values ( ?, ?, 'owner' )", i.ID, u.Identity.ID)
 
 	a.template("forums/create", i.ID)
@@ -211,6 +211,7 @@ func forums_create(u *User, a *Action) {
 
 // Enter details of forums to be subscribed to
 func forums_find(u *User, a *Action) {
+	//TODO Find private forums
 	a.template("forums/find")
 }
 
@@ -252,8 +253,8 @@ func forums_post_create(u *User, a *Action) {
 	}
 
 	id := uid()
-	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, time_unix(), u.Identity.ID, u.Identity.Name, title, body)
-	db.exec("update forums set updated=? where id=?", time_unix(), f.ID)
+	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, now(), u.Identity.ID, u.Identity.Name, title, body)
+	db.exec("update forums set updated=? where id=?", now(), f.ID)
 
 	if f.Identity == nil {
 		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/create", Content: json_encode(map[string]string{"title": title, "body": body})}
@@ -320,7 +321,7 @@ func forums_subscribe(u *User, a *Action) {
 		return
 	}
 
-	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, time_unix())
+	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, now())
 	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: id}
 	e.send()
 

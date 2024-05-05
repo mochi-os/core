@@ -168,7 +168,7 @@ func (e *Event) send() {
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
-	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, time_unix())
+	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
 }
 
 func (e *Event) sign() {

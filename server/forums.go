@@ -13,39 +13,38 @@ type Forum struct {
 	Identity  *Identity
 }
 
-type ForumSubscriber struct {
+type ForumMember struct {
 	Forum string
 	ID    string
+	Name  string
 	Role  string
 }
 
 type ForumPost struct {
-	ID         string
-	Forum      string
-	Time       int64
-	TimeString string
-	Status     string
-	Author     string
-	Name       string
-	Title      string
-	Body       string
-	Up         int
-	Down       int
+	ID     string
+	Forum  string `json:"-"`
+	Time   string
+	Status string
+	Author string
+	Name   string
+	Title  string
+	Body   string
+	Up     int
+	Down   int
 }
 
 type ForumComment struct {
-	ID         string
-	Forum      string
-	Post       string
-	Parent     string
-	Time       int64
-	TimeString string
-	Author     string
-	Name       string
-	Body       string
-	Up         int
-	Down       int
-	Children   *[]ForumComment
+	ID       string
+	Forum    string `json:"-"`
+	Post     string
+	Parent   string
+	Time     string
+	Author   string
+	Name     string
+	Body     string
+	Up       int
+	Down     int
+	Children *[]ForumComment `json:"-"`
 }
 
 type ForumVote struct {
@@ -63,19 +62,24 @@ func init() {
 	a.register_action("forums/new", forums_new, true)
 	a.register_action("forums/comment/create", forums_comment_create, true)
 	a.register_action("forums/comment/new", forums_comment_new, true)
+	a.register_action("forums/comment/vote", forums_comment_vote, true)
 	a.register_action("forums/find", forums_find, false)
 	a.register_action("forums/post/create", forums_post_create, true)
 	a.register_action("forums/post/new", forums_post_new, true)
 	a.register_action("forums/post/view", forums_post_view, true)
+	a.register_action("forums/post/vote", forums_post_vote, true)
 	a.register_action("forums/search", forums_search, false)
 	a.register_action("forums/subscribe", forums_subscribe, true)
+	a.register_action("forums/unsubscribe", forums_unsubscribe, true)
 	a.register_action("forums/view", forums_view, true)
-	a.register_event("comment", forums_event_comment, true)
-	a.register_event("comment/vote", forums_event_comment_vote, true)
-	a.register_event("post", forums_event_post, true)
-	a.register_event("post/vote", forums_event_post_vote, true)
-	a.register_event("subscribe", forums_event_subscribe, true)
-	a.register_event("unsubscribe", forums_event_unsubscribe, true)
+	a.register_event("comment/create", forums_comment_create_event, true)
+	a.register_event("comment/submit", forums_comment_submit_event, true)
+	a.register_event("comment/vote", forums_comment_vote_event, true)
+	a.register_event("post/create", forums_post_create_event, true)
+	a.register_event("post/submit", forums_post_submit_event, true)
+	a.register_event("post/vote", forums_post_vote_event, true)
+	a.register_event("subscribe", forums_subscribe_event, true)
+	a.register_event("unsubscribe", forums_unsubscribe_event, true)
 }
 
 // Create app database
@@ -87,8 +91,8 @@ func forums_db_create(db *DB) {
 	db.exec("create index forums_name on forums( name )")
 	db.exec("create index forums_updated on forums( updated )")
 
-	db.exec("create table members ( forum references forums( id ), member text not null, role text not null default 'poster', primary key ( forum, member ) )")
-	db.exec("create index members_member on members( member )")
+	db.exec("create table members ( forum references forums( id ), id text not null, name text not null, role text not null default 'poster', primary key ( forum, id ) )")
+	db.exec("create index members_id on members( id )")
 
 	db.exec("create table posts ( id text not null primary key, forum references forum( id ), time integer not null, status text not null, author text not null, name text not null, title text not null, body text not null, up integer not null default 1, down integer not null default 0 )")
 	db.exec("create index posts_forum on posts( forum )")
@@ -105,7 +109,6 @@ func forums_db_create(db *DB) {
 }
 
 func forum_by_id(u *User, id string, owner bool) *Forum {
-	log_debug("Getting forum '%s' (%t)", id, owner)
 	db := db_app(u, "forums", "data.db", forums_db_create)
 
 	var f Forum
@@ -151,21 +154,40 @@ func forums_comment_create(u *User, a *Action) {
 	}
 
 	id := uid()
-	db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now(), u.Identity.ID, u.Identity.Name, body)
-	db.exec("update forums set updated=? where id=?", now(), f.ID)
+	now := now_string()
+	db.exec("replace into comments ( id, forum, post, parent, time, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, u.Identity.ID, u.Identity.Name, body)
+	db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Identity == nil {
 		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "comment/create", Content: json_encode(map[string]string{"body": body})}
 		e.send()
 	}
 
-	db.exec("update forums set updated=? where id=?", now(), f.ID)
+	db.exec("update forums set updated=? where id=?", now, f.ID)
 	a.template("forums/comment/create", map[string]any{"Forum": f, "Post": post})
+}
+
+// Received a forum comment from owner
+func forums_comment_create_event(u *User, e *Event) {
+	log_debug("Forum receieved comment create event '%#v'", e)
+	// TODO Receive forum comment
+}
+
+// Received a forum comment from member
+func forums_comment_submit_event(u *User, e *Event) {
+	log_debug("Forum receieved comment submit event '%#v'", e)
+	// TODO Receive forum comment
 }
 
 // Enter details for new comment
 func forums_comment_new(u *User, a *Action) {
 	a.template("forums/comment/new", map[string]any{"Forum": forum_by_id(u, a.input("forum"), false), "Post": a.input("post"), "Parent": a.input("parent")})
+}
+
+// Vote on a comment
+func forums_comment_vote(u *User, a *Action) {
+	// TODO Vote on a comment
+	a.template("forums/comment/vote")
 }
 
 // Get comments recursively
@@ -181,10 +203,16 @@ func forum_comments(u *User, db *DB, f *Forum, p *ForumPost, parent *ForumCommen
 	var cs []ForumComment
 	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by time desc", f.ID, p.ID, id)
 	for j, c := range cs {
-		cs[j].TimeString = u.time_local(c.Time)
+		cs[j].Time = u.time_local(atoi(c.Time, 0))
 		cs[j].Children = forum_comments(u, db, f, p, &c, depth+1)
 	}
 	return &cs
+}
+
+// Received a forum comment vote from another user
+func forums_comment_vote_event(u *User, e *Event) {
+	log_debug("Forum receieved comment vote event '%#v'", e)
+	// TODO Receive forum comment vote
 }
 
 // Create new forum
@@ -207,8 +235,8 @@ func forums_create(u *User, a *Action) {
 		a.error(500, "Unable to create identity: %s", err)
 		return
 	}
-	db.exec("replace into forums ( id, name, view, subscribe, post, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, name, a.input("view"), a.input("subscribe"), a.input("post"), now())
-	db.exec("replace into members ( forum, member, role ) values ( ?, ?, 'owner' )", i.ID, u.Identity.ID)
+	db.exec("replace into forums ( id, name, view, subscribe, post, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, name, a.input("view"), a.input("subscribe"), a.input("post"), now_string())
+	db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, 'administrator' )", i.ID, u.Identity.ID, u.Identity.Name)
 
 	a.template("forums/create", i.ID)
 }
@@ -257,20 +285,145 @@ func forums_post_create(u *User, a *Action) {
 	}
 
 	id := uid()
-	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, now(), u.Identity.ID, u.Identity.Name, title, body)
-	db.exec("update forums set updated=? where id=?", now(), f.ID)
+	now := now_string()
+	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", id, f.ID, now, u.Identity.ID, u.Identity.Name, title, body)
+	db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Identity == nil {
-		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/create", Content: json_encode(map[string]string{"title": title, "body": body})}
+		// We are not forum owner, so send to the owner
+		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/submit", Content: json_encode(map[string]string{"title": title, "body": body})}
 		e.send()
+
+	} else {
+		// We are the forum owner, to send to all members except us
+		j := json_encode(ForumPost{ID: id, Time: now, Status: "posted", Author: u.Identity.ID, Name: u.Identity.Name, Title: title, Body: body})
+		var ms []ForumMember
+		db.scans(&ms, "select * from members where forum=? and role!='pending'", f.ID)
+		for _, m := range ms {
+			if m.ID != u.Identity.ID {
+				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "post/create", Content: j}
+				e.send(f.Identity.Private)
+			}
+		}
 	}
 
 	a.template("forums/post/create", f)
 }
 
+// Received a forum post from the owner
+func forums_post_create_event(u *User, e *Event) {
+	log_debug("Forum receieved post create event '%#v'", e)
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, e.From, false)
+	if f == nil {
+		log_info("Forum dropping post to unknown forum")
+		return
+	}
+	if e.From != f.ID {
+		log_info("Forum dropping post claiming to be from owner but isn't '%s'!='%s'", e.From, f.ID)
+		return
+	}
+
+	var p ForumPost
+	if !json_decode(e.Content, &p) {
+		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
+		return
+	}
+	if !valid(p.Author, "public") {
+		log_info("Forum dropping post with invalid author '%s'", p.Author)
+		return
+	}
+	if !valid(p.Name, "name") {
+		log_info("Forum dropping post with invalid name '%s'", p.Name)
+		return
+	}
+	if !valid(p.Title, "line") {
+		log_info("Forum dropping post with invalid title '%s'", p.Title)
+		return
+	}
+	if !valid(p.Body, "text") {
+		log_info("Forum dropping post with invalid body '%s'", p.Body)
+		return
+	}
+
+	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, 'posted', ?, ?, ?, ? )", e.ID, f.ID, p.Time, p.Author, p.Name, p.Title, p.Body)
+	db.exec("update forums set updated=? where id=?", now_string(), f.ID)
+}
+
 // Enter details for new post
 func forums_post_new(u *User, a *Action) {
 	a.template("forums/post/new", forum_by_id(u, a.input("forum"), false))
+}
+
+// Received a forum post from a member
+func forums_post_submit_event(u *User, e *Event) {
+	log_debug("Forum receieved post submit event '%#v'", e)
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	if db.exists("select id from posts where id=?", e.ID) {
+		log_info("Forum dropping post due to duplicate ID '%s'", e.ID)
+		return
+	}
+
+	f := forum_by_id(u, e.To, true)
+	if f == nil {
+		log_info("Forum dropping post to unknown forum, or forum not owned by us")
+		return
+	}
+
+	var p ForumPost
+	if !json_decode(e.Content, &p) {
+		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
+		return
+	}
+	var m ForumMember
+	if !db.scan(&m, "select * from members where forum=? and id=? and role!='pending'", f.ID, e.From) {
+		log_info("Forum dropping post from unknown or pending member '%s'", e.From)
+		return
+	}
+	p.Time = now_string()
+	p.Status = "pending"
+	if f.Post == "members" {
+		p.Status = "posted"
+	}
+	p.Author = e.From
+	p.Name = m.Name
+	if !valid(p.Title, "line") {
+		log_info("Forum dropping post with invalid title '%s'", p.Title)
+		return
+	}
+	if !valid(p.Body, "text") {
+		log_info("Forum dropping post with invalid body '%s'", p.Body)
+		return
+	}
+
+	db.exec("replace into posts ( id, forum, time, status, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Time, p.Status, p.Author, p.Name, p.Title, p.Body)
+	db.exec("update forums set updated=? where id=?", now_string(), f.ID)
+
+	j := json_encode(p)
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where forum=? and role!='pending'", f.ID)
+	for _, m := range ms {
+		if m.ID != e.From && m.ID != u.Identity.ID {
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "post/create", Content: j}
+			e.send(f.Identity.Private)
+		}
+	}
+}
+
+// Vote on a post
+func forums_post_vote(u *User, a *Action) {
+	// TODO Vote on a post
+	a.template("forums/post/vote")
+}
+
+// Received a forum post vote from another user
+func forums_post_vote_event(u *User, e *Event) {
+	log_debug("Forum receieved post vote event '%#v'", e)
+	// TODO Receive forum post vote
 }
 
 // View a post
@@ -289,7 +442,7 @@ func forums_post_view(u *User, a *Action) {
 		a.error(404, "Post not found")
 		return
 	}
-	p.TimeString = u.time_local(p.Time)
+	p.Time = u.time_local(atoi(p.Time, 0))
 
 	a.template("forums/post/view", map[string]any{"Forum": f, "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
 }
@@ -325,18 +478,49 @@ func forums_subscribe(u *User, a *Action) {
 		return
 	}
 
-	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, now())
-	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: id}
+	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, now_string())
+	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": u.Identity.Name})}
 	e.send()
 
-	//TODO Send posts to new subscriber?
+	//TODO Send recent posts to new subscriber
 
 	a.template("forums/subscribe", id)
+}
+
+// Received a subscribe from another user
+func forums_subscribe_event(u *User, e *Event) {
+	log_debug("Forum receieved subscribe event '%#v'", e)
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, e.To, true)
+	if f == nil {
+		return
+	}
+
+	name := "Unknown"
+	var m ForumMember
+	if json_decode(e.Content, &m) {
+		name = m.Name
+	}
+
+	role := "member"
+	if f.Subscribe != "anyone" {
+		role = "pending"
+	}
+
+	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, name, role)
 }
 
 // Unsubscribe from forum
 func forums_unsubscribe(u *User, a *Action) {
 	//TODO Unsubscribe from forum
+}
+
+// Received an unsubscribe from another user
+func forums_unsubscribe_event(u *User, e *Event) {
+	log_debug("Forum receieved unsubscribe event '%#v'", e)
+	// TODO Receive forum unsubscribe
 }
 
 // View a forum
@@ -354,53 +538,4 @@ func forums_view(u *User, a *Action) {
 	db.scans(&p, "select * from posts where forum=? order by time desc", f.ID)
 
 	a.template("forums/view", map[string]any{"Forum": f, "Posts": &p})
-}
-
-// Received a forum comment from another user
-func forums_event_comment(u *User, e *Event) {
-	log_debug("Forum receieved comment event '%#v'", e)
-	// TODO Receive forum comment
-}
-
-// Received a forum comment vote from another user
-func forums_event_comment_vote(u *User, e *Event) {
-	log_debug("Forum receieved comment vote event '%#v'", e)
-	// TODO Receive forum comment vote
-}
-
-// Received a forum post from another user
-func forums_event_post(u *User, e *Event) {
-	log_debug("Forum receieved post event '%#v'", e)
-	// TODO Receive forum post
-}
-
-// Received a forum post vote from another user
-func forums_event_post_vote(u *User, e *Event) {
-	log_debug("Forum receieved post vote event '%#v'", e)
-	// TODO Receive forum post vote
-}
-
-// Received a subscribe from another user
-func forums_event_subscribe(u *User, e *Event) {
-	log_debug("Forum receieved subscribe event '%#v'", e)
-	db := db_app(u, "forums", "data.db", forums_db_create)
-	defer db.close()
-
-	f := forum_by_id(u, e.To, true)
-	if f == nil {
-		return
-	}
-
-	role := "member"
-	if f.Subscribe != "anyone" {
-		role = "pending"
-	}
-
-	db.exec("insert or ignore into members ( forum, member, role ) values ( ?, ?, ? )", f.ID, e.From, role)
-}
-
-// Received an unsubscribe from another user
-func forums_event_unsubscribe(u *User, e *Event) {
-	log_debug("Forum receieved unsubscribe event '%#v'", e)
-	// TODO Receive forum unsubscribe
 }

@@ -76,7 +76,7 @@ func libp2p_pubsub_listen(s *libp2p_pubsub.Subscription) {
 		peer := m.ReceivedFrom.String()
 		if peer != libp2p_id {
 			log_debug("libp2p received pubsub event: %s", string(m.Data))
-			event_receive_json(m.Data, peer)
+			event_receive_json(string(m.Data), peer)
 		}
 	}
 }
@@ -92,7 +92,7 @@ func libp2p_read(r *bufio.Reader, peer string) {
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
 			log_debug("libp2p received event from peer: %s", in)
-			event_receive_json([]byte(in), peer)
+			event_receive_json(in, peer)
 		}
 	}
 }

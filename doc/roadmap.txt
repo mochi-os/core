@@ -1,17 +1,21 @@
 0.1
 	Forums app
+		Moderation
+		Member management
 	Feeds app
-	Chat app
+	Route on class
 	Choose a product name
 	Introducer server
 
 0.2
+	Client API
+	Command line client
 	Users can change their settings
 	Users can have multiple identities
 	HTTPS using Letsencrypt
-	Client API
-	Command line client
 	Users can set public URLs to publish data
+	WASM apps
+	Group chat app
 	Wiki app
 
 0.3
@@ -36,6 +40,6 @@
 
 Ideas for apps
 	Bug tracker
-	Chess
 	Kanban
+	Chess
 	Scrabble playalike

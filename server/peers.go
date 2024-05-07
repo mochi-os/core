@@ -72,7 +72,7 @@ func peer_event_request(u *User, e *Event) {
 // Received a peer publish event from another server
 func peer_event_publish(u *User, e *Event) {
 	var m map[string]string
-	if json_decode([]byte(e.Content), &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
+	if json_decode(e.Content, &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
 		if m["id"] == libp2p_id {
 			return
 		}
@@ -119,13 +119,13 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(libp2p_context, []byte(json_encode(Event{App: "peers", Action: "publish", Content: jc})))
+		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "publish", Content: jc})))
 	}
 }
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{App: "peers", Action: "request", Content: peer})))
+	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "request", Content: peer})))
 }
 
 // Send a message to a peer

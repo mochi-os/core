@@ -21,16 +21,15 @@ import (
 
 const alphanumeric = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// TODO Forbid \r?
 var match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 var match_hyphens = regexp.MustCompile(`-`)
 
-func atoi(s string, def int) int {
+func atoi(s string, def int64) int64 {
 	i, err := strconv.Atoi(s)
 	if err != nil {
 		return def
 	}
-	return i
+	return int64(i)
 }
 
 func base64_decode(s string, def string) []byte {
@@ -67,8 +66,8 @@ func fingerprint(in string) string {
 	return b64[0:10]
 }
 
-func json_decode(in []byte, out any) bool {
-	err := json.Unmarshal(in, out)
+func json_decode(j string, out any) bool {
+	err := json.Unmarshal([]byte(j), out)
 	if err != nil {
 		return false
 	}
@@ -122,7 +121,7 @@ func valid(s string, match string) bool {
 	case "constant":
 		match = "^[0-9a-z-]{1,100}$"
 	case "id":
-		match = "^[\\w-=]{1,1000}$"
+		match = "^[\\w-]{32}$"
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":

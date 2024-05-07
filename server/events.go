@@ -70,7 +70,7 @@ func events_manager() {
 	}
 }
 
-func event_receive_json(event []byte, source string) {
+func event_receive_json(event string, source string) {
 	var e Event
 	if !json_decode(event, &e) {
 		log_info("Dropping event with malformed JSON: '%s'", event)
@@ -81,8 +81,13 @@ func event_receive_json(event []byte, source string) {
 }
 
 func (e *Event) receive() {
+	if !valid(e.ID, "id") {
+		log_info("Dropping received event due to invalid 'id' field '%s'", e.ID)
+		return
+	}
+
 	if e.From != "" {
-		if !valid(e.From, "id") {
+		if !valid(e.From, "public") {
 			log_info("Dropping received event due to invalid 'from' field '%s'", e.From)
 			return
 		}
@@ -147,7 +152,7 @@ func (a *App) register_event(event string, f func(*User, *Event), addressed bool
 	a.Internal.Events[event] = &AppEvent{Function: f, Addressed: addressed}
 }
 
-func (e *Event) send() {
+func (e *Event) send(key ...string) {
 	if e.ID == "" {
 		e.ID = uid()
 	}
@@ -159,7 +164,7 @@ func (e *Event) send() {
 		return
 	}
 
-	e.sign()
+	e.sign(key...)
 	j := json_encode(e)
 
 	if method == "libp2p" && libp2p_send(location, j) {
@@ -171,7 +176,7 @@ func (e *Event) send() {
 	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
 }
 
-func (e *Event) sign() {
+func (e *Event) sign(key ...string) {
 	if e.From == "" {
 		return
 	}
@@ -180,13 +185,18 @@ func (e *Event) sign() {
 		e.ID = uid()
 	}
 
-	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select private from identities where id=?", e.From) {
-		log_warn("Not signing event due unknown sending identity")
-		return
+	var private []byte
+	if len(key) > 0 {
+		private = base64_decode(key[0], "")
+	} else {
+		db := db_open("db/users.db")
+		var i Identity
+		if !db.scan(&i, "select private from identities where id=?", e.From) {
+			log_warn("Not signing event due unknown sending identity")
+			return
+		}
+		private = base64_decode(i.Private, "")
 	}
-	private := base64_decode(i.Private, "")
 	if string(private) == "" {
 		log_warn("Not signing event due to invalid private key")
 		return

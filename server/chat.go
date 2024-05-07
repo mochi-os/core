@@ -103,7 +103,7 @@ func chat_receive(u *User, e *Event) {
 	db := db_app(u, "chat", "data.db", chat_db_create)
 
 	var m map[string]string
-	if !json_decode([]byte(e.Content), &m) {
+	if !json_decode(e.Content, &m) {
 		log_info("Chat dropping chat message '%s' with malformed JSON", e.Content)
 		return
 	}

@@ -1,6 +1,6 @@
 {{define "forum_comment"}}
 <hr/>
-<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} | {{.TimeString}} | <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a></p>
+<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} | {{.Time}} | <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a></p>
 {{if .Children}}{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}{{end}}
 {{end}}
 
@@ -11,7 +11,7 @@
 <h3>{{.Post.Title}}</h3>
 <pre>{{.Post.Body}}</pre>
 
-<p style="font-variant: small-caps;">{{.Post.Name}} | {{.Post.TimeString}} | <a href="../../comment/new/?forum={{.Forum.ID}}&post={{.Post.ID}}">New comment</a></p>
+<p style="font-variant: small-caps;">{{.Post.Name}} | {{.Post.Time}} | <a href="../../comment/new/?forum={{.Forum.ID}}&post={{.Post.ID}}">New comment</a></p>
 
 <p>{{range .Comments}}{{template "forum_comment" .}}{{end}}</p>
 

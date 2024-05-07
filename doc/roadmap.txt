@@ -1,7 +1,9 @@
 0.1
 	Forums app
+		Voting
 		Moderation
 		Member management
+		Notifications
 	Feeds app
 	Route on class
 	Choose a product name

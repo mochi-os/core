@@ -20,10 +20,10 @@ type Identity struct {
 	Published   int64
 }
 
-func identity_by_id(id string) *Identity {
+func identity_by_id(u *User, id string) *Identity {
 	db := db_open("db/users.db")
 	var i Identity
-	if !db.scan(&i, "select * from identities where id=?", id) {
+	if !db.scan(&i, "select * from identities where id=? and user=?", id, u.ID) {
 		return nil
 	}
 	return &i
@@ -69,7 +69,7 @@ func identity_location(id string) (string, string, string, string) {
 	var i Identity
 	dbu := db_open("db/users.db")
 	if dbu.scan(&i, "select * from identities where id=?", id) {
-		return i.Class, i.ID, "", ""
+		return "local", id, "", ""
 	}
 
 	// Check in directory

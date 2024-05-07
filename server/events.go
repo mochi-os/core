@@ -158,6 +158,7 @@ func (e *Event) send(key ...string) {
 	}
 
 	method, location, queue_method, queue_location := identity_location(e.To)
+	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
 
 	if method == "local" {
 		go e.receive()

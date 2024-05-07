@@ -41,7 +41,7 @@ func directory_delete(id string) {
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
 func directory_download() {
 	time.Sleep(10 * time.Second)
-	j := json_encode(Event{App: "directory", Action: "download"})
+	j := json_encode(Event{ID: uid(), App: "directory", Action: "download"})
 	for peer, _ := range peers_known {
 		if peer != libp2p_id {
 			log_debug("Requesting directory download from peer '%s'", peer)
@@ -59,7 +59,7 @@ func directory_event_download(u *User, e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		peer_send(e.Source, json_encode(Event{App: "directory", Action: "publish", Content: json_encode(d)}))
+		peer_send(e.Source, json_encode(Event{ID: uid(), App: "directory", Action: "publish", Content: json_encode(d)}))
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -108,7 +108,7 @@ func directory_event_publish(u *User, e *Event) {
 // Publish a directory entry on the libp2p pubsub
 func directory_publish(i *Identity) {
 	log_debug("Publishing identity '%s' (%s) to pubsub", i.ID, i.Name)
-	e := Event{From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
+	e := Event{ID: uid(), From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
 	e.sign()
 	//TODO Queue publish if we're not connected to any/enough peers
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
@@ -116,7 +116,7 @@ func directory_publish(i *Identity) {
 
 // Request that another server publish a directory event
 func directory_request(id string) {
-	e := Event{App: "directory", Action: "request", Content: id}
+	e := Event{ID: uid(), App: "directory", Action: "request", Content: id}
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
 }
 

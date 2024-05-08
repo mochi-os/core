@@ -116,7 +116,7 @@ func chat_receive(u *User, e *Event) {
 	f := friend(u, e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event := Event{From: u.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
+		event := Event{ID: uid(), From: u.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
 		event.send()
 		return
 	}
@@ -148,7 +148,7 @@ func chat_send(u *User, a *Action) {
 
 	message := a.input("message")
 	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), i.ID, i.Name, message)
-	event := Event{From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
+	event := Event{ID: uid(), From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
 	event.send()
 
 	j := json_encode(map[string]string{"from": i.ID, "name": i.Name, "time": now_string(), "body": message})

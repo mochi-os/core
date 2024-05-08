@@ -394,7 +394,7 @@ func forums_post_create(u *User, a *Action) {
 	if f.Identity == nil {
 		// We are not forum owner, so send to the owner
 		log_debug("Sending post to forum owner")
-		e := Event{From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: id, Title: title, Body: body})}
+		e := Event{ID: id, From: u.Identity.ID, To: f.ID, App: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: id, Title: title, Body: body})}
 		e.send()
 
 	} else {
@@ -583,15 +583,13 @@ func forums_subscribe(u *User, a *Action) {
 	}
 
 	db.exec("replace into forums ( id, name, updated ) values ( ?, ?, ? )", id, name, now())
-	e := Event{From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": u.Identity.Name})}
+	e := Event{ID: uid(), From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": u.Identity.Name})}
 	e.send()
-
-	//TODO Send recent posts to new subscriber
 
 	a.template("forums/subscribe", id)
 }
 
-// Received a subscribe from another user
+// Received a subscribe from a member
 func forums_subscribe_event(u *User, e *Event) {
 	log_debug("Forum receieved subscribe event '%#v'", e)
 	db := db_app(u, "forums", "data.db", forums_db_create)
@@ -614,6 +612,22 @@ func forums_subscribe_event(u *User, e *Event) {
 	}
 
 	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, name, role)
+	db.exec("update forums set updated=? where id=?", now(), f.ID)
+
+	var ps []ForumPost
+	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 100", f.ID)
+	for _, p := range ps {
+		e := Event{ID: p.ID, From: f.ID, To: e.From, App: "forums", Action: "post/create", Content: json_encode(p)}
+		e.send(f.Identity.Private)
+	}
+	for _, p := range ps {
+		var cs []ForumComment
+		db.scans(&cs, "select * from comments where post=?", p.ID)
+		for _, c := range cs {
+			e := Event{ID: c.ID, From: f.ID, To: e.From, App: "forums", Action: "comment/create", Content: json_encode(c)}
+			e.send(f.Identity.Private)
+		}
+	}
 }
 
 // Unsubscribe from forum

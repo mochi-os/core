@@ -141,13 +141,13 @@ func friend_accept(u *User, friend string) {
 	if !db.exists("select id from friends where id=?", friend) {
 		friend_create(u, friend, fi.Name, "person", false)
 	}
-	event := Event{From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
+	event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
 	event.send()
 	db.exec("delete from invites where id=? and direction='from'", friend)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where id=? and direction='to'", friend) {
-		event := Event{From: u.Identity.ID, To: friend, App: "friends", Action: "cancel"}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "cancel"}
 		event.send()
 		db.exec("delete from invites where id=? and direction='to'", friend)
 	}
@@ -177,13 +177,13 @@ func friend_create(u *User, friend string, name string, class string, invite boo
 
 	if db.exists("select id from invites where id=? and direction='from'", friend) {
 		// We have an existing invitation from them, so accept it automatically
-		event := Event{From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
 		event.send()
 		db.exec("delete from invites where id=? and direction='from'", friend)
 
 	} else if invite {
 		// Send invitation
-		event := Event{From: u.Identity.ID, To: friend, App: "friends", Action: "invite", Content: u.Identity.Name}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "invite", Content: u.Identity.Name}
 		event.send()
 		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, now_string())
 	}

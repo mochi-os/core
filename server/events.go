@@ -154,7 +154,7 @@ func (a *App) register_event(event string, f func(*User, *Event), addressed bool
 
 func (e *Event) send(key ...string) {
 	if e.ID == "" {
-		e.ID = uid()
+		panic("Event did not specify ID; adding one")
 	}
 
 	method, location, queue_method, queue_location := identity_location(e.To)
@@ -183,7 +183,7 @@ func (e *Event) sign(key ...string) {
 	}
 
 	if e.ID == "" {
-		e.ID = uid()
+		panic("Event did not specify ID")
 	}
 
 	var private []byte

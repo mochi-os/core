@@ -4,13 +4,12 @@
 package main
 
 type App struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Track     string `json:"track"`
-	Type      string `json:"type"`
-	AppCreate map[string]func(*DB)
-	Internal  struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Track    string `json:"track"`
+	Type     string `json:"type"`
+	Internal struct {
 		Actions  map[string]func(*User, *Action)
 		Events   map[string]*AppEvent
 		Services map[string]func(int, string, string, string, ...any) any
@@ -63,14 +62,9 @@ func apps_start() {
 
 func register_app(name string) *App {
 	a := &App{ID: name, Name: name, Type: "internal"}
-	a.AppCreate = make(map[string]func(*DB))
 	a.Internal.Actions = make(map[string]func(*User, *Action))
 	a.Internal.Events = make(map[string]*AppEvent)
 	a.Internal.Services = make(map[string]func(int, string, string, string, ...any) any)
 	apps[name] = a
 	return a
-}
-
-func (a *App) register_db_app(file string, f func(*DB)) {
-	a.AppCreate[file] = f
 }

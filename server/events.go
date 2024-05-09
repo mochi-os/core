@@ -148,6 +148,7 @@ func (e *Event) receive() {
 	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
 }
 
+// TODO Replace unaddressed events with register_event_broadcast()?
 func (a *App) register_event(event string, f func(*User, *Event), addressed bool) {
 	a.Internal.Events[event] = &AppEvent{Function: f, Addressed: addressed}
 }

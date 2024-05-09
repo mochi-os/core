@@ -28,7 +28,6 @@ type ChatMessage struct {
 
 func init() {
 	a := register_app("chat")
-	a.register_db_app("data.db", chat_db_create)
 	a.register_home("chat", map[string]string{"en": "Chat"})
 	a.register_action("chat", chat_list, true)
 	a.register_action("chat/messages", chat_messages, true)

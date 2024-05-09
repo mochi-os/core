@@ -18,7 +18,6 @@ type FriendInvite struct {
 
 func init() {
 	a := register_app("friends")
-	a.register_db_app("data.db", friends_db_create)
 	a.register_home("friends", map[string]string{"en": "Friends"})
 	a.register_action("friends", friends_action_list, true)
 	a.register_action("friends/accept", friends_action_accept, true)

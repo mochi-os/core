@@ -31,6 +31,7 @@ type ForumPost struct {
 	Name          string
 	Title         string
 	Body          string
+	Comments      int
 	Up            int
 	Down          int
 }
@@ -53,7 +54,7 @@ type ForumComment struct {
 type ForumVote struct {
 	Voter string
 	ID    string
-	Vote  int
+	Vote  string
 }
 
 func init() {
@@ -97,19 +98,19 @@ func forums_db_create(db *DB) {
 	db.exec("create table members ( forum references forums( id ), id text not null, name text not null, role text not null default 'poster', primary key ( forum, id ) )")
 	db.exec("create index members_id on members( id )")
 
-	db.exec("create table posts ( id text not null primary key, forum references forum( id ), created integer not null, updated integer not null, status text not null, author text not null, name text not null, title text not null, body text not null, up integer not null default 1, down integer not null default 0 )")
+	db.exec("create table posts ( id text not null primary key, forum references forum( id ), created integer not null, updated integer not null, status text not null, author text not null, name text not null, title text not null, body text not null, comments integer not null default 0, up integer not null default 0, down integer not null default 0 )")
 	db.exec("create index posts_forum on posts( forum )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 	db.exec("create index posts_status on posts( status )")
 
-	db.exec("create table comments ( id text not null primary key, forum references forum( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null, up integer not null default 1, down integer not null default 0 )")
+	db.exec("create table comments ( id text not null primary key, forum references forum( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null, up integer not null default 0, down integer not null default 0 )")
 	db.exec("create index comments_forum on comments( forum )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	db.exec("create table votes ( voter text not null, id text not null, vote integer not null, primary key ( voter, id ) )")
+	db.exec("create table votes ( voter text not null, id text not null, vote text not null, primary key ( voter, id ) )")
 }
 
 func forum_by_id(u *User, id string, owner bool) *Forum {
@@ -128,6 +129,16 @@ func forum_by_id(u *User, id string, owner bool) *Forum {
 	}
 
 	return &f
+}
+
+func forum_by_post(u *User, post string) *Forum {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+
+	var p ForumPost
+	if !db.scan(&p, "select * from posts where id=?", post) {
+		return nil
+	}
+	return forum_by_id(u, p.Forum, false)
 }
 
 // New comment
@@ -160,7 +171,7 @@ func forums_comment_create(u *User, a *Action) {
 	id := uid()
 	now := now()
 	db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, u.Identity.ID, u.Identity.Name, body)
-	db.exec("update posts set updated=? where id=?", now, post)
+	db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Identity == nil {
@@ -219,7 +230,7 @@ func forums_comment_create_event(u *User, e *Event) {
 	}
 
 	db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
-	db.exec("update posts set updated=? where id=?", c.Created, c.Post)
+	db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 }
 
@@ -267,7 +278,7 @@ func forums_comment_submit_event(u *User, e *Event) {
 	}
 
 	db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
-	db.exec("update posts set updated=? where id=?", c.Created, c.Post)
+	db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 
 	j := json_encode(c)
@@ -411,7 +422,7 @@ func forums_post_create(u *User, a *Action) {
 		}
 	}
 
-	a.template("forums/post/create", ForumPost{ID: id, Forum: f.ID})
+	a.template("forums/post/create", map[string]any{"Forum": f, "ID": id})
 }
 
 // Received a forum post from the owner
@@ -520,8 +531,49 @@ func forums_post_submit_event(u *User, e *Event) {
 
 // Vote on a post
 func forums_post_vote(u *User, a *Action) {
-	// TODO Vote on a post
-	a.template("forums/post/vote")
+	id := a.input("id")
+	if !forums_post_vote_set(u, "", id, a.input("vote")) {
+		a.error(404, "Post not found")
+		return
+	}
+	a.template("forums/post/vote", map[string]any{"Forum": forum_by_post(u, id), "ID": id})
+}
+
+func forums_post_vote_set(u *User, forum string, id string, vote string) bool {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var p ForumPost
+	if forum == "" {
+		if !db.scan(&p, "select * from posts where id=?", id) {
+			return false
+		}
+	} else {
+		if !db.scan(&p, "select * from posts where forum=? and id=?", forum, id) {
+			return false
+		}
+	}
+
+	var o ForumVote
+	if db.scan(&o, "select vote from votes where voter=? and id=?", u.Identity.ID, id) {
+		switch o.Vote {
+		case "up":
+			db.exec("update posts set up=up-1, updated=? where id=?", now(), id)
+		case "down":
+			db.exec("update posts set down=down-1, updated=? where id=?", now(), id)
+		}
+	}
+
+	db.exec("replace into votes ( voter, id, vote ) values ( ?, ?, ? )", u.Identity.ID, id, vote)
+	switch vote {
+	case "up":
+		db.exec("update posts set up=up+1, updated=? where id=?", now(), id)
+	case "down":
+		db.exec("update posts set down=down+1, updated=? where id=?", now(), id)
+	}
+
+	db.exec("update forums set updated=? where id=?", now(), forum)
+	return true
 }
 
 // Received a forum post vote from another user
@@ -535,18 +587,18 @@ func forums_post_view(u *User, a *Action) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
 	defer db.close()
 
-	f := forum_by_id(u, a.input("forum"), false)
-	if f == nil {
-		a.error(404, "Forum not found")
-		return
-	}
-
 	var p ForumPost
-	if !db.scan(&p, "select * from posts where forum=? and id=?", f.ID, a.input("post")) {
+	if !db.scan(&p, "select * from posts where id=?", a.input("id")) {
 		a.error(404, "Post not found")
 		return
 	}
 	p.CreatedString = u.time_local(p.Created)
+
+	f := forum_by_id(u, p.Forum, false)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
 
 	a.template("forums/post/view", map[string]any{"Forum": f, "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
 }
@@ -600,18 +652,16 @@ func forums_subscribe_event(u *User, e *Event) {
 		return
 	}
 
-	name := "Unknown"
 	var m ForumMember
-	if json_decode(e.Content, &m) {
-		name = m.Name
+	if !json_decode(e.Content, &m) {
+		log_info("Forum dropping subscribe event with invalid JSON")
 	}
-
 	role := "member"
 	if f.Subscribe != "anyone" {
 		role = "pending"
 	}
 
-	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, name, role)
+	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, m.Name, role)
 	db.exec("update forums set updated=? where id=?", now(), f.ID)
 
 	var ps []ForumPost

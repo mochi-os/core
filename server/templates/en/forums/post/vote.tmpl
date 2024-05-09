@@ -1,0 +1,7 @@
+{{define "title"}}Comms: Vote recorded{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Home</a> | <a href="../../">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | Vote recorded
+
+<p>Your vote has been recorded. You may now <a href="../../post/view/?id={{.ID}}">view</a> the post.</p>
+
+{{template "foot" .}}

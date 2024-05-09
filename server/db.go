@@ -46,6 +46,7 @@ func db_create() {
 	users.exec("create index logins_expires on logins( expires )")
 
 	// Identities
+	//TODO Include owning user's identity?
 	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), class text not null, name text not null, privacy text not null default 'public', published integer not null default 0 )")
 	users.exec("create index identities_fingerprint on identities( fingerprint )")
 	users.exec("create index identities_user on identities( user )")
@@ -75,7 +76,7 @@ func db_create() {
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.ID, app, file)
+	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.Fingerprint, app, file)
 	//log_debug("Database opening app file '%s'", path)
 	if file_exists(path) {
 		return db_open(path)

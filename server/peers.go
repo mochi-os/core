@@ -27,8 +27,8 @@ var peer_publish_chan = make(chan bool)
 
 func init() {
 	a := register_app("peers")
-	a.register_event("request", peer_event_request, false)
-	a.register_event("publish", peer_event_publish, false)
+	a.register_event_broadcast("request", peer_request_event)
+	a.register_event_broadcast("publish", peer_publish_event)
 	a.register_pubsub("peers", peers_publish)
 }
 
@@ -58,28 +58,6 @@ func peer_address(peer string) string {
 		return p.Address
 	}
 	return ""
-}
-
-// Reply to a peer request if for us
-func peer_event_request(u *User, e *Event) {
-	log_debug("Received peer request event '%#v'", e)
-	if e.Content == libp2p_id {
-		log_debug("Peer request is for us; requesting a re-publish")
-		peer_publish_chan <- true
-	}
-}
-
-// Received a peer publish event from another server
-func peer_event_publish(u *User, e *Event) {
-	var m map[string]string
-	if json_decode(e.Content, &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
-		if m["id"] == libp2p_id {
-			return
-		}
-		peer_add(m["address"], true)
-	} else {
-		log_info("Invalid peer update")
-	}
 }
 
 // Manage list of known peers, and connect to them if necessary
@@ -123,9 +101,31 @@ func peers_publish(t *pubsub.Topic) {
 	}
 }
 
+// Received a peer publish event from another server
+func peer_publish_event(u *User, e *Event) {
+	var m map[string]string
+	if json_decode(e.Content, &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
+		if m["id"] == libp2p_id {
+			return
+		}
+		peer_add(m["address"], true)
+	} else {
+		log_info("Invalid peer update")
+	}
+}
+
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
 	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "request", Content: peer})))
+}
+
+// Reply to a peer request if for us
+func peer_request_event(u *User, e *Event) {
+	log_debug("Received peer request event '%#v'", e)
+	if e.Content == libp2p_id {
+		log_debug("Peer request is for us; requesting a re-publish")
+		peer_publish_chan <- true
+	}
 }
 
 // Send a message to a peer

@@ -10,9 +10,10 @@ type App struct {
 	Track    string `json:"track"`
 	Type     string `json:"type"`
 	Internal struct {
-		Actions  map[string]func(*User, *Action)
-		Events   map[string]*AppEvent
-		Services map[string]func(int, string, string, string, ...any) any
+		Actions         map[string]func(*User, *Action)
+		Events          map[string]func(*User, *Event)
+		EventsBroadcast map[string]func(*User, *Event)
+		Services        map[string]func(int, string, string, string, ...any) any
 	}
 	WASM struct {
 		File     string            `json:"file"`
@@ -20,11 +21,6 @@ type App struct {
 		Events   map[string]string `json:"events"`
 		Services map[string]string `json:"services"`
 	} `json:"wasm"`
-}
-
-type AppEvent struct {
-	Function  func(*User, *Event)
-	Addressed bool
 }
 
 var apps = map[string]*App{}
@@ -63,7 +59,8 @@ func apps_start() {
 func register_app(name string) *App {
 	a := &App{ID: name, Name: name, Type: "internal"}
 	a.Internal.Actions = make(map[string]func(*User, *Action))
-	a.Internal.Events = make(map[string]*AppEvent)
+	a.Internal.Events = make(map[string]func(*User, *Event))
+	a.Internal.EventsBroadcast = make(map[string]func(*User, *Event))
 	a.Internal.Services = make(map[string]func(int, string, string, string, ...any) any)
 	apps[name] = a
 	return a

@@ -116,18 +116,16 @@ func (e *Event) receive() {
 
 	switch a.Type {
 	case "internal":
-		ae, found := a.Internal.Events[e.Action]
-		if u == nil && ae.Addressed {
-			log_info("Dropping received event due to no matching identity")
-			return
-		}
-		if found {
-			ae.Function(u, e)
-			return
-		} else {
-			ae, found = a.Internal.Events[""]
+		for _, try := range []string{e.Action, ""} {
+			var f func(*User, *Event)
+			var found bool
+			if e.To == "" {
+				f, found = a.Internal.EventsBroadcast[try]
+			} else {
+				f, found = a.Internal.Events[try]
+			}
 			if found {
-				ae.Function(u, e)
+				f(u, e)
 				return
 			}
 		}
@@ -145,12 +143,15 @@ func (e *Event) receive() {
 		}
 	}
 
-	log_info("Dropping received event due to unknown action '%s' for app '%s'", e.Action, e.App)
+	log_info("Dropping received event due to unknown event '%s' for app '%s'", e.Action, e.App)
 }
 
-// TODO Replace unaddressed events with register_event_broadcast()?
-func (a *App) register_event(event string, f func(*User, *Event), addressed bool) {
-	a.Internal.Events[event] = &AppEvent{Function: f, Addressed: addressed}
+func (a *App) register_event(event string, f func(*User, *Event)) {
+	a.Internal.Events[event] = f
+}
+
+func (a *App) register_event_broadcast(event string, f func(*User, *Event)) {
+	a.Internal.EventsBroadcast[event] = f
 }
 
 func (e *Event) send(key ...string) {

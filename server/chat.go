@@ -34,7 +34,7 @@ func init() {
 	a.register_action("chat/new", chat_new, true)
 	a.register_action("chat/send", chat_send, true)
 	a.register_action("chat/view", chat_view, true)
-	a.register_event("message", chat_receive, true)
+	a.register_event("message", chat_receive)
 }
 
 // Create app database

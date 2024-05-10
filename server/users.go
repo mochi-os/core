@@ -148,6 +148,10 @@ func user_from_code(code string) *User {
 }
 
 func user_owning_identity(id string) *User {
+	if id == "" {
+		return nil
+	}
+
 	db := db_open("db/users.db")
 	var i Identity
 	if !db.scan(&i, "select * from identities where id=?", id) {

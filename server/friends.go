@@ -26,9 +26,9 @@ func init() {
 	a.register_action("friends/ignore", friends_action_ignore, true)
 	a.register_action("friends/new", friends_action_new, true)
 	a.register_action("friends/search", friends_action_search, true)
-	a.register_event("accept", friends_event_accept, true)
-	a.register_event("cancel", friends_event_cancel, true)
-	a.register_event("invite", friends_event_invite, true)
+	a.register_event("accept", friends_event_accept)
+	a.register_event("cancel", friends_event_cancel)
+	a.register_event("invite", friends_event_invite)
 }
 
 // Create app database

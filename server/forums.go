@@ -112,7 +112,7 @@ func forums_db_create(db *DB) {
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	db.exec("create table votes ( voter text not null, id text not null, vote text not null, primary key ( voter, id ) )")
+	db.exec("create table votes ( voter text not null, class text not null, id text not null, vote text not null, primary key ( voter, class, id ) )")
 }
 
 func forum_by_id(u *User, id string, owner bool) *Forum {
@@ -381,7 +381,7 @@ func forums_comment_vote_set(u *User, c *ForumComment, voter string, vote string
 	now := now()
 
 	var o ForumVote
-	if db.scan(&o, "select vote from votes where voter=? and id=?", voter, c.ID) {
+	if db.scan(&o, "select vote from votes where voter=? and class='comment' and id=?", voter, c.ID) {
 		switch o.Vote {
 		case "up":
 			c.Up = c.Up - 1
@@ -392,7 +392,7 @@ func forums_comment_vote_set(u *User, c *ForumComment, voter string, vote string
 		}
 	}
 
-	db.exec("replace into votes ( voter, id, vote ) values ( ?, ?, ? )", voter, c.ID, vote)
+	db.exec("replace into votes ( voter, class, id, vote ) values ( ?, 'comment', ?, ? )", voter, c.ID, vote)
 	switch vote {
 	case "up":
 		c.Up = c.Up + 1
@@ -735,7 +735,7 @@ func forums_post_vote_set(u *User, p *ForumPost, voter string, vote string) {
 	now := now()
 
 	var o ForumVote
-	if db.scan(&o, "select vote from votes where voter=? and id=?", voter, p.ID) {
+	if db.scan(&o, "select vote from votes where voter=? and class='post' and id=?", voter, p.ID) {
 		switch o.Vote {
 		case "up":
 			p.Up = p.Up - 1
@@ -746,7 +746,7 @@ func forums_post_vote_set(u *User, p *ForumPost, voter string, vote string) {
 		}
 	}
 
-	db.exec("replace into votes ( voter, id, vote ) values ( ?, ?, ? )", voter, p.ID, vote)
+	db.exec("replace into votes ( voter, class, id, vote ) values ( ?, 'post', ?, ? )", voter, p.ID, vote)
 	switch vote {
 	case "up":
 		p.Up = p.Up + 1

@@ -1,6 +1,6 @@
 {{define "forum_comment"}}
 <hr/>
-<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}} <a href="../../comment/vote/?id={{.ID}}&vote=up">uarr;{{.Up}}</a> <a href="../../comment/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a> <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a></p>
+<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}} <a href="../../comment/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../../comment/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a> <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a></p>
 {{if .Children}}{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}{{end}}
 {{end}}
 

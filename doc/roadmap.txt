@@ -1,6 +1,5 @@
 0.1
 	Forums app
-		Voting
 		Moderation
 		Member management
 		Notifications

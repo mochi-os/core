@@ -133,6 +133,25 @@ func forum_by_id(u *User, id string, owner bool) *Forum {
 	return &f
 }
 
+// Get comments recursively
+func forum_comments(u *User, db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
+	if depth > 1000 {
+		return nil
+	}
+
+	id := ""
+	if parent != nil {
+		id = parent.ID
+	}
+	var cs []ForumComment
+	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
+	for j, c := range cs {
+		cs[j].CreatedString = u.time_local(c.Created)
+		cs[j].Children = forum_comments(u, db, f, p, &c, depth+1)
+	}
+	return &cs
+}
+
 // New comment
 func forums_comment_create(u *User, a *Action) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
@@ -289,41 +308,137 @@ func forums_comment_new(u *User, a *Action) {
 	a.template("forums/comment/new", map[string]any{"Forum": forum_by_id(u, a.input("forum"), false), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
-// Vote on a comment
-func forums_comment_vote(u *User, a *Action) {
-	// TODO Vote on a comment
-	a.template("forums/comment/vote")
-}
-
-// Get comments recursively
-func forum_comments(u *User, db *DB, f *Forum, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
-	if depth > 1000 {
-		return nil
-	}
-
-	id := ""
-	if parent != nil {
-		id = parent.ID
-	}
-	var cs []ForumComment
-	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
-	for j, c := range cs {
-		cs[j].CreatedString = u.time_local(c.Created)
-		cs[j].Children = forum_comments(u, db, f, p, &c, depth+1)
-	}
-	return &cs
-}
-
 // Received a forum comment update event
 func forums_comment_update_event(u *User, e *Event) {
 	log_debug("Forum receieved comment update event '%#v'", e)
-	// TODO Receive forum comment update
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var c ForumComment
+	if !json_decode(e.Content, &c) {
+		log_info("Forum dropping comment update with invalid JSON content '%s'", e.Content)
+		return
+	}
+	var o ForumComment
+	if !db.scan(&o, "select * from comments where id=?", c.ID) {
+		log_info("Forum dropping comment update for unknown comment")
+		return
+	}
+	if e.From != o.Forum {
+		log_info("Forum dropping comment update claiming to be from owner but isn't '%s'!='%s'", e.From, o.Forum)
+		return
+	}
+
+	now := now()
+	db.exec("update comments set up=?, down=? where id=?", c.Up, c.Down, o.ID)
+	db.exec("update posts set updated=? where id=?", now, o.Post)
+	db.exec("update forums set updated=? where id=?", now, o.Forum)
+}
+
+// Vote on a comment
+func forums_comment_vote(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var c ForumComment
+	if !db.scan(&c, "select * from comments where id=?", a.input("id")) {
+		a.error(404, "Comment not found")
+		return
+	}
+	f := forum_by_id(u, c.Forum, false)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
+
+	vote := a.input("vote")
+	forums_comment_vote_set(u, &c, u.Identity.ID, vote)
+
+	if f.Identity == nil {
+		// We are not forum owner, so send to the owner
+		e := Event{ID: uid(), From: u.Identity.ID, To: f.ID, App: "forums", Action: "comment/vote", Content: json_encode(ForumVote{ID: c.ID, Vote: vote})}
+		e.send()
+
+	} else {
+		// We are the forum owner, to send to all members except us
+		id := uid()
+		j := json_encode(c)
+		var ms []ForumMember
+		db.scans(&ms, "select * from members where forum=? and role!='pending'", f.ID)
+		for _, m := range ms {
+			if m.ID != u.Identity.ID {
+				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "comment/update", Content: j}
+				e.send(f.Identity.Private)
+			}
+		}
+	}
+
+	a.template("forums/comment/vote", map[string]any{"Forum": f, "Post": c.Post})
+}
+
+func forums_comment_vote_set(u *User, c *ForumComment, voter string, vote string) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	now := now()
+
+	var o ForumVote
+	if db.scan(&o, "select vote from votes where voter=? and id=?", voter, c.ID) {
+		switch o.Vote {
+		case "up":
+			c.Up = c.Up - 1
+			db.exec("update comments set up=up-1 where id=?", c.ID)
+		case "down":
+			c.Down = c.Down - 1
+			db.exec("update comments set down=down-1 where id=?", c.ID)
+		}
+	}
+
+	db.exec("replace into votes ( voter, id, vote ) values ( ?, ?, ? )", voter, c.ID, vote)
+	switch vote {
+	case "up":
+		c.Up = c.Up + 1
+		db.exec("update comments set up=up+1 where id=?", c.ID)
+	case "down":
+		c.Down = c.Down + 1
+		db.exec("update comments set down=down+1 where id=?", c.ID)
+	}
+
+	db.exec("update posts set updated=? where id=?", now, c.Post)
+	db.exec("update forums set updated=? where id=?", now, c.Forum)
 }
 
 // Received a forum comment vote from a member
 func forums_comment_vote_event(u *User, e *Event) {
-	log_debug("Forum receieved comment vote event '%#v'", e)
-	// TODO Receive forum comment vote
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var v ForumVote
+	if !json_decode(e.Content, &v) {
+		log_info("Forum dropping comment vote with invalid JSON content '%s'", e.Content)
+		return
+	}
+
+	var c ForumComment
+	if !db.scan(&c, "select * from comments where id=?", v.ID) {
+		log_info("Forum dropping comment vote for unknown comment")
+		return
+	}
+	f := forum_by_id(u, c.Forum, true)
+	if f == nil {
+		log_info("Forum dropping comment vote for unknown forum")
+		return
+	}
+
+	forums_comment_vote_set(u, &c, e.From, v.Vote)
+
+	j := json_encode(c)
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where forum=? and role!='pending'", f.ID)
+	for _, m := range ms {
+		if m.ID != e.From && m.ID != u.Identity.ID {
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "comment/update", Content: j}
+			e.send(f.Identity.Private)
+		}
+	}
 }
 
 // Create new forum
@@ -553,6 +668,27 @@ func forums_post_update_event(u *User, e *Event) {
 	db.exec("update forums set updated=? where id=?", now, o.Forum)
 }
 
+// View a post
+func forums_post_view(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var p ForumPost
+	if !db.scan(&p, "select * from posts where id=?", a.input("id")) {
+		a.error(404, "Post not found")
+		return
+	}
+	p.CreatedString = u.time_local(p.Created)
+
+	f := forum_by_id(u, p.Forum, false)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
+
+	a.template("forums/post/view", map[string]any{"Forum": f, "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
+}
+
 // Vote on a post
 func forums_post_vote(u *User, a *Action) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
@@ -570,7 +706,7 @@ func forums_post_vote(u *User, a *Action) {
 	}
 
 	vote := a.input("vote")
-	forums_post_vote_set(u, u.Identity.ID, &p, vote)
+	forums_post_vote_set(u, &p, u.Identity.ID, vote)
 
 	if f.Identity == nil {
 		// We are not forum owner, so send to the owner
@@ -594,7 +730,7 @@ func forums_post_vote(u *User, a *Action) {
 	a.template("forums/post/vote", map[string]any{"Forum": f, "ID": p.ID})
 }
 
-func forums_post_vote_set(u *User, voter string, p *ForumPost, vote string) {
+func forums_post_vote_set(u *User, p *ForumPost, voter string, vote string) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
 	now := now()
 
@@ -625,7 +761,6 @@ func forums_post_vote_set(u *User, voter string, p *ForumPost, vote string) {
 
 // Received a forum post vote from a member
 func forums_post_vote_event(u *User, e *Event) {
-	log_debug("Forum receieved post vote event '%#v'", e)
 	db := db_app(u, "forums", "data.db", forums_db_create)
 	defer db.close()
 
@@ -646,7 +781,7 @@ func forums_post_vote_event(u *User, e *Event) {
 		return
 	}
 
-	forums_post_vote_set(u, e.From, &p, v.Vote)
+	forums_post_vote_set(u, &p, e.From, v.Vote)
 
 	j := json_encode(p)
 	var ms []ForumMember
@@ -657,27 +792,6 @@ func forums_post_vote_event(u *User, e *Event) {
 			e.send(f.Identity.Private)
 		}
 	}
-}
-
-// View a post
-func forums_post_view(u *User, a *Action) {
-	db := db_app(u, "forums", "data.db", forums_db_create)
-	defer db.close()
-
-	var p ForumPost
-	if !db.scan(&p, "select * from posts where id=?", a.input("id")) {
-		a.error(404, "Post not found")
-		return
-	}
-	p.CreatedString = u.time_local(p.Created)
-
-	f := forum_by_id(u, p.Forum, false)
-	if f == nil {
-		a.error(404, "Forum not found")
-		return
-	}
-
-	a.template("forums/post/view", map[string]any{"Forum": f, "Post": p, "Comments": forum_comments(u, db, f, &p, nil, 0)})
 }
 
 // Search for a forum

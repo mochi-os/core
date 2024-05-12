@@ -1,0 +1,16 @@
+{{define "title"}}Forum moderation{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="../">Forums</a> | Moderation</p>
+
+<form action="save/">
+{{if len .Members}}<h3>Moderated members</h3>
+<p>{{range .Members}}<input type="checkbox" id="{{.ID}}:{{.Forum}}" name="{{.ID}}:{{.Forum}}" value="true"/><label for="{{.ID}}:{{.Forum}}"> {{.Name}}: {{.ForumName}}</label><br/>{{end}}</p>
+{{else}}<p>No members wait to be moderated</p>{{end}}
+
+{{if len .Posts}}<h3>Moderated posts</h3>
+<p>{{range .Posts}}<input type="checkbox" id="{{.ID}}:{{.Forum}}" name="{{.ID}}:{{.Forum}}" value="true"/><label for="{{.ID}}:{{.Forum}}"> {{.Title}}: {{.ForumName}}</label><br/>{{end}}</p>
+{{else}}<p>No posts wait to be moderated</p>{{end}}
+<input type="submit" value="Update selected"/>
+</form>
+
+{{template "foot" .}}

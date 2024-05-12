@@ -4,9 +4,9 @@
 {{if .Children}}{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}{{end}}
 {{end}}
 
-{{define "title"}}Comms: {{.Post.Title}}{{end}}
+{{define "title"}}{{.Post.Title}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Home</a> | <a href="../../">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | {{.Post.Title}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="../../">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | {{.Post.Title}}</p>
 
 <h3>{{.Post.Title}}</h3>
 <pre>{{.Post.Body}}</pre>

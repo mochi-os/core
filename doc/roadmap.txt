@@ -1,9 +1,9 @@
 0.1
 	Forums app
 		Moderation
-		Find private forums
 		Member management
 		Notifications
+		Find private forums
 	Feeds app
 	Replace identities with entities?
 	Route on class?

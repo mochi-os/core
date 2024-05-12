@@ -1,8 +1,8 @@
-{{define "title"}}Comms: {{.Forum.Name}}{{end}}
+{{define "title"}}{{.Forum.Name}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Home</a> | <a href="../">Forums</a> | {{.Forum.Name}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="../">Forums</a> | {{.Forum.Name}}</p>
 
-<a href="../post/new/?forum={{.Forum.ID}}">New post</a>
+<p><a href="../post/new/?forum={{.Forum.ID}}">New post</a> | <a href="../members/?forum={{.Forum.ID}}">Manage members</a></p>
 
 <p>{{range .Posts}}<a href="../post/view/?id={{.ID}}">{{.Title}}</a> | &#8618;{{.Comments}} <a href="../post/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../post/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a><br/>{{end}}</p>
 

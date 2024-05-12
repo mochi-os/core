@@ -1,6 +1,6 @@
-{{define "title"}}Comms: {{.Name}}{{end}}
+{{define "title"}}{{.Name}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Home</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
 
 <p id="messages"></p>
 <input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>

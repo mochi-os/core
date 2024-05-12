@@ -14,10 +14,11 @@ type Forum struct {
 }
 
 type ForumMember struct {
-	Forum string
-	ID    string
-	Name  string
-	Role  string
+	Forum     string
+	ID        string
+	Name      string
+	Role      string
+	ForumName string `json:"-"`
 }
 
 type ForumPost struct {
@@ -34,6 +35,7 @@ type ForumPost struct {
 	Comments      int
 	Up            int
 	Down          int
+	ForumName     string `json:"-"`
 }
 
 type ForumComment struct {
@@ -67,6 +69,8 @@ func init() {
 	a.register_action("forums/comment/new", forums_comment_new, true)
 	a.register_action("forums/comment/vote", forums_comment_vote, true)
 	a.register_action("forums/find", forums_find, false)
+	a.register_action("forums/moderate", forums_moderate_edit, true)
+	a.register_action("forums/moderate/save", forums_moderate_save, true)
 	a.register_action("forums/post/create", forums_post_create, true)
 	a.register_action("forums/post/new", forums_post_new, true)
 	a.register_action("forums/post/view", forums_post_view, true)
@@ -97,7 +101,7 @@ func forums_db_create(db *DB) {
 	db.exec("create index forums_name on forums( name )")
 	db.exec("create index forums_updated on forums( updated )")
 
-	db.exec("create table members ( forum references forums( id ), id text not null, name text not null, role text not null default 'poster', primary key ( forum, id ) )")
+	db.exec("create table members ( forum references forums( id ), id text not null, name text not null, role text not null default 'member', primary key ( forum, id ) )")
 	db.exec("create index members_id on members( id )")
 
 	db.exec("create table posts ( id text not null primary key, forum references forum( id ), created integer not null, updated integer not null, status text not null, author text not null, name text not null, title text not null, body text not null, comments integer not null default 0, up integer not null default 0, down integer not null default 0 )")
@@ -481,6 +485,44 @@ func forums_list(u *User, a *Action) {
 	var f []Forum
 	db.scans(&f, "select * from forums order by updated desc")
 	a.write(a.input("format"), "forums/list", f)
+}
+
+// Moderate members and posts
+func forums_moderate_edit(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var ms []ForumMember
+	db.scans(&ms, "select members.*, forums.name as forumname from members inner join forums on members.forum=forums.id where role='pending' and forum in ( select forum from members where id=? and ( role='administrator' or role='moderator' ) ) order by name, forumname", u.Identity.ID)
+
+	var ps []ForumPost
+	db.scans(&ps, "select posts.*, forums.name as forumname from posts inner join forums on posts.forum=forums.id where status='pending' and forum in ( select forum from members where id=? and ( role='administrator' or role='moderator' ) ) order by id", u.Identity.ID)
+
+	a.template("forums/moderate/edit", map[string]any{"Members": &ms, "Posts": &ps})
+}
+
+// Save moderation updates
+func forums_moderate_save(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where role='pending' and forum in ( select forum from members where id=? and ( role='administrator' or role='moderator' ) )", u.Identity.ID)
+	for _, m := range ms {
+		if a.input(m.ID+":"+m.Forum) == "true" {
+			db.exec("update members set role='member' where forum=? and id=?", m.Forum, m.ID)
+		}
+	}
+
+	var ps []ForumPost
+	db.scans(&ps, "select * from posts where status='pending' and forum in ( select forum from members where id=? and ( role='administrator' or role='moderator' ) )", u.Identity.ID)
+	for _, p := range ps {
+		if a.input(p.ID+":"+p.Forum) == "true" {
+			db.exec("update posts set status='posted' where forum=? and id=?", p.Forum, p.ID)
+		}
+	}
+
+	a.template("forums/moderate/save")
 }
 
 // Enter details for new forum to be created

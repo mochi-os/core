@@ -104,7 +104,7 @@ func peers_publish(t *pubsub.Topic) {
 // Received a peer publish event from another server
 func peer_publish_event(u *User, e *Event) {
 	var m map[string]string
-	if json_decode(e.Content, &m) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
+	if json_decode(&m, e.Content) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
 		if m["id"] == libp2p_id {
 			return
 		}

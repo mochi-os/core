@@ -224,7 +224,7 @@ func forums_comment_create_event(u *User, e *Event) {
 	}
 
 	var c ForumComment
-	if !json_decode(e.Content, &c) {
+	if !json_decode(&c, e.Content) {
 		log_info("Forum dropping comment with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -264,7 +264,7 @@ func forums_comment_submit_event(u *User, e *Event) {
 	}
 
 	var c ForumComment
-	if !json_decode(e.Content, &c) {
+	if !json_decode(&c, e.Content) {
 		log_info("Forum dropping comment with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -316,7 +316,7 @@ func forums_comment_update_event(u *User, e *Event) {
 	defer db.close()
 
 	var c ForumComment
-	if !json_decode(e.Content, &c) {
+	if !json_decode(&c, e.Content) {
 		log_info("Forum dropping comment update with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -409,7 +409,7 @@ func forums_comment_vote_event(u *User, e *Event) {
 	defer db.close()
 
 	var v ForumVote
-	if !json_decode(e.Content, &v) {
+	if !json_decode(&v, e.Content) {
 		log_info("Forum dropping comment vote with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -517,7 +517,7 @@ func forums_member_update_event(u *User, e *Event) {
 	}
 
 	var m ForumMember
-	if !json_decode(e.Content, &m) {
+	if !json_decode(&m, e.Content) {
 		log_info("Forum dropping member update with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -618,7 +618,7 @@ func forums_post_create_event(u *User, e *Event) {
 	}
 
 	var p ForumPost
-	if !json_decode(e.Content, &p) {
+	if !json_decode(&p, e.Content) {
 		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -666,7 +666,7 @@ func forums_post_submit_event(u *User, e *Event) {
 	}
 
 	var p ForumPost
-	if !json_decode(e.Content, &p) {
+	if !json_decode(&p, e.Content) {
 		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -708,7 +708,7 @@ func forums_post_update_event(u *User, e *Event) {
 	defer db.close()
 
 	var p ForumPost
-	if !json_decode(e.Content, &p) {
+	if !json_decode(&p, e.Content) {
 		log_info("Forum dropping post update with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -825,7 +825,7 @@ func forums_post_vote_event(u *User, e *Event) {
 	defer db.close()
 
 	var v ForumVote
-	if !json_decode(e.Content, &v) {
+	if !json_decode(&v, e.Content) {
 		log_info("Forum dropping post vote with invalid JSON content '%s'", e.Content)
 		return
 	}
@@ -924,7 +924,7 @@ func forums_subscribe(u *User, a *Action) {
 		return
 	}
 	var m ForumMember
-	if !json_decode(d.Data, &m) {
+	if !json_decode(&m, d.Data) {
 		a.error(400, "Forum directory entry does not contain data")
 		return
 	}
@@ -951,7 +951,7 @@ func forums_subscribe_event(u *User, e *Event) {
 	}
 
 	var m ForumMember
-	if !json_decode(e.Content, &m) {
+	if !json_decode(&m, e.Content) {
 		log_info("Forum dropping subscribe event with invalid JSON")
 	}
 

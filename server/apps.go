@@ -37,7 +37,7 @@ func apps_start() {
 				continue
 			}
 			var a App
-			if !json_decode(file_read(base+"/manifest.json"), &a) {
+			if !json_decode(&a, file_read(base+"/manifest.json")) {
 				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
 				continue
 			}

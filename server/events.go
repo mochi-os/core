@@ -72,7 +72,7 @@ func events_manager() {
 
 func event_receive_json(event string, source string) {
 	var e Event
-	if !json_decode(event, &e) {
+	if !json_decode(&e, event) {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}

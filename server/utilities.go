@@ -66,7 +66,7 @@ func fingerprint(in string) string {
 	return b64[0:10]
 }
 
-func json_decode(j string, out any) bool {
+func json_decode(out any, j string) bool {
 	err := json.Unmarshal([]byte(j), out)
 	if err != nil {
 		return false

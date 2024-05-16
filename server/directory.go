@@ -88,7 +88,7 @@ func directory_publish(i *Identity) {
 func directory_publish_event(u *User, e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
-	if !json_decode(e.Content, &d) {
+	if !json_decode(&d, e.Content) {
 		log_info("Dropping directory event '%s' with malformed JSON", e.Content)
 		return
 	}

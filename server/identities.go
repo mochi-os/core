@@ -10,14 +10,16 @@ import (
 )
 
 type Identity struct {
-	ID          string
-	Private     string
-	Fingerprint string
-	User        int
-	Class       string
-	Name        string
-	Privacy     string
-	Published   int64
+	ID          string `json:"id"`
+	Private     string `json:"-"`
+	Fingerprint string `json:"-"`
+	User        int    `json:"-"`
+	Parent      string `json:"-"`
+	Class       string `json:"class"`
+	Name        string `json:"name"`
+	Privacy     string `json:"-"`
+	Data        string `json:"data"`
+	Published   int64  `json:"-"`
 }
 
 func identity_by_id(u *User, id string) *Identity {
@@ -29,7 +31,7 @@ func identity_by_id(u *User, id string) *Identity {
 	return &i
 }
 
-func identity_create(u *User, class string, name string, privacy string) (*Identity, error) {
+func identity_create(u *User, class string, name string, privacy string, data string) (*Identity, error) {
 	db := db_open("db/users.db")
 	if !valid(name, "name") {
 		return nil, error_message("Invalid name")
@@ -44,14 +46,19 @@ func identity_create(u *User, class string, name string, privacy string) (*Ident
 		return nil, error_message("Invalid privacy")
 	}
 
+	parent := ""
+	if u.Identity != nil {
+		parent = u.Identity.ID
+	}
+
 	for j := 0; j < 1000; j++ {
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
 		id := base64_encode(public)
 		fingerprint := fingerprint(string(public))
 		if !db.exists("select id from identities where id=? or fingerprint=?", id, fingerprint) {
-			db.exec("replace into identities ( id, private, fingerprint, user, class, name, privacy, published ) values ( ?, ?, ?, ?, ?, ?, ?, 0 )", id, base64_encode(private), fingerprint, u.ID, class, name, privacy)
-			i := Identity{ID: id, Fingerprint: fingerprint, User: u.ID, Class: class, Name: name, Privacy: privacy, Published: 0}
+			db.exec("replace into identities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base64_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
+			i := Identity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 			if privacy == "public" {
 				directory_create(&i)
 				directory_publish(&i)

@@ -4,7 +4,7 @@
 
 {{if len .}}<p>Click on a forum to subscribe:</p>
 
-<p>{{range .}}<a href="../subscribe/?id={{.ID}}&name={{.Name}}">{{.Name}}</a><br/>{{end}}</p>
+<p>{{range .}}<a href="../subscribe/?id={{.ID}}">{{.Name}}</a><br/>{{end}}</p>
 {{else}}<p>No matches found.</p>{{end}}
 
 {{template "foot" .}}

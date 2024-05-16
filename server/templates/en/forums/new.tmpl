@@ -5,27 +5,20 @@
 <form action="../create/">
     <label for="name">Forum name:</label>
     <input type="text" name="name"/><br/>
-	<label for="privacy">Privacy:</label>
+	<label for="role">New members may:</label>
+	<select name="role" id="role">
+		<option value="disabled">Not access the forum until approved by an administrator</option>
+		<option value="viewer">View the forum, but not post, comment, or vote</option>
+		<option value="voter">Vote, but not post or comment</option>
+		<option value="commenter">Comment and vote, but not post</option>
+		<option value="poster">Post, comment, and vote</option>
+	</select><br/>
+  	<label for="privacy">Allow anyone to search for forum:</label>
 	<select name="privacy" id="privacy">
-		<option value="public">Public: Published in directory</option>
-		<option value="private">Private: Not published in directory</option>
+		<option value="public">Yes</option>
+		<option value="private">No</option>
 	</select><br/>
-	<label for="view">Viewing:</label>
-	<select name="view" id="viewing">
-		<option value="anyone">Anyone may view posts</option>
-		<option value="members">Members may view posts</option>
-	</select><br/>
-	<label for="">Subscribing:</label>
-	<select name="subscribe" id="subscribe">
-		<option value="anyone">Anyone may subscribe</option>
-		<option value="moderated">New members must be approved by moderator</option>
-	</select><br/>
-	<label for="post">Posting:</label>
-	<select name="post" id="post">
-		<option value="members">Members may post</option>
-		<option value="moderated">Posts must be approved by a moderator</option>
-	</select><br/>
-    <input type="submit" value="Create"/>
+  <input type="submit" value="Create"/>
 </form>
 
 {{template "foot" .}}

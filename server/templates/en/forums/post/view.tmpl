@@ -1,9 +1,3 @@
-{{define "forum_comment"}}
-<hr/>
-<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}} <a href="../../comment/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../../comment/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a> <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a></p>
-{{if .Children}}{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}{{end}}
-{{end}}
-
 {{define "title"}}{{.Post.Title}}{{end}}
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="../../">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | {{.Post.Title}}</p>
@@ -11,8 +5,14 @@
 <h3>{{.Post.Title}}</h3>
 <pre>{{.Post.Body}}</pre>
 
-<p style="font-variant: small-caps;">{{.Post.Name}} {{.Post.CreatedString}} &#8618;{{.Post.Comments}} <a href="../vote/?id={{.Post.ID}}&vote=up">&uarr;{{.Post.Up}}</a> <a href="../vote/?id={{.Post.ID}}&vote=down">&darr;{{.Post.Down}}</a> <a href="../../comment/new/?forum={{.Forum.ID}}&post={{.Post.ID}}">New comment</a></p>
+<p style="font-variant: small-caps;">{{.Post.Name}} {{.Post.CreatedString}} {{if $.RoleVoter}} <a href="../vote/?id={{.Post.ID}}&vote=up">&uarr;{{.Post.Up}}</a> <a href="../vote/?id={{.Post.ID}}&vote=down">&darr;{{.Post.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Post.Comments}}{{if $.RoleCommenter}} <a href="../../comment/new/?forum={{.Forum.ID}}&post={{.Post.ID}}">New comment</a>{{end}}</p>
 
 <p>{{range .Comments}}{{template "forum_comment" .}}{{end}}</p>
 
 {{template "foot" .}}
+
+{{define "forum_comment"}}
+	<hr/>
+	<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}}{{if $.RoleVoter}} <a href="../../comment/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../../comment/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}}{{if $.RoleCommenter}} <a href="../../comment/new/?forum={{.Forum}}&post={{.Post}}&parent={{.ID}}">Reply</a>{{end}}</p>
+	{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}
+{{end}}

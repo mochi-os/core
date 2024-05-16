@@ -108,7 +108,7 @@ func web_identity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"))
+	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"), "")
 	if err != nil {
 		web_error(w, 400, "Unable to create identity: %s", err)
 		return
@@ -135,9 +135,8 @@ func web_start() {
 func web_template(w http.ResponseWriter, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {
-		log_warn(err.Error())
 		http.Error(w, "Web template error", http.StatusInternalServerError)
-		return
+		panic("Web template error: " + err.Error())
 	}
 	if len(values) > 0 {
 		err = t.Execute(w, values[0])
@@ -145,8 +144,7 @@ func web_template(w http.ResponseWriter, file string, values ...any) {
 		err = t.Execute(w, nil)
 	}
 	if err != nil {
-		log_warn("Web template error '%s'", err.Error())
-		http.Error(w, "Web template error", http.StatusInternalServerError)
+		panic("Web template error: " + err.Error())
 	}
 }
 

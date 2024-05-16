@@ -13,6 +13,7 @@ type Directory struct {
 	Name        string `json:"name"`
 	Class       string `json:"class"`
 	Location    string `json:"location"`
+	Data        string `json:"data"`
 	Updated     int    `json:"updated"`
 }
 
@@ -24,11 +25,21 @@ func init() {
 	a.register_pubsub("directory", nil)
 }
 
+// Get a directory entry
+func directory_by_id(id string) *Directory {
+	db := db_open("db/directory.db")
+	var d Directory
+	if db.scan(&d, "select * from directory where id=?", id) {
+		return &d
+	}
+	return nil
+}
+
 // Create a new directory entry for a local identity
 func directory_create(i *Identity) {
 	log_debug("Creating directory entry '%s' (%s)", i.ID, i.Name)
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, now())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, i.Data, now())
 	go events_check_queue("identity", i.ID)
 }
 
@@ -67,7 +78,7 @@ func directory_download_event(u *User, e *Event) {
 // Publish a directory entry on the libp2p pubsub
 func directory_publish(i *Identity) {
 	log_debug("Publishing identity '%s' (%s) to pubsub", i.ID, i.Name)
-	e := Event{ID: uid(), From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id})}
+	e := Event{ID: uid(), From: i.ID, App: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id, "data": i.Data})}
 	e.sign()
 	//TODO Queue publish if we're not connected to any/enough peers
 	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
@@ -81,6 +92,7 @@ func directory_publish_event(u *User, e *Event) {
 		log_info("Dropping directory event '%s' with malformed JSON", e.Content)
 		return
 	}
+
 	if e.From == "" {
 		found := false
 		for peer, _ := range peers_known {
@@ -90,16 +102,17 @@ func directory_publish_event(u *User, e *Event) {
 			}
 		}
 		if !found {
-			log_info("Dropping unsigned directory event from untrusted peer")
+			log_info("Dropping anonymous directory event from untrusted peer")
 			return
 		}
+
 	} else if e.From != d.ID {
 		log_info("Dropping directory event from incorrect sender: '%s'!='%s'", d.ID, e.From)
 		return
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, updated ) values ( ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, now())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now())
 
 	go events_check_queue("identity", d.ID)
 }

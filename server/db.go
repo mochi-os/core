@@ -46,10 +46,10 @@ func db_create() {
 	users.exec("create index logins_expires on logins( expires )")
 
 	// Identities
-	//TODO Include owning user's identity?
-	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), class text not null, name text not null, privacy text not null default 'public', published integer not null default 0 )")
+	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
 	users.exec("create index identities_fingerprint on identities( fingerprint )")
 	users.exec("create index identities_user on identities( user )")
+	users.exec("create index identities_parent on identities( parent )")
 	users.exec("create index identities_class on identities( class )")
 	users.exec("create index identities_name on identities( name )")
 	users.exec("create index identities_privacy on identities( privacy )")
@@ -57,7 +57,7 @@ func db_create() {
 
 	// Directory
 	directory := db_open("db/directory.db")
-	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', updated integer not null )")
+	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', data text not null default '', updated integer not null )")
 	directory.exec("create index directory_fingerprint on directory( fingerprint )")
 	directory.exec("create index directory_name on directory( name )")
 	directory.exec("create index directory_class on directory( class )")

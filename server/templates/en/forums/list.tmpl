@@ -2,11 +2,9 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | Forums</p>
 
+<p><a href="find/">Subscribe to a forum</a> | <a href="new/">Create a forum</a></p>
+
 <p>{{if len .}}{{range .}}<a href="view/?id={{.ID}}">{{.Name}}</a><br/>{{end}}
 {{else}}You are not subscribed to any forums{{end}}</p>
-
-<p><a href="find/">Subscribe to a forum</a><br/>
-<a href="new/">Create a forum</a><br/>
-<a href="moderate/">Moderation</a></p>
 
 {{template "foot" .}}

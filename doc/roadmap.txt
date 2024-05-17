@@ -1,6 +1,5 @@
 0.1
 	Forums app
-		Moderation
 		Member management
 		Notifications
 		Find private forums

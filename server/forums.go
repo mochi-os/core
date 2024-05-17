@@ -90,6 +90,7 @@ func init() {
 	a.register_event("post/vote", forums_post_vote_event)
 	a.register_event("subscribe", forums_subscribe_event)
 	a.register_event("unsubscribe", forums_unsubscribe_event)
+	a.register_event("update", forums_update_event)
 }
 
 // Create app database
@@ -935,7 +936,6 @@ func forums_subscribe(u *User, a *Action) {
 	e := Event{ID: uid(), From: u.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": u.Identity.Name})}
 	e.send()
 
-	//TODO Tell user about role
 	a.template("forums/subscribe", map[string]any{"Forum": id, "Role": m.Role})
 }
 
@@ -957,12 +957,13 @@ func forums_subscribe_event(u *User, e *Event) {
 
 	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, m.Name, f.Role)
 	db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", f.ID, now(), f.ID)
+	f.Members = f.Members + 1
 
 	if f.Role != "disabled" {
 		forum_send_recent_posts(u, f, e.From)
 	}
 
-	//TODO Send forum update events with new number of members
+	forum_update(u, f)
 }
 
 // Unsubscribe from forum
@@ -973,8 +974,47 @@ func forums_unsubscribe(u *User, a *Action) {
 // Received an unsubscribe from member
 func forums_unsubscribe_event(u *User, e *Event) {
 	log_debug("Forum receieved unsubscribe event '%#v'", e)
+
+	f := forum_by_id(u, e.To, true)
+	if f == nil {
+		return
+	}
+
 	//TODO Receive forum unsubscribe
-	//TODO Send forum update events with new number of members
+	f.Members = f.Members - 1
+	forum_update(u, f)
+}
+
+// Send updated forum details to members
+func forum_update(u *User, f *Forum) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	j := json_encode(map[string]any{"members": f.Members})
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+	id := uid()
+	for _, m := range ms {
+		if m.ID != u.Identity.ID {
+			e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "update", Content: j}
+			e.send(f.Identity.Private)
+		}
+	}
+}
+
+// Received a forum update event from owner
+func forums_update_event(u *User, e *Event) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	log_debug("Forum receieved update event '%#v'", e)
+
+	f := forum_by_id(u, e.From, false)
+	if f == nil {
+		return
+	}
+	var n Forum
+	if !json_decode(&n, e.Content) {
+		log_info("Forum dropping update with invalid JSON content '%s'", e.Content)
+		return
+	}
+	db.exec("update forums set members=?, updated=? where id=?", n.Members, now(), f.ID)
 }
 
 // View a forum
@@ -997,6 +1037,5 @@ func forums_view(u *User, a *Action) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
 
-	//TODO Tell user about role
-	a.template("forums/view", map[string]any{"Forum": f, "Posts": &ps, "RoleVoter": forum_role(&m, "voter"), "RolePoster": forum_role(&m, "poster"), "RoleAdministrator": forum_role(&m, "administrator")})
+	a.template("forums/view", map[string]any{"Forum": f, "Member": &m, "Posts": &ps, "RoleVoter": forum_role(&m, "voter"), "RolePoster": forum_role(&m, "poster"), "RoleAdministrator": forum_role(&m, "administrator")})
 }

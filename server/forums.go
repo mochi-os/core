@@ -116,7 +116,8 @@ func forums_db_create(db *DB) {
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	db.exec("create table votes ( voter text not null, class text not null, id text not null, vote text not null, primary key ( voter, class, id ) )")
+	db.exec("create table votes ( voter text not null, forum references forum( id ), class text not null, id text not null, vote text not null, primary key ( voter, class, id ) )")
+	db.exec("create index votes_forum on votes( forum )")
 }
 
 func forum_by_id(u *User, id string, owner bool) *Forum {
@@ -390,7 +391,7 @@ func forums_comment_vote_set(u *User, c *ForumComment, voter string, vote string
 		}
 	}
 
-	db.exec("replace into votes ( voter, class, id, vote ) values ( ?, 'comment', ?, ? )", voter, c.ID, vote)
+	db.exec("replace into votes ( voter, forum, class, id, vote ) values ( ?, ?, 'comment', ?, ? )", voter, c.Forum, c.ID, vote)
 	switch vote {
 	case "up":
 		c.Up = c.Up + 1
@@ -807,7 +808,7 @@ func forums_post_vote_set(u *User, p *ForumPost, voter string, vote string) {
 		}
 	}
 
-	db.exec("replace into votes ( voter, class, id, vote ) values ( ?, 'post', ?, ? )", voter, p.ID, vote)
+	db.exec("replace into votes ( voter, forum, class, id, vote ) values ( ?, ?, 'post', ?, ? )", voter, p.Forum, p.ID, vote)
 	switch vote {
 	case "up":
 		p.Up = p.Up + 1
@@ -957,7 +958,6 @@ func forums_subscribe_event(u *User, e *Event) {
 
 	db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, m.Name, f.Role)
 	db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", f.ID, now(), f.ID)
-	f.Members = f.Members + 1
 
 	if f.Role != "disabled" {
 		forum_send_recent_posts(u, f, e.From)
@@ -968,29 +968,49 @@ func forums_subscribe_event(u *User, e *Event) {
 
 // Unsubscribe from forum
 func forums_unsubscribe(u *User, a *Action) {
-	//TODO Unsubscribe from forum
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, a.input("id"), false)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
+
+	db.exec("delete from votes where forum=?", f.ID)
+	db.exec("delete from comments where forum=?", f.ID)
+	db.exec("delete from posts where forum=?", f.ID)
+	db.exec("delete from members where forum=?", f.ID)
+	db.exec("delete from forums where id=?", f.ID)
+
+	e := Event{ID: uid(), From: u.Identity.ID, To: f.ID, App: "forums", Action: "unsubscribe"}
+	e.send()
+
+	a.template("forums/unsubscribe")
 }
 
 // Received an unsubscribe from member
 func forums_unsubscribe_event(u *User, e *Event) {
 	log_debug("Forum receieved unsubscribe event '%#v'", e)
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	db.close()
 
 	f := forum_by_id(u, e.To, true)
 	if f == nil {
 		return
 	}
 
-	//TODO Receive forum unsubscribe
-	f.Members = f.Members - 1
+	db.exec("delete from members where forum=? and id=?", e.To, e.From)
+	db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", e.To, now(), e.To)
 	forum_update(u, f)
 }
 
 // Send updated forum details to members
 func forum_update(u *User, f *Forum) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
-	j := json_encode(map[string]any{"members": f.Members})
 	var ms []ForumMember
 	db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+	j := json_encode(map[string]any{"members": len(ms)})
 	id := uid()
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {

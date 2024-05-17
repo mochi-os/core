@@ -119,7 +119,7 @@ func valid(s string, match string) bool {
 
 	switch match {
 	case "constant":
-		match = "^[0-9a-z-]{1,100}$"
+		match = "^[0-9a-z-/]{1,100}$"
 	case "id":
 		match = "^[\\w-]{32}$"
 	case "line":

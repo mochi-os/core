@@ -2,7 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="../">Forums</a> | {{.Forum.Name}}</p>
 
-<p>{{if $.RolePoster}}<a href="../post/new/?forum={{.Forum.ID}}">New post</a> | {{if $.RoleAdministrator}}<a href="../members/?forum={{.Forum.ID}}">Manage members</a> | {{end}}{{end}}<a href="../unsubscribe/?id={{.Forum.ID}}">Unsubscribe</a></p>
+<p>{{if $.RolePoster}}<a href="../post/new/?forum={{.Forum.ID}}">New post</a> | {{if $.RoleAdministrator}}<a href="../members/?id={{.Forum.ID}}">Manage members</a> | {{end}}{{end}}<a href="../unsubscribe/?id={{.Forum.ID}}">Unsubscribe</a></p>
 
 {{if eq .Member.Role "disabled"}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{end}}
 

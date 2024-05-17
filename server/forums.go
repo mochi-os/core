@@ -71,6 +71,8 @@ func init() {
 	a.register_action("forums/comment/new", forums_comment_new, true)
 	a.register_action("forums/comment/vote", forums_comment_vote, true)
 	a.register_action("forums/find", forums_find, false)
+	a.register_action("forums/members", forums_members_edit, true)
+	a.register_action("forums/members/save", forums_members_save, true)
 	a.register_action("forums/post/create", forums_post_create, true)
 	a.register_action("forums/post/new", forums_post_new, true)
 	a.register_action("forums/post/view", forums_post_view, true)
@@ -505,6 +507,57 @@ func forum_member(u *User, f *Forum, member string, role string) *ForumMember {
 		return nil
 	}
 	return &m
+}
+
+// Edit members
+func forums_members_edit(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, a.input("id"), true)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
+
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where forum=? order by name", f.ID)
+
+	a.template("forums/members/edit", map[string]any{"Forum": f, "Members": ms})
+}
+
+// Save members
+func forums_members_save(u *User, a *Action) {
+	db := db_app(u, "forums", "data.db", forums_db_create)
+	defer db.close()
+
+	f := forum_by_id(u, a.input("id"), true)
+	if f == nil {
+		a.error(404, "Forum not found")
+		return
+	}
+
+	var ms []ForumMember
+	db.scans(&ms, "select * from members where forum=?", f.ID)
+	for _, m := range ms {
+		role := a.input("role_" + m.ID)
+		if role != m.Role {
+			_, found := forum_roles[role]
+			if !found {
+				a.error(400, "Invalid role")
+				return
+			}
+			db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
+			e := Event{ID: uid(), From: f.ID, To: m.ID, App: "forums", Action: "member/update", Content: json_encode(map[string]any{"role": role})}
+			e.send()
+
+			if m.Role == "disabled" {
+				forum_send_recent_posts(u, f, m.ID)
+			}
+		}
+	}
+
+	a.template("forums/members/save", map[string]any{"Forum": f})
 }
 
 // Member update from owner
@@ -1057,5 +1110,6 @@ func forums_view(u *User, a *Action) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
 
+	log_debug("Forum='%#v', member='%#v'", f, m)
 	a.template("forums/view", map[string]any{"Forum": f, "Member": &m, "Posts": &ps, "RoleVoter": forum_role(&m, "voter"), "RolePoster": forum_role(&m, "poster"), "RoleAdministrator": forum_role(&m, "administrator")})
 }

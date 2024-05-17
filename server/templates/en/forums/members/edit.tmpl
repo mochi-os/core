@@ -1,0 +1,19 @@
+{{define "title"}}Edit forum members{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="../">Forums</a> | <a href="../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | Edit members
+
+<form action="save/">
+	{{range .Members}}<select name="role_{{.ID}}">
+		<option value="disabled" {{if eq .Role "disabled"}}selected{{end}}>No access</option>
+		<option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>View the forum, but not post, comment, or vote</option>
+		<option value="voter" {{if eq .Role "voter"}}selected{{end}}>Vote, but not post or comment</option>
+		<option value="commenter" {{if eq .Role "commenter"}}selected{{end}}>Comment and vote, but not post</option>
+		<option value="poster" {{if eq .Role "poster"}}selected{{end}}>Post, comment, and vote</option>
+		<option value="administrator" {{if eq .Role "administrator"}}selected{{end}}>Administrator</option>
+	</select>
+	{{.Name}}<br/>{{end}}
+	<input type="hidden" name="id" value="{{.Forum.ID}}"/>
+    <input type="submit" value="Save"/>
+</form>
+
+{{template "foot" .}}

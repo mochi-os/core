@@ -4,8 +4,8 @@
 
 <p>{{if $.RolePoster}}<a href="../post/new/?forum={{.Forum.ID}}">New post</a> | {{if $.RoleAdministrator}}<a href="../members/?id={{.Forum.ID}}">Manage members</a> | {{end}}{{end}}<a href="../unsubscribe/?id={{.Forum.ID}}">Unsubscribe</a></p>
 
-{{if eq .Member.Role "disabled"}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{end}}
-
+{{if eq .Member.Role "disabled"}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{else}}
 <p>{{range .Posts}}<a href="../post/view/?id={{.ID}}">{{.Title}}</a> | {{if $.RoleVoter}} <a href="../post/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../post/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Comments}}<br/>{{end}}</p>
+{{end}}
 
 {{template "foot" .}}

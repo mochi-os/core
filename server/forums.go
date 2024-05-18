@@ -523,7 +523,7 @@ func forums_members_edit(u *User, a *Action) {
 	var ms []ForumMember
 	db.scans(&ms, "select * from members where forum=? order by name", f.ID)
 
-	a.template("forums/members/edit", map[string]any{"Forum": f, "Members": ms})
+	a.template("forums/members/edit", map[string]any{"User": u, "Forum": f, "Members": ms})
 }
 
 // Save members
@@ -538,7 +538,7 @@ func forums_members_save(u *User, a *Action) {
 	}
 
 	var ms []ForumMember
-	db.scans(&ms, "select * from members where forum=?", f.ID)
+	db.scans(&ms, "select * from members where forum=? and id!=?", f.ID, u.Identity.ID)
 	for _, m := range ms {
 		role := a.input("role_" + m.ID)
 		if role != m.Role {
@@ -557,6 +557,7 @@ func forums_members_save(u *User, a *Action) {
 		}
 	}
 
+	forum_update(u, f)
 	a.template("forums/members/save", map[string]any{"Forum": f})
 }
 
@@ -1054,15 +1055,17 @@ func forums_unsubscribe_event(u *User, e *Event) {
 	}
 
 	db.exec("delete from members where forum=? and id=?", e.To, e.From)
-	db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", e.To, now(), e.To)
 	forum_update(u, f)
 }
 
 // Send updated forum details to members
 func forum_update(u *User, f *Forum) {
 	db := db_app(u, "forums", "data.db", forums_db_create)
+
 	var ms []ForumMember
 	db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+	db.exec("update forums set members=?, updated=? where id=?", len(ms), now(), f.ID)
+
 	j := json_encode(map[string]any{"members": len(ms)})
 	id := uid()
 	for _, m := range ms {

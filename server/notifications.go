@@ -21,21 +21,7 @@ func notifications_db_create(db *DB) {
 	db.exec("create index notifications_app_entity on notifications( app, entity )")
 }
 
-func notifications_clear(u *User) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
-	defer db.close()
-
-	db.exec("delete from notifications")
-}
-
-func notifications_clear_entity(u *User, app string, entity string) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
-	defer db.close()
-
-	db.exec("delete from notifications where app=? and entity=?", app, entity)
-}
-
-func notification_create(u *User, app string, category string, entity string, content string, link string) string {
+func notification(u *User, app string, category string, entity string, content string, link string) string {
 	db := db_user(u, "db/notifications.db", notifications_db_create)
 	defer db.close()
 
@@ -49,6 +35,20 @@ func notification_create(u *User, app string, category string, entity string, co
 	id := uid()
 	db.exec("replace into notifications ( id, app, category, entity, content, link ) values ( ?, ?, ?, ?, ?, ? )", id, app, category, entity, content, link)
 	return id
+}
+
+func notifications_clear(u *User) {
+	db := db_user(u, "db/notifications.db", notifications_db_create)
+	defer db.close()
+
+	db.exec("delete from notifications")
+}
+
+func notifications_clear_entity(u *User, app string, entity string) {
+	db := db_user(u, "db/notifications.db", notifications_db_create)
+	defer db.close()
+
+	db.exec("delete from notifications where app=? and entity=?", app, entity)
 }
 
 func notifications_list(u *User) *[]Notification {

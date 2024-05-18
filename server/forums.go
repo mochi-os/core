@@ -599,7 +599,7 @@ func forums_member_update_event(u *User, e *Event) {
 			case "administrator":
 				message = "You are an administrator"
 			}
-			notification_create(u, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/view/?id="+f.ID)
+			notification(u, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/view/?id="+f.ID)
 		}
 	}
 	db.exec("replace into members ( forum, id, role ) values ( ?, ?, ? )", e.From, u.Identity.ID, m.Role)

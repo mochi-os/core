@@ -1,6 +1,5 @@
 0.1
 	Forums app
-		Notifications
 		Find private forums
 	Feeds app
 	Replace identities with entities?

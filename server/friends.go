@@ -162,7 +162,7 @@ func friends_accept_event(u *User, e *Event) {
 	var fi FriendInvite
 	db.scan(&fi, "select * from invites where id=? and direction='to'", e.From)
 	if fi.ID != "" {
-		notification_create(u, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends/")
+		notification(u, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends/")
 		db.exec("delete from invites where id=? and direction='to'", e.From)
 		broadcast(u, "friends", "accepted", e.From, nil)
 	}

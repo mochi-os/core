@@ -124,7 +124,7 @@ func chat_receive(u *User, e *Event) {
 	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), e.From, f.Name, body)
 	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": now_string(), "body": body})
 	websockets_send(u, "chat", j)
-	notification_create(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
+	notification(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
 }
 
 // Send a chat message

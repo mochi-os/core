@@ -29,7 +29,7 @@ func broadcast(u *User, sender string, action string, entity string, content any
 	}
 }
 
-func (a *App) register_broadcast(sender string, action string, f func(*User, string, string, string, any)) {
+func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
 	s, sender_found := broadcasts_by_sender[sender]
 	if sender_found {
 		_, action_found := s[action]

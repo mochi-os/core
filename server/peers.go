@@ -26,10 +26,10 @@ var peer_add_chan = make(chan Peer)
 var peer_publish_chan = make(chan bool)
 
 func init() {
-	a := register_app("peers")
-	a.register_event_broadcast("request", peer_request_event)
-	a.register_event_broadcast("publish", peer_publish_event)
-	a.register_pubsub("peers", peers_publish)
+	a := app("peers")
+	a.event_broadcast("request", peer_request_event)
+	a.event_broadcast("publish", peer_publish_event)
+	a.pubsub("peers", peers_publish)
 }
 
 // Add a (possibly existing) peer
@@ -102,7 +102,7 @@ func peers_publish(t *pubsub.Topic) {
 }
 
 // Received a peer publish event from another server
-func peer_publish_event(u *User, e *Event) {
+func peer_publish_event(e *Event) {
 	var m map[string]string
 	if json_decode(&m, e.Content) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
 		if m["id"] == libp2p_id {
@@ -120,7 +120,7 @@ func peer_request(peer string) {
 }
 
 // Reply to a peer request if for us
-func peer_request_event(u *User, e *Event) {
+func peer_request_event(e *Event) {
 	log_debug("Received peer request event '%#v'", e)
 	if e.Content == libp2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")

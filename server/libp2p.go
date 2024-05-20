@@ -21,6 +21,7 @@ import (
 	"strings"
 )
 
+// TODO Lower case struct fields
 type mdns_notifee struct {
 	H host.Host
 }

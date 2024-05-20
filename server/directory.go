@@ -18,11 +18,11 @@ type Directory struct {
 }
 
 func init() {
-	a := register_app("directory")
-	a.register_event_broadcast("download", directory_download_event)
-	a.register_event_broadcast("request", directory_request_event)
-	a.register_event_broadcast("publish", directory_publish_event)
-	a.register_pubsub("directory", nil)
+	a := app("directory")
+	a.event_broadcast("download", directory_download_event)
+	a.event_broadcast("request", directory_request_event)
+	a.event_broadcast("publish", directory_publish_event)
+	a.pubsub("directory", nil)
 }
 
 // Get a directory entry
@@ -62,7 +62,7 @@ func directory_download() {
 }
 
 // Reply to a directory download request
-func directory_download_event(u *User, e *Event) {
+func directory_download_event(e *Event) {
 	log_debug("Received directory download event '%#v'", e)
 	time.Sleep(time.Second)
 
@@ -70,7 +70,7 @@ func directory_download_event(u *User, e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		peer_send(e.Source, json_encode(Event{ID: uid(), App: "directory", Action: "publish", Content: json_encode(d)}))
+		peer_send(e.source, json_encode(Event{ID: uid(), App: "directory", Action: "publish", Content: json_encode(d)}))
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -85,7 +85,7 @@ func directory_publish(i *Identity) {
 }
 
 // Received a directory publish event from another server
-func directory_publish_event(u *User, e *Event) {
+func directory_publish_event(e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	var d Directory
 	if !json_decode(&d, e.Content) {
@@ -96,7 +96,7 @@ func directory_publish_event(u *User, e *Event) {
 	if e.From == "" {
 		found := false
 		for peer, _ := range peers_known {
-			if e.Source == peer {
+			if e.source == peer {
 				found = true
 				break
 			}
@@ -124,7 +124,7 @@ func directory_request(id string) {
 }
 
 // Reply to a directory request if we have the requested identity
-func directory_request_event(u *User, e *Event) {
+func directory_request_event(e *Event) {
 	log_debug("Received directory request event '%#v'", e)
 	var r Identity
 	db := db_open("db/users.db")
@@ -139,7 +139,7 @@ func directory_search(u *User, class string, search string, include_self bool) *
 	var ds []Directory
 	dbd.scans(&ds, "select * from directory where class=? and name like ? order by name", class, "%"+search+"%")
 
-	if include_self || class != "person" {
+	if u == nil || include_self || class != "person" {
 		return &ds
 	}
 

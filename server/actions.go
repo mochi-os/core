@@ -9,48 +9,35 @@ import (
 )
 
 type Action struct {
-	App       *App
-	Databases map[string]*DB
-	Owner     *User
-	R         *http.Request
-	W         http.ResponseWriter
+	user *User
+	db   *DB
+	r    *http.Request
+	w    http.ResponseWriter
 }
 
-var actions = map[string]func(*User, *Action){}
-var actions_apps = map[string]*App{}
+var actions = map[string]func(*Action){}
+
+// TODO Replace actions_authenticated
 var actions_authenticated = map[string]bool{}
 
-func (a *Action) cleanup() {
-	for _, db := range a.Databases {
-		db.close()
-	}
-}
-
 func (a *Action) error(code int, message string, values ...any) {
-	web_error(a.W, code, message, values...)
+	web_error(a.w, code, message, values...)
 }
 
 func (a *Action) input(name string) string {
-	return a.R.FormValue(name)
+	return a.r.FormValue(name)
 }
 
 func (a *Action) json(in any) {
-	fmt.Fprintf(a.W, json_encode(in))
+	fmt.Fprintf(a.w, json_encode(in))
 }
 
 func (a *Action) redirect(url string) {
-	web_redirect(a.W, url)
+	web_redirect(a.w, url)
 }
 
 func (a *Action) template(template string, values ...any) {
-	web_template(a.W, template, values...)
-}
-
-func (a *App) register_action(action string, f func(*User, *Action), authenticated bool) {
-	a.Internal.Actions[action] = f
-	actions[action] = f
-	actions_apps[action] = a
-	actions_authenticated[action] = authenticated
+	web_template(a.w, template, values...)
 }
 
 func (a *Action) write(format string, template string, values ...any) {
@@ -60,4 +47,10 @@ func (a *Action) write(format string, template string, values ...any) {
 	default:
 		a.template(template, values...)
 	}
+}
+
+func (a *App) action(action string, f func(*Action), authenticated bool) {
+	a.Internal.Actions[action] = f
+	actions[action] = f
+	actions_authenticated[action] = authenticated
 }

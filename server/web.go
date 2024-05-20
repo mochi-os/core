@@ -60,19 +60,54 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	action := strings.Trim(r.URL.Path, "/")
-	f, found := actions[action]
-	if !found {
-		web_error(w, 404, "Web path not found")
+	path := strings.Trim(r.URL.Path, "/")
+	if len(path) > 0 && path[0:1] == "-" {
+		splits := strings.SplitN(path, "/", 2)
+		object := splits[0][1:]
+		action := ""
+		if len(splits) > 1 {
+			action = splits[1]
+		}
+		log_debug("Object='%s', action='%s'", object, action)
+		//TODO Find object and invoke action for it
+
+	} else {
+		f, found := paths[path]
+		if !found {
+			web_error(w, 404, "Web path not found")
+			return
+		}
+		if u == nil && paths_authenticated[path] {
+			web_login(w, r)
+			return
+		}
+		a, found := paths_apps[path]
+		if !found {
+			web_error(w, 404, "Web path has no owning app")
+			return
+		}
+		var db *DB = nil
+		if a.Internal.DBFile != "" {
+			db = db_app(u, a.Name, a.Internal.DBFile, a.Internal.DBCreate)
+			defer db.close()
+		}
+		f(&Action{user: u, db: db, r: r, w: w})
+	}
+}
+
+func web_identity_create(w http.ResponseWriter, r *http.Request) {
+	u := web_auth(r)
+	if u == nil {
 		return
 	}
-	if u == nil && actions_authenticated[action] {
-		web_login(w, r)
+
+	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"), "")
+	if err != nil {
+		web_error(w, 400, "Unable to create identity: %s", err)
 		return
 	}
-	a := Action{App: actions_apps[action], Databases: make(map[string]*DB), Owner: u, R: r, W: w}
-	defer a.cleanup()
-	f(u, &a)
+
+	web_redirect(w, "/")
 }
 
 func web_login(w http.ResponseWriter, r *http.Request) {
@@ -102,21 +137,6 @@ func web_login(w http.ResponseWriter, r *http.Request) {
 	web_template(w, "login/email")
 }
 
-func web_identity(w http.ResponseWriter, r *http.Request) {
-	u := web_auth(r)
-	if u == nil {
-		return
-	}
-
-	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"), "")
-	if err != nil {
-		web_error(w, 400, "Unable to create identity: %s", err)
-		return
-	}
-
-	web_redirect(w, "/")
-}
-
 func web_redirect(w http.ResponseWriter, url string) {
 	web_template(w, "redirect", url)
 }
@@ -125,7 +145,7 @@ func web_start() {
 	http.HandleFunc("/", web_action)
 	//TODO Decide what to do with these URL paths
 	http.HandleFunc("/login/", web_login)
-	http.HandleFunc("/login/identity/", web_identity)
+	http.HandleFunc("/login/identity/", web_identity_create)
 	http.HandleFunc("/websocket/", websocket_connection)
 	log_info("Web listening on ':%d'", web_port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)

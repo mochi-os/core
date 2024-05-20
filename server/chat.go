@@ -27,14 +27,17 @@ type ChatMessage struct {
 }
 
 func init() {
-	a := register_app("chat")
-	a.register_home("chat", map[string]string{"en": "Chat"})
-	a.register_action("chat", chat_list, true)
-	a.register_action("chat/messages", chat_messages, true)
-	a.register_action("chat/new", chat_new, true)
-	a.register_action("chat/send", chat_send, true)
-	a.register_action("chat/view", chat_view, true)
-	a.register_event("message", chat_receive)
+	a := app("chat")
+	a.home("chat", map[string]string{"en": "Chat"})
+	a.db("data.db", chat_db_create)
+
+	a.path("chat", chat_list, true)
+	a.path("chat/messages", chat_messages, true)
+	a.path("chat/new", chat_new, true)
+	a.path("chat/send", chat_send, true)
+	a.path("chat/view", chat_view, true)
+
+	a.event("message", chat_receive)
 }
 
 // Create app database
@@ -53,8 +56,7 @@ func chat_db_create(db *DB) {
 }
 
 // Find best chat for friend
-func chat_for_friend(u *User, f *Friend) *Chat {
-	db := db_app(u, "chat", "data.db", chat_db_create)
+func chat_for_friend(db *DB, f *Friend) *Chat {
 	var c Chat
 	if db.scan(&c, "select * from chats where friend=? order by updated desc", f.ID) {
 		db.exec("update chats set updated=? where id=?", now_string(), c.ID)
@@ -66,41 +68,33 @@ func chat_for_friend(u *User, f *Friend) *Chat {
 }
 
 // List existing chats
-func chat_list(u *User, a *Action) {
-	db := db_app(u, "chat", "data.db", chat_db_create)
-	defer db.close()
-
+func chat_list(a *Action) {
 	var c []Chat
-	db.scans(&c, "select * from chats order by updated desc")
+	a.db.scans(&c, "select * from chats order by updated desc")
 	a.write(a.input("format"), "chat/list", c)
 }
 
 // Send list of messages to client
-func chat_messages(u *User, a *Action) {
-	db := db_app(u, "chat", "data.db", chat_db_create)
-	defer db.close()
-
-	f := friend(u, a.input("friend"))
+func chat_messages(a *Action) {
+	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(u, f)
+	c := chat_for_friend(a.db, f)
 
 	var m []ChatMessage
-	db.scans(&m, "select * from messages where chat=? order by id", c.ID)
+	a.db.scans(&m, "select * from messages where chat=? order by id", c.ID)
 	a.json(m)
 }
 
 // Ask user who they'd like to chat with
-func chat_new(u *User, a *Action) {
-	a.template("chat/new", friends(u))
+func chat_new(a *Action) {
+	a.template("chat/new", friends(a.user))
 }
 
 // Received a chat event from another user
-func chat_receive(u *User, e *Event) {
-	db := db_app(u, "chat", "data.db", chat_db_create)
-
+func chat_receive(e *Event) {
 	var m map[string]string
 	if !json_decode(&m, e.Content) {
 		log_info("Chat dropping chat message '%s' with malformed JSON", e.Content)
@@ -112,56 +106,47 @@ func chat_receive(u *User, e *Event) {
 		return
 	}
 
-	f := friend(u, e.From)
+	f := friend(e.user, e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event := Event{ID: uid(), From: u.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
+		event := Event{ID: uid(), From: e.user.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
 		event.send()
 		return
 	}
-	c := chat_for_friend(u, f)
+	c := chat_for_friend(e.db, f)
 
-	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), e.From, f.Name, body)
+	e.db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), e.From, f.Name, body)
 	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": now_string(), "body": body})
-	websockets_send(u, "chat", j)
-	notification(u, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
+	websockets_send(e.user, "chat", j)
+	notification(e.user, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
 }
 
 // Send a chat message
-func chat_send(u *User, a *Action) {
-	db := db_app(u, "chat", "data.db", chat_db_create)
-	defer db.close()
-
-	f := friend(u, a.input("friend"))
+func chat_send(a *Action) {
+	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(u, f)
-
-	i := u.identity()
-	if i == nil {
-		a.error(500, "User has no identity")
-		return
-	}
+	c := chat_for_friend(a.db, f)
 
 	message := a.input("message")
-	db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), i.ID, i.Name, message)
-	event := Event{ID: uid(), From: i.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
+	a.db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), a.user.Identity.ID, a.user.Identity.Name, message)
+	event := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
 	event.send()
 
-	j := json_encode(map[string]string{"from": i.ID, "name": i.Name, "time": now_string(), "body": message})
-	websockets_send(u, "chat", j)
+	j := json_encode(map[string]string{"from": a.user.Identity.ID, "name": a.user.Identity.Name, "time": now_string(), "body": message})
+	websockets_send(a.user, "chat", j)
 }
 
 // View a chat
-func chat_view(u *User, a *Action) {
-	f := friend(u, a.input("friend"))
+func chat_view(a *Action) {
+	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(u, f)
-	notifications_clear_entity(u, "chat", c.ID)
+	c := chat_for_friend(a.db, f)
+	notifications_clear_entity(a.user, "chat", c.ID)
 	a.template("chat/view", c)
 }

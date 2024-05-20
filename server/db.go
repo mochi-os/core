@@ -77,13 +77,11 @@ func db_create() {
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.Fingerprint, app, file)
-	//log_debug("Database opening app file '%s'", path)
 	if file_exists(path) {
 		return db_open(path)
 	}
 
 	db := db_open(path)
-	//log_debug("Database creating new app file schema")
 	create(db)
 	return db
 }
@@ -203,4 +201,9 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 func (db *DB) scans(out any, query string, values ...any) {
 	err := db.handle.Select(out, query, values...)
 	check(err)
+}
+
+func (a *App) db(file string, f func(*DB)) {
+	a.Internal.DBFile = file
+	a.Internal.DBCreate = f
 }

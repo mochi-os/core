@@ -1,6 +1,7 @@
 0.1
 	Forums app
 		Find private forums
+	Format SQL
 	Feeds app
 	Replace identities with entities?
 	Route on class?

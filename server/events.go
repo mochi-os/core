@@ -16,7 +16,9 @@ type Event struct {
 	Action    string `json:"action"`
 	Content   string `json:"content"`
 	Signature string `json:"signature"`
-	Source    string `json:"-"`
+	source    string `json:"-"`
+	user      *User  `json:"-"`
+	db        *DB    `json:"-"`
 }
 
 type Queue struct {
@@ -76,7 +78,7 @@ func event_receive_json(event string, source string) {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}
-	e.Source = source
+	e.source = source
 	e.receive()
 }
 
@@ -92,7 +94,7 @@ func (e *Event) receive() {
 			return
 		}
 
-		if e.Source != "" {
+		if e.source != "" {
 			public := base64_decode(e.From, "")
 			if len(public) != ed25519.PublicKeySize {
 				log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
@@ -105,7 +107,7 @@ func (e *Event) receive() {
 		}
 	}
 
-	u := user_owning_identity(e.To)
+	e.user = user_owning_identity(e.To)
 
 	//TODO Route on destination identity class, rather than app? If so, remove app field from event?
 	a := apps[e.App]
@@ -114,10 +116,15 @@ func (e *Event) receive() {
 		return
 	}
 
+	if a.Internal.DBFile != "" {
+		e.db = db_app(e.user, a.Name, a.Internal.DBFile, a.Internal.DBCreate)
+		defer e.db.close()
+	}
+
 	switch a.Type {
 	case "internal":
 		for _, try := range []string{e.Action, ""} {
-			var f func(*User, *Event)
+			var f func(*Event)
 			var found bool
 			if e.To == "" {
 				f, found = a.Internal.EventsBroadcast[try]
@@ -125,7 +132,7 @@ func (e *Event) receive() {
 				f, found = a.Internal.Events[try]
 			}
 			if found {
-				f(u, e)
+				f(e)
 				return
 			}
 		}
@@ -134,7 +141,7 @@ func (e *Event) receive() {
 		for _, try := range []string{e.Action, ""} {
 			function, found := a.WASM.Events[try]
 			if found {
-				_, err := wasm_run(u, a, function, 0, e)
+				_, err := wasm_run(e.user, a, function, 0, e)
 				if err != nil {
 					log_info("Event handler returned error: %s", err)
 					return
@@ -146,15 +153,7 @@ func (e *Event) receive() {
 	log_info("Dropping received event due to unknown event '%s' for app '%s'", e.Action, e.App)
 }
 
-func (a *App) register_event(event string, f func(*User, *Event)) {
-	a.Internal.Events[event] = f
-}
-
-func (a *App) register_event_broadcast(event string, f func(*User, *Event)) {
-	a.Internal.EventsBroadcast[event] = f
-}
-
-func (e *Event) send(key ...string) {
+func (e *Event) send() {
 	if e.ID == "" {
 		panic("Event did not specify ID; adding one")
 	}
@@ -167,7 +166,7 @@ func (e *Event) send(key ...string) {
 		return
 	}
 
-	e.sign(key...)
+	e.sign()
 	j := json_encode(e)
 
 	if method == "libp2p" && libp2p_send(location, j) {
@@ -179,7 +178,7 @@ func (e *Event) send(key ...string) {
 	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
 }
 
-func (e *Event) sign(key ...string) {
+func (e *Event) sign() {
 	if e.From == "" {
 		return
 	}
@@ -188,21 +187,24 @@ func (e *Event) sign(key ...string) {
 		panic("Event did not specify ID")
 	}
 
-	var private []byte
-	if len(key) > 0 {
-		private = base64_decode(key[0], "")
-	} else {
-		db := db_open("db/users.db")
-		var i Identity
-		if !db.scan(&i, "select private from identities where id=?", e.From) {
-			log_warn("Not signing event due unknown sending identity")
-			return
-		}
-		private = base64_decode(i.Private, "")
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select private from identities where id=?", e.From) {
+		log_warn("Not signing event due unknown sending identity")
+		return
 	}
+	private := base64_decode(i.Private, "")
 	if string(private) == "" {
 		log_warn("Not signing event due to invalid private key")
 		return
 	}
 	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.App+e.Action+e.Content)))
+}
+
+func (a *App) event(event string, f func(*Event)) {
+	a.Internal.Events[event] = f
+}
+
+func (a *App) event_broadcast(event string, f func(*Event)) {
+	a.Internal.EventsBroadcast[event] = f
 }

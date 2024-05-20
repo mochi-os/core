@@ -105,6 +105,21 @@ func sha1(in []byte) string {
 	return hex.EncodeToString(s.Sum(nil))
 }
 
+func time_local(u *User, t int64) string {
+	timezone := "UTC"
+	if u != nil {
+		timezone = u.Timezone
+	}
+
+	l, err := time.LoadLocation(timezone)
+	if err == nil {
+		return time.Unix(t, 0).In(l).Format(time.DateTime)
+	} else {
+		log_warn("Invalid time zone '%s':", err)
+		return time.Unix(t, 0).Format(time.DateTime)
+	}
+}
+
 func uid() string {
 	u, err := uuid.NewV7()
 	check(err)

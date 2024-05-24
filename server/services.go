@@ -3,10 +3,6 @@
 
 package main
 
-func (a *App) register_service(service string, f func(int, string, string, string, ...any) any) {
-	a.Internal.Services[service] = f
-}
-
 func service(u *User, app string, s string, parameters ...any) {
 	log_debug("Service: user='%d', app='%s', service='%s', parameters='%v'", u.ID, app, s, parameters)
 
@@ -30,7 +26,7 @@ func service(u *User, app string, s string, parameters ...any) {
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				_, err := wasm_run(u, a, function, 0, map[string]any{"service": s, "parameters": parameters})
+				_, err := wasm_run(u, a, function, 0, M{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return
@@ -71,7 +67,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				jo, err := wasm_run(u, a, function, depth, map[string]any{"service": s, "parameters": parameters})
+				jo, err := wasm_run(u, a, function, depth, M{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return "", err
@@ -83,4 +79,8 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 
 	log_info("Call to app '%s' without handler for service '%s'", app, s)
 	return "", nil
+}
+
+func (a *App) service(service string, f func(int, string, string, string, ...any) any) {
+	a.Internal.Services[service] = f
 }

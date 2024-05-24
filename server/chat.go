@@ -31,11 +31,11 @@ func init() {
 	a.home("chat", map[string]string{"en": "Chat"})
 	a.db("data.db", chat_db_create)
 
-	a.path("chat", chat_list, true)
-	a.path("chat/messages", chat_messages, true)
-	a.path("chat/new", chat_new, true)
-	a.path("chat/send", chat_send, true)
-	a.path("chat/view", chat_view, true)
+	a.path("chat", chat_list)
+	a.path("chat/messages", chat_messages)
+	a.path("chat/new", chat_new)
+	a.path("chat/send", chat_send)
+	a.path("chat/view", chat_view)
 
 	a.event("message", chat_receive)
 }
@@ -69,6 +69,11 @@ func chat_for_friend(db *DB, f *Friend) *Chat {
 
 // List existing chats
 func chat_list(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	var c []Chat
 	a.db.scans(&c, "select * from chats order by updated desc")
 	a.write(a.input("format"), "chat/list", c)
@@ -76,6 +81,11 @@ func chat_list(a *Action) {
 
 // Send list of messages to client
 func chat_messages(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
@@ -90,6 +100,11 @@ func chat_messages(a *Action) {
 
 // Ask user who they'd like to chat with
 func chat_new(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	a.template("chat/new", friends(a.user))
 }
 
@@ -123,6 +138,11 @@ func chat_receive(e *Event) {
 
 // Send a chat message
 func chat_send(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")
@@ -141,6 +161,11 @@ func chat_send(a *Action) {
 
 // View a chat
 func chat_view(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	f := friend(a.user, a.input("friend"))
 	if f == nil {
 		a.error(404, "Friend not found")

@@ -3,7 +3,6 @@
 
 package main
 
-// TODO Lower case struct fields
 type App struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -12,8 +11,8 @@ type App struct {
 	Type     string `json:"type"`
 	Internal struct {
 		Actions         map[string]func(*Action)
-		DBFile          string
-		DBCreate        func(*DB)
+		DB_file         string
+		DB_create       func(*DB)
 		Events          map[string]func(*Event)
 		EventsBroadcast map[string]func(*Event)
 		Paths           map[string]func(*Action)
@@ -30,12 +29,8 @@ type App struct {
 
 var apps = map[string]*App{}
 var classes = map[string]*App{}
-
-// TODO Move to web.go?
-// TODO Replace paths_authenticated?
 var paths = map[string]func(*Action){}
-var paths_apps = map[string]*App{}
-var paths_authenticated = map[string]bool{}
+var path_apps = map[string]*App{}
 
 /* Not used for now
 func apps_start() {
@@ -71,8 +66,8 @@ func apps_start() {
 func app(name string) *App {
 	a := &App{ID: name, Name: name, Type: "internal"}
 	a.Internal.Actions = make(map[string]func(*Action))
-	a.Internal.DBFile = ""
-	a.Internal.DBCreate = nil
+	a.Internal.DB_file = ""
+	a.Internal.DB_create = nil
 	a.Internal.Events = make(map[string]func(*Event))
 	a.Internal.EventsBroadcast = make(map[string]func(*Event))
 	a.Internal.Paths = make(map[string]func(*Action))
@@ -85,9 +80,8 @@ func (a *App) class(class string) {
 	classes[class] = a
 }
 
-func (a *App) path(path string, f func(*Action), authenticated bool) {
+func (a *App) path(path string, f func(*Action)) {
 	a.Internal.Paths[path] = f
 	paths[path] = f
-	paths_apps[path] = a
-	paths_authenticated[path] = authenticated
+	path_apps[path] = a
 }

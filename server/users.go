@@ -16,14 +16,13 @@ type Login struct {
 	Expires int
 }
 
-// TODO Lower case struct fields
 type User struct {
 	ID       int
 	Username string
-	Identity *Identity
 	Role     string
 	Language string
 	Timezone string
+	Identity *Identity
 }
 
 func code_send(email string) bool {

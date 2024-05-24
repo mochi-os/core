@@ -7,6 +7,8 @@ import (
 	"flag"
 )
 
+type M map[string]any
+
 var data_dir string
 
 func main() {

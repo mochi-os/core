@@ -63,7 +63,7 @@ func fingerprint(in string) string {
 	s := sha.New()
 	s.Write([]byte(in))
 	b64 := base64_encode(s.Sum(nil))
-	return b64[0:10]
+	return b64[0:9]
 }
 
 func json_decode(out any, j string) bool {

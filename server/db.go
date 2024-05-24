@@ -203,7 +203,7 @@ func (db *DB) scans(out any, query string, values ...any) {
 	check(err)
 }
 
-func (a *App) db(file string, f func(*DB)) {
-	a.Internal.DBFile = file
-	a.Internal.DBCreate = f
+func (a *App) db(file string, create func(*DB)) {
+	a.Internal.DB_file = file
+	a.Internal.DB_create = create
 }

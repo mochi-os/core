@@ -22,7 +22,25 @@ type Identity struct {
 	Published   int64  `json:"-"`
 }
 
-func identity_by_id(u *User, id string) *Identity {
+func identity_by_fingerprint(fingerprint string) *Identity {
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select * from identities where fingerprint=?", fingerprint) {
+		return nil
+	}
+	return &i
+}
+
+func identity_by_id(id string) *Identity {
+	db := db_open("db/users.db")
+	var i Identity
+	if !db.scan(&i, "select * from identities where id=?", id) {
+		return nil
+	}
+	return &i
+}
+
+func identity_by_user_id(u *User, id string) *Identity {
 	db := db_open("db/users.db")
 	var i Identity
 	if !db.scan(&i, "select * from identities where id=? and user=?", id, u.ID) {

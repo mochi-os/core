@@ -19,14 +19,15 @@ type FriendInvite struct {
 func init() {
 	a := app("friends")
 	a.home("friends", map[string]string{"en": "Friends"})
+	a.db("data.db", friends_db_create)
 
-	a.path("friends", friends_list, true)
-	a.path("friends/accept", friends_accept, true)
-	a.path("friends/create", friends_create, true)
-	a.path("friends/delete", friends_delete, true)
-	a.path("friends/ignore", friends_ignore, true)
-	a.path("friends/new", friends_new, true)
-	a.path("friends/search", friends_search, true)
+	a.path("friends", friends_list)
+	a.path("friends/accept", friends_accept)
+	a.path("friends/create", friends_create)
+	a.path("friends/delete", friends_delete)
+	a.path("friends/ignore", friends_ignore)
+	a.path("friends/new", friends_new)
+	a.path("friends/search", friends_search)
 
 	a.event("accept", friends_accept_event)
 	a.event("cancel", friends_cancel_event)
@@ -94,6 +95,11 @@ func friend_accept(u *User, db *DB, friend string) {
 
 // Accept friend invitation
 func friends_accept(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	friend_accept(a.user, a.db, a.input("id"))
 	a.template("friends/accepted")
 }
@@ -151,6 +157,11 @@ func friend_create(u *User, db *DB, friend string, name string, class string, in
 
 // Create new friend
 func friends_create(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	err := friend_create(a.user, a.db, a.input("id"), a.input("name"), "person", true)
 	if err != nil {
 		a.error(500, "Unable to create friend: %s", err)
@@ -161,6 +172,11 @@ func friends_create(a *Action) {
 
 // Delete friend
 func friends_delete(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	friend := a.input("id")
 	a.db.exec("delete from invites where id=?", friend)
 	a.db.exec("delete from friends where id=?", friend)
@@ -170,6 +186,11 @@ func friends_delete(a *Action) {
 
 // Ignore friend invitation
 func friends_ignore(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	friend := a.input("id")
 	a.db.exec("delete from invites where id=? and direction='from'", friend)
 	broadcast(a.user, "friends", "ignore", friend, nil)
@@ -190,6 +211,11 @@ func friends_invite_event(e *Event) {
 
 // Show list of friends
 func friends_list(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	var f []Friend
 	a.db.scans(&f, "select * from friends order by name")
 	var i []FriendInvite
@@ -199,7 +225,7 @@ func friends_list(a *Action) {
 	case "json":
 		a.json(f)
 	default:
-		a.template("friends/list", map[string]any{"Friends": f, "Invites": i})
+		a.template("friends/list", M{"Friends": f, "Invites": i})
 	}
 }
 
@@ -210,6 +236,11 @@ func friends_new(a *Action) {
 
 // Search the directory for potential friends
 func friends_search(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
 	search := a.input("search")
 	if search == "" {
 		a.error(400, "No search entered")

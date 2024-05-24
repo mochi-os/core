@@ -116,8 +116,8 @@ func (e *Event) receive() {
 		return
 	}
 
-	if a.Internal.DBFile != "" {
-		e.db = db_app(e.user, a.Name, a.Internal.DBFile, a.Internal.DBCreate)
+	if a.Internal.DB_file != "" {
+		e.db = db_app(e.user, a.Name, a.Internal.DB_file, a.Internal.DB_create)
 		defer e.db.close()
 	}
 

@@ -9,16 +9,14 @@ import (
 )
 
 type Action struct {
-	user *User
-	db   *DB
-	r    *http.Request
-	w    http.ResponseWriter
+	object *Identity
+	user   *User
+	db     *DB
+	r      *http.Request
+	w      http.ResponseWriter
 }
 
 var actions = map[string]func(*Action){}
-
-// TODO Replace actions_authenticated
-var actions_authenticated = map[string]bool{}
 
 func (a *Action) error(code int, message string, values ...any) {
 	web_error(a.w, code, message, values...)
@@ -49,8 +47,7 @@ func (a *Action) write(format string, template string, values ...any) {
 	}
 }
 
-func (a *App) action(action string, f func(*Action), authenticated bool) {
+func (a *App) action(action string, f func(*Action)) {
 	a.Internal.Actions[action] = f
 	actions[action] = f
-	actions_authenticated[action] = authenticated
 }

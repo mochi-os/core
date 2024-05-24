@@ -61,15 +61,46 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := strings.Trim(r.URL.Path, "/")
-	if len(path) > 0 && path[0:1] == "-" {
-		splits := strings.SplitN(path, "/", 2)
-		object := splits[0][1:]
+	if len(path) > 0 && path[0:1] == "+" {
+		splits1 := strings.SplitN(path, "/", 2)
+		splits2 := strings.SplitN(splits1[0][1:], "+", 2)
+		object := splits2[0]
 		action := ""
-		if len(splits) > 1 {
-			action = splits[1]
+		if len(splits1) > 1 {
+			action = splits1[1]
 		}
 		log_debug("Object='%s', action='%s'", object, action)
-		//TODO Find object and invoke action for it
+		i := identity_by_fingerprint(object)
+		if i == nil {
+			i = identity_by_id(object)
+			if i == nil {
+				web_error(w, 404, "Web object not found")
+				return
+			}
+		}
+		a, found := classes[i.Class]
+		if !found {
+			web_error(w, 404, "Web object has no owning app")
+			return
+		}
+		f, found := actions[action]
+		if !found {
+			web_error(w, 404, "Web action not found")
+			return
+		}
+		//TODO Also match parent field?
+		owner := user_by_id(i.User)
+		if owner == nil {
+			web_error(w, 500, "Web object has no owner")
+			return
+		}
+		//TODO Decide what to do about database handle if not logged in
+		var db *DB = nil
+		if a.Internal.DB_file != "" {
+			db = db_app(owner, a.Name, a.Internal.DB_file, a.Internal.DB_create)
+			defer db.close()
+		}
+		f(&Action{object: i, user: u, db: db, r: r, w: w})
 
 	} else {
 		f, found := paths[path]
@@ -77,18 +108,18 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 			web_error(w, 404, "Web path not found")
 			return
 		}
-		if u == nil && paths_authenticated[path] {
-			web_login(w, r)
-			return
-		}
-		a, found := paths_apps[path]
+		a, found := path_apps[path]
 		if !found {
 			web_error(w, 404, "Web path has no owning app")
 			return
 		}
 		var db *DB = nil
-		if a.Internal.DBFile != "" {
-			db = db_app(u, a.Name, a.Internal.DBFile, a.Internal.DBCreate)
+		if a.Internal.DB_file != "" {
+			if u == nil {
+				web_error(w, 401, "Not logged in")
+				return
+			}
+			db = db_app(u, a.Name, a.Internal.DB_file, a.Internal.DB_create)
 			defer db.close()
 		}
 		f(&Action{user: u, db: db, r: r, w: w})

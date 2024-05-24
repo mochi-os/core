@@ -12,10 +12,15 @@ var home_actions = map[string]HomeAction{}
 
 func init() {
 	a := app("home")
-	a.path("", home, true)
+	a.path("", home)
 }
 
 func home(a *Action) {
+	if a.user == nil {
+		web_login(a.w, a.r)
+		return
+	}
+
 	switch a.input("action") {
 	case "clear":
 		notifications_clear(a.user)
@@ -32,7 +37,7 @@ func home(a *Action) {
 		return
 	}
 
-	a.template("home", map[string]any{"User": a.user, "Actions": home_actions, "Notifications": notifications_list(a.user)})
+	a.template("home", M{"User": a.user, "Actions": home_actions, "Notifications": notifications_list(a.user)})
 }
 
 func (a *App) home(action string, labels map[string]string) {

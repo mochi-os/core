@@ -21,9 +21,8 @@ import (
 	"strings"
 )
 
-// TODO Lower case struct fields
 type mdns_notifee struct {
-	H host.Host
+	h host.Host
 }
 
 var libp2p_listen string
@@ -155,7 +154,7 @@ func libp2p_start() {
 	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", libp2p_listen, libp2p_port, libp2p_id)
 	log_info("libp2p listening on '%s'", libp2p_address)
 
-	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{H: h})
+	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{h: h})
 	err = dns.Start()
 	check(err)
 

@@ -4,38 +4,36 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
+	"github.com/gin-gonic/gin"
 )
 
 type Action struct {
 	object *Identity
 	user   *User
 	db     *DB
-	r      *http.Request
-	w      http.ResponseWriter
+	web    *gin.Context
 }
 
 var actions = map[string]func(*Action){}
 
 func (a *Action) error(code int, message string, values ...any) {
-	web_error(a.w, code, message, values...)
+	web_error(a.web, code, message, values...)
 }
 
 func (a *Action) input(name string) string {
-	return a.r.FormValue(name)
+	return a.web.Query(name)
 }
 
 func (a *Action) json(in any) {
-	fmt.Fprintf(a.w, json_encode(in))
+	a.web.JSON(200, in)
 }
 
 func (a *Action) redirect(url string) {
-	web_redirect(a.w, url)
+	a.web.Redirect(301, url)
 }
 
 func (a *Action) template(template string, values ...any) {
-	web_template(a.w, template, values...)
+	web_template(a.web, 200, template, values...)
 }
 
 func (a *Action) write(format string, template string, values ...any) {

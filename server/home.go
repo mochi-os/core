@@ -3,6 +3,7 @@
 
 package main
 
+//TODO Rename to HomePath?
 type HomeAction struct {
 	Action string
 	Labels map[string]string
@@ -17,7 +18,7 @@ func init() {
 
 func home(a *Action) {
 	if a.user == nil {
-		web_login(a.w, a.r)
+		web_login(a.web)
 		return
 	}
 
@@ -28,16 +29,16 @@ func home(a *Action) {
 		return
 
 	case "logout":
-		login := web_cookie_get(a.r, "login", "")
+		login := web_cookie_get(a.web, "login", "")
 		if login != "" {
 			login_delete(login)
 		}
-		web_cookie_unset(a.w, "login")
+		web_cookie_unset(a.web, "login")
 		a.template("login/logout")
 		return
 	}
 
-	a.template("home", M{"User": a.user, "Actions": home_actions, "Notifications": notifications_list(a.user)})
+	a.template("home", Map{"User": a.user, "Actions": home_actions, "Notifications": notifications_list(a.user)})
 }
 
 func (a *App) home(action string, labels map[string]string) {

@@ -71,23 +71,22 @@ func init() {
 	a.action("", forums_view)
 
 	a.path("forums", forums_list)
-	a.path("forums/comment/create", forums_comment_create)
-	a.path("forums/comment/new", forums_comment_new)
-	a.path("forums/comment/vote", forums_comment_vote)
 	a.path("forums/create", forums_create)
 	a.path("forums/find", forums_find)
-	a.path("forums/members", forums_members_edit)
-	a.path("forums/members/save", forums_members_save)
 	a.path("forums/new", forums_new)
-	a.path("forums/post/create", forums_post_create)
-	a.path("forums/post/new", forums_post_new)
-	a.path("forums/post", forums_post_view)
-	a.path("forums/post/view", forums_post_view)
-	a.path("forums/post/vote", forums_post_vote)
 	a.path("forums/search", forums_search)
-	a.path("forums/subscribe", forums_subscribe)
-	a.path("forums/unsubscribe", forums_unsubscribe)
-	a.path("forums/view", forums_view)
+	a.path("forums/:entity", forums_view)
+	a.path("forums/:entity/create", forums_post_create)
+	a.path("forums/:entity/members", forums_members_edit)
+	a.path("forums/:entity/members/save", forums_members_save)
+	a.path("forums/:entity/new", forums_post_new)
+	a.path("forums/:entity/subscribe", forums_subscribe)
+	a.path("forums/:entity/unsubscribe", forums_unsubscribe)
+	a.path("forums/:entity/:post", forums_post_view)
+	a.path("forums/:entity/:post/create", forums_comment_create)
+	a.path("forums/:entity/:post/new", forums_comment_new)
+	a.path("forums/:entity/:post/:vote", forums_post_vote)
+	a.path("forums/:entity/:post/:comment/:vote", forums_comment_vote)
 
 	a.event("comment/create", forums_comment_create_event)
 	a.event("comment/submit", forums_comment_submit_event)
@@ -216,7 +215,7 @@ func forums_comment_create(a *Action) {
 		}
 	}
 
-	a.template("forums/comment/create", M{"Forum": f, "Post": post})
+	a.template("forums/comment/create", Map{"Forum": f, "Post": post})
 }
 
 // Received a forum comment from owner
@@ -315,7 +314,7 @@ func forums_comment_new(a *Action) {
 		return
 	}
 
-	a.template("forums/comment/new", M{"Forum": forum_by_id(a.user, a.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Received a forum comment update event
@@ -379,7 +378,7 @@ func forums_comment_vote(a *Action) {
 		}
 	}
 
-	a.template("forums/comment/vote", M{"Forum": f, "Post": c.Post})
+	a.template("forums/comment/vote", Map{"Forum": f, "Post": c.Post})
 }
 
 func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string) {
@@ -472,7 +471,7 @@ func forums_create(a *Action) {
 		return
 	}
 
-	i, err := identity_create(a.user, "forum", name, privacy, json_encode(M{"role": role}))
+	i, err := identity_create(a.user, "forum", name, privacy, json_encode(Map{"role": role}))
 	if err != nil {
 		a.error(500, "Unable to create identity: %s", err)
 		return
@@ -524,7 +523,7 @@ func forums_members_edit(a *Action) {
 	var ms []ForumMember
 	a.db.scans(&ms, "select * from members where forum=? order by name", f.ID)
 
-	a.template("forums/members/edit", M{"User": a.user, "Forum": f, "Members": ms})
+	a.template("forums/members/edit", Map{"User": a.user, "Forum": f, "Members": ms})
 }
 
 // Save members
@@ -551,7 +550,7 @@ func forums_members_save(a *Action) {
 				return
 			}
 			a.db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
-			e := Event{ID: uid(), From: f.ID, To: m.ID, App: "forums", Action: "member/update", Content: json_encode(M{"role": role})}
+			e := Event{ID: uid(), From: f.ID, To: m.ID, App: "forums", Action: "member/update", Content: json_encode(Map{"role": role})}
 			e.send()
 
 			if m.Role == "disabled" {
@@ -561,7 +560,7 @@ func forums_members_save(a *Action) {
 	}
 
 	forum_update(a.user, a.db, f)
-	a.template("forums/members/save", M{"Forum": f})
+	a.template("forums/members/save", Map{"Forum": f})
 }
 
 // Member update from owner
@@ -658,7 +657,7 @@ func forums_post_create(a *Action) {
 		}
 	}
 
-	a.template("forums/post/create", M{"Forum": f, "ID": id})
+	a.template("forums/post/create", Map{"Forum": f, "ID": id})
 }
 
 // Received a forum post from the owner
@@ -798,7 +797,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.template("forums/post/view", M{"Forum": f, "Post": &p, "Comments": forum_comments(a.user, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Comments": forum_comments(a.user, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -841,7 +840,7 @@ func forums_post_vote(a *Action) {
 		}
 	}
 
-	a.template("forums/post/vote", M{"Forum": f, "ID": p.ID})
+	a.template("forums/post/vote", Map{"Forum": f, "ID": p.ID})
 }
 
 func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
@@ -997,7 +996,7 @@ func forums_subscribe(a *Action) {
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
-	a.template("forums/subscribe", M{"Forum": id, "Role": m.Role})
+	a.template("forums/subscribe", Map{"Forum": id, "Role": m.Role})
 }
 
 // Received a subscribe from a member
@@ -1064,7 +1063,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 	db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	db.exec("update forums set members=?, updated=? where id=?", len(ms), now(), f.ID)
 
-	j := json_encode(M{"members": len(ms)})
+	j := json_encode(Map{"members": len(ms)})
 	id := uid()
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {
@@ -1092,11 +1091,7 @@ func forums_update_event(e *Event) {
 
 // View a forum
 func forums_view(a *Action) {
-	forum := a.input("id")
-	if a.object != nil {
-		forum = a.object.ID
-	}
-	f := forum_by_id(a.user, a.db, forum)
+	f := forum_by_id(a.user, a.db, a.object.ID)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -1116,5 +1111,5 @@ func forums_view(a *Action) {
 	var ps []ForumPost
 	a.db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
 
-	a.template("forums/view", M{"Forum": f, "Member": m, "Posts": &ps, "RoleVoter": forum_role(m, "voter"), "RolePoster": forum_role(m, "poster"), "RoleAdministrator": forum_role(m, "administrator")})
+	a.template("forums/view", Map{"Forum": f, "Member": m, "Posts": &ps, "RoleVoter": forum_role(m, "voter"), "RolePoster": forum_role(m, "poster"), "RoleAdministrator": forum_role(m, "administrator")})
 }

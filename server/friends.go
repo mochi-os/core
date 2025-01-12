@@ -225,7 +225,7 @@ func friends_list(a *Action) {
 	case "json":
 		a.json(f)
 	default:
-		a.template("friends/list", M{"Friends": f, "Invites": i})
+		a.template("friends/list", Map{"Friends": f, "Invites": i})
 	}
 }
 

@@ -3,6 +3,7 @@
 
 package main
 
+// TODO Lower case?
 type App struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -15,22 +16,25 @@ type App struct {
 		DB_create       func(*DB)
 		Events          map[string]func(*Event)
 		EventsBroadcast map[string]func(*Event)
-		Paths           map[string]func(*Action)
 		Services        map[string]func(int, string, string, string, ...any) any
 	}
 	WASM struct {
 		File     string            `json:"file"`
 		Actions  map[string]string `json:"actions"`
 		Events   map[string]string `json:"events"`
-		Paths    map[string]string `json:"paths"`
 		Services map[string]string `json:"services"`
 	} `json:"wasm"`
 }
 
+type Path struct {
+	path   string
+	app    *App
+	action func(*Action)
+}
+
 var apps = map[string]*App{}
 var classes = map[string]*App{}
-var paths = map[string]func(*Action){}
-var path_apps = map[string]*App{}
+var paths = map[string]*Path{}
 
 /* Not used for now
 func apps_start() {
@@ -70,7 +74,6 @@ func app(name string) *App {
 	a.Internal.DB_create = nil
 	a.Internal.Events = make(map[string]func(*Event))
 	a.Internal.EventsBroadcast = make(map[string]func(*Event))
-	a.Internal.Paths = make(map[string]func(*Action))
 	a.Internal.Services = make(map[string]func(int, string, string, string, ...any) any)
 	apps[name] = a
 	return a
@@ -80,8 +83,7 @@ func (a *App) class(class string) {
 	classes[class] = a
 }
 
+//TODO Use Gin groups?
 func (a *App) path(path string, f func(*Action)) {
-	a.Internal.Paths[path] = f
-	paths[path] = f
-	path_apps[path] = a
+	paths[path] = &Path{path: path, app: a, action: f}
 }

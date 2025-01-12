@@ -59,6 +59,7 @@ func error_message(message string, values ...any) error {
 	return errors.New(fmt.Sprintf(message, values...))
 }
 
+//TODO Use base 58? https://pkg.go.dev/github.com/btcsuite/btcutil/base58
 func fingerprint(in string) string {
 	s := sha.New()
 	s.Write([]byte(in))

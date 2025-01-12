@@ -1,11 +1,11 @@
 {{define "title"}}{{.Forum.Name}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="../">Forums</a> | {{.Forum.Name}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a> | {{.Forum.Name}}</p>
 
-{{if .Member}}<p>{{if $.RolePoster}}<a href="../post/new/?forum={{.Forum.ID}}">New post</a> | {{if $.RoleAdministrator}}<a href="../members/?id={{.Forum.ID}}">Manage members</a> | {{end}}{{end}}<a href="../unsubscribe/?id={{.Forum.ID}}">Unsubscribe</a></p>{{end}}
+{{if .Member}}<p>{{if $.RolePoster}}<a href="/forums/{{.Forum.ID}}/post">New post</a> | {{if $.RoleAdministrator}}<a href="/forums/{{.Forum.ID}}/members">Manage members</a> | {{end}}{{end}}<a href="/forums/{{.Forum.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
 
 {{if and .Member (eq .Member.Role "disabled")}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{else}}
-<p>{{range .Posts}}<a href="../post/view/?id={{.ID}}">{{.Title}}</a> | {{if $.RoleVoter}} <a href="../post/vote/?id={{.ID}}&vote=up">&uarr;{{.Up}}</a> <a href="../post/vote/?id={{.ID}}&vote=down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Comments}}<br/>{{end}}</p>
+<p>{{range .Posts}}<a href="/forums/{{.Forum.ID}}/{{.ID}}">{{.Title}}</a> | {{if $.RoleVoter}} <a href="/forums/{{.Forum.ID}}/{{.ID}}/up">&uarr;{{.Up}}</a> <a href="/forums/{{.Forum.ID}}/{{.ID}}/down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Comments}}<br/>{{end}}</p>
 {{end}}
 
 {{template "foot" .}}

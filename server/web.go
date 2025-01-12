@@ -7,11 +7,11 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	//	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
 	"html/template"
-	"net/http"
 	"net/url"
 	"nhooyr.io/websocket"
-	"strings"
 )
 
 var (
@@ -22,45 +22,19 @@ var (
 var web_port int
 var websockets = map[int]map[string]*websocket.Conn{}
 
-func web_auth(r *http.Request) *User {
-	return user_by_login(web_cookie_get(r, "login", ""))
-}
-
-func web_cookie_get(r *http.Request, name string, def string) string {
-	c, err := r.Cookie("login")
-	if err != nil {
-		return def
-	}
-	return c.Value
-}
-
-func web_cookie_set(w http.ResponseWriter, name string, value string) {
-	c := http.Cookie{Name: name, Value: value, Path: "/", MaxAge: 365 * 86400, SameSite: http.SameSiteStrictMode}
-	http.SetCookie(w, &c)
-}
-
-func web_cookie_unset(w http.ResponseWriter, name string) {
-	c := http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1}
-	http.SetCookie(w, &c)
-}
-
-func web_error(w http.ResponseWriter, code int, message string, values ...any) {
-	w.WriteHeader(code)
-	web_template(w, "error", fmt.Sprintf(message, values...))
-}
-
-func web_action(w http.ResponseWriter, r *http.Request) {
+/* Not used for now
+func web_action(c *gin.Context) {
 	var u *User = nil
-	referrer, err := url.Parse(r.Referer())
-	if err == nil && (referrer.Host == "" || referrer.Host == r.Host) {
-		u = web_auth(r)
+	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
+	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
+		u = web_auth(c)
 		if u != nil && u.Identity == nil {
-			web_template(w, "login/identity")
+			web_template(c, 200, "login/identity")
 			return
 		}
 	}
 
-	path := strings.Trim(r.URL.Path, "/")
+	path := strings.Trim(c.Request.URL.Path, "/")
 	if len(path) > 0 && path[0:1] == "+" {
 		splits1 := strings.SplitN(path, "/", 2)
 		splits2 := strings.SplitN(splits1[0][1:], "+", 2)
@@ -74,155 +48,204 @@ func web_action(w http.ResponseWriter, r *http.Request) {
 		if i == nil {
 			i = identity_by_id(object)
 			if i == nil {
-				web_error(w, 404, "Web object not found")
+				web_error(c, 404, "Web object not found")
 				return
 			}
 		}
 		a, found := classes[i.Class]
 		if !found {
-			web_error(w, 404, "Web object has no owning app")
+			web_error(c, 404, "Web object has no owning app")
 			return
 		}
 		f, found := actions[action]
 		if !found {
-			web_error(w, 404, "Web action not found")
+			web_error(c, 404, "Web action not found")
 			return
 		}
-		//TODO Also match parent field?
+		//Also match parent field?
 		owner := user_by_id(i.User)
 		if owner == nil {
-			web_error(w, 500, "Web object has no owner")
+			web_error(c, 500, "Web object has no owner")
 			return
 		}
-		//TODO Decide what to do about database handle if not logged in
 		var db *DB = nil
 		if a.Internal.DB_file != "" {
 			db = db_app(owner, a.Name, a.Internal.DB_file, a.Internal.DB_create)
 			defer db.close()
 		}
-		f(&Action{object: i, user: u, db: db, r: r, w: w})
-
-	} else {
-		f, found := paths[path]
-		if !found {
-			web_error(w, 404, "Web path not found")
-			return
-		}
-		a, found := path_apps[path]
-		if !found {
-			web_error(w, 404, "Web path has no owning app")
-			return
-		}
-		var db *DB = nil
-		if a.Internal.DB_file != "" {
-			if u == nil {
-				web_error(w, 401, "Not logged in")
-				return
-			}
-			db = db_app(u, a.Name, a.Internal.DB_file, a.Internal.DB_create)
-			defer db.close()
-		}
-		f(&Action{user: u, db: db, r: r, w: w})
+		f(&Action{object: i, user: u, db: db, web: c})
 	}
+} */
+
+func web_auth(c *gin.Context) *User {
+	return user_by_login(web_cookie_get(c, "login", ""))
 }
 
-func web_identity_create(w http.ResponseWriter, r *http.Request) {
-	u := web_auth(r)
+func web_cookie_get(c *gin.Context, name string, def string) string {
+	value, err := c.Cookie(name)
+	if err != nil {
+		return def
+	}
+	return value
+}
+
+func web_cookie_set(c *gin.Context, name string, value string) {
+	c.SetCookie(name, value, 365*86400, "/", "", false, true)
+}
+
+func web_cookie_unset(c *gin.Context, name string) {
+	c.SetCookie(name, "", -1, "/", "", false, true)
+}
+
+func web_error(c *gin.Context, code int, message string, values ...any) {
+	web_template(c, code, "error", fmt.Sprintf(message, values...))
+}
+
+func web_identity_create(c *gin.Context) {
+	u := web_auth(c)
 	if u == nil {
 		return
 	}
 
-	_, err := identity_create(u, "person", r.FormValue("name"), r.FormValue("privacy"), "")
+	_, err := identity_create(u, "person", c.Query("name"), c.Query("privacy"), "")
 	if err != nil {
-		web_error(w, 400, "Unable to create identity: %s", err)
+		web_error(c, 400, "Unable to create identity: %s", err)
 		return
 	}
 
-	web_redirect(w, "/")
+	web_redirect(c, "/")
 }
 
-func web_login(w http.ResponseWriter, r *http.Request) {
-	code := r.FormValue("code")
+func web_login(c *gin.Context) {
+	code := c.Query("code")
 	if code != "" {
 		u := user_from_code(code)
 		if u == nil {
-			web_error(w, 400, "Invalid code")
+			web_error(c, 400, "Invalid code")
 			return
 		}
-		web_cookie_set(w, "login", login_create(u.ID))
+		web_cookie_set(c, "login", login_create(u.ID))
 
-		web_redirect(w, "/")
+		web_redirect(c, "/")
 		return
 	}
 
-	email := r.FormValue("email")
+	email := c.Query("email")
 	if email != "" {
 		if !code_send(email) {
-			web_error(w, 400, "Invalid email address")
+			web_error(c, 400, "Invalid email address")
 			return
 		}
-		web_template(w, "login/code", email)
+		web_template(c, 200, "login/code", email)
 		return
 	}
 
-	web_template(w, "login/email")
+	web_template(c, 200, "login/email")
 }
 
-func web_redirect(w http.ResponseWriter, url string) {
-	web_template(w, "redirect", url)
+func (p *Path) web_path(c *gin.Context) {
+	log_debug("Web path '%s', object='%s'", c.Request.URL.Path, c.Param("object"))
+	var u *User = nil
+	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
+	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
+		u = web_auth(c)
+		if u != nil && u.Identity == nil {
+			web_template(c, 200, "login/identity")
+			return
+		}
+	}
+
+	var o *Identity = nil
+	object := c.Param("object")
+	if object != "" {
+		o = identity_by_fingerprint(object)
+		if o == nil {
+			o = identity_by_id(object)
+		}
+	}
+
+	var db *DB = nil
+	if p.app.Internal.DB_file != "" {
+		dbu := u
+		if dbu == nil && o != nil {
+			dbu = user_by_id(o.User)
+		}
+		if dbu == nil {
+			web_error(c, 401, "Path not public, and not logged in")
+			return
+		}
+		log_debug("Loading db for user='%d', app='%s'", dbu.ID, p.app.Name)
+		db = db_app(dbu, p.app.Name, p.app.Internal.DB_file, p.app.Internal.DB_create)
+		defer db.close()
+	}
+
+	p.action(&Action{object: o, user: u, db: db, web: c})
+}
+
+func web_redirect(c *gin.Context, url string) {
+	web_template(c, 200, "redirect", url)
 }
 
 func web_start() {
-	http.HandleFunc("/", web_action)
-	//TODO Decide what to do with these URL paths
-	http.HandleFunc("/login/", web_login)
-	http.HandleFunc("/login/identity/", web_identity_create)
-	http.HandleFunc("/websocket/", websocket_connection)
+	//gin.SetMode(gin.ReleaseMode)
+	r := gin.Default()
+	r.SetTrustedProxies(nil)
+	//TODO HTTPS
+
+	for _, p := range paths {
+		r.GET("/"+p.path, p.web_path)
+		r.POST("/"+p.path, p.web_path)
+	}
+	r.GET("/login", web_login)
+	r.POST("/login/identity", web_identity_create)
+	r.GET("/websocket", websocket_connection)
+
 	log_info("Web listening on ':%d'", web_port)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", web_port), nil)
+	err := r.Run(fmt.Sprintf(":%d", web_port))
 	check(err)
 }
 
-func web_template(w http.ResponseWriter, file string, values ...any) {
+// This could probably be better written using c.HTML(), but I can't figure out how to load the templates.
+func web_template(c *gin.Context, code int, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {
-		http.Error(w, "Web template error", http.StatusInternalServerError)
+		web_error(c, 500, "Web template error")
 		panic("Web template error: " + err.Error())
 	}
 	if len(values) > 0 {
-		err = t.Execute(w, values[0])
+		err = t.Execute(c.Writer, values[0])
 	} else {
-		err = t.Execute(w, nil)
+		err = t.Execute(c.Writer, nil)
 	}
 	if err != nil {
 		panic("Web template error: " + err.Error())
 	}
 }
 
-func websocket_connection(w http.ResponseWriter, r *http.Request) {
-	u := web_auth(r)
+func websocket_connection(c *gin.Context) {
+	u := web_auth(c)
 	if u == nil {
 		return
 	}
 
-	c, err := websocket.Accept(w, r, nil)
+	ws, err := websocket.Accept(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
 	id := uid()
-	defer websocket_terminate(c, u, id)
+	defer websocket_terminate(ws, u, id)
 
 	_, found := websockets[u.ID]
 	if !found {
 		websockets[u.ID] = map[string]*websocket.Conn{}
 	}
-	websockets[u.ID][id] = c
+	websockets[u.ID][id] = ws
 	ctx := context.Background()
 
 	for {
-		t, j, err := c.Read(ctx)
+		t, j, err := ws.Read(ctx)
 		if err != nil {
-			websocket_terminate(c, u, id)
+			websocket_terminate(ws, u, id)
 			return
 		}
 		if t != websocket.MessageText {
@@ -237,18 +260,18 @@ func websockets_send(u *User, app string, content string) {
 	ctx := context.Background()
 	j := ""
 
-	for id, c := range websockets[u.ID] {
+	for id, ws := range websockets[u.ID] {
 		if j == "" {
 			j = json_encode(map[string]string{"app": app, "content": content})
 		}
-		err := c.Write(ctx, websocket.MessageText, []byte(j))
+		err := ws.Write(ctx, websocket.MessageText, []byte(j))
 		if err != nil {
-			websocket_terminate(c, u, id)
+			websocket_terminate(ws, u, id)
 		}
 	}
 }
 
-func websocket_terminate(c *websocket.Conn, u *User, id string) {
-	c.CloseNow()
+func websocket_terminate(ws *websocket.Conn, u *User, id string) {
+	ws.CloseNow()
 	delete(websockets[u.ID], id)
 }

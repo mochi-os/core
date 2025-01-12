@@ -26,7 +26,7 @@ func service(u *User, app string, s string, parameters ...any) {
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				_, err := wasm_run(u, a, function, 0, M{"service": s, "parameters": parameters})
+				_, err := wasm_run(u, a, function, 0, Map{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return
@@ -67,7 +67,7 @@ func service_json(u *User, app string, s string, depth int, parameters ...any) (
 		for _, try := range []string{s, ""} {
 			function, found := a.WASM.Services[try]
 			if found {
-				jo, err := wasm_run(u, a, function, depth, M{"service": s, "parameters": parameters})
+				jo, err := wasm_run(u, a, function, depth, Map{"service": s, "parameters": parameters})
 				if err != nil {
 					log_info("Service returned error: %s", err)
 					return "", err

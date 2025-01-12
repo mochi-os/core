@@ -7,7 +7,7 @@ import (
 	"flag"
 )
 
-type M map[string]any
+type Map map[string]any
 
 var data_dir string
 

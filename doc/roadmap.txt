@@ -15,7 +15,6 @@
 	Users can have multiple identities
 	HTTPS using Letsencrypt
 	Users can set public URLs to publish data
-	WASM apps
 	Group chat app
 	Wiki app
 
@@ -23,6 +22,7 @@
 	User management
 	Resource usage limits
 	File and media storage
+	Users choose which apps get which service
 	Users choose which apps get which web path
 	Apps with multiple installed versions
 	App publishing
@@ -42,5 +42,6 @@
 Ideas for apps
 	Bug tracker
 	Kanban
+	File sharing
 	Chess
 	Scrabble playalike

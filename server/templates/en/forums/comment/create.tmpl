@@ -1,7 +1,7 @@
 {{define "title"}}Comment posted{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="../../">Forums</a> | <a href="../../view/?id={{.Forum.ID}}">{{.Forum.Name}}</a> | Comment posted
+<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a> | <a href="/forums/{{.Forum.ID}}">{{.Forum.Name}}</a> | Comment posted
 
-<p>Your comment has been posted. You may now <a href="../../post/view/?id={{.Post}}">view</a> it.</p>
+<p>Your comment has been posted. You may now <a href="/forums/{{.Forum.ID}}/{{.Post}}">view</a> it.</p>
 
 {{template "foot" .}}

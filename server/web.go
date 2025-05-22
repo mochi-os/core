@@ -38,23 +38,23 @@ func web_action(c *gin.Context) {
 	if len(path) > 0 && path[0:1] == "+" {
 		splits1 := strings.SplitN(path, "/", 2)
 		splits2 := strings.SplitN(splits1[0][1:], "+", 2)
-		object := splits2[0]
+		entity := splits2[0]
 		action := ""
 		if len(splits1) > 1 {
 			action = splits1[1]
 		}
-		log_debug("Object='%s', action='%s'", object, action)
-		i := identity_by_fingerprint(object)
-		if i == nil {
-			i = identity_by_id(object)
-			if i == nil {
-				web_error(c, 404, "Web object not found")
+		log_debug("Entity='%s', action='%s'", entity, action)
+		e := identity_by_fingerprint(entity)
+		if e == nil {
+			e = identity_by_id(entity)
+			if e == nil {
+				web_error(c, 404, "Web entity not found")
 				return
 			}
 		}
-		a, found := classes[i.Class]
+		a, found := classes[e.Class]
 		if !found {
-			web_error(c, 404, "Web object has no owning app")
+			web_error(c, 404, "Web entity has no owning app")
 			return
 		}
 		f, found := actions[action]
@@ -63,17 +63,17 @@ func web_action(c *gin.Context) {
 			return
 		}
 		//Also match parent field?
-		owner := user_by_id(i.User)
+		owner := user_by_id(e.User)
 		if owner == nil {
-			web_error(c, 500, "Web object has no owner")
+			web_error(c, 500, "Web entity has no owner")
 			return
 		}
 		var db *DB = nil
-		if a.Internal.DB_file != "" {
-			db = db_app(owner, a.Name, a.Internal.DB_file, a.Internal.DB_create)
+		if a.db_file != "" {
+			db = db_app(owner, a.name, a.db_file, a.db_create)
 			defer db.close()
 		}
-		f(&Action{object: i, user: u, db: db, web: c})
+		f(&Action{entity: e, user: u, db: db, web: c})
 	}
 } */
 
@@ -144,7 +144,7 @@ func web_login(c *gin.Context) {
 }
 
 func (p *Path) web_path(c *gin.Context) {
-	log_debug("Web path '%s', object='%s'", c.Request.URL.Path, c.Param("object"))
+	log_debug("Web path '%s', entity='%s'", c.Request.URL.Path, c.Param("entity"))
 	var u *User = nil
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
 	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
@@ -155,31 +155,31 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	var o *Identity = nil
-	object := c.Param("object")
-	if object != "" {
-		o = identity_by_fingerprint(object)
-		if o == nil {
-			o = identity_by_id(object)
+	var e *Identity = nil
+	entity := c.Param("entity")
+	if entity != "" {
+		e = identity_by_fingerprint(entity)
+		if e == nil {
+			e = identity_by_id(entity)
 		}
 	}
 
 	var db *DB = nil
-	if p.app.Internal.DB_file != "" {
+	if p.app.db_file != "" {
 		dbu := u
-		if dbu == nil && o != nil {
-			dbu = user_by_id(o.User)
+		if dbu == nil && e != nil {
+			dbu = user_by_id(e.User)
 		}
 		if dbu == nil {
 			web_error(c, 401, "Path not public, and not logged in")
 			return
 		}
-		log_debug("Loading db for user='%d', app='%s'", dbu.ID, p.app.Name)
-		db = db_app(dbu, p.app.Name, p.app.Internal.DB_file, p.app.Internal.DB_create)
+		//log_debug("Loading db for user='%d', app='%s'", dbu.ID, p.app.name)
+		db = db_app(dbu, p.app.name, p.app.db_file, p.app.db_create)
 		defer db.close()
 	}
 
-	p.action(&Action{object: o, user: u, db: db, web: c})
+	p.action(&Action{entity: e, user: u, db: db, web: c})
 }
 
 func web_redirect(c *gin.Context, url string) {
@@ -197,7 +197,7 @@ func web_start() {
 		r.POST("/"+p.path, p.web_path)
 	}
 	r.GET("/login", web_login)
-	r.POST("/login/identity", web_identity_create)
+	r.GET("/login/identity", web_identity_create)
 	r.GET("/websocket", websocket_connection)
 
 	log_info("Web listening on ':%d'", web_port)

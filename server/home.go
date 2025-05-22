@@ -1,15 +1,14 @@
 // Comms server: Home app
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
-//TODO Rename to HomePath?
-type HomeAction struct {
-	Action string
+type HomePath struct {
+	Path string
 	Labels map[string]string
 }
 
-var home_actions = map[string]HomeAction{}
+var home_paths = map[string]HomePath{}
 
 func init() {
 	a := app("home")
@@ -38,9 +37,9 @@ func home(a *Action) {
 		return
 	}
 
-	a.template("home", Map{"User": a.user, "Actions": home_actions, "Notifications": notifications_list(a.user)})
+	a.template("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user)})
 }
 
-func (a *App) home(action string, labels map[string]string) {
-	home_actions[action] = HomeAction{Action: action, Labels: labels}
+func (a *App) home(path string, labels map[string]string) {
+	home_paths[path] = HomePath{Path: path, Labels: labels}
 }

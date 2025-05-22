@@ -1,5 +1,5 @@
 // Comms server: Database
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -204,6 +204,6 @@ func (db *DB) scans(out any, query string, values ...any) {
 }
 
 func (a *App) db(file string, create func(*DB)) {
-	a.Internal.DB_file = file
-	a.Internal.DB_create = create
+	a.db_file = file
+	a.db_create = create
 }

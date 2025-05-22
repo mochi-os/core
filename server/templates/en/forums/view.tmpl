@@ -5,7 +5,7 @@
 {{if .Member}}<p>{{if $.RolePoster}}<a href="/forums/{{.Forum.ID}}/post">New post</a> | {{if $.RoleAdministrator}}<a href="/forums/{{.Forum.ID}}/members">Manage members</a> | {{end}}{{end}}<a href="/forums/{{.Forum.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
 
 {{if and .Member (eq .Member.Role "disabled")}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{else}}
-<p>{{range .Posts}}<a href="/forums/{{.Forum.ID}}/{{.ID}}">{{.Title}}</a> | {{if $.RoleVoter}} <a href="/forums/{{.Forum.ID}}/{{.ID}}/up">&uarr;{{.Up}}</a> <a href="/forums/{{.Forum.ID}}/{{.ID}}/down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Comments}}<br/>{{end}}</p>
+<p>{{range .Posts}}<a href="/forums/{{$.Forum.ID}}/{{.ID}}">{{.Title}}</a> | {{if $.RoleVoter}} <a href="/forums/{{$.Forum.ID}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{$.Forum.ID}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}} &#8618;{{.Comments}}<br/>{{end}}</p>
 {{end}}
 
 {{template "foot" .}}

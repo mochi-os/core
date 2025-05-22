@@ -1,5 +1,5 @@
 // Comms server: Actions
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -8,7 +8,7 @@ import (
 )
 
 type Action struct {
-	object *Identity
+	entity *Identity
 	user   *User
 	db     *DB
 	web    *gin.Context
@@ -16,12 +16,28 @@ type Action struct {
 
 var actions = map[string]func(*Action){}
 
+func (a *Action) id() string {
+	if a.entity != nil {
+		return a.entity.ID
+	}
+	return a.input("entity")
+}
+
 func (a *Action) error(code int, message string, values ...any) {
+	log_debug(message, values...)
 	web_error(a.web, code, message, values...)
 }
 
 func (a *Action) input(name string) string {
-	return a.web.Query(name)
+	value := a.web.Param(name)
+	if value != "" {
+		return value
+	}
+	value = a.web.Query(name)
+	if value != "" {
+		return value
+	}
+	return a.web.PostForm(name)
 }
 
 func (a *Action) json(in any) {
@@ -46,6 +62,6 @@ func (a *Action) write(format string, template string, values ...any) {
 }
 
 func (a *App) action(action string, f func(*Action)) {
-	a.Internal.Actions[action] = f
+	a.actions[action] = f
 	actions[action] = f
 }

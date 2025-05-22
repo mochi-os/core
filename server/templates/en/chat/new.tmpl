@@ -4,8 +4,8 @@
 
 {{if len .}}<p>Choose who you want to chat with:</p>
 
-<p>{{range .}}<a href="/chat/view/?friend={{.ID}}">{{.Name}}</a><br/>{{end}}</p>
+<p>{{range .}}<a href="/chat/{{.ID}}">{{.Name}}</a><br/>{{end}}</p>
 
-{{else}}<p>You have no friends. What a pity. Please <a href="/friends/">add some</a>.{{end}}
+{{else}}<p>You have no friends. What a pity. Please <a href="/friends">add some</a>.{{end}}
 
 {{template "foot" .}}

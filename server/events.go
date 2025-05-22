@@ -1,5 +1,5 @@
 // Comms server: Events
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -12,7 +12,7 @@ type Event struct {
 	ID        string `json:"id"`
 	From      string `json:"from"`
 	To        string `json:"to"`
-	App       string `json:"app"`
+	Service   string `json:"service"`
 	Action    string `json:"action"`
 	Content   string `json:"content"`
 	Signature string `json:"signature"`
@@ -95,12 +95,12 @@ func (e *Event) receive() {
 		}
 
 		if e.source != "" {
-			public := base64_decode(e.From, "")
+			public := base58_decode(e.From, "")
 			if len(public) != ed25519.PublicKeySize {
 				log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
 				return
 			}
-			if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.App+e.Action+e.Content), base64_decode(e.Signature, "")) {
+			if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action+e.Content), base58_decode(e.Signature, "")) {
 				log_info("Dropping received event due to invalid sender signature")
 				return
 			}
@@ -109,48 +109,40 @@ func (e *Event) receive() {
 
 	e.user = user_owning_identity(e.To)
 
-	//TODO Route on destination identity class, rather than app? If so, remove app field from event?
-	a := apps[e.App]
+	//TODO Route on destination identity class, rather than service?
+	a := services[e.Service]
 	if a == nil {
-		log_info("Dropping received event due to unknown app '%s'", e.App)
+		log_info("Dropping received event due to unknown service '%s'", e.Service)
 		return
 	}
 
-	if a.Internal.DB_file != "" {
-		e.db = db_app(e.user, a.Name, a.Internal.DB_file, a.Internal.DB_create)
+	if a.db_file != "" {
+		e.db = db_app(e.user, a.name, a.db_file, a.db_create)
 		defer e.db.close()
 	}
 
-	switch a.Type {
-	case "internal":
-		for _, try := range []string{e.Action, ""} {
-			var f func(*Event)
-			var found bool
-			if e.To == "" {
-				f, found = a.Internal.EventsBroadcast[try]
-			} else {
-				f, found = a.Internal.Events[try]
-			}
-			if found {
-				f(e)
-				return
-			}
-		}
-
-	case "wasm":
-		for _, try := range []string{e.Action, ""} {
-			function, found := a.WASM.Events[try]
-			if found {
-				_, err := wasm_run(e.user, a, function, 0, e)
-				if err != nil {
-					log_info("Event handler returned error: %s", err)
-					return
-				}
-			}
+	var f func(*Event)
+	var found bool
+	// Look for app event matching action
+	if e.To == "" {
+		f, found = a.events_broadcast[e.Action]
+	} else {
+		f, found = a.events[e.Action]
+	}
+	if !found {
+		// Look for app default event
+		if e.To == "" {
+			f, found = a.events_broadcast[""]
+		} else {
+			f, found = a.events[""]
 		}
 	}
+	if !found {
+		log_info("Dropping received event due to unknown event '%s' in app '%s' for service '%s'", e.Action, a.name, e.Service)
+		return
+	}
 
-	log_info("Dropping received event due to unknown event '%s' for app '%s'", e.Action, e.App)
+	f(e)
 }
 
 func (e *Event) send() {
@@ -193,18 +185,18 @@ func (e *Event) sign() {
 		log_warn("Not signing event due unknown sending identity")
 		return
 	}
-	private := base64_decode(i.Private, "")
+	private := base58_decode(i.Private, "")
 	if string(private) == "" {
 		log_warn("Not signing event due to invalid private key")
 		return
 	}
-	e.Signature = base64_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.App+e.Action+e.Content)))
+	e.Signature = base58_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.Service+e.Action+e.Content)))
 }
 
 func (a *App) event(event string, f func(*Event)) {
-	a.Internal.Events[event] = f
+	a.events[event] = f
 }
 
 func (a *App) event_broadcast(event string, f func(*Event)) {
-	a.Internal.EventsBroadcast[event] = f
+	a.events_broadcast[event] = f
 }

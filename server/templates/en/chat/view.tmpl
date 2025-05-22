@@ -1,6 +1,6 @@
 {{define "title"}}{{.Name}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/chat/">Chat</a> | {{.Name}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="/chat">Chat</a> | {{.Name}}</p>
 
 <p id="messages"></p>
 <input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
@@ -9,14 +9,10 @@
 <script>
 const r = new XMLHttpRequest();
 r.onload = function() { messages_receive(this.responseText) }
-r.open("GET", "/chat/messages/?friend={{.Friend}}");
+r.open("GET", "/chat/messages?friend={{.Friend}}");
 r.send();
-const ws = new WebSocket( 'ws://' + window.location.host + '/websocket/' );
+const ws = new WebSocket( 'ws://' + window.location.host + '/websocket' );
 ws.addEventListener( 'message', (event) => { message_receive( event.data ) } );
-
-function event_receive( e ) {
-	const m = JSON.parse( e )
-}
 
 function keypress( event ) {
 	if ( event.key === 'Enter') {
@@ -48,7 +44,7 @@ function message_send( to ) {
 	const b = new URLSearchParams();
 	b.append( 'friend', '{{.Friend}}' );
 	b.append( 'message', document.getElementById('message').value );
-	fetch( window.location.origin + '/chat/send/', { method: 'post', body: b });
+	fetch( window.location.origin + '/chat/send', { method: 'post', body: b });
 	document.getElementById( 'message' ).value = '';
 }
 </script>

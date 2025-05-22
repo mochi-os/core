@@ -1,5 +1,5 @@
 // Comms server: Peers
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -27,6 +27,7 @@ var peer_publish_chan = make(chan bool)
 
 func init() {
 	a := app("peers")
+	a.service("peers")
 	a.event_broadcast("request", peer_request_event)
 	a.event_broadcast("publish", peer_publish_event)
 	a.pubsub("peers", peers_publish)
@@ -97,7 +98,7 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "publish", Content: jc})))
+		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish", Content: jc})))
 	}
 }
 
@@ -116,7 +117,7 @@ func peer_publish_event(e *Event) {
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), App: "peers", Action: "request", Content: peer})))
+	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: peer})))
 }
 
 // Reply to a peer request if for us

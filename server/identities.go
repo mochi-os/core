@@ -1,5 +1,5 @@
 // Comms server: Identities
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -72,10 +72,10 @@ func identity_create(u *User, class string, name string, privacy string, data st
 	for j := 0; j < 1000; j++ {
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
-		id := base64_encode(public)
+		id := base58_encode(public)
 		fingerprint := fingerprint(string(public))
 		if !db.exists("select id from identities where id=? or fingerprint=?", id, fingerprint) {
-			db.exec("replace into identities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base64_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
+			db.exec("replace into identities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
 			i := Identity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 			if privacy == "public" {
 				directory_create(&i)

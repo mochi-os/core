@@ -2,13 +2,13 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | Friends</p>
 
-<p>{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="delete/?id={{.ID}}">Delete</a><br/>{{end}}
+<p>{{if len .Friends}}{{range .Friends}}<p>{{.Name}} | <a href="/friends/delete?id={{.ID}}">Delete</a><br/>{{end}}
 {{else}}You have no friends.{{end}}</p>
 
-<p><a href="new/">Add a new friend</a></p>
+<p><a href="/friends/new">Add a new friend</a></p>
 
 {{if len .Invites}}<p>Or click on a received invitation:</p>
 
-<p>{{range .Invites}}{{.Name}} | <a href="accept/?id={{.ID}}">Accept</a> | <a href="ignore/?id={{.ID}}">Ignore</a><br/>{{end}}</p>{{end}}
+<p>{{range .Invites}}{{.Name}} | <a href="/friends/accept?id={{.ID}}">Accept</a> | <a href="/friends/ignore?id={{.ID}}">Ignore</a><br/>{{end}}</p>{{end}}
 
 {{template "foot" .}}

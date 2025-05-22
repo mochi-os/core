@@ -6,16 +6,15 @@ package main
 import (
 	"crypto/rand"
 	sha "crypto/sha1"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/btcsuite/btcutil/base58"
 	"github.com/google/uuid"
 	"math/big"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -32,21 +31,17 @@ func atoi(s string, def int64) int64 {
 	return int64(i)
 }
 
-func base64_decode(s string, def string) []byte {
-	pad := 4 - len(s)%4
-	if pad < 4 {
-		s = s + strings.Repeat("=", pad)
-	}
-	bytes, err := base64.URLEncoding.DecodeString(s)
+func base58_decode(in string, def string) []byte {
+	out, _, err := base58.CheckDecode(in)
 	if err != nil {
-		log_info("Base64 decoding error for '%s'; returning default '%s': %s", s, def, err)
+		log_info("Base58 decoding error for '%s'; returning default '%s': %s", in, def, err)
 		return []byte(def)
 	}
-	return bytes
+	return out
 }
 
-func base64_encode(b []byte) string {
-	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
+func base58_encode(in []byte) string {
+	return base58.CheckEncode(in, 0)
 }
 
 func check(err error) {
@@ -59,12 +54,11 @@ func error_message(message string, values ...any) error {
 	return errors.New(fmt.Sprintf(message, values...))
 }
 
-//TODO Use base 58? https://pkg.go.dev/github.com/btcsuite/btcutil/base58
 func fingerprint(in string) string {
 	s := sha.New()
 	s.Write([]byte(in))
-	b64 := base64_encode(s.Sum(nil))
-	return b64[0:9]
+	encoded := base58_encode(s.Sum(nil))
+	return encoded[0:9]
 }
 
 func json_decode(out any, j string) bool {
@@ -145,7 +139,7 @@ func valid(s string, match string) bool {
 	case "privacy":
 		match = "^(public|private)$"
 	case "public":
-		match = "^[\\w-=]{43,44}$"
+		match = "^[\\w]{50,51}$"
 	case "text":
 		if len(s) > 10000 {
 			return false

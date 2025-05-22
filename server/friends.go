@@ -1,5 +1,5 @@
 // Comms server: Friends
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -29,6 +29,7 @@ func init() {
 	a.path("friends/new", friends_new)
 	a.path("friends/search", friends_search)
 
+	a.service("friends")
 	a.event("accept", friends_accept_event)
 	a.event("cancel", friends_cancel_event)
 	a.event("invite", friends_invite_event)
@@ -52,7 +53,7 @@ func friend(u *User, id string) *Friend {
 	defer db.close()
 
 	var f Friend
-	if db.scan(&f, "select * from friends where id=?", u.Identity.ID) {
+	if db.scan(&f, "select * from friends where id=?", id) {
 		return &f
 	}
 	return nil
@@ -79,13 +80,13 @@ func friend_accept(u *User, db *DB, friend string) {
 	if !db.exists("select id from friends where id=?", friend) {
 		friend_create(u, db, friend, fi.Name, "person", false)
 	}
-	event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
+	event := Event{ID: uid(), From: u.Identity.ID, To: friend, Service: "friends", Action: "accept"}
 	event.send()
 	db.exec("delete from invites where id=? and direction='from'", friend)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where id=? and direction='to'", friend) {
-		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "cancel"}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, Service: "friends", Action: "cancel"}
 		event.send()
 		db.exec("delete from invites where id=? and direction='to'", friend)
 	}
@@ -140,13 +141,13 @@ func friend_create(u *User, db *DB, friend string, name string, class string, in
 
 	if db.exists("select id from invites where id=? and direction='from'", friend) {
 		// We have an existing invitation from them, so accept it automatically
-		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "accept"}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, Service: "friends", Action: "accept"}
 		event.send()
 		db.exec("delete from invites where id=? and direction='from'", friend)
 
 	} else if invite {
 		// Send invitation
-		event := Event{ID: uid(), From: u.Identity.ID, To: friend, App: "friends", Action: "invite", Content: u.Identity.Name}
+		event := Event{ID: uid(), From: u.Identity.ID, To: friend, Service: "friends", Action: "invite", Content: u.Identity.Name}
 		event.send()
 		db.exec("replace into invites ( id, direction, name, updated ) values ( ?, 'to', ?, ? )", friend, name, now_string())
 	}

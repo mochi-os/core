@@ -1,5 +1,5 @@
 // Comms: Chat app
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -35,8 +35,9 @@ func init() {
 	a.path("chat/messages", chat_messages)
 	a.path("chat/new", chat_new)
 	a.path("chat/send", chat_send)
-	a.path("chat/view", chat_view)
+	a.path("chat/:entity", chat_view)
 
+	a.service("chat")
 	a.event("message", chat_receive)
 }
 
@@ -124,7 +125,7 @@ func chat_receive(e *Event) {
 	f := friend(e.user, e.From)
 	if f == nil {
 		// Event from unkown sender. Send them an error reply and drop their message.
-		event := Event{ID: uid(), From: e.user.Identity.ID, To: e.From, App: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
+		event := Event{ID: uid(), From: e.user.Identity.ID, To: e.From, Service: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
 		event.send()
 		return
 	}
@@ -152,7 +153,7 @@ func chat_send(a *Action) {
 
 	message := a.input("message")
 	a.db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), a.user.Identity.ID, a.user.Identity.Name, message)
-	event := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, App: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
+	event := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
 	event.send()
 
 	j := json_encode(map[string]string{"from": a.user.Identity.ID, "name": a.user.Identity.Name, "time": now_string(), "body": message})
@@ -166,7 +167,7 @@ func chat_view(a *Action) {
 		return
 	}
 
-	f := friend(a.user, a.input("friend"))
+	f := friend(a.user, a.id())
 	if f == nil {
 		a.error(404, "Friend not found")
 		return

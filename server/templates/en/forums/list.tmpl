@@ -2,7 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | Forums</p>
 
-<p><a href="find/">Subscribe to a forum</a> | <a href="new/">Create a forum</a></p>
+<p><a href="/forums/find">Subscribe to a forum</a> | <a href="/forums/new">Create a forum</a></p>
 
 <p>{{if len .}}{{range .}}<a href="/forums/{{.Fingerprint}}">{{.Name}}</a>{{if ne .Members 0}} | &#9786;{{.Members}}{{end}}<br/>{{end}}
 {{else}}You are not subscribed to any forums{{end}}</p>

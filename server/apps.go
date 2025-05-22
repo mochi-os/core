@@ -1,29 +1,16 @@
 // Comms server: Apps
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
-// TODO Lower case?
 type App struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Track    string `json:"track"`
-	Type     string `json:"type"`
-	Internal struct {
-		Actions         map[string]func(*Action)
-		DB_file         string
-		DB_create       func(*DB)
-		Events          map[string]func(*Event)
-		EventsBroadcast map[string]func(*Event)
-		Services        map[string]func(int, string, string, string, ...any) any
-	}
-	WASM struct {
-		File     string            `json:"file"`
-		Actions  map[string]string `json:"actions"`
-		Events   map[string]string `json:"events"`
-		Services map[string]string `json:"services"`
-	} `json:"wasm"`
+	id               string `json:"id"`
+	name             string `json:"name"`
+	actions          map[string]func(*Action)
+	db_file          string
+	db_create        func(*DB)
+	events           map[string]func(*Event)
+	events_broadcast map[string]func(*Event)
 }
 
 type Path struct {
@@ -35,6 +22,7 @@ type Path struct {
 var apps = map[string]*App{}
 var classes = map[string]*App{}
 var paths = map[string]*Path{}
+var services = map[string]*App{}
 
 /* Not used for now
 func apps_start() {
@@ -52,7 +40,7 @@ func apps_start() {
 				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
 				continue
 			}
-			a.ID = id
+			a.id = id
 			apps[a.Name] = &a
 
 			if a.Path != "" {
@@ -68,13 +56,10 @@ func apps_start() {
 } */
 
 func app(name string) *App {
-	a := &App{ID: name, Name: name, Type: "internal"}
-	a.Internal.Actions = make(map[string]func(*Action))
-	a.Internal.DB_file = ""
-	a.Internal.DB_create = nil
-	a.Internal.Events = make(map[string]func(*Event))
-	a.Internal.EventsBroadcast = make(map[string]func(*Event))
-	a.Internal.Services = make(map[string]func(int, string, string, string, ...any) any)
+	a := &App{id: name, name: name, db_file: "", db_create: nil}
+	a.actions = make(map[string]func(*Action))
+	a.events = make(map[string]func(*Event))
+	a.events_broadcast = make(map[string]func(*Event))
 	apps[name] = a
 	return a
 }
@@ -83,7 +68,10 @@ func (a *App) class(class string) {
 	classes[class] = a
 }
 
-//TODO Use Gin groups?
 func (a *App) path(path string, f func(*Action)) {
 	paths[path] = &Path{path: path, app: a, action: f}
+}
+
+func (a *App) service(service string) {
+	services[service] = a
 }

@@ -3,14 +3,14 @@
 <p class="header">Comms | {{.User.Username}}</p>
 
 {{if len .Notifications}}<h2>Notifications:</h2>
-<p>{{range .Notifications}}{{if len .Link}}<a href="/{{.Link}}">{{.Content}}</a>{{else}}{{.Content}}{{end}}<br/>{{end}}</p>
-<p><a href="?action=clear">Clear notifications</a></p>{{end}}
+<p>{{range .Notifications}}{{if len .Link}}<a href="{{.Link}}">{{.Content}}</a>{{else}}{{.Content}}{{end}}<br/>{{end}}</p>
+<p><a href="/?action=clear">Clear notifications</a></p>{{end}}
 
-{{if len .Actions}}<h2>Apps:</h2>
+{{if len .Paths}}<h2>Apps:</h2>
 <p>{{end}}
-{{range .Actions}}<a href="/{{.Action}}">{{.Labels.en}}</a><br/>{{end}}
-{{if len .Actions}}</p>{{end}}
+{{range .Paths}}<a href="/{{.Path}}">{{.Labels.en}}</a><br/>{{end}}
+{{if len .Paths}}</p>{{end}}
 
-<a href="?action=logout">Log out</a></p>
+<a href="/?action=logout">Log out</a></p>
 
 {{template "foot" .}}

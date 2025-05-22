@@ -1,5 +1,5 @@
 // Comms: Forums app
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -68,7 +68,7 @@ func init() {
 	a.db("data.db", forums_db_create)
 
 	a.class("forum")
-	a.action("", forums_view)
+	a.path("forums", forums_view)
 
 	a.path("forums", forums_list)
 	a.path("forums/create", forums_create)
@@ -79,15 +79,16 @@ func init() {
 	a.path("forums/:entity/create", forums_post_create)
 	a.path("forums/:entity/members", forums_members_edit)
 	a.path("forums/:entity/members/save", forums_members_save)
-	a.path("forums/:entity/new", forums_post_new)
+	a.path("forums/:entity/post", forums_post_new)
 	a.path("forums/:entity/subscribe", forums_subscribe)
 	a.path("forums/:entity/unsubscribe", forums_unsubscribe)
 	a.path("forums/:entity/:post", forums_post_view)
+	a.path("forums/:entity/:post/comment", forums_comment_new)
 	a.path("forums/:entity/:post/create", forums_comment_create)
-	a.path("forums/:entity/:post/new", forums_comment_new)
-	a.path("forums/:entity/:post/:vote", forums_post_vote)
-	a.path("forums/:entity/:post/:comment/:vote", forums_comment_vote)
+	a.path("forums/:entity/:post/vote/:vote", forums_post_vote)
+	a.path("forums/:entity/:post/:comment/vote/:vote", forums_comment_vote)
 
+	a.service("forums")
 	a.event("comment/create", forums_comment_create_event)
 	a.event("comment/submit", forums_comment_submit_event)
 	a.event("comment/update", forums_comment_update_event)
@@ -133,7 +134,9 @@ func forums_db_create(db *DB) {
 func forum_by_id(u *User, db *DB, id string) *Forum {
 	var f Forum
 	if !db.scan(&f, "select * from forums where id=?", id) {
-		return nil
+		if !db.scan(&f, "select * from forums where fingerprint=?", id) {
+			return nil
+		}
 	}
 	if u != nil {
 		f.identity = identity_by_user_id(u, f.ID)
@@ -169,7 +172,7 @@ func forums_comment_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -199,7 +202,7 @@ func forums_comment_create(a *Action) {
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, App: "forums", Action: "comment/submit", Content: json_encode(ForumComment{ID: id, Post: post, Parent: parent, Body: body})}
+		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/submit", Content: json_encode(ForumComment{ID: id, Post: post, Parent: parent, Body: body})}
 		e.send()
 
 	} else {
@@ -209,7 +212,7 @@ func forums_comment_create(a *Action) {
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "comment/create", Content: j}
+				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "comment/create", Content: j}
 				e.send()
 			}
 		}
@@ -301,7 +304,7 @@ func forums_comment_submit_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "comment/create", Content: j}
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "comment/create", Content: j}
 			e.send()
 		}
 	}
@@ -314,7 +317,7 @@ func forums_comment_new(a *Action) {
 		return
 	}
 
-	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.id()), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Received a forum comment update event
@@ -346,7 +349,7 @@ func forums_comment_vote(a *Action) {
 	}
 
 	var c ForumComment
-	if !a.db.scan(&c, "select * from comments where id=?", a.input("id")) {
+	if !a.db.scan(&c, "select * from comments where id=?", a.input("comment")) {
 		a.error(404, "Comment not found")
 		return
 	}
@@ -361,7 +364,7 @@ func forums_comment_vote(a *Action) {
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, App: "forums", Action: "comment/vote", Content: json_encode(ForumVote{ID: c.ID, Vote: vote})}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{ID: c.ID, Vote: vote})}
 		e.send()
 
 	} else {
@@ -372,7 +375,7 @@ func forums_comment_vote(a *Action) {
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "comment/update", Content: j}
+				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "comment/update", Content: j}
 				e.send()
 			}
 		}
@@ -441,7 +444,7 @@ func forums_comment_vote_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "comment/update", Content: j}
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "comment/update", Content: j}
 			e.send()
 		}
 	}
@@ -479,7 +482,7 @@ func forums_create(a *Action) {
 	a.db.exec("replace into forums ( id, fingerprint, name, role, members, updated ) values ( ?, ?, ?, ?, 1, ? )", i.ID, i.Fingerprint, name, role, now())
 	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, 'administrator' )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
 
-	a.template("forums/create", i.ID)
+	a.template("forums/create", i.Fingerprint)
 }
 
 // Enter details of forums to be subscribed to
@@ -514,7 +517,7 @@ func forums_members_edit(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("id"))
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil || f.identity == nil {
 		a.error(404, "Forum not found")
 		return
@@ -533,7 +536,7 @@ func forums_members_save(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("id"))
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil || f.identity == nil {
 		a.error(404, "Forum not found")
 		return
@@ -550,7 +553,7 @@ func forums_members_save(a *Action) {
 				return
 			}
 			a.db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
-			e := Event{ID: uid(), From: f.ID, To: m.ID, App: "forums", Action: "member/update", Content: json_encode(Map{"role": role})}
+			e := Event{ID: uid(), From: f.ID, To: m.ID, Service: "forums", Action: "member/update", Content: json_encode(Map{"role": role})}
 			e.send()
 
 			if m.Role == "disabled" {
@@ -597,7 +600,7 @@ func forums_member_update_event(e *Event) {
 			case "administrator":
 				message = "You are an administrator"
 			}
-			notification(e.user, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/view/?id="+f.ID)
+			notification(e.user, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/"+f.ID)
 		}
 	}
 	e.db.exec("replace into members ( forum, id, role ) values ( ?, ?, ? )", e.From, e.user.Identity.ID, m.Role)
@@ -615,7 +618,7 @@ func forums_post_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -641,7 +644,7 @@ func forums_post_create(a *Action) {
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
 		log_debug("Sending post to forum owner")
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, App: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: id, Title: title, Body: body})}
+		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: id, Title: title, Body: body})}
 		e.send()
 
 	} else {
@@ -651,7 +654,7 @@ func forums_post_create(a *Action) {
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "post/create", Content: j}
+				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
 				e.send()
 			}
 		}
@@ -701,7 +704,7 @@ func forums_post_new(a *Action) {
 		return
 	}
 
-	a.template("forums/post/new", forum_by_id(a.user, a.db, a.input("forum")))
+	a.template("forums/post/new", forum_by_id(a.user, a.db, a.id()))
 }
 
 // Received a forum post from a member
@@ -747,7 +750,7 @@ func forums_post_submit_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "post/create", Content: j}
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
 			e.send()
 		}
 	}
@@ -774,7 +777,7 @@ func forums_post_update_event(e *Event) {
 // TODO Handle not logged in
 func forums_post_view(a *Action) {
 	var p ForumPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("id")) {
+	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
@@ -808,7 +811,7 @@ func forums_post_vote(a *Action) {
 	}
 
 	var p ForumPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("id")) {
+	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
@@ -823,7 +826,7 @@ func forums_post_vote(a *Action) {
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, App: "forums", Action: "post/vote", Content: json_encode(ForumVote{ID: p.ID, Vote: vote})}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{ID: p.ID, Vote: vote})}
 		e.send()
 
 	} else {
@@ -834,7 +837,7 @@ func forums_post_vote(a *Action) {
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "post/update", Content: j}
+				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "post/update", Content: j}
 				e.send()
 			}
 		}
@@ -902,7 +905,7 @@ func forums_post_vote_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, App: "forums", Action: "post/update", Content: j}
+			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "post/update", Content: j}
 			e.send()
 		}
 	}
@@ -950,14 +953,14 @@ func forum_send_recent_posts(db *DB, f *Forum, member string) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 100", f.ID)
 	for _, p := range ps {
-		e := Event{ID: p.ID, From: f.ID, To: member, App: "forums", Action: "post/create", Content: json_encode(p)}
+		e := Event{ID: p.ID, From: f.ID, To: member, Service: "forums", Action: "post/create", Content: json_encode(p)}
 		e.send()
 	}
 	for _, p := range ps {
 		var cs []ForumComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)
 		for _, c := range cs {
-			e := Event{ID: c.ID, From: f.ID, To: member, App: "forums", Action: "comment/create", Content: json_encode(c)}
+			e := Event{ID: c.ID, From: f.ID, To: member, Service: "forums", Action: "comment/create", Content: json_encode(c)}
 			e.send()
 		}
 	}
@@ -970,7 +973,7 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	id := a.input("id")
+	id := a.id()
 	if !valid(id, "public") {
 		a.error(400, "Invalid ID")
 		return
@@ -993,7 +996,7 @@ func forums_subscribe(a *Action) {
 	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", id, fingerprint(id), d.Name, now())
 	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", id, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, App: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
+	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
 	a.template("forums/subscribe", Map{"Forum": id, "Role": m.Role})
@@ -1028,7 +1031,7 @@ func forums_unsubscribe(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("id"))
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -1040,7 +1043,7 @@ func forums_unsubscribe(a *Action) {
 	a.db.exec("delete from members where forum=?", f.ID)
 	a.db.exec("delete from forums where id=?", f.ID)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, App: "forums", Action: "unsubscribe"}
+	e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "unsubscribe"}
 	e.send()
 
 	a.template("forums/unsubscribe")
@@ -1067,7 +1070,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 	id := uid()
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {
-			e := Event{ID: id, From: f.ID, To: m.ID, App: "forums", Action: "update", Content: j}
+			e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "update", Content: j}
 			e.send()
 		}
 	}
@@ -1091,7 +1094,7 @@ func forums_update_event(e *Event) {
 
 // View a forum
 func forums_view(a *Action) {
-	f := forum_by_id(a.user, a.db, a.object.ID)
+	f := forum_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Forum not found")
 		return

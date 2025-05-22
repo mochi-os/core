@@ -1,8 +1,9 @@
 // Comms: WASM
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
+/* None of this is used
 import (
 	"bufio"
 	"fmt"
@@ -118,25 +119,6 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 		case "finish":
 			return run_return, nil
 
-		case "service":
-			log_debug("WASM app asked for a service")
-			splits := strings.SplitN(output, " ", 3)
-			if len(splits) >= 2 {
-				var service_return string
-				var err error
-				if len(splits) > 2 {
-					service_return, err = service_json(u, splits[0], splits[1], depth+1, splits[2])
-				} else {
-					service_return, err = service_json(u, splits[0], splits[1], depth+1)
-				}
-				if err != nil {
-					log_info("WASM call to service returned error: %s", err)
-				}
-				wasm_write(w, string(service_return))
-			} else {
-				log_info("WASM app called service without app and service; ignoring service request")
-			}
-
 		case "return":
 			run_return = output
 		}
@@ -151,3 +133,4 @@ func wasm_write(w *bufio.Writer, data string) {
 	w.WriteRune('\n')
 	w.Flush()
 }
+*/

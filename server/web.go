@@ -7,9 +7,10 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	//	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	"html/template"
+	"net/http"
 	"net/url"
 	"nhooyr.io/websocket"
 )
@@ -19,7 +20,6 @@ var (
 	templates embed.FS
 )
 
-var web_port int
 var websockets = map[int]map[string]*websocket.Conn{}
 
 /* Not used for now
@@ -182,15 +182,18 @@ func (p *Path) web_path(c *gin.Context) {
 	p.action(&Action{entity: e, user: u, db: db, web: c})
 }
 
+func web_ping(c *gin.Context) {
+	c.String(http.StatusOK, "pong")
+}
+
 func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
-func web_start() {
+func web_start(port int, domains []string) {
 	//gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	//TODO HTTPS
 
 	for _, p := range paths {
 		r.GET("/"+p.path, p.web_path)
@@ -198,11 +201,19 @@ func web_start() {
 	}
 	r.GET("/login", web_login)
 	r.GET("/login/identity", web_identity_create)
+	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 
-	log_info("Web listening on ':%d'", web_port)
-	err := r.Run(fmt.Sprintf(":%d", web_port))
-	check(err)
+	if len(domains) > 0 {
+		log_info("Web listening on HTTPS domains %v", domains)
+		err := autotls.Run(r, domains...)
+		check(err)
+
+	} else {
+		log_info("Web listening on HTTP port %d", port)
+		err := r.Run(fmt.Sprintf(":%d", port))
+		check(err)
+	}
 }
 
 // This could probably be better written using c.HTML(), but I can't figure out how to load the templates.

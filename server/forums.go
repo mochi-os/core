@@ -487,7 +487,6 @@ func forums_create(a *Action) {
 
 // Enter details of forums to be subscribed to
 func forums_find(a *Action) {
-	//TODO Find private forums
 	a.template("forums/find")
 }
 
@@ -774,7 +773,6 @@ func forums_post_update_event(e *Event) {
 }
 
 // View a post
-// TODO Handle not logged in
 func forums_post_view(a *Action) {
 	var p ForumPost
 	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {

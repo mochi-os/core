@@ -16,7 +16,7 @@ run:
 	./comms-server
 
 run2:
-	./comms-server -directory /var/lib/comms2 -port 1444 -web 8081
+	./comms-server -data /var/lib/comms2 -port 1444 -web 8081
 
 static: clean
 	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o comms-server server/*.go

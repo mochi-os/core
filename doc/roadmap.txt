@@ -1,7 +1,5 @@
 0.1
-	Forums app
-		Find private forums
-	Format SQL
+	HTTPS using Letsencrypt
 	Feeds app
 	Replace identities with entities?
 	Route on class?
@@ -11,9 +9,9 @@
 0.2
 	Client API
 	Command line client
+	Find hidden services
 	Users can change their settings
 	Users can have multiple identities
-	HTTPS using Letsencrypt
 	Users can set public URLs to publish data
 	Group chat app
 	Wiki app

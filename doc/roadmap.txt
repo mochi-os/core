@@ -1,10 +1,10 @@
 0.1
-	HTTPS using Letsencrypt
 	Feeds app
 	Replace identities with entities?
 	Route on class?
 	Choose a product name
 	Introducer server
+	Replace command line flags with config file
 
 0.2
 	Client API

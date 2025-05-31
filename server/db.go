@@ -76,7 +76,7 @@ func db_create() {
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/identities/%s/apps/%s/%s", u.ID, u.Identity.Fingerprint, app, file)
+	path := fmt.Sprintf("users/%d/apps/%s/%s", u.ID, app, file)
 	if file_exists(path) {
 		return db_open(path)
 	}

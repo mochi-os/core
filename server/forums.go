@@ -29,8 +29,10 @@ type ForumPost struct {
 	Updated       int64
 	Author        string
 	Name          string
+	Type          string
 	Title         string
 	Body          string
+	Link          string
 	Comments      int
 	Up            int
 	Down          int
@@ -57,6 +59,7 @@ type ForumComment struct {
 type ForumVote struct {
 	Voter string
 	ID    string
+	Class string
 	Vote  string
 }
 
@@ -65,7 +68,7 @@ var forum_roles = map[string]int{"disabled": 0, "viewer": 1, "voter": 2, "commen
 func init() {
 	a := app("forums")
 	a.home("forums", map[string]string{"en": "Forums"})
-	a.db("data.db", forums_db_create)
+	a.db("forums.db", forums_db_create)
 
 	a.class("forum")
 	a.path("forums", forums_view)
@@ -116,7 +119,7 @@ func forums_db_create(db *DB) {
 	db.exec("create table members ( forum references forums( id ), id text not null, name text not null default '', role text not null, primary key ( forum, id ) )")
 	db.exec("create index members_id on members( id )")
 
-	db.exec("create table posts ( id text not null primary key, forum references forum( id ), created integer not null, updated integer not null, author text not null, name text not null, title text not null, body text not null, comments integer not null default 0, up integer not null default 0, down integer not null default 0 )")
+	db.exec("create table posts ( id text not null primary key, forum references forum( id ), created integer not null, updated integer not null, author text not null, name text not null, type text not null default 'text', title text not null, body text not null, link text not null default '', comments integer not null default 0, up integer not null default 0, down integer not null default 0 )")
 	db.exec("create index posts_forum on posts( forum )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
@@ -196,6 +199,7 @@ func forums_comment_create(a *Action) {
 
 	id := uid()
 	now := now()
+	//TODO Check we don't already have a comment with this ID
 	a.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
 	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
@@ -249,6 +253,7 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
+	//TODO Check we don't already have a comment with this ID
 	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
@@ -295,6 +300,7 @@ func forums_comment_submit_event(e *Event) {
 		return
 	}
 
+	//TODO Check we don't already have a comment with this ID
 	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
@@ -497,7 +503,7 @@ func forums_list(a *Action) {
 	a.write(a.input("format"), "forums/list", f)
 }
 
-// Gte details of a forum member
+// Get details of a forum member
 func forum_member(db *DB, f *Forum, member string, role string) *ForumMember {
 	var m ForumMember
 	if !db.scan(&m, "select * from members where forum=? and id=?", f.ID, member) {
@@ -636,6 +642,7 @@ func forums_post_create(a *Action) {
 
 	id := uid()
 	now := now()
+	//TODO Check we don't already have a post with this ID
 
 	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
@@ -692,6 +699,7 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
+	//TODO Check we don't already have a post with this ID
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down)
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 }
@@ -741,6 +749,7 @@ func forums_post_submit_event(e *Event) {
 		return
 	}
 
+	//TODO Check we don't already have a post with this ID
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body)
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 

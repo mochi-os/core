@@ -4,7 +4,7 @@
 
 <p><a href="/forums/find">Subscribe to a forum</a> | <a href="/forums/new">Create a forum</a></p>
 
-<p>{{if len .}}{{range .}}<a href="/forums/{{.Fingerprint}}">{{.Name}}</a>{{if ne .Members 0}} | &#9786;{{.Members}}{{end}}<br/>{{end}}
+<p>{{if len .}}{{range .}}<a href="/forums/{{.Fingerprint}}">{{.Name}}</a> | &#9786;{{.Members}}<br/>{{end}}
 {{else}}You are not subscribed to any forums{{end}}</p>
 
 {{template "foot" .}}

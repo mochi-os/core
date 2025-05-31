@@ -4,17 +4,12 @@
 package main
 
 type Chat struct {
-	ID      string
-	Name    string
-	Friend  string
-	Master  string
-	Updated int64
-}
-
-type ChatMember struct {
-	Chat   string
-	Member string
-	Role   string
+	ID       string
+	Identity string
+	Name     string
+	Friend   string
+	Master   string
+	Updated  int64
 }
 
 type ChatMessage struct {
@@ -29,7 +24,7 @@ type ChatMessage struct {
 func init() {
 	a := app("chat")
 	a.home("chat", map[string]string{"en": "Chat"})
-	a.db("data.db", chat_db_create)
+	a.db("chat.db", chat_db_create)
 
 	a.path("chat", chat_list)
 	a.path("chat/messages", chat_messages)
@@ -46,7 +41,7 @@ func chat_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")
 	db.exec("replace into settings ( name, value ) values ( 'schema', 1 )")
 
-	db.exec("create table chats ( id text not null primary key, name text not null, friend text not null default '', master text not null default '', updated integer not null )")
+	db.exec("create table chats ( id text not null primary key, identity text not null, name text not null, friend text not null default '', master text not null default '', updated integer not null )")
 	db.exec("create index chats_friend on chats( friend )")
 	db.exec("create index chats_updated on chats( updated )")
 
@@ -57,13 +52,13 @@ func chat_db_create(db *DB) {
 }
 
 // Find best chat for friend
-func chat_for_friend(db *DB, f *Friend) *Chat {
+func chat_for_friend(u *User, db *DB, f *Friend) *Chat {
 	var c Chat
 	if db.scan(&c, "select * from chats where friend=? order by updated desc", f.ID) {
 		db.exec("update chats set updated=? where id=?", now_string(), c.ID)
 	} else {
-		c = Chat{ID: uid(), Name: f.Name, Friend: f.ID, Updated: now()}
-		db.exec("replace into chats ( id, name, friend, updated ) values ( ?, ?, ?, ? )", c.ID, c.Name, c.Friend, c.Updated)
+		c = Chat{ID: uid(), Identity: u.Identity.ID, Name: f.Name, Friend: f.ID, Updated: now()}
+		db.exec("replace into chats ( id, identity, name, friend, updated ) values ( ?, ?, ?, ?, ? )", c.ID, c.Identity, c.Name, c.Friend, c.Updated)
 	}
 	return &c
 }
@@ -92,7 +87,7 @@ func chat_messages(a *Action) {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(a.db, f)
+	c := chat_for_friend(a.user, a.db, f)
 
 	var m []ChatMessage
 	a.db.scans(&m, "select * from messages where chat=? order by id", c.ID)
@@ -124,17 +119,17 @@ func chat_receive(e *Event) {
 
 	f := friend(e.user, e.From)
 	if f == nil {
-		// Event from unkown sender. Send them an error reply and drop their message.
+		// Event from unknown sender. Send them an error reply and drop their message.
 		event := Event{ID: uid(), From: e.user.Identity.ID, To: e.From, Service: "chat", Action: "message", Content: `{"body": "The person you have contacted has not yet added you as a friend, so your message has not been delivered."}`}
 		event.send()
 		return
 	}
-	c := chat_for_friend(e.db, f)
+	c := chat_for_friend(e.user, e.db, f)
 
 	e.db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), e.From, f.Name, body)
 	j := json_encode(map[string]string{"from": e.From, "name": f.Name, "time": now_string(), "body": body})
 	websockets_send(e.user, "chat", j)
-	notification(e.user, "chat", "message", c.ID, f.Name+": "+body, "/chat/view/?friend="+f.ID)
+	notification(e.user, "chat", "message", c.ID, f.Name+": "+body, "/chat/"+f.ID)
 }
 
 // Send a chat message
@@ -149,7 +144,7 @@ func chat_send(a *Action) {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(a.db, f)
+	c := chat_for_friend(a.user, a.db, f)
 
 	message := a.input("message")
 	a.db.exec("replace into messages ( id, chat, time, sender, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), a.user.Identity.ID, a.user.Identity.Name, message)
@@ -172,7 +167,7 @@ func chat_view(a *Action) {
 		a.error(404, "Friend not found")
 		return
 	}
-	c := chat_for_friend(a.db, f)
+	c := chat_for_friend(a.user, a.db, f)
 	notifications_clear_entity(a.user, "chat", c.ID)
 	a.template("chat/view", c)
 }

@@ -4,12 +4,12 @@
 	Route on class?
 	Choose a product name
 	Introducer server
-	Replace command line flags with config file
 
 0.2
 	Client API
 	Command line client
 	Find hidden services
+	Replace command line flags with config file
 	Users can change their settings
 	Users can have multiple identities
 	Users can set public URLs to publish data

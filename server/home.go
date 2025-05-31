@@ -4,7 +4,7 @@
 package main
 
 type HomePath struct {
-	Path string
+	Path   string
 	Labels map[string]string
 }
 

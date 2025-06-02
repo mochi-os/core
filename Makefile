@@ -12,10 +12,10 @@ comms-server: clean
 format:
 	go fmt server/*.go
 
-run:
+run: comms-server
 	./comms-server
 
-run2:
+run2: comms-server
 	./comms-server -data /var/lib/comms2 -port 1444 -web 8081
 
 static: clean

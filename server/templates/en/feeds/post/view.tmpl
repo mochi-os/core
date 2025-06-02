@@ -1,0 +1,17 @@
+{{define "title"}}{{.Post.Body}}{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | {{.Post.Body}}</p>
+
+<pre>{{.Post.Body}}</pre>
+
+<p style="font-variant: small-caps;">{{.Post.Name}} {{.Post.CreatedString}} <a href="/feeds/{{.Feed.ID}}/{{.Post.ID}}/react/like">Like</a> <a href="/feeds/{{.Feed.ID}}/{{.Post.ID}}/comment">New comment</a></p>
+
+<p>{{range .Comments}}{{template "feed_comment" .}}{{end}}</p>
+
+{{template "foot" .}}
+
+{{define "feed_comment"}}
+	<hr/>
+	<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}} <a href="/feeds/{{.Feed}}/{{.Post}}/{{.ID}}/react/like">Like</a> <a href="/feeds/{{.Feed}}/{{.Post}}/comment?parent={{.ID}}">Reply</a></p>
+	{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "feed_comment" .}}</div>{{end}}
+{{end}}

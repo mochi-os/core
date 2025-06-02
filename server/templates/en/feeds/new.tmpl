@@ -1,0 +1,17 @@
+{{define "title"}}New feed{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | New
+
+<form action="/feeds/create">
+    <label for="name">Feed name:</label>
+    <input type="text" name="name"/><br/>
+	<!-- TODO -->
+  	<label for="privacy">Allow anyone to search for feed:</label>
+	<select name="privacy" id="privacy">
+		<option value="public">Yes</option>
+		<option value="private">No</option>
+	</select><br/>
+  <input type="submit" value="Create"/>
+</form>
+
+{{template "foot" .}}

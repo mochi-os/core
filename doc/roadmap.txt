@@ -1,5 +1,8 @@
 0.1
 	Feeds app
+		Send existing data to new subscribers
+	Forums app
+		Send existing data to new subscribers
 	Replace identities with entities?
 	Route on class?
 	Choose a product name

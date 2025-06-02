@@ -1,0 +1,7 @@
+{{define "title"}}Subscribed to feed{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | Subscribed to feed</p>
+
+<p>You are now subscribed to this feed. Please note that it may take a short time to download recent posts. You may now <a href="/feeds/{{.Feed}}">view</a> the feed.</p>
+
+{{template "foot" .}}

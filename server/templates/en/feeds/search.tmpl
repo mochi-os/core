@@ -1,0 +1,10 @@
+{{define "title"}}Search for feeds{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | Feeds found</p>
+
+{{if len .}}<p>Click on a feed to subscribe:</p>
+
+<p>{{range .}}<a href="/feeds/{{.ID}}/subscribe">{{.Name}}</a><br/>{{end}}</p>
+{{else}}<p>No matches found.</p>{{end}}
+
+{{template "foot" .}}

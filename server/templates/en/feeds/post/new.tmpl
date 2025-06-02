@@ -1,0 +1,10 @@
+{{define "title"}}New post{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.ID}}">{{.Name}}</a> | New post
+
+<form action="/feeds/{{.ID}}/create">
+	<textarea name="body" rows="20" cols="100"></textarea><br/>
+    <input type="submit" value="Post"/>
+</form>
+
+{{template "foot" .}}

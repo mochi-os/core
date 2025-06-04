@@ -1,28 +1,23 @@
 0.1
-	Feeds app
-		Send existing data to new subscribers
-	Forums app
-		Send existing data to new subscribers
-	Replace identities with entities?
-	Route on class?
+	Files app
 	Choose a product name
-	Introducer server
+	Set up introducer server
 
 0.2
 	Client API
 	Command line client
+	Route on entity?
 	Find hidden services
 	Replace command line flags with config file
 	Users can change their settings
 	Users can have multiple identities
 	Users can set public URLs to publish data
 	Group chat app
-	Wiki app
 
 0.3
 	User management
+	Wiki app
 	Resource usage limits
-	File and media storage
 	Users choose which apps get which service
 	Users choose which apps get which web path
 	Apps with multiple installed versions

@@ -16,62 +16,8 @@ import (
 var (
 	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
 	templates embed.FS
+	web_port int
 )
-
-/* Not used for now
-func web_action(c *gin.Context) {
-	var u *User = nil
-	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
-	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
-		u = web_auth(c)
-		if u != nil && u.Identity == nil {
-			web_template(c, 200, "login/identity")
-			return
-		}
-	}
-
-	path := strings.Trim(c.Request.URL.Path, "/")
-	if len(path) > 0 && path[0:1] == "+" {
-		splits1 := strings.SplitN(path, "/", 2)
-		splits2 := strings.SplitN(splits1[0][1:], "+", 2)
-		entity := splits2[0]
-		action := ""
-		if len(splits1) > 1 {
-			action = splits1[1]
-		}
-		log_debug("Entity='%s', action='%s'", entity, action)
-		e := identity_by_fingerprint(entity)
-		if e == nil {
-			e = identity_by_id(entity)
-			if e == nil {
-				web_error(c, 404, "Web entity not found")
-				return
-			}
-		}
-		a, found := classes[e.Class]
-		if !found {
-			web_error(c, 404, "Web entity has no owning app")
-			return
-		}
-		f, found := actions[action]
-		if !found {
-			web_error(c, 404, "Web action not found")
-			return
-		}
-		//Also match parent field?
-		owner := user_by_id(e.User)
-		if owner == nil {
-			web_error(c, 500, "Web entity has no owner")
-			return
-		}
-		var db *DB = nil
-		if a.db_file != "" {
-			db = db_app(owner, a.name, a.db_file, a.db_create)
-			defer db.close()
-		}
-		f(&Action{entity: e, user: u, db: db, web: c})
-	}
-} */
 
 func web_auth(c *gin.Context) *User {
 	return user_by_login(web_cookie_get(c, "login", ""))
@@ -170,7 +116,6 @@ func (p *Path) web_path(c *gin.Context) {
 			web_error(c, 401, "Path not public, and not logged in")
 			return
 		}
-		//log_debug("Loading db for user='%d', app='%s'", dbu.ID, p.app.name)
 		db = db_app(dbu, p.app.name, p.app.db_file, p.app.db_create)
 		defer db.close()
 	}
@@ -186,7 +131,7 @@ func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
-func web_start(port int, domains []string) {
+func web_start(domains []string) {
 	//gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
@@ -206,8 +151,8 @@ func web_start(port int, domains []string) {
 		check(err)
 
 	} else {
-		log_info("Web listening on HTTP port %d", port)
-		err := r.Run(fmt.Sprintf(":%d", port))
+		log_info("Web listening on HTTP port %d", web_port)
+		err := r.Run(fmt.Sprintf(":%d", web_port))
 		check(err)
 	}
 }

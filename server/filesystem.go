@@ -1,5 +1,5 @@
-// Comms server: Files
-// Copyright Alistair Cunningham 2024
+// Comms server: Filesystem utilities
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 

@@ -981,7 +981,7 @@ func forums_search(a *Action) {
 // Send recent posts to a member
 func forum_send_recent_posts(db *DB, f *Forum, member string) {
 	var ps []ForumPost
-	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 100", f.ID)
+	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		e := Event{ID: p.ID, From: f.ID, To: member, Service: "forums", Action: "post/create", Content: json_encode(p)}
 		e.send()

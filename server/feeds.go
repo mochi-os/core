@@ -768,7 +768,7 @@ func feeds_search(a *Action) {
 // Send recent posts to a subscriber
 func feed_send_recent_posts(db *DB, f *Feed, subscriber string) {
 	var ps []FeedPost
-	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 100", f.ID)
+	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		e := Event{ID: p.ID, From: f.ID, To: subscriber, Service: "feeds", Action: "post/create", Content: json_encode(p)}
 		e.send()
@@ -829,12 +829,12 @@ func feeds_subscribe_event(e *Event) {
 		log_info("Feed dropping subscribe event with invalid JSON")
 	}
 
-	e.db.exec("insert or ignore into subscribers ( feed, id, name ) values ( ?, ?, ? )", f.ID, e.From, s.Name)
-	e.db.exec("update feeds set subscribers=(select count(*) from subscribers where feed=?), updated=? where id=?", f.ID, now(), f.ID)
 	//TODO Check privacy
 
+	e.db.exec("insert or ignore into subscribers ( feed, id, name ) values ( ?, ?, ? )", f.ID, e.From, s.Name)
+	e.db.exec("update feeds set subscribers=(select count(*) from subscribers where feed=?), updated=? where id=?", f.ID, now(), f.ID)
+
 	feed_update(e.user, e.db, f)
-	//TODO Test sending recent posts
 	feed_send_recent_posts(e.db, f, e.From)
 }
 

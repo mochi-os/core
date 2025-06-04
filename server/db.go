@@ -187,6 +187,13 @@ func (db *DB) exists(query string, values ...any) bool {
 	return false
 }
 
+func (db *DB) integer(query string, values ...any) int {
+	var result int
+	err := db.handle.QueryRow(query, values...).Scan(&result)
+	check(err)
+	return result
+}
+
 func (db *DB) scan(out any, query string, values ...any) bool {
 	err := db.handle.QueryRowx(query, values...).StructScan(out)
 	if err != nil {

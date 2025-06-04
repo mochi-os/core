@@ -1,0 +1,7 @@
+{{define "title"}}Reaction recorded{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | Reaction recorded
+
+<p>Your reaction has been recorded. You may now <a href="/feeds/{{.Feed.ID}}/{{.ID}}">view</a> the post.</p>
+
+{{template "foot" .}}

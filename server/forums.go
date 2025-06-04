@@ -58,8 +58,8 @@ type ForumComment struct {
 
 type ForumVote struct {
 	Voter string
-	ID    string
 	Class string
+	ID    string
 	Vote  string
 }
 
@@ -71,8 +71,6 @@ func init() {
 	a.db("forums.db", forums_db_create)
 
 	a.class("forum")
-	a.path("forums", forums_view)
-
 	a.path("forums", forums_list)
 	a.path("forums/create", forums_create)
 	a.path("forums/find", forums_find)
@@ -170,6 +168,8 @@ func forum_comments(u *User, db *DB, f *Forum, m *ForumMember, p *ForumPost, par
 
 // New comment
 func forums_comment_create(a *Action) {
+	now := now()
+
 	if a.user == nil {
 		a.error(401, "Not logged in")
 		return
@@ -186,11 +186,13 @@ func forums_comment_create(a *Action) {
 		a.error(404, "Post not found")
 		return
 	}
+
 	parent := a.input("parent")
 	if parent != "" && !a.db.exists("select id from comments where id=? and post=?", parent, post) {
 		a.error(404, "Parent not found")
 		return
 	}
+
 	body := a.input("body")
 	if !valid(body, "text") {
 		a.error(400, "Invalid body")
@@ -198,8 +200,11 @@ func forums_comment_create(a *Action) {
 	}
 
 	id := uid()
-	now := now()
-	//TODO Check we don't already have a comment with this ID
+	if a.db.exists("select id from comments where id=?", id) {
+		a.error(500, "Duplicate ID")
+		return
+	}
+
 	a.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
 	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
@@ -240,20 +245,27 @@ func forums_comment_create_event(e *Event) {
 		log_info("Forum dropping comment with invalid JSON content '%s'", e.Content)
 		return
 	}
+
 	if !valid(c.Author, "public") {
 		log_info("Forum dropping comment with invalid author '%s'", c.Author)
 		return
 	}
+
 	if !valid(c.Name, "name") {
 		log_info("Forum dropping comment with invalid name '%s'", c.Name)
 		return
 	}
+
 	if !valid(c.Body, "text") {
 		log_info("Forum dropping comment with invalid body '%s'", c.Body)
 		return
 	}
 
-	//TODO Check we don't already have a comment with this ID
+	if e.db.exists("select id from comments where id=?", e.ID) {
+		log_info("Forum dropping comment with duplicate ID '%s'", e.ID)
+		return
+	}
+
 	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
@@ -300,7 +312,6 @@ func forums_comment_submit_event(e *Event) {
 		return
 	}
 
-	//TODO Check we don't already have a comment with this ID
 	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
@@ -618,6 +629,8 @@ func forums_new(a *Action) {
 
 // New post
 func forums_post_create(a *Action) {
+	now := now()
+
 	if a.user == nil {
 		a.error(401, "Not logged in")
 		return
@@ -634,6 +647,7 @@ func forums_post_create(a *Action) {
 		a.error(400, "Invalid title")
 		return
 	}
+
 	body := a.input("body")
 	if !valid(body, "text") {
 		a.error(400, "Invalid body")
@@ -641,8 +655,10 @@ func forums_post_create(a *Action) {
 	}
 
 	id := uid()
-	now := now()
-	//TODO Check we don't already have a post with this ID
+	if a.db.exists("select id from comments where id=?", id) {
+		a.error(500, "Duplicate ID")
+		return
+	}
 
 	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
@@ -682,24 +698,32 @@ func forums_post_create_event(e *Event) {
 		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
 		return
 	}
+
 	if !valid(p.Author, "public") {
 		log_info("Forum dropping post with invalid author '%s'", p.Author)
 		return
 	}
+
 	if !valid(p.Name, "name") {
 		log_info("Forum dropping post with invalid name '%s'", p.Name)
 		return
 	}
+
 	if !valid(p.Title, "line") {
 		log_info("Forum dropping post with invalid title '%s'", p.Title)
 		return
 	}
+
 	if !valid(p.Body, "text") {
 		log_info("Forum dropping post with invalid body '%s'", p.Body)
 		return
 	}
 
-	//TODO Check we don't already have a post with this ID
+	if e.db.exists("select id from comments where id=?", e.ID) {
+		log_info("Forum dropping post with duplicate ID '%s'", e.ID)
+		return
+	}
+
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down)
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 }
@@ -749,7 +773,6 @@ func forums_post_submit_event(e *Event) {
 		return
 	}
 
-	//TODO Check we don't already have a post with this ID
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body)
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 

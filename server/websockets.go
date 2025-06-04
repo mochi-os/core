@@ -9,7 +9,9 @@ import (
 	"nhooyr.io/websocket"
 )
 
-var websockets = map[int]map[string]*websocket.Conn{}
+var (
+	websockets = map[int]map[string]*websocket.Conn{}
+)
 
 func websocket_connection(c *gin.Context) {
 	u := web_auth(c)

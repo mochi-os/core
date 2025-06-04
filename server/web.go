@@ -16,7 +16,7 @@ import (
 var (
 	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
 	templates embed.FS
-	web_port int
+	web_port  int
 )
 
 func web_auth(c *gin.Context) *User {

@@ -18,10 +18,14 @@ import (
 	"time"
 )
 
-const alphanumeric = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const (
+	alphanumeric = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
-var match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
-var match_hyphens = regexp.MustCompile(`-`)
+var (
+	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
+	match_hyphens      = regexp.MustCompile(`-`)
+)
 
 func atoi(s string, def int64) int64 {
 	i, err := strconv.Atoi(s)

@@ -16,10 +16,12 @@ type Peer struct {
 	Updated int64
 }
 
-var peers_known = map[string]string{
-	//	"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
-	"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1443",
-}
+var (
+	peers_known = map[string]string{
+		//	"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
+		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1443",
+	}
+)
 
 var peers_connected map[string]Peer = map[string]Peer{}
 var peer_add_chan = make(chan Peer)

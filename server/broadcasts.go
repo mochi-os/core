@@ -3,10 +3,14 @@
 
 package main
 
-type broadcast_action_functions []func(*User, string, string, string, any)
-type broadcast_actions map[string]broadcast_action_functions
+type (
+	broadcast_action_functions []func(*User, string, string, string, any)
+	broadcast_actions          map[string]broadcast_action_functions
+)
 
-var broadcasts_by_sender = map[string]broadcast_actions{}
+var (
+	broadcasts_by_sender = map[string]broadcast_actions{}
+)
 
 func broadcast(u *User, sender string, action string, entity string, content any) {
 	log_debug("Broadcast: user='%d', sender='%s', action='%s', entity='%s', content='%s'", u.ID, sender, action, entity, content)

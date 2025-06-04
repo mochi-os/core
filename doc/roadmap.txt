@@ -6,7 +6,7 @@
 0.2
 	Client API
 	Command line client
-	Route on entity?
+	Route on entity
 	Find hidden services
 	Replace command line flags with config file
 	Users can change their settings

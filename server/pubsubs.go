@@ -13,7 +13,9 @@ type PubSub struct {
 	Publish func(*libp2p_pubsub.Topic)
 }
 
-var pubsubs = map[string]*PubSub{}
+var (
+	pubsubs = map[string]*PubSub{}
+)
 
 func (a *App) pubsub(topic string, publish func(*libp2p_pubsub.Topic)) {
 	pubsubs[a.name] = &PubSub{Name: a.name, Topic: topic, Publish: publish}

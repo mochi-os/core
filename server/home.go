@@ -8,7 +8,9 @@ type HomePath struct {
 	Labels map[string]string
 }
 
-var home_paths = map[string]HomePath{}
+var (
+	home_paths = map[string]HomePath{}
+)
 
 func init() {
 	a := app("home")

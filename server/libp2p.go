@@ -25,13 +25,15 @@ type mdns_notifee struct {
 	h host.Host
 }
 
-var libp2p_listen string
-var libp2p_port int
-var libp2p_address string
-var libp2p_context context.Context
-var libp2p_host host.Host
-var libp2p_id string
-var libp2p_topics = map[string]*libp2p_pubsub.Topic{}
+var (
+	libp2p_listen  string
+	libp2p_port    int
+	libp2p_address string
+	libp2p_context context.Context
+	libp2p_host    host.Host
+	libp2p_id      string
+	libp2p_topics  = map[string]*libp2p_pubsub.Topic{}
+)
 
 // Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {

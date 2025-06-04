@@ -12,7 +12,9 @@ import (
 	"strings"
 )
 
-var wasm_invoke_id int64 = 0
+var (
+	wasm_invoke_id int64 = 0
+)
 
 func wasm_cleanup(storage string, id int64) {
 	file_delete(fmt.Sprintf("%s/.in-%d", storage, wasm_invoke_id))

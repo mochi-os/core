@@ -62,7 +62,6 @@ func init() {
 	a.home("feeds", map[string]string{"en": "Feeds"})
 	a.db("feeds.db", feeds_db_create)
 
-	a.class("feed")
 	a.path("feeds", feeds_list)
 	a.path("feeds/create", feeds_create)
 	a.path("feeds/find", feeds_find)

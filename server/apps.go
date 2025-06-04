@@ -19,10 +19,11 @@ type Path struct {
 	action func(*Action)
 }
 
-var apps = map[string]*App{}
-var classes = map[string]*App{}
-var paths = map[string]*Path{}
-var services = map[string]*App{}
+var (
+	apps     = map[string]*App{}
+	paths    = map[string]*Path{}
+	services = map[string]*App{}
+)
 
 /* Not used for now
 func apps_start() {
@@ -62,10 +63,6 @@ func app(name string) *App {
 	a.events_broadcast = make(map[string]func(*Event))
 	apps[name] = a
 	return a
-}
-
-func (a *App) class(class string) {
-	classes[class] = a
 }
 
 func (a *App) path(path string, f func(*Action)) {

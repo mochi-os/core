@@ -14,7 +14,9 @@ type Action struct {
 	web    *gin.Context
 }
 
-var actions = map[string]func(*Action){}
+var (
+	actions = map[string]func(*Action){}
+)
 
 func (a *Action) id() string {
 	if a.entity != nil {

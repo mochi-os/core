@@ -7,9 +7,13 @@ import (
 	"flag"
 )
 
-type Map map[string]any
+type (
+	Map map[string]any
+)
 
-var data_dir string
+var (
+	data_dir string
+)
 
 func main() {
 	log_info("Starting")

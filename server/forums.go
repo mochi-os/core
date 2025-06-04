@@ -63,14 +63,15 @@ type ForumVote struct {
 	Vote  string
 }
 
-var forum_roles = map[string]int{"disabled": 0, "viewer": 1, "voter": 2, "commenter": 3, "poster": 4, "administrator": 5}
+var (
+	forum_roles = map[string]int{"disabled": 0, "viewer": 1, "voter": 2, "commenter": 3, "poster": 4, "administrator": 5}
+)
 
 func init() {
 	a := app("forums")
 	a.home("forums", map[string]string{"en": "Forums"})
 	a.db("forums.db", forums_db_create)
 
-	a.class("forum")
 	a.path("forums", forums_list)
 	a.path("forums/create", forums_create)
 	a.path("forums/find", forums_find)

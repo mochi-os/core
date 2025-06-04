@@ -18,10 +18,14 @@ type DB struct {
 	closed int64
 }
 
-const latest_schema = 1
+const (
+	latest_schema = 1
+)
 
-var databases = map[string]*DB{}
-var databases_lock sync.Mutex
+var (
+	databases      = map[string]*DB{}
+	databases_lock sync.Mutex
+)
 
 func db_create() {
 	log_info("Creating new database")

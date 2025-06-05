@@ -40,7 +40,6 @@ func init() {
 
 // Add a (possibly existing) peer
 func peer_add(address string, connect bool) {
-	log_debug("Adding peer at '%s', connect='%v'", address, connect)
 	parts := strings.Split(address, "/")
 	if len(parts) > 1 {
 		peer_add_chan <- Peer{ID: parts[len(parts)-1], Address: address, Connect: connect}
@@ -73,7 +72,6 @@ func peers_manager() {
 	db := db_open("db/peers.db")
 
 	for p := range peer_add_chan {
-		log_debug("Peer connect channel request for '%#v'", p)
 		if p.ID == libp2p_id {
 			continue
 		}

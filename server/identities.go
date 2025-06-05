@@ -79,7 +79,7 @@ func identity_create(u *User, class string, name string, privacy string, data st
 			i := Identity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 			if privacy == "public" {
 				directory_create(&i)
-				directory_publish(&i)
+				directory_publish(&i, true)
 			}
 			return &i, nil
 		}
@@ -119,11 +119,13 @@ func identities_manager() {
 
 	for {
 		time.Sleep(time.Minute)
-		var identities []Identity
-		db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-30*86400)
-		for _, i := range identities {
-			db.exec("update identities set published=? where id=?", now(), i.ID)
-			directory_publish(&i)
+		if len(peers_connected) >= peers_minimum {
+			var identities []Identity
+			db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-30*86400)
+			for _, i := range identities {
+				db.exec("update identities set published=? where id=?", now(), i.ID)
+				directory_publish(&i, false)
+			}
 		}
 	}
 }

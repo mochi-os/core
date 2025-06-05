@@ -16,16 +16,19 @@ type Peer struct {
 	Updated int64
 }
 
-var (
-	peers_known = map[string]string{
-		//	"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
-		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1443",
-	}
+const (
+	peers_minimum = 1
 )
 
-var peers_connected map[string]Peer = map[string]Peer{}
-var peer_add_chan = make(chan Peer)
-var peer_publish_chan = make(chan bool)
+var (
+	peers_connected map[string]Peer = map[string]Peer{}
+	peer_add_chan                   = make(chan Peer)
+	peers_known                     = map[string]string{
+		//  "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
+		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1443",
+	}
+	peer_publish_chan = make(chan bool)
+)
 
 func init() {
 	a := app("peers")
@@ -37,6 +40,7 @@ func init() {
 
 // Add a (possibly existing) peer
 func peer_add(address string, connect bool) {
+	log_debug("Adding peer at '%s', connect='%v'", address, connect)
 	parts := strings.Split(address, "/")
 	if len(parts) > 1 {
 		peer_add_chan <- Peer{ID: parts[len(parts)-1], Address: address, Connect: connect}
@@ -49,6 +53,7 @@ func peers_add_from_db(limit int) {
 	db := db_open("db/peers.db")
 	db.scans(&peers, "select * from peers order by updated desc limit ?", limit)
 	for _, p := range peers {
+		log_debug("Adding peer from database at '%s'", p.Address)
 		peer_add(p.Address, true)
 	}
 }
@@ -68,6 +73,7 @@ func peers_manager() {
 	db := db_open("db/peers.db")
 
 	for p := range peer_add_chan {
+		log_debug("Peer connect channel request for '%#v'", p)
 		if p.ID == libp2p_id {
 			continue
 		}
@@ -80,7 +86,7 @@ func peers_manager() {
 			db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
 
 		} else if p.Connect && libp2p_connect(p.Address) {
-			// New peer
+			// Newly connected peer
 			peers_connected[p.ID] = p
 			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 			go events_check_queue("peer", p.ID)
@@ -111,6 +117,7 @@ func peer_publish_event(e *Event) {
 		if m["id"] == libp2p_id {
 			return
 		}
+		log_debug("Adding peer due to publish event at '%s'", m["address"])
 		peer_add(m["address"], true)
 	} else {
 		log_info("Invalid peer update")

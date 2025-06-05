@@ -77,12 +77,16 @@ func directory_download_event(e *Event) {
 }
 
 // Publish a directory entry on the libp2p pubsub
-func directory_publish(i *Identity) {
-	log_debug("Publishing identity '%s' (%s) to pubsub", i.ID, i.Name)
+func directory_publish(i *Identity, allow_queue bool) {
 	e := Event{ID: uid(), From: i.ID, Service: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id, "data": i.Data})}
 	e.sign()
-	//TODO Queue publish for later if we're not connected to any/enough peers
-	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
+	j := []byte(json_encode(e))
+	if len(peers_connected) >= peers_minimum {
+		libp2p_topics["directory"].Publish(libp2p_context, j)
+	} else if allow_queue {
+		db := db_open("db/queue.db")
+		db.exec("replace into broadcast ( id, topic, content, updated ) values ( ?, 'directory', ?, ? )", e.ID, j, now())
+	}
 }
 
 // Received a directory publish event from another server
@@ -130,7 +134,7 @@ func directory_request_event(e *Event) {
 	var r Identity
 	db := db_open("db/users.db")
 	if db.scan(&r, "select * from identities where id=?", e.Content) {
-		directory_publish(&r)
+		directory_publish(&r, true)
 	}
 }
 

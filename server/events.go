@@ -21,18 +21,25 @@ type Event struct {
 	db        *DB    `json:"-"`
 }
 
-type Queue struct {
+type BroadcastQueue struct {
+	ID      string
+	Topic   string
+	Content string
+	Updated int
+}
+
+type EventsQueue struct {
 	ID       string
 	Method   string
 	Location string
 	Event    string
-	Updated  string
+	Updated  int
 }
 
 func events_check_queue(method string, location string) {
-	var queue []Queue
+	var queue []EventsQueue
 	db := db_open("db/queue.db")
-	db.scans(&queue, "select * from queue where method=? and location=?", method, location)
+	db.scans(&queue, "select * from events where method=? and location=?", method, location)
 	for _, q := range queue {
 		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
 		success := false
@@ -52,7 +59,7 @@ func events_check_queue(method string, location string) {
 		if success {
 			log_debug("Queue event sent")
 			db := db_open("db/queue.db")
-			db.exec("delete from queue where id=?", q.ID)
+			db.exec("delete from events where id=?", q.ID)
 		} else {
 			log_debug("Still unable to send queued event; keeping in queue")
 		}
@@ -64,10 +71,20 @@ func events_manager() {
 
 	for {
 		time.Sleep(time.Minute)
-		var q Queue
-		if db.scan(&q, "select * from queue limit 1 offset abs(random()) % max((select count(*) from queue), 1)") {
-			log_debug("Queue helper nudging events to %s '%s'", q.Method, q.Location)
-			events_check_queue(q.Method, q.Location)
+		if len(peers_connected) >= peers_minimum {
+			var eq EventsQueue
+			if db.scan(&eq, "select * from events limit 1 offset abs(random()) % max((select count(*) from events), 1)") {
+				log_debug("Events queue helper nudging events to %s '%s'", eq.Method, eq.Location)
+				events_check_queue(eq.Method, eq.Location)
+			}
+
+			var broadcasts []BroadcastQueue
+			db.scans(&broadcasts, "select * from broadcast")
+			for _, b := range broadcasts {
+				log_debug("Broadcast queue helper sending event '%s'", b.ID)
+				libp2p_topics[b.Topic].Publish(libp2p_context, []byte(b.Content))
+				db.exec("delete from broadcast where id=?", b.ID)
+			}
 		}
 	}
 }
@@ -109,7 +126,6 @@ func (e *Event) receive() {
 
 	e.user = user_owning_identity(e.To)
 
-	//TODO Route on destination identity class, rather than service?
 	a := services[e.Service]
 	if a == nil {
 		log_info("Dropping received event due to unknown service '%s'", e.Service)
@@ -147,7 +163,8 @@ func (e *Event) receive() {
 
 func (e *Event) send() {
 	if e.ID == "" {
-		panic("Event did not specify ID; adding one")
+		log_warn("Event did not specify ID; adding one")
+		e.ID = uid()
 	}
 
 	method, location, queue_method, queue_location := identity_location(e.To)
@@ -167,7 +184,7 @@ func (e *Event) send() {
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
-	db.exec("replace into queue ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
+	db.exec("replace into events ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
 }
 
 func (e *Event) sign() {

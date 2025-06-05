@@ -74,9 +74,13 @@ func db_create() {
 
 	// Queued outbound events
 	queue := db_open("db/queue.db")
-	queue.exec("create table queue ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
-	queue.exec("create index queue_method_location on queue( method, location )")
-	queue.exec("create index queue_updated on queue( updated )")
+	queue.exec("create table events ( id text not null primary key, method text not null, location text not null, event text not null, updated integer not null )")
+	queue.exec("create index events_method_location on events( method, location )")
+	queue.exec("create index events_updated on events( updated )")
+
+	// Queued broadcast events
+	queue.exec("create table broadcast ( id text not null primary key, topic text not null, content text not null, updated integer not null )")
+	queue.exec("create index broadcast_updated on broadcast( updated )")
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {

@@ -1,4 +1,5 @@
 0.1
+	Feeds app
 	Files app
 	Choose a product name
 	Set up introducer server

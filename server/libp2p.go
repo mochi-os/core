@@ -36,9 +36,10 @@ var (
 )
 
 // Peer discovered using multicast DNS
+// This function seems to get called twice, leading to two connection attempts. It would be good to improve this.
 func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		//log_debug("Found multicast DNS peer '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		log_debug("libp2p received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_add(pa.String()+"/p2p/"+p.ID.String(), true)
 	}
 }
@@ -179,6 +180,7 @@ func libp2p_start() {
 
 	for peer, location := range peers_known {
 		if peer != libp2p_id {
+			log_debug("Adding known libp2p peer '%s' at '%s'", peer, location)
 			peer_add(location+"/p2p/"+peer, true)
 		}
 	}

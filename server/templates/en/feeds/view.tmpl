@@ -4,6 +4,6 @@
 
 {{if .Subscriber}}<p><a href="/feeds/{{.Feed.ID}}/post">New post</a> | <a href="/feeds/{{.Feed.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
 
-<p>{{range .Posts}}<a href="/feeds/{{$.Feed.ID}}/{{.ID}}">{{.Body}}</a> | <a href="/feeds/{{$.Feed.ID}}/{{.ID}}/react/like">Like</a> &#8618;{{.Comments}}<br/>{{end}}</p>
+<p>{{range .Posts}}<a href="/feeds/{{.Feed}}/{{.ID}}">{{.Body}}</a> | &#8618;{{.Comments}} &#9872;{{.Reactions}}<br/>{{end}}</p>
 
 {{template "foot" .}}

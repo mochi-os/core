@@ -686,7 +686,7 @@ func forums_post_create(a *Action) {
 	a.template("forums/post/create", Map{"Forum": f, "ID": id})
 }
 
-// Received a forum post from the owner
+// Received a forum post from owner
 func forums_post_create_event(e *Event) {
 	f := forum_by_id(e.user, e.db, e.From)
 	if f == nil {

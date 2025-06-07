@@ -32,7 +32,6 @@ type FeedPost struct {
 	Body          string
 	Link          string
 	Comments      int
-	Reactions     int
 	FeedName      string `json:"-"`
 }
 
@@ -46,8 +45,9 @@ type FeedComment struct {
 	Author        string
 	Name          string
 	Body          string
-	Reactions     int
-	Children      *[]FeedComment `json:"-"`
+	MyReaction    string          `json:"-"`
+	Reactions     *[]FeedReaction `json:"-"`
+	Children      *[]FeedComment  `json:"-"`
 }
 
 type FeedReaction struct {
@@ -83,10 +83,8 @@ func init() {
 	a.service("feeds")
 	a.event("comment/create", feeds_comment_create_event)
 	a.event("comment/submit", feeds_comment_submit_event)
-	a.event("comment/update", feeds_comment_update_event)
 	a.event("comment/react", feeds_comment_reaction_event)
 	a.event("post/create", feeds_post_create_event)
-	a.event("post/update", feeds_post_update_event)
 	a.event("post/react", feeds_post_reaction_event)
 	a.event("subscribe", feeds_subscribe_event)
 	a.event("unsubscribe", feeds_unsubscribe_event)
@@ -106,12 +104,12 @@ func feeds_db_create(db *DB) {
 	db.exec("create table subscribers ( feed references feeds( id ), id text not null, name text not null default '', primary key ( feed, id ) )")
 	db.exec("create index subscriber_id on subscribers( id )")
 
-	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, author text not null, name text not null, type text not null default 'text', body text not null, link text not null default '', comments integer not null default 0, reactions integer not null default 0 )")
+	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, author text not null, name text not null, type text not null default 'text', body text not null, link text not null default '', comments integer not null default 0 )")
 	db.exec("create index posts_feed on posts( feed )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null, reactions integer not null default 0 )")
+	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null )")
 	db.exec("create index comments_feed on comments( feed )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
@@ -148,6 +146,16 @@ func feed_comments(u *User, db *DB, f *Feed, s *FeedSubscriber, p *FeedPost, par
 	db.scans(&cs, "select * from comments where feed=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
 	for j, c := range cs {
 		cs[j].CreatedString = time_local(u, c.Created)
+
+		var r FeedReaction
+		if db.scan(&r, "select reaction from reactions where class='comment' and id=? and subscriber=?", cs[j].ID, u.Identity.ID) {
+			cs[j].MyReaction = r.Reaction
+		}
+
+		var rs []FeedReaction
+		db.scans(&rs, "select * from reactions where class='comment' and id=? and subscriber!=? and reaction!='' order by name", cs[j].ID, u.Identity.ID)
+		cs[j].Reactions = &rs
+
 		cs[j].Children = feed_comments(u, db, f, s, p, &c, depth+1)
 	}
 	return &cs
@@ -324,28 +332,6 @@ func feeds_comment_new(a *Action) {
 	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.db, a.id()), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
-// Received a feed comment update event
-func feeds_comment_update_event(e *Event) {
-	log_debug("Feed receieved comment update event '%#v'", e)
-
-	var c FeedComment
-	if !json_decode(&c, e.Content) {
-		log_info("Feed dropping comment update with invalid JSON content '%s'", e.Content)
-		return
-	}
-
-	var o FeedComment
-	if !e.db.scan(&o, "select * from comments where feed=? and id=?", e.From, c.ID) {
-		log_info("Feed dropping comment update for unknown comment")
-		return
-	}
-
-	now := now()
-	e.db.exec("update comments set reactions=? where id=?", c.Reactions, o.ID)
-	e.db.exec("update posts set updated=? where id=?", now, o.Post)
-	e.db.exec("update feeds set updated=? where id=?", now, o.Feed)
-}
-
 // Reaction to a comment
 func feeds_comment_react(a *Action) {
 	if a.user == nil {
@@ -366,23 +352,22 @@ func feeds_comment_react(a *Action) {
 	}
 
 	reaction := feeds_reaction_valid(a.input("reaction"))
-	feeds_comment_reaction_set(a.db, &c, a.user.Identity.ID, reaction)
+	feeds_comment_reaction_set(a.db, &c, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
 	if f.identity == nil {
 		// We are not feed owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/react", Content: json_encode(FeedReaction{ID: c.ID, Reaction: reaction})}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/react", Content: json_encode(FeedReaction{ID: c.ID, Name: a.user.Identity.Name, Reaction: reaction})}
 		e.send()
 
 	} else {
-		//TODO Replace
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
-		j := json_encode(c)
+		j := json_encode(FeedReaction{Feed: f.ID, Class: "comment", ID: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
 		var ss []FeedSubscriber
 		a.db.scans(&ss, "select id from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: s.ID, Service: "feeds", Action: "comment/update", Content: j}
+				e := Event{ID: id, From: f.ID, To: s.ID, Service: "feeds", Action: "comment/react", Content: j}
 				e.send()
 			}
 		}
@@ -391,18 +376,16 @@ func feeds_comment_react(a *Action) {
 	a.template("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
 }
 
-func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, reaction string) {
+func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, name string, reaction string) {
 	now := now()
 
-	//TODO
-	db.exec("replace into reactions ( subscriber, feed, class, id, reaction ) values ( ?, ?, 'comment', ?, ? )", subscriber, c.Feed, c.ID, reaction)
-	c.Reactions = db.integer("select count(*) from reactions where subscriber=? and class='comment' and id=? and reaction!=''", subscriber, c.ID)
+	db.exec("replace into reactions ( feed, class, id, subscriber, name, reaction ) values ( ?, 'comment', ?, ?, ?, ? )", c.Feed, c.ID, subscriber, name, reaction)
 
 	db.exec("update posts set updated=? where id=?", now, c.Post)
 	db.exec("update feeds set updated=? where id=?", now, c.Feed)
 }
 
-// Received a feed comment reaction from a subscriber
+// Received a feed comment reaction
 func feeds_comment_reaction_event(e *Event) {
 	var r FeedReaction
 	if !json_decode(&r, e.Content) {
@@ -422,23 +405,34 @@ func feeds_comment_reaction_event(e *Event) {
 		return
 	}
 
-	s := feed_subscriber(e.db, f, e.From)
-	if s == nil {
-		log_info("Feed dropping comment reaction from unknown subscriber '%s'", e.From)
-		return
-	}
-
-	//TODO
 	reaction := feeds_reaction_valid(r.Reaction)
-	feeds_comment_reaction_set(e.db, &c, e.From, reaction)
 
-	j := json_encode(c)
-	var ss []FeedSubscriber
-	e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
-	for _, s := range ss {
-		if s.ID != e.From && s.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: s.ID, Service: "feeds", Action: "comment/update", Content: j}
-			e.send()
+	if f.identity == nil {
+		// We are not feed owner
+		if e.From != c.Feed {
+			log_info("Feed dropping comment reaction from unknown owner")
+			return
+		}
+		feeds_comment_reaction_set(e.db, &c, r.Subscriber, r.Name, reaction)
+
+	} else {
+		// We are the feed owner
+		s := feed_subscriber(e.db, f, e.From)
+		if s == nil {
+			log_info("Feed dropping comment reaction from unknown subscriber '%s'", e.From)
+			return
+		}
+
+		feeds_comment_reaction_set(e.db, &c, e.From, r.Name, reaction)
+
+		j := json_encode(FeedReaction{Feed: f.ID, Class: "comment", ID: c.ID, Subscriber: e.From, Name: r.Name, Reaction: reaction})
+		var ss []FeedSubscriber
+		e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
+		for _, s := range ss {
+			if s.ID != e.From && s.ID != e.user.Identity.ID {
+				e := Event{ID: e.ID, From: f.ID, To: s.ID, Service: "feeds", Action: "comment/react", Content: j}
+				e.send()
+			}
 		}
 	}
 }
@@ -602,23 +596,6 @@ func feeds_post_new(a *Action) {
 	a.template("feeds/post/new", feed_by_id(a.user, a.db, a.id()))
 }
 
-// Received a feed post update event
-func feeds_post_update_event(e *Event) {
-	var p FeedPost
-	if !json_decode(&p, e.Content) {
-		log_info("Feed dropping post update with invalid JSON content '%s'", e.Content)
-		return
-	}
-	if !e.db.exists("select id from posts where feed=? and id=?", e.From, p.ID) {
-		log_info("Feed dropping post update for unknown post")
-		return
-	}
-
-	now := now()
-	e.db.exec("update posts set updated=?, reactions=? where id=?", now, p.Reactions, p.ID)
-	e.db.exec("update feeds set updated=? where id=?", now, e.From)
-}
-
 // View a post
 func feeds_post_view(a *Action) {
 	var p FeedPost
@@ -679,8 +656,7 @@ func feeds_post_react(a *Action) {
 	} else {
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
-		r := FeedReaction{Feed: f.ID, Class: "post", ID: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction}
-		j := json_encode(r)
+		j := json_encode(FeedReaction{Feed: f.ID, Class: "post", ID: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
 		var ss []FeedSubscriber
 		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
@@ -698,8 +674,7 @@ func feeds_post_reaction_set(db *DB, p *FeedPost, subscriber string, name string
 	now := now()
 
 	db.exec("replace into reactions ( feed, class, id, subscriber, name, reaction ) values ( ?, 'post', ?, ?, ?, ? )", p.Feed, p.ID, subscriber, name, reaction)
-	p.Reactions = db.integer("select count(*) from reactions where class='post' and id=? and reaction!=''", p.ID)
-	db.exec("update posts set reactions=?, updated=? where id=?", p.Reactions, now, p.ID)
+	db.exec("update posts set updated=? where id=?", now, p.ID)
 	db.exec("update feeds set updated=? where id=?", now, p.Feed)
 }
 
@@ -727,6 +702,10 @@ func feeds_post_reaction_event(e *Event) {
 
 	if f.identity == nil {
 		// We are not feed owner
+		if e.From != p.Feed {
+			log_info("Feed dropping post reaction from unknown owner")
+			return
+		}
 		feeds_post_reaction_set(e.db, &p, r.Subscriber, r.Name, reaction)
 
 	} else {
@@ -919,11 +898,13 @@ func feeds_update_event(e *Event) {
 	if f == nil {
 		return
 	}
+
 	var n Feed
 	if !json_decode(&n, e.Content) {
 		log_info("Feed dropping update with invalid JSON content '%s'", e.Content)
 		return
 	}
+
 	e.db.exec("update feeds set subscribers=?, updated=? where id=?", n.Subscribers, now(), f.ID)
 }
 

@@ -111,8 +111,7 @@ func friends_accept(a *Action) {
 // Remote party accepted our invitation
 func friends_accept_event(e *Event) {
 	var fi FriendInvite
-	e.db.scan(&fi, "select * from invites where identity=? and id=? and direction='to'", e.To, e.From)
-	if fi.ID != "" {
+	if e.db.scan(&fi, "select * from invites where identity=? and id=? and direction='to'", e.To, e.From) {
 		notification(e.user, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends/")
 		e.db.exec("delete from invites where identity=? and id=? and direction='to'", e.To, e.From)
 		broadcast(e.user, "friends", "accepted", e.From, nil)

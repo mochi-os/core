@@ -1,5 +1,4 @@
 0.1
-	Feeds app
 	Files app
 	Choose a product name
 	Set up introducer server
@@ -14,6 +13,8 @@
 	Users can have multiple identities
 	Users can set public URLs to publish data
 	Group chat app
+	Feeds app
+		Permissions
 
 0.3
 	User management

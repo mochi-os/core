@@ -829,8 +829,6 @@ func feeds_subscribe_event(e *Event) {
 		log_info("Feed dropping subscribe event with invalid JSON")
 	}
 
-	//TODO Check privacy
-
 	e.db.exec("insert or ignore into subscribers ( feed, id, name ) values ( ?, ?, ? )", f.ID, e.From, s.Name)
 	e.db.exec("update feeds set subscribers=(select count(*) from subscribers where feed=?), updated=? where id=?", f.ID, now(), f.ID)
 

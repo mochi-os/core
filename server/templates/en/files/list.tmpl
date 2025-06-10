@@ -1,0 +1,8 @@
+{{define "title"}}Files{{end}}
+{{template "head" .}}
+<p class="header"><a href="/">Comms</a> | Files</p>
+
+<p>{{if len .Files}}{{range .Files}}<a href="/files/{{.ID}}">{{.Name}}</a><br/>{{end}}
+{{else}}You have no files.{{end}}</p>
+
+{{template "foot" .}}

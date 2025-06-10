@@ -526,6 +526,9 @@ func feeds_post_create(a *Action) {
 	a.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, body)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
+	files := a.upload("files")
+	log_debug("Files = '%#v'", files)
+
 	if f.identity == nil {
 		// We are not feed owner, so send to the owner
 		log_debug("Sending post to feed owner")

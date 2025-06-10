@@ -7,7 +7,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"syscall"
+)
+
+var (
+	match_leading_dots = regexp.MustCompile("^\\.+")
+	match_spaces       = regexp.MustCompile("\\s+")
+	match_unsafe       = regexp.MustCompile("[^0-9a-zA-Z-._]+")
 )
 
 func file_create(path string) {
@@ -55,6 +62,16 @@ func file_read(path string) []byte {
 	data, err := os.ReadFile(data_dir + "/" + path)
 	check(err)
 	return data
+}
+
+func file_safe_name(s string) string {
+	s = match_spaces.ReplaceAllString(s, "_")
+	s = match_unsafe.ReplaceAllString(s, "")
+	s = match_leading_dots.ReplaceAllString(s, "")
+	if len(s) > 254 {
+		return s[:254]
+	}
+	return s
 }
 
 func file_write(path string, data []byte) {

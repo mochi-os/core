@@ -1,5 +1,9 @@
 0.1
 	Files app
+	Replace command line flags with config file
+	Decide where to store user database data
+	Chat app
+		Group Chat
 	Choose a product name
 	Set up introducer server
 
@@ -8,12 +12,13 @@
 	Command line client
 	Route on entity
 	Find hidden services
-	Replace command line flags with config file
 	Users can change their settings
 	Users can have multiple identities
 	Users can set public URLs to publish data
-	Group chat app
 	Feeds app
+		Permissions
+	Files app
+		Folders
 		Permissions
 
 0.3

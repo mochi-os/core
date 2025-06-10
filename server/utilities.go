@@ -23,8 +23,9 @@ const (
 )
 
 var (
-	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
+	match_filename     = regexp.MustCompile("^[0-9a-zA-Z][0-9a-zA-Z-._ ()]{0,254}$")
 	match_hyphens      = regexp.MustCompile(`-`)
+	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 )
 
 func atoi(s string, def int64) int64 {

@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 )
 
 type File struct {
@@ -51,13 +52,26 @@ func files_get_event(e *Event) {
 func files_list(a *Action) {
 	var fs []File
 	a.db.scans(&fs, "select * from files order by name")
-
 	a.template("files/list", Map{"Files": fs})
 }
 
 // View a file
 func files_view(a *Action) {
-	a.template("files/view")
+	var f File
+	if !a.db.scan(&f, "select * from files where id=?", a.input("entity")) {
+		a.error(404, "File not found")
+		return
+	}
+
+	file := fmt.Sprintf("users/%d/files/data/%s", a.user.ID, f.Path)
+	if !file_exists(file) {
+		a.error(500, "File data not found")
+		return
+	}
+	data := file_read(file)
+
+	a.web.Header("Content-Disposition", "attachment; filename="+file_safe_name(f.Name))
+	a.web.Data(http.StatusOK, "application/octet-stream", data)
 }
 
 // Upload one or more files for an action
@@ -75,7 +89,7 @@ func (a *Action) upload(name string) *[]File {
 		dir := fmt.Sprintf("%s/users/%d/files/data", data_dir, a.user.ID)
 		file_mkdir(dir)
 		path := id + "_" + file_safe_name(file.Filename)
-		a.web.SaveUploadedFile(file, dir + "/" + path)
+		a.web.SaveUploadedFile(file, dir+"/"+path)
 		db.exec("replace into files ( id, name, path, updated ) values ( ?, ?, ?, ? )", id, file.Filename, path, updated)
 		results = append(results, File{ID: id, Name: file.Filename, Path: path, Updated: updated})
 	}

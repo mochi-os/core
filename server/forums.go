@@ -216,7 +216,7 @@ func forums_comment_create(a *Action) {
 		e.send()
 
 	} else {
-		// We are the forum owner, to send to all members except us
+		// We are the forum owner, so send to all members except us
 		j := json_encode(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)

@@ -2,7 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | {{.Feed.Name}}</p>
 
-{{if .Subscriber}}<p><a href="/feeds/{{.Feed.ID}}/post">New post</a> | <a href="/feeds/{{.Feed.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
+{{if .Subscriber}}<p>{{if .Owner}}<a href="/feeds/{{.Feed.ID}}/post">New post</a> | {{end}}<a href="/feeds/{{.Feed.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
 
 <p>{{range .Posts}}<a href="/feeds/{{.Feed}}/{{.ID}}">{{.Body}}</a> | &#8618;{{.Comments}}<br/>{{end}}</p>
 

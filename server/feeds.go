@@ -33,7 +33,7 @@ type FeedPost struct {
 	Link          string
 	Comments      int
 	FeedName      string `json:"-"`
-	Attachments   []File
+	Attachments   []File `json:",omitempty"`
 }
 
 type FeedComment struct {
@@ -131,9 +131,11 @@ func feed_by_id(u *User, db *DB, id string) *Feed {
 			return nil
 		}
 	}
+
 	if u != nil {
 		f.identity = identity_by_user_id(u, f.ID)
 	}
+
 	return &f
 }
 
@@ -501,7 +503,7 @@ func feeds_new(a *Action) {
 	a.template("feeds/new")
 }
 
-// New post
+// New post by owner
 func feeds_post_create(a *Action) {
 	now := now()
 
@@ -514,6 +516,9 @@ func feeds_post_create(a *Action) {
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
+	}
+	if f.identity == nil {
+		a.error(403, "Not feed owner")
 	}
 
 	body := a.input("body")
@@ -536,23 +541,12 @@ func feeds_post_create(a *Action) {
 		a.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, id, att.ID, att.Name, att.Rank)
 	}
 
-	if f.identity == nil {
-		// We are not feed owner, so send to the owner
-		log_debug("Sending post to feed owner")
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "post/submit", Content: json_encode(FeedPost{ID: id, Body: body, Attachments: attachments})}
+	j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: attachments})
+	var ss []FeedSubscriber
+	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
+	for _, s := range ss {
+		e := Event{ID: id, From: f.ID, To: s.ID, Service: "feeds", Action: "post/create", Content: j}
 		e.send()
-
-	} else {
-		// We are the feed owner, to send to all subscribers except us
-		j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: attachments})
-		var ss []FeedSubscriber
-		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
-		for _, s := range ss {
-			if s.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: s.ID, Service: "feeds", Action: "post/create", Content: j}
-				e.send()
-			}
-		}
 	}
 
 	a.template("feeds/post/create", Map{"Feed": f, "ID": id})
@@ -931,6 +925,12 @@ func feeds_view(a *Action) {
 		a.error(404, "Feed not found")
 		return
 	}
+
+	owner := false
+	if f.identity != nil {
+		owner = true
+	}
+
 	var s *FeedSubscriber = nil
 	if a.user != nil {
 		s = &FeedSubscriber{}
@@ -942,5 +942,5 @@ func feeds_view(a *Action) {
 	var ps []FeedPost
 	a.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
 
-	a.template("feeds/view", Map{"Feed": f, "Subscriber": s, "Posts": &ps})
+	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Subscriber": s, "Posts": &ps})
 }

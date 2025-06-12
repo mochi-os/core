@@ -11,8 +11,9 @@ import (
 type File struct {
 	ID      string
 	Name    string
-	Path    string
-	Updated int64
+	Path    string `json:"-"`
+	Rank    int
+	Updated int64 `json:"-"`
 }
 
 func init() {
@@ -33,7 +34,7 @@ func files_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")
 	db.exec("replace into settings ( name, value ) values ( 'schema', 1 )")
 
-	db.exec("create table files ( id text not null primary key, name text not null, path text not null, updated integer not null )")
+	db.exec("create table files ( id text not null primary key, name text not null, path text not null, rank integer not null default 1, updated integer not null )")
 	db.exec("create index files_name on files( name )")
 	db.exec("create index files_path on files( path )")
 	db.exec("create index files_updated on files( updated )")
@@ -75,7 +76,7 @@ func files_view(a *Action) {
 }
 
 // Upload one or more files for an action
-func (a *Action) upload(name string) *[]File {
+func (a *Action) upload(name string) []File {
 	updated := now()
 	db := db_user(a.user, "files/files.db", files_db_create)
 	defer db.close()
@@ -84,15 +85,15 @@ func (a *Action) upload(name string) *[]File {
 	form, err := a.web.MultipartForm()
 	check(err)
 
-	for _, file := range form.File[name] {
+	for i, file := range form.File[name] {
 		id := uid()
 		dir := fmt.Sprintf("%s/users/%d/files/data", data_dir, a.user.ID)
 		file_mkdir(dir)
 		path := id + "_" + file_safe_name(file.Filename)
 		a.web.SaveUploadedFile(file, dir+"/"+path)
-		db.exec("replace into files ( id, name, path, updated ) values ( ?, ?, ?, ? )", id, file.Filename, path, updated)
-		results = append(results, File{ID: id, Name: file.Filename, Path: path, Updated: updated})
+		db.exec("replace into files ( id, name, path, rank, updated ) values ( ?, ?, ?, ?, ? )", id, file.Filename, path, i+1, updated)
+		results = append(results, File{ID: id, Name: file.Filename, Path: path, Rank: i + 1, Updated: updated})
 	}
 
-	return &results
+	return results
 }

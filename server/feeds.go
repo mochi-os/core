@@ -33,6 +33,7 @@ type FeedPost struct {
 	Link          string
 	Comments      int
 	FeedName      string `json:"-"`
+	Attachments   []File
 }
 
 type FeedComment struct {
@@ -108,6 +109,10 @@ func feeds_db_create(db *DB) {
 	db.exec("create index posts_feed on posts( feed )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
+
+	db.exec("create table attachments ( feed references feed( id ), class text not null, id text not null, file string not null, name text not null, rank integer not null default 1, primary key ( class, id, file ) )")
+	db.exec("create index attachments_feed on attachments( feed )")
+	db.exec("create index attachments_name on attachments( name )")
 
 	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null )")
 	db.exec("create index comments_feed on comments( feed )")
@@ -526,18 +531,20 @@ func feeds_post_create(a *Action) {
 	a.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, body)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
-	files := a.upload("files")
-	log_debug("Files = '%#v'", files)
+	attachments := a.upload("attachments")
+	for _, att := range attachments {
+		a.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, id, att.ID, att.Name, att.Rank)
+	}
 
 	if f.identity == nil {
 		// We are not feed owner, so send to the owner
 		log_debug("Sending post to feed owner")
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "post/submit", Content: json_encode(FeedPost{ID: id, Body: body})}
+		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "post/submit", Content: json_encode(FeedPost{ID: id, Body: body, Attachments: attachments})}
 		e.send()
 
 	} else {
 		// We are the feed owner, to send to all subscribers except us
-		j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
+		j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: attachments})
 		var ss []FeedSubscriber
 		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
@@ -586,6 +593,11 @@ func feeds_post_create_event(e *Event) {
 	}
 
 	e.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Body)
+
+    for _, att := range p.Attachments {
+        e.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, e.ID, att.ID, att.Name, att.Rank)
+    }
+
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
 }
 
@@ -621,13 +633,16 @@ func feeds_post_view(a *Action) {
 		}
 	}
 
+	var as []File
+	a.db.scans(&as, "select id, name, rank from attachments where class='post' and id=? order by rank, name", p.ID)
+
 	var r FeedReaction
 	a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID)
 
 	var rs []FeedReaction
 	a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
 
-	a.template("feeds/post/view", Map{"Feed": f, "Post": &p, "Comments": feed_comments(a.user, a.db, f, s, &p, nil, 0), "MyReaction": r.Reaction, "Reactions": rs})
+	a.template("feeds/post/view", Map{"Feed": f, "Post": &p, "Attachments": &as, "Comments": feed_comments(a.user, a.db, f, s, &p, nil, 0), "MyReaction": r.Reaction, "Reactions": rs})
 }
 
 // Reaction to a post
@@ -764,15 +779,8 @@ func feed_send_recent_posts(db *DB, f *Feed, subscriber string) {
 		e := Event{ID: p.ID, From: f.ID, To: subscriber, Service: "feeds", Action: "post/create", Content: json_encode(p)}
 		e.send()
 
-		var rs []FeedReaction
-		db.scans(&rs, "select * from reactions where class='post' and id=?", p.ID)
-		for _, r := range rs {
-			e := Event{ID: uid(), From: f.ID, To: subscriber, Service: "feeds", Action: "post/react", Content: json_encode(FeedReaction{Class: "post", ID: p.ID, Subscriber: r.Subscriber, Name: r.Name, Reaction: r.Reaction})}
-			e.send()
-		}
-	}
+		//TODO Send attachments
 
-	for _, p := range ps {
 		var cs []FeedComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)
 		for _, c := range cs {
@@ -785,6 +793,13 @@ func feed_send_recent_posts(db *DB, f *Feed, subscriber string) {
 				e := Event{ID: uid(), From: f.ID, To: subscriber, Service: "feeds", Action: "comment/react", Content: json_encode(FeedReaction{Class: "comment", ID: c.ID, Subscriber: r.Subscriber, Name: r.Name, Reaction: r.Reaction})}
 				e.send()
 			}
+		}
+
+		var rs []FeedReaction
+		db.scans(&rs, "select * from reactions where class='post' and id=?", p.ID)
+		for _, r := range rs {
+			e := Event{ID: uid(), From: f.ID, To: subscriber, Service: "feeds", Action: "post/react", Content: json_encode(FeedReaction{Class: "post", ID: p.ID, Subscriber: r.Subscriber, Name: r.Name, Reaction: r.Reaction})}
+			e.send()
 		}
 	}
 }

@@ -24,6 +24,7 @@ func init() {
 	a.path("files", files_list)
 	a.path("files/create", files_create)
 	a.path("files/:entity", files_view)
+	a.path("files/:entity/:name", files_view)
 
 	a.service("files")
 	a.event("get", files_get_event)
@@ -71,8 +72,8 @@ func files_view(a *Action) {
 	}
 	data := file_read(file)
 
-	a.web.Header("Content-Disposition", "attachment; filename="+file_safe_name(f.Name))
-	a.web.Data(http.StatusOK, "application/octet-stream", data)
+	a.web.Header("Content-Disposition", "inline; filename=\""+file_name_safe(f.Name)+"\"")
+	a.web.Data(http.StatusOK, file_name_type(f.Name), data)
 }
 
 // Upload one or more files for an action
@@ -89,7 +90,7 @@ func (a *Action) upload(name string) []File {
 		id := uid()
 		dir := fmt.Sprintf("%s/users/%d/files/data", data_dir, a.user.ID)
 		file_mkdir(dir)
-		path := id + "_" + file_safe_name(file.Filename)
+		path := id + "_" + file_name_safe(file.Filename)
 		a.web.SaveUploadedFile(file, dir+"/"+path)
 		db.exec("replace into files ( id, name, path, rank, updated ) values ( ?, ?, ?, ?, ? )", id, file.Filename, path, i+1, updated)
 		results = append(results, File{ID: id, Name: file.Filename, Path: path, Rank: i + 1, Updated: updated})

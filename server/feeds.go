@@ -36,6 +36,15 @@ type FeedPost struct {
 	Attachments   []File `json:",omitempty"`
 }
 
+type FeedAttachment struct {
+	Feed  string
+	Class string
+	ID    string
+	File  string
+	Name  string
+	Rank  int
+}
+
 type FeedComment struct {
 	ID            string
 	Feed          string `json:"-"`
@@ -588,9 +597,9 @@ func feeds_post_create_event(e *Event) {
 
 	e.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Body)
 
-    for _, att := range p.Attachments {
-        e.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, e.ID, att.ID, att.Name, att.Rank)
-    }
+	for _, att := range p.Attachments {
+		e.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, e.ID, att.ID, att.Name, att.Rank)
+	}
 
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
 }
@@ -627,8 +636,8 @@ func feeds_post_view(a *Action) {
 		}
 	}
 
-	var as []File
-	a.db.scans(&as, "select id, name, rank from attachments where class='post' and id=? order by rank, name", p.ID)
+	var as []FeedAttachment
+	a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
 
 	var r FeedReaction
 	a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID)

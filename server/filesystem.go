@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"syscall"
@@ -58,13 +59,7 @@ func file_mkfifo(path string) {
 	check(err)
 }
 
-func file_read(path string) []byte {
-	data, err := os.ReadFile(data_dir + "/" + path)
-	check(err)
-	return data
-}
-
-func file_safe_name(s string) string {
+func file_name_safe(s string) string {
 	s = match_spaces.ReplaceAllString(s, "_")
 	s = match_unsafe.ReplaceAllString(s, "")
 	s = match_leading_dots.ReplaceAllString(s, "")
@@ -72,6 +67,31 @@ func file_safe_name(s string) string {
 		return s[:254]
 	}
 	return s
+}
+
+func file_name_type(name string) string {
+	switch path.Ext(name) {
+	case ".gif":
+		return "image/gif"
+	case ".jpeg":
+		return "image/jpeg"
+	case ".jpg":
+		return "image/jpeg"
+	case ".pdf":
+		return "application/pdf"
+	case ".png":
+		return "image/png"
+	case ".txt":
+		return "text/plain"
+	}
+
+	return "application/octet-stream"
+}
+
+func file_read(path string) []byte {
+	data, err := os.ReadFile(data_dir + "/" + path)
+	check(err)
+	return data
 }
 
 func file_write(path string, data []byte) {

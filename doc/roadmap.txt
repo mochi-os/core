@@ -1,9 +1,12 @@
 0.1
 	Files app
+		Thumbnails
 	Replace command line flags with config file
-	Decide where to store user database data
 	Chat app
+		Attachments
 		Group Chat
+	Forums app
+		Attachments
 	Choose a product name
 	Set up introducer server
 
@@ -18,7 +21,9 @@
 	Feeds app
 		Permissions
 	Files app
+		Cache remote files
 		Folders
+		Improve performance of large files using io.Copy()
 		Permissions
 
 0.3

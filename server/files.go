@@ -72,11 +72,9 @@ func files_create(a *Action) {
 
 // Request to get a file
 func files_get_event(e *Event) {
-	log_debug("Files received get event '%#v'", e)
-
 	id := e.Content
 	if !valid(id, "uid") {
-		log_debug("Files dropping get event with invalid file id '%s'", id)
+		log_info("Files dropping get event with invalid file id '%s'", id)
 		return
 	}
 
@@ -90,7 +88,7 @@ func files_get_event(e *Event) {
 		}
 	}
 
-	log_debug("Files received request for unknown file '%s'", id)
+	log_info("Files received request for unknown file '%s'", id)
 	r := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: id, Status: 404})}
 	r.send()
 }
@@ -110,10 +108,7 @@ func files_manager() {
 		now := now()
 		mu.Lock()
 		for _, fr := range files_requested {
-			if fr.Time < now-86400 {
-				log_debug("File request for entity '%s', id '%s' is more than one day old. Deleting...", fr.Entity, fr.ID)
-			} else {
-				log_debug("Files manager keeping request for entity '%s', id '%s'", fr.Entity, fr.ID)
+			if fr.Time >= now-86400 {
 				survivors = append(survivors, fr)
 			}
 		}
@@ -173,9 +168,7 @@ func files_view(a *Action) {
 		files_requested = append(files_requested, &fr)
 		mu.Unlock()
 
-		log_debug("Files waiting for remote file from entity '%s', id '%s'", entity, id)
 		r := <-fr.Response
-		log_debug("Files received remote file entity '%s', id '%s', status '%d'", entity, id, r.Status)
 		if r.Status == 200 {
 			a.web.Header("Content-Disposition", "inline; filename=\""+file_name_safe(r.Name)+"\"")
 			a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)

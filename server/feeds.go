@@ -244,8 +244,6 @@ func feeds_comment_create(a *Action) {
 
 // Received a feed comment from owner
 func feeds_comment_create_event(e *Event) {
-	log_debug("Feed receieved comment create event '%#v'", e)
-
 	f := feed_by_id(e.user, e.db, e.From)
 	if f == nil {
 		log_info("Feed dropping comment to unknown feed")
@@ -285,8 +283,6 @@ func feeds_comment_create_event(e *Event) {
 
 // Received a feed comment from subscriber
 func feeds_comment_submit_event(e *Event) {
-	log_debug("Feed receieved comment submit event '%#v'", e)
-
 	if e.db.exists("select id from comments where id=?", e.ID) {
 		log_info("Feed dropping comment with duplicate ID '%s'", e.ID)
 		return
@@ -915,8 +911,6 @@ func feed_update(u *User, db *DB, f *Feed) {
 
 // Received a feed update event from owner
 func feeds_update_event(e *Event) {
-	log_debug("Feed receieved update event '%#v'", e)
-
 	f := feed_by_id(e.user, e.db, e.From)
 	if f == nil {
 		return

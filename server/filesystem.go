@@ -94,6 +94,12 @@ func file_read(path string) []byte {
 	return data
 }
 
+func file_size(path string) int64 {
+	f, err := os.Stat(data_dir + "/" + path)
+	check(err)
+	return f.Size()
+}
+
 func file_write(path string, data []byte) {
 	err := os.WriteFile(data_dir+"/"+path, data, 0644)
 	check(err)

@@ -22,7 +22,7 @@ func notifications_db_create(db *DB) {
 }
 
 func notification(u *User, app string, category string, entity string, content string, link string) string {
-	db := db_user(u, "notifications/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	log_debug("Creating notification: user='%d', app='%s', category='%s', entity='%s', content='%s', link='%s'", u.ID, app, category, entity, content, link)
@@ -38,21 +38,21 @@ func notification(u *User, app string, category string, entity string, content s
 }
 
 func notifications_clear(u *User) {
-	db := db_user(u, "notifications/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	db.exec("delete from notifications")
 }
 
 func notifications_clear_entity(u *User, app string, entity string) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	db.exec("delete from notifications where app=? and entity=?", app, entity)
 }
 
 func notifications_list(u *User) *[]Notification {
-	db := db_user(u, "notifications/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	var n []Notification

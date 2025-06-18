@@ -32,8 +32,8 @@ type FeedPost struct {
 	Body          string
 	Link          string
 	Comments      int
-	FeedName      string `json:"-"`
-	Attachments   []File `json:",omitempty"`
+	FeedName      string           `json:"-"`
+	Attachments   []FeedAttachment `json:",omitempty"`
 }
 
 type FeedAttachment struct {
@@ -42,6 +42,7 @@ type FeedAttachment struct {
 	ID    string
 	File  string
 	Name  string
+	Size  int64
 	Rank  int
 }
 
@@ -119,7 +120,7 @@ func feeds_db_create(db *DB) {
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	db.exec("create table attachments ( feed references feed( id ), class text not null, id text not null, file string not null, name text not null, rank integer not null default 1, primary key ( class, id, file ) )")
+	db.exec("create table attachments ( feed references feed( id ), class text not null, id text not null, file string not null, name text not null, size integer default 0, rank integer not null default 1, primary key ( class, id, file ) )")
 	db.exec("create index attachments_feed on attachments( feed )")
 	db.exec("create index attachments_name on attachments( name )")
 
@@ -545,12 +546,13 @@ func feeds_post_create(a *Action) {
 	a.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, body)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
-	attachments := a.upload("attachments")
-	for _, att := range attachments {
-		a.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, id, att.ID, att.Name, att.Rank)
+	var as []FeedAttachment
+	for _, at := range a.upload("attachments") {
+		a.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, id, at.ID, at.Name, at.Size, at.Rank)
+		as = append(as, FeedAttachment{Feed: f.ID, Class: "post", ID: id, Name: at.Name, Size: at.Size, Rank: at.Rank})
 	}
 
-	j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: attachments})
+	j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: as})
 	var ss []FeedSubscriber
 	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
@@ -597,8 +599,8 @@ func feeds_post_create_event(e *Event) {
 
 	e.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Body)
 
-	for _, att := range p.Attachments {
-		e.db.exec("replace into attachments ( feed, class, id, file, name, rank ) values ( ?, 'post', ?, ?, ?, ? )", f.ID, e.ID, att.ID, att.Name, att.Rank)
+	for _, at := range p.Attachments {
+		e.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, e.ID, at.File, at.Name, at.Size, at.Rank)
 	}
 
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
@@ -779,10 +781,12 @@ func feed_send_recent_posts(db *DB, f *Feed, subscriber string) {
 	var ps []FeedPost
 	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
+		var as []FeedAttachment
+		db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
+		p.Attachments = as
+
 		e := Event{ID: p.ID, From: f.ID, To: subscriber, Service: "feeds", Action: "post/create", Content: json_encode(p)}
 		e.send()
-
-		//TODO Send attachments
 
 		var cs []FeedComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)

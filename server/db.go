@@ -84,7 +84,7 @@ func db_create() {
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/%s/%s", u.ID, app, file)
+	path := fmt.Sprintf("users/%d/db/%s", u.ID, file)
 	if file_exists(path) {
 		return db_open(path)
 	}

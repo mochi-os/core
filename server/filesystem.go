@@ -83,6 +83,8 @@ func file_name_type(name string) string {
 		return "image/png"
 	case ".txt":
 		return "text/plain"
+	case ".webp":
+		return "image/webp"
 	}
 
 	return "application/octet-stream"

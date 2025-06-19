@@ -545,7 +545,7 @@ func feeds_post_create(a *Action) {
 	var as []FeedAttachment
 	for _, at := range a.upload("attachments") {
 		a.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, id, at.ID, at.Name, at.Size, at.Rank)
-		as = append(as, FeedAttachment{Feed: f.ID, Class: "post", ID: id, Name: at.Name, Size: at.Size, Rank: at.Rank})
+		as = append(as, FeedAttachment{Feed: f.ID, Class: "post", ID: id, File: at.ID, Name: at.Name, Size: at.Size, Rank: at.Rank})
 	}
 
 	j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: as})
@@ -751,7 +751,7 @@ func feeds_post_reaction_event(e *Event) {
 
 // Validate a reaction
 func feeds_reaction_valid(reaction string) string {
-	if valid(reaction, "^(|like|dislike|agree|disagree|amazed|laugh|love|sad|angry)$") {
+	if valid(reaction, "^(|like|dislike|laugh|amazed|love|sad|angry|agree|disagree)$") {
 		return reaction
 	}
 	return ""

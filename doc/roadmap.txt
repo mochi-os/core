@@ -1,11 +1,12 @@
 0.1
 	Files app
-		Thumbnails
+		Cache remote files
+		Image thumbnails
 	Replace command line flags with config file
-	Chat app
-		Attachments
-		Group Chat
 	Forums app
+		Attachments
+	Chat app
+		Group Chat
 		Attachments
 	Choose a product name
 	Set up introducer server
@@ -18,15 +19,18 @@
 	Users can change their settings
 	Users can have multiple identities
 	Users can set public URLs to publish data
+	Users can create hooks to control events
 	Feeds app
 		Permissions
 	Files app
-		Cache remote files
 		Folders
-		Improve performance of large files using io.Copy()
 		Permissions
 
 0.3
+	Streming services
+		Large files
+		Audio
+		Video
 	User management
 	Wiki app
 	Resource usage limits
@@ -39,7 +43,6 @@
 0.4 or later
 	Push notifications to Android and iOS apps
 	Users can categorise updates into feeds
-	Users can configure hooks (via HTTP?) to have thier own code control feeds
 	Read external RSS feeds
 	Provide RSS feeds for feeds
 	Inbound email into feeds

@@ -160,6 +160,9 @@ func files_view(a *Action) {
 			return
 		}
 
+		//TODO Check cache
+
+		//TODO Don't send another request if we already have an active request from this identity
 		e := Event{ID: uid(), From: a.user.Identity.ID, To: entity, Service: "files", Action: "get", Content: id}
 		e.send()
 
@@ -172,6 +175,7 @@ func files_view(a *Action) {
 		if r.Status == 200 {
 			a.web.Header("Content-Disposition", "inline; filename=\""+file_name_safe(r.Name)+"\"")
 			a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)
+			//TODO Store in cache
 		} else {
 			a.error(500, "Unable to fetch remote file")
 		}

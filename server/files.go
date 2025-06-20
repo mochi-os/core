@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -15,11 +16,22 @@ type File struct {
 	Name    string
 	Path    string `json:"-"`
 	Size    int64
+	Created int64 `json:"-"`
 	Rank    int
-	Updated int64 `json:"-"`
+}
+
+type FileCache struct {
+	Identity string
+	Entity   string
+	ID       string
+	Name     string
+	Path     string
+	Size     int64
+	Created  int64
 }
 
 type FileRequest struct {
+	Identity string
 	Entity   string
 	ID       string
 	Response chan FileResponse
@@ -59,10 +71,14 @@ func files_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")
 	db.exec("replace into settings ( name, value ) values ( 'schema', 1 )")
 
-	db.exec("create table files ( id text not null primary key, name text not null, path text not null, size integer default 0, rank integer not null default 1, updated integer not null )")
+	db.exec("create table files ( id text not null primary key, name text not null, path text not null, size integer default 0, created integer not null )")
 	db.exec("create index files_name on files( name )")
 	db.exec("create index files_path on files( path )")
-	db.exec("create index files_updated on files( updated )")
+	db.exec("create index files_created on files( created )")
+
+	db.exec("create table cache ( identity text not null, entity text not null, id text not null, name text not null, path text not null, size integer default 0, created integer not null )")
+	db.exec("create index cache_path on cache( path )")
+	db.exec("create index cache_created on cache( created )")
 }
 
 // Create a new file
@@ -80,7 +96,7 @@ func files_get_event(e *Event) {
 
 	var f File
 	if e.db.scan(&f, "select * from files where id=?", id) {
-		file := fmt.Sprintf("users/%d/files/%s", e.user.ID, f.Path)
+		file := fmt.Sprintf("%s/users/%d/files/%s", data_dir, e.user.ID, f.Path)
 		if file_exists(file) {
 			r := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: id, Status: 200, Name: f.Name, Size: f.Size, Data: file_read(file)})}
 			r.send()
@@ -114,6 +130,9 @@ func files_manager() {
 		}
 		files_requested = survivors
 		mu.Unlock()
+
+		//TODO Clean old cache entries
+		//TODO Clean cache files without database entry
 	}
 }
 
@@ -129,7 +148,7 @@ func files_send_event(e *Event) {
 
 	mu.Lock()
 	for _, fr := range files_requested {
-		if fr.Entity == e.From && fr.ID == r.ID {
+		if fr.Identity == e.To && fr.Entity == e.From && fr.ID == r.ID {
 			fr.Response <- r
 		} else {
 			survivors = append(survivors, fr)
@@ -142,49 +161,82 @@ func files_send_event(e *Event) {
 // View a file
 func files_view(a *Action) {
 	id := a.input("id")
+	if !valid(id, "id") {
+		a.error(400, "Invalid ID for file")
+		return
+	}
 
+	// Check local
 	var f File
 	if a.db.scan(&f, "select * from files where id=?", id) {
-		file := fmt.Sprintf("users/%d/files/%s", a.user.ID, f.Path)
-		if !file_exists(file) {
-			a.error(500, "File data not found")
+		r, err := os.Open(fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path))
+		defer r.Close()
+		if err == nil {
+			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(f.Name) + "\""})
 			return
 		}
-		a.web.Header("Content-Disposition", "inline; filename=\""+file_name_safe(f.Name)+"\"")
-		a.web.Data(http.StatusOK, file_name_type(f.Name), file_read(file))
+	}
 
-	} else {
-		entity := a.input("entity")
-		if entity == "" || entity == "local" {
-			a.error(404, "File not found")
+	// Not local, must be remote
+	entity := a.input("entity")
+	if !valid(entity, "public") {
+		a.error(400, "Invalid entity for file")
+		return
+	}
+
+	// Check cache
+	var c FileCache
+	if a.db.scan(&c, "select * from cache where identity=? and entity=? and id=?", a.user.Identity.ID, entity, id) {
+		r, err := os.Open(cache_dir + "/" + c.Path)
+		defer r.Close()
+		if err == nil {
+			a.web.DataFromReader(http.StatusOK, c.Size, file_name_type(c.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(c.Name) + "\""})
 			return
 		}
+	}
 
-		//TODO Check cache
-
-		//TODO Don't send another request if we already have an active request from this identity
+	// Send event asking for remote file, but only if we don't already have a request for the same file
+	found := false
+	mu.Lock()
+	for _, fr := range files_requested {
+		if fr.Identity == a.user.Identity.ID && fr.Entity == entity && fr.ID == id {
+			found = true
+			break
+		}
+	}
+	mu.Unlock()
+	if !found {
 		e := Event{ID: uid(), From: a.user.Identity.ID, To: entity, Service: "files", Action: "get", Content: id}
 		e.send()
+	}
 
-		mu.Lock()
-		fr := FileRequest{Entity: entity, ID: id, Response: make(chan FileResponse), Time: now()}
-		files_requested = append(files_requested, &fr)
-		mu.Unlock()
+	// Add to list of requested files
+	mu.Lock()
+	fr := FileRequest{Identity: a.user.Identity.ID, Entity: entity, ID: id, Response: make(chan FileResponse), Time: now()}
+	files_requested = append(files_requested, &fr)
+	mu.Unlock()
 
-		r := <-fr.Response
-		if r.Status == 200 {
-			a.web.Header("Content-Disposition", "inline; filename=\""+file_name_safe(r.Name)+"\"")
-			a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)
-			//TODO Store in cache
-		} else {
-			a.error(500, "Unable to fetch remote file")
-		}
+	// Wait for response
+	r := <-fr.Response
+	if r.Status == 200 {
+		safe := file_name_safe(r.Name)
+		a.web.Header("Content-Disposition", "inline; filename=\""+safe+"\"")
+		a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)
+
+		// Add to cache
+		path := fmt.Sprintf("files/%s/%s/%s_%s", a.user.Identity.ID, entity, id, safe)
+		file_mkdir(fmt.Sprintf("%s/files/%s/%s", cache_dir, a.user.Identity.ID, entity))
+		file_write(cache_dir+"/"+path, r.Data)
+		a.db.exec("replace into cache ( identity, entity, id, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ? )", a.user.Identity.ID, entity, id, r.Name, path, r.Size, now())
+
+	} else {
+		a.error(500, "Unable to fetch remote file")
 	}
 }
 
 // Upload one or more files for an action
 func (a *Action) upload(name string) []File {
-	updated := now()
+	created := now()
 	db := db_user(a.user, "db/files.db", files_db_create)
 	defer db.close()
 
@@ -194,14 +246,14 @@ func (a *Action) upload(name string) []File {
 
 	for i, file := range form.File[name] {
 		id := uid()
-		dir := fmt.Sprintf("users/%d/files", a.user.ID)
-		file_mkdir(data_dir + "/" + dir)
+		dir := fmt.Sprintf("%s/users/%d/files", data_dir, a.user.ID)
+		file_mkdir(dir)
 		path := id + "_" + file_name_safe(file.Filename)
-		a.web.SaveUploadedFile(file, data_dir+"/"+dir+"/"+path)
+		a.web.SaveUploadedFile(file, dir+"/"+path)
 		size := file_size(dir + "/" + path)
 
-		db.exec("replace into files ( id, name, path, size, rank, updated ) values ( ?, ?, ?, ?, ?, ? )", id, file.Filename, path, size, i+1, updated)
-		results = append(results, File{ID: id, Name: file.Filename, Path: path, Size: size, Rank: i + 1, Updated: updated})
+		db.exec("replace into files ( id, name, path, size, created ) values ( ?, ?, ?, ?, ? )", id, file.Filename, path, size, created)
+		results = append(results, File{ID: id, Name: file.Filename, Path: path, Size: size, Created: created, Rank: i + 1})
 	}
 
 	return results

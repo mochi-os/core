@@ -27,10 +27,10 @@ var (
 
 /* Not used for now
 func apps_start() {
-	for _, id := range files_dir("apps") {
-		for _, version := range files_dir("apps/" + id) {
+	for _, id := range files_dir(data_dir + "/apps") {
+		for _, version := range files_dir(data_dir + "/apps/" + id) {
 			log_debug("Found installed app ID '%s' version '%s'", id, version)
-			base := "apps/" + id + "/" + version
+			base := data_dir + "/apps/" + id + "/" + version
 
 			if !file_exists(base + "/manifest.json") {
 				log_debug("App ID '%s' version '%s' has no manifest.json file; ignoring app", id, version)

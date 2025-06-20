@@ -132,8 +132,8 @@ func libp2p_start() {
 	var private crypto.PrivKey
 	var err error
 
-	if file_exists("libp2p/private.key") {
-		private, err = crypto.UnmarshalPrivateKey(file_read("libp2p/private.key"))
+	if file_exists(data_dir + "/libp2p/private.key") {
+		private, err = crypto.UnmarshalPrivateKey(file_read(data_dir + "/libp2p/private.key"))
 		check(err)
 	} else {
 		private, _, err = crypto.GenerateKeyPairWithReader(crypto.Ed25519, 256, rand.Reader)
@@ -141,8 +141,8 @@ func libp2p_start() {
 		var p []byte
 		p, err = crypto.MarshalPrivateKey(private)
 		check(err)
-		file_mkdir("libp2p")
-		file_write("libp2p/private.key", p)
+		file_mkdir(data_dir + "/libp2p")
+		file_write(data_dir+"/libp2p/private.key", p)
 	}
 
 	libp2p_context = context.Background()

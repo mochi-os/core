@@ -54,7 +54,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 		return "", error_message("WASM unable to read file '%s': %v", file, err)
 	}
 
-	storage := fmt.Sprintf("users/%d/%d", u.ID, u.Identity.ID, a.ID)
+	storage := fmt.Sprintf("%s/users/%d/%d", data_dir, u.ID, u.Identity.ID, a.ID)
 	if !file_exists(storage) {
 		file_mkdir(storage)
 	}

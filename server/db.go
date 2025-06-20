@@ -85,7 +85,7 @@ func db_create() {
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/db/%s", u.ID, file)
-	if file_exists(path) {
+	if file_exists(data_dir + "/" + path) {
 		return db_open(path)
 	}
 
@@ -124,11 +124,12 @@ func db_open(path string) *DB {
 		return db
 	}
 
-	if !file_exists(path) {
-		file_create(path)
+	file := data_dir + "/" + path
+	if !file_exists(file) {
+		file_create(file)
 	}
 
-	h, err := sqlx.Open("sqlite3", data_dir+"/"+path)
+	h, err := sqlx.Open("sqlite3", file)
 	check(err)
 	db = &DB{path: path, handle: h, closed: 0}
 
@@ -141,7 +142,7 @@ func db_open(path string) *DB {
 }
 
 func db_start() bool {
-	if file_exists("db/users.db") {
+	if file_exists(data_dir + "/db/users.db") {
 		db_upgrade()
 		go db_manager()
 	} else {
@@ -167,7 +168,7 @@ func db_upgrade() {
 
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
-	if file_exists(path) {
+	if file_exists(data_dir + "/" + path) {
 		return db_open(path)
 	}
 

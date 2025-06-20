@@ -12,11 +12,13 @@ type (
 )
 
 var (
-	data_dir string
+	cache_dir string
+	data_dir  string
 )
 
 func main() {
 	log_info("Starting")
+	flag.StringVar(&cache_dir, "cache", "/var/cache/comms", "Directory to cache data in")
 	flag.StringVar(&data_dir, "data", "/var/lib/comms", "Directory to store data in")
 	flag.StringVar(&libp2p_listen, "listen", "0.0.0.0", "libp2p IP address to listen on")
 	flag.IntVar(&libp2p_port, "port", 1443, "libp2p port to listen on")

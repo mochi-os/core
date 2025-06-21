@@ -35,7 +35,7 @@ run:
 	./comms-server -data ~/var/lib/comms -cache ~/var/cache/comms -port 1444 -web 8081
 
 run2:
-	./comms-server -data /var/lib/comms2 -cache /var/cache/comms2 -port 1445 -web 8082
+	./comms-server -data ~/var/lib/comms2 -cache ~/var/cache/comms2 -port 1445 -web 8082
 
 static: clean
 	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o comms-server server/*.go

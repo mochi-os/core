@@ -1,7 +1,8 @@
 # Makefile for Comms
 # Copyright Alistair Cunningham 2024
 
-build = /tmp/comms-server_0.1-3_amd64
+version = $(shell cat version | tr -d '\n')
+build = /tmp/comms-server_$(version)_amd64
 
 all: comms-server
 
@@ -15,6 +16,7 @@ deb: comms-server
 	rm -rf $(build) $(build).deb
 	mkdir $(build)
 	cp -av build/deb/* $(build)
+	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
 	cp -av install/* $(build)
 	mkdir -p -m 0755 $(build)/usr/bin
 	mkdir -p -m 0755 $(build)/var/cache/comms

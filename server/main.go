@@ -35,6 +35,7 @@ func main() {
 	libp2p_start()
 	go identities_manager()
 	go events_manager()
+	go cache_manager()
 	go files_manager()
 	if new_install {
 		go directory_download()

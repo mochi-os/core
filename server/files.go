@@ -20,16 +20,6 @@ type File struct {
 	Rank    int
 }
 
-type FileCache struct {
-	Identity string
-	Entity   string
-	ID       string
-	Name     string
-	Path     string
-	Size     int64
-	Created  int64
-}
-
 type FileRequest struct {
 	Identity string
 	Entity   string
@@ -75,10 +65,6 @@ func files_db_create(db *DB) {
 	db.exec("create index files_name on files( name )")
 	db.exec("create index files_path on files( path )")
 	db.exec("create index files_created on files( created )")
-
-	db.exec("create table cache ( identity text not null, entity text not null, id text not null, name text not null, path text not null, size integer default 0, created integer not null )")
-	db.exec("create index cache_path on cache( path )")
-	db.exec("create index cache_created on cache( created )")
 }
 
 // Create a new file
@@ -130,9 +116,6 @@ func files_manager() {
 		}
 		files_requested = survivors
 		mu.Unlock()
-
-		//TODO Clean old cache entries
-		//TODO Clean cache files without database entry
 	}
 }
 
@@ -185,8 +168,9 @@ func files_view(a *Action) {
 	}
 
 	// Check cache
-	var c FileCache
-	if a.db.scan(&c, "select * from cache where identity=? and entity=? and id=?", a.user.Identity.ID, entity, id) {
+	var c CacheFile
+	db_cache := db_open("db/cache.db")
+	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=?", a.user.ID, a.user.Identity.ID, entity, id) {
 		r, err := os.Open(cache_dir + "/" + c.Path)
 		defer r.Close()
 		if err == nil {
@@ -224,10 +208,10 @@ func files_view(a *Action) {
 		a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)
 
 		// Add to cache
-		path := fmt.Sprintf("files/%s/%s/%s_%s", a.user.Identity.ID, entity, id, safe)
-		file_mkdir(fmt.Sprintf("%s/files/%s/%s", cache_dir, a.user.Identity.ID, entity))
+		path := fmt.Sprintf("files/%d/%s/%s/%s_%s", a.user.ID, a.user.Identity.ID, entity, id, safe)
+		file_mkdir(fmt.Sprintf("%s/files/%d/%s/%s", cache_dir, a.user.ID, a.user.Identity.ID, entity))
 		file_write(cache_dir+"/"+path, r.Data)
-		a.db.exec("replace into cache ( identity, entity, id, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ? )", a.user.Identity.ID, entity, id, r.Name, path, r.Size, now())
+		db_cache.exec("replace into files ( user, identity, entity, id, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", a.user.ID, a.user.Identity.ID, entity, id, r.Name, path, r.Size, now())
 
 	} else {
 		a.error(500, "Unable to fetch remote file")

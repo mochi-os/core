@@ -81,6 +81,12 @@ func db_create() {
 	// Queued broadcast events
 	queue.exec("create table broadcast ( id text not null primary key, topic text not null, content text not null, updated integer not null )")
 	queue.exec("create index broadcast_updated on broadcast( updated )")
+
+	// Cache
+	cache := db_open("db/cache.db")
+	cache.exec("create table files ( user integer not null, identity text not null, entity text not null, id text not null, name text not null, path text not null, size integer default 0, created integer not null, primary key ( user, identity, entity, id ) )")
+	cache.exec("create index files_path on files( path )")
+	cache.exec("create index files_created on files( created )")
 }
 
 func db_app(u *User, app string, file string, create func(*DB)) *DB {

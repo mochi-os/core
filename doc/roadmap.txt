@@ -1,13 +1,17 @@
 0.1
 	Files app
-		Cache remote files
 		Image thumbnails
+	Feeds app
+		Default name
+	Welcome message
 	Replace command line flags with config file
 	Forums app
 		Attachments
 	Chat app
 		Group Chat
 		Attachments
+	Protocol
+	Large files
 	Choose a product name
 	Set up introducer server
 
@@ -28,7 +32,6 @@
 
 0.3
 	Streming services
-		Large files
 		Audio
 		Video
 	User management

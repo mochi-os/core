@@ -1,9 +1,6 @@
 0.1
 	Files app
 		Image thumbnails
-	Feeds app
-		Default name
-	Welcome message
 	Replace command line flags with config file
 	Forums app
 		Attachments

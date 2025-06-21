@@ -23,6 +23,8 @@ func home(a *Action) {
 		return
 	}
 
+	welcome := false
+
 	switch a.input("action") {
 	case "clear":
 		notifications_clear(a.user)
@@ -37,9 +39,12 @@ func home(a *Action) {
 		web_cookie_unset(a.web, "login")
 		a.template("login/logout")
 		return
+
+	case "welcome":
+		welcome = true
 	}
 
-	a.template("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user)})
+	a.template("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user), "Welcome": welcome})
 }
 
 func (a *App) home(path string, labels map[string]string) {

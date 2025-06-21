@@ -506,7 +506,14 @@ func feed_subscriber(db *DB, f *Feed, subscriber string) *FeedSubscriber {
 
 // Enter details for new feed to be created
 func feeds_new(a *Action) {
-	a.template("feeds/new")
+	name := ""
+
+	if !a.db.exists("select * from feeds") {
+		// This is our first feed, so suggest our name as the feed name
+		name = a.user.Identity.Name
+	}
+
+	a.template("feeds/new", Map{"Name": name})
 }
 
 // New post by owner
@@ -876,8 +883,10 @@ func feeds_unsubscribe(a *Action) {
 	a.db.exec("delete from subscribers where feed=?", f.ID)
 	a.db.exec("delete from feeds where id=?", f.ID)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "unsubscribe"}
-	e.send()
+	if f.identity == nil {
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "unsubscribe"}
+		e.send()
+	}
 
 	a.template("feeds/unsubscribe")
 }

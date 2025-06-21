@@ -4,7 +4,7 @@
 
 <form action="/feeds/create">
     <label for="name">Feed name:</label>
-    <input type="text" name="name"/><br/>
+    <input type="text" name="name" value="{{.Name}}"/><br/>
   	<label for="privacy">Allow anyone to search for feed:</label>
 	<select name="privacy" id="privacy">
 		<option value="public">Yes</option>

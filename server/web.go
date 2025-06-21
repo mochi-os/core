@@ -55,7 +55,7 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
-	web_redirect(c, "/")
+	web_redirect(c, "/?action=welcome")
 }
 
 func web_login(c *gin.Context) {

@@ -78,7 +78,7 @@ func peers_manager() {
 
 		p.Updated = now()
 		e, found := peers_connected[p.ID]
-		//TODO Fix
+		//TODO Fix problem where we keep connecting to a peer we're already connected to
 		if found && p.Address == e.Address {
 			// We're already connected to this peer and it's at the same address as before, so just update its updated time
 			peers_connected[p.ID] = p

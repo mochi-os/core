@@ -2,7 +2,7 @@
  
 if  [ "$1" = install ] 
 then
-	echo "Adding comms user and group"
+	echo "Adding comms user and group ..."
 
 	if ! getent group comms >/dev/null; then
 		addgroup --system comms >/dev/null

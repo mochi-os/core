@@ -1,0 +1,16 @@
+[Unit]
+Description=Comms server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/comms-server
+PIDFile=/run/comms-server.pid
+Restart=on-abnormal
+RestartSec=1
+LimitSTACK=infinity
+LimitNOFILE=65535
+LimitNPROC=65535
+
+[Install]
+WantedBy=multi-user.target

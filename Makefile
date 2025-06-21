@@ -1,6 +1,8 @@
 # Makefile for Comms
 # Copyright Alistair Cunningham 2024
 
+build = /tmp/comms-server_0.1-2_amd64
+
 all: comms-server
 
 clean:
@@ -8,6 +10,17 @@ clean:
 
 comms-server: clean
 	go build -o comms-server server/*.go
+
+deb: comms-server
+	mkdir $(build)
+	cp -av build/deb/* $(build)
+	cp -av install/* $(build)
+	cp -av comms-server $(build)/usr/bin
+	strip $(build)/usr/bin/comms-server
+	upx -qq $(build)/usr/bin/comms-server
+	dpkg-deb --build --root-owner-group $(build)
+	rm -r $(build)
+	ls -l $(build).deb
 
 format:
 	go fmt server/*.go

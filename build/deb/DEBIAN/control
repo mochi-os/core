@@ -1,0 +1,6 @@
+Package: comms-server
+Version: 0.1
+Architecture: amd64
+Maintainer: Comms developers <dev@comms-os.com>
+Description: The open source social operating system.
+ This package contains the server.

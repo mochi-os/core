@@ -1,0 +1,14 @@
+#!/bin/bash
+ 
+if  [ "$1" = install ] 
+then
+	echo "Adding comms user and group"
+
+	if ! getent group comms >/dev/null; then
+		addgroup --system comms >/dev/null
+	fi
+ 
+	if ! getent passwd comms >/dev/null; then
+		adduser --system --disabled-login --ingroup comms --no-create-home --home /var/lib/comms --gecos "Comms server" --shell /usr/sbin/nologin comms >/dev/null
+	fi
+fi

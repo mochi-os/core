@@ -14,7 +14,8 @@ type Directory struct {
 	Class       string `json:"class"`
 	Location    string `json:"location"`
 	Data        string `json:"data"`
-	Updated     int    `json:"updated"`
+	Created     int64  `json:"created"`
+	Updated     int64  `json:"updated"`
 }
 
 func init() {
@@ -39,8 +40,10 @@ func directory_by_id(id string) *Directory {
 // Create a new directory entry for a local identity
 func directory_create(i *Identity) {
 	log_debug("Creating directory entry '%s' (%s)", i.ID, i.Name)
+	now := now()
+
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, i.Data, now())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", i.ID, i.Fingerprint, i.Name, i.Class, libp2p_id, i.Data, now, now)
 	go events_check_queue("identity", i.ID)
 }
 
@@ -92,6 +95,8 @@ func directory_publish(i *Identity, allow_queue bool) {
 // Received a directory publish event from another server
 func directory_publish_event(e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
+	now := now()
+
 	var d Directory
 	if !json_decode(&d, e.Content) {
 		log_info("Dropping directory event '%s' with malformed JSON", e.Content)
@@ -117,7 +122,7 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, updated ) values ( ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now())
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now, now)
 
 	go events_check_queue("identity", d.ID)
 }

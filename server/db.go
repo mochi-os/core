@@ -61,11 +61,12 @@ func db_create() {
 
 	// Directory
 	directory := db_open("db/directory.db")
-	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', data text not null default '', updated integer not null )")
+	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', data text not null default '', created integer not null, updated integer not null )")
 	directory.exec("create index directory_fingerprint on directory( fingerprint )")
 	directory.exec("create index directory_name on directory( name )")
 	directory.exec("create index directory_class on directory( class )")
 	directory.exec("create index directory_location on directory( location )")
+	directory.exec("create index directory_created on directory( created )")
 	directory.exec("create index directory_updated on directory( updated )")
 
 	// Peers

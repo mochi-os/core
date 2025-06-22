@@ -147,7 +147,7 @@ func directory_request_event(e *Event) {
 func directory_search(u *User, class string, search string, include_self bool) *[]Directory {
 	dbd := db_open("db/directory.db")
 	var ds []Directory
-	dbd.scans(&ds, "select * from directory where class=? and name like ? order by name", class, "%"+search+"%")
+	dbd.scans(&ds, "select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
 
 	if u == nil || include_self || class != "person" {
 		return &ds

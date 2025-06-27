@@ -62,7 +62,7 @@ func thumbnail_create(file string) (string, error) {
 }
 
 func thumbnail_name(file string) string {
-    ext := filepath.Ext(file)
-    strings.TrimSuffix(file, ext)
-    return fmt.Sprintf("%s_thumbnail%s", strings.TrimSuffix(file, ext), ext)
+	ext := filepath.Ext(file)
+	strings.TrimSuffix(file, ext)
+	return fmt.Sprintf("%s_thumbnail%s", strings.TrimSuffix(file, ext), ext)
 }

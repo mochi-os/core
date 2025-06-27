@@ -618,6 +618,7 @@ func feeds_post_new(a *Action) {
 
 	a.template("feeds/post/new", feed_by_id(a.user, a.db, a.id()))
 }
+
 // Reaction to a post
 func feeds_post_react(a *Action) {
 	if a.user == nil {

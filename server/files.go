@@ -185,8 +185,10 @@ func files_view_action(a *Action, extra string) {
 		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path)
 		if extra == "thumbnail" {
 			path, err = thumbnail_create(path)
-			// TODO Handle no thumbnail
-			check(err)
+			if err != nil {
+				a.error(500, "Unable to generate thumbnail: %s", err)
+				return
+			}
 		}
 		r, err := os.Open(path)
 		defer r.Close()
@@ -207,12 +209,14 @@ func files_view_action(a *Action, extra string) {
 	var c CacheFile
 	db_cache := db_open("db/cache.db")
 	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=?", a.user.ID, a.user.Identity.ID, entity, id) {
-	    path := cache_dir + "/" + c.Path
-        if extra == "thumbnail" {
-            path, err = thumbnail_create(path)
-            // TODO Handle no thumbnail
-            check(err)
-        }
+		path := cache_dir + "/" + c.Path
+		if extra == "thumbnail" {
+			path, err = thumbnail_create(path)
+			if err != nil {
+				a.error(500, "Unable to generate thumbnail: %s", err)
+				return
+			}
+		}
 		r, err := os.Open(path)
 		defer r.Close()
 		if err == nil {

@@ -75,7 +75,7 @@ func init() {
 	a.home("feeds", map[string]string{"en": "Feeds"})
 	a.db("feeds.db", feeds_db_create)
 
-	a.path("feeds", feeds_list)
+	a.path("feeds", feeds_view)
 	a.path("feeds/create", feeds_create)
 	a.path("feeds/find", feeds_find)
 	a.path("feeds/new", feeds_new)
@@ -484,13 +484,16 @@ func feeds_find(a *Action) {
 	a.template("feeds/find")
 }
 
-// List existing feeds and show posts from all of them
 func feeds_list(a *Action) {
 	var fs []Feed
 	a.db.scans(&fs, "select * from feeds order by updated desc")
 
 	var ps []FeedPost
 	a.db.scans(&ps, "select * from posts order by updated desc")
+
+	for _, p := range ps {
+		a.db.scans(&p.Attachments, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
+	}
 
 	a.template("feeds/list", Map{"Feeds": fs, "Posts": &ps})
 }
@@ -934,21 +937,25 @@ func feeds_update_event(e *Event) {
 	e.db.exec("update feeds set subscribers=?, updated=? where id=?", n.Subscribers, now(), f.ID)
 }
 
-// View a feed
+// View a feed, or all feeds
 func feeds_view(a *Action) {
-	f := feed_by_id(a.user, a.db, a.id())
-	if f == nil {
-		a.error(404, "Feed not found")
-		return
+	var f *Feed = nil
+
+	if a.id() != "" {
+		f := feed_by_id(a.user, a.db, a.id())
+		if f == nil {
+			a.error(404, "Feed not found")
+			return
+		}
 	}
 
 	owner := false
-	if f.identity != nil {
+	if f != nil && f.identity != nil {
 		owner = true
 	}
 
 	var s *FeedSubscriber = nil
-	if a.user != nil {
+	if f != nil && a.user != nil {
 		s = &FeedSubscriber{}
 		if !a.db.scan(s, "select * from subscribers where feed=? and id=?", f.ID, a.user.Identity.ID) {
 			s = nil
@@ -956,7 +963,21 @@ func feeds_view(a *Action) {
 	}
 
 	var ps []FeedPost
-	a.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+	if f == nil {
+		a.db.scans(&ps, "select * from posts order by updated desc")
+	} else {
+		a.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+	}
 
-	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Subscriber": s, "Posts": &ps})
+	for i, p := range ps {
+		var as []FeedAttachment
+		a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
+		ps[i].Attachments = as
+	}
+
+	var fs []Feed
+	a.db.scans(&fs, "select * from feeds order by updated desc")
+
+	log_debug("Posts='%#v'", ps)
+	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Subscriber": &s, "Posts": &ps, "Feeds": &fs})
 }

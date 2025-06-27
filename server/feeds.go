@@ -618,41 +618,6 @@ func feeds_post_new(a *Action) {
 
 	a.template("feeds/post/new", feed_by_id(a.user, a.db, a.id()))
 }
-
-// View a post
-func feeds_post_view(a *Action) {
-	var p FeedPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
-		a.error(404, "Post not found")
-		return
-	}
-	p.CreatedString = time_local(a.user, p.Created)
-
-	f := feed_by_id(a.user, a.db, p.Feed)
-	if f == nil {
-		a.error(404, "Feed not found")
-		return
-	}
-	var s *FeedSubscriber = nil
-	if a.user != nil {
-		s = &FeedSubscriber{}
-		if !a.db.scan(s, "select * from subscribers where feed=? and id=?", f.ID, a.user.Identity.ID) {
-			s = nil
-		}
-	}
-
-	var as []FeedAttachment
-	a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
-
-	var r FeedReaction
-	a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID)
-
-	var rs []FeedReaction
-	a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
-
-	a.template("feeds/post/view", Map{"Feed": f, "Post": &p, "Attachments": &as, "Comments": feed_comments(a.user, a.db, f, s, &p, nil, 0), "MyReaction": r.Reaction, "Reactions": rs})
-}
-
 // Reaction to a post
 func feeds_post_react(a *Action) {
 	if a.user == nil {
@@ -754,6 +719,40 @@ func feeds_post_reaction_event(e *Event) {
 			}
 		}
 	}
+}
+
+// View a post
+func feeds_post_view(a *Action) {
+	var p FeedPost
+	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
+		a.error(404, "Post not found")
+		return
+	}
+	p.CreatedString = time_local(a.user, p.Created)
+
+	f := feed_by_id(a.user, a.db, p.Feed)
+	if f == nil {
+		a.error(404, "Feed not found")
+		return
+	}
+	var s *FeedSubscriber = nil
+	if a.user != nil {
+		s = &FeedSubscriber{}
+		if !a.db.scan(s, "select * from subscribers where feed=? and id=?", f.ID, a.user.Identity.ID) {
+			s = nil
+		}
+	}
+
+	var as []FeedAttachment
+	a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
+
+	var r FeedReaction
+	a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID)
+
+	var rs []FeedReaction
+	a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
+
+	a.template("feeds/post/view", Map{"Feed": f, "Post": &p, "Attachments": &as, "Comments": feed_comments(a.user, a.db, f, s, &p, nil, 0), "MyReaction": r.Reaction, "Reactions": rs})
 }
 
 // Validate a reaction

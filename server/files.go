@@ -24,12 +24,14 @@ type FileRequest struct {
 	Identity string
 	Entity   string
 	ID       string
+	Extra    string
 	Response chan FileResponse
 	Time     int64
 }
 
 type FileResponse struct {
 	ID     string
+	Extra  string
 	Status int
 	Name   string
 	Size   int64
@@ -50,6 +52,8 @@ func init() {
 	a.path("files/create", files_create)
 	a.path("files/:entity/:id", files_view)
 	a.path("files/:entity/:id/:name", files_view)
+	a.path("files/thumbnail/:entity/:id", files_thumbnail)
+	a.path("files/thumbnail/:entity/:id/:name", files_thumbnail)
 
 	a.service("files")
 	a.event("get", files_get_event)
@@ -74,25 +78,39 @@ func files_create(a *Action) {
 
 // Request to get a file
 func files_get_event(e *Event) {
-	id := e.Content
-	if !valid(id, "uid") {
-		log_info("Files dropping get event with invalid file id '%s'", id)
+	var r FileRequest
+	if !json_decode(&r, e.Content) {
+		log_info("Files dropping get event with invalid JSON '%s'", e.Content)
+		return
+	}
+
+	if !valid(r.ID, "uid") {
+		log_info("Files dropping get event with invalid file id '%s'", r.ID)
 		return
 	}
 
 	var f File
-	if e.db.scan(&f, "select * from files where id=?", id) {
+	if e.db.scan(&f, "select * from files where id=?", r.ID) {
 		file := fmt.Sprintf("%s/users/%d/files/%s", data_dir, e.user.ID, f.Path)
-		if file_exists(file) {
-			r := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: id, Status: 200, Name: f.Name, Size: f.Size, Data: file_read(file)})}
-			r.send()
+
+		if r.Extra == "thumbnail" {
+			thumb, err := thumbnail_create(file)
+			if err == nil {
+				a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: thumb, Size: file_size(thumb), Data: file_read(thumb)})}
+				a.send()
+				return
+			}
+
+		} else if file_exists(file) {
+			a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: f.Name, Size: f.Size, Data: file_read(file)})}
+			a.send()
 			return
 		}
 	}
 
-	log_info("Files received request for unknown file '%s'", id)
-	r := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: id, Status: 404})}
-	r.send()
+	log_info("Files received request for unknown file '%s'", r.ID)
+	a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 404})}
+	a.send()
 }
 
 // List existing files
@@ -141,8 +159,20 @@ func files_send_event(e *Event) {
 	mu.Unlock()
 }
 
+// View the thumbnail of a file
+func files_thumbnail(a *Action) {
+	files_view_action(a, "thumbnail")
+}
+
 // View a file
 func files_view(a *Action) {
+	files_view_action(a, "")
+}
+
+// Do the work of viewing a file
+func files_view_action(a *Action, extra string) {
+	var err error
+
 	id := a.input("id")
 	if !valid(id, "id") {
 		a.error(400, "Invalid ID for file")
@@ -152,10 +182,16 @@ func files_view(a *Action) {
 	// Check local
 	var f File
 	if a.db.scan(&f, "select * from files where id=?", id) {
-		r, err := os.Open(fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path))
+		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path)
+		if extra == "thumbnail" {
+			path, err = thumbnail_create(path)
+			// TODO Handle no thumbnail
+			check(err)
+		}
+		r, err := os.Open(path)
 		defer r.Close()
 		if err == nil {
-			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(f.Name) + "\""})
+			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(thumbnail_name(f.Name)) + "\""})
 			return
 		}
 	}
@@ -171,10 +207,16 @@ func files_view(a *Action) {
 	var c CacheFile
 	db_cache := db_open("db/cache.db")
 	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=?", a.user.ID, a.user.Identity.ID, entity, id) {
-		r, err := os.Open(cache_dir + "/" + c.Path)
+	    path := cache_dir + "/" + c.Path
+        if extra == "thumbnail" {
+            path, err = thumbnail_create(path)
+            // TODO Handle no thumbnail
+            check(err)
+        }
+		r, err := os.Open(path)
 		defer r.Close()
 		if err == nil {
-			a.web.DataFromReader(http.StatusOK, c.Size, file_name_type(c.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(c.Name) + "\""})
+			a.web.DataFromReader(http.StatusOK, c.Size, file_name_type(c.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(thumbnail_name(c.Name)) + "\""})
 			return
 		}
 	}
@@ -183,20 +225,20 @@ func files_view(a *Action) {
 	found := false
 	mu.Lock()
 	for _, fr := range files_requested {
-		if fr.Identity == a.user.Identity.ID && fr.Entity == entity && fr.ID == id {
+		if fr.Identity == a.user.Identity.ID && fr.Entity == entity && fr.ID == id && fr.Extra == extra {
 			found = true
 			break
 		}
 	}
 	mu.Unlock()
 	if !found {
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: entity, Service: "files", Action: "get", Content: id}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: entity, Service: "files", Action: "get", Content: json_encode(Map{"ID": id, "Extra": extra})}
 		e.send()
 	}
 
 	// Add to list of requested files
 	mu.Lock()
-	fr := FileRequest{Identity: a.user.Identity.ID, Entity: entity, ID: id, Response: make(chan FileResponse), Time: now()}
+	fr := FileRequest{Identity: a.user.Identity.ID, Entity: entity, ID: id, Extra: extra, Response: make(chan FileResponse), Time: now()}
 	files_requested = append(files_requested, &fr)
 	mu.Unlock()
 

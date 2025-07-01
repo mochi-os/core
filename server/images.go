@@ -17,11 +17,9 @@ import (
 
 func thumbnail_create(file string) (string, error) {
 	thumb := thumbnail_name(file)
-	log_debug("Getting thumbnail '%s' for '%s'", thumb, file)
 	if file_exists(thumb) {
 		return thumb, nil
 	}
-	log_debug("Thumbnail does not exist, generating...")
 
 	f, err := os.Open(file)
 	if err != nil {
@@ -50,6 +48,7 @@ func thumbnail_create(file string) (string, error) {
 	case "png":
 		err = png.Encode(o, t)
 	default:
+		//TODO Decide what to do about other formats
 		return "", nil
 	}
 

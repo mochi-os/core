@@ -170,6 +170,7 @@ func files_view(a *Action) {
 }
 
 // Do the work of viewing a file
+//TODO The "extra" field for thumbnails isn't very elegant. It would be good to find a neater way.
 func files_view_action(a *Action, extra string) {
 	var err error
 
@@ -266,7 +267,7 @@ func files_view_action(a *Action, extra string) {
 }
 
 // Upload one or more files for an action
-func (a *Action) upload(name string) []File {
+func (a *Action) upload(field string) []File {
 	created := now()
 	db := db_user(a.user, "db/files.db", files_db_create)
 	defer db.close()
@@ -275,16 +276,20 @@ func (a *Action) upload(name string) []File {
 	form, err := a.web.MultipartForm()
 	check(err)
 
-	for i, file := range form.File[name] {
+	for i, file := range form.File[field] {
 		id := uid()
 		dir := fmt.Sprintf("%s/users/%d/files", data_dir, a.user.ID)
 		file_mkdir(dir)
 		path := id + "_" + file_name_safe(file.Filename)
-		a.web.SaveUploadedFile(file, dir+"/"+path)
-		size := file_size(dir + "/" + path)
+		full_path := dir + "/" + path
+		a.web.SaveUploadedFile(file, full_path)
+		size := file_size(full_path)
 
 		db.exec("replace into files ( id, name, path, size, created ) values ( ?, ?, ?, ?, ? )", id, file.Filename, path, size, created)
 		results = append(results, File{ID: id, Name: file.Filename, Path: path, Size: size, Created: created, Rank: i + 1})
+
+		//TODO Test this makes thumbnails when uploading images
+		thumbnail_create(full_path)
 	}
 
 	return results

@@ -26,14 +26,15 @@ type FeedPost struct {
 	Created       int64
 	CreatedString string `json:"-"`
 	Updated       int64
-	Author        string
-	Name          string
-	Type          string
-	Body          string
-	Link          string
-	Comments      int
-	FeedName      string           `json:"-"`
-	Attachments   []FeedAttachment `json:",omitempty"`
+	//TODO Remove unused fields
+	Author      string
+	Name        string
+	Type        string
+	Body        string
+	Link        string
+	Comments    int
+	FeedName    string           `json:"-"`
+	Attachments []FeedAttachment `json:",omitempty"`
 }
 
 type FeedAttachment struct {

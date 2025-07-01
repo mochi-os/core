@@ -96,7 +96,7 @@ func files_get_event(e *Event) {
 		if r.Extra == "thumbnail" {
 			thumb, err := thumbnail_create(file)
 			if err == nil {
-				a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: thumb, Size: file_size(thumb), Data: file_read(thumb)})}
+				a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: thumbnail_name(f.Name), Size: file_size(thumb), Data: file_read(thumb)})}
 				a.send()
 				return
 			}
@@ -182,18 +182,27 @@ func files_view_action(a *Action, extra string) {
 	// Check local
 	var f File
 	if a.db.scan(&f, "select * from files where id=?", id) {
+		name := f.Name
+
 		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path)
+		if !file_exists(path) {
+			a.error(500, "File exists in database but no file found")
+			return
+		}
+
 		if extra == "thumbnail" {
 			path, err = thumbnail_create(path)
 			if err != nil {
 				a.error(500, "Unable to generate thumbnail: %s", err)
 				return
 			}
+			name = thumbnail_name(name)
 		}
+
 		r, err := os.Open(path)
 		defer r.Close()
 		if err == nil {
-			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(thumbnail_name(f.Name)) + "\""})
+			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(name) + "\""})
 			return
 		}
 	}
@@ -208,19 +217,11 @@ func files_view_action(a *Action, extra string) {
 	// Check cache
 	var c CacheFile
 	db_cache := db_open("db/cache.db")
-	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=?", a.user.ID, a.user.Identity.ID, entity, id) {
-		path := cache_dir + "/" + c.Path
-		if extra == "thumbnail" {
-			path, err = thumbnail_create(path)
-			if err != nil {
-				a.error(500, "Unable to generate thumbnail: %s", err)
-				return
-			}
-		}
-		r, err := os.Open(path)
+	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=? and extra=?", a.user.ID, a.user.Identity.ID, entity, id, extra) {
+		r, err := os.Open(cache_dir + "/" + c.Path)
 		defer r.Close()
 		if err == nil {
-			a.web.DataFromReader(http.StatusOK, c.Size, file_name_type(c.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(thumbnail_name(c.Name)) + "\""})
+			a.web.DataFromReader(http.StatusOK, c.Size, file_name_type(c.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(c.Name) + "\""})
 			return
 		}
 	}
@@ -257,7 +258,7 @@ func files_view_action(a *Action, extra string) {
 		path := fmt.Sprintf("files/%d/%s/%s/%s_%s", a.user.ID, a.user.Identity.ID, entity, id, safe)
 		file_mkdir(fmt.Sprintf("%s/files/%d/%s/%s", cache_dir, a.user.ID, a.user.Identity.ID, entity))
 		file_write(cache_dir+"/"+path, r.Data)
-		db_cache.exec("replace into files ( user, identity, entity, id, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", a.user.ID, a.user.Identity.ID, entity, id, r.Name, path, r.Size, now())
+		db_cache.exec("replace into files ( user, identity, entity, id, extra, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )", a.user.ID, a.user.Identity.ID, entity, id, extra, r.Name, path, r.Size, now())
 
 	} else {
 		a.error(500, "Unable to fetch remote file")

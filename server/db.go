@@ -85,7 +85,7 @@ func db_create() {
 
 	// Cache
 	cache := db_open("db/cache.db")
-	cache.exec("create table files ( user integer not null, identity text not null, entity text not null, id text not null, name text not null, path text not null, size integer default 0, created integer not null, primary key ( user, identity, entity, id ) )")
+	cache.exec("create table files ( user integer not null, identity text not null, entity text not null, id text not null, extra text not null default '', name text not null, path text not null, size integer default 0, created integer not null, primary key ( user, identity, entity, id, extra ) )")
 	cache.exec("create index files_path on files( path )")
 	cache.exec("create index files_created on files( created )")
 }

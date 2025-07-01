@@ -15,6 +15,7 @@ type CacheFile struct {
 	Identity string
 	Entity   string
 	ID       string
+	Extra    string
 	Name     string
 	Path     string
 	Size     int64

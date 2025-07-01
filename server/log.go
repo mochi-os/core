@@ -4,11 +4,17 @@
 package main
 
 import (
+	"fmt"
 	"log"
 )
 
 func log_debug(message string, values ...any) {
-	log.Printf(message+"\n", values...)
+	s := fmt.Sprintf(message, values...)
+	if len(s) > 1000 {
+		log.Print(s[:1000] + "...\n")
+	} else {
+		log.Print(s + "\n")
+	}
 }
 
 func log_error(message string, values ...any) {

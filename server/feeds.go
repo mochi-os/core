@@ -26,12 +26,7 @@ type FeedPost struct {
 	Created       int64
 	CreatedString string `json:"-"`
 	Updated       int64
-	//TODO Remove unused fields
-	Author      string
-	Name        string
-	Type        string
 	Body        string
-	Link        string
 	Comments    int
 	FeedName    string           `json:"-"`
 	Attachments []FeedAttachment `json:",omitempty"`
@@ -116,7 +111,7 @@ func feeds_db_create(db *DB) {
 	db.exec("create table subscribers ( feed references feeds( id ), id text not null, name text not null default '', primary key ( feed, id ) )")
 	db.exec("create index subscriber_id on subscribers( id )")
 
-	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, author text not null, name text not null, type text not null default 'text', body text not null, link text not null default '', comments integer not null default 0 )")
+	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, body text not null, comments integer not null default 0 )")
 	db.exec("create index posts_feed on posts( feed )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
@@ -485,20 +480,6 @@ func feeds_find(a *Action) {
 	a.template("feeds/find")
 }
 
-func feeds_list(a *Action) {
-	var fs []Feed
-	a.db.scans(&fs, "select * from feeds order by updated desc")
-
-	var ps []FeedPost
-	a.db.scans(&ps, "select * from posts order by updated desc")
-
-	for _, p := range ps {
-		a.db.scans(&p.Attachments, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
-	}
-
-	a.template("feeds/list", Map{"Feeds": fs, "Posts": &ps})
-}
-
 // Get details of a feed subscriber
 func feed_subscriber(db *DB, f *Feed, subscriber string) *FeedSubscriber {
 	var s FeedSubscriber
@@ -550,7 +531,7 @@ func feeds_post_create(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, body)
+	a.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", id, f.ID, now, now, body)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
 	var as []FeedAttachment
@@ -559,7 +540,7 @@ func feeds_post_create(a *Action) {
 		as = append(as, FeedAttachment{Feed: f.ID, Class: "post", ID: id, File: at.ID, Name: at.Name, Size: at.Size, Rank: at.Rank})
 	}
 
-	j := json_encode(FeedPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body, Attachments: as})
+	j := json_encode(FeedPost{ID: id, Created: now, Body: body, Attachments: as})
 	var ss []FeedSubscriber
 	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
@@ -584,16 +565,6 @@ func feeds_post_create_event(e *Event) {
 		return
 	}
 
-	if !valid(p.Author, "public") {
-		log_info("Feed dropping post with invalid author '%s'", p.Author)
-		return
-	}
-
-	if !valid(p.Name, "name") {
-		log_info("Feed dropping post with invalid name '%s'", p.Name)
-		return
-	}
-
 	if !valid(p.Body, "text") {
 		log_info("Feed dropping post with invalid body '%s'", p.Body)
 		return
@@ -604,7 +575,7 @@ func feeds_post_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into posts ( id, feed, created, updated, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Body)
+	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Body)
 
 	for _, at := range p.Attachments {
 		e.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, e.ID, at.File, at.Name, at.Size, at.Rank)
@@ -620,7 +591,13 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
-	a.template("feeds/post/new", feed_by_id(a.user, a.db, a.id()))
+	f := feed_by_id(a.user, a.db, a.id())
+	if f == nil {
+		a.error(404, "Feed not found")
+		return
+	}
+
+	a.template("feeds/post/new", f)
 }
 
 // Reaction to a post
@@ -841,6 +818,7 @@ func feeds_subscribe(a *Action) {
 	}
 
 	a.db.exec("replace into feeds ( id, fingerprint, name, subscribers, updated ) values ( ?, ?, ?, 1, ? )", id, fingerprint(id), d.Name, now())
+	//TODO Consider if we need this
 	a.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", id, a.user.Identity.ID, a.user.Identity.Name)
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
@@ -943,7 +921,7 @@ func feeds_view(a *Action) {
 	var f *Feed = nil
 
 	if a.id() != "" {
-		f := feed_by_id(a.user, a.db, a.id())
+		f = feed_by_id(a.user, a.db, a.id())
 		if f == nil {
 			a.error(404, "Feed not found")
 			return
@@ -953,14 +931,6 @@ func feeds_view(a *Action) {
 	owner := false
 	if f != nil && f.identity != nil {
 		owner = true
-	}
-
-	var s *FeedSubscriber = nil
-	if f != nil && a.user != nil {
-		s = &FeedSubscriber{}
-		if !a.db.scan(s, "select * from subscribers where feed=? and id=?", f.ID, a.user.Identity.ID) {
-			s = nil
-		}
 	}
 
 	var ps []FeedPost
@@ -979,6 +949,5 @@ func feeds_view(a *Action) {
 	var fs []Feed
 	a.db.scans(&fs, "select * from feeds order by updated desc")
 
-	log_debug("Posts='%#v'", ps)
-	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Subscriber": &s, "Posts": &ps, "Feeds": &fs})
+	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Posts": &ps, "Feeds": &fs})
 }

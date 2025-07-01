@@ -1,8 +1,6 @@
 0.1
 	Replace command line flags with config file
 	Send email via remote server
-	Files app
-		Image thumbnails
 	Forums app
 		Attachments
 	Chat app
@@ -19,6 +17,7 @@
 	Command line client
 	Route on entity
 	Find hidden services
+	Avatars
 	Users can change their settings
 	Users can have multiple identities
 	Users can set public URLs to publish data

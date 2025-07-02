@@ -26,10 +26,12 @@ type FeedPost struct {
 	Created       int64
 	CreatedString string `json:"-"`
 	Updated       int64
-	Body        string
-	Comments    int
-	FeedName    string           `json:"-"`
-	Attachments []FeedAttachment `json:",omitempty"`
+	Body          string
+	FeedName      string            `json:"-"`
+	MyReaction    string            `json:"-"`
+	Attachments   *[]FeedAttachment `json:",omitempty"`
+	Reactions     *[]FeedReaction   `json:"-"`
+	Comments      *[]FeedComment    `json:"-"`
 }
 
 type FeedAttachment struct {
@@ -81,7 +83,7 @@ func init() {
 	a.path("feeds/:entity/post", feeds_post_new)
 	a.path("feeds/:entity/subscribe", feeds_subscribe)
 	a.path("feeds/:entity/unsubscribe", feeds_unsubscribe)
-	a.path("feeds/:entity/:post", feeds_post_view)
+	a.path("feeds/:entity/:post", feeds_view)
 	a.path("feeds/:entity/:post/comment", feeds_comment_new)
 	a.path("feeds/:entity/:post/create", feeds_comment_create)
 	a.path("feeds/:entity/:post/react/:reaction", feeds_post_react)
@@ -111,7 +113,7 @@ func feeds_db_create(db *DB) {
 	db.exec("create table subscribers ( feed references feeds( id ), id text not null, name text not null default '', primary key ( feed, id ) )")
 	db.exec("create index subscriber_id on subscribers( id )")
 
-	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, body text not null, comments integer not null default 0 )")
+	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, body text not null )")
 	db.exec("create index posts_feed on posts( feed )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
@@ -146,7 +148,7 @@ func feed_by_id(u *User, db *DB, id string) *Feed {
 }
 
 // Get comments recursively
-func feed_comments(u *User, db *DB, f *Feed, s *FeedSubscriber, p *FeedPost, parent *FeedComment, depth int) *[]FeedComment {
+func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int) *[]FeedComment {
 	if depth > 1000 {
 		return nil
 	}
@@ -156,7 +158,7 @@ func feed_comments(u *User, db *DB, f *Feed, s *FeedSubscriber, p *FeedPost, par
 		id = parent.ID
 	}
 	var cs []FeedComment
-	db.scans(&cs, "select * from comments where feed=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
+	db.scans(&cs, "select * from comments where feed=? and post=? and parent=? order by created desc", p.Feed, p.ID, id)
 	for j, c := range cs {
 		cs[j].CreatedString = time_local(u, c.Created)
 
@@ -169,7 +171,7 @@ func feed_comments(u *User, db *DB, f *Feed, s *FeedSubscriber, p *FeedPost, par
 		db.scans(&rs, "select * from reactions where class='comment' and id=? and subscriber!=? and reaction!='' order by name", cs[j].ID, u.Identity.ID)
 		cs[j].Reactions = &rs
 
-		cs[j].Children = feed_comments(u, db, f, s, p, &c, depth+1)
+		cs[j].Children = feed_comments(u, db, p, &c, depth+1)
 	}
 	return &cs
 }
@@ -214,7 +216,7 @@ func feeds_comment_create(a *Action) {
 	}
 
 	a.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
-	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
+	a.db.exec("update posts set updated=? where id=?", now, post)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
 	if f.identity == nil {
@@ -273,7 +275,7 @@ func feeds_comment_create_event(e *Event) {
 	}
 
 	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
-	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
+	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 }
 
@@ -317,7 +319,7 @@ func feeds_comment_submit_event(e *Event) {
 	}
 
 	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
-	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
+	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 
 	j := json_encode(c)
@@ -540,7 +542,7 @@ func feeds_post_create(a *Action) {
 		as = append(as, FeedAttachment{Feed: f.ID, Class: "post", ID: id, File: at.ID, Name: at.Name, Size: at.Size, Rank: at.Rank})
 	}
 
-	j := json_encode(FeedPost{ID: id, Created: now, Body: body, Attachments: as})
+	j := json_encode(FeedPost{ID: id, Created: now, Body: body, Attachments: &as})
 	var ss []FeedSubscriber
 	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
@@ -577,7 +579,7 @@ func feeds_post_create_event(e *Event) {
 
 	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Body)
 
-	for _, at := range p.Attachments {
+	for _, at := range *p.Attachments {
 		e.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, e.ID, at.File, at.Name, at.Size, at.Rank)
 	}
 
@@ -591,6 +593,7 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
+	//TODO Allow use to choose feed
 	f := feed_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Feed not found")
@@ -703,40 +706,6 @@ func feeds_post_reaction_event(e *Event) {
 	}
 }
 
-// View a post
-func feeds_post_view(a *Action) {
-	var p FeedPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
-		a.error(404, "Post not found")
-		return
-	}
-	p.CreatedString = time_local(a.user, p.Created)
-
-	f := feed_by_id(a.user, a.db, p.Feed)
-	if f == nil {
-		a.error(404, "Feed not found")
-		return
-	}
-	var s *FeedSubscriber = nil
-	if a.user != nil {
-		s = &FeedSubscriber{}
-		if !a.db.scan(s, "select * from subscribers where feed=? and id=?", f.ID, a.user.Identity.ID) {
-			s = nil
-		}
-	}
-
-	var as []FeedAttachment
-	a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
-
-	var r FeedReaction
-	a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID)
-
-	var rs []FeedReaction
-	a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
-
-	a.template("feeds/post/view", Map{"Feed": f, "Post": &p, "Attachments": &as, "Comments": feed_comments(a.user, a.db, f, s, &p, nil, 0), "MyReaction": r.Reaction, "Reactions": rs})
-}
-
 // Validate a reaction
 func feeds_reaction_valid(reaction string) string {
 	if valid(reaction, "^(|like|dislike|laugh|amazed|love|sad|angry|agree|disagree)$") {
@@ -767,7 +736,7 @@ func feed_send_recent_posts(db *DB, f *Feed, subscriber string) {
 	for _, p := range ps {
 		var as []FeedAttachment
 		db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
-		p.Attachments = as
+		p.Attachments = &as
 
 		e := Event{ID: p.ID, From: f.ID, To: subscriber, Service: "feeds", Action: "post/create", Content: json_encode(p)}
 		e.send()
@@ -933,21 +902,42 @@ func feeds_view(a *Action) {
 		owner = true
 	}
 
+	var fs []Feed
+	a.db.scans(&fs, "select * from feeds order by updated desc")
+
+	post := a.input("post")
 	var ps []FeedPost
-	if f == nil {
-		a.db.scans(&ps, "select * from posts order by updated desc")
-	} else {
+	if post != "" {
+		a.db.scans(&ps, "select * from posts where id=?", post)
+	} else if f != nil {
 		a.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+	} else {
+		a.db.scans(&ps, "select * from posts order by updated desc")
 	}
 
 	for i, p := range ps {
+		var f Feed
+		if a.db.scan(&f, "select name from feeds where id=?", p.Feed) {
+			ps[i].FeedName = f.Name
+		}
+
+		ps[i].CreatedString = time_local(a.user, p.Created)
+
 		var as []FeedAttachment
 		a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
-		ps[i].Attachments = as
-	}
+		ps[i].Attachments = &as
 
-	var fs []Feed
-	a.db.scans(&fs, "select * from feeds order by updated desc")
+		var r FeedReaction
+		if a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID) {
+			ps[i].MyReaction = r.Reaction
+		}
+
+		var rs []FeedReaction
+		a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
+		ps[i].Reactions = &rs
+
+		ps[i].Comments = feed_comments(a.user, a.db, &p, nil, 0)
+	}
 
 	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Posts": &ps, "Feeds": &fs})
 }

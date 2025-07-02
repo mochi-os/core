@@ -170,7 +170,7 @@ func files_view(a *Action) {
 }
 
 // Do the work of viewing a file
-//TODO The "extra" field for thumbnails isn't very elegant. It would be good to find a neater way.
+// TODO The "extra" field for thumbnails isn't very elegant. It would be good to find a neater way.
 func files_view_action(a *Action, extra string) {
 	var err error
 

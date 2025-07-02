@@ -593,7 +593,7 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
-	//TODO Allow use to choose feed
+	//TODO Allow user to choose feed
 	f := feed_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Feed not found")
@@ -787,8 +787,6 @@ func feeds_subscribe(a *Action) {
 	}
 
 	a.db.exec("replace into feeds ( id, fingerprint, name, subscribers, updated ) values ( ?, ?, ?, 1, ? )", id, fingerprint(id), d.Name, now())
-	//TODO Consider if we need this
-	a.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", id, a.user.Identity.ID, a.user.Identity.Name)
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()

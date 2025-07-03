@@ -86,8 +86,6 @@ func web_login(c *gin.Context) {
 }
 
 func (p *Path) web_path(c *gin.Context) {
-	//log_debug("Web path '%s', entity='%s'", c.Request.URL.Path, c.Param("entity"))
-
 	var user *User = nil
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
 	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
@@ -107,6 +105,8 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
+	//TODO Fix
+	//owner := user_by_identity(e.ID)
 	owner := user
 	if owner == nil && e != nil {
 		owner = user_by_id(e.User)

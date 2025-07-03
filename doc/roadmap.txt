@@ -3,6 +3,7 @@
 	Send email via remote server
 	Forums app
 		Attachments
+		View when not logged in
 	Chat app
 		Group Chat
 		Attachments

@@ -6,7 +6,7 @@
 
 {{if .User}}
 <p><a href="/feeds/find">Subscribe to a feed</a>{{if .Feed}}{{if not .Feed.Owner}} | <a href="/feeds/{{.Feed.ID}}/unsubscribe">Unsubscribe from {{.Feed.Name}}</a>{{end}}{{end}} | <a href="/feeds/new">Create new feed</a>{{if .Owner}} | <a href="/feeds/post/new{{if .Feed}}?current={{.Feed.ID}}{{end}}">New post</a>{{end}}<br/>
-<a href="/feeds">All feeds</a>{{range .Feeds}} | <a href="/feeds/{{.ID}}">{{.Name}}</a>{{end}}</p>
+<a href="/feeds">All feeds</a>{{range .Feeds}} | <a href="/feeds/{{.Fingerprint}}">{{.Name}}</a>{{end}}</p>
 {{end}}
 
 <div style="background: #dddddd; padding: 5px;">

@@ -915,10 +915,6 @@ func feeds_view(a *Action) {
 	var f *Feed = nil
 	if a.id() != "" {
 		f = feed_by_id(a.user, a.db, a.id())
-		if f == nil {
-			a.error(404, "Feed not found")
-			return
-		}
 	}
 
 	if identity == "" && f == nil {

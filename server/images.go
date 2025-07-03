@@ -15,6 +15,25 @@ import (
 	"strings"
 )
 
+func is_image(file string) bool {
+	ext := filepath.Ext(file)
+
+	switch ext {
+	case ".gif":
+		return true
+	case ".jpeg":
+		return true
+	case ".jpg":
+		return true
+	case ".png":
+		return true
+	case ".webp":
+		return true
+	}
+
+	return false
+}
+
 func thumbnail_create(file string) (string, error) {
 	thumb := thumbnail_name(file)
 	if file_exists(thumb) {
@@ -48,7 +67,6 @@ func thumbnail_create(file string) (string, error) {
 	case "png":
 		err = png.Encode(o, t)
 	default:
-		//TODO Decide what to do about other formats
 		return "", nil
 	}
 

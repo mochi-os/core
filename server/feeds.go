@@ -43,6 +43,7 @@ type FeedAttachment struct {
 	Name  string
 	Size  int64
 	Rank  int
+	Image bool `json:"-"`
 }
 
 type FeedComment struct {
@@ -948,6 +949,9 @@ func feeds_view(a *Action) {
 
 		var as []FeedAttachment
 		a.db.scans(&as, "select * from attachments where class='post' and id=? order by rank, name", p.ID)
+		for j, a := range as {
+			as[j].Image = is_image(a.Name)
+		}
 		ps[i].Attachments = &as
 
 		var r FeedReaction

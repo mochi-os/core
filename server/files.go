@@ -24,18 +24,18 @@ type FileRequest struct {
 	Identity string
 	Entity   string
 	ID       string
-	Extra    string
+	Variant  string
 	Response chan FileResponse
 	Time     int64
 }
 
 type FileResponse struct {
-	ID     string
-	Extra  string
-	Status int
-	Name   string
-	Size   int64
-	Data   []byte
+	ID      string
+	Variant string
+	Status  int
+	Name    string
+	Size    int64
+	Data    []byte
 }
 
 var (
@@ -93,23 +93,23 @@ func files_get_event(e *Event) {
 	if e.db.scan(&f, "select * from files where id=?", r.ID) {
 		file := fmt.Sprintf("%s/users/%d/files/%s", data_dir, e.user.ID, f.Path)
 
-		if r.Extra == "thumbnail" {
+		if r.Variant == "thumbnail" {
 			thumb, err := thumbnail_create(file)
 			if err == nil {
-				a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: thumbnail_name(f.Name), Size: file_size(thumb), Data: file_read(thumb)})}
+				a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Variant: r.Variant, Status: 200, Name: thumbnail_name(f.Name), Size: file_size(thumb), Data: file_read(thumb)})}
 				a.send()
 				return
 			}
 
 		} else if file_exists(file) {
-			a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 200, Name: f.Name, Size: f.Size, Data: file_read(file)})}
+			a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Variant: r.Variant, Status: 200, Name: f.Name, Size: f.Size, Data: file_read(file)})}
 			a.send()
 			return
 		}
 	}
 
 	log_info("Files received request for unknown file '%s'", r.ID)
-	a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Extra: r.Extra, Status: 404})}
+	a := Event{ID: e.ID, From: e.To, To: e.From, Service: "files", Action: "send", Content: json_encode(FileResponse{ID: r.ID, Variant: r.Variant, Status: 404})}
 	a.send()
 }
 
@@ -170,8 +170,7 @@ func files_view(a *Action) {
 }
 
 // Do the work of viewing a file
-// TODO The "extra" field for thumbnails isn't very elegant. It would be good to find a neater way.
-func files_view_action(a *Action, extra string) {
+func files_view_action(a *Action, variant string) {
 	var err error
 
 	id := a.input("id")
@@ -191,6 +190,7 @@ func files_view_action(a *Action, extra string) {
 	var f File
 	if a.db.scan(&f, "select * from files where id=?", id) {
 		name := f.Name
+		size := f.Size
 
 		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.owner.ID, f.Path)
 		if !file_exists(path) {
@@ -198,19 +198,20 @@ func files_view_action(a *Action, extra string) {
 			return
 		}
 
-		if extra == "thumbnail" {
+		if variant == "thumbnail" {
 			path, err = thumbnail_create(path)
 			if err != nil {
 				a.error(500, "Unable to generate thumbnail: %s", err)
 				return
 			}
 			name = thumbnail_name(name)
+			size = file_size(path)
 		}
 
 		r, err := os.Open(path)
 		defer r.Close()
 		if err == nil {
-			a.web.DataFromReader(http.StatusOK, f.Size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(name) + "\""})
+			a.web.DataFromReader(http.StatusOK, size, file_name_type(f.Name), r, map[string]string{"Content-Disposition": "inline; filename=\"" + file_name_safe(name) + "\""})
 			return
 		}
 	}
@@ -230,7 +231,7 @@ func files_view_action(a *Action, extra string) {
 	// Check cache
 	var c CacheFile
 	db_cache := db_open("db/cache.db")
-	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=? and extra=?", user, identity, entity, id, extra) {
+	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=? and variant=?", user, identity, entity, id, variant) {
 		r, err := os.Open(cache_dir + "/" + c.Path)
 		defer r.Close()
 		if err == nil {
@@ -243,20 +244,20 @@ func files_view_action(a *Action, extra string) {
 	found := false
 	mu.Lock()
 	for _, fr := range files_requested {
-		if fr.Identity == identity && fr.Entity == entity && fr.ID == id && fr.Extra == extra {
+		if fr.Identity == identity && fr.Entity == entity && fr.ID == id && fr.Variant == variant {
 			found = true
 			break
 		}
 	}
 	mu.Unlock()
 	if !found {
-		e := Event{ID: uid(), From: identity, To: entity, Service: "files", Action: "get", Content: json_encode(Map{"ID": id, "Extra": extra})}
+		e := Event{ID: uid(), From: identity, To: entity, Service: "files", Action: "get", Content: json_encode(Map{"ID": id, "Variant": variant})}
 		e.send()
 	}
 
 	// Add to list of requested files
 	mu.Lock()
-	fr := FileRequest{Identity: identity, Entity: entity, ID: id, Extra: extra, Response: make(chan FileResponse), Time: now()}
+	fr := FileRequest{Identity: identity, Entity: entity, ID: id, Variant: variant, Response: make(chan FileResponse), Time: now()}
 	files_requested = append(files_requested, &fr)
 	mu.Unlock()
 
@@ -271,7 +272,7 @@ func files_view_action(a *Action, extra string) {
 		path := fmt.Sprintf("files/%d/%s/%s/%s_%s", user, identity, entity, id, safe)
 		file_mkdir(fmt.Sprintf("%s/files/%d/%s/%s", cache_dir, user, identity, entity))
 		file_write(cache_dir+"/"+path, r.Data)
-		db_cache.exec("replace into files ( user, identity, entity, id, extra, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, extra, r.Name, path, r.Size, now())
+		db_cache.exec("replace into files ( user, identity, entity, id, variant, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, variant, r.Name, path, r.Size, now())
 
 	} else {
 		a.error(500, "Unable to fetch remote file")

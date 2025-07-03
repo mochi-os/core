@@ -58,6 +58,7 @@ type FeedComment struct {
 	MyReaction    string          `json:"-"`
 	Reactions     *[]FeedReaction `json:"-"`
 	Children      *[]FeedComment  `json:"-"`
+	User          int             `json:"-"`
 }
 
 type FeedReaction struct {
@@ -160,18 +161,28 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 	if parent != nil {
 		id = parent.ID
 	}
+
+	identity := ""
+	if u != nil {
+		identity = u.Identity.ID
+	}
+
 	var cs []FeedComment
 	db.scans(&cs, "select * from comments where feed=? and post=? and parent=? order by created desc", p.Feed, p.ID, id)
 	for j, c := range cs {
 		cs[j].CreatedString = time_local(u, c.Created)
+		cs[j].User = 0
+		if u != nil {
+			cs[j].User = u.ID
+		}
 
 		var r FeedReaction
-		if db.scan(&r, "select reaction from reactions where class='comment' and id=? and subscriber=?", cs[j].ID, u.Identity.ID) {
+		if db.scan(&r, "select reaction from reactions where class='comment' and id=? and subscriber=?", cs[j].ID, identity) {
 			cs[j].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		db.scans(&rs, "select * from reactions where class='comment' and id=? and subscriber!=? and reaction!='' order by name", cs[j].ID, u.Identity.ID)
+		db.scans(&rs, "select * from reactions where class='comment' and id=? and subscriber!=? and reaction!='' order by name", cs[j].ID, identity)
 		cs[j].Reactions = &rs
 
 		cs[j].Children = feed_comments(u, db, p, &c, depth+1)
@@ -895,14 +906,23 @@ func feeds_update_event(e *Event) {
 
 // View a feed, or all feeds
 func feeds_view(a *Action) {
-	var f *Feed = nil
+	identity := ""
+	if a.user != nil {
+		identity = a.user.Identity.ID
+	}
 
+	var f *Feed = nil
 	if a.id() != "" {
 		f = feed_by_id(a.user, a.db, a.id())
 		if f == nil {
 			a.error(404, "Feed not found")
 			return
 		}
+	}
+
+	if identity == "" && f == nil {
+		a.error(404, "No feed specified")
+		return
 	}
 
 	var fs []Feed
@@ -931,12 +951,12 @@ func feeds_view(a *Action) {
 		ps[i].Attachments = &as
 
 		var r FeedReaction
-		if a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, a.user.Identity.ID) {
+		if a.db.scan(&r, "select reaction from reactions where class='post' and id=? and subscriber=?", p.ID, identity) {
 			ps[i].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, a.user.Identity.ID)
+		a.db.scans(&rs, "select * from reactions where class='post' and id=? and subscriber!=? and reaction!='' order by name", p.ID, identity)
 		ps[i].Reactions = &rs
 
 		ps[i].Comments = feed_comments(a.user, a.db, &p, nil, 0)
@@ -947,5 +967,5 @@ func feeds_view(a *Action) {
 		owner = true
 	}
 
-	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner})
+	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

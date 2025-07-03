@@ -180,14 +180,21 @@ func files_view_action(a *Action, extra string) {
 		return
 	}
 
+	user := 0
+	identity := "anonymous"
+	if a.user != nil {
+		user = a.user.ID
+		identity = a.user.Identity.ID
+	}
+
 	// Check local
 	var f File
 	if a.db.scan(&f, "select * from files where id=?", id) {
 		name := f.Name
 
-		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.user.ID, f.Path)
+		path := fmt.Sprintf("%s/users/%d/files/%s", data_dir, a.owner.ID, f.Path)
 		if !file_exists(path) {
-			a.error(500, "File exists in database but no file found")
+			a.error(500, "File '%s' exists in database but '%s' not found", id, path)
 			return
 		}
 
@@ -208,6 +215,11 @@ func files_view_action(a *Action, extra string) {
 		}
 	}
 
+	if a.user == nil {
+		a.error(404, "Not found locally and not logged in")
+		return
+	}
+
 	// Not local, must be remote
 	entity := a.input("entity")
 	if !valid(entity, "public") {
@@ -218,7 +230,7 @@ func files_view_action(a *Action, extra string) {
 	// Check cache
 	var c CacheFile
 	db_cache := db_open("db/cache.db")
-	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=? and extra=?", a.user.ID, a.user.Identity.ID, entity, id, extra) {
+	if db_cache.scan(&c, "select * from files where user=? and identity=? and entity=? and id=? and extra=?", user, identity, entity, id, extra) {
 		r, err := os.Open(cache_dir + "/" + c.Path)
 		defer r.Close()
 		if err == nil {
@@ -231,20 +243,20 @@ func files_view_action(a *Action, extra string) {
 	found := false
 	mu.Lock()
 	for _, fr := range files_requested {
-		if fr.Identity == a.user.Identity.ID && fr.Entity == entity && fr.ID == id && fr.Extra == extra {
+		if fr.Identity == identity && fr.Entity == entity && fr.ID == id && fr.Extra == extra {
 			found = true
 			break
 		}
 	}
 	mu.Unlock()
 	if !found {
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: entity, Service: "files", Action: "get", Content: json_encode(Map{"ID": id, "Extra": extra})}
+		e := Event{ID: uid(), From: identity, To: entity, Service: "files", Action: "get", Content: json_encode(Map{"ID": id, "Extra": extra})}
 		e.send()
 	}
 
 	// Add to list of requested files
 	mu.Lock()
-	fr := FileRequest{Identity: a.user.Identity.ID, Entity: entity, ID: id, Extra: extra, Response: make(chan FileResponse), Time: now()}
+	fr := FileRequest{Identity: identity, Entity: entity, ID: id, Extra: extra, Response: make(chan FileResponse), Time: now()}
 	files_requested = append(files_requested, &fr)
 	mu.Unlock()
 
@@ -256,10 +268,10 @@ func files_view_action(a *Action, extra string) {
 		a.web.Data(http.StatusOK, file_name_type(r.Name), r.Data)
 
 		// Add to cache
-		path := fmt.Sprintf("files/%d/%s/%s/%s_%s", a.user.ID, a.user.Identity.ID, entity, id, safe)
-		file_mkdir(fmt.Sprintf("%s/files/%d/%s/%s", cache_dir, a.user.ID, a.user.Identity.ID, entity))
+		path := fmt.Sprintf("files/%d/%s/%s/%s_%s", user, identity, entity, id, safe)
+		file_mkdir(fmt.Sprintf("%s/files/%d/%s/%s", cache_dir, user, identity, entity))
 		file_write(cache_dir+"/"+path, r.Data)
-		db_cache.exec("replace into files ( user, identity, entity, id, extra, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )", a.user.ID, a.user.Identity.ID, entity, id, extra, r.Name, path, r.Size, now())
+		db_cache.exec("replace into files ( user, identity, entity, id, extra, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, extra, r.Name, path, r.Size, now())
 
 	} else {
 		a.error(500, "Unable to fetch remote file")

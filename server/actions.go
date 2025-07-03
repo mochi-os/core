@@ -10,6 +10,7 @@ import (
 type Action struct {
 	entity *Identity
 	user   *User
+	owner  *User
 	db     *DB
 	web    *gin.Context
 }

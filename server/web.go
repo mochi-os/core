@@ -86,12 +86,13 @@ func web_login(c *gin.Context) {
 }
 
 func (p *Path) web_path(c *gin.Context) {
-	log_debug("Web path '%s', entity='%s'", c.Request.URL.Path, c.Param("entity"))
-	var u *User = nil
+	//log_debug("Web path '%s', entity='%s'", c.Request.URL.Path, c.Param("entity"))
+
+	var user *User = nil
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
 	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
-		u = web_auth(c)
-		if u != nil && u.Identity == nil {
+		user = web_auth(c)
+		if user != nil && user.Identity == nil {
 			web_template(c, 200, "login/identity")
 			return
 		}
@@ -106,21 +107,22 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
+	owner := user
+	if owner == nil && e != nil {
+		owner = user_by_id(e.User)
+	}
+
 	var db *DB = nil
 	if p.app.db_file != "" {
-		dbu := u
-		if dbu == nil && e != nil {
-			dbu = user_by_id(e.User)
-		}
-		if dbu == nil {
+		if owner == nil {
 			web_error(c, 401, "Path not public, and not logged in")
 			return
 		}
-		db = db_app(dbu, p.app.name, p.app.db_file, p.app.db_create)
+		db = db_app(owner, p.app.name, p.app.db_file, p.app.db_create)
 		defer db.close()
 	}
 
-	p.action(&Action{entity: e, user: u, db: db, web: c})
+	p.action(&Action{entity: e, user: user, owner: owner, db: db, web: c})
 }
 
 func web_ping(c *gin.Context) {

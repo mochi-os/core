@@ -1,13 +1,14 @@
 {{define "title"}}{{if .Feed}}{{.Feed.Name}}{{else}}Feeds{{end}}{{end}}
-{{template "head_cards" .}}
+{{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a>{{if .Feed}} | {{.Feed.Name}}{{end}}</p>
 
 <style>.off { filter: grayscale(100%); }</style>
 
-<p><a href="/feeds/new">Create feed</a> | <a href="/feeds/find">Subscribe to feed</a><br/>
+<!--TODO Check if logged in-->
+<p><a href="/feeds/find">Subscribe to a feed</a>{{if .Feed}}{{if not .Feed.Owner}} | <a href="/feeds/{{.Feed.ID}}/unsubscribe">Unsubscribe from {{.Feed.Name}}</a>{{end}}{{end}} | <a href="/feeds/new">Create new feed</a>{{if .Owner}} | <a href="/feeds/post/new{{if .Feed}}?current={{.Feed.ID}}{{end}}">New post</a>{{end}}<br/>
 <a href="/feeds">All feeds</a>{{range .Feeds}} | <a href="/feeds/{{.ID}}">{{.Name}}</a>{{end}}</p>
 
-{{if .Feed}}<p>{{.Feed.Name}}: {{if .Owner}}<a href="/feeds/{{.Feed}}/post">New post</a> | {{end}}<a href="/feeds/{{.Feed}}/unsubscribe">Unsubscribe</a></p>{{end}}
+<div style="background: #dddddd; padding: 5px;">
 
 {{range .Posts}}
 <div style="background: white; margin: 10px; padding: 4px; border-radius: 6px;">
@@ -24,6 +25,7 @@
 </div>
 {{end}}
 
+</div>
 {{template "foot" .}}
 
 {{define "feed_comment"}}

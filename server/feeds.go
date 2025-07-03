@@ -8,6 +8,7 @@ type Feed struct {
 	Fingerprint string
 	Name        string
 	Privacy     string
+	Owner       int
 	Subscribers int
 	Updated     int64
 	identity    *Identity
@@ -77,6 +78,8 @@ func init() {
 	a.path("feeds/create", feeds_create)
 	a.path("feeds/find", feeds_find)
 	a.path("feeds/new", feeds_new)
+	a.path("feeds/post/create", feeds_post_create)
+	a.path("feeds/post/new", feeds_post_new)
 	a.path("feeds/search", feeds_search)
 	a.path("feeds/:entity", feeds_view)
 	a.path("feeds/:entity/create", feeds_post_create)
@@ -105,7 +108,7 @@ func feeds_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")
 	db.exec("replace into settings ( name, value ) values ( 'schema', 1 )")
 
-	db.exec("create table feeds ( id text not null primary key, fingerprint text not null, name text not null, privacy text not null default 'public', subscribers integer not null default 0, updated integer not null )")
+	db.exec("create table feeds ( id text not null primary key, fingerprint text not null, name text not null, privacy text not null default 'public', owner integer not null default 0, subscribers integer not null default 0, updated integer not null )")
 	db.exec("create index feeds_fingerprint on feeds( fingerprint )")
 	db.exec("create index feeds_name on feeds( name )")
 	db.exec("create index feeds_updated on feeds( updated )")
@@ -471,7 +474,7 @@ func feeds_create(a *Action) {
 		a.error(500, "Unable to create identity: %s", err)
 		return
 	}
-	a.db.exec("replace into feeds ( id, fingerprint, name, subscribers, updated ) values ( ?, ?, ?, 1, ? )", i.ID, i.Fingerprint, name, now())
+	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", i.ID, i.Fingerprint, name, now())
 	a.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
 
 	a.template("feeds/create", i.Fingerprint)
@@ -495,7 +498,7 @@ func feed_subscriber(db *DB, f *Feed, subscriber string) *FeedSubscriber {
 func feeds_new(a *Action) {
 	name := ""
 
-	if !a.db.exists("select * from feeds") {
+	if !a.db.exists("select * from feeds where owner=1 limit 1") {
 		// This is our first feed, so suggest our name as the feed name
 		name = a.user.Identity.Name
 	}
@@ -517,6 +520,7 @@ func feeds_post_create(a *Action) {
 		a.error(404, "Feed not found")
 		return
 	}
+	log_debug("New post in feed '%s'", f.Name)
 	if f.identity == nil {
 		a.error(403, "Not feed owner")
 	}
@@ -579,8 +583,10 @@ func feeds_post_create_event(e *Event) {
 
 	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Body)
 
-	for _, at := range *p.Attachments {
-		e.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, e.ID, at.File, at.Name, at.Size, at.Rank)
+	if p.Attachments != nil {
+		for _, at := range *p.Attachments {
+			e.db.exec("replace into attachments ( feed, class, id, file, name, size, rank ) values ( ?, 'post', ?, ?, ?, ?, ? )", f.ID, e.ID, at.File, at.Name, at.Size, at.Rank)
+		}
 	}
 
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
@@ -593,14 +599,14 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
-	//TODO Allow user to choose feed
-	f := feed_by_id(a.user, a.db, a.id())
-	if f == nil {
-		a.error(404, "Feed not found")
+	var fs []Feed
+	a.db.scans(&fs, "select * from feeds where owner=1 order by name")
+	if len(fs) == 0 {
+		a.error(500, "You do not own any feeds")
 		return
 	}
 
-	a.template("feeds/post/new", f)
+	a.template("feeds/post/new", Map{"Feeds": fs, "Current": a.input("current")})
 }
 
 // Reaction to a post
@@ -786,7 +792,7 @@ func feeds_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into feeds ( id, fingerprint, name, subscribers, updated ) values ( ?, ?, ?, 1, ? )", id, fingerprint(id), d.Name, now())
+	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", id, fingerprint(id), d.Name, now())
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
@@ -823,6 +829,10 @@ func feeds_unsubscribe(a *Action) {
 	f := feed_by_id(a.user, a.db, a.id())
 	if f == nil {
 		a.error(404, "Feed not found")
+		return
+	}
+	if f.Owner == 1 {
+		a.error(404, "You own this feed")
 		return
 	}
 
@@ -895,11 +905,6 @@ func feeds_view(a *Action) {
 		}
 	}
 
-	owner := false
-	if f != nil && f.identity != nil {
-		owner = true
-	}
-
 	var fs []Feed
 	a.db.scans(&fs, "select * from feeds order by updated desc")
 
@@ -937,5 +942,10 @@ func feeds_view(a *Action) {
 		ps[i].Comments = feed_comments(a.user, a.db, &p, nil, 0)
 	}
 
-	a.template("feeds/view", Map{"Feed": f, "Owner": owner, "Posts": &ps, "Feeds": &fs})
+	owner := false
+	if a.db.exists("select id from feeds where owner=1 limit 1") {
+		owner = true
+	}
+
+	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner})
 }

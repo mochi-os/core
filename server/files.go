@@ -288,7 +288,6 @@ func (a *Action) upload(field string) []File {
 		db.exec("replace into files ( id, name, path, size, created ) values ( ?, ?, ?, ?, ? )", id, file.Filename, path, size, created)
 		results = append(results, File{ID: id, Name: file.Filename, Path: path, Size: size, Created: created, Rank: i + 1})
 
-		//TODO Test this makes thumbnails when uploading images
 		thumbnail_create(full_path)
 	}
 

@@ -2,7 +2,8 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.ID}}">{{.Name}}</a> | New post
 
-<form method="post" enctype="multipart/form-data" action="/feeds/{{.ID}}/create">
+<form method="post" enctype="multipart/form-data" action="/feeds/post/create">
+    <select name="entity">{{range .Feeds}}<option value="{{.ID}}" {{if eq $.Current .ID}}selected{{end}}>{{.Name}}</option>{{end}}</select><br/>
 	<textarea name="body" rows="20" cols="100"></textarea><br/>
 	<input type="file" name="attachments" multiple><br/>
     <input type="submit" value="Post"/>

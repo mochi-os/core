@@ -113,7 +113,7 @@ func db_manager() {
 
 func db_open(file string) *DB {
 	path := data_dir + "/" + file
-	log_debug("db_open() using '%s'", path)
+	//log_debug("db_open() using '%s'", path)
 
 	databases_lock.Lock()
 	db, found := databases[path]
@@ -123,7 +123,7 @@ func db_open(file string) *DB {
 		return db
 	}
 
-	log_debug("db_open() opening '%s'", path)
+	//log_debug("db_open() opening '%s'", path)
 	if !file_exists(path) {
 		file_create(path)
 	}

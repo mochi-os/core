@@ -71,24 +71,25 @@ func init() {
 	a := app("forums")
 	a.home("forums", map[string]string{"en": "Forums"})
 	a.db("db/forums.db", forums_db_create)
+	a.entity("forum")
 
 	a.path("forums", forums_list)
 	a.path("forums/create", forums_create)
 	a.path("forums/find", forums_find)
 	a.path("forums/new", forums_new)
 	a.path("forums/search", forums_search)
-	a.path("forums/:entity", forums_view)
-	a.path("forums/:entity/create", forums_post_create)
-	a.path("forums/:entity/members", forums_members_edit)
-	a.path("forums/:entity/members/save", forums_members_save)
-	a.path("forums/:entity/post", forums_post_new)
-	a.path("forums/:entity/subscribe", forums_subscribe)
-	a.path("forums/:entity/unsubscribe", forums_unsubscribe)
-	a.path("forums/:entity/:post", forums_post_view)
-	a.path("forums/:entity/:post/comment", forums_comment_new)
-	a.path("forums/:entity/:post/create", forums_comment_create)
-	a.path("forums/:entity/:post/vote/:vote", forums_post_vote)
-	a.path("forums/:entity/:post/:comment/vote/:vote", forums_comment_vote)
+	a.path("forums/:forum", forums_view)
+	a.path("forums/:forum/create", forums_post_create)
+	a.path("forums/:forum/members", forums_members_edit)
+	a.path("forums/:forum/members/save", forums_members_save)
+	a.path("forums/:forum/post", forums_post_new)
+	a.path("forums/:forum/subscribe", forums_subscribe)
+	a.path("forums/:forum/unsubscribe", forums_unsubscribe)
+	a.path("forums/:forum/:post", forums_post_view)
+	a.path("forums/:forum/:post/comment", forums_comment_new)
+	a.path("forums/:forum/:post/create", forums_comment_create)
+	a.path("forums/:forum/:post/vote/:vote", forums_post_vote)
+	a.path("forums/:forum/:post/:comment/vote/:vote", forums_comment_vote)
 
 	a.service("forums")
 	a.event("comment/create", forums_comment_create_event)
@@ -176,7 +177,7 @@ func forums_comment_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -335,7 +336,7 @@ func forums_comment_new(a *Action) {
 		return
 	}
 
-	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.id()), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Received a forum comment update event
@@ -534,7 +535,7 @@ func forums_members_edit(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil || f.identity == nil {
 		a.error(404, "Forum not found")
 		return
@@ -553,7 +554,7 @@ func forums_members_save(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil || f.identity == nil {
 		a.error(404, "Forum not found")
 		return
@@ -637,7 +638,7 @@ func forums_post_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -736,7 +737,7 @@ func forums_post_new(a *Action) {
 		return
 	}
 
-	a.template("forums/post/new", forum_by_id(a.user, a.db, a.id()))
+	a.template("forums/post/new", forum_by_id(a.user, a.db, a.input("forum")))
 }
 
 // Received a forum post from a member
@@ -1004,16 +1005,16 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	id := a.id()
-	if !valid(id, "public") {
+	forum := a.input("forum")
+	if !valid(forum, "public") {
 		a.error(400, "Invalid ID")
 		return
 	}
-	if forum_by_id(a.user, a.db, id) != nil {
+	if forum_by_id(a.user, a.db, forum) != nil {
 		a.error(400, "You are already subscribed to this forum")
 		return
 	}
-	d := directory_by_id(id)
+	d := directory_by_id(forum)
 	if d == nil {
 		a.error(404, "Unable to find forum in directory")
 		return
@@ -1024,13 +1025,13 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", id, fingerprint(id), d.Name, now())
-	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", id, a.user.Identity.ID, a.user.Identity.Name, m.Role)
+	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
+	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
+	e := Event{ID: uid(), From: a.user.Identity.ID, To: forum, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
-	a.template("forums/subscribe", Map{"Forum": id, "Role": m.Role})
+	a.template("forums/subscribe", Map{"Forum": forum, "Role": m.Role})
 }
 
 // Received a subscribe from a member
@@ -1062,7 +1063,7 @@ func forums_unsubscribe(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -1125,11 +1126,12 @@ func forums_update_event(e *Event) {
 
 // View a forum
 func forums_view(a *Action) {
-	f := forum_by_id(a.user, a.db, a.id())
+	f := forum_by_id(a.user, a.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
+
 	var m *ForumMember = nil
 	if a.user != nil {
 		m = &ForumMember{}

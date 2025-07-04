@@ -25,12 +25,13 @@ func init() {
 	a := app("chat")
 	a.home("chat", map[string]string{"en": "Chat"})
 	a.db("db/chat.db", chat_db_create)
+	a.entity("chat")
 
 	a.path("chat", chat_list)
 	a.path("chat/messages", chat_messages)
 	a.path("chat/new", chat_new)
 	a.path("chat/send", chat_send)
-	a.path("chat/:entity", chat_view)
+	a.path("chat/:chat", chat_view)
 
 	a.service("chat")
 	a.event("message", chat_receive)
@@ -162,7 +163,7 @@ func chat_view(a *Action) {
 		return
 	}
 
-	f := friend(a.user, a.id())
+	f := friend(a.user, a.input("chat"))
 	if f == nil {
 		a.error(404, "Friend not found")
 		return

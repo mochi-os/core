@@ -19,10 +19,6 @@ var (
 	actions = map[string]func(*Action){}
 )
 
-func (a *Action) id() string {
-	return a.input("entity")
-}
-
 func (a *Action) error(code int, message string, values ...any) {
 	log_debug(message, values...)
 	web_error(a.web, code, message, values...)
@@ -42,6 +38,21 @@ func (a *Action) input(name string) string {
 
 func (a *Action) json(in any) {
 	a.web.JSON(200, in)
+}
+
+func (a *Action) owner_mode() *Action {
+	log_debug("Switching action to owner mode")
+	a.user = nil
+
+	if a.db != nil {
+		a.db.close()
+		if a.owner != nil {
+			a.db = db_user(a.owner, a.path.app.db_file, a.path.app.db_create)
+			defer a.db.close()
+		}
+	}
+
+	return a
 }
 
 func (a *Action) redirect(url string) {
@@ -64,19 +75,4 @@ func (a *Action) write(format string, template string, values ...any) {
 func (a *App) action(action string, f func(*Action)) {
 	a.actions[action] = f
 	actions[action] = f
-}
-
-func (a *Action) owner_mode() *Action {
-	log_debug("Switching action to owner mode")
-	a.user = nil
-
-	if a.db != nil {
-		a.db.close()
-		if a.owner != nil {
-			a.db = db_user(a.owner, a.path.app.db_file, a.path.app.db_create)
-			defer a.db.close()
-		}
-	}
-
-	return a
 }

@@ -11,6 +11,7 @@ type App struct {
 	db_create        func(*DB)
 	events           map[string]func(*Event)
 	events_broadcast map[string]func(*Event)
+	entity_field     string
 }
 
 type Path struct {
@@ -57,12 +58,16 @@ func apps_start() {
 } */
 
 func app(name string) *App {
-	a := &App{id: name, name: name, db_file: "", db_create: nil}
+	a := &App{id: name, name: name, db_file: "", db_create: nil, entity_field: "entity"}
 	a.actions = make(map[string]func(*Action))
 	a.events = make(map[string]func(*Event))
 	a.events_broadcast = make(map[string]func(*Event))
 	apps[name] = a
 	return a
+}
+
+func (a *App) entity(field string) {
+	a.entity_field = field
 }
 
 func (a *App) path(path string, f func(*Action)) {

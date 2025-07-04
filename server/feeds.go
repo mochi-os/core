@@ -75,6 +75,7 @@ func init() {
 	a := app("feeds")
 	a.home("feeds", map[string]string{"en": "Feeds"})
 	a.db("db/feeds.db", feeds_db_create)
+	a.entity("feed")
 
 	a.path("feeds", feeds_view)
 	a.path("feeds/create", feeds_create)
@@ -83,16 +84,16 @@ func init() {
 	a.path("feeds/post/create", feeds_post_create)
 	a.path("feeds/post/new", feeds_post_new)
 	a.path("feeds/search", feeds_search)
-	a.path("feeds/:entity", feeds_view)
-	a.path("feeds/:entity/create", feeds_post_create)
-	a.path("feeds/:entity/post", feeds_post_new)
-	a.path("feeds/:entity/subscribe", feeds_subscribe)
-	a.path("feeds/:entity/unsubscribe", feeds_unsubscribe)
-	a.path("feeds/:entity/:post", feeds_view)
-	a.path("feeds/:entity/:post/comment", feeds_comment_new)
-	a.path("feeds/:entity/:post/create", feeds_comment_create)
-	a.path("feeds/:entity/:post/react/:reaction", feeds_post_react)
-	a.path("feeds/:entity/:post/:comment/react/:reaction", feeds_comment_react)
+	a.path("feeds/:feed", feeds_view)
+	a.path("feeds/:feed/create", feeds_post_create)
+	a.path("feeds/:feed/post", feeds_post_new)
+	a.path("feeds/:feed/subscribe", feeds_subscribe)
+	a.path("feeds/:feed/unsubscribe", feeds_unsubscribe)
+	a.path("feeds/:feed/:post", feeds_view)
+	a.path("feeds/:feed/:post/comment", feeds_comment_new)
+	a.path("feeds/:feed/:post/create", feeds_comment_create)
+	a.path("feeds/:feed/:post/react/:reaction", feeds_post_react)
+	a.path("feeds/:feed/:post/:comment/react/:reaction", feeds_comment_react)
 
 	a.service("feeds")
 	a.event("comment/create", feeds_comment_create_event)
@@ -200,7 +201,7 @@ func feeds_comment_create(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.id())
+	f := feed_by_id(a.user, a.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
@@ -355,7 +356,7 @@ func feeds_comment_new(a *Action) {
 		return
 	}
 
-	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.db, a.id()), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Reaction to a comment
@@ -527,7 +528,7 @@ func feeds_post_create(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.id())
+	f := feed_by_id(a.user, a.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
@@ -789,27 +790,27 @@ func feeds_subscribe(a *Action) {
 		return
 	}
 
-	id := a.id()
-	if !valid(id, "public") {
+	feed := a.input("feed")
+	if !valid(feed, "public") {
 		a.error(400, "Invalid ID")
 		return
 	}
-	if feed_by_id(a.user, a.db, id) != nil {
+	if feed_by_id(a.user, a.db, feed) != nil {
 		a.error(400, "You are already subscribed to this feed")
 		return
 	}
-	d := directory_by_id(id)
+	d := directory_by_id(feed)
 	if d == nil {
 		a.error(404, "Unable to find feed in directory")
 		return
 	}
 
-	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", id, fingerprint(id), d.Name, now())
+	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: id, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
+	e := Event{ID: uid(), From: a.user.Identity.ID, To: feed, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
-	a.template("feeds/subscribe", Map{"Feed": id})
+	a.template("feeds/subscribe", Map{"Feed": feed})
 }
 
 // Received a subscribe from a subscriber
@@ -838,7 +839,7 @@ func feeds_unsubscribe(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.id())
+	f := feed_by_id(a.user, a.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
@@ -907,12 +908,14 @@ func feeds_update_event(e *Event) {
 
 // View a feed, or all feeds
 func feeds_view(a *Action) {
+	feed := a.input("feed")
+
 	var f *Feed = nil
-	if a.id() != "" {
-		f = feed_by_id(a.user, a.db, a.id())
+	if feed != "" {
+		f = feed_by_id(a.user, a.db, feed)
 		if f == nil {
 			a = a.owner_mode()
-			f = feed_by_id(a.user, a.db, a.id())
+			f = feed_by_id(a.user, a.db, feed)
 		}
 	}
 

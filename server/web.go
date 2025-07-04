@@ -97,8 +97,7 @@ func (p *Path) web_path(c *gin.Context) {
 	}
 
 	var e *Identity = nil
-	//TODO Change?
-	entity := c.Param("entity")
+	entity := c.Param(p.app.entity_field)
 	if entity != "" {
 		e = identity_by_fingerprint(entity)
 		if e == nil {

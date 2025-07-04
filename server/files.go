@@ -46,7 +46,7 @@ var (
 func init() {
 	a := app("files")
 	a.home("files", map[string]string{"en": "Files"})
-	a.db("files.db", files_db_create)
+	a.db("db/files.db", files_db_create)
 
 	a.path("files", files_list)
 	a.path("files/create", files_create)

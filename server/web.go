@@ -97,6 +97,7 @@ func (p *Path) web_path(c *gin.Context) {
 	}
 
 	var e *Identity = nil
+	//TODO Change?
 	entity := c.Param("entity")
 	if entity != "" {
 		e = identity_by_fingerprint(entity)
@@ -105,24 +106,28 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	//TODO Fix
-	//owner := user_by_identity(e.ID)
 	owner := user
-	if owner == nil && e != nil {
-		owner = user_by_id(e.User)
+	if e != nil {
+		owner = user_owning_identity(e.ID)
 	}
 
 	var db *DB = nil
 	if p.app.db_file != "" {
-		if owner == nil {
+		if user != nil {
+			db = db_user(user, p.app.db_file, p.app.db_create)
+			defer db.close()
+
+		} else if owner != nil {
+			db = db_user(owner, p.app.db_file, p.app.db_create)
+			defer db.close()
+
+		} else {
 			web_error(c, 401, "Path not public, and not logged in")
 			return
 		}
-		db = db_app(owner, p.app.name, p.app.db_file, p.app.db_create)
-		defer db.close()
 	}
 
-	p.action(&Action{entity: e, user: user, owner: owner, db: db, web: c})
+	p.action(&Action{user: user, owner: owner, db: db, web: c, path: p})
 }
 
 func web_ping(c *gin.Context) {

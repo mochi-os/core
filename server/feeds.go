@@ -74,7 +74,7 @@ type FeedReaction struct {
 func init() {
 	a := app("feeds")
 	a.home("feeds", map[string]string{"en": "Feeds"})
-	a.db("feeds.db", feeds_db_create)
+	a.db("db/feeds.db", feeds_db_create)
 
 	a.path("feeds", feeds_view)
 	a.path("feeds/create", feeds_create)
@@ -907,14 +907,18 @@ func feeds_update_event(e *Event) {
 
 // View a feed, or all feeds
 func feeds_view(a *Action) {
-	identity := ""
-	if a.user != nil {
-		identity = a.user.Identity.ID
-	}
-
 	var f *Feed = nil
 	if a.id() != "" {
 		f = feed_by_id(a.user, a.db, a.id())
+		if f == nil {
+			a = a.owner_mode()
+			f = feed_by_id(a.user, a.db, a.id())
+		}
+	}
+
+	identity := ""
+	if a.user != nil {
+		identity = a.user.Identity.ID
 	}
 
 	if identity == "" && f == nil {

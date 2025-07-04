@@ -70,7 +70,7 @@ var (
 func init() {
 	a := app("forums")
 	a.home("forums", map[string]string{"en": "Forums"})
-	a.db("forums.db", forums_db_create)
+	a.db("db/forums.db", forums_db_create)
 
 	a.path("forums", forums_list)
 	a.path("forums/create", forums_create)

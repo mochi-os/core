@@ -21,7 +21,7 @@ type FriendInvite struct {
 func init() {
 	a := app("friends")
 	a.home("friends", map[string]string{"en": "Friends"})
-	a.db("friends.db", friends_db_create)
+	a.db("db/friends.db", friends_db_create)
 
 	a.path("friends", friends_list)
 	a.path("friends/accept", friends_accept)
@@ -52,7 +52,7 @@ func friends_db_create(db *DB) {
 
 // Get a friend
 func friend(u *User, id string) *Friend {
-	db := db_app(u, "friends", "friends.db", friends_db_create)
+	db := db_user(u, "db/friends.db", friends_db_create)
 	defer db.close()
 
 	var f Friend
@@ -64,7 +64,7 @@ func friend(u *User, id string) *Friend {
 
 // List friends
 func friends(u *User) *[]Friend {
-	db := db_app(u, "friends", "friends.db", friends_db_create)
+	db := db_user(u, "db/friends.db", friends_db_create)
 	defer db.close()
 
 	var f []Friend

@@ -90,17 +90,6 @@ func db_create() {
 	cache.exec("create index files_created on files( created )")
 }
 
-func db_app(u *User, app string, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/db/%s", u.ID, file)
-	if file_exists(data_dir + "/" + path) {
-		return db_open(path)
-	}
-
-	db := db_open(path)
-	create(db)
-	return db
-}
-
 func db_manager() {
 	for {
 		time.Sleep(time.Minute)
@@ -122,7 +111,10 @@ func db_manager() {
 	}
 }
 
-func db_open(path string) *DB {
+func db_open(file string) *DB {
+	path := data_dir + "/" + file
+	log_debug("db_open() using '%s'", path)
+
 	databases_lock.Lock()
 	db, found := databases[path]
 	databases_lock.Unlock()
@@ -131,12 +123,12 @@ func db_open(path string) *DB {
 		return db
 	}
 
-	file := data_dir + "/" + path
-	if !file_exists(file) {
-		file_create(file)
+	log_debug("db_open() opening '%s'", path)
+	if !file_exists(path) {
+		file_create(path)
 	}
 
-	h, err := sqlx.Open("sqlite3", file)
+	h, err := sqlx.Open("sqlite3", path)
 	check(err)
 	db = &DB{path: path, handle: h, closed: 0}
 

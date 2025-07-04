@@ -8,11 +8,11 @@ import (
 )
 
 type Action struct {
-	entity *Identity
-	user   *User
-	owner  *User
-	db     *DB
-	web    *gin.Context
+	user  *User
+	owner *User
+	db    *DB
+	web   *gin.Context
+	path  *Path
 }
 
 var (
@@ -20,9 +20,6 @@ var (
 )
 
 func (a *Action) id() string {
-	if a.entity != nil {
-		return a.entity.ID
-	}
 	return a.input("entity")
 }
 
@@ -67,4 +64,19 @@ func (a *Action) write(format string, template string, values ...any) {
 func (a *App) action(action string, f func(*Action)) {
 	a.actions[action] = f
 	actions[action] = f
+}
+
+func (a *Action) owner_mode() *Action {
+	log_debug("Switching action to owner mode")
+	a.user = nil
+
+	if a.db != nil {
+		a.db.close()
+		if a.owner != nil {
+			a.db = db_user(a.owner, a.path.app.db_file, a.path.app.db_create)
+			defer a.db.close()
+		}
+	}
+
+	return a
 }

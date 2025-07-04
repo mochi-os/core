@@ -133,7 +133,7 @@ func (e *Event) receive() {
 	}
 
 	if a.db_file != "" {
-		e.db = db_app(e.user, a.name, a.db_file, a.db_create)
+		e.db = db_user(e.user, a.db_file, a.db_create)
 		defer e.db.close()
 	}
 

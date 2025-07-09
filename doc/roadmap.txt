@@ -18,6 +18,7 @@
 	Command line client
 	Route on entity
 	Find hidden services
+	Directory get recent updates
 	Avatars
 	Users can change their settings
 	Users can have multiple identities

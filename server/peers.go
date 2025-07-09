@@ -25,7 +25,7 @@ var (
 	peer_add_chan                   = make(chan Peer)
 	peers_known                     = map[string]string{
 		//  "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
-		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1443",
+		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1444",
 	}
 	peer_publish_chan = make(chan bool)
 )
@@ -76,17 +76,21 @@ func peers_manager() {
 			continue
 		}
 
+		o, found := peers_connected[p.ID]
 		p.Updated = now()
-		e, found := peers_connected[p.ID]
-		//TODO Fix problem where we keep connecting to a peer we're already connected to
-		if found && p.Address == e.Address {
-			// We're already connected to this peer and it's at the same address as before, so just update its updated time
-			peers_connected[p.ID] = p
-			db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
+		peers_connected[p.ID] = p
+
+		if found {
+			if p.Address == o.Address {
+				log_debug("Updating already connected peer '%s'", p.ID)
+				db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
+			} else {
+				log_debug("Peer '%s' changed address from '%s' to '%s'", p.ID, o.Address, p.Address)
+				db.exec("update peers set address=?, updated=? where id=?", p.Address, p.Updated, p.ID)
+			}
 
 		} else if p.Connect && libp2p_connect(p.Address) {
-			// Newly connected peer
-			peers_connected[p.ID] = p
+			log_debug("New peer connected '%s'", p.ID)
 			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 			go events_check_queue("peer", p.ID)
 		}
@@ -110,6 +114,8 @@ func peers_publish(t *pubsub.Topic) {
 }
 
 // Received a peer publish event from another server
+// If the peer publishes its address as /ip4/0.0.0.0 or similar, we should probably
+// use the received address, but I don't know how to do this.
 func peer_publish_event(e *Event) {
 	var m map[string]string
 	if json_decode(&m, e.Content) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {

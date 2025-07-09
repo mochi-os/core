@@ -113,7 +113,8 @@ func identity_location(id string) (string, string, string, string) {
 	return "entity", id, "entity", id
 }
 
-// Re-publish all our identities every 30 days so the network knows they're still active
+// Re-publish all our identities every day so the network knows they're still active
+// Increase this interval in future versions, especially once the directory gets recent updates
 func identities_manager() {
 	db := db_open("db/users.db")
 
@@ -121,7 +122,7 @@ func identities_manager() {
 		time.Sleep(time.Minute)
 		if len(peers_connected) >= peers_minimum {
 			var identities []Identity
-			db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-30*86400)
+			db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-86400)
 			for _, i := range identities {
 				db.exec("update identities set published=? where id=?", now(), i.ID)
 				directory_publish(&i, false)

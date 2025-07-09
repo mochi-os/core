@@ -103,6 +103,7 @@ func file_size(path string) int64 {
 }
 
 func file_write(path string, data []byte) {
+	file_mkdir(filepath.Dir(path))
 	err := os.WriteFile(path, data, 0644)
 	check(err)
 }

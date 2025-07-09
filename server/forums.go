@@ -36,7 +36,8 @@ type ForumPost struct {
 	Comments      int
 	Up            int
 	Down          int
-	ForumName     string `json:"-"`
+	Attachments   *[]Attachment `json:",omitempty"`
+	ForumName     string        `json:"-"`
 }
 
 type ForumComment struct {
@@ -57,10 +58,10 @@ type ForumComment struct {
 }
 
 type ForumVote struct {
-	Voter string
-	Class string
-	ID    string
-	Vote  string
+	Post    string
+	Comment string
+	Voter   string
+	Vote    string
 }
 
 var (
@@ -130,8 +131,10 @@ func forums_db_create(db *DB) {
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	db.exec("create table votes ( voter text not null, forum references forum( id ), class text not null, id text not null, vote text not null, primary key ( voter, class, id ) )")
-	db.exec("create index votes_forum on votes( forum )")
+	db.exec("create table votes ( forum references forum( id ), post text not null, comment text not null default '', voter text not null, vote text not null, primary key ( forum, post, comment, voter ) )")
+	db.exec("create index votes_post on votes( post )")
+	db.exec("create index votes_comment on votes( comment )")
+	db.exec("create index votes_voter on votes( voter )")
 }
 
 func forum_by_id(u *User, db *DB, id string) *Forum {
@@ -248,7 +251,7 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
-	if !valid(c.Author, "public") {
+	if !valid(c.Author, "entity") {
 		log_info("Forum dropping comment with invalid author '%s'", c.Author)
 		return
 	}
@@ -383,7 +386,7 @@ func forums_comment_vote(a *Action) {
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{ID: c.ID, Vote: vote})}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{Comment: c.ID, Vote: vote})}
 		e.send()
 
 	} else {
@@ -407,7 +410,7 @@ func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string)
 	now := now()
 
 	var o ForumVote
-	if db.scan(&o, "select vote from votes where voter=? and class='comment' and id=?", voter, c.ID) {
+	if db.scan(&o, "select vote from votes where comment=? and voter=?", c.ID, voter) {
 		switch o.Vote {
 		case "up":
 			c.Up = c.Up - 1
@@ -418,7 +421,7 @@ func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string)
 		}
 	}
 
-	db.exec("replace into votes ( voter, forum, class, id, vote ) values ( ?, ?, 'comment', ?, ? )", voter, c.Forum, c.ID, vote)
+	db.exec("replace into votes ( forum, post, comment, voter, vote ) values ( ?, ?, ?, ?, ? )", c.Forum, c.Post, voter, c.ID, vote)
 	switch vote {
 	case "up":
 		c.Up = c.Up + 1
@@ -441,7 +444,7 @@ func forums_comment_vote_event(e *Event) {
 	}
 
 	var c ForumComment
-	if !e.db.scan(&c, "select * from comments where id=?", v.ID) {
+	if !e.db.scan(&c, "select * from comments where id=?", v.Comment) {
 		log_info("Forum dropping comment vote for unknown comment")
 		return
 	}
@@ -575,7 +578,7 @@ func forums_members_save(a *Action) {
 			e.send()
 
 			if m.Role == "disabled" {
-				forum_send_recent_posts(a.db, f, m.ID)
+				forum_send_recent_posts(a.user, a.db, f, m.ID)
 			}
 		}
 	}
@@ -656,35 +659,35 @@ func forums_post_create(a *Action) {
 		return
 	}
 
-	id := uid()
-	if a.db.exists("select id from comments where id=?", id) {
+	post := uid()
+	if a.db.exists("select id from posts where id=?", post) {
 		a.error(500, "Duplicate ID")
 		return
 	}
 
-	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
+	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
 		log_debug("Sending post to forum owner")
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: id, Title: title, Body: body})}
+		e := Event{ID: post, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})}
 		e.send()
 
 	} else {
-		// We are the forum owner, to send to all members except us
-		j := json_encode(ForumPost{ID: id, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body})
+		// We are the forum owner
+		j := json_encode(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
+				e := Event{ID: post, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
 				e.send()
 			}
 		}
 	}
 
-	a.template("forums/post/create", Map{"Forum": f, "ID": id})
+	a.template("forums/post/create", Map{"Forum": f, "Post": post})
 }
 
 // Received a forum post from owner
@@ -701,7 +704,7 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
-	if !valid(p.Author, "public") {
+	if !valid(p.Author, "entity") {
 		log_info("Forum dropping post with invalid author '%s'", p.Author)
 		return
 	}
@@ -727,6 +730,8 @@ func forums_post_create_event(e *Event) {
 	}
 
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down)
+	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, e.ID)
+
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 }
 
@@ -776,9 +781,13 @@ func forums_post_submit_event(e *Event) {
 	}
 
 	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body)
+	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, e.ID)
+
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 
+	p.Attachments = nil
 	j := json_encode(p)
+
 	var ms []ForumMember
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
@@ -832,7 +841,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Comments": forum_comments(a.user, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.user, f.ID, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.user, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -858,7 +867,7 @@ func forums_post_vote(a *Action) {
 
 	if f.identity == nil {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{ID: p.ID, Vote: vote})}
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{Post: p.ID, Vote: vote})}
 		e.send()
 
 	} else {
@@ -882,7 +891,7 @@ func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
 	now := now()
 
 	var o ForumVote
-	if db.scan(&o, "select vote from votes where voter=? and class='post' and id=?", voter, p.ID) {
+	if db.scan(&o, "select vote from votes where post=? and voter=?", p.ID, voter) {
 		switch o.Vote {
 		case "up":
 			p.Up = p.Up - 1
@@ -893,7 +902,7 @@ func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
 		}
 	}
 
-	db.exec("replace into votes ( voter, forum, class, id, vote ) values ( ?, ?, 'post', ?, ? )", voter, p.Forum, p.ID, vote)
+	db.exec("replace into votes ( forum, post, voter, vote ) values ( ?, ?, ?, ? )", p.Forum, p.ID, voter, vote)
 	switch vote {
 	case "up":
 		p.Up = p.Up + 1
@@ -915,7 +924,7 @@ func forums_post_vote_event(e *Event) {
 	}
 
 	var p ForumPost
-	if !e.db.scan(&p, "select * from posts where id=?", v.ID) {
+	if !e.db.scan(&p, "select * from posts where id=?", v.Post) {
 		log_info("Forum dropping post vote for unknown post")
 		return
 	}
@@ -980,14 +989,16 @@ func forums_search(a *Action) {
 	a.template("forums/search", directory_search(a.user, "forum", search, false))
 }
 
-// Send recent posts to a member
-func forum_send_recent_posts(db *DB, f *Forum, member string) {
+// Send recent posts to a new member
+func forum_send_recent_posts(u *User, db *DB, f *Forum, member string) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
+		p.Attachments = attachments(u, f.ID, "forums/%s/%s", f.ID, p.ID)
 		e := Event{ID: p.ID, From: f.ID, To: member, Service: "forums", Action: "post/create", Content: json_encode(p)}
 		e.send()
 	}
+
 	for _, p := range ps {
 		var cs []ForumComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)
@@ -1006,7 +1017,7 @@ func forums_subscribe(a *Action) {
 	}
 
 	forum := a.input("forum")
-	if !valid(forum, "public") {
+	if !valid(forum, "entity") {
 		a.error(400, "Invalid ID")
 		return
 	}
@@ -1050,7 +1061,7 @@ func forums_subscribe_event(e *Event) {
 	e.db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", f.ID, now(), f.ID)
 
 	if f.Role != "disabled" {
-		forum_send_recent_posts(e.db, f, e.From)
+		forum_send_recent_posts(e.user, e.db, f, e.From)
 	}
 
 	forum_update(e.user, e.db, f)

@@ -79,8 +79,9 @@ func directory_download_event(e *Event) {
 	}
 }
 
-// Publish a directory entry on the libp2p pubsub
+// Publish a directory entry to the entire network
 func directory_publish(i *Identity, allow_queue bool) {
+	// Send to libp2p broadcast
 	e := Event{ID: uid(), From: i.ID, Service: "directory", Action: "publish", Content: json_encode(map[string]string{"id": i.ID, "name": i.Name, "class": i.Class, "location": libp2p_id, "data": i.Data})}
 	e.sign()
 	j := []byte(json_encode(e))

@@ -33,10 +33,10 @@ func main() {
 	}
 	go peers_manager()
 	libp2p_start()
+	go attachments_manager()
 	go identities_manager()
 	go events_manager()
 	go cache_manager()
-	go files_manager()
 	if new_install {
 		go directory_download()
 	}

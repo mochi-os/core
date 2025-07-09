@@ -10,16 +10,14 @@ import (
 	"time"
 )
 
-type CacheFile struct {
-	User     int
-	Identity string
-	Entity   string
-	ID       string
-	Variant  string
-	Name     string
-	Path     string
-	Size     int64
-	Created  int64
+type CacheAttachment struct {
+	User      int
+	Identity  string
+	Entity    string
+	ID        string
+	Thumbnail bool
+	Path      string
+	Created   int64
 }
 
 // Clean up stale cache entries
@@ -28,8 +26,8 @@ func cache_manager() {
 	for {
 		time.Sleep(24 * time.Hour)
 		log_debug("Cache cleaning files older than 30 days")
-		db.exec("delete from files where created<?", now()-30*86400)
-		filepath.WalkDir(cache_dir, cache_manager_walk)
+		db.exec("delete from attachments where created<?", now()-30*86400)
+		filepath.WalkDir(cache_dir+"/attachments", cache_manager_walk)
 	}
 }
 
@@ -39,7 +37,7 @@ func cache_manager_walk(path string, d fs.DirEntry, err error) error {
 		return err
 	}
 
-	if path == cache_dir {
+	if path == cache_dir+"/attachments" {
 		return nil
 	}
 
@@ -50,7 +48,7 @@ func cache_manager_walk(path string, d fs.DirEntry, err error) error {
 	} else {
 		// Delete file if no matching entry in database
 		db := db_open("db/cache.db")
-		if !db.exists("select * from files where path=?", strings.TrimLeft(path, cache_dir+"/")) {
+		if !db.exists("select * from attachments where path=?", strings.TrimLeft(path, cache_dir+"/")) {
 			file_delete(path)
 		}
 	}

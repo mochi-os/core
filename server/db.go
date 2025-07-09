@@ -19,7 +19,7 @@ type DB struct {
 }
 
 const (
-	latest_schema = 1
+	schema_version = 1
 )
 
 var (
@@ -33,7 +33,7 @@ func db_create() {
 	// Settings
 	settings := db_open("db/settings.db")
 	settings.exec("create table settings ( name text not null primary key, value text not null )")
-	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", latest_schema)
+	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
 	// Users
 	users := db_open("db/users.db")
@@ -85,9 +85,9 @@ func db_create() {
 
 	// Cache
 	cache := db_open("db/cache.db")
-	cache.exec("create table files ( user integer not null, identity text not null, entity text not null, id text not null, variant text not null default '', name text not null, path text not null, size integer default 0, created integer not null, primary key ( user, identity, entity, id, variant ) )")
-	cache.exec("create index files_path on files( path )")
-	cache.exec("create index files_created on files( created )")
+	cache.exec("create table attachments ( user integer not null, identity text not null, entity text not null, id text not null, thumbnail integer not null default 0, path text not null, created integer not null, primary key ( user, identity, entity, id, thumbnail ) )")
+	cache.exec("create index attachments_path on attachments( path )")
+	cache.exec("create index attachments_created on attachments( created )")
 }
 
 func db_manager() {
@@ -155,7 +155,7 @@ func db_start() bool {
 // Does nothing yet
 func db_upgrade() {
 	schema := atoi(setting_get("schema", ""), 1)
-	for schema < latest_schema {
+	for schema < schema_version {
 		schema++
 		log_info("Upgrading database schema to version %d", schema)
 		if schema == 2 {

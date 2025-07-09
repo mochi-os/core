@@ -106,7 +106,7 @@ func (e *Event) receive() {
 	}
 
 	if e.From != "" {
-		if !valid(e.From, "public") {
+		if !valid(e.From, "entity") {
 			log_info("Dropping received event due to invalid 'from' field '%s'", e.From)
 			return
 		}

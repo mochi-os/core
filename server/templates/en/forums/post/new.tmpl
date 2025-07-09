@@ -2,9 +2,10 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a> | <a href="/forums/{{.ID}}">{{.Name}}</a> | New post
 
-<form action="/forums/{{.ID}}/create">
+<form method="post" enctype="multipart/form-data" action="/forums/{{.ID}}/create">
 	<input type="text" name="title" size="1000"/>
 	<textarea name="body" rows="20" cols="100"></textarea><br/>
+	<input type="file" name="attachments" multiple><br/>
     <input type="submit" value="Post"/>
 </form>
 

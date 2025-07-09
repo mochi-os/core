@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/nfnt/resize"
 	"image"
 	"image/gif"
@@ -34,27 +33,30 @@ func is_image(file string) bool {
 	return false
 }
 
-func thumbnail_create(file string) (string, error) {
-	thumb := thumbnail_name(file)
+func thumbnail_create(path string) (string, error) {
+	dir, file := filepath.Split(path)
+	thumb := dir + "thumbnail/" + thumbnail_name(file)
+
 	if file_exists(thumb) {
 		return thumb, nil
 	}
 
-	f, err := os.Open(file)
+	f, err := os.Open(path)
 	if err != nil {
-		log_warn("Unable to open image file '%s' to create thumbnail: %v", file, err)
+		log_warn("Unable to open image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 	defer f.Close()
 
 	i, format, err := image.Decode(f)
 	if err != nil {
-		log_info("Unable to decode image file '%s' to create thumbnail: %v", file, err)
+		log_info("Unable to decode image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 
 	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
 
+	file_mkdir(dir + "thumbnail")
 	o, err := os.Create(thumb)
 	check(err)
 	defer o.Close()
@@ -71,7 +73,7 @@ func thumbnail_create(file string) (string, error) {
 	}
 
 	if err != nil {
-		log_info("Unable to encode image file '%s' to create thumbnail: %v", file, err)
+		log_info("Unable to encode image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 
@@ -80,6 +82,5 @@ func thumbnail_create(file string) (string, error) {
 
 func thumbnail_name(name string) string {
 	ext := filepath.Ext(name)
-	strings.TrimSuffix(name, ext)
-	return fmt.Sprintf("%s_thumbnail%s", strings.TrimSuffix(name, ext), ext)
+	return strings.TrimSuffix(name, ext) + "_thumbnail" + ext
 }

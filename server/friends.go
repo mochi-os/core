@@ -126,7 +126,7 @@ func friends_cancel_event(e *Event) {
 
 // Create new friend
 func friend_create(u *User, db *DB, id string, name string, class string, invite bool) error {
-	if !valid(id, "public") {
+	if !valid(id, "entity") {
 		return error_message("Invalid ID")
 	}
 	if !valid(name, "name") {

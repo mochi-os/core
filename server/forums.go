@@ -620,7 +620,6 @@ func forums_member_update_event(e *Event) {
 
 // Enter details for new forum to be created
 func forums_new(a *Action) {
-	//TODO Ask which forum
 	a.template("forums/new")
 }
 

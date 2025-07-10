@@ -9,11 +9,11 @@
 <a href="/feeds">All feeds</a>{{range .Feeds}} | <a href="/feeds/{{.Fingerprint}}">{{.Name}}</a>{{end}}</p>
 {{end}}
 
-<div style="background: #dddddd; padding: 5px;">
+<div style="background: #dddddd; padding: 2px;">
 
 {{range .Posts}}
-<a href="/feeds/{{.Feed}}/{{.ID}}" style="text-decoration:none;"><div style="background: white; margin: 10px; padding: 4px; border-radius: 6px;">
-<pre>{{.Body}}</pre>
+<a href="/feeds/{{.Feed}}/{{.ID}}" style="text-decoration:none;"><div style="background: white; margin: 10px; padding: 5px; border-radius: 5px;">
+<pre style="margin: 8px;">{{.Body}}</pre>
 
 {{if len .Attachments}}<div style="overflow-x: auto; white-space: nowrap;">{{range .Attachments}}<a href="/attachments/{{.Entity}}/{{.ID}}">{{if .Image}}<img src="/attachments/{{.Entity}}/{{.ID}}/thumbnail" title="{{.Name}}"/>{{else}}<span style="display:inline-block; white-space: pre-line;">{{.Name}}<br/>{{.Size}} bytes</span>{{end}}</a>&nbsp;{{end}}</div>{{end}}
 

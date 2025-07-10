@@ -212,12 +212,7 @@ func forums_comment_create(a *Action) {
 	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
 
-	if f.Identity == nil {
-		// We are not forum owner, so send to the owner
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/submit", Content: json_encode(ForumComment{ID: id, Post: post, Parent: parent, Body: body})}
-		e.send()
-
-	} else {
+	if f.Identity != nil {
 		// We are the forum owner, so send to all members except us
 		j := json_encode(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ms []ForumMember
@@ -228,6 +223,11 @@ func forums_comment_create(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not forum owner, so send to the owner
+		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/submit", Content: json_encode(ForumComment{ID: id, Post: post, Parent: parent, Body: body})}
+		e.send()
 	}
 
 	a.template("forums/comment/create", Map{"Forum": f, "Post": post})
@@ -382,12 +382,7 @@ func forums_comment_vote(a *Action) {
 	vote := a.input("vote")
 	forums_comment_vote_set(a.db, &c, a.user.Identity.ID, vote)
 
-	if f.Identity == nil {
-		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{Comment: c.ID, Vote: vote})}
-		e.send()
-
-	} else {
+	if f.Identity != nil {
 		// We are the forum owner, to send to all members except us
 		id := uid()
 		j := json_encode(c)
@@ -399,6 +394,11 @@ func forums_comment_vote(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not forum owner, so send to the owner
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{Comment: c.ID, Vote: vote})}
+		e.send()
 	}
 
 	a.template("forums/comment/vote", Map{"Forum": f, "Post": c.Post})
@@ -659,14 +659,8 @@ func forums_post_create(a *Action) {
 	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
 
-	if f.Identity == nil {
-		// We are not forum owner, so send to the owner
-		log_debug("Sending post to forum owner")
-		e := Event{ID: post, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})}
-		e.send()
-
-	} else {
-		// We are the forum owner
+	if f.Identity != nil {
+		// We are the forum owner, so send to all members except us
 		j := json_encode(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
@@ -676,6 +670,12 @@ func forums_post_create(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not forum owner, so send to the owner
+		log_debug("Sending post to forum owner")
+		e := Event{ID: post, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})}
+		e.send()
 	}
 
 	a.template("forums/post/create", Map{"Forum": f, "Post": post})
@@ -863,12 +863,7 @@ func forums_post_vote(a *Action) {
 	vote := a.input("vote")
 	forums_post_vote_set(a.db, &p, a.user.Identity.ID, vote)
 
-	if f.Identity == nil {
-		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{Post: p.ID, Vote: vote})}
-		e.send()
-
-	} else {
+	if f.Identity != nil {
 		// We are the forum owner, to send to all members except us
 		id := uid()
 		j := json_encode(p)
@@ -880,6 +875,11 @@ func forums_post_vote(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not forum owner, so send to the owner
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{Post: p.ID, Vote: vote})}
+		e.send()
 	}
 
 	a.template("forums/post/vote", Map{"Forum": f, "ID": p.ID})

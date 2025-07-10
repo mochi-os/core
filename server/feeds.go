@@ -221,12 +221,7 @@ func feeds_comment_create(a *Action) {
 	a.db.exec("update posts set updated=? where id=?", now, post)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
-	if f.identity == nil {
-		// We are not feed owner, so send to the owner
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/submit", Content: json_encode(FeedComment{ID: id, Post: post, Parent: parent, Body: body})}
-		e.send()
-
-	} else {
+	if f.identity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		j := json_encode(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ss []FeedSubscriber
@@ -237,6 +232,11 @@ func feeds_comment_create(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not feed owner, so send to the owner
+		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/submit", Content: json_encode(FeedComment{ID: id, Post: post, Parent: parent, Body: body})}
+		e.send()
 	}
 
 	a.template("feeds/comment/create", Map{"Feed": f, "Post": post})
@@ -367,12 +367,7 @@ func feeds_comment_react(a *Action) {
 	reaction := feeds_reaction_valid(a.input("reaction"))
 	feeds_comment_reaction_set(a.db, &c, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
-	if f.identity == nil {
-		// We are not feed owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/react", Content: json_encode(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction})}
-		e.send()
-
-	} else {
+	if f.identity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
 		j := json_encode(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
@@ -384,6 +379,11 @@ func feeds_comment_react(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not feed owner, so send to the owner
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "comment/react", Content: json_encode(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction})}
+		e.send()
 	}
 
 	a.template("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
@@ -420,15 +420,7 @@ func feeds_comment_reaction_event(e *Event) {
 
 	reaction := feeds_reaction_valid(r.Reaction)
 
-	if f.identity == nil {
-		// We are not feed owner
-		if e.From != c.Feed {
-			log_info("Feed dropping comment reaction from unknown owner")
-			return
-		}
-		feeds_comment_reaction_set(e.db, &c, r.Subscriber, r.Name, reaction)
-
-	} else {
+	if f.identity != nil {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
@@ -447,6 +439,14 @@ func feeds_comment_reaction_event(e *Event) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not feed owner
+		if e.From != c.Feed {
+			log_info("Feed dropping comment reaction from unknown owner")
+			return
+		}
+		feeds_comment_reaction_set(e.db, &c, r.Subscriber, r.Name, reaction)
 	}
 }
 
@@ -618,12 +618,7 @@ func feeds_post_react(a *Action) {
 	reaction := feeds_reaction_valid(a.input("reaction"))
 	feeds_post_reaction_set(a.db, &p, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
-	if f.identity == nil {
-		// We are not feed owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "post/react", Content: json_encode(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction})}
-		e.send()
-
-	} else {
+	if f.identity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
 		j := json_encode(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
@@ -635,6 +630,11 @@ func feeds_post_react(a *Action) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not feed owner, so send to the owner
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "post/react", Content: json_encode(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction})}
+		e.send()
 	}
 
 	a.template("feeds/post/react", Map{"Feed": f, "ID": p.ID})
@@ -670,15 +670,7 @@ func feeds_post_reaction_event(e *Event) {
 
 	reaction := feeds_reaction_valid(r.Reaction)
 
-	if f.identity == nil {
-		// We are not feed owner
-		if e.From != p.Feed {
-			log_info("Feed dropping post reaction from unknown owner")
-			return
-		}
-		feeds_post_reaction_set(e.db, &p, r.Subscriber, r.Name, reaction)
-
-	} else {
+	if f.identity != nil {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
@@ -697,6 +689,14 @@ func feeds_post_reaction_event(e *Event) {
 				e.send()
 			}
 		}
+
+	} else {
+		// We are not feed owner
+		if e.From != p.Feed {
+			log_info("Feed dropping post reaction from unknown owner")
+			return
+		}
+		feeds_post_reaction_set(e.db, &p, r.Subscriber, r.Name, reaction)
 	}
 }
 

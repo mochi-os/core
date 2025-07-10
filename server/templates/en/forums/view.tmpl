@@ -1,11 +1,28 @@
-{{define "title"}}{{.Forum.Name}}{{end}}
+{{define "title"}}{{if .Forum}}{{.Forum.Name}}{{else}}Forums{{end}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a> | {{.Forum.Name}}</p>
+<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a>{{if .Forum}} | {{.Forum.Name}}{{end}}</p>
 
-{{if .Member}}<p>{{if $.RolePoster}}<a href="/forums/{{.Forum.ID}}/post">New post</a> | {{if $.RoleAdministrator}}<a href="/forums/{{.Forum.ID}}/members">Manage members</a> | {{end}}{{end}}<a href="/forums/{{.Forum.ID}}/unsubscribe">Unsubscribe</a></p>{{end}}
-
-{{if and .Member (eq .Member.Role "disabled")}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{else}}
-<p>{{range .Posts}}<a href="/forums/{{$.Forum.ID}}/{{.ID}}">{{.Title}}</a> | &#8618;{{.Comments}} {{if $.RoleVoter}}<a href="/forums/{{$.Forum.ID}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{$.Forum.ID}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}}&uarr;{{.Up}} &darr;{{.Down}}{{end}}<br/>{{end}}</p>
+{{if .User}}
+<p><a href="/forums/find">Subscribe to a forum</a> | <a href="/forums/new">Create new forum</a>{{if .Forum}}{{if $.RoleAdministrator}} | <a href="/forums/{{.Forum.ID}}/members">Manage members of {{.Forum.Name}}</a>{{end}}{{if not .Forum.Identity}} | <a href="/forums/{{.Forum.ID}}/unsubscribe">Unsubscribe from {{.Forum.Name}}</a>{{end}}{{end}} | <a href="/forums/post/new{{if .Forum}}?current={{.Forum.ID}}{{end}}">New post</a><br/>
+<a href="/forums">All forums</a>{{range .Forums}} | <a href="/forums/{{.Fingerprint}}">{{.Name}}</a>{{end}}</p>
 {{end}}
 
+{{if and .Member (eq .Member.Role "disabled")}}<p>You do not currently have access to this forum. Please wait until an administrator admits you.</p>{{else}}
+
+<div style="background: #dddddd; padding: 5px;">
+
+{{range .Posts}}
+<a href="/forums/{{.Forum}}/{{.ID}}" style="text-decoration:none;"><div style="background: white; margin: 10px; padding: 4px; border-radius: 6px;">
+<h3>{{.Title}}</h3>
+<pre>{{.Body}}</pre>
+
+{{if len .Attachments}}<div style="overflow-x: auto; white-space: nowrap;">{{range .Attachments}}<a href="/attachments/{{.Entity}}/{{.ID}}" style="z-index: 2;">{{if .Image}}<img src="/attachments/{{.Entity}}/{{.ID}}/thumbnail" title="{{.Name}}"/>{{else}}<span style="display:inline-block; white-space: pre-line;">{{.Name}}<br/>{{.Size}} bytes</span>{{end}}</a>&nbsp;{{end}}</div>{{end}}
+
+<p style="font-variant: small-caps;">{{if not $.Forum}}{{.ForumName}}, {{end}} {{.Name}}, {{.CreatedString}} | &uarr;{{.Up}} &darr;{{.Down}} &#8618;{{.Comments}}</p>
+
+</div></a>
+{{end}}
+
+</div>
+{{end}}
 {{template "foot" .}}

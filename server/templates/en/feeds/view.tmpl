@@ -12,7 +12,7 @@
 <div style="background: #dddddd; padding: 5px;">
 
 {{range .Posts}}
-<div style="background: white; margin: 10px; padding: 4px; border-radius: 6px;">
+<a href="/feeds/{{.Feed}}/{{.ID}}" style="text-decoration:none;"><div style="background: white; margin: 10px; padding: 4px; border-radius: 6px;">
 <pre>{{.Body}}</pre>
 
 {{if len .Attachments}}<div style="overflow-x: auto; white-space: nowrap;">{{range .Attachments}}<a href="/attachments/{{.Entity}}/{{.ID}}">{{if .Image}}<img src="/attachments/{{.Entity}}/{{.ID}}/thumbnail" title="{{.Name}}"/>{{else}}<span style="display:inline-block; white-space: pre-line;">{{.Name}}<br/>{{.Size}} bytes</span>{{end}}</a>&nbsp;{{end}}</div>{{end}}
@@ -21,11 +21,11 @@
 <p style="font-variant: small-caps;">{{if not $.Feed}}{{.FeedName}}, {{end}}{{.CreatedString}} | <a href="/feeds/{{.Feed}}/{{.ID}}/comment">New comment</a>&nbsp;
 {{if ne .MyReaction ""}}<a href="/feeds/{{.Feed}}/{{.ID}}/react/none" title="None" class="off">&#128528;</a> {{end}}<a href="/feeds/{{.ID}}/{{.ID}}/react/like" title="Like" {{if ne .MyReaction "like"}}class="off"{{end}}>&#128515;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/dislike" title="Dislike" {{if ne .MyReaction "dislike"}}class="off"{{end}}>&#128543;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/laugh" title="Laugh" {{if ne .MyReaction "laugh"}}class="off"{{end}}>&#128541;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/amazed" title="Amazed" {{if ne .MyReaction "amazed"}}class="off"{{end}}>&#128562;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/love" title="Love" {{if ne .MyReaction "love"}}class="off"{{end}}>&#128536;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/sad" title="Sad" {{if ne .MyReaction "sad"}}class="off"{{end}}>&#128542;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/angry" title="Angry" {{if ne .MyReaction "angry"}}class="off"{{end}}>&#128544;</a><a href="/feeds/{{.Feed}}/{{.ID}}/react/agree" title="Agree" {{if ne .MyReaction "agree"}}class="off"{{end}}>&#128077;</a> <a href="/feeds/{{.Feed}}/{{.ID}}/react/disagree" title="Disagree" {{if ne .MyReaction "disagree"}}class="off"{{end}}>&#128078;</a>&nbsp;
 {{end}}
-{{range .Reactions}} | {{.Name}} {{if eq .Reaction "like"}}&#128515;{{end}}{{if eq .Reaction "dislike"}}&#128543;{{end}}{{if eq .Reaction "laugh"}}&#128541;{{end}}{{if eq .Reaction "amazed"}}&#128562;{{end}}{{if eq .Reaction "love"}}&#128536;{{end}}{{if eq .Reaction "sad"}}&#128542;{{end}}{{if eq .Reaction "angry"}}&#128544;{{end}}{{if eq .Reaction "agree"}}&#128077;{{end}}{{if eq .Reaction "disagree"}}&#128078;{{end}}{{end}}<br/>
+{{range .Reactions}} | {{.Name}} {{if eq .Reaction "like"}}&#128515;{{end}}{{if eq .Reaction "dislike"}}&#128543;{{end}}{{if eq .Reaction "laugh"}}&#128541;{{end}}{{if eq .Reaction "amazed"}}&#128562;{{end}}{{if eq .Reaction "love"}}&#128536;{{end}}{{if eq .Reaction "sad"}}&#128542;{{end}}{{if eq .Reaction "angry"}}&#128544;{{end}}{{if eq .Reaction "agree"}}&#128077;{{end}}{{if eq .Reaction "disagree"}}&#128078;{{end}}{{end}}</p>
 
 <p>{{range .Comments}}{{template "feed_comment" .}}{{end}}</p>
 
-</div>
+</div></a>
 {{end}}
 
 </div>

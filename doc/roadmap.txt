@@ -1,8 +1,9 @@
 0.1
+	Thumbnails
 	Replace command line flags with config file
 	Send email via remote server
 	Forums app
-		Attachments
+		Layout
 		View when not logged in
 	Chat app
 		Group Chat
@@ -26,8 +27,8 @@
 	Users can create hooks to control events
 	Feeds app
 		Permissions
-	Files app
-		Folders
+	Forums app
+		Moderation
 		Permissions
 
 0.3

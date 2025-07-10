@@ -24,11 +24,11 @@ type FeedSubscriber struct {
 type FeedPost struct {
 	ID            string
 	Feed          string `json:"-"`
+	FeedName      string `json:"-"`
 	Created       int64
 	CreatedString string `json:"-"`
 	Updated       int64
 	Body          string
-	FeedName      string          `json:"-"`
 	MyReaction    string          `json:"-"`
 	Attachments   *[]Attachment   `json:",omitempty"`
 	Reactions     *[]FeedReaction `json:"-"`
@@ -901,9 +901,6 @@ func feeds_view(a *Action) {
 		return
 	}
 
-	var fs []Feed
-	a.db.scans(&fs, "select * from feeds order by updated desc")
-
 	post := a.input("post")
 	var ps []FeedPost
 	if post != "" {
@@ -921,7 +918,7 @@ func feeds_view(a *Action) {
 		}
 
 		ps[i].CreatedString = time_local(a.user, p.Created)
-		ps[i].Attachments = attachments(a.user, p.Feed, "feeds/%s/%s", p.Feed, p.ID)
+		ps[i].Attachments = attachments(a.owner, p.Feed, "feeds/%s/%s", p.Feed, p.ID)
 
 		var r FeedReaction
 		if a.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, identity) {
@@ -939,6 +936,9 @@ func feeds_view(a *Action) {
 	if a.db.exists("select id from feeds where owner=1 limit 1") {
 		owner = true
 	}
+
+	var fs []Feed
+	a.db.scans(&fs, "select * from feeds order by updated desc")
 
 	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

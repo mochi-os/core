@@ -1,14 +1,11 @@
 0.1
-	Thumbnails
 	Replace command line flags with config file
 	Send email via remote server
-	Forums app
-		Layout
-		View when not logged in
 	Chat app
 		Group Chat
 		Attachments
 	Protocol
+	Fingerprints
 	Large files
 	Choose a product name
 	Set up introducer server

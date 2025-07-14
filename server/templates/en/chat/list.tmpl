@@ -2,7 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | Chat</p>
 
-<p>{{if len .}}{{range .}}<a href="/chat/{{.Friend}}">{{.Name}}</a><br/>{{end}}
+<p>{{if len .}}{{range .}}<a href="/chat/{{.ID}}">{{.Name}}</a><br/>{{end}}
 {{else}}You have no chats{{end}}</p>
 
 <p><a href="/chat/new">New chat</a></p>

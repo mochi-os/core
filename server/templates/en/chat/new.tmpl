@@ -1,11 +1,28 @@
 {{define "title"}}New chat{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/chat/">Chat</a> | New
+<p class="header"><a href="/">Comms</a> | <a href="/chat">Chat</a> | New
 
-{{if len .}}<p>Choose who you want to chat with:</p>
+{{if len .Friends}}<p>Choose friends to chat with:</p>
 
-<p>{{range .}}<a href="/chat/{{.ID}}">{{.Name}}</a><br/>{{end}}</p>
+<form id="form" method="post" action="/chat/create">
+{{range .Friends}}<input type="checkbox" id="{{.ID}}" name="{{.ID}}" value="{{.Name}}" onclick="name_set()">&nbsp;<label for="{{.ID}}">{{.Name}}</label><br/>{{end}}
+<label for="name">Chat name: </label><input type="text" id="name" name="name" value="{{.Name}}" size="100" maxlength="1000"/><br/>
+<input type="submit" value="Chat"/>
+</form>
 
-{{else}}<p>You have no friends. What a pity. Please <a href="/friends">add some</a>.{{end}}
+{{else}}<p>You have no friends. Please <a href="/friends">add some</a>.{{end}}
+
+<script>
+function name_set() {
+	var names = [ '{{.Name}}' ];
+ 	for ( i = 0; i < document.getElementsByTagName( 'input' ).length; i++ ) {
+		const n = document.getElementsByTagName( 'input' ).item( i );
+		if ( n.type == 'checkbox' && n.checked ) {
+			names.push( n.value );
+		}
+	}
+	document.getElementById( 'name' ).value = names.join( ', ' );
+}
+</script>
 
 {{template "foot" .}}

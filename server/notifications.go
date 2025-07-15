@@ -12,6 +12,7 @@ type Notification struct {
 	Link     string
 }
 
+// TODO Rename entity to object
 // Create app database
 func notifications_db_create(db *DB) {
 	db.exec("create table settings ( name text not null primary key, value text not null )")

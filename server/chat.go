@@ -5,9 +5,10 @@ package main
 
 type Chat struct {
 	ID       string
-	Identity string
+	Identity string `json:"-"`
 	Name     string
-	Updated  int64
+	Updated  int64 `json:"-"`
+	Members  *[]ChatMember
 }
 
 type ChatMember struct {
@@ -29,18 +30,21 @@ type ChatMessage struct {
 func init() {
 	a := app("chat")
 	a.home("chat", map[string]string{"en": "Chat"})
-	a.db("db/chat.db", chat_db_create)
+	a.db("db/chats.db", chat_db_create)
 	a.entity("chat")
 
 	a.path("chat", chat_list)
 	a.path("chat/create", chat_create)
 	a.path("chat/new", chat_new)
 	a.path("chat/:chat", chat_view)
+	a.path("chat/:chat/:name", chat_view)
 	a.path("chat/:chat/messages", chat_messages)
 	a.path("chat/:chat/send", chat_send)
 
 	a.service("chat")
-	a.event("message", chat_receive)
+	a.event("message", chat_message_event)
+	a.event("new", chat_new_event)
+	//TODO Receive event for new chat
 }
 
 // Create app database
@@ -83,12 +87,20 @@ func chat_create(a *Action) {
 	log_debug("Creating chat '%s' with name '%s'", chat, name)
 	a.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
 	a.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, 'administrator' )", chat, a.user.Identity.ID, a.user.Identity.Name)
+	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name, Role: "administrator"}}
 
 	for _, f := range *friends(a.user) {
 		if a.input(f.ID) != "" {
 			log_debug("Adding %s (%s) to new chat", f.ID, f.Name)
 			a.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, 'talker' )", chat, f.ID, f.Name)
+			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name, Role: "talker"})
 		}
+	}
+
+	j := json_encode(Chat{ID: chat, Name: name, Members: &members})
+	for _, m := range members {
+		e := Event{ID: uid(), From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "new", Content: j}
+		e.send()
 	}
 
 	a.redirect("/chat/" + chat)
@@ -116,36 +128,9 @@ func chat_member(db *DB, chat string, member string) *ChatMember {
 	return nil
 }
 
-// Send list of messages to client
-func chat_messages(a *Action) {
-	if a.user == nil {
-		a.error(401, "Not logged in")
-		return
-	}
-
-	c := chat_by_id(a.db, a.input("chat"))
-	if c == nil {
-		a.error(404, "Chat not found")
-		return
-	}
-
-	var m []ChatMessage
-	a.db.scans(&m, "select * from messages where chat=? order by id", c.ID)
-	a.json(m)
-}
-
-// Ask user who they'd like to chat with
-func chat_new(a *Action) {
-	if a.user == nil {
-		a.error(401, "Not logged in")
-		return
-	}
-
-	a.template("chat/new", Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
-}
-
-// Received a chat event from another user
-func chat_receive(e *Event) {
+// Received a message event from another member
+func chat_message_event(e *Event) {
+	//TODO
 	var cm ChatMessage
 	if !json_decode(&cm, e.Content) {
 		log_info("Chat dropping message '%s' with malformed JSON", e.Content)
@@ -174,19 +159,106 @@ func chat_receive(e *Event) {
 	notification(e.user, "chat", "message", c.ID, m.Name+": "+cm.Body, "/chat/"+c.ID)
 }
 
-// Send a chat message
-func chat_send(a *Action) {
+// Send previous messages to client
+func chat_messages(a *Action) {
 	if a.user == nil {
 		a.error(401, "Not logged in")
 		return
 	}
 
 	c := chat_by_id(a.db, a.input("chat"))
+	if c == nil {
+		a.error(404, "Chat not found")
+		return
+	}
+
+	var m []ChatMessage
+	a.db.scans(&m, "select * from messages where chat=? order by id", c.ID)
+	a.json(m)
+}
+
+// Ask user who they'd like to chat with
+func chat_new(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
+	a.template("chat/new", Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
+}
+
+// Received a new chat event from a friend
+func chat_new_event(e *Event) {
+	f := friend(e.user, e.From)
+	if f == nil {
+		log_info("Chat dropping new chat from unknown friend '%s'", e.From)
+		return
+	}
+
+	var c Chat
+	if !json_decode(&c, e.Content) {
+		log_info("Chat dropping new chat '%s' with malformed JSON", e.Content)
+		return
+	}
+
+	if !valid(c.ID, "uid") {
+		log_info("Chat dropping new chat with invalid ID '%s'", c.ID)
+		return
+	}
+
+	o := chat_by_id(e.db, c.ID)
+	if o != nil {
+		log_info("Chat dropping duplicate new chat '%s'", c.ID)
+		return
+	}
+
+	if !valid(c.Name, "name") {
+		log_info("Chat dropping new chat with invalid name '%s'", c.Name)
+		return
+	}
+
+	e.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", c.ID, e.To, c.Name, now())
+
+	for _, cm := range *c.Members {
+		if !valid(cm.Member, "entity") {
+			log_info("Chat dropping member with invalid ID '%s'", cm.Member)
+			continue
+		}
+
+		if !valid(cm.Name, "name") {
+			log_info("Chat dropping member with invalid name '%s'", cm.Name)
+			continue
+		}
+
+		if cm.Role != "administrator" && cm.Role != "talker" && cm.Role != "listener" {
+			log_info("Chat dropping member with invalid role '%s'", cm.Role)
+			continue
+		}
+
+		e.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, ? )", c.ID, cm.Member, cm.Name, cm.Role)
+	}
+
+	notification(e.user, "chat", "new", c.ID, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)
+}
+
+// Send a chat message
+func chat_send(a *Action) {
+	//TODO
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
+	c := chat_by_id(a.db, a.input("chat"))
+	if c == nil {
+		a.error(404, "Chat not found")
+		return
+	}
 
 	message := a.input("message")
 	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), a.user.Identity.ID, a.user.Identity.Name, message)
-	event := Event{ID: uid(), From: a.user.Identity.ID, To: c.ID, Service: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
-	event.send()
+	e := Event{ID: uid(), From: a.user.Identity.ID, To: c.ID, Service: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
+	e.send()
 
 	j := json_encode(map[string]string{"from": a.user.Identity.ID, "name": a.user.Identity.Name, "time": now_string(), "body": message})
 	websockets_send(a.user, "chat", j)
@@ -200,6 +272,11 @@ func chat_view(a *Action) {
 	}
 
 	c := chat_by_id(a.db, a.input("chat"))
+	if c == nil {
+		a.error(404, "Chat not found")
+		return
+	}
+
 	notifications_clear_entity(a.user, "chat", c.ID)
 	a.template("chat/view", Map{"Chat": c})
 }

@@ -19,10 +19,10 @@ type ChatMember struct {
 }
 
 type ChatMessage struct {
-	ID     string
+	ID     string `json:"-"`
 	Chat   string
-	Time   int64
-	Author string
+	Time   int64  `json:"-"`
+	Author string `json:"-"`
 	Name   string
 	Body   string
 }
@@ -39,12 +39,11 @@ func init() {
 	a.path("chat/:chat", chat_view)
 	a.path("chat/:chat/:name", chat_view)
 	a.path("chat/:chat/messages", chat_messages)
-	a.path("chat/:chat/send", chat_send)
+	a.path("chat/:chat/send", chat_message_send)
 
 	a.service("chat")
 	a.event("message", chat_message_event)
 	a.event("new", chat_new_event)
-	//TODO Receive event for new chat
 }
 
 // Create app database
@@ -99,7 +98,11 @@ func chat_create(a *Action) {
 
 	j := json_encode(Chat{ID: chat, Name: name, Members: &members})
 	for _, m := range members {
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "new", Content: j}
+		if m.Member == a.user.Identity.ID {
+			continue
+		}
+		log_debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
+		e := Event{ID: chat, From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "new", Content: j}
 		e.send()
 	}
 
@@ -122,7 +125,7 @@ func chat_list(a *Action) {
 // Get details of a chat member
 func chat_member(db *DB, chat string, member string) *ChatMember {
 	var m ChatMember
-	if db.scan("select * from members where chat=? and member=?", chat, member) {
+	if db.scan(&m, "select * from members where chat=? and member=?", chat, member) {
 		return &m
 	}
 	return nil
@@ -130,7 +133,6 @@ func chat_member(db *DB, chat string, member string) *ChatMember {
 
 // Received a message event from another member
 func chat_message_event(e *Event) {
-	//TODO
 	var cm ChatMessage
 	if !json_decode(&cm, e.Content) {
 		log_info("Chat dropping message '%s' with malformed JSON", e.Content)
@@ -154,8 +156,9 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, time, author, author, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, c.ID, now(), e.From, m.Name, cm.Body)
-	websockets_send(e.user, "chat", json_encode(map[string]string{"from": e.From, "name": m.Name, "time": now_string(), "body": cm.Body}))
+	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, c.ID, now(), e.From, m.Name, cm.Body)
+	cm.Name = m.Name
+	websockets_send(e.user, "chat", json_encode(cm))
 	notification(e.user, "chat", "message", c.ID, m.Name+": "+cm.Body, "/chat/"+c.ID)
 }
 
@@ -172,9 +175,38 @@ func chat_messages(a *Action) {
 		return
 	}
 
-	var m []ChatMessage
-	a.db.scans(&m, "select * from messages where chat=? order by id", c.ID)
-	a.json(m)
+	var ms []ChatMessage
+	a.db.scans(&ms, "select * from messages where chat=? order by id", c.ID)
+	a.json(ms)
+}
+
+// Send a chat message
+func chat_message_send(a *Action) {
+	if a.user == nil {
+		a.error(401, "Not logged in")
+		return
+	}
+
+	c := chat_by_id(a.db, a.input("chat"))
+	if c == nil {
+		a.error(404, "Chat not found")
+		return
+	}
+
+	id := uid()
+	message := a.input("message")
+	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, message)
+
+	j := json_encode(ChatMessage{Chat: c.ID, Body: message})
+	var ms []ChatMember
+	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
+	for _, m := range ms {
+		log_debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
+		e := Event{ID: id, From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "message", Content: j}
+		e.send()
+	}
+
+	websockets_send(a.user, "chat", json_encode(map[string]string{"Name": a.user.Identity.Name, "Body": message}))
 }
 
 // Ask user who they'd like to chat with
@@ -239,29 +271,6 @@ func chat_new_event(e *Event) {
 	}
 
 	notification(e.user, "chat", "new", c.ID, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)
-}
-
-// Send a chat message
-func chat_send(a *Action) {
-	//TODO
-	if a.user == nil {
-		a.error(401, "Not logged in")
-		return
-	}
-
-	c := chat_by_id(a.db, a.input("chat"))
-	if c == nil {
-		a.error(404, "Chat not found")
-		return
-	}
-
-	message := a.input("message")
-	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", uid(), c.ID, now_string(), a.user.Identity.ID, a.user.Identity.Name, message)
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: c.ID, Service: "chat", Action: "message", Content: json_encode(map[string]string{"body": message})}
-	e.send()
-
-	j := json_encode(map[string]string{"from": a.user.Identity.ID, "name": a.user.Identity.Name, "time": now_string(), "body": message})
-	websockets_send(a.user, "chat", j)
 }
 
 // View a chat

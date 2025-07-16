@@ -26,7 +26,7 @@ function message_receive( j ) {
 	const c = JSON.parse( m.content );
 	const messages = document.getElementById( 'messages' );
 	messages.innerHTML = messages.innerHTML + '<br/>';
-	messages.innerText = messages.innerText + c.name + ': ' + c.body
+	messages.innerText = messages.innerText + c.Name + ': ' + c.Body
 	window.scrollTo( 0, document.body.scrollHeight );
 }
 

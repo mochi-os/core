@@ -112,7 +112,8 @@ func friends_accept(a *Action) {
 func friends_accept_event(e *Event) {
 	var fi FriendInvite
 	if e.db.scan(&fi, "select * from invites where identity=? and id=? and direction='to'", e.To, e.From) {
-		notification(e.user, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends/")
+		//TODO Figure out why we receive two notifications
+		notification(e.user, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends")
 		e.db.exec("delete from invites where identity=? and id=? and direction='to'", e.To, e.From)
 		broadcast(e.user, "friends", "accepted", e.From, nil)
 	}

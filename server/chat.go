@@ -15,22 +15,22 @@ type ChatMember struct {
 	Chat   string
 	Member string
 	Name   string
-	Role   string
 }
 
 type ChatMessage struct {
-	ID     string `json:"-"`
-	Chat   string
-	Time   int64  `json:"-"`
-	Author string `json:"-"`
-	Name   string
-	Body   string
+	ID          string `json:"-"`
+	Chat        string
+	Time        int64  `json:"-"`
+	Author      string `json:"-"`
+	Name        string
+	Body        string
+	Attachments *[]Attachment `json:",omitempty"`
 }
 
 func init() {
 	a := app("chat")
 	a.home("chat", map[string]string{"en": "Chat"})
-	a.db("db/chats.db", chat_db_create)
+	a.db("db/chat.db", chat_db_create)
 	a.entity("chat")
 
 	a.path("chat", chat_list)
@@ -54,7 +54,7 @@ func chat_db_create(db *DB) {
 	db.exec("create table chats ( id text not null primary key, identity text not null, name text not null, updated integer not null )")
 	db.exec("create index chats_updated on chats( updated )")
 
-	db.exec("create table members ( chat references chats( id ), member text not null, name text not null, role text not null default 'admin', primary key ( chat, member ) )")
+	db.exec("create table members ( chat references chats( id ), member text not null, name text not null, primary key ( chat, member ) )")
 
 	db.exec("create table messages ( id text not null primary key, chat references chats( id ), time integer not null, author text not null, name text not null, body text not null )")
 	db.exec("create index messages_chat_time on messages( chat, time )")
@@ -85,14 +85,14 @@ func chat_create(a *Action) {
 
 	log_debug("Creating chat '%s' with name '%s'", chat, name)
 	a.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
-	a.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, 'administrator' )", chat, a.user.Identity.ID, a.user.Identity.Name)
-	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name, Role: "administrator"}}
+	a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, a.user.Identity.ID, a.user.Identity.Name)
+	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name}}
 
 	for _, f := range *friends(a.user) {
 		if a.input(f.ID) != "" {
 			log_debug("Adding %s (%s) to new chat", f.ID, f.Name)
-			a.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, 'talker' )", chat, f.ID, f.Name)
-			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name, Role: "talker"})
+			a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, f.ID, f.Name)
+			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name})
 		}
 	}
 
@@ -262,12 +262,7 @@ func chat_new_event(e *Event) {
 			continue
 		}
 
-		if cm.Role != "administrator" && cm.Role != "talker" && cm.Role != "listener" {
-			log_info("Chat dropping member with invalid role '%s'", cm.Role)
-			continue
-		}
-
-		e.db.exec("replace into members ( chat, member, name, role ) values ( ?, ?, ?, ? )", c.ID, cm.Member, cm.Name, cm.Role)
+		e.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", c.ID, cm.Member, cm.Name)
 	}
 
 	notification(e.user, "chat", "new", c.ID, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)

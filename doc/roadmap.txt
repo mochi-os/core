@@ -2,7 +2,6 @@
 	Replace command line flags with config file
 	Send email via remote server
 	Chat app
-		Group Chat
 		Attachments
 	Protocol
 	Fingerprints

@@ -5,7 +5,7 @@
 <h3>{{.Post.Title}}</h3>
 <pre>{{.Post.Body}}</pre>
 
-{{if len .Attachments}}<div style="overflow-x: auto; white-space: nowrap;">{{range .Attachments}}<a href="/attachments/{{$.Forum.ID}}/{{.ID}}">{{if .Image}}<img src="/attachments/{{$.Forum.ID}}/{{.ID}}/thumbnail" title="{{.Name}}"/>{{else}}<span style="display:inline-block; white-space: pre-line;">{{.Name}}<br/>{{.Size}} bytes</span>{{end}}</a>&nbsp;{{end}}</div>{{end}}
+{{template "attachments" .}}
 
 <p style="font-variant: small-caps;">{{.Forum.Name}}, {{.Post.Name}}, {{.Post.CreatedString}}{{if $.RoleVoter}} <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/vote/up">&uarr;{{.Post.Up}}</a> <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/vote/down">&darr;{{.Post.Down}}</a>{{else}} &uarr;{{.Post.Up}} &darr;{{.Post.Down}}{{end}} &#8618;{{.Post.Comments}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/comment">New comment</a>{{end}}</p>
 

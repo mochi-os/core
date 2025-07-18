@@ -1,18 +1,28 @@
-{{define "title"}}{{.Name}}{{end}}
+{{define "title"}}{{.Chat.Name}}{{end}}
 {{template "head" .}}
 <p class="header"><a href="/">Comms</a> | <a href="/chat">Chat</a> | {{.Chat.Name}}</p>
 
 <p id="messages"></p>
-<input type="text" id="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
-<input type="button" value="Send" onclick="message_send()"/>
+<form id="form">
+	<input type="text" id="message" name="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
+	<input type="file" id="attachments" name="attachments" multiple>
+	<input type="button" value="Send" onclick="message_send()"/>
+</form>
 
 <script>
 const r = new XMLHttpRequest();
-r.onload = function() { messages_receive(this.responseText) }
-r.open("GET", "/chat/{{.Chat.ID}}/messages");
+r.onload = function() { messages_receive( this.responseText ) }
+r.open( 'GET', '/chat/{{.Chat.ID}}/messages' );
 r.send();
 const ws = new WebSocket( 'ws://' + window.location.host + '/websocket' );
 ws.addEventListener( 'message', (event) => { message_receive( event.data ) } );
+
+function escape( s ) {
+	if ( s == undefined ) {
+		return '[undefined]';
+	}
+	return s.replace( /&/g, '&amp;' ).replace( /</g, '&lt;' ).replace( />/g, '&gt;' ).replace( /"/g, '&quot;' );
+}
 
 function keypress( event ) {
 	if ( event.key === 'Enter') {
@@ -24,27 +34,52 @@ function keypress( event ) {
 function message_receive( j ) {
 	const m = JSON.parse( j )
 	const c = JSON.parse( m.content );
-	const messages = document.getElementById( 'messages' );
-	messages.innerHTML = messages.innerHTML + '<br/>';
-	messages.innerText = messages.innerText + c.Name + ': ' + c.Body
-	window.scrollTo( 0, document.body.scrollHeight );
+	message_render( c );
 }
 
 function messages_receive( j ) {
-	const messages = document.getElementById( 'messages' );
 	const ms = JSON.parse( j )
-	for ( var i in ms ) { 
-		messages.innerHTML = messages.innerHTML + '<br/>';
-		messages.innerText = messages.innerText + ms[i].Name + ': ' + ms[i].Body
+	for ( var i = 0; i < ms.length; i++ ) { 
+		message_render( ms[i] );
 	}
-	window.scrollTo( 0, document.body.scrollHeight );
 }
 
-function message_send( to ) {
-	const b = new URLSearchParams();
-	b.append( 'message', document.getElementById('message').value );
-	fetch( window.location.origin + '/chat/{{.Chat.ID}}/send', { method: 'post', body: b });
+function message_render( c ) {
+    const m = document.getElementById( 'messages' );
+    m.innerHTML += '<br/>' + escape( c.Name + ': ' + c.Body );
+
+	if ( c.Attachments != null ) {
+		var div = document.createElement( 'div' );
+		div.style = 'overflow-x: auto; white-space: nowrap;';
+		for ( var i = 0; i < c.Attachments.length; i++ ) {
+			const at = c.Attachments[i];
+			var a = document.createElement( 'a' );
+			a.href = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID );
+			a.style = 'z-index: 2;';
+			if ( at.Image ) {
+				var img = document.createElement( 'img' );
+				img.src = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID ) + '/thumbnail';
+				img.title = a.Name;
+				a.appendChild( img );
+			} else {
+				var span = document.createElement( 'span' );
+				span.style = 'display: inline-block; white-space: pre-line;';
+				span.innerHTML = escape( at.Name ) + '<br/>' + at.Size + ' bytes';
+				a.appendChild( span );
+			}
+			div.appendChild( a );
+			div.innerHTML += '&nbsp;';
+		}
+		m.appendChild( div );
+	}
+
+    window.scrollTo( 0, document.body.scrollHeight );
+}
+
+function message_send() {
+	fetch( window.location.origin + '/chat/{{.Chat.ID}}/send', { method: 'post', body: new FormData( document.getElementById( 'form' ) ) } );
 	document.getElementById( 'message' ).value = '';
+	document.getElementById( 'attachments' ).value = '';
 }
 </script>
 

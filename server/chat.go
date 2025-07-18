@@ -18,10 +18,10 @@ type ChatMember struct {
 }
 
 type ChatMessage struct {
-	ID          string `json:"-"`
+	ID          string
 	Chat        string
-	Time        int64  `json:"-"`
-	Author      string `json:"-"`
+	Time        int64
+	Author      string
 	Name        string
 	Body        string
 	Attachments *[]Attachment `json:",omitempty"`
@@ -156,8 +156,11 @@ func chat_message_event(e *Event) {
 		return
 	}
 
+	//TODO Get attachments
+
 	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, c.ID, now(), e.From, m.Name, cm.Body)
 	cm.Name = m.Name
+	//TODO Send attachments
 	websockets_send(e.user, "chat", json_encode(cm))
 	notification(e.user, "chat", "message", c.ID, m.Name+": "+cm.Body, "/chat/"+c.ID)
 }
@@ -177,6 +180,11 @@ func chat_messages(a *Action) {
 
 	var ms []ChatMessage
 	a.db.scans(&ms, "select * from messages where chat=? order by id", c.ID)
+
+	for i, m := range ms {
+		ms[i].Attachments = attachments(a.user, a.user.Identity.ID, "chat/%s/%s", c.ID, m.ID)
+	}
+
 	a.json(ms)
 }
 
@@ -195,9 +203,12 @@ func chat_message_send(a *Action) {
 
 	id := uid()
 	message := a.input("message")
+	log_debug("Chat sending message '%s'", message)
 	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, message)
 
-	j := json_encode(ChatMessage{Chat: c.ID, Body: message})
+	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
+
+	j := json_encode(ChatMessage{Chat: c.ID, Body: message, Attachments: attachments})
 	var ms []ChatMember
 	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
@@ -206,7 +217,7 @@ func chat_message_send(a *Action) {
 		e.send()
 	}
 
-	websockets_send(a.user, "chat", json_encode(map[string]string{"Name": a.user.Identity.Name, "Body": message}))
+	websockets_send(a.user, "chat", json_encode(map[string]any{"Name": a.user.Identity.Name, "Body": message, "Attachments": attachments}))
 }
 
 // Ask user who they'd like to chat with

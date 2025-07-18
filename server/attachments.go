@@ -12,7 +12,7 @@ import (
 )
 
 type Attachment struct {
-	Entity  string `json:"-"`
+	Entity  string
 	ID      string
 	Object  string
 	Rank    int
@@ -21,7 +21,7 @@ type Attachment struct {
 	Size    int64
 	Created int64  `json:"-"`
 	Data    []byte `json:",omitempty"`
-	Image   bool   `json:"-"`
+	Image   bool
 }
 
 type AttachmentRequest struct {
@@ -370,6 +370,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 	var results []Attachment
 
 	for i, f := range form.File[field] {
+		log_debug("Attachment uploading '%s'", f.Filename)
 		if !valid(f.Filename, "filename") {
 			log_info("Skipping uploaded file with invalid name '%s'", f.Filename)
 			continue
@@ -383,6 +384,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			path := fmt.Sprintf("attachments/%s/%s_%s", object, id, file_name_safe(f.Filename))
 			dir := fmt.Sprintf("%s/users/%d/", data_dir, a.user.ID)
 			file_mkdir(dir + "/attachments/" + object)
+			log_debug("Attachment writing file '%s'", dir+"/"+path)
 			a.web.SaveUploadedFile(f, dir+"/"+path)
 			size := file_size(dir + "/" + path)
 

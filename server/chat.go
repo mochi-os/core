@@ -292,6 +292,6 @@ func chat_view(a *Action) {
 		return
 	}
 
-	notifications_clear_entity(a.user, "chat", c.ID)
+	notifications_clear_object(a.user, "chat", c.ID)
 	a.template("chat/view", Map{"Chat": c})
 }

@@ -156,11 +156,10 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	//TODO Get attachments
-
 	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, c.ID, now(), e.From, m.Name, cm.Body)
+	attachments_save(cm.Attachments, e.user, e.From, "chat/%s/%s", c.ID, e.ID)
+
 	cm.Name = m.Name
-	//TODO Send attachments
 	websockets_send(e.user, "chat", json_encode(cm))
 	notification(e.user, "chat", "message", c.ID, m.Name+": "+cm.Body, "/chat/"+c.ID)
 }
@@ -182,7 +181,8 @@ func chat_messages(a *Action) {
 	a.db.scans(&ms, "select * from messages where chat=? order by id", c.ID)
 
 	for i, m := range ms {
-		ms[i].Attachments = attachments(a.user, a.user.Identity.ID, "chat/%s/%s", c.ID, m.ID)
+		ms[i].Attachments = attachments(a.user, "chat/%s/%s", c.ID, m.ID)
+		log_debug("Attachments found for 'chat/%s/%s': %d", c.ID, m.ID, len(*ms[i].Attachments))
 	}
 
 	a.json(ms)

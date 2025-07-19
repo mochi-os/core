@@ -54,12 +54,12 @@ function message_render( c ) {
 		for ( var i = 0; i < c.Attachments.length; i++ ) {
 			const at = c.Attachments[i];
 			var a = document.createElement( 'a' );
-			a.href = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID );
+			a.href = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID ) + '/' + escape( at.Name );
 			a.style = 'z-index: 2;';
 			if ( at.Image ) {
 				var img = document.createElement( 'img' );
 				img.src = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID ) + '/thumbnail';
-				img.title = a.Name;
+				img.title = at.Name;
 				a.appendChild( img );
 			} else {
 				var span = document.createElement( 'span' );

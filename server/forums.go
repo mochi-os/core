@@ -839,7 +839,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, f.ID, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -992,7 +992,7 @@ func forum_send_recent_posts(u *User, db *DB, f *Forum, member string) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
-		p.Attachments = attachments(u, f.ID, "forums/%s/%s", f.ID, p.ID)
+		p.Attachments = attachments(u, "forums/%s/%s", f.ID, p.ID)
 		e := Event{ID: p.ID, From: f.ID, To: member, Service: "forums", Action: "post/create", Content: json_encode(p)}
 		e.send()
 	}
@@ -1181,7 +1181,7 @@ func forums_view(a *Action) {
 			ps[i].ForumName = f.Name
 		}
 		ps[i].CreatedString = time_local(a.user, p.Created)
-		ps[i].Attachments = attachments(a.owner, p.Forum, "forums/%s/%s", p.Forum, p.ID)
+		ps[i].Attachments = attachments(a.owner, "forums/%s/%s", p.Forum, p.ID)
 	}
 
 	var fs []Forum

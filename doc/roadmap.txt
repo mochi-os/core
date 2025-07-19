@@ -1,8 +1,9 @@
 0.1
+	Notifications
+	User identity
+	Entities
 	Replace command line flags with config file
 	Send email via remote server
-	Chat app
-		Attachments
 	Protocol
 	Fingerprints
 	Large files

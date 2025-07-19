@@ -43,6 +43,7 @@ func init() {
 	a.db("db/attachments.db", attachments_db_create)
 
 	a.path("attachments/:entity/:id", attachments_get)
+	a.path("attachments/:entity/:id/:name", attachments_get)
 	a.path("attachments/:entity/:id/thumbnail", attachments_get_thumbnail)
 
 	a.service("attachments")
@@ -65,13 +66,13 @@ func attachments_db_create(db *DB) {
 }
 
 // Get list of attachments for an object
-func attachments(u *User, entity string, format string, values ...any) *[]Attachment {
+func attachments(u *User, format string, values ...any) *[]Attachment {
 	object := fmt.Sprintf(format, values...)
 	db := db_user(u, "db/attachments.db", attachments_db_create)
 	defer db.close()
 
 	var as []Attachment
-	db.scans(&as, "select * from attachments where entity=? and object=? order by rank, name", entity, object)
+	db.scans(&as, "select * from attachments where object=? order by rank, name", object)
 
 	for i, at := range as {
 		as[i].Image = is_image(at.Name)
@@ -221,11 +222,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 
 // Request to get a file
 func attachments_get_event(e *Event) {
+	log_debug("Request for attachment '%s' '%s'", e.To, e.Content)
 	db := db_user(e.user, "db/attachments.db", attachments_db_create)
 	defer db.close()
 
 	if !valid(e.Content, "id") {
-		log_info("Request to get attachment with invalid ID '%s'", e.Content)
+		log_info("Request for attachment with invalid ID '%s'", e.Content)
 		return
 	}
 
@@ -247,11 +249,12 @@ func attachments_get_event(e *Event) {
 
 // Request to get a thumbnail
 func attachments_get_thumbnail_event(e *Event) {
+	log_debug("Request for thumbnail '%s' '%s'", e.To, e.Content)
 	db := db_user(e.user, "db/attachments.db", attachments_db_create)
 	defer db.close()
 
 	if !valid(e.Content, "id") {
-		log_info("Request to get thumbnail with invalid ID '%s'", e.Content)
+		log_info("Request for thumbnail with invalid ID '%s'", e.Content)
 		return
 	}
 
@@ -389,7 +392,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			size := file_size(dir + "/" + path)
 
 			db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, path, size, created)
-			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Path: path, Size: size, Created: created})
+			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Path: path, Size: size, Created: created, Image: is_image(f.Filename)})
 
 		} else {
 			// Save information about the attachment locally, but not its data because we're sending that to the owning entity
@@ -401,7 +404,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			size := file_size(tmp)
 
 			db.exec("replace into attachments ( entity, id, object, rank, name, size, created ) values ( ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, size, created)
-			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Size: size, Created: created, Data: file_read(tmp)})
+			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Size: size, Created: created, Data: file_read(tmp), Image: is_image(f.Filename)})
 
 			file_delete(tmp)
 		}

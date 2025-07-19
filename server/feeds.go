@@ -728,7 +728,7 @@ func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 	var ps []FeedPost
 	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
-		p.Attachments = attachments(u, f.ID, "feeds/%s/%s", f.ID, p.ID)
+		p.Attachments = attachments(u, "feeds/%s/%s", f.ID, p.ID)
 		e := Event{ID: p.ID, From: f.ID, To: subscriber, Service: "feeds", Action: "post/create", Content: json_encode(p)}
 		e.send()
 
@@ -918,7 +918,7 @@ func feeds_view(a *Action) {
 		}
 
 		ps[i].CreatedString = time_local(a.user, p.Created)
-		ps[i].Attachments = attachments(a.owner, p.Feed, "feeds/%s/%s", p.Feed, p.ID)
+		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
 
 		var r FeedReaction
 		if a.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, identity) {

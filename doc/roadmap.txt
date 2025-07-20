@@ -1,6 +1,4 @@
 0.1
-	Send email via remote server
-
 	User identity
 	Route on entity
 	Fingerprints

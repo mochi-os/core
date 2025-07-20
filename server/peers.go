@@ -82,15 +82,15 @@ func peers_manager() {
 
 		if found {
 			if p.Address == o.Address {
-				log_debug("Updating already connected peer '%s'", p.ID)
+				log_debug("Peer '%s' already connected", p.ID)
 				db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
 			} else {
-				log_debug("Peer '%s' changed address from '%s' to '%s'", p.ID, o.Address, p.Address)
+				log_debug("Peer '%s' changed address to '%s'", o.Address, p.Address)
 				db.exec("update peers set address=?, updated=? where id=?", p.Address, p.Updated, p.ID)
 			}
 
 		} else if p.Connect && libp2p_connect(p.Address) {
-			log_debug("New peer connected '%s'", p.ID)
+			log_debug("New peer '%s' connected", p.ID)
 			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 			go events_check_queue("peer", p.ID)
 		}

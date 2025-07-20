@@ -48,7 +48,7 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
-	_, err := identity_create(u, "person", c.Query("name"), c.Query("privacy"), "")
+	_, err := identity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
 	if err != nil {
 		web_error(c, 400, "Unable to create identity: %s", err)
 		return
@@ -58,7 +58,7 @@ func web_identity_create(c *gin.Context) {
 }
 
 func web_login(c *gin.Context) {
-	code := c.Query("code")
+	code := c.PostForm("code")
 	if code != "" {
 		u := user_from_code(code)
 		if u == nil {
@@ -71,7 +71,7 @@ func web_login(c *gin.Context) {
 		return
 	}
 
-	email := c.Query("email")
+	email := c.PostForm("email")
 	if email != "" {
 		if !code_send(email) {
 			web_error(c, 400, "Invalid email address")
@@ -136,12 +136,14 @@ func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
-func web_start(listen string, port int) {
+func web_start(listen string, port int, debug bool) {
 	if port == 0 {
 		return
 	}
 
-	//gin.SetMode(gin.ReleaseMode)
+	if !debug {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 
@@ -149,7 +151,7 @@ func web_start(listen string, port int) {
 		r.GET("/"+p.path, p.web_path)
 		r.POST("/"+p.path, p.web_path)
 	}
-	r.GET("/login", web_login)
+	r.POST("/login", web_login)
 	r.GET("/login/identity", web_identity_create)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
@@ -161,7 +163,7 @@ func web_start(listen string, port int) {
 		check(err)
 
 	} else {*/
-	log_info("Web listening on '%s' port %d", listen, port)
+	log_info("Web listening on '%s:%d'", listen, port)
 	err := r.Run(fmt.Sprintf("%s:%d", listen, port))
 	check(err)
 	//}

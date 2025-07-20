@@ -11,11 +11,11 @@ import (
 type Map map[string]any
 
 var (
-	cache_dir    string
-	data_dir     string
-	email_from   string
+	cache_dir  string
+	data_dir   string
+	email_from string
 	email_host string
-	email_port   int
+	email_port int
 )
 
 func main() {
@@ -43,7 +43,7 @@ func main() {
 	go identities_manager()
 	go events_manager()
 	go cache_manager()
-	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080))
+	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), c.Section("web").Key("debug").MustBool(false))
 
 	if new_install {
 		go directory_download()

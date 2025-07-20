@@ -14,7 +14,7 @@ var (
 	cache_dir    string
 	data_dir     string
 	email_from   string
-	email_server string
+	email_host string
 	email_port   int
 )
 
@@ -33,7 +33,7 @@ func main() {
 	cache_dir = c.Section("directories").Key("cache").MustString("/var/cache/comms")
 	data_dir = c.Section("directories").Key("data").MustString("/var/lib/comms")
 	email_from = c.Section("email").Key("from").MustString("comms-server@localhost")
-	email_server = c.Section("email").Key("server").MustString("127.0.0.1")
+	email_host = c.Section("email").Key("host").MustString("127.0.0.1")
 	email_port = c.Section("email").Key("port").MustInt(25)
 
 	new_install := db_start()

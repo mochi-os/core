@@ -26,8 +26,7 @@ func email_send(to string, subject string, body string) {
 	m.Subject(subject)
 	m.SetBodyString(gm.TypeTextPlain, body)
 
-	log_debug("Sending email to server '%s'", email_server)
-	c, err := gm.NewClient(email_server, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
+	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
 	if err != nil {
 		log_warn("Email failed to create mail client: %v", err)
 		return

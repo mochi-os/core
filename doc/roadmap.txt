@@ -1,12 +1,14 @@
 0.1
-	Notifications
-	User identity
-	Entities
 	Replace command line flags with config file
 	Send email via remote server
-	Protocol
+
+	User identity
+	Route on entity
 	Fingerprints
+
+	Protocol
 	Large files
+
 	Choose a product name
 	Set up introducer server
 	Set up apt repository
@@ -14,14 +16,12 @@
 0.2
 	Client API
 	Command line client
-	Route on entity
 	Find hidden services
 	Directory get recent updates
 	Avatars
 	Users can change their settings
-	Users can have multiple identities
-	Users can set public URLs to publish data
 	Users can create hooks to control events
+	Map web URLs to entities
 	Feeds app
 		Permissions
 	Forums app

@@ -886,7 +886,7 @@ func feeds_view(a *Action) {
 	if feed != "" {
 		f = feed_by_id(a.user, a.db, feed)
 		if f == nil {
-			a = a.owner_mode()
+			a = a.public_mode()
 			f = feed_by_id(a.user, a.db, feed)
 		}
 	}

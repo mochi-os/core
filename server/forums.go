@@ -1141,7 +1141,7 @@ func forums_view(a *Action) {
 	if forum != "" {
 		f = forum_by_id(a.user, a.db, forum)
 		if f == nil {
-			a = a.owner_mode()
+			a = a.public_mode()
 			f = forum_by_id(a.user, a.db, forum)
 		}
 	}

@@ -128,7 +128,7 @@ func libp2p_send(address string, content string) bool {
 }
 
 // Start libp2p
-func libp2p_start() {
+func libp2p_start(listen string, port int) {
 	var private crypto.PrivKey
 	var err error
 
@@ -146,14 +146,14 @@ func libp2p_start() {
 	}
 
 	libp2p_context = context.Background()
-	ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", libp2p_listen, libp2p_port))
+	ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", listen, port))
 	check(err)
 	h, err := libp2p.New(libp2p.ListenAddrs(ma), libp2p.Identity(private))
 	check(err)
 	libp2p_host = h
 	libp2p_id = h.ID().String()
 	h.SetStreamHandler("/comms/1.0.0", libp2p_handle)
-	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", libp2p_listen, libp2p_port, libp2p_id)
+	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", listen, port, libp2p_id)
 	log_info("libp2p listening on '%s'", libp2p_address)
 
 	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{h: h})

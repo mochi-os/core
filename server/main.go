@@ -5,11 +5,10 @@ package main
 
 import (
 	"flag"
+	"gopkg.in/ini.v1"
 )
 
-type (
-	Map map[string]any
-)
+type Map map[string]any
 
 var (
 	cache_dir string
@@ -18,25 +17,28 @@ var (
 
 func main() {
 	log_info("Starting")
-	flag.StringVar(&cache_dir, "cache", "/var/cache/comms", "Directory to cache data in")
-	flag.StringVar(&data_dir, "data", "/var/lib/comms", "Directory to store data in")
-	flag.StringVar(&libp2p_listen, "listen", "0.0.0.0", "libp2p IP address to listen on")
-	flag.IntVar(&libp2p_port, "port", 1443, "libp2p port to listen on")
-	flag.IntVar(&web_port, "web", 8080, "Web port to listen on")
+
+	var file string
+	flag.StringVar(&file, "f", "/etc/comms/comms.conf", "Configuration file")
 	flag.Parse()
-	domains := flag.Args()
+	i, err := ini.Load(file)
+	if err != nil {
+		log_error("Unable to read configuration file: %v", err)
+		return
+	}
+
+	cache_dir = i.Section("directories").Key("cache").MustString("/var/cache/comms")
+	data_dir = i.Section("directories").Key("data").MustString("/var/lib/comms")
 
 	new_install := db_start()
-	//apps_start()
-	if web_port != 0 {
-		go web_start(domains)
-	}
 	go peers_manager()
-	libp2p_start()
+	libp2p_start(i.Section("libp2p").Key("listen").MustString("0.0.0.0"), i.Section("libp2p").Key("port").MustInt(1443))
 	go attachments_manager()
 	go identities_manager()
 	go events_manager()
 	go cache_manager()
+	go web_start(i.Section("web").Key("listen").MustString("0.0.0.0"), i.Section("web").Key("port").MustInt(8080))
+
 	if new_install {
 		go directory_download()
 	}

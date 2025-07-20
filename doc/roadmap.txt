@@ -1,5 +1,4 @@
 0.1
-	Replace command line flags with config file
 	Send email via remote server
 
 	User identity

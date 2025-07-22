@@ -1,10 +1,11 @@
 0.1
 	Protocol
-	Large files
+	Send large files
 
 	User identity
 	Route on entity
 	Fingerprints
+	Database files layout
 
 	Choose a product name
 	Set up introducer server

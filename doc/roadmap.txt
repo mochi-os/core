@@ -1,10 +1,10 @@
 0.1
+	Protocol
+	Large files
+
 	User identity
 	Route on entity
 	Fingerprints
-
-	Protocol
-	Large files
 
 	Choose a product name
 	Set up introducer server

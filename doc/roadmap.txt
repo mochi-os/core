@@ -25,9 +25,10 @@
 	Forums app
 		Moderation
 		Permissions
+	.rpm packages and repository
 
 0.3
-	Streming services
+	Streaming services
 		Audio
 		Video
 	User management
@@ -47,7 +48,6 @@
 	Inbound email into feeds
 	Outbound email from feeds
 	Oauth server
-	.rpm packages and repository
 
 Ideas for apps
 	Bug tracker

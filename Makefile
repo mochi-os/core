@@ -14,13 +14,10 @@ comms-server: clean
 
 deb: comms-server
 	rm -rf $(build) $(build).deb
-	mkdir $(build)
+	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/comms $(build)/var/lib/comms
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
 	cp -av install/* $(build)
-	mkdir -p -m 0755 $(build)/usr/bin
-	mkdir -p -m 0755 $(build)/var/cache/comms
-	mkdir -p -m 0755 $(build)/var/lib/comms
 	cp -av comms-server $(build)/usr/bin
 	strip $(build)/usr/bin/comms-server
 	upx -qq $(build)/usr/bin/comms-server

@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"gopkg.in/ini.v1"
+	"strings"
 )
 
 type Map map[string]any
@@ -43,7 +44,7 @@ func main() {
 	go identities_manager()
 	go events_manager()
 	go cache_manager()
-	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), c.Section("web").Key("debug").MustBool(false))
+	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), strings.Split(c.Section("web").Key("domains").MustString(""), ","), c.Section("web").Key("debug").MustBool(false))
 
 	if new_install {
 		go directory_download()

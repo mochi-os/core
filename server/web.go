@@ -6,7 +6,7 @@ package main
 import (
 	"embed"
 	"fmt"
-	//	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	"html/template"
 	"net/http"
@@ -136,7 +136,7 @@ func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
-func web_start(listen string, port int, debug bool) {
+func web_start(listen string, port int, domains []string, debug bool) {
 	if port == 0 {
 		return
 	}
@@ -156,17 +156,16 @@ func web_start(listen string, port int, debug bool) {
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 
-	/* Not used for now
 	if len(domains) > 0 {
 		log_info("Web listening on HTTPS domains %v", domains)
 		err := autotls.Run(r, domains...)
 		check(err)
 
-	} else {*/
-	log_info("Web listening on '%s:%d'", listen, port)
-	err := r.Run(fmt.Sprintf("%s:%d", listen, port))
-	check(err)
-	//}
+	} else {
+		log_info("Web listening on '%s:%d'", listen, port)
+		err := r.Run(fmt.Sprintf("%s:%d", listen, port))
+		check(err)
+	}
 }
 
 // This could probably be better written using c.HTML(), but I can't figure out how to load the templates.

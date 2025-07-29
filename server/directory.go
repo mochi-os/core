@@ -123,7 +123,7 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID, false), d.Name, d.Class, d.Location, d.Data, now, now)
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now, now)
 
 	go events_check_queue("entity", d.ID)
 }

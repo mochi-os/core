@@ -1034,7 +1034,7 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum, false), d.Name, now())
+	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
 	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: forum, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}

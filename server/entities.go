@@ -25,7 +25,7 @@ type Entity struct {
 func entity_by_fingerprint(in string) *Entity {
 	db := db_open("db/users.db")
 	var e Entity
-	if db.scan(&e, "select * from entities where fingerprint=?", fingerprint_clean(in)) {
+	if db.scan(&e, "select * from entities where fingerprint=?", in) {
 		return &e
 	}
 	return nil
@@ -73,7 +73,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
 		id := base58_encode(public)
-		fingerprint := fingerprint(string(public), false)
+		fingerprint := fingerprint(string(public))
 		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
 			db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
 			e := Entity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}

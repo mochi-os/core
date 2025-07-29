@@ -1,11 +1,10 @@
 0.1
+	Fingerprints
+	User identity
+	Database file locations
+
 	Protocol
 	Send large files
-
-	User identity
-	Route on entity
-	Fingerprints
-	Database files layout
 
 	Choose a product name
 	Set up introducer server
@@ -14,6 +13,7 @@
 0.2
 	Client API
 	Command line client
+	Route on entity
 	Find hidden services
 	Directory get recent updates
 	Avatars

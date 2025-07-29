@@ -777,7 +777,7 @@ func feeds_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed, false), d.Name, now())
+	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: feed, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()

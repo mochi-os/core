@@ -59,19 +59,15 @@ func error_message(message string, values ...any) error {
 	return errors.New(fmt.Sprintf(message, values...))
 }
 
-func fingerprint(in string, hyphens bool) string {
+func fingerprint(in string) string {
 	s := sha.New()
 	s.Write([]byte(in))
 	encoded := base58_encode(s.Sum(nil))
-	out := encoded[len(encoded)-9:]
-	if hyphens {
-		return out[:3] + "-" + out[3:6] + "-" + out[6:]
-	}
-	return out
+	return encoded[len(encoded)-9:]
 }
 
-func fingerprint_clean(in string) string {
-	return match_hyphens.ReplaceAllString(in, "")
+func fingerprint_hyphens(in string) string {
+	return in[:3] + "-" + in[3:6] + "-" + in[6:]
 }
 
 func json_decode(out any, j string) bool {

@@ -10,7 +10,7 @@ type Forum struct {
 	Role        string
 	Members     int
 	Updated     int64
-	Identity    *Identity
+	Entity      *Entity
 }
 
 type ForumMember struct {
@@ -143,7 +143,7 @@ func forum_by_id(u *User, db *DB, id string) *Forum {
 		}
 	}
 	if u != nil {
-		f.Identity = identity_by_user_id(u, f.ID)
+		f.Entity = entity_by_user_id(u, f.ID)
 	}
 	return &f
 }
@@ -212,7 +212,7 @@ func forums_comment_create(a *Action) {
 	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
 
-	if f.Identity != nil {
+	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
 		j := json_encode(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ms []ForumMember
@@ -382,7 +382,7 @@ func forums_comment_vote(a *Action) {
 	vote := a.input("vote")
 	forums_comment_vote_set(a.db, &c, a.user.Identity.ID, vote)
 
-	if f.Identity != nil {
+	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
 		id := uid()
 		j := json_encode(c)
@@ -494,9 +494,9 @@ func forums_create(a *Action) {
 		return
 	}
 
-	i, err := identity_create(a.user, "forum", name, privacy, json_encode(Map{"role": role}))
+	i, err := entity_create(a.user, "forum", name, privacy, json_encode(Map{"role": role}))
 	if err != nil {
-		a.error(500, "Unable to create identity: %s", err)
+		a.error(500, "Unable to create entity: %s", err)
 		return
 	}
 	a.db.exec("replace into forums ( id, fingerprint, name, role, members, updated ) values ( ?, ?, ?, ?, 1, ? )", i.ID, i.Fingerprint, name, role, now())
@@ -530,7 +530,7 @@ func forums_members_edit(a *Action) {
 	}
 
 	f := forum_by_id(a.user, a.db, a.input("forum"))
-	if f == nil || f.Identity == nil {
+	if f == nil || f.Entity == nil {
 		a.error(404, "Forum not found")
 		return
 	}
@@ -549,7 +549,7 @@ func forums_members_save(a *Action) {
 	}
 
 	f := forum_by_id(a.user, a.db, a.input("forum"))
-	if f == nil || f.Identity == nil {
+	if f == nil || f.Entity == nil {
 		a.error(404, "Forum not found")
 		return
 	}
@@ -659,7 +659,7 @@ func forums_post_create(a *Action) {
 	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
 	a.db.exec("update forums set updated=? where id=?", now, f.ID)
 
-	if f.Identity != nil {
+	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
 		j := json_encode(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
 		var ms []ForumMember
@@ -863,7 +863,7 @@ func forums_post_vote(a *Action) {
 	vote := a.input("vote")
 	forums_post_vote_set(a.db, &p, a.user.Identity.ID, vote)
 
-	if f.Identity != nil {
+	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
 		id := uid()
 		j := json_encode(p)
@@ -1034,7 +1034,7 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
+	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum, false), d.Name, now())
 	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: forum, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
@@ -1146,12 +1146,12 @@ func forums_view(a *Action) {
 		}
 	}
 
-	identity := ""
+	entity := ""
 	if a.user != nil {
-		identity = a.user.Identity.ID
+		entity = a.user.Identity.ID
 	}
 
-	if identity == "" && f == nil {
+	if entity == "" && f == nil {
 		a.error(404, "No forum specified")
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TODO Put identity directly in Action struct?
 type Action struct {
 	user  *User
 	owner *User

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-type Identity struct {
+type Entity struct {
 	ID          string `json:"id"`
 	Private     string `json:"-"`
 	Fingerprint string `json:"-"`
@@ -22,34 +22,34 @@ type Identity struct {
 	Published   int64  `json:"-"`
 }
 
-func identity_by_fingerprint(fingerprint string) *Identity {
+func entity_by_fingerprint(in string) *Entity {
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select * from identities where fingerprint=?", fingerprint) {
-		return nil
+	var e Entity
+	if db.scan(&e, "select * from entities where fingerprint=?", fingerprint_clean(in)) {
+		return &e
 	}
-	return &i
+	return nil
 }
 
-func identity_by_id(id string) *Identity {
+func entity_by_id(id string) *Entity {
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select * from identities where id=?", id) {
-		return nil
+	var e Entity
+	if db.scan(&e, "select * from entities where id=?", id) {
+		return &e
 	}
-	return &i
+	return nil
 }
 
-func identity_by_user_id(u *User, id string) *Identity {
+func entity_by_user_id(u *User, id string) *Entity {
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select * from identities where id=? and user=?", id, u.ID) {
-		return nil
+	var e Entity
+	if db.scan(&e, "select * from entities where id=? and user=?", id, u.ID) {
+		return &e
 	}
-	return &i
+	return nil
 }
 
-func identity_create(u *User, class string, name string, privacy string, data string) (*Identity, error) {
+func entity_create(u *User, class string, name string, privacy string, data string) (*Entity, error) {
 	db := db_open("db/users.db")
 	if !valid(name, "name") {
 		return nil, error_message("Invalid name")
@@ -73,15 +73,15 @@ func identity_create(u *User, class string, name string, privacy string, data st
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
 		id := base58_encode(public)
-		fingerprint := fingerprint(string(public))
-		if !db.exists("select id from identities where id=? or fingerprint=?", id, fingerprint) {
-			db.exec("replace into identities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
-			i := Identity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+		fingerprint := fingerprint(string(public), false)
+		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
+			db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
+			e := Entity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 			if privacy == "public" {
-				directory_create(&i)
-				directory_publish(&i, true)
+				directory_create(&e)
+				directory_publish(&e, true)
 			}
-			return &i, nil
+			return &e, nil
 		}
 		log_debug("Identity '%s', fingerprint '%s' already in use. Trying another...", id, fingerprint)
 	}
@@ -89,11 +89,11 @@ func identity_create(u *User, class string, name string, privacy string, data st
 	return nil, error_message("Unable to find spare entity ID or fingerprint")
 }
 
-func identity_location(id string) (string, string, string, string) {
+func entity_location(id string) (string, string, string, string) {
 	// Check if local
-	var i Identity
+	var e Entity
 	dbu := db_open("db/users.db")
-	if dbu.scan(&i, "select * from identities where id=?", id) {
+	if dbu.scan(&e, "select * from entities where id=?", id) {
 		return "local", id, "", ""
 	}
 
@@ -113,19 +113,19 @@ func identity_location(id string) (string, string, string, string) {
 	return "entity", id, "entity", id
 }
 
-// Re-publish all our identities every day so the network knows they're still active
+// Re-publish all our entities every day so the network knows they're still active
 // Increase this interval in future versions, especially once the directory gets recent updates
-func identities_manager() {
+func entities_manager() {
 	db := db_open("db/users.db")
 
 	for {
 		time.Sleep(time.Minute)
 		if len(peers_connected) >= peers_minimum {
-			var identities []Identity
-			db.scans(&identities, "select * from identities where privacy='public' and published<?", now()-86400)
-			for _, i := range identities {
-				db.exec("update identities set published=? where id=?", now(), i.ID)
-				directory_publish(&i, false)
+			var es []Entity
+			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
+			for _, e := range es {
+				db.exec("update identities set published=? where id=?", now(), e.ID)
+				directory_publish(&e, false)
 			}
 		}
 	}

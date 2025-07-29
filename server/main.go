@@ -41,7 +41,7 @@ func main() {
 	go peers_manager()
 	libp2p_start(c.Section("libp2p").Key("listen").MustString("0.0.0.0"), c.Section("libp2p").Key("port").MustInt(1443))
 	go attachments_manager()
-	go identities_manager()
+	go entities_manager()
 	go events_manager()
 	go cache_manager()
 	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), strings.Split(c.Section("web").Key("domains").MustString(""), ","), c.Section("web").Key("debug").MustBool(false))

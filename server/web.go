@@ -48,7 +48,7 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
-	_, err := identity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
+	_, err := entity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
 	if err != nil {
 		web_error(c, 400, "Unable to create identity: %s", err)
 		return
@@ -95,20 +95,21 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	var e *Identity = nil
+	var e *Entity = nil
 	entity := c.Param(p.app.entity_field)
 	if entity != "" {
-		e = identity_by_fingerprint(entity)
+		e = entity_by_fingerprint(entity)
 		if e == nil {
-			e = identity_by_id(entity)
+			e = entity_by_id(entity)
 		}
 	}
 
 	owner := user
 	if e != nil {
-		owner = user_owning_identity(e.ID)
+		owner = user_owning_entity(e.ID)
 	}
 
+	//TODO
 	var db *DB = nil
 	if p.app.db_file != "" {
 		if user != nil {
@@ -152,11 +153,11 @@ func web_start(listen string, port int, domains []string, debug bool) {
 		r.POST("/"+p.path, p.web_path)
 	}
 	r.POST("/login", web_login)
-	r.GET("/login/identity", web_identity_create)
+	r.POST("/login/identity", web_identity_create)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 
-	if len(domains) > 0 {
+	if len(domains) > 0 && false { // Enable when ready
 		log_info("Web listening on HTTPS domains %v", domains)
 		err := autotls.Run(r, domains...)
 		check(err)

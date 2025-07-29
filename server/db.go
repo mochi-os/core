@@ -49,15 +49,15 @@ func db_create() {
 	users.exec("create unique index logins_code on logins( code )")
 	users.exec("create index logins_expires on logins( expires )")
 
-	// Identities
-	users.exec("create table identities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
-	users.exec("create index identities_fingerprint on identities( fingerprint )")
-	users.exec("create index identities_user on identities( user )")
-	users.exec("create index identities_parent on identities( parent )")
-	users.exec("create index identities_class on identities( class )")
-	users.exec("create index identities_name on identities( name )")
-	users.exec("create index identities_privacy on identities( privacy )")
-	users.exec("create index identities_published on identities( published )")
+	// Entities
+	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
+	users.exec("create index entities_fingerprint on entities( fingerprint )")
+	users.exec("create index entities_user on entities( user )")
+	users.exec("create index entities_parent on entities( parent )")
+	users.exec("create index entities_class on entities( class )")
+	users.exec("create index entities_name on entities( name )")
+	users.exec("create index entities_privacy on entities( privacy )")
+	users.exec("create index entities_published on entities( published )")
 
 	// Directory
 	directory := db_open("db/directory.db")

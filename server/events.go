@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TODO Put identity directly in Event struct?
 type Event struct {
 	ID        string `json:"id"`
 	From      string `json:"from"`
@@ -49,8 +50,8 @@ func events_check_queue(method string, location string) {
 				success = true
 			}
 
-		} else if q.Method == "identity" {
-			method, location, _, _ := identity_location(location)
+		} else if q.Method == "entity" {
+			method, location, _, _ := entity_location(location)
 			if method == "libp2p" && libp2p_send(location, q.Event) {
 				success = true
 			}
@@ -124,7 +125,7 @@ func (e *Event) receive() {
 		}
 	}
 
-	e.user = user_owning_identity(e.To)
+	e.user = user_owning_entity(e.To)
 
 	a := services[e.Service]
 	if a == nil {
@@ -132,6 +133,7 @@ func (e *Event) receive() {
 		return
 	}
 
+	//TODO
 	if a.db_file != "" {
 		e.db = db_user(e.user, a.db_file, a.db_create)
 		defer e.db.close()
@@ -167,7 +169,7 @@ func (e *Event) send() {
 		e.ID = uid()
 	}
 
-	method, location, queue_method, queue_location := identity_location(e.To)
+	method, location, queue_method, queue_location := entity_location(e.To)
 	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
 
 	if method == "local" {
@@ -197,12 +199,12 @@ func (e *Event) sign() {
 	}
 
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select private from identities where id=?", e.From) {
-		log_warn("Not signing event due unknown sending identity")
+	var from Entity
+	if !db.scan(&from, "select private from entities where id=?", e.From) {
+		log_warn("Not signing event due unknown sending entity")
 		return
 	}
-	private := base58_decode(i.Private, "")
+	private := base58_decode(from.Private, "")
 	if string(private) == "" {
 		log_warn("Not signing event due to invalid private key")
 		return

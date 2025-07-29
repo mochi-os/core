@@ -11,7 +11,7 @@ type Feed struct {
 	Owner       int
 	Subscribers int
 	Updated     int64
-	identity    *Identity
+	entity      *Entity
 }
 
 type FeedSubscriber struct {
@@ -133,7 +133,7 @@ func feed_by_id(u *User, db *DB, id string) *Feed {
 	}
 
 	if u != nil {
-		f.identity = identity_by_user_id(u, f.ID)
+		f.entity = entity_by_user_id(u, f.ID)
 	}
 
 	return &f
@@ -150,9 +150,9 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 		id = parent.ID
 	}
 
-	identity := ""
+	entity := ""
 	if u != nil {
-		identity = u.Identity.ID
+		entity = u.Identity.ID
 	}
 
 	var cs []FeedComment
@@ -165,12 +165,12 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 		}
 
 		var r FeedReaction
-		if db.scan(&r, "select reaction from reactions where comment=? and subscriber=?", c.ID, identity) {
+		if db.scan(&r, "select reaction from reactions where comment=? and subscriber=?", c.ID, entity) {
 			cs[j].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		db.scans(&rs, "select * from reactions where comment=? and subscriber!=? and reaction!='' order by name", c.ID, identity)
+		db.scans(&rs, "select * from reactions where comment=? and subscriber!=? and reaction!='' order by name", c.ID, entity)
 		cs[j].Reactions = &rs
 
 		cs[j].Children = feed_comments(u, db, p, &c, depth+1)
@@ -221,7 +221,7 @@ func feeds_comment_create(a *Action) {
 	a.db.exec("update posts set updated=? where id=?", now, post)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
-	if f.identity != nil {
+	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		j := json_encode(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ss []FeedSubscriber
@@ -367,7 +367,7 @@ func feeds_comment_react(a *Action) {
 	reaction := feeds_reaction_valid(a.input("reaction"))
 	feeds_comment_reaction_set(a.db, &c, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
-	if f.identity != nil {
+	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
 		j := json_encode(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
@@ -420,7 +420,7 @@ func feeds_comment_reaction_event(e *Event) {
 
 	reaction := feeds_reaction_valid(r.Reaction)
 
-	if f.identity != nil {
+	if f.entity != nil {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
@@ -468,9 +468,9 @@ func feeds_create(a *Action) {
 		return
 	}
 
-	i, err := identity_create(a.user, "feed", name, privacy, "")
+	i, err := entity_create(a.user, "feed", name, privacy, "")
 	if err != nil {
-		a.error(500, "Unable to create identity: %s", err)
+		a.error(500, "Unable to create entity: %s", err)
 		return
 	}
 	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", i.ID, i.Fingerprint, name, now())
@@ -520,7 +520,7 @@ func feeds_post_create(a *Action) {
 		return
 	}
 	log_debug("New post in feed '%s'", f.Name)
-	if f.identity == nil {
+	if f.entity == nil {
 		a.error(403, "Not feed owner")
 	}
 
@@ -618,7 +618,7 @@ func feeds_post_react(a *Action) {
 	reaction := feeds_reaction_valid(a.input("reaction"))
 	feeds_post_reaction_set(a.db, &p, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
-	if f.identity != nil {
+	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		id := uid()
 		j := json_encode(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
@@ -670,7 +670,7 @@ func feeds_post_reaction_event(e *Event) {
 
 	reaction := feeds_reaction_valid(r.Reaction)
 
-	if f.identity != nil {
+	if f.entity != nil {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
@@ -777,7 +777,7 @@ func feeds_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
+	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed, false), d.Name, now())
 
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: feed, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
@@ -827,7 +827,7 @@ func feeds_unsubscribe(a *Action) {
 	a.db.exec("delete from subscribers where feed=?", f.ID)
 	a.db.exec("delete from feeds where id=?", f.ID)
 
-	if f.identity == nil {
+	if f.entity == nil {
 		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "feeds", Action: "unsubscribe"}
 		e.send()
 	}
@@ -891,12 +891,12 @@ func feeds_view(a *Action) {
 		}
 	}
 
-	identity := ""
+	entity := ""
 	if a.user != nil {
-		identity = a.user.Identity.ID
+		entity = a.user.Identity.ID
 	}
 
-	if identity == "" && f == nil {
+	if entity == "" && f == nil {
 		a.error(404, "No feed specified")
 		return
 	}
@@ -921,12 +921,12 @@ func feeds_view(a *Action) {
 		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
 
 		var r FeedReaction
-		if a.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, identity) {
+		if a.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {
 			ps[i].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		a.db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, identity)
+		a.db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, entity)
 		ps[i].Reactions = &rs
 
 		ps[i].Comments = feed_comments(a.user, a.db, &p, nil, 0)

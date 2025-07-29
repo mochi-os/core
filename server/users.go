@@ -22,7 +22,7 @@ type User struct {
 	Role     string
 	Language string
 	Timezone string
-	Identity *Identity
+	Identity *Entity
 }
 
 func code_send(email string) bool {
@@ -37,10 +37,10 @@ func code_send(email string) bool {
 	return true
 }
 
-func (u *User) identity() *Identity {
+func (u *User) identity() *Entity {
 	db := db_open("db/users.db")
-	var i Identity
-	if db.scan(&i, "select * from identities where user=? and class='person' order by id limit 1", u.ID) {
+	var i Entity
+	if db.scan(&i, "select * from entities where user=? and class='person' order by id limit 1", u.ID) {
 		return &i
 	}
 	return nil
@@ -75,8 +75,8 @@ func user_by_id(id int) *User {
 
 func user_by_identity(id string) *User {
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select * from identities where id=?", id) {
+	var i Entity
+	if !db.scan(&i, "select * from entities where id=?", id) {
 		return nil
 	}
 
@@ -133,14 +133,14 @@ func user_from_code(code string) *User {
 	return nil
 }
 
-func user_owning_identity(id string) *User {
+func user_owning_entity(id string) *User {
 	if id == "" {
 		return nil
 	}
 
 	db := db_open("db/users.db")
-	var i Identity
-	if !db.scan(&i, "select * from identities where id=?", id) {
+	var i Entity
+	if !db.scan(&i, "select * from entities where id=?", id) {
 		return nil
 	}
 

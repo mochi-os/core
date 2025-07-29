@@ -2,7 +2,7 @@
 {{template "head" .}}
 <h2>Set how others see you</h2>
 
-<form action="/login/identity">
+<form method="post" action="/login/identity">
 	<label for="name">Your name, as you'd like others to see it:</label>
 	<input type="text" name="name" autofocus/><br/>
 	<label for="privacy">Allow others to search for you:</label>

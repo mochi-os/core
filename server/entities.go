@@ -124,7 +124,7 @@ func entities_manager() {
 			var es []Entity
 			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
 			for _, e := range es {
-				db.exec("update identities set published=? where id=?", now(), e.ID)
+				db.exec("update entities set published=? where id=?", now(), e.ID)
 				directory_publish(&e, false)
 			}
 		}

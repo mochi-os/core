@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// TODO Put identity directly in Event struct?
 type Event struct {
 	ID        string `json:"id"`
 	From      string `json:"from"`

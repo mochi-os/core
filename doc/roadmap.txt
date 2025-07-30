@@ -1,5 +1,4 @@
 0.1
-	Fingerprints
 	User identity
 	Database file locations
 

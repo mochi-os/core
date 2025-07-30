@@ -218,6 +218,7 @@ func friends_list(a *Action) {
 		a.error(401, "Not logged in")
 		return
 	}
+	notifications_clear_app(a.user, "friends")
 
 	var f []Friend
 	a.db.scans(&f, "select * from friends order by name, identity, id")

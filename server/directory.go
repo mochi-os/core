@@ -150,6 +150,10 @@ func directory_search(u *User, class string, search string, include_self bool) *
 	var ds []Directory
 	dbd.scans(&ds, "select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
 
+	for i, _ := range ds {
+		ds[i].Fingerprint = fingerprint_hyphens(ds[i].Fingerprint)
+	}
+
 	if u == nil || include_self || class != "person" {
 		return &ds
 	}

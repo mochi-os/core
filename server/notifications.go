@@ -41,6 +41,13 @@ func notifications_clear(u *User) {
 	db.exec("delete from notifications")
 }
 
+func notifications_clear_app(u *User, app string) {
+	db := db_user(u, "db/notifications.db", notifications_db_create)
+	defer db.close()
+
+	db.exec("delete from notifications where app=?", app)
+}
+
 func notifications_clear_object(u *User, app string, object string) {
 	db := db_user(u, "db/notifications.db", notifications_db_create)
 	defer db.close()

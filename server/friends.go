@@ -1,4 +1,4 @@
-// Comms server: Friends
+// Mochi server: Friends
 // Copyright Alistair Cunningham 2024-2025
 
 package main

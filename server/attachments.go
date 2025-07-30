@@ -1,4 +1,4 @@
-// Comms: Attachments app
+// Mochi: Attachments app
 // Copyright Alistair Cunningham 2025
 
 package main

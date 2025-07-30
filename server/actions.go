@@ -1,4 +1,4 @@
-// Comms server: Actions
+// Mochi server: Actions
 // Copyright Alistair Cunningham 2024-2025
 
 package main

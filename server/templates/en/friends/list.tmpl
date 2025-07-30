@@ -1,6 +1,6 @@
 {{define "title"}}Friends{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | Friends</p>
+<p class="header"><a href="/">Mochi</a> | Friends</p>
 
 <p>{{if len .Friends}}{{range .Friends}}{{.Name}} | <a href="/friends/delete?id={{.ID}}">Delete</a><br/>{{end}}
 {{else}}You have no friends.{{end}}</p>

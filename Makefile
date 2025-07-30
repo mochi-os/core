@@ -1,26 +1,26 @@
-# Makefile for Comms
+# Makefile for Mochi
 # Copyright Alistair Cunningham 2024
 
 version = $(shell cat version | tr -d '\n')
-build = /tmp/comms-server_$(version)_amd64
+build = /tmp/mochi-server_$(version)_amd64
 
-all: comms-server
+all: mochi-server
 
 clean:
-	rm -f comms-server
+	rm -f mochi-server
 
-comms-server: clean
-	go build -o comms-server server/*.go
+mochi-server: clean
+	go build -o mochi-server server/*.go
 
-deb: comms-server
+deb: mochi-server
 	rm -rf $(build) $(build).deb
-	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/comms $(build)/var/lib/comms
+	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/mochi $(build)/var/lib/mochi
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
 	cp -av install/* $(build)
-	cp -av comms-server $(build)/usr/bin
-	strip $(build)/usr/bin/comms-server
-	upx -qq $(build)/usr/bin/comms-server
+	cp -av mochi-server $(build)/usr/bin
+	strip $(build)/usr/bin/mochi-server
+	upx -qq $(build)/usr/bin/mochi-server
 	dpkg-deb --build --root-owner-group $(build)
 	rm -rf $(build)
 	ls -l $(build).deb
@@ -29,10 +29,10 @@ format:
 	go fmt server/*.go
 
 run:
-	./comms-server
+	./mochi-server
 
 run2:
-	./comms-server -f /etc/comms/comms2.conf
+	./mochi-server -f /etc/mochi/mochi2.conf
 
 static: clean
-	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o comms-server server/*.go
+	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o mochi-server server/*.go

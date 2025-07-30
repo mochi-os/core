@@ -1,4 +1,4 @@
-// Comms server: Filesystem utilities
+// Mochi server: Filesystem utilities
 // Copyright Alistair Cunningham 2024-2025
 
 package main

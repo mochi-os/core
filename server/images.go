@@ -1,4 +1,4 @@
-// Comms: Images
+// Mochi: Images
 // Copyright Alistair Cunningham 2025
 
 package main

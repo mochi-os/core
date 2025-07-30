@@ -1,8 +1,8 @@
-{{define "title"}}Comms{{end}}
+{{define "title"}}Mochi{{end}}
 {{template "head" .}}
-<p class="header">Comms | {{.User.Username}}</p>
+<p class="header">Mochi | {{.User.Username}}</p>
 
-{{if .Welcome}}<p>Welcome to Comms, the open source social operating system. Why not create <a href="/feeds/new/">a feed</a>?</p>{{end}}
+{{if .Welcome}}<p>Welcome to Mochi, the open source social operating system. Why not create <a href="/feeds/new/">a feed</a>?</p>{{end}}
 
 {{if len .Notifications}}<h2>Notifications:</h2>
 <p>{{range .Notifications}}{{if len .Link}}<a href="{{.Link}}">{{.Content}}</a>{{else}}{{.Content}}{{end}}<br/>{{end}}</p>

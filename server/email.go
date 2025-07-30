@@ -1,4 +1,4 @@
-// Comms server: Email
+// Mochi server: Email
 // Copyright Alistair Cunningham 2024
 
 package main

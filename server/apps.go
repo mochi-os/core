@@ -1,4 +1,4 @@
-// Comms server: Apps
+// Mochi server: Apps
 // Copyright Alistair Cunningham 2024-2025
 
 package main

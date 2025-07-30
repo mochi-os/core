@@ -1,4 +1,4 @@
-// Comms: Feeds app
+// Mochi: Feeds app
 // Copyright Alistair Cunningham 2025
 
 package main

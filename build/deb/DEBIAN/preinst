@@ -2,13 +2,13 @@
  
 if  [ "$1" = install ] 
 then
-	echo "Adding comms user and group ..."
+	echo "Adding mochi user and group ..."
 
-	if ! getent group comms >/dev/null; then
-		addgroup --system comms >/dev/null
+	if ! getent group mochi >/dev/null; then
+		addgroup --system mochi >/dev/null
 	fi
  
-	if ! getent passwd comms >/dev/null; then
-		adduser --system --disabled-login --ingroup comms --no-create-home --home /var/lib/comms --gecos "Comms server" --shell /usr/sbin/nologin comms >/dev/null
+	if ! getent passwd mochi >/dev/null; then
+		adduser --system --disabled-login --ingroup mochi --no-create-home --home /var/lib/mochi --gecos "Mochi server" --shell /usr/sbin/nologin mochi >/dev/null
 	fi
 fi

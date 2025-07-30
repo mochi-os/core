@@ -1,4 +1,4 @@
-// Comms server: Peers
+// Mochi server: Peers
 // Copyright Alistair Cunningham 2024-2025
 
 package main

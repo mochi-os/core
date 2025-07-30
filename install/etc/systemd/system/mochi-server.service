@@ -1,11 +1,11 @@
 [Unit]
-Description=Comms server
+Description=Mochi server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/comms-server
-PIDFile=/run/comms-server.pid
+ExecStart=/usr/bin/mochi-server
+PIDFile=/run/mochi-server.pid
 Restart=on-abnormal
 RestartSec=1
 LimitSTACK=infinity

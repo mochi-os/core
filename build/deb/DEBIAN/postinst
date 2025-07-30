@@ -1,7 +1,7 @@
 #!/bin/bash
 
-chown -R comms:comms /var/lib/comms
-chown -R comms:comms /var/cache/comms
+chown -R mochi:mochi /var/lib/mochi
+chown -R mochi:mochi /var/cache/mochi
 
 systemctl daemon-reload
-systemctl start comms-server
+systemctl start mochi-server

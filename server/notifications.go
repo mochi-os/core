@@ -1,4 +1,4 @@
-// Comms server: Notifications
+// Mochi server: Notifications
 // Copyright Alistair Cunningham 2024
 
 package main

@@ -1,4 +1,4 @@
-// Comms: Forums app
+// Mochi: Forums app
 // Copyright Alistair Cunningham 2024-2025
 
 package main

@@ -1,4 +1,4 @@
-// Comms server: Publish/Subscribes
+// Mochi server: Publish/Subscribes
 // Copyright Alistair Cunningham 2024
 
 package main

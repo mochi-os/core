@@ -1,4 +1,4 @@
-// Comms server: Database
+// Mochi server: Database
 // Copyright Alistair Cunningham 2024-2025
 
 package main

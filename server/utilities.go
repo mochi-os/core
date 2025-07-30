@@ -1,4 +1,4 @@
-// Comms server: Utilities
+// Mochi server: Utilities
 // Copyright Alistair Cunningham 2024
 
 package main

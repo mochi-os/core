@@ -1,6 +1,6 @@
 {{define "title"}}Chats{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | Chat</p>
+<p class="header"><a href="/">Mochi</a> | Chat</p>
 
 <p>{{if len .}}{{range .}}<a href="/chat/{{.ID}}/{{.Name}}">{{.Name}}</a><br/>{{end}}
 {{else}}You have no chats{{end}}</p>

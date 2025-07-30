@@ -4,7 +4,6 @@
 	Protocol
 	Send large files
 
-	Choose a product name
 	Set up introducer server
 	Set up apt repository
 

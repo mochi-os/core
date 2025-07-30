@@ -1,6 +1,6 @@
 {{define "title"}}New comment{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | New comment
+<p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | New comment
 
 <form action="/feeds/{{.Feed.ID}}/{{.Post}}/create">
 	<textarea name="body" rows="20" cols="100"></textarea><br/>

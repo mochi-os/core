@@ -1,4 +1,4 @@
-// Comms server: Wesockets interface
+// Mochi server: Wesockets interface
 // Copyright Alistair Cunningham 2024-2025
 
 package main

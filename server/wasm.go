@@ -1,4 +1,4 @@
-// Comms: WASM
+// Mochi: WASM
 // Copyright Alistair Cunningham 2024-2025
 
 package main
@@ -87,7 +87,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 
 	store := wasmer.NewStore(wasmer.NewEngine())
 	module, _ := wasmer.NewModule(store, wasm)
-	wasi, _ := wasmer.NewWasiStateBuilder("comms").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
+	wasi, _ := wasmer.NewWasiStateBuilder("mochi").MapDirectory("/", data_dir+"/"+storage).InheritStdout().InheritStderr().Finalize()
 	io, err := wasi.GenerateImportObject(store, module)
 	check(err)
 	i, err := wasmer.NewInstance(module, io)

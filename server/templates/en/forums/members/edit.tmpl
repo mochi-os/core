@@ -1,6 +1,6 @@
 {{define "title"}}Edit forum members{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a> | <a href="/forums/{{.Forum.ID}}">{{.Forum.Name}}</a> | Edit members
+<p class="header"><a href="/">Mochi</a> | <a href="/forums">Forums</a> | <a href="/forums/{{.Forum.ID}}">{{.Forum.Name}}</a> | Edit members
 
 <form action="/forums/{{.Forum.ID}}/members/save">
 	{{range .Members}}<select name="role_{{.ID}}" {{if eq .ID $.User.Identity.ID}}disabled{{end}}>

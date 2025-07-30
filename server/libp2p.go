@@ -1,4 +1,4 @@
-// Comms server: libp2p
+// Mochi server: libp2p
 // Copyright Alistair Cunningham 2024
 
 // The code in this file and peers.go could probably be improved by someone highly familiar with libp2p
@@ -108,7 +108,7 @@ func libp2p_send(address string, content string) bool {
 		log_warn("libp2p invalid peer address '%s': %s", address, err)
 		return false
 	}
-	s, err := libp2p_host.NewStream(context.Background(), info.ID, "/comms/1.0.0")
+	s, err := libp2p_host.NewStream(context.Background(), info.ID, "/mochi/1.0.0")
 	if err != nil {
 		log_warn("libp2p unable to create stream to '%s': %s'", address, err)
 		return false
@@ -152,11 +152,11 @@ func libp2p_start(listen string, port int) {
 	check(err)
 	libp2p_host = h
 	libp2p_id = h.ID().String()
-	h.SetStreamHandler("/comms/1.0.0", libp2p_handle)
+	h.SetStreamHandler("/mochi/1.0.0", libp2p_handle)
 	libp2p_address = fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", listen, port, libp2p_id)
 	log_info("libp2p listening on '%s'", libp2p_address)
 
-	dns := mdns.NewMdnsService(h, "comms", &mdns_notifee{h: h})
+	dns := mdns.NewMdnsService(h, "mochi", &mdns_notifee{h: h})
 	err = dns.Start()
 	check(err)
 

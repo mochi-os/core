@@ -1,6 +1,6 @@
 {{define "title"}}{{if .Forum}}{{.Forum.Name}}{{else}}Forums{{end}}{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Comms</a> | <a href="/forums">Forums</a>{{if .Forum}} | {{.Forum.Name}}{{end}}</p>
+<p class="header"><a href="/">Mochi</a> | <a href="/forums">Forums</a>{{if .Forum}} | {{.Forum.Name}}{{end}}</p>
 
 {{if .User}}
 <p><a href="/forums/find">Subscribe to a forum</a> | <a href="/forums/new">Create new forum</a>{{if .Forum}}{{if $.RoleAdministrator}} | <a href="/forums/{{.Forum.ID}}/members">Manage members of {{.Forum.Name}}</a>{{end}}{{if not .Forum.Entity}} | <a href="/forums/{{.Forum.ID}}/unsubscribe">Unsubscribe from {{.Forum.Name}}</a>{{end}}{{end}} | <a href="/forums/post/new{{if .Forum}}?current={{.Forum.ID}}{{end}}">New post</a><br/>

@@ -1,4 +1,4 @@
-// Comms server: Users
+// Mochi server: Users
 // Copyright Alistair Cunningham 2024
 
 package main
@@ -32,7 +32,7 @@ func code_send(email string) bool {
 	code := random_alphanumeric(12)
 	db := db_open("db/users.db")
 	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
-	email_send(email, "Comms login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
+	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	log_debug("Code: %s", code)
 	return true
 }

@@ -1,4 +1,4 @@
-// Comms server: Broadcasts
+// Mochi server: Broadcasts
 // Copyright Alistair Cunningham 2024
 
 package main

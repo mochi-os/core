@@ -1,4 +1,4 @@
-// Comms: Chat app
+// Mochi: Chat app
 // Copyright Alistair Cunningham 2024-2025
 
 package main

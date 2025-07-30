@@ -1,4 +1,4 @@
-// Comms server: Sample web interface
+// Mochi server: Sample web interface
 // Copyright Alistair Cunningham 2024
 
 package main

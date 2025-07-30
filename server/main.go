@@ -1,4 +1,4 @@
-// Comms server: Main
+// Mochi server: Main
 // Copyright Alistair Cunningham 2024
 
 package main
@@ -23,7 +23,7 @@ func main() {
 	log_info("Starting")
 
 	var file string
-	flag.StringVar(&file, "f", "/etc/comms/comms.conf", "Configuration file")
+	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")
 	flag.Parse()
 	c, err := ini.Load(file)
 	if err != nil {
@@ -31,9 +31,9 @@ func main() {
 		return
 	}
 
-	cache_dir = c.Section("directories").Key("cache").MustString("/var/cache/comms")
-	data_dir = c.Section("directories").Key("data").MustString("/var/lib/comms")
-	email_from = c.Section("email").Key("from").MustString("comms-server@localhost")
+	cache_dir = c.Section("directories").Key("cache").MustString("/var/cache/mochi")
+	data_dir = c.Section("directories").Key("data").MustString("/var/lib/mochi")
+	email_from = c.Section("email").Key("from").MustString("mochi-server@localhost")
 	email_host = c.Section("email").Key("host").MustString("127.0.0.1")
 	email_port = c.Section("email").Key("port").MustInt(25)
 

@@ -1,16 +1,18 @@
 0.1
-	Database file locations
-
-	Protocol
-	Send large files
-
 	Set up introducer server
 	Set up apt repository
+	File locations and directory layout
+		Databases
+		Attachments
+		Cache
+	Protocol
+	Large files
 
 0.2
 	Client API
 	Command line client
 	Route on entity
+	IPv6 support
 	Find hidden services
 	Directory get recent updates
 	Avatars
@@ -19,6 +21,9 @@
 	Map web URLs to entities
 	Feeds app
 		Permissions
+		Check-ins
+			Location
+			Travelling to
 	Forums app
 		Moderation
 		Permissions
@@ -45,8 +50,11 @@
 	Inbound email into feeds
 	Outbound email from feeds
 	Oauth server
+	Feeds app
+		On this day
 
 Ideas for apps
+	Achievements tracker
 	Bug tracker
 	Kanban
 	File sharing

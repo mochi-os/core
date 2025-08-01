@@ -109,7 +109,7 @@ func (p *Path) web_path(c *gin.Context) {
 		owner = user_owning_entity(e.ID)
 	}
 
-	//TODO
+	//TODO Set database location
 	var db *DB = nil
 	if p.app.db_file != "" {
 		if user != nil {
@@ -156,8 +156,10 @@ func web_start(listen string, port int, domains []string, debug bool) {
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
+	//TODO Add route for repository
+	//r.Static("/assets", "./assets")
 
-	if len(domains) > 0 && false { // Enable when ready
+	if len(domains) > 0 {
 		log_info("Web listening on HTTPS domains %v", domains)
 		err := autotls.Run(r, domains...)
 		check(err)

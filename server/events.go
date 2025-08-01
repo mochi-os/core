@@ -132,7 +132,7 @@ func (e *Event) receive() {
 		return
 	}
 
-	//TODO
+	//TODO Set database location
 	if a.db_file != "" {
 		e.db = db_user(e.user, a.db_file, a.db_create)
 		defer e.db.close()

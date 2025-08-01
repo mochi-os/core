@@ -37,6 +37,9 @@ func main() {
 	email_host = c.Section("email").Key("host").MustString("127.0.0.1")
 	email_port = c.Section("email").Key("port").MustInt(25)
 
+	//TODO Choose default port
+	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), strings.Split(c.Section("web").Key("domains").MustString(""), ","), c.Section("web").Key("debug").MustBool(false))
+
 	new_install := db_start()
 	go peers_manager()
 	libp2p_start(c.Section("libp2p").Key("listen").MustString("0.0.0.0"), c.Section("libp2p").Key("port").MustInt(1443))
@@ -44,7 +47,6 @@ func main() {
 	go entities_manager()
 	go events_manager()
 	go cache_manager()
-	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(8080), strings.Split(c.Section("web").Key("domains").MustString(""), ","), c.Section("web").Key("debug").MustBool(false))
 
 	if new_install {
 		go directory_download()

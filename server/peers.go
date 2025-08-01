@@ -21,13 +21,10 @@ const (
 )
 
 var (
-	peers_connected map[string]Peer = map[string]Peer{}
-	peer_add_chan                   = make(chan Peer)
-	peers_known                     = map[string]string{
-		//  "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/145.239.9.209/tcp/1443",
-		"12D3KooWHrYrMabQw6HdWjKS5FcYMYGgMjKGYPGZpeZxUD3gmvvs": "/ip4/127.0.0.1/tcp/1444",
-	}
-	peer_publish_chan = make(chan bool)
+	peers_connected   map[string]Peer = map[string]Peer{}
+	peer_add_chan                     = make(chan Peer)
+	peers_known                       = map[string]string{"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/217.182.75.108/tcp/1443"}
+	peer_publish_chan                 = make(chan bool)
 )
 
 func init() {

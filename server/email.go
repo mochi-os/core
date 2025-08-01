@@ -9,8 +9,6 @@ import (
 )
 
 func email_send(to string, subject string, body string) {
-	log_debug("Sending email, to='%s', subject='%s', body='%s'", to, subject, body)
-
 	m := gm.NewMsg()
 
 	err := m.From(email_from)

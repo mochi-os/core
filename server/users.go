@@ -33,7 +33,7 @@ func code_send(email string) bool {
 	db := db_open("db/users.db")
 	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
-	log_debug("Code: %s", code)
+	//log_debug("Code: %s", code)
 	return true
 }
 
@@ -124,6 +124,9 @@ func user_from_code(code string) *User {
 	}
 
 	db.exec("replace into users ( username, role, language, timezone ) values ( ?, 'user', 'en', '' )", c.Username)
+
+	// Remove once we have new user hooks
+	email_send("root@localhost", "Mochi new user", "New user: "+c.Username)
 
 	if db.scan(&u, "select * from users where username=?", c.Username) {
 		return &u

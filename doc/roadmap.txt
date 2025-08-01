@@ -1,5 +1,6 @@
 0.1
-	Set up introducer server
+	Log to custom file
+	Choose port numbers
 	Set up apt repository
 	File locations and directory layout
 		Databases

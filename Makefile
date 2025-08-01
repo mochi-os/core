@@ -31,11 +31,4 @@ format:
 run:
 	./mochi-server
 
-run2:
-	./mochi-server -f /etc/mochi/mochi2.conf
-
-static: clean
-	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o mochi-server server/*.go
-
-upload:
-	scp $(build).deb root@wasabi.mochi-os.org:/tmp
+-include local/Makefile

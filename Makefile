@@ -36,3 +36,6 @@ run2:
 
 static: clean
 	go build -ldflags="-extldflags=-static" -tags sqlite_omit_load_extension -o mochi-server server/*.go
+
+upload:
+	scp $(build).deb root@wasabi.mochi-os.org:/tmp

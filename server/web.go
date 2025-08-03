@@ -109,7 +109,6 @@ func (p *Path) web_path(c *gin.Context) {
 		owner = user_owning_entity(e.ID)
 	}
 
-	//TODO Set database location
 	var db *DB = nil
 	if p.app.db_file != "" {
 		if user != nil {

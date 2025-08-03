@@ -31,6 +31,7 @@ func main() {
 		return
 	}
 
+	//TODO Replace ini lookups
 	cache_dir = c.Section("directories").Key("cache").MustString("/var/cache/mochi")
 	data_dir = c.Section("directories").Key("data").MustString("/var/lib/mochi")
 	email_from = c.Section("email").Key("from").MustString("mochi-server@localhost")
@@ -42,8 +43,6 @@ func main() {
 		domains = nil
 	}
 
-	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(80), domains, c.Section("web").Key("debug").MustBool(false))
-
 	new_install := db_start()
 	go peers_manager()
 	libp2p_start(c.Section("libp2p").Key("listen").MustString("0.0.0.0"), c.Section("libp2p").Key("port").MustInt(1443))
@@ -51,6 +50,7 @@ func main() {
 	go entities_manager()
 	go events_manager()
 	go cache_manager()
+	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(80), domains, c.Section("web").Key("debug").MustBool(false))
 
 	if new_install {
 		go directory_download()

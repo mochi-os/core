@@ -1,23 +1,25 @@
 0.1
+	ini file
 	Set up apt repository
+
 	File locations and directory layout
 		Databases
 		Attachments
 		Cache
+
 	Protocol
 	Large files
 
 0.2
 	Client API
-	Command line client
 	Route on entity
 	IPv6 support
 	Logging
 	Find hidden services
 	Directory get recent updates
-	Avatars
 	Users can change their settings
 	Users can create hooks to control events
+	User avatars
 	Map web URLs to entities
 	Feeds app
 		Permissions

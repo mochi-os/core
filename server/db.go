@@ -166,7 +166,7 @@ func db_upgrade() {
 }
 
 func db_user(u *User, file string, create func(*DB)) *DB {
-	path := fmt.Sprintf("users/%d/%s", u.ID, file)
+	path := fmt.Sprintf("users/%d/db/%s", u.ID, file)
 	if file_exists(data_dir + "/" + path) {
 		return db_open(path)
 	}

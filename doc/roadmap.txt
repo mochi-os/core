@@ -1,6 +1,4 @@
 0.1
-	Log to custom file
-	Choose port numbers
 	Set up apt repository
 	File locations and directory layout
 		Databases
@@ -14,6 +12,7 @@
 	Command line client
 	Route on entity
 	IPv6 support
+	Logging
 	Find hidden services
 	Directory get recent updates
 	Avatars

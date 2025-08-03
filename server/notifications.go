@@ -21,7 +21,7 @@ func notifications_db_create(db *DB) {
 }
 
 func notification(u *User, app string, category string, object string, content string, link string) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	log_debug("Creating notification: user='%d', app='%s', object='%s', category='%s', content='%s', link='%s'", u.ID, app, object, category, content, link)
@@ -35,28 +35,28 @@ func notification(u *User, app string, category string, object string, content s
 }
 
 func notifications_clear(u *User) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	db.exec("delete from notifications")
 }
 
 func notifications_clear_app(u *User, app string) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	db.exec("delete from notifications where app=?", app)
 }
 
 func notifications_clear_object(u *User, app string, object string) {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	db.exec("delete from notifications where app=? and object=?", app, object)
 }
 
 func notifications_list(u *User) *[]Notification {
-	db := db_user(u, "db/notifications.db", notifications_db_create)
+	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
 	var n []Notification

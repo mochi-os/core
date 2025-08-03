@@ -63,8 +63,8 @@ type FeedReaction struct {
 func init() {
 	a := app("feeds")
 	a.home("feeds", map[string]string{"en": "Feeds"})
-	a.db("db/feeds.db", feeds_db_create)
 	a.entity("feed")
+	a.db("feeds.db", feeds_db_create)
 
 	a.path("feeds", feeds_view)
 	a.path("feeds/create", feeds_create)

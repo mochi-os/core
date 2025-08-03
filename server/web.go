@@ -156,8 +156,8 @@ func web_start(listen string, port int, domains []string, debug bool) {
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
-	//TODO Add route for repository
-	//r.Static("/assets", "./assets")
+	//TODO Replace with ini file setting
+	r.Static("/apt", "/sys/apt")
 
 	if len(domains) > 0 {
 		log_info("Web listening on HTTPS domains %v", domains)

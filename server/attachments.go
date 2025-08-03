@@ -40,7 +40,7 @@ var (
 
 func init() {
 	a := app("attachments")
-	a.db("db/attachments.db", attachments_db_create)
+	a.db("attachments.db", attachments_db_create)
 
 	a.path("attachments/:entity/:id", attachments_get)
 	a.path("attachments/:entity/:id/:name", attachments_get)
@@ -68,7 +68,7 @@ func attachments_db_create(db *DB) {
 // Get list of attachments for an object
 func attachments(u *User, format string, values ...any) *[]Attachment {
 	object := fmt.Sprintf(format, values...)
-	db := db_user(u, "db/attachments.db", attachments_db_create)
+	db := db_user(u, "attachments.db", attachments_db_create)
 	defer db.close()
 
 	var as []Attachment
@@ -223,7 +223,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 // Request to get a file
 func attachments_get_event(e *Event) {
 	log_debug("Request for attachment '%s' '%s'", e.To, e.Content)
-	db := db_user(e.user, "db/attachments.db", attachments_db_create)
+	db := db_user(e.user, "attachments.db", attachments_db_create)
 	defer db.close()
 
 	if !valid(e.Content, "id") {
@@ -250,7 +250,7 @@ func attachments_get_event(e *Event) {
 // Request to get a thumbnail
 func attachments_get_thumbnail_event(e *Event) {
 	log_debug("Request for thumbnail '%s' '%s'", e.To, e.Content)
-	db := db_user(e.user, "db/attachments.db", attachments_db_create)
+	db := db_user(e.user, "attachments.db", attachments_db_create)
 	defer db.close()
 
 	if !valid(e.Content, "id") {
@@ -298,7 +298,7 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 	}
 
 	object := fmt.Sprintf(format, values...)
-	db := db_user(u, "db/attachments.db", attachments_db_create)
+	db := db_user(u, "attachments.db", attachments_db_create)
 	defer db.close()
 
 	for _, at := range *as {
@@ -364,7 +364,7 @@ func attachments_send_event_work(e *Event, thumbnail bool) {
 // Get list of uploaded attachments, save them, and optionally save their data
 func (a *Action) upload_attachments(field string, entity string, local bool, format string, values ...any) *[]Attachment {
 	object := fmt.Sprintf(format, values...)
-	db := db_user(a.user, "db/attachments.db", attachments_db_create)
+	db := db_user(a.user, "attachments.db", attachments_db_create)
 	defer db.close()
 
 	created := now()

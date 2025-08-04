@@ -1,5 +1,4 @@
 0.1
-	ini file
 	Set up apt repository
 
 	File locations and directory layout

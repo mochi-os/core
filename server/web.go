@@ -136,10 +136,14 @@ func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
-func web_start(listen string, port int, domains []string, debug bool) {
+func web_start() {
+	listen := ini_string("web", "listen", "0.0.0.")
+	port := ini_int("web", "port", 80)
 	if port == 0 {
 		return
 	}
+	domains := ini_strings_commas("web", "domains")
+	debug := ini_bool("web", "debug", false)
 
 	if !debug {
 		gin.SetMode(gin.ReleaseMode)
@@ -155,8 +159,11 @@ func web_start(listen string, port int, domains []string, debug bool) {
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
-	//TODO Replace with ini file setting
-	r.Static("/apt", "/sys/apt")
+
+	// Replace when we implement URL mapping
+	if ini_string("web", "special", "") == "packages" {
+		r.Static("/apt", "/sys/apt")
+	}
 
 	if len(domains) > 0 {
 		log_info("Web listening on HTTPS domains %v", domains)

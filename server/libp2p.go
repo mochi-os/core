@@ -128,9 +128,11 @@ func libp2p_send(address string, content string) bool {
 }
 
 // Start libp2p
-func libp2p_start(listen string, port int) {
+func libp2p_start() {
 	var private crypto.PrivKey
 	var err error
+	listen := ini_string("libp2p", "listen", "0.0.0.0")
+	port := ini_int("libp2p", "port", 1443)
 
 	if file_exists(data_dir + "/libp2p/private.key") {
 		private, err = crypto.UnmarshalPrivateKey(file_read(data_dir + "/libp2p/private.key"))

@@ -5,8 +5,6 @@ package main
 
 import (
 	"flag"
-	"gopkg.in/ini.v1"
-	"strings"
 )
 
 type Map map[string]any
@@ -25,32 +23,26 @@ func main() {
 	var file string
 	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")
 	flag.Parse()
-	c, err := ini.Load(file)
+	err := ini_load(file)
 	if err != nil {
 		log_error("Unable to read configuration file: %v", err)
 		return
 	}
 
-	//TODO Replace ini lookups
-	cache_dir = c.Section("directories").Key("cache").MustString("/var/cache/mochi")
-	data_dir = c.Section("directories").Key("data").MustString("/var/lib/mochi")
-	email_from = c.Section("email").Key("from").MustString("mochi-server@localhost")
-	email_host = c.Section("email").Key("host").MustString("127.0.0.1")
-	email_port = c.Section("email").Key("port").MustInt(25)
-
-	domains := strings.Split(c.Section("web").Key("domains").MustString(""), ",")
-	if len(domains) == 1 && domains[0] == "" {
-		domains = nil
-	}
+	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
+	data_dir = ini_string("directories", "data", "/var/lib/mochi")
+	email_from = ini_string("email", "from", "mochi-server@localhost")
+	email_host = ini_string("email", "host", "127.0.0.1")
+	email_port = ini_int("email", "port", 25)
 
 	new_install := db_start()
 	go peers_manager()
-	libp2p_start(c.Section("libp2p").Key("listen").MustString("0.0.0.0"), c.Section("libp2p").Key("port").MustInt(1443))
+	libp2p_start()
 	go attachments_manager()
 	go entities_manager()
 	go events_manager()
 	go cache_manager()
-	go web_start(c.Section("web").Key("listen").MustString("0.0.0.0"), c.Section("web").Key("port").MustInt(80), domains, c.Section("web").Key("debug").MustBool(false))
+	go web_start()
 
 	if new_install {
 		go directory_download()

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -e
+
+do_hash() {
+	HASH_NAME=$1
+	HASH_CMD=$2
+	echo "${HASH_NAME}:" >> Release
+	for f in $(find -type f); do
+		f=$(echo $f | cut -c3-) # remove ./ prefix
+		if [ "$f" = "Release" -o "$f" = "Release.base" ]; then
+			continue
+		fi
+		echo " $(${HASH_CMD} ${f}  | cut -d" " -f1) $(wc -c $f)" >> Release
+	done
+}
+
+if [ $# -lt 2 ]; then
+    echo "Syntax: $0 <root directory of repository> <GPG key>"
+    exit 1
+fi
+
+cd $1
+dpkg-scanpackages --arch amd64 pool > dists/stable/main/binary-amd64/Packages
+cat dists/stable/main/binary-amd64/Packages | gzip -9 > dists/stable/main/binary-amd64/Packages.gz
+
+cd dists/stable
+rm -f Release
+cp Release.base Release
+echo -n "Date: " >> Release
+date -Ru >> Release
+do_hash "MD5Sum" "md5sum"
+do_hash "SHA1" "sha1sum"
+do_hash "SHA256" "sha256sum"
+
+cat Release | gpg --default-key $2 -abs --clearsign > InRelease

@@ -1,0 +1,18 @@
+To install Mochi server on .deb based Linux distributions:
+
+ 1. Ensure that the machine can send email from the command line using the "mail" command or similar.
+ 2. Run the following commands as root or using sudo:
+
+    curl https://packages.mochi-os.org/apt/mochi.gpg -o /etc/apt/keyrings/mochi.gpg
+	curl https://packages.mochi-os.org/apt/mochi.list -o /etc/apt/sources.list.d/mochi.list
+    apt update
+    apt install mochi-server
+
+ 3. Edit /etc/mochi/mochi.conf as needed.
+ 4. Run the following commands as root or using sudo:
+
+	systemctl enable mochi-server
+    systemctl start mochi-server
+
+ 7. In a web browser, go to http://<hostname or IP address>/
+ 8. Follow the instructions in your web browser.

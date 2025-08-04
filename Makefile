@@ -3,17 +3,18 @@
 
 version = $(shell cat version | tr -d '\n')
 build = /tmp/mochi-server_$(version)_amd64
+deb = $(build).deb
 
 all: mochi-server
 
 clean:
-	rm -f mochi-server
+	rm -f mochi-server $(deb)
 
-mochi-server: clean
+mochi-server:
 	go build -o mochi-server server/*.go
 
-deb: mochi-server
-	rm -rf $(build) $(build).deb
+$(deb): mochi-server
+	rm -rf $(build) $(deb)
 	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/mochi $(build)/var/lib/mochi
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
@@ -23,7 +24,14 @@ deb: mochi-server
 	upx -qq $(build)/usr/bin/mochi-server
 	dpkg-deb --build --root-owner-group $(build)
 	rm -rf $(build)
-	ls -l $(build).deb
+	ls -l $(deb)
+
+apt: $(deb)
+	cp $(deb) ../apt/pool/main
+	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
+	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/
+
+deb: $(deb)
 
 format:
 	go fmt server/*.go

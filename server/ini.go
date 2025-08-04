@@ -10,7 +10,7 @@ import (
 
 var (
 	ini_file            *ini.File
-	match_commas_spaces = regexp.MustCompile("[\\S,]+")
+	match_commas_spaces = regexp.MustCompile("[\\s,]+")
 )
 
 func ini_bool(section string, key string, def bool) bool {

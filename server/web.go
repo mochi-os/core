@@ -162,7 +162,7 @@ func web_start() {
 
 	// Replace when we implement URL mapping
 	if ini_string("web", "special", "") == "packages" {
-		r.Static("/apt", "/sys/apt")
+		r.Static("/apt", "/srv/apt")
 	}
 
 	if len(domains) > 0 {

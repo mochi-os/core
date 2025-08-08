@@ -15,7 +15,7 @@ import (
 type Peer struct {
 	ID      string `json:"id"`
 	Address string `json:"address,omitempty"`
-	Updated int64  `json:"updated"`
+	Updated int64  `json:"updated,omitempty"`
 	stream  *libp2p_network.Stream
 }
 
@@ -74,6 +74,9 @@ func peer_connect(id string) *Peer {
 		}
 	}
 
+	// Can't connect to it at this time. Send a publish request to the pubsub and give up.
+	log_debug("Peer '%s' unknown. Sending pubsub request for it.", id)
+	pubsub_publish("peers", []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: json_encode(Peer{ID: id})})))
 	return nil
 }
 
@@ -99,16 +102,11 @@ func peer_publish_event(e *Event) {
 	//peer_update(e.libp2p_peer, e.libp2p_address, nil)
 }
 
-// Ask the peers pubsub for a peer
-func peer_request(peer string) {
-	//TODO Structure content?
-	pubsub_publish("peers", []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: peer})))
-}
-
 // Reply to a peer request if for us
 func peer_request_event(e *Event) {
 	log_debug("Received peer request event '%#v'", e)
-	if e.Content == libp2p_id {
+	var p Peer
+	if json_decode(&p, e.Content) && p.ID == libp2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}

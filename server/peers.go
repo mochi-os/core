@@ -13,8 +13,7 @@ import (
 )
 
 type Peer struct {
-	ID string `json:"id"`
-	//TODO Remove Address field?
+	ID        string           `json:"id"`
 	Address   string           `json:"-"`
 	Updated   int64            `json:"updated,omitempty"`
 	addresses map[string]int64 `json:"-"`
@@ -171,8 +170,8 @@ func peer_send(peer string, content string) bool {
 
 // Add or update a peer
 // If the peer connected to us stream will be the stream libp2p opened for us, otherwise stream will be nil.
-// TODO Test
 func peer_update(id string, stream *libp2p_network.Stream, addresses ...string) *Peer {
+	log_debug("Peer updating '%s' at %v", id, addresses)
 	if id == libp2p_id {
 		log_debug("Peer ignoring request to add ourself")
 		return nil

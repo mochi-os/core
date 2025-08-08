@@ -1,5 +1,5 @@
 // Mochi server: Notifications
-// Copyright Alistair Cunningham 2024
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 

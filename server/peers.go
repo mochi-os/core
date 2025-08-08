@@ -47,7 +47,7 @@ func peers_add_from_db(limit int) {
 	db := db_open("db/peers.db")
 	db.scans(&peers, "select * from peers order by updated desc limit ?", limit)
 	for _, p := range peers {
-		log_debug("Adding peer from database at '%s'", p.Address)
+		log_debug("Adding database peer '%s' at '%s'", p.ID, p.Address)
 		peer_update(p.ID, p.Address, nil)
 	}
 }
@@ -61,13 +61,20 @@ func peer_connect(id string) *Peer {
 		return &p
 	}
 
-	//TODO Better handle peers with multiple addresses
-	var dp Peer
+	// This tries each known address for the peer in turn until one connects.
+	// In future it would be good to pass all known addresses to libp2p and let it
+	// decide which to use.
+	var ps []Peer
 	db := db_open("db/peers.db")
-	if !db.scan(&dp, "select * from peers where id=? order by updated desc limit 1", id) {
-		return nil
+	db.scans(&ps, "select * from peers where id=? order by updated desc", id)
+	for _, t := range ps {
+		p := peer_update(t.ID, t.Address, nil)
+		if p != nil {
+			return p
+		}
 	}
-	return peer_update(id, dp.Address, nil)
+
+	return nil
 }
 
 // Publish our own information to the pubsub regularly or when requested

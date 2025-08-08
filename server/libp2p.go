@@ -37,6 +37,9 @@ func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {
 }
 
 // Connect to a peer
+// For now we only use one address at a time.
+// In future it would be good to use all known addresses together.
+// See also the note in peers.go:peer_connect().
 func libp2p_connect(peer string, address string) *libp2p_network.Stream {
 	log_debug("libp2p connecting to peer '%s' at '%s'", peer, address)
 	ctx := context.Background()
@@ -129,13 +132,25 @@ func libp2p_start() {
 		file_write(data_dir+"/libp2p/private.key", p)
 	}
 
-	// Listen for connecting peers
+	// Create libp2p instance
 	port := ini_int("libp2p", "port", 1443)
 	libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), libp2p.Identity(private))
 	check(err)
 	libp2p_id = libp2p_me.ID().String()
+
+	// Listen for connecting peers
 	libp2p_me.SetStreamHandler("/mochi/1.0.0", libp2p_handle)
-	log_info("libp2p listening on port %d with id '%s'", port, libp2p_id)
+
+	// Add bootstrap peers
+	for _, p := range peers_known {
+		if p.ID != libp2p_id {
+			log_debug("Adding bootstrap peer '%s' at '%s'", p.ID, p.Address)
+			peer_update(p.ID, p.Address+"/p2p/"+p.ID, nil)
+		}
+	}
+
+	// Add peers from database
+	peers_add_from_db(100)
 
 	// Listen via multicast DNS
 	dns := mdns.NewMdnsService(libp2p_me, "mochi", &mdns_notifee{h: libp2p_me})
@@ -158,14 +173,5 @@ func libp2p_start() {
 		}
 	}
 
-	// Add peers from database
-	peers_add_from_db(100)
-
-	// Add bootstrap peers
-	for _, p := range peers_known {
-		if p.ID != libp2p_id {
-			log_debug("Adding libp2p bootstrap peer '%s' at '%s'", p.ID, p.Address)
-			peer_update(p.ID, p.Address+"/p2p/"+p.ID, nil)
-		}
-	}
+	log_info("libp2p listening on port %d with id '%s'", port, libp2p_id)
 }

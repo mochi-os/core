@@ -32,7 +32,7 @@ var (
 func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		log_debug("libp2p received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_add(p.ID.String(), pa.String()+"/p2p/"+p.ID.String(), nil)
+		peer_update(p.ID.String(), pa.String()+"/p2p/"+p.ID.String(), nil)
 	}
 }
 
@@ -68,7 +68,7 @@ func libp2p_handle(s libp2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	log_debug("libp2p peer '%s' connected from '%s'", peer, address)
-	peer_add(peer, address, &s)
+	peer_update(peer, address, &s)
 	go libp2p_read(&s, peer)
 }
 
@@ -80,9 +80,9 @@ func libp2p_pubsub_listen(s *libp2p_pubsub.Subscription) {
 		peer := m.ReceivedFrom.String()
 		if peer != libp2p_id {
 			log_debug("libp2p received pubsub event from peer '%s': %s", peer, string(m.Data))
-			//TODO Set source
-			source := peer
-			event_receive_json(string(m.Data), peer, source)
+			//TODO Set source address
+			address := peer
+			event_receive_json(string(m.Data), peer, address)
 			//TODO Add peer for source?
 		}
 	}
@@ -102,9 +102,9 @@ func libp2p_read(s *libp2p_network.Stream, peer string) {
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
 			log_debug("libp2p received event from peer '%s': %s", peer, in)
-			//TODO Set source
-			source := peer
-			event_receive_json(in, peer, source)
+			//TODO Set source address
+			address := peer
+			event_receive_json(in, peer, address)
 			//TODO Add peer for source?
 		}
 	}
@@ -131,9 +131,7 @@ func libp2p_start() {
 
 	// Listen for connecting peers
 	port := ini_int("libp2p", "port", 1443)
-	//TODO Re-enable IPv6
-	//libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), libp2p.Identity(private))
-	libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)), libp2p.Identity(private))
+	libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), libp2p.Identity(private))
 	check(err)
 	libp2p_id = libp2p_me.ID().String()
 	libp2p_me.SetStreamHandler("/mochi/1.0.0", libp2p_handle)
@@ -167,7 +165,7 @@ func libp2p_start() {
 	for _, p := range peers_known {
 		if p.ID != libp2p_id {
 			log_debug("Adding libp2p bootstrap peer '%s' at '%s'", p.ID, p.Address)
-			peer_add(p.ID, p.Address+"/p2p/"+p.ID, nil)
+			peer_update(p.ID, p.Address+"/p2p/"+p.ID, nil)
 		}
 	}
 }

@@ -41,42 +41,6 @@ func init() {
 	a.pubsub("peers", peers_publish)
 }
 
-// Add a (possibly existing) peer
-// If the peer connected to us stream will be the stream libp2p opened for us. Otherwise stream will be nil.
-// TODO Better handle peers with multiple addresses
-func peer_add(id string, address string, stream *libp2p_network.Stream) *Peer {
-	if id == libp2p_id {
-		log_debug("Peer ignoring request to add ourself")
-		return nil
-	}
-
-	now := now()
-	p := Peer{ID: id, Address: address, Updated: now, stream: stream}
-
-	peers_lock.Lock()
-	o, found := peers_connected[id]
-	peers_lock.Unlock()
-
-	if found {
-		p.stream = o.stream
-
-	} else if stream == nil {
-		p.stream = libp2p_connect(id, address)
-		if p.stream == nil {
-			return nil
-		}
-	}
-
-	peers_lock.Lock()
-	peers_connected[id] = p
-	peers_lock.Unlock()
-	db := db_open("db/peers.db")
-	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
-
-	go events_check_queue("peer", id)
-	return &p
-}
-
 // Add some peers we already know about from the database
 func peers_add_from_db(limit int) {
 	var peers []Peer
@@ -84,7 +48,7 @@ func peers_add_from_db(limit int) {
 	db.scans(&peers, "select * from peers order by updated desc limit ?", limit)
 	for _, p := range peers {
 		log_debug("Adding peer from database at '%s'", p.Address)
-		peer_add(p.ID, p.Address, nil)
+		peer_update(p.ID, p.Address, nil)
 	}
 }
 
@@ -103,14 +67,13 @@ func peer_connect(id string) *Peer {
 	if !db.scan(&dp, "select * from peers where id=? order by updated desc limit 1", id) {
 		return nil
 	}
-	return peer_add(id, dp.Address, nil)
+	return peer_update(id, dp.Address, nil)
 }
 
 // Publish our own information to the pubsub regularly or when requested
 func peers_publish(t *libp2p_pubsub.Topic) {
 	for {
-		//TODO Change to hourly
-		after := time.After(time.Minute)
+		after := time.After(time.Hour)
 		select {
 		case <-peer_publish_chan:
 			log_debug("Peer publish requested")
@@ -126,7 +89,7 @@ func peers_publish(t *libp2p_pubsub.Topic) {
 func peer_publish_event(e *Event) {
 	//TODO Enable once libp2p_address is set
 	//log_debug("Adding peer '%s' due to publish event from '%s'", e.libp2p_peer, e.libp2p_address)
-	//peer_add(e.libp2p_peer, e.libp2p_address, nil)
+	//peer_update(e.libp2p_peer, e.libp2p_address, nil)
 }
 
 // Ask the peers pubsub for a peer
@@ -172,4 +135,39 @@ func peer_send(peer string, content string) bool {
 	}
 
 	return true
+}
+
+// Add or update a peer
+// If the peer connected to us stream will be the stream libp2p opened for us. Otherwise stream will be nil.
+func peer_update(id string, address string, stream *libp2p_network.Stream) *Peer {
+	if id == libp2p_id {
+		log_debug("Peer ignoring request to add ourself")
+		return nil
+	}
+
+	now := now()
+	p := Peer{ID: id, Address: address, Updated: now, stream: stream}
+
+	peers_lock.Lock()
+	o, found := peers_connected[id]
+	peers_lock.Unlock()
+
+	if found {
+		p.stream = o.stream
+
+	} else if stream == nil {
+		p.stream = libp2p_connect(id, address)
+		if p.stream == nil {
+			return nil
+		}
+	}
+
+	peers_lock.Lock()
+	peers_connected[id] = p
+	peers_lock.Unlock()
+	db := db_open("db/peers.db")
+	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
+
+	go events_check_queue("peer", id)
+	return &p
 }

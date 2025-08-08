@@ -13,9 +13,9 @@ import (
 )
 
 type Peer struct {
-	ID      string
-	Address string `json:",omitempty"`
-	Updated int64
+	ID      string `json:"id"`
+	Address string `json:"address,omitempty"`
+	Updated int64  `json:"updated"`
 	stream  *libp2p_network.Stream
 }
 
@@ -108,8 +108,9 @@ func peer_connect(id string) *Peer {
 
 // Publish our own information to the pubsub regularly or when requested
 func peers_publish(t *libp2p_pubsub.Topic) {
-	after := time.After(time.Hour)
 	for {
+		//TODO Change to hourly
+		after := time.After(time.Minute)
 		select {
 		case <-peer_publish_chan:
 			log_debug("Peer publish requested")
@@ -117,26 +118,15 @@ func peers_publish(t *libp2p_pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		//TODO Structure content
-		//TODO Test event looks correct
-		t.Publish(context.Background(), []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish", Content: json_encode(Peer{ID: libp2p_id, Updated: now()})})))
+		t.Publish(context.Background(), []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish"})))
 	}
 }
 
 // Received a peer publish event from another server
-// TODO Use received address
-// TODO Check timestamp
 func peer_publish_event(e *Event) {
-	var m map[string]string
-	if json_decode(&m, e.Content) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
-		if m["id"] == libp2p_id {
-			return
-		}
-		log_debug("Adding peer '%s' due to publish event at '%s'", m["id"], m["address"])
-		peer_add(m["id"], m["address"], nil)
-	} else {
-		log_info("Invalid peer update")
-	}
+	//TODO Enable once libp2p_address is set
+	//log_debug("Adding peer '%s' due to publish event from '%s'", e.libp2p_peer, e.libp2p_address)
+	//peer_add(e.libp2p_peer, e.libp2p_address, nil)
 }
 
 // Ask the peers pubsub for a peer
@@ -157,13 +147,15 @@ func peer_request_event(e *Event) {
 // Send a message to a peer
 // TODO Make work with Go streams
 func peer_send(peer string, content string) bool {
+	log_debug("Sending to peer '%s': %s", peer, content)
 	p := peer_connect(peer)
 	if p == nil {
 		log_debug("Unable to connect to peer '%s'", peer)
 		return false
 	}
 	if p.stream == nil {
-		log_error("Peer '%s' has no stream", peer)
+		log_warn("Peer '%s' has no stream", peer)
+		return false
 	}
 
 	w := bufio.NewWriter(*p.stream)
@@ -179,5 +171,5 @@ func peer_send(peer string, content string) bool {
 		return false
 	}
 
-	return false
+	return true
 }

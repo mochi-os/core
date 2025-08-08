@@ -74,7 +74,7 @@ func directory_download_event(e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		peer_send(e.source, json_encode(Event{ID: uid(), Service: "directory", Action: "publish", Content: json_encode(d)}))
+		peer_send(e.libp2p_peer, json_encode(Event{ID: uid(), Service: "directory", Action: "publish", Content: json_encode(d)}))
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -109,7 +109,7 @@ func directory_publish_event(e *Event) {
 	if e.From == "" {
 		found := false
 		for _, p := range peers_known {
-			if e.source == p.ID {
+			if e.libp2p_peer == p.ID {
 				found = true
 				break
 			}

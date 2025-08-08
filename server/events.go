@@ -9,16 +9,17 @@ import (
 )
 
 type Event struct {
-	ID        string `json:"id"`
-	From      string `json:"from"`
-	To        string `json:"to"`
-	Service   string `json:"service"`
-	Action    string `json:"action"`
-	Content   string `json:"content"`
-	Signature string `json:"signature"`
-	source    string `json:"-"`
-	user      *User  `json:"-"`
-	db        *DB    `json:"-"`
+	ID             string `json:"id"`
+	From           string `json:"from"`
+	To             string `json:"to"`
+	Service        string `json:"service"`
+	Action         string `json:"action"`
+	Content        string `json:"content"`
+	Signature      string `json:"signature"`
+	libp2p_peer    string `json:"-"`
+	libp2p_address string `json:"-"`
+	user           *User  `json:"-"`
+	db             *DB    `json:"-"`
 }
 
 type BroadcastQueue struct {
@@ -43,17 +44,19 @@ func events_check_queue(method string, location string) {
 	db := db_open("db/queue.db")
 	db.scans(&qs, "select * from events where method=? and location=?", method, location)
 	for _, q := range qs {
-		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
+		log_debug("Trying to send queued event to %s '%s': %s", q.Method, q.Location, q.Event)
 		success := false
 
 		switch q.Method {
 		case "peer":
+			log_debug("Trying to send to peer")
 			if peer_send(q.Location, q.Event) {
 				success = true
 			}
 
 		case "entity":
 			loc := entity_location(location)
+			log_debug("Trying to send to location '%s'", loc)
 			if loc != "" && peer_send(loc, q.Event) {
 				success = true
 			}
@@ -95,36 +98,37 @@ func events_manager() {
 	}
 }
 
-func event_receive_json(event string, source string) {
+func event_receive_json(event string, libp2p_peer string, libp2p_address string) {
 	var e Event
 	if !json_decode(&e, event) {
 		log_info("Dropping event with malformed JSON: '%s'", event)
 		return
 	}
-	e.source = source
+	e.libp2p_peer = libp2p_peer
+	e.libp2p_address = libp2p_address
 	e.receive()
 }
 
 func (e *Event) receive() {
 	if !valid(e.ID, "id") {
-		log_info("Dropping received event due to invalid 'id' field '%s'", e.ID)
+		log_info("Dropping received event due to invalid id field '%s'", e.ID)
 		return
 	}
 
 	if e.From != "" {
 		if !valid(e.From, "entity") {
-			log_info("Dropping received event due to invalid 'from' field '%s'", e.From)
+			log_info("Dropping received event '%s' due to invalid from field '%s'", e.ID, e.From)
 			return
 		}
 
-		if e.source != "" {
+		if e.libp2p_peer != "" {
 			public := base58_decode(e.From, "")
 			if len(public) != ed25519.PublicKeySize {
-				log_info("Dropping received event due to invalid from length %d!=%d", len(public), ed25519.PublicKeySize)
+				log_info("Dropping received event '%s' due to invalid from length %d!=%d", e.ID, len(public), ed25519.PublicKeySize)
 				return
 			}
 			if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action+e.Content), base58_decode(e.Signature, "")) {
-				log_info("Dropping received event due to invalid sender signature")
+				log_info("Dropping received event '%s' due to invalid sender signature", e.ID)
 				return
 			}
 		}
@@ -134,7 +138,7 @@ func (e *Event) receive() {
 
 	a := services[e.Service]
 	if a == nil {
-		log_info("Dropping received event due to unknown service '%s'", e.Service)
+		log_info("Dropping received event '%s' due to unknown service '%s'", e.ID, e.Service)
 		return
 	}
 
@@ -160,7 +164,7 @@ func (e *Event) receive() {
 		}
 	}
 	if !found {
-		log_info("Dropping received event due to unknown event '%s' in app '%s' for service '%s'", e.Action, a.name, e.Service)
+		log_info("Dropping received event '%s' due to unknown event '%s' in app '%s' for service '%s'", e.ID, e.Action, a.name, e.Service)
 		return
 	}
 

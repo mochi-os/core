@@ -77,11 +77,13 @@ func libp2p_pubsub_listen(s *libp2p_pubsub.Subscription) {
 	for {
 		m, err := s.Next(context.Background())
 		check(err)
-		//TODO Get received address, and perhaps add a peer for it
 		peer := m.ReceivedFrom.String()
 		if peer != libp2p_id {
-			log_debug("libp2p received pubsub event: %s", string(m.Data))
-			event_receive_json(string(m.Data), peer)
+			log_debug("libp2p received pubsub event from peer '%s': %s", peer, string(m.Data))
+			//TODO Set source
+			source := peer
+			event_receive_json(string(m.Data), peer, source)
+			//TODO Add peer for source?
 		}
 	}
 }
@@ -99,8 +101,11 @@ func libp2p_read(s *libp2p_network.Stream, peer string) {
 		}
 		in = strings.TrimSuffix(in, "\n")
 		if in != "" {
-			log_debug("libp2p received event from peer: %s", in)
-			event_receive_json(in, peer)
+			log_debug("libp2p received event from peer '%s': %s", peer, in)
+			//TODO Set source
+			source := peer
+			event_receive_json(in, peer, source)
+			//TODO Add peer for source?
 		}
 	}
 }
@@ -126,11 +131,13 @@ func libp2p_start() {
 
 	// Listen for connecting peers
 	port := ini_int("libp2p", "port", 1443)
-	libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), libp2p.Identity(private))
+	//TODO Re-enable IPv6
+	//libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), libp2p.Identity(private))
+	libp2p_me, err = libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)), libp2p.Identity(private))
 	check(err)
 	libp2p_id = libp2p_me.ID().String()
 	libp2p_me.SetStreamHandler("/mochi/1.0.0", libp2p_handle)
-	log_info("libp2p listening on port %d", port)
+	log_info("libp2p listening on port %d with id '%s'", port, libp2p_id)
 
 	// Listen via multicast DNS
 	dns := mdns.NewMdnsService(libp2p_me, "mochi", &mdns_notifee{h: libp2p_me})

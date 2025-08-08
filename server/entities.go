@@ -90,31 +90,24 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 }
 
 // Gets the location of an entity
-// Returns the method to leach the entity (local or peer), the peer, the queue method, and the queue object
-//TODO Re-write this whole mess
-func entity_location(id string) (string, string, string, string) {
+func entity_location(id string) string {
 	// Check if local
 	var e Entity
 	dbu := db_open("db/users.db")
 	if dbu.scan(&e, "select * from entities where id=?", id) {
-		return "local", id, "", ""
+		return "local"
 	}
 
 	// Check in directory
 	var d Directory
 	dbd := db_open("db/directory.db")
 	if dbd.scan(&d, "select location from directory where id=?", id) {
-		p := peer_connect(d.Location)
-		if p != nil {
-			return "libp2p", p.ID, "peer", d.Location
-		} else {
-			peer_request(d.Location)
-			return "peer", d.Location, "peer", d.Location
-		}
+		return d.Location
 	}
 
+	// Not found. Send a directory request and return failure.
 	directory_request(id)
-	return "entity", id, "entity", id
+	return ""
 }
 
 // Re-publish all our entities every day so the network knows they're still active

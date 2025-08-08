@@ -34,8 +34,6 @@ func email_send(to string, subject string, body string) {
 		log_warn("Email failed to send message: %v", err)
 		return
 	}
-
-	log_debug("Email sent")
 }
 
 func email_valid(address string) bool {

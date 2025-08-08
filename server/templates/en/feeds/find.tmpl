@@ -2,10 +2,12 @@
 {{template "head" .}}
 <p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | Find a feed</p>
 
+<p>
 <form action="/feeds/search">
     <label for="search">Feed name or part of name:</label>
     <input type="text" name="search"/><br/>
     <input type="submit" value="Search"/>
 </form>
+</p>
 
 {{template "foot" .}}

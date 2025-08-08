@@ -81,7 +81,7 @@ func directory_download_event(e *Event) {
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	ev := Event{ID: uid(), From: e.ID, Service: "directory", Action: "publish", Content: json_encode(Directory{ID: e.ID, name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})}
+	ev := Event{ID: uid(), From: e.ID, Service: "directory", Action: "publish", Content: json_encode(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})}
 	ev.sign()
 	j := []byte(json_encode(ev))
 

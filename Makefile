@@ -10,7 +10,7 @@ all: mochi-server
 clean:
 	rm -f mochi-server $(deb)
 
-mochi-server: server/*.go
+mochi-server: $(shell find server)
 	go build -o mochi-server server/*.go
 
 $(deb): mochi-server

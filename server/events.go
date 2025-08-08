@@ -25,7 +25,7 @@ type BroadcastQueue struct {
 	ID      string
 	Topic   string
 	Content string
-	Updated int
+	Created int64
 }
 
 type EventsQueue struct {
@@ -33,34 +33,34 @@ type EventsQueue struct {
 	Method   string
 	Location string
 	Event    string
-	Updated  int
+	Created  int64
 }
 
+const maximum_queue_time = 7 * 86400
+
 func events_check_queue(method string, location string) {
-	var queue []EventsQueue
+	var qs []EventsQueue
 	db := db_open("db/queue.db")
-	db.scans(&queue, "select * from events where method=? and location=?", method, location)
-	for _, q := range queue {
+	db.scans(&qs, "select * from events where method=? and location=?", method, location)
+	for _, q := range qs {
 		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
 		success := false
 
-		//TODO Change how we send queued events
-		if q.Method == "peer" {
+		switch q.Method {
+		case "peer":
 			if peer_send(q.Location, q.Event) {
 				success = true
 			}
 
-		} else if q.Method == "entity" {
-			//TODO Stop using entity_location()
-			method, location, _, _ := entity_location(location)
-			if method == "libp2p" && peer_send(location, q.Event) {
+		case "entity":
+			loc := entity_location(location)
+			if loc != "" && peer_send(loc, q.Event) {
 				success = true
 			}
 		}
 
 		if success {
 			log_debug("Queue event sent")
-			db := db_open("db/queue.db")
 			db.exec("delete from events where id=?", q.ID)
 		} else {
 			log_debug("Still unable to send queued event; keeping in queue")
@@ -88,6 +88,10 @@ func events_manager() {
 				db.exec("delete from broadcast where id=?", b.ID)
 			}
 		}
+
+		now := now()
+		db.exec("delete from broadcast where created<?", now-maximum_queue_time)
+		db.exec("delete from events where created<?", now-maximum_queue_time)
 	}
 }
 
@@ -169,27 +173,27 @@ func (e *Event) send() {
 		e.ID = uid()
 	}
 
-	//TODO Stop using entity_location()
-	method, location, queue_method, queue_location := entity_location(e.To)
-	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
+	location := entity_location(e.To)
+	log_debug("Sending event '%#v' to '%s'", e, location)
 
-	if method == "local" {
+	if location == "local" {
 		go e.receive()
 		return
 	}
 
-	//TODO Only sign when necessary
 	e.sign()
 	j := json_encode(e)
-
-	if method == "libp2p" && peer_send(location, j) {
+	if peer_send(location, j) {
 		return
 	}
 
-	//TODO Move to peer_send()
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
-	db.exec("replace into events ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())
+	if location == "" {
+		db.exec("replace into events ( id, method, location, event, created ) values ( ?, 'entity', ?, ?, ? )", e.ID, e.To, j, now())
+	} else {
+		db.exec("replace into events ( id, method, location, event, created ) values ( ?, 'peer', ?, ?, ? )", e.ID, location, j, now())
+	}
 }
 
 func (e *Event) sign() {

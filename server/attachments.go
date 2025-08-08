@@ -35,7 +35,7 @@ type AttachmentRequest struct {
 
 var (
 	attachments_requested []*AttachmentRequest
-	mu                    = &sync.Mutex{}
+	attachments_lock      = &sync.Mutex{}
 )
 
 func init() {
@@ -168,14 +168,14 @@ func attachments_get_work(a *Action, thumbnail bool) {
 
 	// Check if we already have a request in progress
 	found := false
-	mu.Lock()
+	attachments_lock.Lock()
 	for _, ar := range attachments_requested {
 		if ar.identity == identity && ar.entity == at.Entity && ar.id == id && ar.thumbnail == thumbnail {
 			found = true
 			break
 		}
 	}
-	mu.Unlock()
+	attachments_lock.Unlock()
 
 	// Send request to entity storing file
 	if !found {
@@ -190,10 +190,10 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	}
 
 	// Add to list of requested files
-	mu.Lock()
+	attachments_lock.Lock()
 	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan Attachment), time: now()}
 	attachments_requested = append(attachments_requested, &ar)
-	mu.Unlock()
+	attachments_lock.Unlock()
 
 	// Wait for response
 	r := <-ar.response
@@ -282,14 +282,14 @@ func attachments_manager() {
 		var survivors []*AttachmentRequest
 		time.Sleep(time.Hour)
 		now := now()
-		mu.Lock()
+		attachments_lock.Lock()
 		for _, r := range attachments_requested {
 			if r.time >= now-86400 {
 				survivors = append(survivors, r)
 			}
 		}
 		attachments_requested = survivors
-		mu.Unlock()
+		attachments_lock.Unlock()
 	}
 }
 
@@ -351,7 +351,7 @@ func attachments_send_event_work(e *Event, thumbnail bool) {
 	}
 
 	var survivors []*AttachmentRequest
-	mu.Lock()
+	attachments_lock.Lock()
 	for _, r := range attachments_requested {
 		if r.identity == e.To && r.entity == e.From && r.id == at.ID && r.thumbnail == thumbnail {
 			r.response <- at
@@ -360,7 +360,7 @@ func attachments_send_event_work(e *Event, thumbnail bool) {
 		}
 	}
 	attachments_requested = survivors
-	mu.Unlock()
+	attachments_lock.Unlock()
 }
 
 // Get list of uploaded attachments, save them, and optionally save their data

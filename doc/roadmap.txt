@@ -5,8 +5,12 @@
 		Attachments
 		Cache
 
+	libp2p
+		Pubsub updates
+		Connect to multiple addresses at once
 	Protocol
 		CBOR?
+		Structure data
 		Check sender owns user
 		Prevent replay attacks
 		Remove signing when unnecessary

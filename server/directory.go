@@ -9,12 +9,12 @@ import (
 
 type Directory struct {
 	ID          string `json:"id"`
-	Fingerprint string `json:"fingerprint"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 	Name        string `json:"name"`
 	Class       string `json:"class"`
 	Location    string `json:"location"`
 	Data        string `json:"data"`
-	Created     int64  `json:"created"`
+	Created     int64  `json:"created,omitempty"`
 	Updated     int64  `json:"updated"`
 }
 
@@ -57,10 +57,10 @@ func directory_delete(id string) {
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	j := json_encode(Event{ID: uid(), Service: "directory", Action: "download"})
-	for peer, _ := range peers_known {
-		if peer != libp2p_id {
-			log_debug("Requesting directory download from peer '%s'", peer)
-			peer_send(peer, j)
+	for _, p := range peers_known {
+		if p.ID != libp2p_id {
+			log_debug("Requesting directory download from peer '%s'", p.ID)
+			peer_send(p.ID, j)
 		}
 	}
 }
@@ -81,12 +81,13 @@ func directory_download_event(e *Event) {
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	// Send to libp2p broadcast
-	ev := Event{ID: uid(), From: e.ID, Service: "directory", Action: "publish", Content: json_encode(map[string]string{"id": e.ID, "name": e.Name, "class": e.Class, "location": libp2p_id, "data": e.Data})}
+	ev := Event{ID: uid(), From: e.ID, Service: "directory", Action: "publish", Content: json_encode(Directory{ID: e.ID, name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})}
 	ev.sign()
 	j := []byte(json_encode(ev))
+
 	if len(peers_connected) >= peers_minimum {
-		libp2p_topics["directory"].Publish(libp2p_context, j)
+		pubsub_publish("directory", j)
+
 	} else if allow_queue {
 		db := db_open("db/queue.db")
 		db.exec("replace into broadcast ( id, topic, content, updated ) values ( ?, 'directory', ?, ? )", ev.ID, j, now())
@@ -94,6 +95,7 @@ func directory_publish(e *Entity, allow_queue bool) {
 }
 
 // Received a directory publish event from another server
+// TODO Check timestamp
 func directory_publish_event(e *Event) {
 	log_debug("Received directory publish event '%#v'", e)
 	now := now()
@@ -106,8 +108,8 @@ func directory_publish_event(e *Event) {
 
 	if e.From == "" {
 		found := false
-		for peer, _ := range peers_known {
-			if e.source == peer {
+		for _, p := range peers_known {
+			if e.source == p.ID {
 				found = true
 				break
 			}
@@ -130,8 +132,9 @@ func directory_publish_event(e *Event) {
 
 // Request that another server publish a directory event
 func directory_request(id string) {
+	//TODO Structure content?
 	e := Event{ID: uid(), Service: "directory", Action: "request", Content: id}
-	libp2p_topics["directory"].Publish(libp2p_context, []byte(json_encode(e)))
+	pubsub_publish("directory", []byte(json_encode(e)))
 }
 
 // Reply to a directory request if we have the requested entity

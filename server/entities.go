@@ -89,6 +89,9 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	return nil, error_message("Unable to find spare entity ID or fingerprint")
 }
 
+// Gets the location of an entity
+// Returns the method to leach the entity (local or peer), the peer, the queue method, and the queue object
+//TODO Re-write this whole mess
 func entity_location(id string) (string, string, string, string) {
 	// Check if local
 	var e Entity
@@ -101,12 +104,13 @@ func entity_location(id string) (string, string, string, string) {
 	var d Directory
 	dbd := db_open("db/directory.db")
 	if dbd.scan(&d, "select location from directory where id=?", id) {
-		address := peer_address(d.Location)
-		if address != "" {
-			return "libp2p", address, "peer", d.Location
+		p := peer_connect(d.Location)
+		if p != nil {
+			return "libp2p", p.ID, "peer", d.Location
+		} else {
+			peer_request(d.Location)
+			return "peer", d.Location, "peer", d.Location
 		}
-		peer_request(d.Location)
-		return "peer", d.Location, "peer", d.Location
 	}
 
 	directory_request(id)

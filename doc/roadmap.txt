@@ -1,47 +1,60 @@
 0.1
 	File locations and directory layout
 		Databases
+			Replace public mode
 		Attachments
 		Cache
 
 	Protocol
+		CBOR?
+		Check sender owns user
+		Prevent replay attacks
+		Remove signing when unnecessary
+		Directory messages must be timestamped and signed
 	Large files
+		IPFS?
 
 0.2
+	Web interface
 	Client API
 	Route on entity
-	IPv6 support
-	Logging
+	Map web URLs to entities
+
 	Find hidden services
 	Directory get recent updates
+
+	Map web URLs to entities
+	User management
 	Users can change their settings
 	Users can create hooks to control events
 	User avatars
-	Map web URLs to entities
+
 	Feeds app
 		Permissions
 		Check-ins
 			Location
 			Travelling to
+
 	Forums app
 		Moderation
 		Permissions
+
+	Logging
 	.rpm packages and repository
 
-0.3
+0.3 or later
+	Separate apps from server
+		Resource usage limits
+		Users choose which apps get which service
+		Users choose which apps get which web path
+		App publishing
+		App updates
+
 	Streaming services
 		Audio
 		Video
-	User management
-	Wiki app
-	Resource usage limits
-	Users choose which apps get which service
-	Users choose which apps get which web path
-	Apps with multiple installed versions
-	App publishing
-	App updates
 
-0.4 or later
+	Wiki app
 	Push notifications to Android and iOS apps
 	Users can categorise updates into feeds
 	Read external RSS feeds

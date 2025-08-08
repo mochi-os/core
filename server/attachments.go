@@ -184,6 +184,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			action = "get/thumbnail"
 		}
 
+		//TODO Structure content?
 		e := Event{ID: uid(), From: identity, To: at.Entity, Service: "attachments", Action: action, Content: id}
 		e.send()
 	}
@@ -242,6 +243,7 @@ func attachments_get_event(e *Event) {
 		}
 	}
 
+	//TODO Return more meaningful error status
 	log_info("Request for unknown attachment '%s'", e.ID)
 	ev := Event{ID: e.ID, From: e.To, To: e.From, Service: "attachments", Action: "send"}
 	ev.send()

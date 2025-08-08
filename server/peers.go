@@ -4,16 +4,18 @@
 package main
 
 import (
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"strings"
+	"bufio"
+	"context"
+	libp2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
+	libp2p_network "github.com/libp2p/go-libp2p/core/network"
 	"time"
 )
 
 type Peer struct {
 	ID      string
-	Address string
-	Connect bool
+	Address string `json:",omitempty"`
 	Updated int64
+	stream  *libp2p_network.Stream
 }
 
 const (
@@ -21,9 +23,12 @@ const (
 )
 
 var (
+	peers_known = []Peer{
+		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", Address: "/ip4/217.182.75.108/tcp/1443"},
+		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", Address: "/ip6/2001:41d0:601:1100::61f7/tcp/1443"},
+	}
 	peers_connected   map[string]Peer = map[string]Peer{}
 	peer_add_chan                     = make(chan Peer)
-	peers_known                       = map[string]string{"12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": "/ip4/217.182.75.108/tcp/1443"}
 	peer_publish_chan                 = make(chan bool)
 )
 
@@ -36,11 +41,9 @@ func init() {
 }
 
 // Add a (possibly existing) peer
-func peer_add(address string, connect bool) {
-	parts := strings.Split(address, "/")
-	if len(parts) > 1 {
-		peer_add_chan <- Peer{ID: parts[len(parts)-1], Address: address, Connect: connect}
-	}
+// If the peer connected to us stream will be the stream libp2p opened for us. Otherwise stream will be nil.
+func peer_add(id string, address string, stream *libp2p_network.Stream) {
+	peer_add_chan <- Peer{ID: id, Address: address, Stream: stream}
 }
 
 // Add some peers we already know about from the database
@@ -50,18 +53,14 @@ func peers_add_from_db(limit int) {
 	db.scans(&peers, "select * from peers order by updated desc limit ?", limit)
 	for _, p := range peers {
 		log_debug("Adding peer from database at '%s'", p.Address)
-		peer_add(p.Address, true)
+		peer_add(p.ID, p.Address, nil)
 	}
 }
 
-// Get address of peer
-func peer_address(peer string) string {
-	var p Peer
-	db := db_open("db/peers.db")
-	if db.scan(&p, "select address from peers where id=?", peer) {
-		return p.Address
-	}
-	return ""
+// Get details of a peer, connecting to it if not already connected
+// TODO THIS IS NEXT
+func peer_connect(peer string) *Peer {
+	return nil
 }
 
 // Manage list of known peers, and connect to them if necessary
@@ -69,34 +68,43 @@ func peers_manager() {
 	db := db_open("db/peers.db")
 
 	for p := range peer_add_chan {
+		log_debug("Peer request to add '%s' at '%s'", p.ID, p.Address)
+		p.Updated = now()
+
 		if p.ID == libp2p_id {
+			log_debug("Peer ignoring request to add ourself")
 			continue
 		}
 
-		o, found := peers_connected[p.ID]
-		p.Updated = now()
-		peers_connected[p.ID] = p
-
+		_, found := peers_connected[p.ID]
 		if found {
-			if p.Address == o.Address {
-				log_debug("Peer '%s' already connected", p.ID)
-				db.exec("update peers set updated=? where id=?", p.Updated, p.ID)
-			} else {
-				log_debug("Peer '%s' changed address to '%s'", o.Address, p.Address)
-				db.exec("update peers set address=?, updated=? where id=?", p.Address, p.Updated, p.ID)
-			}
+			log_debug("Peer '%s' already connected", p.ID)
 
-		} else if p.Connect && libp2p_connect(p.Address) {
-			log_debug("New peer '%s' connected", p.ID)
-			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
-			go events_check_queue("peer", p.ID)
+		} else if p.stream != nil {
+			log_debug("Peer '%s' connected to us and has stream; using their stream'", p.ID)
+			peers_connected[p.ID] = p
+
+		} else {
+			log_debug("Peer '%s' is not connected; connecting...", p.ID)
+			p.stream = libp2p_connect(p.ID, p.Address)
+			if p.stream != nil {
+				log_debug("New peer '%s' connected", p.ID)
+				peers_connected[p.ID] = p
+				go events_check_queue("peer", p.ID)
+
+			} else {
+				log_debug("Unable to connect to peer '%s'", p.ID)
+				continue
+			}
 		}
+
+		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", p.ID, p.Address, p.Updated)
 	}
 }
 
 // Publish our own information to the pubsub regularly or when requested
-func peers_publish(t *pubsub.Topic) {
-	jc := json_encode(map[string]string{"id": libp2p_id, "address": libp2p_address})
+func peers_publish(t *libp2p_pubsub.Topic) {
+	jc := json_encode(PeerUpdate{ID: libp2p_id, Updated: now()})
 	after := time.After(time.Hour)
 	for {
 		select {
@@ -106,21 +114,21 @@ func peers_publish(t *pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish", Content: jc})))
+		t.Publish(context.Background(), []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish", Content: jc})))
 	}
 }
 
 // Received a peer publish event from another server
-// If the peer publishes its address as /ip4/0.0.0.0 or similar, we should probably
-// use the received address, but I don't know how to do this.
+// TODO Use received address
+// TODO Check timestamp
 func peer_publish_event(e *Event) {
 	var m map[string]string
 	if json_decode(&m, e.Content) && valid(m["id"], "^[\\w]{1,100}$") && valid(m["address"], "^[\\w/.]{1,100}$") {
 		if m["id"] == libp2p_id {
 			return
 		}
-		log_debug("Adding peer due to publish event at '%s'", m["address"])
-		peer_add(m["address"], true)
+		log_debug("Adding peer '%s' due to publish event at '%s'", m["id"], m["address"])
+		peer_add(m["id"], m["address"], nil)
 	} else {
 		log_info("Invalid peer update")
 	}
@@ -128,7 +136,8 @@ func peer_publish_event(e *Event) {
 
 // Ask the peers pubsub for a peer
 func peer_request(peer string) {
-	libp2p_topics["peers"].Publish(libp2p_context, []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: peer})))
+	//TODO Structure content?
+	pubsub_publish("peers", []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: peer})))
 }
 
 // Reply to a peer request if for us
@@ -141,10 +150,26 @@ func peer_request_event(e *Event) {
 }
 
 // Send a message to a peer
+// TODO Make work with Go streams
 func peer_send(peer string, content string) bool {
-	address := peer_address(peer)
-	if address != "" {
-		return libp2p_send(address, content)
+	p := peer_connect(peer)
+	if p == nil {
+		log_debug("Unable to connect to peer '%s'", peer)
+		return false
 	}
+
+	w := bufio.NewWriter(bufio.NewWriter(*p.stream))
+	_, err := w.WriteString(content + "\n")
+	if err != nil {
+		log_debug("libp2p unable to write event: %s", err)
+		return false
+	}
+
+	err = w.Flush()
+	if err != nil {
+		log_debug("libp2p unable to flush event: %s", err)
+		return false
+	}
+
 	return false
 }

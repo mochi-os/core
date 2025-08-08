@@ -137,7 +137,7 @@ func web_redirect(c *gin.Context, url string) {
 }
 
 func web_start() {
-	listen := ini_string("web", "listen", "0.0.0.")
+	listen := ini_string("web", "listen", "")
 	port := ini_int("web", "port", 80)
 	if port == 0 {
 		return

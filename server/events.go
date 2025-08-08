@@ -44,14 +44,16 @@ func events_check_queue(method string, location string) {
 		log_debug("Trying to send queued event '%s' to %s '%s'", q.Event, q.Method, q.Location)
 		success := false
 
+		//TODO Change how we send queued events
 		if q.Method == "peer" {
 			if peer_send(q.Location, q.Event) {
 				success = true
 			}
 
 		} else if q.Method == "entity" {
+			//TODO Stop using entity_location()
 			method, location, _, _ := entity_location(location)
-			if method == "libp2p" && libp2p_send(location, q.Event) {
+			if method == "libp2p" && peer_send(location, q.Event) {
 				success = true
 			}
 		}
@@ -82,7 +84,7 @@ func events_manager() {
 			db.scans(&broadcasts, "select * from broadcast")
 			for _, b := range broadcasts {
 				log_debug("Broadcast queue helper sending event '%s'", b.ID)
-				libp2p_topics[b.Topic].Publish(libp2p_context, []byte(b.Content))
+				pubsub_publish(b.Topic, []byte(b.Content))
 				db.exec("delete from broadcast where id=?", b.ID)
 			}
 		}
@@ -167,6 +169,7 @@ func (e *Event) send() {
 		e.ID = uid()
 	}
 
+	//TODO Stop using entity_location()
 	method, location, queue_method, queue_location := entity_location(e.To)
 	log_debug("Sending event '%#v' to %s '%s'", e, method, location)
 
@@ -175,13 +178,15 @@ func (e *Event) send() {
 		return
 	}
 
+	//TODO Only sign when necessary
 	e.sign()
 	j := json_encode(e)
 
-	if method == "libp2p" && libp2p_send(location, j) {
+	if method == "libp2p" && peer_send(location, j) {
 		return
 	}
 
+	//TODO Move to peer_send()
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
 	db.exec("replace into events ( id, method, location, event, updated ) values ( ?, ?, ?, ?, ? )", e.ID, queue_method, queue_location, j, now())

@@ -57,7 +57,7 @@ func directory_delete(id string) {
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	j := json_encode(Event{ID: uid(), Service: "directory", Action: "download"})
-	for _, p := range peers_known {
+	for _, p := range peers_bootstrap {
 		if p.ID != libp2p_id {
 			log_debug("Requesting directory download from peer '%s'", p.ID)
 			peer_send(p.ID, j)
@@ -108,7 +108,7 @@ func directory_publish_event(e *Event) {
 
 	if e.From == "" {
 		found := false
-		for _, p := range peers_known {
+		for _, p := range peers_bootstrap {
 			if e.libp2p_peer == p.ID {
 				found = true
 				break
@@ -132,17 +132,23 @@ func directory_publish_event(e *Event) {
 
 // Request that another server publish a directory event
 func directory_request(id string) {
-	//TODO Structure content?
-	e := Event{ID: uid(), Service: "directory", Action: "request", Content: id}
+	e := Event{ID: uid(), Service: "directory", Action: "request", Content: json_encode(Entity{ID: id})}
 	pubsub_publish("directory", []byte(json_encode(e)))
 }
 
 // Reply to a directory request if we have the requested entity
 func directory_request_event(e *Event) {
 	log_debug("Received directory request event '%#v'", e)
+
+	var en Entity
+	if !json_decode(&en, e.Content) {
+		log_info("Directory unable to parse request for '%s'", e.Content)
+		return
+	}
+
 	var r Entity
 	db := db_open("db/users.db")
-	if db.scan(&r, "select * from entities where id=?", e.Content) {
+	if db.scan(&r, "select * from entities where id=?", en.ID) {
 		directory_publish(&r, true)
 	}
 }

@@ -14,8 +14,8 @@ type Event struct {
 	To             string `json:"to"`
 	Service        string `json:"service"`
 	Action         string `json:"action"`
-	Content        string `json:"content"`
-	Signature      string `json:"signature"`
+	Content        string `json:"content"`   //TODO Remove
+	Signature      string `json:"signature"` //TODO Remove
 	libp2p_peer    string `json:"-"`
 	libp2p_address string `json:"-"`
 	user           *User  `json:"-"`
@@ -98,6 +98,11 @@ func events_manager() {
 	}
 }
 
+// TODO CBOR
+func event_receive_cbor(event string, libp2p_peer string, libp2p_address string) {
+}
+
+// TODO Remove
 func event_receive_json(event string, libp2p_peer string, libp2p_address string) {
 	var e Event
 	if !json_decode(&e, event) {
@@ -185,6 +190,7 @@ func (e *Event) send() {
 		return
 	}
 
+	//TODO CBOR
 	e.sign()
 	j := json_encode(e)
 	if peer_send(location, j) {

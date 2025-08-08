@@ -15,6 +15,7 @@ import (
 	libp2p_network "github.com/libp2p/go-libp2p/core/network"
 	libp2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	multiaddr "github.com/multiformats/go-multiaddr"
 	"strings"
 )
 
@@ -32,27 +33,47 @@ var (
 func (n *mdns_notifee) HandlePeerFound(p libp2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		log_debug("libp2p received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_update(p.ID.String(), pa.String()+"/p2p/"+p.ID.String(), nil)
+		peer_update(p.ID.String(), nil, pa.String()+"/p2p/"+p.ID.String())
 	}
 }
 
 // Connect to a peer
-// For now we only use one address at a time.
-// In future it would be good to use all known addresses together.
-// See also the note in peers.go:peer_connect().
-func libp2p_connect(peer string, address string) *libp2p_network.Stream {
-	log_debug("libp2p connecting to peer '%s' at '%s'", peer, address)
+func libp2p_connect(peer string, addresses ...string) *libp2p_network.Stream {
+	log_debug("libp2p connecting to peer '%s' at %v", peer, addresses)
+	var err error
 	ctx := context.Background()
 
-	info, err := libp2p_peer.AddrInfoFromString(address)
+	var info libp2p_peer.AddrInfo
+	info.ID, err = libp2p_peer.Decode(peer)
 	if err != nil {
-		log_warn("libp2p invalid peer address '%s': %v", address, err)
+		log_warn("libp2p ignoring invalid peer ID '%s': %v", peer, err)
 		return nil
 	}
 
-	err = libp2p_me.Connect(ctx, *info)
+	for _, address := range addresses {
+		ma, err := multiaddr.NewMultiaddr(address)
+		if err != nil {
+			log_warn("libp2p ignoring invalid peer address '%s': %v", address, err)
+			continue
+		}
+
+		i, err := libp2p_peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			log_warn("libp2p ignoring invalid multiaddress: %v", err)
+			continue
+		}
+
+		info.Addrs = append(info.Addrs, i.Addrs...)
+	}
+
+	if len(info.Addrs) == 0 {
+		log_warn("libp2p peer '%s' has no valid addresses", peer)
+		return nil
+	}
+
+	err = libp2p_me.Connect(ctx, info)
 	if err != nil {
-		log_info("libp2p error connecting to '%s': %v", address, err)
+		log_info("libp2p error connecting to '%s': %v", peer, err)
 		return nil
 	}
 
@@ -62,7 +83,7 @@ func libp2p_connect(peer string, address string) *libp2p_network.Stream {
 		return nil
 	}
 
-	log_debug("libp2p connected to peer '%s' at '%s'", peer, address)
+	log_debug("libp2p connected to peer '%s'", peer)
 	return &s
 }
 
@@ -71,7 +92,7 @@ func libp2p_handle(s libp2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	log_debug("libp2p peer '%s' connected from '%s'", peer, address)
-	peer_update(peer, address, &s)
+	peer_update(peer, &s, address)
 	go libp2p_read(&s, peer)
 }
 
@@ -86,16 +107,16 @@ func libp2p_pubsub_listen(s *libp2p_pubsub.Subscription) {
 			//TODO Set source address
 			address := peer
 			event_receive_json(string(m.Data), peer, address)
-			//TODO Add peer for source?
+			//TODO Add peer for source
 		}
 	}
 }
 
 // Read from a connected peer
+// TODO Make work with Go streaming
 func libp2p_read(s *libp2p_network.Stream, peer string) {
 	log_debug("libp2p reading events from peer '%s'", peer)
-	//TODO Make work with Go streaming
-	r := bufio.NewReader(bufio.NewReader(*s))
+	r := bufio.NewReader(*s)
 	for {
 		in, err := r.ReadString('\n')
 		if err != nil {
@@ -142,10 +163,10 @@ func libp2p_start() {
 	libp2p_me.SetStreamHandler("/mochi/1.0.0", libp2p_handle)
 
 	// Add bootstrap peers
-	for _, p := range peers_known {
+	for _, p := range peers_bootstrap {
 		if p.ID != libp2p_id {
-			log_debug("Adding bootstrap peer '%s' at '%s'", p.ID, p.Address)
-			peer_update(p.ID, p.Address+"/p2p/"+p.ID, nil)
+			log_debug("Adding bootstrap peer '%s' at %v", p.ID, p.addresses_as_slice())
+			peer_update(p.ID, nil, p.addresses_as_slice()...)
 		}
 	}
 

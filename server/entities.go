@@ -15,10 +15,10 @@ type Entity struct {
 	Fingerprint string `json:"-"`
 	User        int    `json:"-"`
 	Parent      string `json:"-"`
-	Class       string `json:"class"`
-	Name        string `json:"name"`
+	Class       string `json:"class,omitempty"`
+	Name        string `json:"name,omitempty"`
 	Privacy     string `json:"-"`
-	Data        string `json:"data"`
+	Data        string `json:"data,omitempty"`
 	Published   int64  `json:"-"`
 }
 

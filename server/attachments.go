@@ -12,16 +12,16 @@ import (
 )
 
 type Attachment struct {
-	Entity  string
-	ID      string
-	Object  string
-	Rank    int
-	Name    string
+	Entity  string `json:",omitempty"`
+	ID      string `json:"id"`
+	Object  string `json:",omitempty"`
+	Rank    int    `json:",omitempty"`
+	Name    string `json:",omitempty"`
 	Path    string `json:"-"`
-	Size    int64
+	Size    int64  `json:",omitempty"`
 	Created int64  `json:"-"`
 	Data    []byte `json:",omitempty"`
-	Image   bool
+	Image   bool   `json:",omitempty"`
 }
 
 type AttachmentRequest struct {
@@ -184,8 +184,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			action = "get/thumbnail"
 		}
 
-		//TODO Structure content?
-		e := Event{ID: uid(), From: identity, To: at.Entity, Service: "attachments", Action: action, Content: id}
+		e := Event{ID: uid(), From: identity, To: at.Entity, Service: "attachments", Action: action, Content: json_encode(Attachment{ID: id})}
 		e.send()
 	}
 
@@ -227,13 +226,14 @@ func attachments_get_event(e *Event) {
 	db := db_user(e.user, "attachments.db", attachments_db_create)
 	defer db.close()
 
-	if !valid(e.Content, "id") {
+	var a Attachment
+	if !json_decode(&a, e.Content) || !valid(a.ID, "id") {
 		log_info("Request for attachment with invalid ID '%s'", e.Content)
 		return
 	}
 
 	var at Attachment
-	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, e.Content) {
+	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, a.ID) {
 		file := fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path)
 		if file_exists(file) {
 			at.Data = file_read(file)

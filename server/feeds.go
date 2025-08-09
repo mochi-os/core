@@ -782,7 +782,7 @@ func feeds_subscribe(a *Action) {
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: feed, Service: "feeds", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
-	a.template("feeds/subscribe", Map{"Feed": feed})
+	a.template("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
 }
 
 // Received a subscribe from a subscriber

@@ -129,7 +129,7 @@ func libp2p_read(s *libp2p_network.Stream, peer string) {
 			//TODO Set source address
 			address := peer
 			event_receive_json(in, peer, address)
-			//TODO Add peer for source?
+			//TODO Add peer for source
 		}
 	}
 }

@@ -102,7 +102,7 @@ func events_manager() {
 func event_receive_cbor(event string, libp2p_peer string, libp2p_address string) {
 }
 
-// TODO Remove
+// TODO Remove JSON version
 func event_receive_json(event string, libp2p_peer string, libp2p_address string) {
 	var e Event
 	if !json_decode(&e, event) {

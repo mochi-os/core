@@ -1040,7 +1040,7 @@ func forums_subscribe(a *Action) {
 	e := Event{ID: uid(), From: a.user.Identity.ID, To: forum, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
 	e.send()
 
-	a.template("forums/subscribe", Map{"Forum": forum, "Role": m.Role})
+	a.template("forums/subscribe", Map{"Forum": forum, "Fingerprint": fingerprint(forum), "Role": m.Role})
 }
 
 // Received a subscribe from a member

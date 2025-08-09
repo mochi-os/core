@@ -6,8 +6,8 @@
 		Cache
 
 	libp2p
+		stream reset errors
 		Pubsub updates
-		Connect to multiple addresses at once
 	Protocol
 		CBOR?
 		Structure data

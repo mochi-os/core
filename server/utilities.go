@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/btcsuite/btcutil/base58"
+	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
 	"math/big"
 	"regexp"
@@ -47,6 +48,12 @@ func base58_decode(in string, def string) []byte {
 
 func base58_encode(in []byte) string {
 	return base58.CheckEncode(in, 0)
+}
+
+func cbor_encode(in any) []byte {
+	out, err := cbor.Marshal(in)
+	check(err)
+	return out
 }
 
 func check(err error) {
@@ -145,12 +152,18 @@ func valid(s string, match string) bool {
 		match = "^[^<>\r\n\\;\"'`\\.][^<>\r\n\\;\"'`]{0,253}$"
 	case "id":
 		match = "^[\\w-]{32}$"
+	case "integer":
+		match = "^(-)?\\d{1,9}$"
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
+	case "natural":
+		match = "^\\d{1,9}$"
 	case "path":
 		match = "^[0-9a-zA-Z-/]{1,1000}$"
+	case "postive":
+		match = "^\\d{1,9}$"
 	case "privacy":
 		match = "^(public|private)$"
 	case "text":

@@ -4,7 +4,7 @@
 
 <p id="messages"></p>
 <form id="form">
-	<input type="text" id="message" name="message" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
+	<input type="text" id="body" name="body" size="10000" style="width: 90%" autofocus onkeypress="keypress(event)"/>
 	<input type="file" id="attachments" name="attachments" multiple>
 	<input type="button" value="Send" onclick="message_send()"/>
 </form>
@@ -78,7 +78,7 @@ function message_render( c ) {
 
 function message_send() {
 	fetch( window.location.origin + '/chat/{{.Chat.ID}}/send', { method: 'post', body: new FormData( document.getElementById( 'form' ) ) } );
-	document.getElementById( 'message' ).value = '';
+	document.getElementById( 'body' ).value = '';
 	document.getElementById( 'attachments' ).value = '';
 }
 </script>

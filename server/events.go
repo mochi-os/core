@@ -4,146 +4,197 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
-	"time"
+	cbor "github.com/fxamacker/cbor/v2"
+	libp2p_network "github.com/libp2p/go-libp2p/core/network"
+	"io"
+	"os"
 )
 
 type Event struct {
-	ID             string `json:"id"`
-	From           string `json:"from"`
-	To             string `json:"to"`
-	Service        string `json:"service"`
-	Action         string `json:"action"`
-	Content        string `json:"content"`   //TODO Remove
-	Signature      string `json:"signature"` //TODO Remove
-	libp2p_peer    string `json:"-"`
-	libp2p_address string `json:"-"`
-	user           *User  `json:"-"`
-	db             *DB    `json:"-"`
+	ID             string `cbor:"id,omitempty"`
+	From           string `cbor:"from,omitempty"`
+	To             string `cbor:"to,omitempty"`
+	Service        string `cbor:"service,omitempty"`
+	Action         string `cbor:"action,omitempty"`
+	content        map[string]string
+	segments       []*EventSegment
+	libp2p_peer    string
+	libp2p_address string
+	user           *User
+	db             *DB
+	decoder        *cbor.Decoder
 }
 
-type BroadcastQueue struct {
-	ID      string
-	Topic   string
-	Content string
-	Created int64
+type EventSegment struct {
+	file string
+	data []byte
 }
 
-type EventsQueue struct {
-	ID       string
-	Method   string
-	Location string
-	Event    string
-	Created  int64
+// Create a new event
+func event(from string, to string, service string, action string) *Event {
+	return &Event{ID: uid(), From: from, To: to, Service: service, Action: action, content: map[string]string{}}
 }
 
-const maximum_queue_time = 7 * 86400
+// Receive event from reader
+func event_receive_reader(r io.Reader, peer string, address string) {
+	d := cbor.NewDecoder(r)
 
-func events_check_queue(method string, location string) {
-	var qs []EventsQueue
-	db := db_open("db/queue.db")
-	db.scans(&qs, "select * from events where method=? and location=?", method, location)
-	for _, q := range qs {
-		log_debug("Trying to send queued event to %s '%s': %s", q.Method, q.Location, q.Event)
-		success := false
-
-		switch q.Method {
-		case "peer":
-			log_debug("Trying to send to peer")
-			if peer_send(q.Location, q.Event) {
-				success = true
-			}
-
-		case "entity":
-			loc := entity_location(location)
-			log_debug("Trying to send to location '%s'", loc)
-			if loc != "" && peer_send(loc, q.Event) {
-				success = true
-			}
-		}
-
-		if success {
-			log_debug("Queue event sent")
-			db.exec("delete from events where id=?", q.ID)
-		} else {
-			log_debug("Still unable to send queued event; keeping in queue")
-		}
-	}
-}
-
-func events_manager() {
-	db := db_open("db/queue.db")
-
-	for {
-		time.Sleep(time.Minute)
-		if len(peers_connected) >= peers_minimum {
-			var eq EventsQueue
-			if db.scan(&eq, "select * from events limit 1 offset abs(random()) % max((select count(*) from events), 1)") {
-				log_debug("Events queue helper nudging events to %s '%s'", eq.Method, eq.Location)
-				events_check_queue(eq.Method, eq.Location)
-			}
-
-			var broadcasts []BroadcastQueue
-			db.scans(&broadcasts, "select * from broadcast")
-			for _, b := range broadcasts {
-				log_debug("Broadcast queue helper sending event '%s'", b.ID)
-				pubsub_publish(b.Topic, []byte(b.Content))
-				db.exec("delete from broadcast where id=?", b.ID)
-			}
-		}
-
-		now := now()
-		db.exec("delete from broadcast where created<?", now-maximum_queue_time)
-		db.exec("delete from events where created<?", now-maximum_queue_time)
-	}
-}
-
-// TODO CBOR
-func event_receive_cbor(event string, libp2p_peer string, libp2p_address string) {
-}
-
-// TODO Remove JSON version
-func event_receive_json(event string, libp2p_peer string, libp2p_address string) {
+	// Get and verify event headers
 	var e Event
-	if !json_decode(&e, event) {
-		log_info("Dropping event with malformed JSON: '%s'", event)
+	err := d.Decode(&e)
+	if err != nil {
+		log_info("Dropping event with bad headers: %v", err)
 		return
 	}
-	e.libp2p_peer = libp2p_peer
-	e.libp2p_address = libp2p_address
-	e.receive()
+	log_debug("Received event from peer '%s': %#v", peer, e)
+	e.libp2p_peer = peer
+	e.libp2p_address = address
+
+	if !valid(e.ID, "id") {
+		log_info("Dropping event with invalid id '%s'", e.ID)
+		return
+	}
+
+	if e.From != "" && !valid(e.From, "entity") {
+		log_info("Dropping event '%s' with invalid from '%s'", e.ID, e.From)
+		return
+	}
+
+	if e.To != "" && !valid(e.To, "entity") {
+		log_info("Dropping event '%s' with invalid to '%s'", e.ID, e.To)
+		return
+	}
+
+	if e.Service != "" && !valid(e.Service, "constant") {
+		log_info("Dropping event '%s' with invalid service '%s'", e.ID, e.Service)
+		return
+	}
+
+	if !valid(e.Action, "constant") {
+		log_info("Dropping event '%s' with invalid action '%s'", e.ID, e.Action)
+		return
+	}
+
+	// Get and verify headers signature
+	var signature string
+	err = d.Decode(&signature)
+	if err != nil {
+		log_info("Dropping event '%s' with invalid signature: %v", e.ID, err)
+		return
+	}
+	public := base58_decode(e.From, "")
+	if len(public) != ed25519.PublicKeySize {
+		log_info("Dropping event '%s' with invalid from length %d!=%d", e.ID, len(public), ed25519.PublicKeySize)
+		return
+	}
+	if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action), base58_decode(signature, "")) {
+		log_info("Dropping event '%s' with incorrect signature", e.ID)
+		return
+	}
+	log_debug("Received event signature '%s'", signature)
+
+	// Decode the content segment
+	err = d.Decode(&e.content)
+	if err != nil {
+		log_info("Dropping event with bad content segment: %v", err)
+		return
+	}
+	log_debug("Received event content segment %v", e.content)
+
+	// Save decoder in case the app wants to read any more segments
+	e.decoder = d
+
+	// Route the event to app
+	e.route()
 }
 
-func (e *Event) receive() {
-	if !valid(e.ID, "id") {
-		log_info("Dropping received event due to invalid id field '%s'", e.ID)
-		return
+// Receive event from libp2p stream
+func event_receive_stream(s libp2p_network.Stream) {
+	peer := s.Conn().RemotePeer().String()
+	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
+	log_debug("libp2p message from '%s' at '%s'", peer, address)
+
+	event_receive_reader(bufio.NewReader(s), peer, address)
+	peer_update(peer, address)
+}
+
+// Add a segment to an outgoing event
+func (e *Event) add(v any) {
+	var s EventSegment
+	s.data = cbor_encode(v)
+	e.segments = append(e.segments, &s)
+}
+
+// Decode the next segment from a received event
+func (e *Event) decode(v any) bool {
+	err := e.decoder.Decode(v)
+	if err != nil {
+		log_info("Event '%s' unable to decode segment: %v", e.ID, err)
+		return false
+	}
+	return true
+}
+
+// Add a file segment to an outgoing event
+func (e *Event) file(file string) {
+	e.segments = append(e.segments, &EventSegment{file: file})
+}
+
+// Get a field from the content segment of a received event
+func (e *Event) get(field string, def string) string {
+	result, found := e.content[field]
+	if found {
+		return result
+	}
+	return def
+}
+
+// Publish an event to a pubsub
+func (e *Event) publish(topic string, allow_queue bool) {
+	headers := cbor_encode(&e)
+	data := headers
+	signature := cbor_encode(e.signature())
+	data = append(data, signature...)
+	content := cbor_encode(e.content)
+	data = append(data, content...)
+
+	for _, es := range e.segments {
+		if es.file == "" {
+			data = append(data, es.data...)
+		} else {
+			data = append(data, cbor_encode(file_read(data_dir+"/"+es.file))...)
+		}
 	}
 
-	if e.From != "" {
-		if !valid(e.From, "entity") {
-			log_info("Dropping received event '%s' due to invalid from field '%s'", e.ID, e.From)
-			return
+	if peers_sufficient() {
+		libp2p_topics[topic].Publish(libp2p_context, data)
+
+	} else if allow_queue {
+		log_debug("Unable to send broadcast event, adding to queue")
+		db := db_open("db/queue.db")
+		db.exec("replace into queue_broadcasts ( id, topic, created ) values ( ?, ?, ? )", e.ID, topic, now())
+
+		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 1, ? )", e.ID, headers)
+		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 2, ? )", e.ID, signature)
+		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 3, ? )", e.ID, content)
+
+		for i, es := range e.segments {
+			db.exec("replace into queue_segments( event, rank, data, file ) values ( ?, ?, ?, ? )", e.ID, i+4, es.data, es.file)
 		}
 
-		if e.libp2p_peer != "" {
-			public := base58_decode(e.From, "")
-			if len(public) != ed25519.PublicKeySize {
-				log_info("Dropping received event '%s' due to invalid from length %d!=%d", e.ID, len(public), ed25519.PublicKeySize)
-				return
-			}
-			if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action+e.Content), base58_decode(e.Signature, "")) {
-				log_info("Dropping received event '%s' due to invalid sender signature", e.ID)
-				return
-			}
-		}
+		log_debug("Event added to queue")
 	}
+}
 
+// Route a received event to the correct app
+func (e *Event) route() {
 	e.user = user_owning_entity(e.To)
 
 	a := services[e.Service]
 	if a == nil {
-		log_info("Dropping received event '%s' due to unknown service '%s'", e.ID, e.Service)
+		log_info("Dropping event '%s' to unknown service '%s'", e.ID, e.Service)
 		return
 	}
 
@@ -169,46 +220,135 @@ func (e *Event) receive() {
 		}
 	}
 	if !found {
-		log_info("Dropping received event '%s' due to unknown event '%s' in app '%s' for service '%s'", e.ID, e.Action, a.name, e.Service)
+		log_info("Dropping event '%s' to unknown action '%s' in app '%s' for service '%s'", e.ID, e.Action, a.name, e.Service)
 		return
 	}
 
 	f(e)
 }
 
+// Send a completed outgoing event
 func (e *Event) send() {
 	if e.ID == "" {
-		log_warn("Event did not specify ID; adding one")
 		e.ID = uid()
 	}
 
-	location := entity_location(e.To)
-	log_debug("Sending event '%#v' to '%s'", e, location)
+	peer := entity_peer(e.To)
+	log_debug("Sending event '%#v' to '%s'", e, peer)
+	failed := false
 
-	if location == "local" {
-		go e.receive()
-		return
+	//TODO Test sending to local entity
+	s := peer_stream(peer)
+	if s == nil {
+		failed = true
 	}
 
-	//TODO CBOR
-	e.sign()
-	j := json_encode(e)
-	if peer_send(location, j) {
+	if !failed {
+		log_debug("Sending event to peer '%s'", peer)
+	}
+
+	headers := cbor_encode(e)
+	if !failed {
+		_, err := s.Write(headers)
+		if err != nil {
+			log_debug("Error sending headers segment: %v", err)
+			failed = true
+		}
+	}
+
+	signature := cbor_encode(e.signature())
+	if !failed {
+		_, err := s.Write(signature)
+		if err != nil {
+			log_debug("Error sending signature segment: %v", err)
+			failed = true
+		}
+	}
+
+	content := cbor_encode(e.content)
+	if !failed {
+		_, err := s.Write(content)
+		if err != nil {
+			log_debug("Error sending content segment: %v", err)
+			failed = true
+		}
+	}
+
+	if !failed {
+		for _, es := range e.segments {
+			if es.file == "" {
+				log_debug("    Sending segment to peer")
+				_, err := s.Write(es.data)
+				if err != nil {
+					log_debug("Error sending segment: %v", err)
+					failed = true
+					break
+				}
+				log_debug("    Finished sending segment")
+
+			} else {
+				log_debug("    Sending file segment to peer: %s", es.file)
+				f, err := os.Open(data_dir + "/" + es.file)
+				if err != nil {
+					log_warn("Unable to read file '%s/%s', skipping file segment", data_dir, es.file)
+					continue
+				}
+				defer f.Close()
+
+				err = cbor.NewEncoder(s).Encode(bufio.NewReader(f))
+				if err != nil {
+					log_debug("Error sending file segment: %v", err)
+					failed = true
+					break
+				}
+				log_debug("    Finished sending file segment")
+			}
+		}
+	}
+
+	if s != nil {
+		s.Close()
+	}
+
+	if !failed {
+		log_debug("Finished sending event to peer")
 		return
 	}
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
 	db := db_open("db/queue.db")
-	if location == "" {
-		db.exec("replace into events ( id, method, location, event, created ) values ( ?, 'entity', ?, ?, ? )", e.ID, e.To, j, now())
+	if peer == "" {
+		db.exec("replace into queue_entities ( id, entity, created ) values ( ?, ?, ? )", e.ID, e.To, now())
 	} else {
-		db.exec("replace into events ( id, method, location, event, created ) values ( ?, 'peer', ?, ?, ? )", e.ID, location, j, now())
+		db.exec("replace into queue_peers ( id, peer, created ) values ( ?, ?, ? )", e.ID, peer, now())
+	}
+
+	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 1, ? )", e.ID, headers)
+	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 2, ? )", e.ID, signature)
+	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 3, ? )", e.ID, content)
+
+	for i, es := range e.segments {
+		db.exec("replace into queue_segments( event, rank, data, file ) values ( ?, ?, ?, ? )", e.ID, i+4, es.data, es.file)
+	}
+
+	log_debug("Event added to queue")
+}
+
+// Set the content segment of an outgoing event
+func (e *Event) set(in ...string) {
+	for {
+		e.content[in[0]] = in[1]
+		in = in[2:]
+		if len(in) < 2 {
+			return
+		}
 	}
 }
 
-func (e *Event) sign() {
+// Get the signature of an event's headers
+func (e *Event) signature() string {
 	if e.From == "" {
-		return
+		return ""
 	}
 
 	if e.ID == "" {
@@ -219,20 +359,12 @@ func (e *Event) sign() {
 	var from Entity
 	if !db.scan(&from, "select private from entities where id=?", e.From) {
 		log_warn("Not signing event due unknown sending entity")
-		return
+		return ""
 	}
 	private := base58_decode(from.Private, "")
 	if string(private) == "" {
 		log_warn("Not signing event due to invalid private key")
-		return
+		return ""
 	}
-	e.Signature = base58_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.Service+e.Action+e.Content)))
-}
-
-func (a *App) event(event string, f func(*Event)) {
-	a.events[event] = f
-}
-
-func (a *App) event_broadcast(event string, f func(*Event)) {
-	a.events_broadcast[event] = f
+	return base58_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.Service+e.Action)))
 }

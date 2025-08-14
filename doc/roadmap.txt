@@ -6,10 +6,9 @@
 		Cache
 
 	libp2p
-		stream reset errors
 		Pubsub updates
 	Protocol
-		CBOR?
+		CBOR
 		Structure data
 		Check sender owns user
 		Prevent replay attacks

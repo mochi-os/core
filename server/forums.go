@@ -214,20 +214,21 @@ func forums_comment_create(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
-		j := json_encode(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "comment/create", Content: j}
-				e.send()
+				ev := event(f.ID, m.ID, "forums", "comment/create")
+				ev.add(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
+				ev.send()
 			}
 		}
 
 	} else {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: id, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/submit", Content: json_encode(ForumComment{ID: id, Post: post, Parent: parent, Body: body})}
-		e.send()
+		ev := event(a.user.Identity.ID, f.ID, "forums", "comment/submit")
+		ev.add(ForumComment{ID: id, Post: post, Parent: parent, Body: body})
+		ev.send()
 	}
 
 	a.template("forums/comment/create", Map{"Forum": f, "Post": post})
@@ -244,8 +245,8 @@ func forums_comment_create_event(e *Event) {
 	}
 
 	var c ForumComment
-	if !json_decode(&c, e.Content) {
-		log_info("Forum dropping comment with invalid JSON content '%s'", e.Content)
+	if !e.decode(&c) {
+		log_info("Forum dropping comment with invalid data")
 		return
 	}
 
@@ -290,26 +291,31 @@ func forums_comment_submit_event(e *Event) {
 	}
 
 	var c ForumComment
-	if !json_decode(&c, e.Content) {
-		log_info("Forum dropping comment with invalid JSON content '%s'", e.Content)
+	if !e.decode(&c) {
+		log_info("Forum dropping comment with invalid data")
 		return
 	}
+
 	if !e.db.exists("select id from posts where forum=? and id=?", f.ID, c.Post) {
 		log_info("Forum dropping comment for unknown post '%s'", c.Post)
 		return
 	}
+
 	if c.Parent != "" && !e.db.exists("select id from comments where forum=? and post=? and id=?", f.ID, c.Post, c.Parent) {
 		log_info("Forum dropping comment with unknown parent '%s'", c.Parent)
 		return
 	}
+
 	m := forum_member(e.db, f, e.From, "commenter")
 	if m == nil {
 		log_info("Forum dropping comment from unknown member '%s'", e.From)
 		return
 	}
+
 	c.Created = now()
 	c.Author = e.From
 	c.Name = m.Name
+
 	if !valid(c.Body, "text") {
 		log_info("Forum dropping comment with invalid body '%s'", c.Body)
 		return
@@ -319,13 +325,13 @@ func forums_comment_submit_event(e *Event) {
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 
-	j := json_encode(c)
 	var ms []ForumMember
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "comment/create", Content: j}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "comment/create")
+			ev.add(c)
+			ev.send()
 		}
 	}
 }
@@ -345,10 +351,11 @@ func forums_comment_update_event(e *Event) {
 	log_debug("Forum receieved comment update event '%#v'", e)
 
 	var c ForumComment
-	if !json_decode(&c, e.Content) {
-		log_info("Forum dropping comment update with invalid JSON content '%s'", e.Content)
+	if !e.decode(&c) {
+		log_info("Forum dropping comment update with invalid data")
 		return
 	}
+
 	var o ForumComment
 	if !e.db.scan(&o, "select * from comments where forum=? and id=?", e.From, c.ID) {
 		log_info("Forum dropping comment update for unknown comment")
@@ -384,21 +391,21 @@ func forums_comment_vote(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
-		id := uid()
-		j := json_encode(c)
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "comment/update", Content: j}
-				e.send()
+				ev := event(f.ID, m.ID, "forums", "comment/update")
+				ev.add(c)
+				ev.send()
 			}
 		}
 
 	} else {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "comment/vote", Content: json_encode(ForumVote{Comment: c.ID, Vote: vote})}
-		e.send()
+		ev := event(a.user.Identity.ID, f.ID, "forums", "comment/vote")
+		ev.add(ForumVote{Comment: c.ID, Vote: vote})
+		ev.send()
 	}
 
 	a.template("forums/comment/vote", Map{"Forum": f, "Post": c.Post})
@@ -436,8 +443,8 @@ func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string)
 // Received a forum comment vote from a member
 func forums_comment_vote_event(e *Event) {
 	var v ForumVote
-	if !json_decode(&v, e.Content) {
-		log_info("Forum dropping comment vote with invalid JSON content '%s'", e.Content)
+	if !e.decode(&v) {
+		log_info("Forum dropping comment vote with invalid data")
 		return
 	}
 
@@ -459,13 +466,13 @@ func forums_comment_vote_event(e *Event) {
 
 	forums_comment_vote_set(e.db, &c, e.From, v.Vote)
 
-	j := json_encode(c)
 	var ms []ForumMember
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "comment/update", Content: j}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "comment/update")
+			ev.add(c)
+			ev.send()
 		}
 	}
 }
@@ -565,8 +572,9 @@ func forums_members_save(a *Action) {
 				return
 			}
 			a.db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
-			e := Event{ID: uid(), From: f.ID, To: m.ID, Service: "forums", Action: "member/update", Content: json_encode(Map{"role": role})}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "member/update")
+			ev.set("role", role)
+			ev.send()
 
 			if m.Role == "disabled" {
 				forum_send_recent_posts(a.user, a.db, f, m.ID)
@@ -585,22 +593,18 @@ func forums_member_update_event(e *Event) {
 		return
 	}
 
-	var m ForumMember
-	if !json_decode(&m, e.Content) {
-		log_info("Forum dropping member update with invalid JSON content '%s'", e.Content)
-		return
-	}
-	_, found := forum_roles[m.Role]
+	role := e.get("role", "")
+	_, found := forum_roles[role]
 	if !found {
-		log_info("Forum dropping member update with invalid role '%s'", e.Content)
+		log_info("Forum dropping member update with invalid role '%s'", role)
 		return
 	}
 
 	var o ForumMember
 	if e.db.scan(&o, "select * from members where forum=? and id=?", e.From, e.user.Identity.ID) {
-		if m.Role != o.Role {
+		if role != o.Role {
 			message := "An error occurred"
-			switch m.Role {
+			switch role {
 			case "disabled":
 				message = "You may not access this forum"
 			case "voter":
@@ -615,7 +619,7 @@ func forums_member_update_event(e *Event) {
 			notification(e.user, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/"+f.ID)
 		}
 	}
-	e.db.exec("replace into members ( forum, id, role ) values ( ?, ?, ? )", e.From, e.user.Identity.ID, m.Role)
+	e.db.exec("replace into members ( forum, id, role ) values ( ?, ?, ? )", e.From, e.user.Identity.ID, role)
 }
 
 // Enter details for new forum to be created
@@ -661,21 +665,22 @@ func forums_post_create(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
-		j := json_encode(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: post, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
-				e.send()
+				ev := event(f.ID, m.ID, "forums", "post/create")
+				ev.add(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
+				ev.send()
 			}
 		}
 
 	} else {
 		// We are not forum owner, so send to the owner
 		log_debug("Sending post to forum owner")
-		e := Event{ID: post, From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/submit", Content: json_encode(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})}
-		e.send()
+		ev := event(a.user.Identity.ID, f.ID, "forums", "post/submit")
+		ev.add(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})
+		ev.send()
 	}
 
 	a.template("forums/post/create", Map{"Forum": f, "Post": post})
@@ -690,8 +695,8 @@ func forums_post_create_event(e *Event) {
 	}
 
 	var p ForumPost
-	if !json_decode(&p, e.Content) {
-		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
+	if !e.decode(&p) {
+		log_info("Forum dropping post with invalid data")
 		return
 	}
 
@@ -757,22 +762,26 @@ func forums_post_submit_event(e *Event) {
 	}
 
 	var p ForumPost
-	if !json_decode(&p, e.Content) {
-		log_info("Forum dropping post with invalid JSON content '%s'", e.Content)
+	if !e.decode(&p) {
+		log_info("Forum dropping post with invalid data")
 		return
 	}
+
 	m := forum_member(e.db, f, e.From, "poster")
 	if m == nil {
 		log_info("Forum dropping post from unknown member '%s'", e.From)
 		return
 	}
+
 	p.Created = now()
 	p.Author = e.From
 	p.Name = m.Name
+
 	if !valid(p.Title, "line") {
 		log_info("Forum dropping post with invalid title '%s'", p.Title)
 		return
 	}
+
 	if !valid(p.Body, "text") {
 		log_info("Forum dropping post with invalid body '%s'", p.Body)
 		return
@@ -784,14 +793,13 @@ func forums_post_submit_event(e *Event) {
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 
 	p.Attachments = nil
-	j := json_encode(p)
-
 	var ms []ForumMember
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "post/create", Content: j}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "post/create")
+			ev.add(p)
+			ev.send()
 		}
 	}
 }
@@ -799,10 +807,11 @@ func forums_post_submit_event(e *Event) {
 // Received a forum post update event
 func forums_post_update_event(e *Event) {
 	var p ForumPost
-	if !json_decode(&p, e.Content) {
-		log_info("Forum dropping post update with invalid JSON content '%s'", e.Content)
+	if !e.decode(&p) {
+		log_info("Forum dropping post update with invalid data")
 		return
 	}
+
 	if !e.db.exists("select id from posts where forum=? and id=?", e.From, p.ID) {
 		log_info("Forum dropping post update for unknown post")
 		return
@@ -865,21 +874,21 @@ func forums_post_vote(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
-		id := uid()
-		j := json_encode(p)
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "post/update", Content: j}
-				e.send()
+				ev := event(f.ID, m.ID, "forums", "post/update")
+				ev.add(p)
+				ev.send()
 			}
 		}
 
 	} else {
 		// We are not forum owner, so send to the owner
-		e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "post/vote", Content: json_encode(ForumVote{Post: p.ID, Vote: vote})}
-		e.send()
+		ev := event(a.user.Identity.ID, f.ID, "forums", "post/vote")
+		ev.add(ForumVote{Post: p.ID, Vote: vote})
+		ev.send()
 	}
 
 	a.template("forums/post/vote", Map{"Forum": f, "ID": p.ID})
@@ -916,8 +925,8 @@ func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
 // Received a forum post vote from a member
 func forums_post_vote_event(e *Event) {
 	var v ForumVote
-	if !json_decode(&v, e.Content) {
-		log_info("Forum dropping post vote with invalid JSON content '%s'", e.Content)
+	if !e.decode(&v) {
+		log_info("Forum dropping post vote with invalid data")
 		return
 	}
 
@@ -926,11 +935,13 @@ func forums_post_vote_event(e *Event) {
 		log_info("Forum dropping post vote for unknown post")
 		return
 	}
+
 	f := forum_by_id(e.user, e.db, p.Forum)
 	if f == nil {
 		log_info("Forum dropping post vote for unknown forum")
 		return
 	}
+
 	m := forum_member(e.db, f, e.From, "voter")
 	if m == nil {
 		log_info("Forum dropping post vote from unknown member")
@@ -939,13 +950,13 @@ func forums_post_vote_event(e *Event) {
 
 	forums_post_vote_set(e.db, &p, e.From, v.Vote)
 
-	j := json_encode(p)
 	var ms []ForumMember
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.From && m.ID != e.user.Identity.ID {
-			e := Event{ID: e.ID, From: f.ID, To: m.ID, Service: "forums", Action: "post/update", Content: j}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "post/update")
+			ev.add(p)
+			ev.send()
 		}
 	}
 }
@@ -993,16 +1004,18 @@ func forum_send_recent_posts(u *User, db *DB, f *Forum, member string) {
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		p.Attachments = attachments(u, "forums/%s/%s", f.ID, p.ID)
-		e := Event{ID: p.ID, From: f.ID, To: member, Service: "forums", Action: "post/create", Content: json_encode(p)}
-		e.send()
+		ev := event(f.ID, member, "forums", "post/create")
+		ev.add(p)
+		ev.send()
 	}
 
 	for _, p := range ps {
 		var cs []ForumComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)
 		for _, c := range cs {
-			e := Event{ID: c.ID, From: f.ID, To: member, Service: "forums", Action: "comment/create", Content: json_encode(c)}
-			e.send()
+			ev := event(f.ID, member, "forums", "comment/create")
+			ev.add(c)
+			ev.send()
 		}
 	}
 }
@@ -1037,8 +1050,9 @@ func forums_subscribe(a *Action) {
 	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
 	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: forum, Service: "forums", Action: "subscribe", Content: json_encode(map[string]string{"name": a.user.Identity.Name})}
-	e.send()
+	ev := event(a.user.Identity.ID, forum, "forums", "subscribe")
+	ev.set("name", a.user.Identity.Name)
+	ev.send()
 
 	a.template("forums/subscribe", Map{"Forum": forum, "Fingerprint": fingerprint(forum), "Role": m.Role})
 }
@@ -1050,12 +1064,13 @@ func forums_subscribe_event(e *Event) {
 		return
 	}
 
-	var m ForumMember
-	if !json_decode(&m, e.Content) {
-		log_info("Forum dropping subscribe event with invalid JSON")
+	name := e.get("name", "")
+	if !valid(name, "line") {
+		log_info("Forums dropping subscribe with invalid name '%s'", name)
+		return
 	}
 
-	e.db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, m.Name, f.Role)
+	e.db.exec("insert or ignore into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", f.ID, e.From, name, f.Role)
 	e.db.exec("update forums set members=(select count(*) from members where forum=? and role!='disabled'), updated=? where id=?", f.ID, now(), f.ID)
 
 	if f.Role != "disabled" {
@@ -1084,8 +1099,8 @@ func forums_unsubscribe(a *Action) {
 	a.db.exec("delete from members where forum=?", f.ID)
 	a.db.exec("delete from forums where id=?", f.ID)
 
-	e := Event{ID: uid(), From: a.user.Identity.ID, To: f.ID, Service: "forums", Action: "unsubscribe"}
-	e.send()
+	ev := event(a.user.Identity.ID, f.ID, "forums", "unsubscribe")
+	ev.send()
 
 	a.template("forums/unsubscribe")
 }
@@ -1107,12 +1122,11 @@ func forum_update(u *User, db *DB, f *Forum) {
 	db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	db.exec("update forums set members=?, updated=? where id=?", len(ms), now(), f.ID)
 
-	j := json_encode(Map{"members": len(ms)})
-	id := uid()
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {
-			e := Event{ID: id, From: f.ID, To: m.ID, Service: "forums", Action: "update", Content: j}
-			e.send()
+			ev := event(f.ID, m.ID, "forums", "update")
+			ev.set("members", string(len(ms)))
+			ev.send()
 		}
 	}
 }
@@ -1125,12 +1139,13 @@ func forums_update_event(e *Event) {
 	if f == nil {
 		return
 	}
-	var n Forum
-	if !json_decode(&n, e.Content) {
-		log_info("Forum dropping update with invalid JSON content '%s'", e.Content)
+
+	members := e.get("members", "0")
+	if !valid(members, "natural") {
+		log_info("Forum dropping update with invalid number of members '%s'", members)
 		return
 	}
-	e.db.exec("update forums set members=?, updated=? where id=?", n.Members, now(), f.ID)
+	e.db.exec("update forums set members=?, updated=? where id=?", members, now(), f.ID)
 }
 
 // View a forum, or all forums

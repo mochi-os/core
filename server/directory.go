@@ -8,14 +8,14 @@ import (
 )
 
 type Directory struct {
-	ID          string `json:"id"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-	Name        string `json:"name"`
-	Class       string `json:"class"`
-	Location    string `json:"location"`
-	Data        string `json:"data"`
-	Created     int64  `json:"created,omitempty"`
-	Updated     int64  `json:"updated"`
+	ID          string `cbor:"id"`
+	Fingerprint string `cbor:"fingerprint,omitempty"`
+	Name        string `cbor:"name"`
+	Class       string `cbor:"class"`
+	Location    string `cbor:"location"`
+	Data        string `cbor:"data"`
+	Created     int64  `cbor:"created,omitempty"`
+	Updated     int64  `cbor:"updated"`
 }
 
 func init() {
@@ -44,7 +44,6 @@ func directory_create(e *Entity) {
 
 	db := db_open("db/directory.db")
 	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, libp2p_id, e.Data, now, now)
-	go events_check_queue("entity", e.ID)
 }
 
 // Delete a directory entry
@@ -54,13 +53,14 @@ func directory_delete(id string) {
 }
 
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
+// TODO Test
 func directory_download() {
 	time.Sleep(10 * time.Second)
-	j := json_encode(Event{ID: uid(), Service: "directory", Action: "download"})
 	for _, p := range peers_bootstrap {
 		if p.ID != libp2p_id {
 			log_debug("Requesting directory download from peer '%s'", p.ID)
-			peer_send(p.ID, j)
+			ev := event("", p.ID, "directory", "download")
+			ev.send()
 		}
 	}
 }
@@ -74,24 +74,18 @@ func directory_download_event(e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		peer_send(e.libp2p_peer, json_encode(Event{ID: uid(), Service: "directory", Action: "publish", Content: json_encode(d)}))
+		ev := event(e.To, e.From, "directory", "publish")
+		ev.add(d)
+		ev.send()
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	ev := Event{ID: uid(), From: e.ID, Service: "directory", Action: "publish", Content: json_encode(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})}
-	ev.sign()
-	j := []byte(json_encode(ev))
-
-	if len(peers_connected) >= peers_minimum {
-		pubsub_publish("directory", j)
-
-	} else if allow_queue {
-		db := db_open("db/queue.db")
-		db.exec("replace into broadcast ( id, topic, content, updated ) values ( ?, 'directory', ?, ? )", ev.ID, j, now())
-	}
+	ev := event(e.ID, "", "", "publish")
+	ev.add(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})
+	ev.publish("directory", allow_queue)
 }
 
 // Received a directory publish event from another server
@@ -101,8 +95,7 @@ func directory_publish_event(e *Event) {
 	now := now()
 
 	var d Directory
-	if !json_decode(&d, e.Content) {
-		log_info("Dropping directory event '%s' with malformed JSON", e.Content)
+	if !e.decode(&d) {
 		return
 	}
 
@@ -127,29 +120,24 @@ func directory_publish_event(e *Event) {
 	db := db_open("db/directory.db")
 	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now, now)
 
-	go events_check_queue("entity", d.ID)
+	go queue_check_entity(d.ID)
 }
 
 // Request that another server publish a directory event
 func directory_request(id string) {
-	e := Event{ID: uid(), Service: "directory", Action: "request", Content: json_encode(Entity{ID: id})}
-	pubsub_publish("directory", []byte(json_encode(e)))
+	ev := event("", "", "", "request")
+	ev.set("id", id)
+	ev.publish("directory", false)
 }
 
 // Reply to a directory request if we have the requested entity
 func directory_request_event(e *Event) {
 	log_debug("Received directory request event '%#v'", e)
 
-	var en Entity
-	if !json_decode(&en, e.Content) {
-		log_info("Directory unable to parse request for '%s'", e.Content)
-		return
-	}
-
 	var r Entity
 	db := db_open("db/users.db")
-	if db.scan(&r, "select * from entities where id=?", en.ID) {
-		directory_publish(&r, true)
+	if db.scan(&r, "select * from entities where id=?", e.get("id", "")) {
+		directory_publish(&r, false)
 	}
 }
 

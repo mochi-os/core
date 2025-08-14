@@ -4,8 +4,6 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	libp2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	libp2p_network "github.com/libp2p/go-libp2p/core/network"
 	"sync"
@@ -17,7 +15,7 @@ type Peer struct {
 	Address   string           `json:"-"`
 	Updated   int64            `json:"updated,omitempty"`
 	addresses map[string]int64 `json:"-"`
-	stream    *libp2p_network.Stream
+	connected bool
 }
 
 const (
@@ -28,7 +26,7 @@ var (
 	peers_bootstrap = []Peer{
 		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", addresses: map[string]int64{"/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": now(), "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH": now()}},
 	}
-	peers_connected   map[string]Peer = map[string]Peer{}
+	peers             map[string]Peer = map[string]Peer{}
 	peer_publish_chan                 = make(chan bool)
 	peers_lock                        = &sync.Mutex{}
 )
@@ -54,7 +52,7 @@ func peers_add_from_db(limit int) {
 			addresses = append(addresses, a.Address)
 		}
 		log_debug("Adding database peer '%s' at %v", p.ID, addresses)
-		peer_update(p.ID, nil, addresses...)
+		peer_update(p.ID, addresses...)
 	}
 }
 
@@ -67,43 +65,38 @@ func (p Peer) addresses_as_slice() []string {
 	return results
 }
 
-// Connect to a peer, unless already connected
-func peer_connect(id string) *Peer {
-	// Check if we're already connected
+// Get details of a peer, either from memory, or from database
+func peer_by_id(id string) *Peer {
 	peers_lock.Lock()
-	p, found := peers_connected[id]
+	p, found := peers[id]
 	peers_lock.Unlock()
 	if found {
+		log_debug("Already have peer '%s' at %v", id, p.addresses)
 		return &p
 	}
 
 	// Load from database
 	now := now()
-	var as []Peer
+	p = Peer{ID: id, Updated: now, connected: false}
+
+	var ps []Peer
 	db := db_open("db/peers.db")
-	db.scans(&as, "select * from peers where id=?", id)
-	if len(as) > 0 {
-		var addresses []string
-		for _, a := range as {
-			addresses = append(addresses, a.Address)
-		}
-		log_debug("Adding database peer '%s' at %v", p.ID, addresses)
-		p = Peer{ID: id, Updated: now, stream: libp2p_connect(id, addresses...)}
-		if p.stream != nil {
-			for _, address := range addresses {
-				p.addresses[address] = now
-			}
-			peers_lock.Lock()
-			peers_connected[id] = p
-			peers_lock.Unlock()
-			return &p
-		}
+	db.scans(&ps, "select * from peers where id=?", id)
+	if len(ps) == 0 {
+		log_debug("Peer '%s' not found in database", id)
+		return nil
+	}
+	for _, a := range ps {
+		log_debug("Peer '%s' adding address '%s' from database", id, a.Address)
+		p.addresses[a.Address] = now
 	}
 
-	// Can't connect to it at this time. Send a publish request to the pubsub and give up.
-	log_debug("Peer '%s' unknown. Sending pubsub request for it.", id)
-	pubsub_publish("peers", []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "request", Content: json_encode(Peer{ID: id})})))
-	return nil
+	peers_lock.Lock()
+	peers[id] = p
+	peers_lock.Unlock()
+
+	log_debug("Adding database peer '%s' at %v", id, p.addresses)
+	return &p
 }
 
 // Publish our own information to the pubsub regularly or when requested
@@ -117,7 +110,8 @@ func peers_publish(t *libp2p_pubsub.Topic) {
 			log_debug("Peer routine publish")
 		}
 		log_debug("Publishing peer")
-		t.Publish(context.Background(), []byte(json_encode(Event{ID: uid(), Service: "peers", Action: "publish"})))
+		ev := event("", "", "", "publish")
+		ev.publish("peers", false)
 	}
 }
 
@@ -125,91 +119,92 @@ func peers_publish(t *libp2p_pubsub.Topic) {
 func peer_publish_event(e *Event) {
 	//TODO Enable once libp2p_address is set
 	//log_debug("Adding peer '%s' due to publish event from '%s'", e.libp2p_peer, e.libp2p_address)
-	//peer_update(e.libp2p_peer, nil, e.libp2p_address)
+	//peer_update(e.libp2p_peer, e.libp2p_address)
 }
 
 // Reply to a peer request if for us
 func peer_request_event(e *Event) {
 	log_debug("Received peer request event '%#v'", e)
-	var p Peer
-	if json_decode(&p, e.Content) && p.ID == libp2p_id {
+	if e.get("id", "") == libp2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}
 }
 
-// Send a message to a peer
-// TODO Make work with Go streams
-func peer_send(peer string, content string) bool {
-	log_debug("Sending to peer '%s': %s", peer, content)
-	p := peer_connect(peer)
-	if p == nil {
-		log_debug("Unable to connect to peer '%s'", peer)
-		return false
-	}
-	if p.stream == nil {
-		log_warn("Peer '%s' has no stream", peer)
-		return false
-	}
-
-	w := bufio.NewWriter(*p.stream)
-	_, err := w.WriteString(content + "\n")
-	if err != nil {
-		log_debug("libp2p unable to write event: %s", err)
-		return false
-	}
-
-	err = w.Flush()
-	if err != nil {
-		log_debug("libp2p unable to flush event: %s", err)
-		return false
-	}
-
-	return true
-}
-
-// Add or update a peer
-// If the peer connected to us stream will be the stream libp2p opened for us, otherwise stream will be nil.
-func peer_update(id string, stream *libp2p_network.Stream, addresses ...string) *Peer {
-	log_debug("Peer updating '%s' at %v", id, addresses)
-	if id == libp2p_id {
-		log_debug("Peer ignoring request to add ourself")
+// Get a stream to a peer, connecting if necessary
+func peer_stream(id string) libp2p_network.Stream {
+	if id == "" {
 		return nil
 	}
 
+	p := peer_by_id(id)
+	if p == nil {
+		log_debug("Peer '%s' unknown, sending pubsub request for it", id)
+		ev := event("", "", "peers", "request")
+		ev.set("id", id)
+		ev.publish("peers", false)
+		return nil
+	}
+
+	if !p.connected {
+		p.connected = libp2p_connect(id, p.addresses_as_slice()...)
+		if !p.connected {
+			return nil
+		}
+	}
+
+	return libp2p_stream(id)
+}
+
+// Check whether we have enough peers
+func peers_sufficient() bool {
 	peers_lock.Lock()
-	p, found := peers_connected[id]
+	count := len(peers)
 	peers_lock.Unlock()
 
+	if count >= peers_minimum {
+		return true
+	}
+	return false
+}
+
+// Add or update a peer
+func peer_update(id string, addresses ...string) {
+	log_debug("Peer updating '%s' at %v", id, addresses)
 	now := now()
-	if found {
-		for _, address := range addresses {
-			p.addresses[address] = now
-		}
-		p.Updated = now
-
-	} else {
-		if stream == nil {
-			stream = libp2p_connect(id, addresses...)
-			if stream == nil {
-				return nil
-			}
-		}
-		p = Peer{ID: id, addresses: map[string]int64{}, Updated: now, stream: stream}
-		for _, address := range addresses {
-			p.addresses[address] = now
-		}
-	}
+	update_db := false
 
 	peers_lock.Lock()
-	peers_connected[id] = p
+	p, found := peers[id]
 	peers_lock.Unlock()
 
-	db := db_open("db/peers.db")
+	if found && p.Updated < now-int64(3600) {
+		update_db = true
+
+	} else if !found {
+		p = Peer{ID: id, addresses: map[string]int64{}, connected: false}
+		update_db = true
+	}
 	for _, address := range addresses {
-		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
+		_, address_found := p.addresses[address]
+		if !address_found {
+			update_db = true
+		}
+		p.addresses[address] = now
 	}
 
-	go events_check_queue("peer", id)
-	return &p
+	p.Updated = now
+	peers_lock.Lock()
+	peers[id] = p
+	peers_lock.Unlock()
+
+	if update_db {
+		log_debug("Updating peer '%s' in database", id)
+		db := db_open("db/peers.db")
+		for _, address := range addresses {
+			db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
+		}
+	}
+
+	go queue_check_peer(id)
 }

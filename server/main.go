@@ -39,8 +39,8 @@ func main() {
 	libp2p_start()
 	go attachments_manager()
 	go entities_manager()
-	go events_manager()
 	go cache_manager()
+	go queue_manager()
 	go web_start()
 
 	if new_install {

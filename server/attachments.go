@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -29,7 +30,7 @@ type AttachmentRequest struct {
 	entity    string
 	id        string
 	thumbnail bool
-	response  chan Attachment
+	response  chan *Event
 	time      int64
 }
 
@@ -184,95 +185,126 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			action = "get/thumbnail"
 		}
 
-		e := Event{ID: uid(), From: identity, To: at.Entity, Service: "attachments", Action: action, Content: json_encode(Attachment{ID: id})}
-		e.send()
+		ev := event(identity, at.Entity, "attachments", action)
+		ev.set("id", id)
+		ev.send()
 	}
 
 	// Add to list of requested files
 	attachments_lock.Lock()
-	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan Attachment), time: now()}
+	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan *Event), time: now()}
 	attachments_requested = append(attachments_requested, &ar)
 	attachments_lock.Unlock()
 
 	// Wait for response
-	r := <-ar.response
-	if len(r.Data) == 0 {
-		a.error(500, "Unable to fetch remote attachment")
+	e := <-ar.response
+	if e.get("status", "") != "200" {
+		log_debug("Received negative response for attachment '%s': %s", id, e.get("status", ""))
 		return
 	}
 
-	// Write data to web browser
+	// Write data to cache
 	name := at.Name
 	if thumbnail {
 		name = thumbnail_name(name)
 	}
 	safe := file_name_safe(name)
-	a.web.Header("Content-Disposition", "inline; filename=\""+safe+"\"")
-	a.web.Data(http.StatusOK, file_name_type(name), r.Data)
-
-	// Add to cache
 	thumbnail_dir := ""
 	if thumbnail {
 		thumbnail_dir = "thumbnail/"
 	}
 	path := fmt.Sprintf("attachments/%d/%s/%s/%s%s_%s", user, identity, at.Entity, thumbnail_dir, id, safe)
-	file_write(cache_dir+"/"+path, r.Data)
+	file := cache_dir + "/" + path
+
+	f, err := os.Create(cache_dir + "/" + path)
+	if err != nil {
+		log_warn("Unable to open cache file '%s/%s' for writing: %v", cache_dir, path, err)
+		f.Close()
+		return
+	}
+	_, err = io.Copy(f, e.decoder.Buffered())
+	f.Close()
+	if err != nil {
+		log_warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
+		return
+	}
+
 	db_cache.exec("replace into attachments ( user, identity, entity, id, thumbnail, path, created ) values ( ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, thumbnail, path, now())
+
+	// Write data to browser from cache
+	f, err = os.Open(file)
+	defer f.Close()
+	if err != nil {
+		log_warn("Unable to read newly cached file '%s': %v", file, err)
+		return
+	}
+	a.web.DataFromReader(http.StatusOK, file_size(file), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
 }
 
 // Request to get a file
 func attachments_get_event(e *Event) {
-	log_debug("Request for attachment '%s' '%s'", e.To, e.Content)
-	db := db_user(e.user, "attachments.db", attachments_db_create)
-	defer db.close()
+	id := e.get("id", "")
+	log_debug("Request for attachment '%s' '%s'", e.To, id)
 
-	var a Attachment
-	if !json_decode(&a, e.Content) || !valid(a.ID, "id") {
-		log_info("Request for attachment with invalid ID '%s'", e.Content)
+	if !valid(id, "id") {
+		log_info("Request for attachment with invalid ID '%s'", id)
 		return
 	}
 
+	db := db_user(e.user, "attachments.db", attachments_db_create)
+	defer db.close()
+
 	var at Attachment
-	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, a.ID) {
-		file := fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path)
-		if file_exists(file) {
-			at.Data = file_read(file)
-			ev := Event{ID: e.ID, From: e.To, To: e.From, Service: "attachments", Action: "send", Content: json_encode(at)}
+	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, id) {
+		file := fmt.Sprintf("users/%d/%s", e.user.ID, at.Path)
+		if !file_exists(data_dir + "/" + file) {
+			ev := event(e.To, e.From, "attachments", "send")
+			ev.set("status", "200", "id", id)
+			ev.file(file)
 			ev.send()
 			return
+
+		} else {
+			log_warn("Attachment file '%s' not found", data_dir+"/"+file)
 		}
+
+	} else {
+		log_info("Request for unknown attachment '%s'", e.ID)
 	}
 
-	//TODO Return more meaningful error status
-	log_info("Request for unknown attachment '%s'", e.ID)
-	ev := Event{ID: e.ID, From: e.To, To: e.From, Service: "attachments", Action: "send"}
+	ev := event(e.To, e.From, "attachments", "send")
+	ev.set("status", "404", "id", id)
 	ev.send()
 }
 
 // Request to get a thumbnail
 func attachments_get_thumbnail_event(e *Event) {
-	log_debug("Request for thumbnail '%s' '%s'", e.To, e.Content)
-	db := db_user(e.user, "attachments.db", attachments_db_create)
-	defer db.close()
+	id := e.get("id", "")
+	log_debug("Request for thumbnail '%s' '%s'", e.To, id)
 
-	if !valid(e.Content, "id") {
-		log_info("Request for thumbnail with invalid ID '%s'", e.Content)
+	if !valid(id, "id") {
+		log_info("Request for thumbnail with invalid ID '%s'", id)
 		return
 	}
 
+	db := db_user(e.user, "attachments.db", attachments_db_create)
+	defer db.close()
+
 	var at Attachment
-	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, e.Content) {
+	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, id) {
 		path, err := thumbnail_create(fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path))
 		if err == nil {
-			at.Data = file_read(path)
-			ev := Event{ID: e.ID, From: e.To, To: e.From, Service: "attachments", Action: "send/thumbnail", Content: json_encode(at)}
+			ev := event(e.To, e.From, "attachments", "send/thumbnail")
+			ev.set("status", "200", "id", id)
+			ev.file(path)
 			ev.send()
 			return
 		}
 	}
 
 	log_info("Request for unknown attachment thumbnail '%s'", e.ID)
-	ev := Event{ID: e.ID, From: e.To, To: e.From, Service: "attachments", Action: "send/thumbnail"}
+	ev := event(e.To, e.From, "attachments", "send/thumbnail")
+	ev.set("status", "404", "id", id)
 	ev.send()
 }
 
@@ -339,22 +371,12 @@ func attachments_send_thumbnail_event(e *Event) {
 
 // Do the work for the above two functions
 func attachments_send_event_work(e *Event, thumbnail bool) {
-	if len(e.Content) == 0 {
-		log_debug("Received negative response for attachment '%s'", e.ID)
-		return
-	}
-
-	var at Attachment
-	if !json_decode(&at, e.Content) {
-		log_info("Dropping attachment send vent with invalid JSON content '%s'", e.Content)
-		return
-	}
-
+	id := e.get("id", "")
 	var survivors []*AttachmentRequest
 	attachments_lock.Lock()
 	for _, r := range attachments_requested {
-		if r.identity == e.To && r.entity == e.From && r.id == at.ID && r.thumbnail == thumbnail {
-			r.response <- at
+		if r.identity == e.To && r.entity == e.From && r.id == id && r.thumbnail == thumbnail {
+			r.response <- e
 		} else {
 			survivors = append(survivors, r)
 		}

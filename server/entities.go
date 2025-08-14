@@ -22,6 +22,7 @@ type Entity struct {
 	Published   int64  `json:"-"`
 }
 
+// Get an entity by fingerprint
 func entity_by_fingerprint(in string) *Entity {
 	db := db_open("db/users.db")
 	var e Entity
@@ -31,6 +32,7 @@ func entity_by_fingerprint(in string) *Entity {
 	return nil
 }
 
+// Get an entity by id
 func entity_by_id(id string) *Entity {
 	db := db_open("db/users.db")
 	var e Entity
@@ -40,6 +42,7 @@ func entity_by_id(id string) *Entity {
 	return nil
 }
 
+// Get an entity for a user
 func entity_by_user_id(u *User, id string) *Entity {
 	db := db_open("db/users.db")
 	var e Entity
@@ -49,6 +52,7 @@ func entity_by_user_id(u *User, id string) *Entity {
 	return nil
 }
 
+// Create a new entity in the database
 func entity_create(u *User, class string, name string, privacy string, data string) (*Entity, error) {
 	db := db_open("db/users.db")
 	if !valid(name, "name") {
@@ -89,13 +93,31 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	return nil, error_message("Unable to find spare entity ID or fingerprint")
 }
 
-// Gets the location of an entity
-func entity_location(id string) string {
+// Re-publish all our entities every day so the network knows they're still active
+// Increase this interval in future versions, especially once the directory gets recent updates
+func entities_manager() {
+	db := db_open("db/users.db")
+
+	for {
+		time.Sleep(time.Minute)
+		if peers_sufficient() {
+			var es []Entity
+			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
+			for _, e := range es {
+				db.exec("update entities set published=? where id=?", now(), e.ID)
+				directory_publish(&e, false)
+			}
+		}
+	}
+}
+
+// Get the peer an entity is at
+func entity_peer(id string) string {
 	// Check if local
 	var e Entity
 	dbu := db_open("db/users.db")
 	if dbu.scan(&e, "select * from entities where id=?", id) {
-		return "local"
+		return libp2p_id
 	}
 
 	// Check in directory
@@ -108,22 +130,4 @@ func entity_location(id string) string {
 	// Not found. Send a directory request and return failure.
 	directory_request(id)
 	return ""
-}
-
-// Re-publish all our entities every day so the network knows they're still active
-// Increase this interval in future versions, especially once the directory gets recent updates
-func entities_manager() {
-	db := db_open("db/users.db")
-
-	for {
-		time.Sleep(time.Minute)
-		if len(peers_connected) >= peers_minimum {
-			var es []Entity
-			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
-			for _, e := range es {
-				db.exec("update entities set published=? where id=?", now(), e.ID)
-				directory_publish(&e, false)
-			}
-		}
-	}
 }

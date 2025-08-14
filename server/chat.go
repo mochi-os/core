@@ -95,14 +95,15 @@ func chat_create(a *Action) {
 		}
 	}
 
-	j := json_encode(Chat{ID: chat, Name: name, Members: &members})
 	for _, m := range members {
 		if m.Member == a.user.Identity.ID {
 			continue
 		}
 		log_debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
-		e := Event{ID: chat, From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "new", Content: j}
-		e.send()
+		ev := event(a.user.Identity.ID, m.Member, "chat", "new")
+		ev.set("id", chat, "name", name)
+		ev.add(members)
+		ev.send()
 	}
 
 	a.redirect("/chat/" + chat)
@@ -132,35 +133,35 @@ func chat_member(db *DB, chat string, member string) *ChatMember {
 
 // Received a message event from another member
 func chat_message_event(e *Event) {
-	var cm ChatMessage
-	if !json_decode(&cm, e.Content) {
-		log_info("Chat dropping message '%s' with malformed JSON", e.Content)
-		return
-	}
-
-	c := chat_by_id(e.db, cm.Chat)
+	chat := e.get("chat", "")
+	c := chat_by_id(e.db, chat)
 	if c == nil {
-		log_info("Chat dropping message to unknown chat '%s'", cm.Chat)
+		log_info("Chat dropping message to unknown chat '%s'", chat)
 		return
 	}
 
-	m := chat_member(e.db, cm.Chat, e.From)
+	m := chat_member(e.db, chat, e.From)
 	if m == nil {
 		log_info("Chat dropping message from unknown member '%s'", e.From)
 		return
 	}
 
-	if !valid(cm.Body, "text") {
-		log_info("Chat dropping message with invalid body '%s'", cm.Body)
+	body := e.get("body", "")
+	if !valid(body, "text") {
+		log_info("Chat dropping message with invalid body '%s'", body)
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, c.ID, now(), e.From, m.Name, cm.Body)
-	attachments_save(cm.Attachments, e.user, e.From, "chat/%s/%s", c.ID, e.ID)
+	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, chat, now(), e.From, m.Name, body)
 
-	cm.Name = m.Name
-	websockets_send(e.user, "chat", json_encode(cm))
-	notification(e.user, "chat", "message", c.ID, m.Name+": "+cm.Body, "/chat/"+c.ID)
+	var as []Attachment
+	if e.decode(&as) {
+		log_debug("Chat recieved attachments %v", as)
+		attachments_save(&as, e.user, e.From, "chat/%s/%s", chat, e.ID)
+	}
+
+	websockets_send(e.user, "chat", json_encode(Map{"Name": m.Name, "Body": body, "Attachments": &as}))
+	notification(e.user, "chat", "message", c.ID, m.Name+": "+body, "/chat/"+c.ID)
 }
 
 // Send previous messages to client
@@ -201,22 +202,23 @@ func chat_message_send(a *Action) {
 	}
 
 	id := uid()
-	message := a.input("message")
-	log_debug("Chat sending message '%s'", message)
-	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, message)
+	body := a.input("body")
+	log_debug("Chat sending message '%s'", body)
+	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
 
-	j := json_encode(ChatMessage{Chat: c.ID, Body: message, Attachments: attachments})
 	var ms []ChatMember
 	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
 		log_debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
-		e := Event{ID: id, From: a.user.Identity.ID, To: m.Member, Service: "chat", Action: "message", Content: j}
-		e.send()
+		ev := event(a.user.Identity.ID, m.Member, "chat", "message")
+		ev.set("chat", c.ID, "body", body)
+		ev.add(attachments)
+		ev.send()
 	}
 
-	websockets_send(a.user, "chat", json_encode(map[string]any{"Name": a.user.Identity.Name, "Body": message, "Attachments": attachments}))
+	websockets_send(a.user, "chat", json_encode(Map{"Name": a.user.Identity.Name, "Body": body, "Attachments": attachments}))
 }
 
 // Ask user who they'd like to chat with
@@ -237,45 +239,44 @@ func chat_new_event(e *Event) {
 		return
 	}
 
-	var c Chat
-	if !json_decode(&c, e.Content) {
-		log_info("Chat dropping new chat '%s' with malformed JSON", e.Content)
+	chat := e.get("chat", "")
+	if !valid(chat, "uid") {
+		log_info("Chat dropping new chat with invalid ID '%s'", chat)
 		return
 	}
 
-	if !valid(c.ID, "uid") {
-		log_info("Chat dropping new chat with invalid ID '%s'", c.ID)
+	c := chat_by_id(e.db, chat)
+	if c != nil {
+		log_info("Chat dropping duplicate new chat '%s'", chat)
 		return
 	}
 
-	o := chat_by_id(e.db, c.ID)
-	if o != nil {
-		log_info("Chat dropping duplicate new chat '%s'", c.ID)
+	name := e.get("name", "")
+	if !valid(name, "name") {
+		log_info("Chat dropping new chat with invalid name '%s'", name)
 		return
 	}
 
-	if !valid(c.Name, "name") {
-		log_info("Chat dropping new chat with invalid name '%s'", c.Name)
-		return
-	}
+	e.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, e.To, name, now())
 
-	e.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", c.ID, e.To, c.Name, now())
+	var ms []ChatMember
+	if e.decode(&ms) {
+		for _, cm := range ms {
+			if !valid(cm.Member, "entity") {
+				log_info("Chat dropping member with invalid ID '%s'", cm.Member)
+				continue
+			}
 
-	for _, cm := range *c.Members {
-		if !valid(cm.Member, "entity") {
-			log_info("Chat dropping member with invalid ID '%s'", cm.Member)
-			continue
+			if !valid(cm.Name, "name") {
+				log_info("Chat dropping member with invalid name '%s'", cm.Name)
+				continue
+			}
+
+			e.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, cm.Member, cm.Name)
 		}
-
-		if !valid(cm.Name, "name") {
-			log_info("Chat dropping member with invalid name '%s'", cm.Name)
-			continue
-		}
-
-		e.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", c.ID, cm.Member, cm.Name)
 	}
 
-	notification(e.user, "chat", "new", c.ID, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)
+	notification(e.user, "chat", "new", chat, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)
 }
 
 // View a chat

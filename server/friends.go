@@ -83,14 +83,14 @@ func friend_accept(u *User, db *DB, id string) {
 	if !db.exists("select id from friends where identity=? and id=?", u.Identity.ID, id) {
 		friend_create(u, db, id, fi.Name, "person", false)
 	}
-	event := Event{ID: uid(), From: u.Identity.ID, To: id, Service: "friends", Action: "accept"}
-	event.send()
+	ev := event(u.Identity.ID, id, "friends", "accept")
+	ev.send()
 	db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where identity=? and id=? and direction='to'", u.Identity.ID, id) {
-		event := Event{ID: uid(), From: u.Identity.ID, To: id, Service: "friends", Action: "cancel"}
-		event.send()
+		ev := event(u.Identity.ID, id, "friends", "cancel")
+		ev.send()
 		db.exec("delete from invites where identity=? and id=? and direction='to'", u.Identity.ID, id)
 	}
 
@@ -143,14 +143,15 @@ func friend_create(u *User, db *DB, id string, name string, class string, invite
 
 	if db.exists("select id from invites where identity=? and id=? and direction='from'", u.Identity.ID, id) {
 		// We have an existing invitation from them, so accept it automatically
-		event := Event{ID: uid(), From: u.Identity.ID, To: id, Service: "friends", Action: "accept"}
-		event.send()
+		ev := event(u.Identity.ID, id, "friends", "accept")
+		ev.send()
 		db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	} else if invite {
 		// Send invitation
-		event := Event{ID: uid(), From: u.Identity.ID, To: id, Service: "friends", Action: "invite", Content: u.Identity.Name}
-		event.send()
+		ev := event(u.Identity.ID, id, "friends", "invite")
+		ev.set("name", u.Identity.Name)
+		ev.send()
 		db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'to', ?, ? )", u.Identity.ID, id, name, now_string())
 	}
 
@@ -202,12 +203,19 @@ func friends_ignore(a *Action) {
 
 // Remote party sent us a new invitation
 func friends_invite_event(e *Event) {
+	name := e.get("name", "")
+	if !valid(name, "line") {
+		log_info("Friends dropping invitation with invalid name '%s'", name)
+		return
+	}
+
 	if e.db.exists("select id from invites where identity=? and id=? and direction='to'", e.To, e.From) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
+		//TODO Set name?
 		friend_accept(e.user, e.db, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
-		e.db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'from', ?, ? )", e.To, e.From, e.Content, now_string())
+		e.db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'from', ?, ? )", e.To, e.From, name, now_string())
 	}
 	broadcast(e.user, "friends", "invited", e.From, nil)
 }

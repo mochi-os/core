@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	websockets = map[int]map[string]*websocket.Conn{}
+	websockets        = map[int]map[string]*websocket.Conn{}
+	websocket_context = context.Background()
 )
 
 func websocket_connection(c *gin.Context) {
@@ -31,10 +32,9 @@ func websocket_connection(c *gin.Context) {
 		websockets[u.ID] = map[string]*websocket.Conn{}
 	}
 	websockets[u.ID][id] = ws
-	ctx := context.Background()
 
 	for {
-		t, j, err := ws.Read(ctx)
+		t, j, err := ws.Read(websocket_context)
 		if err != nil {
 			websocket_terminate(ws, u, id)
 			return
@@ -48,7 +48,6 @@ func websocket_connection(c *gin.Context) {
 }
 
 func websockets_send(u *User, app string, content string) {
-	ctx := context.Background()
 	j := ""
 
 	for id, ws := range websockets[u.ID] {
@@ -56,7 +55,7 @@ func websockets_send(u *User, app string, content string) {
 			j = json_encode(map[string]string{"app": app, "content": content})
 		}
 		log_debug("Websocket sending '%s'", j)
-		err := ws.Write(ctx, websocket.MessageText, []byte(j))
+		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
 			websocket_terminate(ws, u, id)
 		}

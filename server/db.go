@@ -75,11 +75,18 @@ func db_create() {
 
 	// Queued outbound events
 	queue := db_open("db/queue.db")
-	queue.exec("create table events ( id text not null primary key, method text not null, location text not null, event text not null, created integer not null )")
-	queue.exec("create index events_method_location on events( method, location )")
-	queue.exec("create index events_created on events( created )")
-	queue.exec("create table broadcast ( id text not null primary key, topic text not null, content text not null, created integer not null )")
-	queue.exec("create index broadcast_created on broadcast( created )")
+	queue.exec("create table queue_entities ( id text not null primary key, entity text not null, created integer not null )")
+	queue.exec("create index queue_entities_entity on queue_entities( entity )")
+	queue.exec("create index queue_entities_created on queue_entities( created )")
+
+	queue.exec("create table queue_peers ( id text not null primary key, peer text not null, created integer not null )")
+	queue.exec("create index queue_peers_peer on queue_peers( peer )")
+	queue.exec("create index queue_peers_created on queue_peers( created )")
+
+	queue.exec("create table queue_broadcasts ( id text not null primary key, topic text not null, created integer not null )")
+	queue.exec("create index queue_broadcasts_created on queue_broadcasts( created )")
+
+	queue.exec("create table queue_segments ( event text not null, rank integer not null, data blob not null default '', file text not null default '', primary key (event, rank ) )")
 
 	// Cache
 	cache := db_open("db/cache.db")

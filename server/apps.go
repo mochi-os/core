@@ -70,6 +70,14 @@ func (a *App) entity(field string) {
 	a.entity_field = field
 }
 
+func (a *App) event(event string, f func(*Event)) {
+	a.events[event] = f
+}
+
+func (a *App) event_broadcast(event string, f func(*Event)) {
+	a.events_broadcast[event] = f
+}
+
 func (a *App) path(path string, f func(*Action)) {
 	paths[path] = &Path{path: path, app: a, action: f}
 }

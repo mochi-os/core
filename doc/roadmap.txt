@@ -8,14 +8,9 @@
 	p2p
 		Pubsub updates
 	Protocol
-		CBOR
-		Structure data
 		Check sender owns user
 		Prevent replay attacks
-		Remove signing when unnecessary
 		Directory messages must be timestamped and signed
-	Large files
-		IPFS?
 
 0.2
 	Web interface

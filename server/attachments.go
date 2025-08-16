@@ -190,14 +190,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		ev := event(identity, at.Entity, "attachments", action)
 		ev.set("id", id)
 		ev.send()
-		log_debug("Sent request event for attachment")
 	}
 
 	// Wait for response
 	e := <-ar.response
-	log_debug("Got response to attachment request")
 	if e.get("status", "") != "200" {
-		log_debug("Received negative response for attachment '%s': %s", id, e.get("status", ""))
+		log_info("Received negative response for attachment '%s': %s", id, e.get("status", ""))
 		return
 	}
 
@@ -220,16 +218,13 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		f.Close()
 		return
 	}
-	log_debug("Writing attachment '%s/%s' to cache", cache_dir, path)
 	n, err := io.Copy(f, e.reader)
 	f.Close()
 	if err != nil {
 		log_warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
 		return
 	}
-	log_debug("Wrote cache file, length %d", n)
 
-	log_debug("Creating attachment cache database entry")
 	db_cache.exec("replace into attachments ( user, identity, entity, id, thumbnail, path, created ) values ( ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, thumbnail, path, now())
 
 	// Write data to browser from cache
@@ -239,15 +234,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		log_warn("Unable to read newly cached file '%s': %v", file, err)
 		return
 	}
-	log_debug("Writing attachment to browser")
 	a.web.DataFromReader(http.StatusOK, file_size(file), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
-	log_debug("Finished writing attachment to browser")
 }
 
 // Request to get a file
 func attachments_get_event(e *Event) {
 	id := e.get("id", "")
-	log_debug("Request for attachment '%s' '%s'", e.To, id)
 
 	if !valid(id, "id") {
 		log_info("Request for attachment with invalid ID '%s'", id)
@@ -283,7 +275,6 @@ func attachments_get_event(e *Event) {
 // Request to get a thumbnail
 func attachments_get_thumbnail_event(e *Event) {
 	id := e.get("id", "")
-	log_debug("Request for thumbnail '%s' '%s'", e.To, id)
 
 	if !valid(id, "id") {
 		log_info("Request for thumbnail with invalid ID '%s'", id)
@@ -330,7 +321,6 @@ func attachments_manager() {
 
 // Take an array of attachment objects, and save them locally
 func attachments_save(as *[]Attachment, u *User, entity string, format string, values ...any) {
-	log_debug("Attachments saving %#v", as)
 	if as == nil {
 		return
 	}
@@ -401,7 +391,6 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 	var results []Attachment
 
 	for i, f := range form.File[field] {
-		log_debug("Attachment uploading '%s'", f.Filename)
 		if !valid(f.Filename, "filename") {
 			log_info("Skipping uploaded file with invalid name '%s'", f.Filename)
 			continue
@@ -415,7 +404,6 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			path := fmt.Sprintf("attachments/%s/%s_%s", object, id, file_name_safe(f.Filename))
 			dir := fmt.Sprintf("%s/users/%d/", data_dir, a.user.ID)
 			file_mkdir(dir + "/attachments/" + object)
-			log_debug("Attachment writing file '%s'", dir+"/"+path)
 			a.web.SaveUploadedFile(f, dir+"/"+path)
 			size := file_size(dir + "/" + path)
 

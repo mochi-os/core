@@ -39,7 +39,7 @@ func directory_by_id(id string) *Directory {
 
 // Create a new directory entry for a local entity
 func directory_create(e *Entity) {
-	log_debug("Creating directory entry '%s' (%s)", e.ID, e.Name)
+	log_debug("Directory creating entry '%s' (%s)", e.ID, e.Name)
 	now := now()
 
 	db := db_open("db/directory.db")
@@ -58,7 +58,7 @@ func directory_download() {
 	time.Sleep(10 * time.Second)
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
-			log_debug("Requesting directory download from peer '%s'", p.ID)
+			log_debug("Directory requesting download from peer '%s'", p.ID)
 			ev := event("", p.ID, "directory", "download")
 			ev.send()
 		}
@@ -67,7 +67,7 @@ func directory_download() {
 
 // Reply to a directory download request
 func directory_download_event(e *Event) {
-	log_debug("Received directory download event '%#v'", e)
+	log_debug("Directory received download event '%#v'", e)
 	time.Sleep(time.Second)
 
 	var results []Directory
@@ -89,9 +89,8 @@ func directory_publish(e *Entity, allow_queue bool) {
 }
 
 // Received a directory publish event from another server
-// TODO Check timestamp
 func directory_publish_event(e *Event) {
-	log_debug("Received directory publish event '%#v'", e)
+	log_debug("Directory received publish event '%#v'", e)
 	now := now()
 
 	var d Directory
@@ -108,12 +107,12 @@ func directory_publish_event(e *Event) {
 			}
 		}
 		if !found {
-			log_info("Dropping anonymous directory event from untrusted peer")
+			log_info("Directory dropping anonymous event from untrusted peer")
 			return
 		}
 
 	} else if e.From != d.ID {
-		log_info("Dropping directory event from incorrect sender: '%s'!='%s'", d.ID, e.From)
+		log_info("Directory dropping event from incorrect sender: '%s'!='%s'", d.ID, e.From)
 		return
 	}
 
@@ -132,7 +131,7 @@ func directory_request(id string) {
 
 // Reply to a directory request if we have the requested entity
 func directory_request_event(e *Event) {
-	log_debug("Received directory request event '%#v'", e)
+	log_debug("Directory received request event '%#v'", e)
 
 	var r Entity
 	db := db_open("db/users.db")

@@ -10,27 +10,24 @@ import (
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	"io"
 	"os"
+	"slices"
 )
 
 type Event struct {
-	ID             string `cbor:"id,omitempty"`
-	From           string `cbor:"from,omitempty"`
-	To             string `cbor:"to,omitempty"`
-	Service        string `cbor:"service,omitempty"`
-	Action         string `cbor:"action,omitempty"`
-	content        map[string]string
-	segments       []*EventSegment
+	ID          string `cbor:"id,omitempty"`
+	From        string `cbor:"from,omitempty"`
+	To          string `cbor:"to,omitempty"`
+	Service     string `cbor:"service,omitempty"`
+	Action      string `cbor:"action,omitempty"`
+	content     map[string]string
+	data        []byte
+	file        string
 	p2p_peer    string
 	p2p_address string
-	user           *User
-	db             *DB
-	reader         io.Reader
-	decoder        *cbor.Decoder
-}
-
-type EventSegment struct {
-	file string
-	data []byte
+	user        *User
+	db          *DB
+	reader      io.Reader
+	decoder     *cbor.Decoder
 }
 
 // Create a new event
@@ -123,9 +120,7 @@ func event_receive_stream(s p2p_network.Stream) {
 
 // Add a CBOR segment to an outgoing event
 func (e *Event) add(v any) {
-	var s EventSegment
-	s.data = cbor_encode(v)
-	e.segments = append(e.segments, &s)
+	e.data = append(e.data, cbor_encode(v)...)
 }
 
 // Decode the next segment from a received event
@@ -136,12 +131,6 @@ func (e *Event) decode(v any) bool {
 		return false
 	}
 	return true
-}
-
-// Add a file segment to an outgoing event
-func (e *Event) file(file string) {
-	log_debug("Adding file segment for '%s'", file)
-	e.segments = append(e.segments, &EventSegment{file: file})
 }
 
 // Get a field from the content segment of a received event
@@ -155,20 +144,9 @@ func (e *Event) get(field string, def string) string {
 
 // Publish an event to a pubsub
 func (e *Event) publish(topic string, allow_queue bool) {
-	headers := cbor_encode(&e)
-	data := headers
-	signature := cbor_encode(e.signature())
-	data = append(data, signature...)
-	content := cbor_encode(e.content)
-	data = append(data, content...)
-
-	for _, es := range e.segments {
-		if es.file == "" {
-			data = append(data, es.data...)
-		} else {
-			data = append(data, cbor_encode(file_read(es.file))...)
-		}
-	}
+	data := cbor_encode(&e)
+	data = append(data, cbor_encode(e.signature())...)
+	data = append(data, cbor_encode(e.content)...)
 
 	if peers_sufficient() {
 		p2p_topics[topic].Publish(p2p_context, data)
@@ -176,17 +154,7 @@ func (e *Event) publish(topic string, allow_queue bool) {
 	} else if allow_queue {
 		log_debug("Unable to send broadcast event, adding to queue")
 		db := db_open("db/queue.db")
-		db.exec("replace into queue_broadcasts ( id, topic, created ) values ( ?, ?, ? )", e.ID, topic, now())
-
-		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 1, ? )", e.ID, headers)
-		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 2, ? )", e.ID, signature)
-		db.exec("replace into queue_segments( event, rank, data ) values ( ?, 3, ? )", e.ID, content)
-
-		for i, es := range e.segments {
-			db.exec("replace into queue_segments( event, rank, data, file ) values ( ?, ?, ?, ? )", e.ID, i+4, es.data, es.file)
-		}
-
-		log_debug("Event added to queue")
+		db.exec("replace into queue_broadcasts ( id, topic, data, created ) values ( ?, ?, ?, ? )", e.ID, topic, data, now())
 	}
 }
 
@@ -273,34 +241,29 @@ func (e *Event) send() {
 		}
 	}
 
-	if !failed {
-		for _, es := range e.segments {
-			if es.file == "" {
-				log_debug("    Sending segment to peer")
-				_, err := s.Write(es.data)
-				if err != nil {
-					log_debug("Error sending segment: %v", err)
-					failed = true
-					break
-				}
-				log_debug("    Finished sending segment")
+	if len(e.data) > 0 && !failed {
+		_, err := s.Write(e.data)
+		if err != nil {
+			log_debug("Error sending data segment: %v", err)
+			failed = true
+		}
+	}
 
-			} else {
-				log_debug("    Sending file segment to peer: %s", es.file)
-				f, err := os.Open(es.file)
-				if err != nil {
-					log_warn("Unable to read file '%s', skipping file segment", es.file)
-					continue
-				}
-				defer f.Close()
-				n, err := io.Copy(s, f)
-				if err != nil {
-					log_debug("Error sending file segment: %v", err)
-					failed = true
-					break
-				}
-				log_debug("    Finished sending file segment, length %d", n)
+	if e.file != "" && !failed {
+		log_debug("Sending file segment to peer: %s", e.file)
+		f, err := os.Open(e.file)
+		if err != nil {
+			log_warn("Unable to read file '%s'", e.file)
+			failed = true
+		}
+		defer f.Close()
+		if !failed {
+			n, err := io.Copy(s, f)
+			if err != nil {
+				log_debug("Error sending file segment: %v", err)
+				failed = true
 			}
+			log_debug("Finished sending file segment, length %d", n)
 		}
 	}
 
@@ -314,22 +277,13 @@ func (e *Event) send() {
 	}
 
 	log_debug("Unable to send event to '%s', adding to queue", e.To)
+	data := slices.Concat(headers, signature, content, e.data)
 	db := db_open("db/queue.db")
 	if peer == "" {
-		db.exec("replace into queue_entities ( id, entity, created ) values ( ?, ?, ? )", e.ID, e.To, now())
+		db.exec("replace into queue_entities ( id, entity, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, e.To, data, e.file, now())
 	} else {
-		db.exec("replace into queue_peers ( id, peer, created ) values ( ?, ?, ? )", e.ID, peer, now())
+		db.exec("replace into queue_peers ( id, peer, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, peer, data, e.file, now())
 	}
-
-	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 1, ? )", e.ID, headers)
-	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 2, ? )", e.ID, signature)
-	db.exec("replace into queue_segments( event, rank, data ) values ( ?, 3, ? )", e.ID, content)
-
-	for i, es := range e.segments {
-		db.exec("replace into queue_segments( event, rank, data, file ) values ( ?, ?, ?, ? )", e.ID, i+4, es.data, es.file)
-	}
-
-	log_debug("Event added to queue")
 }
 
 // Set the content segment of an outgoing event

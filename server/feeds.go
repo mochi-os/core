@@ -259,8 +259,8 @@ func feeds_comment_create_event(e *Event) {
 
 	if !valid(c.ID, "id") {
 		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
-        return
-    }
+		return
+	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
 		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
 		return
@@ -302,8 +302,8 @@ func feeds_comment_submit_event(e *Event) {
 
 	if !valid(c.ID, "id") {
 		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
-        return
-    }
+		return
+	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
 		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
 		return
@@ -584,13 +584,13 @@ func feeds_post_create_event(e *Event) {
 	log_debug("Feed received post %#v", p)
 
 	if !valid(p.ID, "id") {
-        log_info("Feed dropping post with invalid ID '%s'", p.ID)
-        return
-    }
-    if e.db.exists("select id from posts where id=?", p.ID) {
-        log_info("Feed dropping post with duplicate ID '%s'", p.ID)
-        return
-    }
+		log_info("Feed dropping post with invalid ID '%s'", p.ID)
+		return
+	}
+	if e.db.exists("select id from posts where id=?", p.ID) {
+		log_info("Feed dropping post with duplicate ID '%s'", p.ID)
+		return
+	}
 
 	if !valid(p.Body, "text") {
 		log_info("Feed dropping post with invalid body '%s'", p.Body)

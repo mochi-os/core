@@ -4,8 +4,7 @@
 package main
 
 import (
-	"bufio"
-	cbor "github.com/fxamacker/cbor/v2"
+	"io"
 	"os"
 	"time"
 )
@@ -13,27 +12,24 @@ import (
 type QueueBroadcast struct {
 	ID      string
 	Topic   string
-	Content string
+	Data    []byte
 	Created int64
 }
 
 type QueueEntity struct {
 	ID      string
 	Entity  string
+	Data    []byte
+	File    string
 	Created int64
 }
 
 type QueuePeer struct {
 	ID      string
 	Peer    string
+	Data    []byte
+	File    string
 	Created int64
-}
-
-type QueueSegment struct {
-	Event string
-	Rank  int
-	Data  []byte
-	File  string
 }
 
 const (
@@ -50,9 +46,8 @@ func queue_check_entity(entity string) {
 		peer := entity_peer(q.Entity)
 		if peer != "" {
 			log_debug("Entity '%s' is at peer '%s'", q.ID, peer)
-			if queue_event_send(db, peer, q.ID) {
+			if queue_event_send(db, peer, &q.Data, q.File) {
 				log_debug("Removing sent event from queue")
-				db.exec("delete from queue_segments where event=?", q.ID)
 				db.exec("delete from queue_entities where id=?", q.ID)
 			}
 		}
@@ -66,54 +61,47 @@ func queue_check_peer(peer string) {
 	db.scans(&qs, "select * from queue_peers where peer=?", peer)
 	for _, q := range qs {
 		log_debug("Trying to send queued event '%s' to peer '%s': %s", q.ID, q.Peer)
-		if queue_event_send(db, peer, q.ID) {
+		if queue_event_send(db, peer, &q.Data, q.File) {
 			log_debug("Removing sent event from queue")
-			db.exec("delete from queue_segments where event=?", q.ID)
 			db.exec("delete from queue_peers where id=?", q.ID)
 		}
 	}
 }
 
 // Send a queue event
-func queue_event_send(db *DB, peer string, event string) bool {
+func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 	s := peer_stream(peer)
 	if s == nil {
 		log_debug("Unable to create stream to peer, keeping in queue")
 		return false
 	}
 
-	var qss []QueueSegment
-	db.scans(&qss, "select * from queue_segments where event=? order by rank", event)
-
-	for _, qs := range qss {
-		if qs.File == "" {
-			log_debug("    Sending encoded segment to peer")
-			_, err := s.Write(qs.Data)
-			if err != nil {
-				log_debug("Error sending segment: %v", err)
-				return false
-			}
-			log_debug("    Finished sending segment")
-
-		} else {
-			log_debug("    Sending file segment to peer: %s", qs.File)
-			f, err := os.Open(qs.File)
-			if err != nil {
-				log_warn("Unable to read file '%s', skipping file segment", qs.File)
-				continue
-			}
-			defer f.Close()
-
-			err = cbor.NewEncoder(s).Encode(bufio.NewReader(f))
-			if err != nil {
-				log_debug("Error sending file segment: %v", err)
-				return false
-			}
-			log_debug("    Finished sending file segment")
+	if len(*data) > 0 {
+		log_debug("Sending combined data segment")
+		_, err := s.Write(*data)
+		if err != nil {
+			log_debug("Error sending combined data segment: %v", err)
+			return false
 		}
 	}
 
-	s.CloseWrite()
+	if file != "" {
+		log_debug("Sending file segment: %s", file)
+		f, err := os.Open(file)
+		if err != nil {
+			log_warn("Unable to read file '%s'", file)
+			return false
+		}
+		defer f.Close()
+		n, err := io.Copy(s, f)
+		if err != nil {
+			log_debug("Error sending file segment: %v", err)
+			return false
+		}
+		log_debug("Finished sending file segment, length %d", n)
+	}
+
+	s.Close()
 	log_debug("Queued event sent")
 	return true
 }
@@ -141,18 +129,7 @@ func queue_manager() {
 			db.scans(&qbs, "select * from queue_broadcasts")
 			for _, qb := range qbs {
 				log_debug("Queue manager sending broadcast event '%s'", qb.ID)
-				var data []byte
-				var qss []QueueSegment
-				db.scans(&qss, "select * from queue_segments where event=? order by rank", qb.ID)
-				for _, qs := range qss {
-					if qs.File == "" {
-						data = append(data, qs.Data...)
-					} else {
-						data = append(data, cbor_encode(file_read(qs.File))...)
-					}
-				}
-
-				p2p_topics[qb.Topic].Publish(p2p_context, data)
+				p2p_topics[qb.Topic].Publish(p2p_context, qb.Data)
 				db.exec("delete from broadcast where id=?", qb.ID)
 			}
 		}

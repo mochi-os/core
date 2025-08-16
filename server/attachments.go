@@ -263,7 +263,7 @@ func attachments_get_event(e *Event) {
 		if !file_exists(data_dir + "/" + file) {
 			ev := event(e.To, e.From, "attachments", "send")
 			ev.set("status", "200", "id", id)
-			ev.file(file)
+			ev.file = file
 			ev.send()
 			return
 
@@ -299,7 +299,7 @@ func attachments_get_thumbnail_event(e *Event) {
 		if err == nil {
 			ev := event(e.To, e.From, "attachments", "send/thumbnail")
 			ev.set("status", "200", "id", id)
-			ev.file(path)
+			ev.file = path
 			ev.send()
 			return
 		}

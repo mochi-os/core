@@ -7,7 +7,7 @@ import (
 	"bufio"
 	"crypto/ed25519"
 	cbor "github.com/fxamacker/cbor/v2"
-	libp2p_network "github.com/libp2p/go-libp2p/core/network"
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	"io"
 	"os"
 )
@@ -20,10 +20,11 @@ type Event struct {
 	Action         string `cbor:"action,omitempty"`
 	content        map[string]string
 	segments       []*EventSegment
-	libp2p_peer    string
-	libp2p_address string
+	p2p_peer    string
+	p2p_address string
 	user           *User
 	db             *DB
+	reader         io.Reader
 	decoder        *cbor.Decoder
 }
 
@@ -48,9 +49,12 @@ func event_receive_reader(r io.Reader, peer string, address string) {
 		log_info("Dropping event with bad headers: %v", err)
 		return
 	}
-	log_debug("Received event from peer '%s': %#v", peer, e)
-	e.libp2p_peer = peer
-	e.libp2p_address = address
+
+	log_debug("Received event from peer '%s', from='%s', to='%s', service='%s', action='%s'", peer, e.From, e.To, e.Service, e.Action)
+	e.decoder = d
+	e.reader = r
+	e.p2p_peer = peer
+	e.p2p_address = address
 
 	if !valid(e.ID, "id") {
 		log_info("Dropping event with invalid id '%s'", e.ID)
@@ -101,26 +105,23 @@ func event_receive_reader(r io.Reader, peer string, address string) {
 		log_info("Dropping event with bad content segment: %v", err)
 		return
 	}
-	log_debug("Received event content segment %v", e.content)
-
-	// Save decoder in case the app wants to read any more segments
-	e.decoder = d
+	log_debug("Received event content segment: %#v", e.content)
 
 	// Route the event to app
 	e.route()
 }
 
-// Receive event from libp2p stream
-func event_receive_stream(s libp2p_network.Stream) {
+// Receive event from p2p stream
+func event_receive_stream(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
-	log_debug("libp2p message from '%s' at '%s'", peer, address)
+	log_debug("p2p message from '%s' at '%s'", peer, address)
 
 	event_receive_reader(bufio.NewReader(s), peer, address)
 	peer_update(peer, address)
 }
 
-// Add a segment to an outgoing event
+// Add a CBOR segment to an outgoing event
 func (e *Event) add(v any) {
 	var s EventSegment
 	s.data = cbor_encode(v)
@@ -139,6 +140,7 @@ func (e *Event) decode(v any) bool {
 
 // Add a file segment to an outgoing event
 func (e *Event) file(file string) {
+	log_debug("Adding file segment for '%s'", file)
 	e.segments = append(e.segments, &EventSegment{file: file})
 }
 
@@ -164,12 +166,12 @@ func (e *Event) publish(topic string, allow_queue bool) {
 		if es.file == "" {
 			data = append(data, es.data...)
 		} else {
-			data = append(data, cbor_encode(file_read(data_dir+"/"+es.file))...)
+			data = append(data, cbor_encode(file_read(es.file))...)
 		}
 	}
 
 	if peers_sufficient() {
-		libp2p_topics[topic].Publish(libp2p_context, data)
+		p2p_topics[topic].Publish(p2p_context, data)
 
 	} else if allow_queue {
 		log_debug("Unable to send broadcast event, adding to queue")
@@ -234,17 +236,14 @@ func (e *Event) send() {
 	}
 
 	peer := entity_peer(e.To)
-	log_debug("Sending event '%#v' to '%s'", e, peer)
+	log_debug("Sending event to peer '%s', from='%s', to='%s', service='%s', action='%s'", peer, e.From, e.To, e.Service, e.Action)
 	failed := false
 
 	//TODO Test sending to local entity
 	s := peer_stream(peer)
 	if s == nil {
+		log_debug("Unable to open stream to peer")
 		failed = true
-	}
-
-	if !failed {
-		log_debug("Sending event to peer '%s'", peer)
 	}
 
 	headers := cbor_encode(e)
@@ -288,20 +287,19 @@ func (e *Event) send() {
 
 			} else {
 				log_debug("    Sending file segment to peer: %s", es.file)
-				f, err := os.Open(data_dir + "/" + es.file)
+				f, err := os.Open(es.file)
 				if err != nil {
-					log_warn("Unable to read file '%s/%s', skipping file segment", data_dir, es.file)
+					log_warn("Unable to read file '%s', skipping file segment", es.file)
 					continue
 				}
 				defer f.Close()
-
-				err = cbor.NewEncoder(s).Encode(bufio.NewReader(f))
+				n, err := io.Copy(s, f)
 				if err != nil {
 					log_debug("Error sending file segment: %v", err)
 					failed = true
 					break
 				}
-				log_debug("    Finished sending file segment")
+				log_debug("    Finished sending file segment, length %d", n)
 			}
 		}
 	}

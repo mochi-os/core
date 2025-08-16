@@ -18,43 +18,43 @@ type FeedSubscriber struct {
 	Feed     string
 	ID       string
 	Name     string
-	FeedName string `json:"-"`
+	FeedName string `cbor:"-"`
 }
 
 type FeedPost struct {
 	ID            string
-	Feed          string `json:"-"`
-	FeedName      string `json:"-"`
+	Feed          string `cbor:"-"`
+	FeedName      string `cbor:"-"`
 	Created       int64
-	CreatedString string `json:"-"`
+	CreatedString string `cbor:"-"`
 	Updated       int64
 	Body          string
-	MyReaction    string          `json:"-"`
-	Attachments   *[]Attachment   `json:",omitempty"`
-	Reactions     *[]FeedReaction `json:"-"`
-	Comments      *[]FeedComment  `json:"-"`
+	MyReaction    string          `cbor:"-"`
+	Attachments   *[]Attachment   `cbor:",omitempty"`
+	Reactions     *[]FeedReaction `cbor:"-"`
+	Comments      *[]FeedComment  `cbor:"-"`
 }
 
 type FeedComment struct {
 	ID            string
-	Feed          string `json:"-"`
+	Feed          string `cbor:"-"`
 	Post          string
 	Parent        string
 	Created       int64
-	CreatedString string `json:"-"`
+	CreatedString string `cbor:"-"`
 	Author        string
 	Name          string
 	Body          string
-	MyReaction    string          `json:"-"`
-	Reactions     *[]FeedReaction `json:"-"`
-	Children      *[]FeedComment  `json:"-"`
-	User          int             `json:"-"`
+	MyReaction    string          `cbor:"-"`
+	Reactions     *[]FeedReaction `cbor:"-"`
+	Children      *[]FeedComment  `cbor:"-"`
+	User          int             `cbor:"-"`
 }
 
 type FeedReaction struct {
 	Feed       string
 	Post       string
-	Comment    string `json:",omitempty"`
+	Comment    string `cbor:",omitempty"`
 	Subscriber string
 	Name       string
 	Reaction   string
@@ -257,6 +257,15 @@ func feeds_comment_create_event(e *Event) {
 		return
 	}
 
+	if !valid(c.ID, "id") {
+		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
+        return
+    }
+	if e.db.exists("select id from comments where id=?", c.ID) {
+		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
+		return
+	}
+
 	if !valid(c.Author, "entity") {
 		log_info("Feed dropping comment with invalid author '%s'", c.Author)
 		return
@@ -272,23 +281,13 @@ func feeds_comment_create_event(e *Event) {
 		return
 	}
 
-	if e.db.exists("select id from comments where id=?", e.ID) {
-		log_info("Feed dropping comment with duplicate ID '%s'", e.ID)
-		return
-	}
-
-	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
+	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 }
 
 // Received a feed comment from subscriber
 func feeds_comment_submit_event(e *Event) {
-	if e.db.exists("select id from comments where id=?", e.ID) {
-		log_info("Feed dropping comment with duplicate ID '%s'", e.ID)
-		return
-	}
-
 	f := feed_by_id(e.user, e.db, e.To)
 	if f == nil {
 		log_info("Feed dropping comment to unknown feed")
@@ -298,6 +297,15 @@ func feeds_comment_submit_event(e *Event) {
 	var c FeedComment
 	if !e.decode(&c) {
 		log_info("Feed dropping comment with invalid data")
+		return
+	}
+
+	if !valid(c.ID, "id") {
+		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
+        return
+    }
+	if e.db.exists("select id from comments where id=?", c.ID) {
+		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
@@ -573,19 +581,24 @@ func feeds_post_create_event(e *Event) {
 		log_info("Feed dropping post with invalid data")
 		return
 	}
+	log_debug("Feed received post %#v", p)
+
+	if !valid(p.ID, "id") {
+        log_info("Feed dropping post with invalid ID '%s'", p.ID)
+        return
+    }
+    if e.db.exists("select id from posts where id=?", p.ID) {
+        log_info("Feed dropping post with duplicate ID '%s'", p.ID)
+        return
+    }
 
 	if !valid(p.Body, "text") {
 		log_info("Feed dropping post with invalid body '%s'", p.Body)
 		return
 	}
 
-	if e.db.exists("select id from posts where id=?", e.ID) {
-		log_info("Feed dropping post with duplicate ID '%s'", e.ID)
-		return
-	}
-
-	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Body)
-	attachments_save(p.Attachments, e.user, f.ID, "feeds/%s/%s", f.ID, e.ID)
+	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", p.ID, f.ID, p.Created, p.Created, p.Body)
+	attachments_save(p.Attachments, e.user, f.ID, "feeds/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
 }

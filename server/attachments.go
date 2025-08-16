@@ -13,16 +13,16 @@ import (
 )
 
 type Attachment struct {
-	Entity  string `json:",omitempty"`
-	ID      string `json:"id"`
-	Object  string `json:",omitempty"`
-	Rank    int    `json:",omitempty"`
-	Name    string `json:",omitempty"`
-	Path    string `json:"-"`
-	Size    int64  `json:",omitempty"`
-	Created int64  `json:"-"`
-	Data    []byte `json:",omitempty"`
-	Image   bool   `json:",omitempty"`
+	Entity  string `cbor:"entity,omitempty"`
+	ID      string `cbor:"id"`
+	Object  string `cbor:"object,omitempty"`
+	Rank    int    `cbor:"rank,omitempty"`
+	Name    string `cbor:"name,omitempty"`
+	Path    string `cbor:"-"`
+	Size    int64  `cbor:"size,omitempty"`
+	Created int64  `cbor:"-"`
+	Image   bool   `cbor:"image,omitempty"`
+	Data    []byte `cbor:"-"`
 }
 
 type AttachmentRequest struct {
@@ -155,8 +155,8 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	}
 
 	// Check cache
-	var c CacheAttachment
 	db_cache := db_open("db/cache.db")
+	var c CacheAttachment
 	if db_cache.scan(&c, "select * from attachments where user=? and identity=? and entity=? and id=? and thumbnail=?", user, identity, at.Entity, id, thumbnail) {
 		file := cache_dir + "/" + c.Path
 		f, err := os.Open(file)
@@ -167,7 +167,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		}
 	}
 
-	// Check if we already have a request in progress
+	// Check if we already have a request in progress, and if not add to list
 	found := false
 	attachments_lock.Lock()
 	for _, ar := range attachments_requested {
@@ -176,6 +176,8 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			break
 		}
 	}
+	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan *Event), time: now()}
+	attachments_requested = append(attachments_requested, &ar)
 	attachments_lock.Unlock()
 
 	// Send request to entity storing file
@@ -188,16 +190,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		ev := event(identity, at.Entity, "attachments", action)
 		ev.set("id", id)
 		ev.send()
+		log_debug("Sent request event for attachment")
 	}
-
-	// Add to list of requested files
-	attachments_lock.Lock()
-	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan *Event), time: now()}
-	attachments_requested = append(attachments_requested, &ar)
-	attachments_lock.Unlock()
 
 	// Wait for response
 	e := <-ar.response
+	log_debug("Got response to attachment request")
 	if e.get("status", "") != "200" {
 		log_debug("Received negative response for attachment '%s': %s", id, e.get("status", ""))
 		return
@@ -222,13 +220,16 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		f.Close()
 		return
 	}
-	_, err = io.Copy(f, e.decoder.Buffered())
+	log_debug("Writing attachment '%s/%s' to cache", cache_dir, path)
+	n, err := io.Copy(f, e.reader)
 	f.Close()
 	if err != nil {
 		log_warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
 		return
 	}
+	log_debug("Wrote cache file, length %d", n)
 
+	log_debug("Creating attachment cache database entry")
 	db_cache.exec("replace into attachments ( user, identity, entity, id, thumbnail, path, created ) values ( ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, thumbnail, path, now())
 
 	// Write data to browser from cache
@@ -238,7 +239,9 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		log_warn("Unable to read newly cached file '%s': %v", file, err)
 		return
 	}
+	log_debug("Writing attachment to browser")
 	a.web.DataFromReader(http.StatusOK, file_size(file), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
+	log_debug("Finished writing attachment to browser")
 }
 
 // Request to get a file
@@ -256,7 +259,7 @@ func attachments_get_event(e *Event) {
 
 	var at Attachment
 	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, id) {
-		file := fmt.Sprintf("users/%d/%s", e.user.ID, at.Path)
+		file := fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path)
 		if !file_exists(data_dir + "/" + file) {
 			ev := event(e.To, e.From, "attachments", "send")
 			ev.set("status", "200", "id", id)
@@ -327,6 +330,7 @@ func attachments_manager() {
 
 // Take an array of attachment objects, and save them locally
 func attachments_save(as *[]Attachment, u *User, entity string, format string, values ...any) {
+	log_debug("Attachments saving %#v", as)
 	if as == nil {
 		return
 	}

@@ -4,8 +4,8 @@
 package main
 
 type App struct {
-	id               string `json:"id"`
-	name             string `json:"name"`
+	id               string
+	name             string
 	actions          map[string]func(*Action)
 	db_file          string
 	db_create        func(*DB)

@@ -18,15 +18,15 @@ type ForumMember struct {
 	ID        string
 	Name      string
 	Role      string
-	ForumName string `json:"-"`
+	ForumName string `cbor:"-"`
 }
 
 type ForumPost struct {
 	ID            string
-	Forum         string `json:"-"`
-	ForumName     string `json:"-"`
+	Forum         string `cbor:"-"`
+	ForumName     string `cbor:"-"`
 	Created       int64
-	CreatedString string `json:"-"`
+	CreatedString string `cbor:"-"`
 	Updated       int64
 	Author        string
 	Name          string
@@ -35,24 +35,24 @@ type ForumPost struct {
 	Comments      int
 	Up            int
 	Down          int
-	Attachments   *[]Attachment `json:",omitempty"`
+	Attachments   *[]Attachment `cbor:",omitempty"`
 }
 
 type ForumComment struct {
 	ID            string
-	Forum         string `json:"-"`
+	Forum         string `cbor:"-"`
 	Post          string
 	Parent        string
 	Created       int64
-	CreatedString string `json:"-"`
+	CreatedString string `cbor:"-"`
 	Author        string
 	Name          string
 	Body          string
 	Up            int
 	Down          int
-	Children      *[]ForumComment `json:"-"`
-	RoleVoter     bool            `json:"-"`
-	RoleCommenter bool            `json:"-"`
+	Children      *[]ForumComment `cbor:"-"`
+	RoleVoter     bool            `cbor:"-"`
+	RoleCommenter bool            `cbor:"-"`
 }
 
 type ForumVote struct {
@@ -250,6 +250,15 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
+	if !valid(c.ID, "id") {
+		log_info("Forum dropping comment with invalid ID '%s'", c.ID)
+        return
+    }
+	if e.db.exists("select id from comments where id=?", c.ID) {
+		log_info("Forum dropping comment with duplicate ID '%s'", c.ID)
+		return
+	}
+
 	if !valid(c.Author, "entity") {
 		log_info("Forum dropping comment with invalid author '%s'", c.Author)
 		return
@@ -265,12 +274,7 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
-	if e.db.exists("select id from comments where id=?", e.ID) {
-		log_info("Forum dropping comment with duplicate ID '%s'", e.ID)
-		return
-	}
-
-	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
+	e.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 }
@@ -278,11 +282,6 @@ func forums_comment_create_event(e *Event) {
 // Received a forum comment from member
 func forums_comment_submit_event(e *Event) {
 	log_debug("Forum receieved comment submit event '%#v'", e)
-
-	if e.db.exists("select id from comments where id=?", e.ID) {
-		log_info("Forum dropping comment with duplicate ID '%s'", e.ID)
-		return
-	}
 
 	f := forum_by_id(e.user, e.db, e.To)
 	if f == nil {
@@ -293,6 +292,15 @@ func forums_comment_submit_event(e *Event) {
 	var c ForumComment
 	if !e.decode(&c) {
 		log_info("Forum dropping comment with invalid data")
+		return
+	}
+
+	if !valid(c.ID, "id") {
+		log_info("Forum dropping comment with invalid ID '%s'", c.ID)
+        return
+    }
+	if e.db.exists("select id from comments where id=?", c.ID) {
+		log_info("Forum dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
@@ -700,6 +708,15 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
+	if !valid(p.ID, "id") {
+		log_info("Forum dropping post with invalid ID '%s'", p.ID)
+        return
+    }
+	if e.db.exists("select id from comments where id=?", p.ID) {
+		log_info("Forum dropping post with duplicate ID '%s'", p.ID)
+		return
+	}
+
 	if !valid(p.Author, "entity") {
 		log_info("Forum dropping post with invalid author '%s'", p.Author)
 		return
@@ -720,13 +737,8 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
-	if e.db.exists("select id from comments where id=?", e.ID) {
-		log_info("Forum dropping post with duplicate ID '%s'", e.ID)
-		return
-	}
-
-	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down)
-	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, e.ID)
+	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down)
+	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 }
@@ -750,11 +762,6 @@ func forums_post_new(a *Action) {
 
 // Received a forum post from a member
 func forums_post_submit_event(e *Event) {
-	if e.db.exists("select id from posts where id=?", e.ID) {
-		log_info("Forum dropping post with duplicate ID '%s'", e.ID)
-		return
-	}
-
 	f := forum_by_id(e.user, e.db, e.To)
 	if f == nil {
 		log_info("Forum dropping post to unknown forum")
@@ -764,6 +771,15 @@ func forums_post_submit_event(e *Event) {
 	var p ForumPost
 	if !e.decode(&p) {
 		log_info("Forum dropping post with invalid data")
+		return
+	}
+
+	if !valid(p.ID, "id") {
+		log_info("Forum dropping post with invalid ID '%s'", p.ID)
+        return
+    }
+	if e.db.exists("select id from posts where id=?", p.ID) {
+		log_info("Forum dropping post with duplicate ID '%s'", p.ID)
 		return
 	}
 
@@ -787,8 +803,8 @@ func forums_post_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body)
-	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, e.ID)
+	e.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Created, p.Created, p.Author, p.Name, p.Title, p.Body)
+	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
 

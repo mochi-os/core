@@ -4,17 +4,17 @@
 package main
 
 import (
-	libp2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
-	libp2p_network "github.com/libp2p/go-libp2p/core/network"
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	"sync"
 	"time"
 )
 
 type Peer struct {
-	ID        string           `json:"id"`
-	Address   string           `json:"-"`
-	Updated   int64            `json:"updated,omitempty"`
-	addresses map[string]int64 `json:"-"`
+	ID        string           `cbor:"id"`
+	Address   string           `cbor:"-"`
+	Updated   int64            `cbor:"updated,omitempty"`
+	addresses map[string]int64 `cbor:"-"`
 	connected bool
 }
 
@@ -71,7 +71,6 @@ func peer_by_id(id string) *Peer {
 	p, found := peers[id]
 	peers_lock.Unlock()
 	if found {
-		log_debug("Already have peer '%s' at %v", id, p.addresses)
 		return &p
 	}
 
@@ -100,7 +99,7 @@ func peer_by_id(id string) *Peer {
 }
 
 // Publish our own information to the pubsub regularly or when requested
-func peers_publish(t *libp2p_pubsub.Topic) {
+func peers_publish(t *p2p_pubsub.Topic) {
 	for {
 		after := time.After(time.Hour)
 		select {
@@ -117,22 +116,22 @@ func peers_publish(t *libp2p_pubsub.Topic) {
 
 // Received a peer publish event from another server
 func peer_publish_event(e *Event) {
-	//TODO Enable once libp2p_address is set
-	//log_debug("Adding peer '%s' due to publish event from '%s'", e.libp2p_peer, e.libp2p_address)
-	//peer_update(e.libp2p_peer, e.libp2p_address)
+	//TODO Enable once p2p_address is set
+	//log_debug("Adding peer '%s' due to publish event from '%s'", e.p2p_peer, e.p2p_address)
+	//peer_update(e.p2p_peer, e.p2p_address)
 }
 
 // Reply to a peer request if for us
 func peer_request_event(e *Event) {
 	log_debug("Received peer request event '%#v'", e)
-	if e.get("id", "") == libp2p_id {
+	if e.get("id", "") == p2p_id {
 		log_debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}
 }
 
 // Get a stream to a peer, connecting if necessary
-func peer_stream(id string) libp2p_network.Stream {
+func peer_stream(id string) p2p_network.Stream {
 	if id == "" {
 		return nil
 	}
@@ -147,13 +146,17 @@ func peer_stream(id string) libp2p_network.Stream {
 	}
 
 	if !p.connected {
-		p.connected = libp2p_connect(id, p.addresses_as_slice()...)
+		p.connected = p2p_connect(id, p.addresses_as_slice()...)
+		peers_lock.Lock()
+		peers[id] = *p
+		peers_lock.Unlock()
+
 		if !p.connected {
 			return nil
 		}
 	}
 
-	return libp2p_stream(id)
+	return p2p_stream(id)
 }
 
 // Check whether we have enough peers

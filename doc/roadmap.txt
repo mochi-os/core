@@ -5,7 +5,7 @@
 		Attachments
 		Cache
 
-	libp2p
+	p2p
 		Pubsub updates
 	Protocol
 		CBOR

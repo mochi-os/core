@@ -43,7 +43,7 @@ func directory_create(e *Entity) {
 	now := now()
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, libp2p_id, e.Data, now, now)
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, p2p_id, e.Data, now, now)
 }
 
 // Delete a directory entry
@@ -53,11 +53,11 @@ func directory_delete(id string) {
 }
 
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
-// TODO Test
+// TODO Test directory download
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	for _, p := range peers_bootstrap {
-		if p.ID != libp2p_id {
+		if p.ID != p2p_id {
 			log_debug("Requesting directory download from peer '%s'", p.ID)
 			ev := event("", p.ID, "directory", "download")
 			ev.send()
@@ -84,7 +84,7 @@ func directory_download_event(e *Event) {
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
 	ev := event(e.ID, "", "", "publish")
-	ev.add(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: libp2p_id, Data: e.Data, Updated: now()})
+	ev.add(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: p2p_id, Data: e.Data, Updated: now()})
 	ev.publish("directory", allow_queue)
 }
 
@@ -102,7 +102,7 @@ func directory_publish_event(e *Event) {
 	if e.From == "" {
 		found := false
 		for _, p := range peers_bootstrap {
-			if e.libp2p_peer == p.ID {
+			if e.p2p_peer == p.ID {
 				found = true
 				break
 			}

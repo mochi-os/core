@@ -5,9 +5,9 @@ package main
 
 type Chat struct {
 	ID       string
-	Identity string `json:"-"`
+	Identity string `cbor:"-"`
 	Name     string
-	Updated  int64 `json:"-"`
+	Updated  int64 `cbor:"-"`
 	Members  *[]ChatMember
 }
 
@@ -24,7 +24,7 @@ type ChatMessage struct {
 	Author      string
 	Name        string
 	Body        string
-	Attachments *[]Attachment `json:",omitempty"`
+	Attachments *[]Attachment `cbor:",omitempty"`
 }
 
 func init() {

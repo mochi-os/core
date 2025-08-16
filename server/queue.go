@@ -97,9 +97,9 @@ func queue_event_send(db *DB, peer string, event string) bool {
 
 		} else {
 			log_debug("    Sending file segment to peer: %s", qs.File)
-			f, err := os.Open(data_dir + "/" + qs.File)
+			f, err := os.Open(qs.File)
 			if err != nil {
-				log_warn("Unable to read file '%s/%s', skipping file segment", data_dir, qs.File)
+				log_warn("Unable to read file '%s', skipping file segment", qs.File)
 				continue
 			}
 			defer f.Close()
@@ -148,11 +148,11 @@ func queue_manager() {
 					if qs.File == "" {
 						data = append(data, qs.Data...)
 					} else {
-						data = append(data, cbor_encode(file_read(data_dir+"/"+qs.File))...)
+						data = append(data, cbor_encode(file_read(qs.File))...)
 					}
 				}
 
-				libp2p_topics[qb.Topic].Publish(libp2p_context, data)
+				p2p_topics[qb.Topic].Publish(p2p_context, data)
 				db.exec("delete from broadcast where id=?", qb.ID)
 			}
 		}

@@ -10,16 +10,16 @@ import (
 )
 
 type Entity struct {
-	ID          string `json:"id"`
-	Private     string `json:"-"`
-	Fingerprint string `json:"-"`
-	User        int    `json:"-"`
-	Parent      string `json:"-"`
-	Class       string `json:"class,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Privacy     string `json:"-"`
-	Data        string `json:"data,omitempty"`
-	Published   int64  `json:"-"`
+	ID          string `cbor:"id"`
+	Private     string `cbor:"-"`
+	Fingerprint string `cbor:"-"`
+	User        int    `cbor:"-"`
+	Parent      string `cbor:"-"`
+	Class       string `cbor:"class,omitempty"`
+	Name        string `cbor:"name,omitempty"`
+	Privacy     string `cbor:"-"`
+	Data        string `cbor:"data,omitempty"`
+	Published   int64  `cbor:"-"`
 }
 
 // Get an entity by fingerprint
@@ -117,7 +117,7 @@ func entity_peer(id string) string {
 	var e Entity
 	dbu := db_open("db/users.db")
 	if dbu.scan(&e, "select * from entities where id=?", id) {
-		return libp2p_id
+		return p2p_id
 	}
 
 	// Check in directory

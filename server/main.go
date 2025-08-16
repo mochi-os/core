@@ -36,7 +36,7 @@ func main() {
 	email_port = ini_int("email", "port", 25)
 
 	new_install := db_start()
-	libp2p_start()
+	p2p_start()
 	go attachments_manager()
 	go entities_manager()
 	go cache_manager()

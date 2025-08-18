@@ -13,12 +13,12 @@ func email_send(to string, subject string, body string) {
 
 	err := m.From(email_from)
 	if err != nil {
-		log_warn("Email failed to set from address '%s': %v", email_from, err)
+		warn("Email failed to set from address '%s': %v", email_from, err)
 		return
 	}
 	err = m.To(to)
 	if err != nil {
-		log_warn("Email failed to set to address '%s': %v", to, err)
+		warn("Email failed to set to address '%s': %v", to, err)
 		return
 	}
 	m.Subject(subject)
@@ -26,12 +26,12 @@ func email_send(to string, subject string, body string) {
 
 	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
 	if err != nil {
-		log_warn("Email failed to create mail client: %v", err)
+		warn("Email failed to create mail client: %v", err)
 		return
 	}
 	err = c.DialAndSend(m)
 	if err != nil {
-		log_warn("Email failed to send message: %v", err)
+		warn("Email failed to send message: %v", err)
 		return
 	}
 }

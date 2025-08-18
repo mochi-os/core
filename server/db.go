@@ -28,7 +28,7 @@ var (
 )
 
 func db_create() {
-	log_info("Creating new database")
+	info("Creating new database")
 
 	// Settings
 	settings := db_open("db/settings.db")
@@ -75,16 +75,16 @@ func db_create() {
 
 	// Queued outbound events
 	queue := db_open("db/queue.db")
-	queue.exec("create table queue_entities ( id text not null primary key, entity text not null, data blob not null, file text not null default '', created integer not null )")
-	queue.exec("create index queue_entities_entity on queue_entities( entity )")
-	queue.exec("create index queue_entities_created on queue_entities( created )")
+	queue.exec("create table entities ( id text not null primary key, entity text not null, data blob not null, file text not null default '', created integer not null )")
+	queue.exec("create index entities_entity on entities( entity )")
+	queue.exec("create index entities_created on entities( created )")
 
-	queue.exec("create table queue_peers ( id text not null primary key, peer text not null, data blob not null, file text not null default '', created integer not null )")
-	queue.exec("create index queue_peers_peer on queue_peers( peer )")
-	queue.exec("create index queue_peers_created on queue_peers( created )")
+	queue.exec("create table peers ( id text not null primary key, peer text not null, data blob not null, file text not null default '', created integer not null )")
+	queue.exec("create index peers_peer on peers( peer )")
+	queue.exec("create index peers_created on peers( created )")
 
-	queue.exec("create table queue_broadcasts ( id text not null primary key, topic text not null, data blob not null, created integer not null )")
-	queue.exec("create index queue_broadcasts_created on queue_broadcasts( created )")
+	queue.exec("create table broadcast ( id text not null primary key, data blob not null, created integer not null )")
+	queue.exec("create index broadcast_created on broadcast( created )")
 
 	// Cache
 	cache := db_open("db/cache.db")
@@ -116,7 +116,7 @@ func db_manager() {
 
 func db_open(file string) *DB {
 	path := data_dir + "/" + file
-	//log_debug("db_open() using '%s'", path)
+	//debug("db_open() using '%s'", path)
 
 	databases_lock.Lock()
 	db, found := databases[path]
@@ -126,7 +126,7 @@ func db_open(file string) *DB {
 		return db
 	}
 
-	//log_debug("db_open() opening '%s'", path)
+	//debug("db_open() opening '%s'", path)
 	if !file_exists(path) {
 		file_create(path)
 	}
@@ -160,7 +160,7 @@ func db_upgrade() {
 	schema := atoi(setting_get("schema", ""), 1)
 	for schema < schema_version {
 		schema++
-		log_info("Upgrading database schema to version %d", schema)
+		info("Upgrading database schema to version %d", schema)
 		if schema == 2 {
 		} else if schema == 3 {
 		}

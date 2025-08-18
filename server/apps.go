@@ -30,16 +30,16 @@ var (
 func apps_start() {
 	for _, id := range files_dir(data_dir + "/apps") {
 		for _, version := range files_dir(data_dir + "/apps/" + id) {
-			log_debug("Found installed app ID '%s' version '%s'", id, version)
+			debug("Found installed app ID '%s' version '%s'", id, version)
 			base := data_dir + "/apps/" + id + "/" + version
 
 			if !file_exists(base + "/manifest.json") {
-				log_debug("App ID '%s' version '%s' has no manifest.json file; ignoring app", id, version)
+				debug("App ID '%s' version '%s' has no manifest.json file; ignoring app", id, version)
 				continue
 			}
 			var a App
 			if !json_decode(&a, file_read(base+"/manifest.json")) {
-				log_warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
+				warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
 				continue
 			}
 			a.id = id
@@ -48,7 +48,7 @@ func apps_start() {
 			if a.Path != "" {
 				e, found := app_paths[a.Path]
 				if found {
-					log_warn("Path conflict for '%s' between apps '%s' and '%s'", a.Path, e.Name, a.Name)
+					warn("Path conflict for '%s' between apps '%s' and '%s'", a.Path, e.Name, a.Name)
 				} else {
 					app_paths[a.Path] = &a
 				}

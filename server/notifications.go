@@ -24,10 +24,10 @@ func notification(u *User, app string, category string, object string, content s
 	db := db_user(u, "notifications.db", notifications_db_create)
 	defer db.close()
 
-	log_debug("Creating notification: user='%d', app='%s', object='%s', category='%s', content='%s', link='%s'", u.ID, app, object, category, content, link)
+	debug("Creating notification: user='%d', app='%s', object='%s', category='%s', content='%s', link='%s'", u.ID, app, object, category, content, link)
 
 	if !valid(app, "constant") || !valid(category, "constant") || !valid(content, "text") || !valid(link, "url") {
-		log_info("Notification data not valid")
+		info("Notification data not valid")
 		return
 	}
 

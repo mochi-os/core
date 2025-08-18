@@ -43,7 +43,7 @@ func websocket_connection(c *gin.Context) {
 			continue
 		}
 
-		log_info("Websocket received message; ignoring: %s", j)
+		info("Websocket received message; ignoring: %s", j)
 	}
 }
 
@@ -54,7 +54,7 @@ func websockets_send(u *User, app string, content string) {
 		if j == "" {
 			j = json_encode(map[string]string{"app": app, "content": content})
 		}
-		log_debug("Websocket sending '%s'", j)
+		debug("Websocket sending '%s'", j)
 		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
 			websocket_terminate(ws, u, id)

@@ -5,6 +5,7 @@ package main
 
 import (
 	"flag"
+	"os"
 )
 
 type Map map[string]any
@@ -18,15 +19,15 @@ var (
 )
 
 func main() {
-	log_info("Starting")
+	info("Mochi starting")
 
 	var file string
 	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")
 	flag.Parse()
 	err := ini_load(file)
 	if err != nil {
-		log_error("Unable to read configuration file: %v", err)
-		return
+		warn("Unable to read configuration file: %v", err)
+		os.Exit(1)
 	}
 
 	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
@@ -38,8 +39,10 @@ func main() {
 	new_install := db_start()
 	p2p_start()
 	go attachments_manager()
-	go entities_manager()
 	go cache_manager()
+	go entities_manager()
+	go peers_manager()
+	go peers_publish()
 	go queue_manager()
 	go web_start()
 

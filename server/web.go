@@ -54,6 +54,12 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
+	// Remove once we have new user hooks
+	admin := ini_string("email", "admin", "")
+	if admin != "" {
+		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))
+	}
+
 	web_redirect(c, "/?action=welcome")
 }
 
@@ -166,12 +172,12 @@ func web_start() {
 	}
 
 	if len(domains) > 0 {
-		log_info("Web listening on HTTPS domains %v", domains)
+		info("Web listening on HTTPS domains %v", domains)
 		err := autotls.Run(r, domains...)
 		check(err)
 
 	} else {
-		log_info("Web listening on '%s:%d'", listen, port)
+		info("Web listening on '%s:%d'", listen, port)
 		err := r.Run(fmt.Sprintf("%s:%d", listen, port))
 		check(err)
 	}

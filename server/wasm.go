@@ -23,34 +23,34 @@ func wasm_cleanup(storage string, id int64) {
 
 func wasm_invoke(f func(...any) (any, error), out *os.File, id int64) {
 	defer wasm_finish(out, id)
-	log_debug("WASM calling function")
+	debug("WASM calling function")
 	f(id)
 }
 
 func wasm_finish(out *os.File, id int64) {
 	recover()
-	log_debug("WASM function finished")
+	debug("WASM function finished")
 	out.Write([]byte("\nfinish\n"))
 }
 
 func wasm_read(r *bufio.Reader) string {
 	output, err := r.ReadString('\n')
 	if err != nil {
-		log_info("WASM error reading from app: %s", err)
+		info("WASM error reading from app: %s", err)
 		return ""
 	}
 	output = strings.TrimRight(output, "\n")
-	log_debug("WASM received from app '%s'", output)
+	debug("WASM received from app '%s'", output)
 	return output
 }
 
 func wasm_run(u *User, a *App, function string, depth int, input any) (string, error) {
-	log_debug("WASM running app '%s', version '%s', function '%s'", a.Name, a.Version, function)
+	debug("WASM running app '%s', version '%s', function '%s'", a.Name, a.Version, function)
 
 	file := data_dir + "/apps/" + a.Name + "/" + a.Version + "/" + a.WASM.File
 	wasm, err := os.ReadFile(file)
 	if err != nil {
-		log_warn("WASM unable to read file '%s': %v", file, err)
+		warn("WASM unable to read file '%s': %v", file, err)
 		return "", error_message("WASM unable to read file '%s': %v", file, err)
 	}
 
@@ -67,7 +67,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 	}
 	in, err := os.OpenFile(data_dir+"/"+in_fifo, os.O_RDWR, 0600)
 	if err != nil {
-		log_warn("WASM unable to open input pipe for writing: %s", err)
+		warn("WASM unable to open input pipe for writing: %s", err)
 		return "", error_message("WASM unable to open input pipe for writing: %s", err)
 	}
 	defer in.Close()
@@ -79,7 +79,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 	}
 	out, err := os.OpenFile(data_dir+"/"+out_fifo, os.O_RDWR, 0600)
 	if err != nil {
-		log_warn("WASM unable to open output pipe for reading: %s", err)
+		warn("WASM unable to open output pipe for reading: %s", err)
 		return "", error_message("WASM unable to open output pipe for reading: %s", err)
 	}
 	defer out.Close()
@@ -98,7 +98,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 
 	f, err := i.Exports.GetFunction(function)
 	if err != nil {
-		log_info("WASM unable to find function '%s': %s", function, err)
+		info("WASM unable to find function '%s': %s", function, err)
 		return "", error_message("WASM unable to find function '%s': %s", function, err)
 	}
 	go wasm_invoke(f, out, wasm_invoke_id)
@@ -109,7 +109,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 		read := wasm_read(r)
 		splits := strings.SplitN(read, " ", 2)
 		if len(splits) == 0 {
-			log_info("WASM app returned invalid message")
+			info("WASM app returned invalid message")
 		}
 		action := splits[0]
 		output := ""
@@ -130,7 +130,7 @@ func wasm_run(u *User, a *App, function string, depth int, input any) (string, e
 }
 
 func wasm_write(w *bufio.Writer, data string) {
-	log_debug("WASM writing to app '%s'", data)
+	debug("WASM writing to app '%s'", data)
 	w.WriteString(data)
 	w.WriteRune('\n')
 	w.Flush()

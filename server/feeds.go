@@ -247,37 +247,37 @@ func feeds_comment_create(a *Action) {
 func feeds_comment_create_event(e *Event) {
 	f := feed_by_id(e.user, e.db, e.From)
 	if f == nil {
-		log_info("Feed dropping comment to unknown feed")
+		info("Feed dropping comment to unknown feed")
 		return
 	}
 
 	var c FeedComment
 	if !e.decode(&c) {
-		log_info("Feed dropping comment with invalid data")
+		info("Feed dropping comment with invalid data")
 		return
 	}
 
 	if !valid(c.ID, "id") {
-		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
+		info("Feed dropping comment with invalid ID '%s'", c.ID)
 		return
 	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
-		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
+		info("Feed dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
 	if !valid(c.Author, "entity") {
-		log_info("Feed dropping comment with invalid author '%s'", c.Author)
+		info("Feed dropping comment with invalid author '%s'", c.Author)
 		return
 	}
 
 	if !valid(c.Name, "name") {
-		log_info("Feed dropping comment with invalid name '%s'", c.Name)
+		info("Feed dropping comment with invalid name '%s'", c.Name)
 		return
 	}
 
 	if !valid(c.Body, "text") {
-		log_info("Feed dropping comment with invalid body '%s'", c.Body)
+		info("Feed dropping comment with invalid body '%s'", c.Body)
 		return
 	}
 
@@ -290,38 +290,38 @@ func feeds_comment_create_event(e *Event) {
 func feeds_comment_submit_event(e *Event) {
 	f := feed_by_id(e.user, e.db, e.To)
 	if f == nil {
-		log_info("Feed dropping comment to unknown feed")
+		info("Feed dropping comment to unknown feed")
 		return
 	}
 
 	var c FeedComment
 	if !e.decode(&c) {
-		log_info("Feed dropping comment with invalid data")
+		info("Feed dropping comment with invalid data")
 		return
 	}
 
 	if !valid(c.ID, "id") {
-		log_info("Feed dropping comment with invalid ID '%s'", c.ID)
+		info("Feed dropping comment with invalid ID '%s'", c.ID)
 		return
 	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
-		log_info("Feed dropping comment with duplicate ID '%s'", c.ID)
+		info("Feed dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
 	if !e.db.exists("select id from posts where feed=? and id=?", f.ID, c.Post) {
-		log_info("Feed dropping comment for unknown post '%s'", c.Post)
+		info("Feed dropping comment for unknown post '%s'", c.Post)
 		return
 	}
 
 	if c.Parent != "" && !e.db.exists("select id from comments where feed=? and post=? and id=?", f.ID, c.Post, c.Parent) {
-		log_info("Feed dropping comment with unknown parent '%s'", c.Parent)
+		info("Feed dropping comment with unknown parent '%s'", c.Parent)
 		return
 	}
 
 	s := feed_subscriber(e.db, f, e.From)
 	if s == nil {
-		log_info("Feed dropping comment from unknown subscriber '%s'", e.From)
+		info("Feed dropping comment from unknown subscriber '%s'", e.From)
 		return
 	}
 
@@ -330,7 +330,7 @@ func feeds_comment_submit_event(e *Event) {
 	c.Name = s.Name
 
 	if !valid(c.Body, "text") {
-		log_info("Feed dropping comment with invalid body '%s'", c.Body)
+		info("Feed dropping comment with invalid body '%s'", c.Body)
 		return
 	}
 
@@ -416,24 +416,24 @@ func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, name 
 func feeds_comment_reaction_event(e *Event) {
 	var fr FeedReaction
 	if !e.decode(&fr) {
-		log_info("Feed dropping comment reaction with invalid data")
+		info("Feed dropping comment reaction with invalid data")
 		return
 	}
 
 	if !valid(fr.Name, "line") {
-		log_info("Feed dropping post reaction with invalid name '%s'", fr.Name)
+		info("Feed dropping post reaction with invalid name '%s'", fr.Name)
 		return
 	}
 
 	var c FeedComment
 	if !e.db.scan(&c, "select * from comments where id=?", fr.Comment) {
-		log_info("Feed dropping comment reaction for unknown comment")
+		info("Feed dropping comment reaction for unknown comment")
 		return
 	}
 
 	f := feed_by_id(e.user, e.db, c.Feed)
 	if f == nil {
-		log_info("Feed dropping comment reaction for unknown feed")
+		info("Feed dropping comment reaction for unknown feed")
 		return
 	}
 
@@ -443,7 +443,7 @@ func feeds_comment_reaction_event(e *Event) {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
-			log_info("Feed dropping comment reaction from unknown subscriber '%s'", e.From)
+			info("Feed dropping comment reaction from unknown subscriber '%s'", e.From)
 			return
 		}
 
@@ -462,7 +462,7 @@ func feeds_comment_reaction_event(e *Event) {
 	} else {
 		// We are not feed owner
 		if e.From != c.Feed {
-			log_info("Feed dropping comment reaction from unknown owner")
+			info("Feed dropping comment reaction from unknown owner")
 			return
 		}
 		feeds_comment_reaction_set(e.db, &c, fr.Subscriber, fr.Name, reaction)
@@ -572,28 +572,28 @@ func feeds_post_create(a *Action) {
 func feeds_post_create_event(e *Event) {
 	f := feed_by_id(e.user, e.db, e.From)
 	if f == nil {
-		log_info("Feed dropping post to unknown feed")
+		info("Feed dropping post to unknown feed")
 		return
 	}
 
 	var p FeedPost
 	if !e.decode(&p) {
-		log_info("Feed dropping post with invalid data")
+		info("Feed dropping post with invalid data")
 		return
 	}
-	log_debug("Feed received post %#v", p)
+	debug("Feed received post %#v", p)
 
 	if !valid(p.ID, "id") {
-		log_info("Feed dropping post with invalid ID '%s'", p.ID)
+		info("Feed dropping post with invalid ID '%s'", p.ID)
 		return
 	}
 	if e.db.exists("select id from posts where id=?", p.ID) {
-		log_info("Feed dropping post with duplicate ID '%s'", p.ID)
+		info("Feed dropping post with duplicate ID '%s'", p.ID)
 		return
 	}
 
 	if !valid(p.Body, "text") {
-		log_info("Feed dropping post with invalid body '%s'", p.Body)
+		info("Feed dropping post with invalid body '%s'", p.Body)
 		return
 	}
 
@@ -675,24 +675,24 @@ func feeds_post_reaction_set(db *DB, p *FeedPost, subscriber string, name string
 func feeds_post_reaction_event(e *Event) {
 	var fr FeedReaction
 	if !e.decode(&fr) {
-		log_info("Feed dropping post reaction with invalid data")
+		info("Feed dropping post reaction with invalid data")
 		return
 	}
 
 	if !valid(fr.Name, "line") {
-		log_info("Feed dropping post reaction with invalid name '%s'", fr.Name)
+		info("Feed dropping post reaction with invalid name '%s'", fr.Name)
 		return
 	}
 
 	var p FeedPost
 	if !e.db.scan(&p, "select * from posts where id=?", fr.Post) {
-		log_info("Feed dropping post reaction for unknown post")
+		info("Feed dropping post reaction for unknown post")
 		return
 	}
 
 	f := feed_by_id(e.user, e.db, p.Feed)
 	if f == nil {
-		log_info("Feed dropping post reaction for unknown feed")
+		info("Feed dropping post reaction for unknown feed")
 		return
 	}
 
@@ -702,7 +702,7 @@ func feeds_post_reaction_event(e *Event) {
 		// We are the feed owner
 		s := feed_subscriber(e.db, f, e.From)
 		if s == nil {
-			log_info("Feed dropping post reaction from unknown subscriber")
+			info("Feed dropping post reaction from unknown subscriber")
 			return
 		}
 
@@ -721,7 +721,7 @@ func feeds_post_reaction_event(e *Event) {
 	} else {
 		// We are not feed owner
 		if e.From != p.Feed {
-			log_info("Feed dropping post reaction from unknown owner")
+			info("Feed dropping post reaction from unknown owner")
 			return
 		}
 		feeds_post_reaction_set(e.db, &p, fr.Subscriber, fr.Name, reaction)
@@ -827,7 +827,7 @@ func feeds_subscribe_event(e *Event) {
 
 	name := e.get("name", "")
 	if !valid(name, "line") {
-		log_debug("Feeds dropping subscribe with invalid name '%s'", name)
+		debug("Feeds dropping subscribe with invalid name '%s'", name)
 		return
 	}
 
@@ -904,7 +904,7 @@ func feeds_update_event(e *Event) {
 
 	subscribers := e.get("subscribers", "0")
 	if !valid(subscribers, "natural") {
-		log_info("Feed dropping update with invalid number of subscribers '%s'", subscribers)
+		info("Feed dropping update with invalid number of subscribers '%s'", subscribers)
 		return
 	}
 

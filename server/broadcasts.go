@@ -13,7 +13,7 @@ var (
 )
 
 func broadcast(u *User, sender string, action string, entity string, content any) {
-	log_debug("Broadcast: user='%d', sender='%s', action='%s', entity='%s', content='%s'", u.ID, sender, action, entity, content)
+	debug("Broadcast: user='%d', sender='%s', action='%s', entity='%s', content='%s'", u.ID, sender, action, entity, content)
 
 	s, sender_found := broadcasts_by_sender[sender]
 	if sender_found {

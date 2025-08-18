@@ -25,7 +25,7 @@ func cache_manager() {
 	db := db_open("db/cache.db")
 	for {
 		time.Sleep(24 * time.Hour)
-		log_debug("Cache cleaning files older than 30 days")
+		debug("Cache cleaning files older than 30 days")
 		db.exec("delete from attachments where created<?", now()-30*86400)
 		filepath.WalkDir(cache_dir+"/attachments", cache_manager_walk)
 	}

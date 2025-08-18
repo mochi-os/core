@@ -2,6 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | New
 
+<p>
 <form action="/feeds/create">
     <label for="name">Feed name:</label>
     <input type="text" name="name" value="{{.Name}}"/><br/>
@@ -12,5 +13,6 @@
 	</select><br/>
   <input type="submit" value="Create"/>
 </form>
+</p>
 
 {{template "foot" .}}

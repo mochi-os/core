@@ -205,7 +205,7 @@ func friends_ignore(a *Action) {
 func friends_invite_event(e *Event) {
 	name := e.get("name", "")
 	if !valid(name, "line") {
-		log_info("Friends dropping invitation with invalid name '%s'", name)
+		info("Friends dropping invitation with invalid name '%s'", name)
 		return
 	}
 

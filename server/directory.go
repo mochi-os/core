@@ -8,14 +8,14 @@ import (
 )
 
 type Directory struct {
-	ID          string `cbor:"id"`
-	Fingerprint string `cbor:"fingerprint,omitempty"`
-	Name        string `cbor:"name"`
-	Class       string `cbor:"class"`
-	Location    string `cbor:"location"`
-	Data        string `cbor:"data"`
-	Created     int64  `cbor:"created,omitempty"`
-	Updated     int64  `cbor:"updated"`
+	ID          string
+	Fingerprint string
+	Name        string
+	Class       string
+	Location    string
+	Data        string
+	Created     int64
+	Updated     int64
 }
 
 func init() {
@@ -24,7 +24,6 @@ func init() {
 	a.event_broadcast("download", directory_download_event)
 	a.event_broadcast("request", directory_request_event)
 	a.event_broadcast("publish", directory_publish_event)
-	a.pubsub("directory", nil)
 }
 
 // Get a directory entry
@@ -39,7 +38,7 @@ func directory_by_id(id string) *Directory {
 
 // Create a new directory entry for a local entity
 func directory_create(e *Entity) {
-	log_debug("Directory creating entry '%s' (%s)", e.ID, e.Name)
+	debug("Directory creating entry '%s' (%s)", e.ID, e.Name)
 	now := now()
 
 	db := db_open("db/directory.db")
@@ -58,7 +57,7 @@ func directory_download() {
 	time.Sleep(10 * time.Second)
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
-			log_debug("Directory requesting download from peer '%s'", p.ID)
+			debug("Directory requesting download from peer '%s'", p.ID)
 			ev := event("", p.ID, "directory", "download")
 			ev.send()
 		}
@@ -67,7 +66,7 @@ func directory_download() {
 
 // Reply to a directory download request
 func directory_download_event(e *Event) {
-	log_debug("Directory received download event '%#v'", e)
+	debug("Directory received download event '%#v'", e)
 	time.Sleep(time.Second)
 
 	var results []Directory
@@ -83,20 +82,22 @@ func directory_download_event(e *Event) {
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	ev := event(e.ID, "", "", "publish")
-	ev.add(Directory{ID: e.ID, Name: e.Name, Class: e.Class, Location: p2p_id, Data: e.Data, Updated: now()})
-	ev.publish("directory", allow_queue)
+	ev := event(e.ID, "", "directory", "publish")
+	ev.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
+	ev.publish(allow_queue)
 }
 
 // Received a directory publish event from another server
 func directory_publish_event(e *Event) {
-	log_debug("Directory received publish event '%#v'", e)
+	debug("Directory received publish event '%#v'", e)
 	now := now()
 
-	var d Directory
-	if !e.decode(&d) {
-		return
-	}
+	//TODO Validate fields
+	id := e.get("id", "")
+	name := e.get("name", "")
+	class := e.get("class", "")
+	location := e.get("location", "")
+	data := e.get("data", "")
 
 	if e.From == "" {
 		found := false
@@ -107,31 +108,32 @@ func directory_publish_event(e *Event) {
 			}
 		}
 		if !found {
-			log_info("Directory dropping anonymous event from untrusted peer")
+			info("Directory dropping anonymous event from untrusted peer")
 			return
 		}
 
-	} else if e.From != d.ID {
-		log_info("Directory dropping event from incorrect sender: '%s'!='%s'", d.ID, e.From)
+	} else if e.From != id {
+		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.From)
 		return
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, now, now)
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, data, now, now)
 
-	go queue_check_entity(d.ID)
+	go queue_check_entity(id)
 }
 
 // Request that another server publish a directory event
+// TODO Test directory publish request
 func directory_request(id string) {
-	ev := event("", "", "", "request")
+	ev := event("", "", "directory", "request")
 	ev.set("id", id)
-	ev.publish("directory", false)
+	ev.publish(false)
 }
 
 // Reply to a directory request if we have the requested entity
 func directory_request_event(e *Event) {
-	log_debug("Directory received request event '%#v'", e)
+	debug("Directory received request event '%#v'", e)
 
 	var r Entity
 	db := db_open("db/users.db")

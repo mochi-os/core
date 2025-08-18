@@ -87,7 +87,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 			}
 			return &e, nil
 		}
-		log_debug("Identity '%s', fingerprint '%s' already in use. Trying another...", id, fingerprint)
+		debug("Identity '%s', fingerprint '%s' already in use. Trying another...", id, fingerprint)
 	}
 
 	return nil, error_message("Unable to find spare entity ID or fingerprint")

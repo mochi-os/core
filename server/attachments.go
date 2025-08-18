@@ -195,7 +195,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	// Wait for response
 	e := <-ar.response
 	if e.get("status", "") != "200" {
-		log_info("Received negative response for attachment '%s': %s", id, e.get("status", ""))
+		info("Received negative response for attachment '%s': %s", id, e.get("status", ""))
 		return
 	}
 
@@ -214,14 +214,14 @@ func attachments_get_work(a *Action, thumbnail bool) {
 
 	f, err := os.Create(cache_dir + "/" + path)
 	if err != nil {
-		log_warn("Unable to open cache file '%s/%s' for writing: %v", cache_dir, path, err)
+		warn("Unable to open cache file '%s/%s' for writing: %v", cache_dir, path, err)
 		f.Close()
 		return
 	}
-	n, err := io.Copy(f, e.reader)
+	_, err = io.Copy(f, e.reader)
 	f.Close()
 	if err != nil {
-		log_warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
+		warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
 		return
 	}
 
@@ -231,7 +231,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	f, err = os.Open(file)
 	defer f.Close()
 	if err != nil {
-		log_warn("Unable to read newly cached file '%s': %v", file, err)
+		warn("Unable to read newly cached file '%s': %v", file, err)
 		return
 	}
 	a.web.DataFromReader(http.StatusOK, file_size(file), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
@@ -242,7 +242,7 @@ func attachments_get_event(e *Event) {
 	id := e.get("id", "")
 
 	if !valid(id, "id") {
-		log_info("Request for attachment with invalid ID '%s'", id)
+		info("Request for attachment with invalid ID '%s'", id)
 		return
 	}
 
@@ -260,11 +260,11 @@ func attachments_get_event(e *Event) {
 			return
 
 		} else {
-			log_warn("Attachment file '%s' not found", data_dir+"/"+file)
+			warn("Attachment file '%s' not found", data_dir+"/"+file)
 		}
 
 	} else {
-		log_info("Request for unknown attachment '%s'", e.ID)
+		info("Request for unknown attachment '%s'", e.ID)
 	}
 
 	ev := event(e.To, e.From, "attachments", "send")
@@ -277,7 +277,7 @@ func attachments_get_thumbnail_event(e *Event) {
 	id := e.get("id", "")
 
 	if !valid(id, "id") {
-		log_info("Request for thumbnail with invalid ID '%s'", id)
+		info("Request for thumbnail with invalid ID '%s'", id)
 		return
 	}
 
@@ -296,7 +296,7 @@ func attachments_get_thumbnail_event(e *Event) {
 		}
 	}
 
-	log_info("Request for unknown attachment thumbnail '%s'", e.ID)
+	info("Request for unknown attachment thumbnail '%s'", e.ID)
 	ev := event(e.To, e.From, "attachments", "send/thumbnail")
 	ev.set("status", "404", "id", id)
 	ev.send()
@@ -331,15 +331,15 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 
 	for _, at := range *as {
 		if !valid(at.ID, "id") {
-			log_info("Skipping attachment with invalid ID '%s'", at.ID)
+			info("Skipping attachment with invalid ID '%s'", at.ID)
 			continue
 		}
 		if !valid(at.Object, "path") {
-			log_info("Skipping attachment with invalid object '%s'", at.Object)
+			info("Skipping attachment with invalid object '%s'", at.Object)
 			continue
 		}
 		if !valid(at.Name, "filename") {
-			log_info("Skipping attachment with invalid name '%s'", at.Name)
+			info("Skipping attachment with invalid name '%s'", at.Name)
 			continue
 		}
 
@@ -392,7 +392,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 
 	for i, f := range form.File[field] {
 		if !valid(f.Filename, "filename") {
-			log_info("Skipping uploaded file with invalid name '%s'", f.Filename)
+			info("Skipping uploaded file with invalid name '%s'", f.Filename)
 			continue
 		}
 

@@ -40,7 +40,7 @@ func atoi(s string, def int64) int64 {
 func base58_decode(in string, def string) []byte {
 	out, _, err := base58.CheckDecode(in)
 	if err != nil {
-		log_info("Base58 decoding error for '%s'; returning default '%s': %s", in, def, err)
+		info("Base58 decoding error for '%s'; returning default '%s': %s", in, def, err)
 		return []byte(def)
 	}
 	return out
@@ -126,7 +126,7 @@ func time_local(u *User, t int64) string {
 	if err == nil {
 		return time.Unix(t, 0).In(l).Format(time.DateTime)
 	} else {
-		log_warn("Invalid time zone '%s':", err)
+		warn("Invalid time zone '%s':", err)
 		return time.Unix(t, 0).Format(time.DateTime)
 	}
 }
@@ -138,7 +138,7 @@ func uid() string {
 }
 
 func valid(s string, match string) bool {
-	//log_debug("Validating '%s' (%#v) as %s", s, s, match)
+	//debug("Validating '%s' (%#v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
 		return false
 	}

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -23,77 +24,92 @@ type mdns_notifee struct {
 }
 
 var (
-	p2p_context = context.Background()
-	p2p_id      string
-	p2p_me      p2p_host.Host
-	p2p_topics  = map[string]*p2p_pubsub.Topic{}
+	p2p_context          = context.Background()
+	p2p_id               string
+	p2p_me               p2p_host.Host
+	p2p_broadcast_events *p2p_pubsub.Topic
 )
 
 // Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		log_debug("p2p received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_update(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		debug("P2P received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		peer_discovered(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		peer_connect(p.ID.String())
 	}
 }
 
 // Connect to a peer
-func p2p_connect(peer string, addresses ...string) bool {
-	log_debug("p2p connecting to peer '%s' at %v", peer, addresses)
+func p2p_connect(peer string, addresses []string) bool {
+	debug("P2P connecting to peer '%s' at %v", peer, addresses)
 	var err error
 
-	var info p2p_peer.AddrInfo
-	info.ID, err = p2p_peer.Decode(peer)
+	var ai p2p_peer.AddrInfo
+	ai.ID, err = p2p_peer.Decode(peer)
 	if err != nil {
-		log_warn("p2p ignoring invalid peer ID '%s': %v", peer, err)
+		warn("P2P ignoring invalid peer ID '%s': %v", peer, err)
 		return false
 	}
 
 	for _, address := range addresses {
 		ma, err := multiaddr.NewMultiaddr(address)
 		if err != nil {
-			log_warn("p2p ignoring invalid peer address '%s': %v", address, err)
+			warn("P2P ignoring invalid peer address '%s': %v", address, err)
 			continue
 		}
 
 		i, err := p2p_peer.AddrInfoFromP2pAddr(ma)
 		if err != nil {
-			log_warn("p2p ignoring invalid multiaddress: %v", err)
+			warn("P2P ignoring invalid multiaddress: %v", err)
 			continue
 		}
 
-		info.Addrs = append(info.Addrs, i.Addrs...)
+		ai.Addrs = append(ai.Addrs, i.Addrs...)
 	}
 
-	if len(info.Addrs) == 0 {
-		log_warn("p2p peer '%s' has no valid addresses", peer)
+	if len(ai.Addrs) == 0 {
+		warn("P2P peer '%s' has no valid addresses", peer)
 		return false
 	}
 
-	err = p2p_me.Connect(p2p_context, info)
+	err = p2p_me.Connect(p2p_context, ai)
 	if err != nil {
-		log_info("p2p error connecting to '%s': %v", peer, err)
+		info("P2P error connecting to '%s': %v", peer, err)
 		return false
 	}
 
-	log_debug("p2p connected to peer '%s'", peer)
+	debug("P2P connected to peer '%s'", peer)
 	return true
 }
 
-// Listen for  on a pubsub
-func p2p_pubsub_listen(s *p2p_pubsub.Subscription) {
+// Join pubsubs
+func p2p_pubsubs() {
+	s, err := p2p_broadcast_events.Subscribe()
+	check(err)
+
 	for {
 		m, err := s.Next(p2p_context)
 		check(err)
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
-			log_debug("p2p received pubsub event from peer '%s'", peer)
+			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
 			//TODO Provide source address
 			event_receive_reader(bytes.NewReader(m.Data), peer, "")
 			//TODO Add peer for source at address
-			//peer_update(peer, address)
+			//peer_discovered(peer, address)
+			//peer_connect(peer)
 		}
 	}
+}
+
+// Receive event from p2p stream
+func p2p_receive_event(s p2p_network.Stream) {
+	peer := s.Conn().RemotePeer().String()
+	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
+	debug("P2P event from '%s' at '%s'", peer, address)
+
+	event_receive_reader(bufio.NewReader(s), peer, address)
+	peer_discovered(peer, address)
 }
 
 // Start p2p
@@ -120,15 +136,17 @@ func p2p_start() {
 	p2p_me, err = p2p.New(p2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), p2p.Identity(private))
 	check(err)
 	p2p_id = p2p_me.ID().String()
+	info("P2P listening on port %d with id '%s'", port, p2p_id)
 
 	// Listen for connecting peers
-	p2p_me.SetStreamHandler("/mochi/events/1", event_receive_stream)
+	p2p_me.SetStreamHandler("/mochi/events/1", p2p_receive_event)
 
 	// Add bootstrap peers
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
-			log_debug("Adding bootstrap peer '%s' at %v", p.ID, p.addresses_as_slice())
-			peer_update(p.ID, p.addresses_as_slice()...)
+			debug("Adding bootstrap peer '%s' at %v", p.ID, p.addresses)
+			peer_add_known(p.ID, p.addresses)
+			peer_connect(p.ID)
 		}
 	}
 
@@ -143,33 +161,22 @@ func p2p_start() {
 	// Start pubsubs
 	gs, err := p2p_pubsub.NewGossipSub(p2p_context, p2p_me)
 	check(err)
-	for _, ps := range pubsubs {
-		t, err := gs.Join(ps.Topic)
-		check(err)
-		p2p_topics[ps.Topic] = t
-		s, err := t.Subscribe()
-		check(err)
-		go p2p_pubsub_listen(s)
-
-		if ps.Publish != nil {
-			go ps.Publish(t)
-		}
-	}
-
-	log_info("p2p listening on port %d with id '%s'", port, p2p_id)
+	p2p_broadcast_events, err = gs.Join("events")
+	check(err)
+	go p2p_pubsubs()
 }
 
 // Create stream to an already connected peer
 func p2p_stream(peer string) p2p_network.Stream {
 	p, err := p2p_peer.Decode(peer)
 	if err != nil {
-		log_warn("p2p invalid peer '%s'", peer)
+		warn("P2P invalid peer '%s'", peer)
 		return nil
 	}
 
 	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/events/1")
 	if err != nil {
-		log_warn("p2p unable to create stream to '%s': %v'", peer, err)
+		warn("P2P unable to create stream to '%s': %v'", peer, err)
 		return nil
 	}
 	return s

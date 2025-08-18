@@ -20,7 +20,7 @@ var (
 )
 
 func (a *Action) error(code int, message string, values ...any) {
-	log_debug(message, values...)
+	debug(message, values...)
 	web_error(a.web, code, message, values...)
 }
 
@@ -42,7 +42,7 @@ func (a *Action) json(in any) {
 
 // TODO Replace public mode with something better
 func (a *Action) public_mode() *Action {
-	log_debug("Switching action to public mode")
+	debug("Switching action to public mode")
 	a.user = nil
 
 	if a.db != nil {

@@ -2,6 +2,7 @@
 {{template "head" .}}
 <p class="header"><a href="/">Mochi</a> | <a href="/forums">Forums</a> | New
 
+<p>
 <form action="/forums/create">
     <label for="name">Forum name:</label>
     <input type="text" name="name"/><br/>
@@ -20,5 +21,6 @@
 	</select><br/>
   <input type="submit" value="Create"/>
 </form>
+</p>
 
 {{template "foot" .}}

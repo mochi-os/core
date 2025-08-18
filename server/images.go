@@ -43,14 +43,14 @@ func thumbnail_create(path string) (string, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
-		log_warn("Unable to open image file '%s' to create thumbnail: %v", path, err)
+		warn("Unable to open image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 	defer f.Close()
 
 	i, format, err := image.Decode(f)
 	if err != nil {
-		log_info("Unable to decode image file '%s' to create thumbnail: %v", path, err)
+		info("Unable to decode image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 
@@ -73,7 +73,7 @@ func thumbnail_create(path string) (string, error) {
 	}
 
 	if err != nil {
-		log_info("Unable to encode image file '%s' to create thumbnail: %v", path, err)
+		info("Unable to encode image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}
 

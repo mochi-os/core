@@ -82,14 +82,14 @@ func chat_create(a *Action) {
 		return
 	}
 
-	log_debug("Creating chat '%s' with name '%s'", chat, name)
+	debug("Creating chat '%s' with name '%s'", chat, name)
 	a.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
 	a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, a.user.Identity.ID, a.user.Identity.Name)
 	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name}}
 
 	for _, f := range *friends(a.user) {
 		if a.input(f.ID) != "" {
-			log_debug("Adding %s (%s) to new chat", f.ID, f.Name)
+			debug("Adding %s (%s) to new chat", f.ID, f.Name)
 			a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, f.ID, f.Name)
 			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name})
 		}
@@ -99,7 +99,7 @@ func chat_create(a *Action) {
 		if m.Member == a.user.Identity.ID {
 			continue
 		}
-		log_debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
+		debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
 		ev := event(a.user.Identity.ID, m.Member, "chat", "new")
 		ev.set("id", chat, "name", name)
 		ev.add(members)
@@ -136,19 +136,19 @@ func chat_message_event(e *Event) {
 	chat := e.get("chat", "")
 	c := chat_by_id(e.db, chat)
 	if c == nil {
-		log_info("Chat dropping message to unknown chat '%s'", chat)
+		info("Chat dropping message to unknown chat '%s'", chat)
 		return
 	}
 
 	m := chat_member(e.db, chat, e.From)
 	if m == nil {
-		log_info("Chat dropping message from unknown member '%s'", e.From)
+		info("Chat dropping message from unknown member '%s'", e.From)
 		return
 	}
 
 	body := e.get("body", "")
 	if !valid(body, "text") {
-		log_info("Chat dropping message with invalid body '%s'", body)
+		info("Chat dropping message with invalid body '%s'", body)
 		return
 	}
 
@@ -156,7 +156,7 @@ func chat_message_event(e *Event) {
 
 	var as []Attachment
 	if e.decode(&as) {
-		log_debug("Chat recieved attachments %v", as)
+		debug("Chat recieved attachments %v", as)
 		attachments_save(&as, e.user, e.From, "chat/%s/%s", chat, e.ID)
 	}
 
@@ -182,7 +182,7 @@ func chat_messages(a *Action) {
 
 	for i, m := range ms {
 		ms[i].Attachments = attachments(a.user, "chat/%s/%s", c.ID, m.ID)
-		log_debug("Attachments found for 'chat/%s/%s': %d", c.ID, m.ID, len(*ms[i].Attachments))
+		debug("Attachments found for 'chat/%s/%s': %d", c.ID, m.ID, len(*ms[i].Attachments))
 	}
 
 	a.json(ms)
@@ -203,7 +203,7 @@ func chat_message_send(a *Action) {
 
 	id := uid()
 	body := a.input("body")
-	log_debug("Chat sending message '%s'", body)
+	debug("Chat sending message '%s'", body)
 	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
@@ -211,7 +211,7 @@ func chat_message_send(a *Action) {
 	var ms []ChatMember
 	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
-		log_debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
+		debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
 		ev := event(a.user.Identity.ID, m.Member, "chat", "message")
 		ev.set("chat", c.ID, "body", body)
 		ev.add(attachments)
@@ -235,25 +235,25 @@ func chat_new(a *Action) {
 func chat_new_event(e *Event) {
 	f := friend(e.user, e.From)
 	if f == nil {
-		log_info("Chat dropping new chat from unknown friend '%s'", e.From)
+		info("Chat dropping new chat from unknown friend '%s'", e.From)
 		return
 	}
 
 	chat := e.get("chat", "")
 	if !valid(chat, "uid") {
-		log_info("Chat dropping new chat with invalid ID '%s'", chat)
+		info("Chat dropping new chat with invalid ID '%s'", chat)
 		return
 	}
 
 	c := chat_by_id(e.db, chat)
 	if c != nil {
-		log_info("Chat dropping duplicate new chat '%s'", chat)
+		info("Chat dropping duplicate new chat '%s'", chat)
 		return
 	}
 
 	name := e.get("name", "")
 	if !valid(name, "name") {
-		log_info("Chat dropping new chat with invalid name '%s'", name)
+		info("Chat dropping new chat with invalid name '%s'", name)
 		return
 	}
 
@@ -263,12 +263,12 @@ func chat_new_event(e *Event) {
 	if e.decode(&ms) {
 		for _, cm := range ms {
 			if !valid(cm.Member, "entity") {
-				log_info("Chat dropping member with invalid ID '%s'", cm.Member)
+				info("Chat dropping member with invalid ID '%s'", cm.Member)
 				continue
 			}
 
 			if !valid(cm.Name, "name") {
-				log_info("Chat dropping member with invalid name '%s'", cm.Name)
+				info("Chat dropping member with invalid name '%s'", cm.Name)
 				continue
 			}
 

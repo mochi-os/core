@@ -236,41 +236,41 @@ func forums_comment_create(a *Action) {
 
 // Received a forum comment from owner
 func forums_comment_create_event(e *Event) {
-	log_debug("Forum receieved comment create event '%#v'", e)
+	debug("Forum receieved comment create event '%#v'", e)
 
 	f := forum_by_id(e.user, e.db, e.From)
 	if f == nil {
-		log_info("Forum dropping comment to unknown forum")
+		info("Forum dropping comment to unknown forum")
 		return
 	}
 
 	var c ForumComment
 	if !e.decode(&c) {
-		log_info("Forum dropping comment with invalid data")
+		info("Forum dropping comment with invalid data")
 		return
 	}
 
 	if !valid(c.ID, "id") {
-		log_info("Forum dropping comment with invalid ID '%s'", c.ID)
+		info("Forum dropping comment with invalid ID '%s'", c.ID)
 		return
 	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
-		log_info("Forum dropping comment with duplicate ID '%s'", c.ID)
+		info("Forum dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
 	if !valid(c.Author, "entity") {
-		log_info("Forum dropping comment with invalid author '%s'", c.Author)
+		info("Forum dropping comment with invalid author '%s'", c.Author)
 		return
 	}
 
 	if !valid(c.Name, "name") {
-		log_info("Forum dropping comment with invalid name '%s'", c.Name)
+		info("Forum dropping comment with invalid name '%s'", c.Name)
 		return
 	}
 
 	if !valid(c.Body, "text") {
-		log_info("Forum dropping comment with invalid body '%s'", c.Body)
+		info("Forum dropping comment with invalid body '%s'", c.Body)
 		return
 	}
 
@@ -281,42 +281,42 @@ func forums_comment_create_event(e *Event) {
 
 // Received a forum comment from member
 func forums_comment_submit_event(e *Event) {
-	log_debug("Forum receieved comment submit event '%#v'", e)
+	debug("Forum receieved comment submit event '%#v'", e)
 
 	f := forum_by_id(e.user, e.db, e.To)
 	if f == nil {
-		log_info("Forum dropping comment to unknown forum")
+		info("Forum dropping comment to unknown forum")
 		return
 	}
 
 	var c ForumComment
 	if !e.decode(&c) {
-		log_info("Forum dropping comment with invalid data")
+		info("Forum dropping comment with invalid data")
 		return
 	}
 
 	if !valid(c.ID, "id") {
-		log_info("Forum dropping comment with invalid ID '%s'", c.ID)
+		info("Forum dropping comment with invalid ID '%s'", c.ID)
 		return
 	}
 	if e.db.exists("select id from comments where id=?", c.ID) {
-		log_info("Forum dropping comment with duplicate ID '%s'", c.ID)
+		info("Forum dropping comment with duplicate ID '%s'", c.ID)
 		return
 	}
 
 	if !e.db.exists("select id from posts where forum=? and id=?", f.ID, c.Post) {
-		log_info("Forum dropping comment for unknown post '%s'", c.Post)
+		info("Forum dropping comment for unknown post '%s'", c.Post)
 		return
 	}
 
 	if c.Parent != "" && !e.db.exists("select id from comments where forum=? and post=? and id=?", f.ID, c.Post, c.Parent) {
-		log_info("Forum dropping comment with unknown parent '%s'", c.Parent)
+		info("Forum dropping comment with unknown parent '%s'", c.Parent)
 		return
 	}
 
 	m := forum_member(e.db, f, e.From, "commenter")
 	if m == nil {
-		log_info("Forum dropping comment from unknown member '%s'", e.From)
+		info("Forum dropping comment from unknown member '%s'", e.From)
 		return
 	}
 
@@ -325,7 +325,7 @@ func forums_comment_submit_event(e *Event) {
 	c.Name = m.Name
 
 	if !valid(c.Body, "text") {
-		log_info("Forum dropping comment with invalid body '%s'", c.Body)
+		info("Forum dropping comment with invalid body '%s'", c.Body)
 		return
 	}
 
@@ -356,17 +356,17 @@ func forums_comment_new(a *Action) {
 
 // Received a forum comment update event
 func forums_comment_update_event(e *Event) {
-	log_debug("Forum receieved comment update event '%#v'", e)
+	debug("Forum receieved comment update event '%#v'", e)
 
 	var c ForumComment
 	if !e.decode(&c) {
-		log_info("Forum dropping comment update with invalid data")
+		info("Forum dropping comment update with invalid data")
 		return
 	}
 
 	var o ForumComment
 	if !e.db.scan(&o, "select * from comments where forum=? and id=?", e.From, c.ID) {
-		log_info("Forum dropping comment update for unknown comment")
+		info("Forum dropping comment update for unknown comment")
 		return
 	}
 
@@ -452,23 +452,23 @@ func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string)
 func forums_comment_vote_event(e *Event) {
 	var v ForumVote
 	if !e.decode(&v) {
-		log_info("Forum dropping comment vote with invalid data")
+		info("Forum dropping comment vote with invalid data")
 		return
 	}
 
 	var c ForumComment
 	if !e.db.scan(&c, "select * from comments where id=?", v.Comment) {
-		log_info("Forum dropping comment vote for unknown comment")
+		info("Forum dropping comment vote for unknown comment")
 		return
 	}
 	f := forum_by_id(e.user, e.db, c.Forum)
 	if f == nil {
-		log_info("Forum dropping comment vote for unknown forum")
+		info("Forum dropping comment vote for unknown forum")
 		return
 	}
 	m := forum_member(e.db, f, e.From, "voter")
 	if m == nil {
-		log_info("Forum dropping comment vote from unknown member '%s'", e.From)
+		info("Forum dropping comment vote from unknown member '%s'", e.From)
 		return
 	}
 
@@ -604,7 +604,7 @@ func forums_member_update_event(e *Event) {
 	role := e.get("role", "")
 	_, found := forum_roles[role]
 	if !found {
-		log_info("Forum dropping member update with invalid role '%s'", role)
+		info("Forum dropping member update with invalid role '%s'", role)
 		return
 	}
 
@@ -685,7 +685,7 @@ func forums_post_create(a *Action) {
 
 	} else {
 		// We are not forum owner, so send to the owner
-		log_debug("Sending post to forum owner")
+		debug("Sending post to forum owner")
 		ev := event(a.user.Identity.ID, f.ID, "forums", "post/submit")
 		ev.add(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})
 		ev.send()
@@ -698,42 +698,42 @@ func forums_post_create(a *Action) {
 func forums_post_create_event(e *Event) {
 	f := forum_by_id(e.user, e.db, e.From)
 	if f == nil {
-		log_info("Forum dropping post to unknown forum")
+		info("Forum dropping post to unknown forum")
 		return
 	}
 
 	var p ForumPost
 	if !e.decode(&p) {
-		log_info("Forum dropping post with invalid data")
+		info("Forum dropping post with invalid data")
 		return
 	}
 
 	if !valid(p.ID, "id") {
-		log_info("Forum dropping post with invalid ID '%s'", p.ID)
+		info("Forum dropping post with invalid ID '%s'", p.ID)
 		return
 	}
 	if e.db.exists("select id from comments where id=?", p.ID) {
-		log_info("Forum dropping post with duplicate ID '%s'", p.ID)
+		info("Forum dropping post with duplicate ID '%s'", p.ID)
 		return
 	}
 
 	if !valid(p.Author, "entity") {
-		log_info("Forum dropping post with invalid author '%s'", p.Author)
+		info("Forum dropping post with invalid author '%s'", p.Author)
 		return
 	}
 
 	if !valid(p.Name, "name") {
-		log_info("Forum dropping post with invalid name '%s'", p.Name)
+		info("Forum dropping post with invalid name '%s'", p.Name)
 		return
 	}
 
 	if !valid(p.Title, "line") {
-		log_info("Forum dropping post with invalid title '%s'", p.Title)
+		info("Forum dropping post with invalid title '%s'", p.Title)
 		return
 	}
 
 	if !valid(p.Body, "text") {
-		log_info("Forum dropping post with invalid body '%s'", p.Body)
+		info("Forum dropping post with invalid body '%s'", p.Body)
 		return
 	}
 
@@ -764,28 +764,28 @@ func forums_post_new(a *Action) {
 func forums_post_submit_event(e *Event) {
 	f := forum_by_id(e.user, e.db, e.To)
 	if f == nil {
-		log_info("Forum dropping post to unknown forum")
+		info("Forum dropping post to unknown forum")
 		return
 	}
 
 	var p ForumPost
 	if !e.decode(&p) {
-		log_info("Forum dropping post with invalid data")
+		info("Forum dropping post with invalid data")
 		return
 	}
 
 	if !valid(p.ID, "id") {
-		log_info("Forum dropping post with invalid ID '%s'", p.ID)
+		info("Forum dropping post with invalid ID '%s'", p.ID)
 		return
 	}
 	if e.db.exists("select id from posts where id=?", p.ID) {
-		log_info("Forum dropping post with duplicate ID '%s'", p.ID)
+		info("Forum dropping post with duplicate ID '%s'", p.ID)
 		return
 	}
 
 	m := forum_member(e.db, f, e.From, "poster")
 	if m == nil {
-		log_info("Forum dropping post from unknown member '%s'", e.From)
+		info("Forum dropping post from unknown member '%s'", e.From)
 		return
 	}
 
@@ -794,12 +794,12 @@ func forums_post_submit_event(e *Event) {
 	p.Name = m.Name
 
 	if !valid(p.Title, "line") {
-		log_info("Forum dropping post with invalid title '%s'", p.Title)
+		info("Forum dropping post with invalid title '%s'", p.Title)
 		return
 	}
 
 	if !valid(p.Body, "text") {
-		log_info("Forum dropping post with invalid body '%s'", p.Body)
+		info("Forum dropping post with invalid body '%s'", p.Body)
 		return
 	}
 
@@ -824,12 +824,12 @@ func forums_post_submit_event(e *Event) {
 func forums_post_update_event(e *Event) {
 	var p ForumPost
 	if !e.decode(&p) {
-		log_info("Forum dropping post update with invalid data")
+		info("Forum dropping post update with invalid data")
 		return
 	}
 
 	if !e.db.exists("select id from posts where forum=? and id=?", e.From, p.ID) {
-		log_info("Forum dropping post update for unknown post")
+		info("Forum dropping post update for unknown post")
 		return
 	}
 
@@ -942,25 +942,25 @@ func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
 func forums_post_vote_event(e *Event) {
 	var v ForumVote
 	if !e.decode(&v) {
-		log_info("Forum dropping post vote with invalid data")
+		info("Forum dropping post vote with invalid data")
 		return
 	}
 
 	var p ForumPost
 	if !e.db.scan(&p, "select * from posts where id=?", v.Post) {
-		log_info("Forum dropping post vote for unknown post")
+		info("Forum dropping post vote for unknown post")
 		return
 	}
 
 	f := forum_by_id(e.user, e.db, p.Forum)
 	if f == nil {
-		log_info("Forum dropping post vote for unknown forum")
+		info("Forum dropping post vote for unknown forum")
 		return
 	}
 
 	m := forum_member(e.db, f, e.From, "voter")
 	if m == nil {
-		log_info("Forum dropping post vote from unknown member")
+		info("Forum dropping post vote from unknown member")
 		return
 	}
 
@@ -1082,7 +1082,7 @@ func forums_subscribe_event(e *Event) {
 
 	name := e.get("name", "")
 	if !valid(name, "line") {
-		log_info("Forums dropping subscribe with invalid name '%s'", name)
+		info("Forums dropping subscribe with invalid name '%s'", name)
 		return
 	}
 
@@ -1149,7 +1149,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 
 // Received a forum update event from owner
 func forums_update_event(e *Event) {
-	log_debug("Forum receieved update event '%#v'", e)
+	debug("Forum receieved update event '%#v'", e)
 
 	f := forum_by_id(e.user, e.db, e.From)
 	if f == nil {
@@ -1158,7 +1158,7 @@ func forums_update_event(e *Event) {
 
 	members := e.get("members", "0")
 	if !valid(members, "natural") {
-		log_info("Forum dropping update with invalid number of members '%s'", members)
+		info("Forum dropping update with invalid number of members '%s'", members)
 		return
 	}
 	e.db.exec("update forums set members=?, updated=? where id=?", members, now(), f.ID)

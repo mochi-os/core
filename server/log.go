@@ -8,23 +8,25 @@ import (
 	"log"
 )
 
-func log_debug(message string, values ...any) {
-	s := fmt.Sprintf(message, values...)
-	if len(s) > 1000 {
-		log.Print(s[:1000] + "...\n")
+func debug(message string, values ...any) {
+	out := fmt.Sprintf(message, values...)
+	if len(out) > 1000 {
+		log.Print(out[:1000] + "...\n")
 	} else {
-		log.Print(s + "\n")
+		log.Print(out + "\n")
 	}
 }
 
-func log_error(message string, values ...any) {
-	log.Fatalf(message+"\n", values...)
-}
-
-func log_info(message string, values ...any) {
+func info(message string, values ...any) {
 	log.Printf(message+"\n", values...)
 }
 
-func log_warn(message string, values ...any) {
-	log.Printf(message+"\n", values...)
+func warn(message string, values ...any) {
+	out := fmt.Sprintf(message, values...)
+	log.Print(out + "\n")
+
+	admin := ini_string("email", "admin", "")
+	if admin != "" {
+		email_send(admin, "Mochi error", out)
+	}
 }

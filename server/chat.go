@@ -240,7 +240,7 @@ func chat_new_event(e *Event) {
 	}
 
 	chat := e.get("chat", "")
-	if !valid(chat, "uid") {
+	if !valid(chat, "id") {
 		info("Chat dropping new chat with invalid ID '%s'", chat)
 		return
 	}

@@ -146,7 +146,7 @@ func (e *Event) publish(allow_queue bool) {
 	} else if allow_queue {
 		debug("Unable to send broadcast event, adding to queue")
 		db := db_open("db/queue.db")
-		db.exec("replace into broadcast ( id, data, created ) values ( ?, ?, ? )", e.ID, data, now())
+		db.exec("replace into broadcasts ( id, data, created ) values ( ?, ?, ? )", e.ID, data, now())
 	}
 }
 

@@ -92,12 +92,35 @@ func directory_publish_event(e *Event) {
 	debug("Directory received publish event '%#v'", e)
 	now := now()
 
-	//TODO Validate fields
 	id := e.get("id", "")
+	if !valid(id, "entity") {
+		debug("Directory dropping event with invalid id '%s'", id)
+		return
+	}
+
 	name := e.get("name", "")
+	if !valid(name, "line") {
+		debug("Directory dropping event with invalid name '%s'", name)
+		return
+	}
+
 	class := e.get("class", "")
+	if !valid(class, "constant") {
+		debug("Directory dropping event with invalid class '%s'", class)
+		return
+	}
+
 	location := e.get("location", "")
+	if !valid(location, "line") {
+		debug("Directory dropping event with invalid location '%s'", location)
+		return
+	}
+
 	data := e.get("data", "")
+	if !valid(data, "text") {
+		debug("Directory dropping event with invalid data '%s'", data)
+		return
+	}
 
 	if e.From == "" {
 		found := false

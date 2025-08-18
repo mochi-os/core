@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"time"
 )
 
@@ -124,6 +125,7 @@ func entity_peer(id string) string {
 	var d Directory
 	dbd := db_open("db/directory.db")
 	if dbd.scan(&d, "select location from directory where id=?", id) {
+		d.Location, _ = strings.CutPrefix(d.Location, "p2p/")
 		return d.Location
 	}
 

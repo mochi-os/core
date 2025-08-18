@@ -46,7 +46,3 @@ func home(a *Action) {
 
 	a.template("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user), "Welcome": welcome})
 }
-
-func (a *App) home(path string, labels map[string]string) {
-	home_paths[path] = HomePath{Path: path, Labels: labels}
-}

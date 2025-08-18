@@ -238,11 +238,16 @@ func peer_stream(id string) p2p_network.Stream {
 
 // Check whether we have enough peers to send broadcast events to, or whether to queue them
 func peers_sufficient() bool {
+	total := 0
 	peers_lock.Lock()
-	count := len(peers)
+	for _, p := range peers {
+		if p.connected {
+			total++
+		}
+	}
 	peers_lock.Unlock()
 
-	if count >= peers_minimum {
+	if total >= peers_minimum {
 		return true
 	}
 	return false

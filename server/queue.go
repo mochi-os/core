@@ -125,17 +125,17 @@ func queue_manager() {
 			}
 
 			var qbs []QueueBroadcast
-			db.scans(&qbs, "select * from broadcast")
+			db.scans(&qbs, "select * from broadcasts")
 			for _, qb := range qbs {
 				debug("Queue manager sending broadcast event '%s'", qb.ID)
 				p2p_broadcast_events.Publish(p2p_context, qb.Data)
-				db.exec("delete from broadcast where id=?", qb.ID)
+				db.exec("delete from broadcasts where id=?", qb.ID)
 			}
 		}
 
 		now := now()
 		db.exec("delete from entities where created<?", now-maximum_queue_time)
 		db.exec("delete from peers where created<?", now-maximum_queue_time)
-		db.exec("delete from broadcast where created<?", now-maximum_queue_time)
+		db.exec("delete from broadcasts where created<?", now-maximum_queue_time)
 	}
 }

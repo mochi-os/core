@@ -72,8 +72,3 @@ func (a *Action) write(format string, template string, values ...any) {
 		a.template(template, values...)
 	}
 }
-
-func (a *App) action(action string, f func(*Action)) {
-	a.actions[action] = f
-	actions[action] = f
-}

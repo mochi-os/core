@@ -83,8 +83,8 @@ func db_create() {
 	queue.exec("create index peers_peer on peers( peer )")
 	queue.exec("create index peers_created on peers( created )")
 
-	queue.exec("create table broadcast ( id text not null primary key, data blob not null, created integer not null )")
-	queue.exec("create index broadcast_created on broadcast( created )")
+	queue.exec("create table broadcasts ( id text not null primary key, data blob not null, created integer not null )")
+	queue.exec("create index broadcasts_created on broadcasts( created )")
 
 	// Cache
 	cache := db_open("db/cache.db")
@@ -219,9 +219,4 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 func (db *DB) scans(out any, query string, values ...any) {
 	err := db.handle.Select(out, query, values...)
 	check(err)
-}
-
-func (a *App) db(file string, create func(*DB)) {
-	a.db_file = file
-	a.db_create = create
 }

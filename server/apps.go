@@ -66,6 +66,30 @@ func app(name string) *App {
 	return a
 }
 
+func (a *App) action(action string, f func(*Action)) {
+	a.actions[action] = f
+	actions[action] = f
+}
+
+func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
+	s, sender_found := broadcasts_by_sender[sender]
+	if sender_found {
+		_, action_found := s[action]
+		if action_found {
+			s[action] = append(s[action], f)
+		} else {
+			s[action] = broadcast_action_functions{f}
+		}
+	} else {
+		broadcasts_by_sender[sender] = broadcast_actions{action: broadcast_action_functions{f}}
+	}
+}
+
+func (a *App) db(file string, create func(*DB)) {
+	a.db_file = file
+	a.db_create = create
+}
+
 func (a *App) entity(field string) {
 	a.entity_field = field
 }
@@ -76,6 +100,10 @@ func (a *App) event(event string, f func(*Event)) {
 
 func (a *App) event_broadcast(event string, f func(*Event)) {
 	a.events_broadcast[event] = f
+}
+
+func (a *App) home(path string, labels map[string]string) {
+	home_paths[path] = HomePath{Path: path, Labels: labels}
 }
 
 func (a *App) path(path string, f func(*Action)) {

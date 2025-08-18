@@ -145,15 +145,17 @@ func valid(s string, match string) bool {
 
 	switch match {
 	case "constant":
-		match = "^[0-9a-z-/]{1,100}$"
+		match = "^[0-9a-zA-Z/-]{1,100}$"
 	case "entity":
 		match = "^[\\w]{50,51}$"
 	case "filename":
 		match = "^[^<>\r\n\\;\"'`\\.][^<>\r\n\\;\"'`]{0,253}$"
 	case "id":
-		match = "^[\\w-]{32}$"
+		match = "^[0-9a-z]{32}"
 	case "integer":
 		match = "^(-)?\\d{1,9}$"
+	case "json":
+		match = "^[0-9a-zA-Z{}:\"]{1,1000}$"
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":
@@ -171,8 +173,6 @@ func valid(s string, match string) bool {
 			return false
 		}
 		return true
-	case "uid":
-		match = "^[0-9a-z]{32}"
 	case "url":
 		if len(s) > 10000 {
 			return false

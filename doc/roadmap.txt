@@ -21,7 +21,6 @@
 	Users can change their settings
 	Users can create hooks to control events
 	User avatars
-	User content using markup language
 
 	Feeds app
 		Permissions

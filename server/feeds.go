@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"html/template"
+)
+
 type Feed struct {
 	ID          string
 	Fingerprint string
@@ -29,6 +33,7 @@ type FeedPost struct {
 	CreatedString string `cbor:"-"`
 	Updated       int64
 	Body          string
+	BodyMarkdown  template.HTML   `cbor:"-"`
 	MyReaction    string          `cbor:"-"`
 	Attachments   *[]Attachment   `cbor:",omitempty"`
 	Reactions     *[]FeedReaction `cbor:"-"`
@@ -45,6 +50,7 @@ type FeedComment struct {
 	Author        string
 	Name          string
 	Body          string
+	BodyMarkdown  template.HTML   `cbor:"-"`
 	MyReaction    string          `cbor:"-"`
 	Reactions     *[]FeedReaction `cbor:"-"`
 	Children      *[]FeedComment  `cbor:"-"`
@@ -158,6 +164,7 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 	var cs []FeedComment
 	db.scans(&cs, "select * from comments where post=? and parent=? order by created desc", p.ID, id)
 	for j, c := range cs {
+		cs[j].BodyMarkdown = web_markdown(c.Body)
 		cs[j].CreatedString = time_local(u, c.Created)
 		cs[j].User = 0
 		if u != nil {
@@ -951,6 +958,7 @@ func feeds_view(a *Action) {
 			ps[i].FeedName = f.Name
 		}
 
+		ps[i].BodyMarkdown = web_markdown(p.Body)
 		ps[i].CreatedString = time_local(a.user, p.Created)
 		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
 

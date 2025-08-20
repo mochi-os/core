@@ -2,8 +2,11 @@
 {{template "head" .}}
 <p class="header"><a href="/">Mochi</a> | <a href="/forums">Forums</a> | <a href="/forums/{{.Forum.Fingerprint}}">{{.Forum.Name}}</a> | {{.Post.Title}}</p>
 
+<div style="background: #dddddd; padding: 2px;">
+<div style="background: white; margin: 10px; padding: 5px; border-radius: 5px; box-shadow: 1px 1px;">
+
 <h3>{{.Post.Title}}</h3>
-<pre>{{.Post.Body}}</pre>
+{{.Post.BodyMarkdown}}
 
 {{template "attachments" .}}
 
@@ -11,10 +14,14 @@
 
 <p>{{range .Comments}}{{template "forum_comment" .}}{{end}}</p>
 
+</div>
+</div>
+
 {{template "foot" .}}
 
 {{define "forum_comment"}}
 	<hr/>
-	<pre>{{.Body}}</pre><p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum}}/{{.Post}}/comment?parent={{.ID}}">Reply</a>{{end}}{{if $.RoleVoter}} <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}} &uarr;{{.Up}} &darr;{{.Down}}{{end}}</p>
+	{{.BodyMarkdown}}
+	<p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum}}/{{.Post}}/comment?parent={{.ID}}">Reply</a>{{end}}{{if $.RoleVoter}} <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}} &uarr;{{.Up}} &darr;{{.Down}}{{end}}</p>
 	{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}
 {{end}}

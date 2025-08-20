@@ -3,7 +3,7 @@
 <p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | New comment
 
 <form action="/feeds/{{.Feed.ID}}/{{.Post}}/create">
-	<textarea name="body" rows="20" cols="100"></textarea><br/>
+	<textarea name="body" rows="20" cols="100" placeholder="Enter comment, markdown is allowed"></textarea><br/>
 	<input type="hidden" name="parent" value="{{.Parent}}"/>
     <input type="submit" value="Comment"/>
 </form>

@@ -51,7 +51,7 @@ func peers_add_from_db(limit int) {
 		}
 		debug("Adding database peer '%s' at %v", p.ID, addresses)
 		peer_add_known(p.ID, addresses)
-		peer_connect(p.ID)
+		go peer_connect(p.ID)
 	}
 }
 

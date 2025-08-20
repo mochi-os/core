@@ -1,6 +1,6 @@
 {{define "title"}}Post created{{end}}
 {{template "head" .}}
-<p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.ID}}">{{.Feed.Name}}</a> | Post created
+<p class="header"><a href="/">Mochi</a> | <a href="/feeds">Feeds</a> | <a href="/feeds/{{.Feed.Fingerprint}}">{{.Feed.Name}}</a> | Post created
 
 <p>Your post has been created. You may now <a href="/feeds">return</a>.</p>
 

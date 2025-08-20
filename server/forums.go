@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	"html/template"
+)
+
 type Forum struct {
 	ID          string
 	Fingerprint string
@@ -32,6 +36,7 @@ type ForumPost struct {
 	Name          string
 	Title         string
 	Body          string
+	BodyMarkdown  template.HTML `cbor:"-"`
 	Comments      int
 	Up            int
 	Down          int
@@ -48,6 +53,7 @@ type ForumComment struct {
 	Author        string
 	Name          string
 	Body          string
+	BodyMarkdown  template.HTML `cbor:"-"`
 	Up            int
 	Down          int
 	Children      *[]ForumComment `cbor:"-"`
@@ -161,6 +167,7 @@ func forum_comments(u *User, db *DB, f *Forum, m *ForumMember, p *ForumPost, par
 	var cs []ForumComment
 	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
 	for j, c := range cs {
+		cs[j].BodyMarkdown = web_markdown(c.Body)
 		cs[j].CreatedString = time_local(u, c.Created)
 		cs[j].Children = forum_comments(u, db, f, m, p, &c, depth+1)
 		cs[j].RoleVoter = forum_role(m, "voter")
@@ -847,6 +854,7 @@ func forums_post_view(a *Action) {
 		a.error(404, "Post not found")
 		return
 	}
+	p.BodyMarkdown = web_markdown(p.Body)
 	p.CreatedString = time_local(a.user, p.Created)
 
 	f := forum_by_id(a.user, a.db, p.Forum)
@@ -1213,6 +1221,7 @@ func forums_view(a *Action) {
 		if a.db.scan(&f, "select name from forums where id=?", p.Forum) {
 			ps[i].ForumName = f.Name
 		}
+		ps[i].BodyMarkdown = web_markdown(p.Body)
 		ps[i].CreatedString = time_local(a.user, p.Created)
 		ps[i].Attachments = attachments(a.owner, "forums/%s/%s", p.Forum, p.ID)
 	}

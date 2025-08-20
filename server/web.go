@@ -90,6 +90,10 @@ func web_login(c *gin.Context) {
 	web_template(c, 200, "login/email")
 }
 
+func web_markdown(in string) template.HTML {
+	return template.HTML(markdown([]byte(in)))
+}
+
 func (p *Path) web_path(c *gin.Context) {
 	var user *User = nil
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))

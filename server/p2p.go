@@ -146,7 +146,7 @@ func p2p_start() {
 		if p.ID != p2p_id {
 			debug("Adding bootstrap peer '%s' at %v", p.ID, p.addresses)
 			peer_add_known(p.ID, p.addresses)
-			peer_connect(p.ID)
+			go peer_connect(p.ID)
 		}
 	}
 

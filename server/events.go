@@ -189,6 +189,11 @@ func (e *Event) route() {
 
 // Send a completed outgoing event
 func (e *Event) send() {
+	go e.send_work()
+}
+
+// Do the work of sending
+func (e *Event) send_work() {
 	if e.ID == "" {
 		e.ID = uid()
 	}
@@ -203,7 +208,6 @@ func (e *Event) send() {
 		debug("Unable to open peer for writing")
 		failed = true
 	}
-	defer w.Close()
 
 	headers := cbor_encode(e)
 	if !failed {
@@ -254,6 +258,10 @@ func (e *Event) send() {
 				failed = true
 			}
 		}
+	}
+
+	if w != nil {
+		w.Close()
 	}
 
 	if !failed {

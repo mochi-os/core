@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/btcsuite/btcutil/base58"
 	cbor "github.com/fxamacker/cbor/v2"
+	md "github.com/gomarkdown/markdown"
 	"github.com/google/uuid"
 	"math/big"
 	"regexp"
@@ -89,6 +90,10 @@ func json_encode(in any) string {
 	j, err := json.Marshal(in)
 	check(err)
 	return string(j)
+}
+
+func markdown(in []byte) []byte {
+	return md.ToHTML(in, nil, nil)
 }
 
 func now() int64 {

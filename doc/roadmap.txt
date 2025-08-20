@@ -5,27 +5,23 @@
 		Attachments
 		Cache
 
-	p2p
-		Pubsub updates
-	Protocol
-		Check sender owns user
-		Prevent replay attacks
-		Directory messages must be timestamped and signed
+	Pubsubs
+	Remove unwanted debugging
 
 0.2
 	Web interface
 	Client API
+
 	Route on entity
 	Map web URLs to entities
-
 	Find hidden services
 	Directory get recent updates
 
-	Map web URLs to entities
 	User management
 	Users can change their settings
 	Users can create hooks to control events
 	User avatars
+	User content using markup language
 
 	Feeds app
 		Permissions

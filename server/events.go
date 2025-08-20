@@ -45,7 +45,7 @@ func event_receive(r io.Reader, peer string, address string) {
 		return
 	}
 
-	debug("Received event from peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
+	debug("Event received from peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
 
 	if !valid(e.ID, "id") {
 		info("Dropping event with invalid id '%s'", e.ID)
@@ -90,7 +90,6 @@ func event_receive(r io.Reader, peer string, address string) {
 			return
 		}
 	}
-	debug("Received event signature '%s'", signature)
 
 	// Decode the content segment
 	err = d.Decode(&e.content)
@@ -98,7 +97,6 @@ func event_receive(r io.Reader, peer string, address string) {
 		info("Dropping event with bad content segment: %v", err)
 		return
 	}
-	debug("Received event content segment: %#v", e.content)
 
 	// Route to app
 	e.decoder = d
@@ -134,7 +132,7 @@ func (e *Event) get(field string, def string) string {
 
 // Publish an event to a pubsub
 func (e *Event) publish(allow_queue bool) {
-	debug("Publishing event, from='%s', to='%s', service='%s', action='%s'", e.From, e.To, e.Service, e.Action)
+	debug("Event publishing, from='%s', to='%s', service='%s', action='%s'", e.From, e.To, e.Service, e.Action)
 	data := cbor_encode(&e)
 	data = append(data, cbor_encode(e.signature())...)
 	data = append(data, cbor_encode(e.content)...)
@@ -197,7 +195,7 @@ func (e *Event) send() {
 
 	peer := entity_peer(e.To)
 
-	debug("Sending event to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
+	debug("Event sending to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
 	failed := false
 
 	w := peer_writer(peer)
@@ -209,7 +207,6 @@ func (e *Event) send() {
 
 	headers := cbor_encode(e)
 	if !failed {
-		debug("Sending headers segment to peer, length %d", len(headers))
 		_, err := w.Write(headers)
 		if err != nil {
 			debug("Error sending headers segment: %v", err)
@@ -219,7 +216,6 @@ func (e *Event) send() {
 
 	signature := cbor_encode(e.signature())
 	if !failed {
-		debug("Sending signature segment to peer, length %d", len(signature))
 		_, err := w.Write(signature)
 		if err != nil {
 			debug("Error sending signature segment: %v", err)
@@ -229,7 +225,6 @@ func (e *Event) send() {
 
 	content := cbor_encode(e.content)
 	if !failed {
-		debug("Sending content segment to peer, length %d", len(content))
 		_, err := w.Write(content)
 		if err != nil {
 			debug("Error sending content segment: %v", err)
@@ -238,7 +233,6 @@ func (e *Event) send() {
 	}
 
 	if len(e.data) > 0 && !failed {
-		debug("Sending data segment to peer, length %d", len(e.data))
 		_, err := w.Write(e.data)
 		if err != nil {
 			debug("Error sending data segment: %v", err)
@@ -247,7 +241,6 @@ func (e *Event) send() {
 	}
 
 	if e.file != "" && !failed {
-		debug("Sending file segment to peer: %s", e.file)
 		f, err := os.Open(e.file)
 		if err != nil {
 			warn("Unable to read file '%s'", e.file)
@@ -255,22 +248,21 @@ func (e *Event) send() {
 		}
 		defer f.Close()
 		if !failed {
-			n, err := io.Copy(w, f)
+			_, err := io.Copy(w, f)
 			if err != nil {
 				debug("Error sending file segment: %v", err)
 				failed = true
 			}
-			debug("Finished sending file segment, length %d", n)
 		}
 	}
 
 	if !failed {
-		debug("Finished sending event to peer")
+		debug("Event finished sending to peer")
 		return
 	}
 
 	//TODO Mark peer as disconnected?
-	debug("Unable to send event to '%s', adding to queue", e.To)
+	debug("Event unable to send to '%s', adding to queue", e.To)
 	data := slices.Concat(headers, signature, content, e.data)
 	db := db_open("db/queue.db")
 	if peer == "" {

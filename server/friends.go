@@ -211,7 +211,6 @@ func friends_invite_event(e *Event) {
 
 	if e.db.exists("select id from invites where identity=? and id=? and direction='to'", e.To, e.From) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
-		//TODO Set friend name?
 		friend_accept(e.user, e.db, e.From)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam

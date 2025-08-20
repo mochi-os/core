@@ -40,7 +40,6 @@ func (a *Action) json(in any) {
 	a.web.JSON(200, in)
 }
 
-// TODO Replace public mode with something better
 func (a *Action) public_mode() *Action {
 	debug("Switching action to public mode")
 	a.user = nil

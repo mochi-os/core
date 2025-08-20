@@ -94,7 +94,7 @@ func p2p_pubsubs() {
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
 			//TODO Provide source address
-			event_receive_reader(bytes.NewReader(m.Data), peer, "")
+			event_receive(bytes.NewReader(m.Data), peer, "")
 			//TODO Add peer for source at address
 			//peer_discovered(peer, address)
 			//peer_connect(peer)
@@ -108,7 +108,7 @@ func p2p_receive_event(s p2p_network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P event from '%s' at '%s'", peer, address)
 
-	event_receive_reader(bufio.NewReader(s), peer, address)
+	event_receive(bufio.NewReader(s), peer, address)
 	peer_discovered(peer, address)
 }
 

@@ -556,12 +556,13 @@ func feeds_post_create(a *Action) {
 
 	a.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", post, f.ID, now, now, body)
 	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
+	attachments := a.upload_attachments("attachments", f.ID, true, "feeds/%s/%s", f.ID, post)
 
 	var ss []FeedSubscriber
 	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
 		ev := event(f.ID, s.ID, "feeds", "post/create")
-		ev.add(FeedPost{ID: post, Created: now, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "feeds/%s/%s", f.ID, post)})
+		ev.add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments})
 		ev.send()
 	}
 

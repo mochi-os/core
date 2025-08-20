@@ -4,7 +4,7 @@
 package main
 
 import (
-	p2p_network "github.com/libp2p/go-libp2p/core/network"
+	"io"
 	"sync"
 	"time"
 )
@@ -188,11 +188,10 @@ func peers_publish() {
 		ev := event("", "", "peers", "publish")
 		ev.publish(false)
 
-		after := time.After(time.Hour)
 		select {
 		case <-peer_publish_chan:
 			debug("Peer publish requested")
-		case <-after:
+		case <-time.After(time.Hour):
 			debug("Peer routine publish")
 		}
 	}
@@ -215,10 +214,17 @@ func peer_request_event(e *Event) {
 	}
 }
 
-// Get a stream to a peer, connecting if necessary
-func peer_stream(id string) p2p_network.Stream {
+// Get a writer to a peer, connecting if necessary
+func peer_writer(id string) io.WriteCloser {
 	if id == "" {
 		return nil
+	}
+
+	if id == p2p_id {
+		debug("Sending event to ourself")
+		r, w := io.Pipe()
+		go event_receive(r, p2p_id, "")
+		return w
 	}
 
 	p := peer_by_id(id)

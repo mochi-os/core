@@ -673,21 +673,23 @@ func forums_post_create(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
+		attachments := a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)
 		var ms []ForumMember
 		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
 				ev := event(f.ID, m.ID, "forums", "post/create")
-				ev.add(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)})
+				ev.add(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: attachments})
 				ev.send()
 			}
 		}
 
 	} else {
 		// We are not forum owner, so send to the owner
+		attachments := a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)
 		debug("Sending post to forum owner")
 		ev := event(a.user.Identity.ID, f.ID, "forums", "post/submit")
-		ev.add(ForumPost{ID: post, Title: title, Body: body, Attachments: a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)})
+		ev.add(ForumPost{ID: post, Title: title, Body: body, Attachments: attachments})
 		ev.send()
 	}
 

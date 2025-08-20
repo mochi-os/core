@@ -192,10 +192,17 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		ev.send()
 	}
 
-	// Wait for response
-	e := <-ar.response
+	// Wait up to 1 minute for response
+	var e *Event
+	select {
+	case e = <-ar.response:
+		debug("Attachment [user %d] received response in requesting thread", a.user.ID)
+	case <-time.After(time.Minute):
+		debug("Attachment [user %d] receive timed out", a.user.ID)
+		return
+	}
 	if e.get("status", "") != "200" {
-		info("Received negative response for attachment '%s': %s", id, e.get("status", ""))
+		info("Attachment received negative response for '%s': %s", id, e.get("status", ""))
 		return
 	}
 
@@ -207,27 +214,34 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	safe := file_name_safe(name)
 	thumbnail_dir := ""
 	if thumbnail {
-		thumbnail_dir = "thumbnail/"
+		thumbnail_dir = "/thumbnail"
 	}
-	path := fmt.Sprintf("attachments/%d/%s/%s/%s%s_%s", user, identity, at.Entity, thumbnail_dir, id, safe)
+	path := fmt.Sprintf("attachments/%d/%s/%s%s/%s_%s", user, identity, at.Entity, thumbnail_dir, id, safe)
 	file := cache_dir + "/" + path
 
+	debug("Attachment [user %d] creating cache file '%s/%s'", a.user.ID, cache_dir, path)
+	file_mkdir(fmt.Sprintf("%s/attachments/%d/%s/%s%s", cache_dir, user, identity, at.Entity, thumbnail_dir))
 	f, err := os.Create(cache_dir + "/" + path)
 	if err != nil {
 		warn("Unable to open cache file '%s/%s' for writing: %v", cache_dir, path, err)
 		f.Close()
 		return
 	}
+	debug("Attachment [user %d] writing to cache file", a.user.ID)
 	_, err = io.Copy(f, e.reader)
+	debug("Attachment [user %d] finished writing to cache file", a.user.ID)
 	f.Close()
+	debug("Attachment [user %d] closed cache file", a.user.ID)
 	if err != nil {
 		warn("Unable to write cache file '%s/%s': %v", cache_dir, path, err)
 		return
 	}
 
+	debug("Attachment writing cache entry, user %d", user)
 	db_cache.exec("replace into attachments ( user, identity, entity, id, thumbnail, path, created ) values ( ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, thumbnail, path, now())
 
 	// Write data to browser from cache
+	debug("Attachment [user %d] writing to browser", a.user.ID)
 	f, err = os.Open(file)
 	defer f.Close()
 	if err != nil {
@@ -235,6 +249,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		return
 	}
 	a.web.DataFromReader(http.StatusOK, file_size(file), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
+	debug("Attachment [user %d] finished")
 }
 
 // Request to get a file
@@ -349,6 +364,7 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 			file_write(fmt.Sprintf("%s/users/%d/%s", data_dir, u.ID, path), at.Data)
 		}
 
+		debug("Attachment saving [user %d]: entity=%s, id=%s, object=%s, rank=%d, name=%s, path=%s, size=%d", u.ID, entity, at.ID, at.Object, at.Rank, at.Name, path, at.Size)
 		db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, at.ID, at.Object, at.Rank, at.Name, path, at.Size, at.Created)
 	}
 }
@@ -366,10 +382,13 @@ func attachments_send_thumbnail_event(e *Event) {
 // Do the work for the above two functions
 func attachments_send_event_work(e *Event, thumbnail bool) {
 	id := e.get("id", "")
+	debug("Attachment [user %d] got response for %#v", e.user.ID, e)
+
 	var survivors []*AttachmentRequest
 	attachments_lock.Lock()
 	for _, r := range attachments_requested {
 		if r.identity == e.To && r.entity == e.From && r.id == id && r.thumbnail == thumbnail {
+			debug("Attachment sending to requesting thread")
 			r.response <- e
 		} else {
 			survivors = append(survivors, r)
@@ -407,6 +426,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			a.web.SaveUploadedFile(f, dir+"/"+path)
 			size := file_size(dir + "/" + path)
 
+			debug("Attachment saving local [user %d]: entity=%s, id=%s, object=%s, rank=%d, name=%s, path=%s, size=%d", a.user.ID, entity, id, object, i+1, f.Filename, path, size)
 			db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, path, size, created)
 			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Path: path, Size: size, Created: created, Image: is_image(f.Filename)})
 
@@ -419,6 +439,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			a.web.SaveUploadedFile(f, tmp)
 			size := file_size(tmp)
 
+			debug("Attachment saving remote [user %d]: entity=%s, id=%s, object=%s, rank=%d, name=%s, size=%d", a.user.ID, entity, id, object, i+1, f.Filename, size)
 			db.exec("replace into attachments ( entity, id, object, rank, name, size, created ) values ( ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, size, created)
 			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Size: size, Created: created, Data: file_read(tmp), Image: is_image(f.Filename)})
 

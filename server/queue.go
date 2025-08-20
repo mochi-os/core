@@ -69,15 +69,16 @@ func queue_check_peer(peer string) {
 
 // Send a queue event
 func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
-	s := peer_stream(peer)
-	if s == nil {
+	w := peer_writer(peer)
+	if w == nil {
 		debug("Unable to create stream to peer, keeping in queue")
 		return false
 	}
+	defer w.Close()
 
 	if len(*data) > 0 {
 		debug("Sending combined data segment")
-		_, err := s.Write(*data)
+		_, err := w.Write(*data)
 		if err != nil {
 			debug("Error sending combined data segment: %v", err)
 			return false
@@ -92,7 +93,7 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 			return false
 		}
 		defer f.Close()
-		n, err := io.Copy(s, f)
+		n, err := io.Copy(w, f)
 		if err != nil {
 			debug("Error sending file segment: %v", err)
 			return false
@@ -100,7 +101,6 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 		debug("Finished sending file segment, length %d", n)
 	}
 
-	s.Close()
 	debug("Queued event sent")
 	return true
 }

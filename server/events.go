@@ -34,7 +34,7 @@ func event(from string, to string, service string, action string) *Event {
 }
 
 // Receive event from reader
-func event_receive_reader(r io.Reader, peer string, address string) {
+func event_receive(r io.Reader, peer string, address string) {
 	d := cbor.NewDecoder(r)
 
 	// Get and verify event headers
@@ -45,11 +45,7 @@ func event_receive_reader(r io.Reader, peer string, address string) {
 		return
 	}
 
-	debug("Received event from peer '%s', from='%s', to='%s', service='%s', action='%s'", peer, e.From, e.To, e.Service, e.Action)
-	e.decoder = d
-	e.reader = r
-	e.p2p_peer = peer
-	e.p2p_address = address
+	debug("Received event from peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
 
 	if !valid(e.ID, "id") {
 		info("Dropping event with invalid id '%s'", e.ID)
@@ -104,7 +100,11 @@ func event_receive_reader(r io.Reader, peer string, address string) {
 	}
 	debug("Received event content segment: %#v", e.content)
 
-	// Route the event to app
+	// Route to app
+	e.decoder = d
+	e.reader = r
+	e.p2p_peer = peer
+	e.p2p_address = address
 	e.route()
 }
 
@@ -196,19 +196,21 @@ func (e *Event) send() {
 	}
 
 	peer := entity_peer(e.To)
-	debug("Sending event to peer '%s', from='%s', to='%s', service='%s', action='%s'", peer, e.From, e.To, e.Service, e.Action)
+
+	debug("Sending event to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
 	failed := false
 
-	//TODO Test sending to local entity
-	s := peer_stream(peer)
-	if s == nil {
-		debug("Unable to open stream to peer")
+	w := peer_writer(peer)
+	if w == nil {
+		debug("Unable to open peer for writing")
 		failed = true
 	}
+	defer w.Close()
 
 	headers := cbor_encode(e)
 	if !failed {
-		_, err := s.Write(headers)
+		debug("Sending headers segment to peer, length %d", len(headers))
+		_, err := w.Write(headers)
 		if err != nil {
 			debug("Error sending headers segment: %v", err)
 			failed = true
@@ -217,7 +219,8 @@ func (e *Event) send() {
 
 	signature := cbor_encode(e.signature())
 	if !failed {
-		_, err := s.Write(signature)
+		debug("Sending signature segment to peer, length %d", len(signature))
+		_, err := w.Write(signature)
 		if err != nil {
 			debug("Error sending signature segment: %v", err)
 			failed = true
@@ -226,7 +229,8 @@ func (e *Event) send() {
 
 	content := cbor_encode(e.content)
 	if !failed {
-		_, err := s.Write(content)
+		debug("Sending content segment to peer, length %d", len(content))
+		_, err := w.Write(content)
 		if err != nil {
 			debug("Error sending content segment: %v", err)
 			failed = true
@@ -234,7 +238,8 @@ func (e *Event) send() {
 	}
 
 	if len(e.data) > 0 && !failed {
-		_, err := s.Write(e.data)
+		debug("Sending data segment to peer, length %d", len(e.data))
+		_, err := w.Write(e.data)
 		if err != nil {
 			debug("Error sending data segment: %v", err)
 			failed = true
@@ -250,17 +255,13 @@ func (e *Event) send() {
 		}
 		defer f.Close()
 		if !failed {
-			n, err := io.Copy(s, f)
+			n, err := io.Copy(w, f)
 			if err != nil {
 				debug("Error sending file segment: %v", err)
 				failed = true
 			}
 			debug("Finished sending file segment, length %d", n)
 		}
-	}
-
-	if s != nil {
-		s.Close()
 	}
 
 	if !failed {

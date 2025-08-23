@@ -58,8 +58,7 @@ func directory_download() {
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
 			debug("Directory requesting download from peer '%s'", p.ID)
-			m := message("", p.ID, "directory", "download")
-			m.send()
+			message("", p.ID, "directory", "download").send()
 		}
 	}
 }

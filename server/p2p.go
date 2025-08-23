@@ -189,7 +189,7 @@ func p2p_stream(peer string) p2p_network.Stream {
 
 // Watch event bus for disconnecting peers
 func p2p_watch_disconnect() {
-	sub, err := p2p_me.EventBus().Subscribe(p2p_event.EvtPeerConnectednessChanged{}, p2p_eventbus.Name("disconnect"))
+	sub, err := p2p_me.EventBus().Subscribe(&p2p_event.EvtPeerConnectednessChanged{}, p2p_eventbus.Name("disconnect"))
 	if err != nil {
 		warn("P2P unable to subscribe to event bus: %v", err)
 		return
@@ -199,7 +199,7 @@ func p2p_watch_disconnect() {
 	for e := range sub.Out() {
 		c := e.(p2p_event.EvtPeerConnectednessChanged)
 		if c.Connectedness == p2p_network.NotConnected {
-			peer_disconnected(string(c.Peer))
+			peer_disconnected(c.Peer.String())
 		}
 	}
 }

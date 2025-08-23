@@ -114,7 +114,6 @@ func peer_connect(id string) bool {
 		return false
 	}
 
-	//TODO Detect when peer becomes disconnected and mark it as such
 	if p.connected {
 		return true
 	}
@@ -128,7 +127,6 @@ func peer_connect(id string) bool {
 }
 
 // Peer has become disconnected
-// TODO Test peer disconnected
 func peer_disconnected(id string) {
 	debug("Peer '%s' disconnected", id)
 

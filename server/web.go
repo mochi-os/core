@@ -133,7 +133,7 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	if user == nil && owner == nil {
+	if p.app.db_file != "" && user == nil && owner == nil {
 		web_error(c, 401, "Content not public, and not logged in")
 		return
 	}

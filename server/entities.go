@@ -116,15 +116,18 @@ func entities_manager() {
 func entity_peer(id string) string {
 	// Check if local
 	var e Entity
-	dbu := db_open("db/users.db")
-	if dbu.scan(&e, "select * from entities where id=?", id) {
+	if db_open("db/users.db").scan(&e, "select * from entities where id=?", id) {
 		return p2p_id
+	}
+
+	// Check if a peer
+	if peer_by_id(id) != nil {
+		return id
 	}
 
 	// Check in directory
 	var d Directory
-	dbd := db_open("db/directory.db")
-	if dbd.scan(&d, "select location from directory where id=?", id) {
+	if db_open("db/directory.db").scan(&d, "select location from directory where id=?", id) {
 		d.Location, _ = strings.CutPrefix(d.Location, "p2p/")
 		return d.Location
 	}

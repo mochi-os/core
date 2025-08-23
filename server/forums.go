@@ -76,7 +76,7 @@ func init() {
 	a := app("forums")
 	a.home("forums", map[string]string{"en": "Forums"})
 	a.entity("forum")
-	a.db("forums.db", forums_db_create)
+	a.db("forums/forums.db", forums_db_create)
 
 	a.path("forums", forums_view)
 	a.path("forums/create", forums_create)

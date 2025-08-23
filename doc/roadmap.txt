@@ -2,8 +2,6 @@
 	File locations and directory layout
 		Databases
 			Replace public mode
-		Attachments
-		Cache
 
 	Pubsubs
 	Remove unwanted debugging

@@ -35,7 +35,7 @@ func is_image(file string) bool {
 
 func thumbnail_create(path string) (string, error) {
 	dir, file := filepath.Split(path)
-	thumb := dir + "thumbnail/" + thumbnail_name(file)
+	thumb := dir + "thumbnails/" + thumbnail_name(file)
 
 	if file_exists(thumb) {
 		return thumb, nil
@@ -56,7 +56,7 @@ func thumbnail_create(path string) (string, error) {
 
 	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
 
-	file_mkdir(dir + "thumbnail")
+	file_mkdir_for_file(thumb)
 	o, err := os.Create(thumb)
 	check(err)
 	defer o.Close()

@@ -10,11 +10,13 @@ import (
 	"crypto/rand"
 	"fmt"
 	p2p "github.com/libp2p/go-libp2p"
-	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
+	p2p_event "github.com/libp2p/go-libp2p/core/event"
+	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	p2p_host "github.com/libp2p/go-libp2p/core/host"
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
@@ -24,10 +26,10 @@ type mdns_notifee struct {
 }
 
 var (
-	p2p_context          = context.Background()
-	p2p_id               string
-	p2p_me               p2p_host.Host
-	p2p_broadcast_events *p2p_pubsub.Topic
+	p2p_context         = context.Background()
+	p2p_id              string
+	p2p_me              p2p_host.Host
+	p2p_pubsub_events_1 *p2p_pubsub.Topic
 )
 
 // Peer discovered using multicast DNS
@@ -84,7 +86,7 @@ func p2p_connect(peer string, addresses []string) bool {
 
 // Join pubsubs
 func p2p_pubsubs() {
-	s, err := p2p_broadcast_events.Subscribe()
+	s, err := p2p_pubsub_events_1.Subscribe()
 	check(err)
 
 	for {
@@ -94,7 +96,7 @@ func p2p_pubsubs() {
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
 			//TODO Provide source address
-			event_receive(bytes.NewReader(m.Data), peer, "")
+			event_receive(bytes.NewReader(m.Data), 1, peer, "")
 			//TODO Add peer for source at address
 			//peer_discovered(peer, address)
 			//peer_connect(peer)
@@ -102,13 +104,13 @@ func p2p_pubsubs() {
 	}
 }
 
-// Receive event from p2p stream
-func p2p_receive_event(s p2p_network.Stream) {
+// Receive event with protocol version 1 from p2p stream
+func p2p_receive_event_1(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P event from '%s' at '%s'", peer, address)
 
-	event_receive(bufio.NewReader(s), peer, address)
+	event_receive(bufio.NewReader(s), 1, peer, address)
 	peer_discovered(peer, address)
 }
 
@@ -139,7 +141,10 @@ func p2p_start() {
 	info("P2P listening on port %d with id '%s'", port, p2p_id)
 
 	// Listen for connecting peers
-	p2p_me.SetStreamHandler("/mochi/events/1", p2p_receive_event)
+	p2p_me.SetStreamHandler("/mochi/events/1", p2p_receive_event_1)
+
+	// Watch event bus for disconnecting peers
+	go p2p_watch_disconnect()
 
 	// Add bootstrap peers
 	for _, p := range peers_bootstrap {
@@ -161,7 +166,7 @@ func p2p_start() {
 	// Start pubsubs
 	gs, err := p2p_pubsub.NewGossipSub(p2p_context, p2p_me)
 	check(err)
-	p2p_broadcast_events, err = gs.Join("events")
+	p2p_pubsub_events_1, err = gs.Join("mochi/events/1")
 	check(err)
 	go p2p_pubsubs()
 }
@@ -180,4 +185,21 @@ func p2p_stream(peer string) p2p_network.Stream {
 		return nil
 	}
 	return s
+}
+
+// Watch event bus for disconnecting peers
+func p2p_watch_disconnect() {
+	sub, err := p2p_me.EventBus().Subscribe(p2p_event.EvtPeerConnectednessChanged{}, p2p_eventbus.Name("disconnect"))
+	if err != nil {
+		warn("P2P unable to subscribe to event bus: %v", err)
+		return
+	}
+	defer sub.Close()
+
+	for e := range sub.Out() {
+		ev := e.(p2p_event.EvtPeerConnectednessChanged)
+		if ev.Connectedness == p2p_network.NotConnected {
+			peer_disconnected(ev.Peer)
+		}
+	}
 }

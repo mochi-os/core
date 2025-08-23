@@ -127,6 +127,23 @@ func peer_connect(id string) bool {
 	return p.connected
 }
 
+// Peer has become disconnected
+//TODO Test peer disconnected
+func peer_disconnected(id string) {
+	debug("Peer '%s' disconnected", id)
+
+	peers_lock.Lock()
+	p, found := peers[id]
+	peers_lock.Unlock()
+
+	if found {
+		p.connected = false
+		peers_lock.Lock()
+		peers[id] = p
+		peers_lock.Unlock()
+	}
+}
+
 // New or existing peer discovered or re-discovered
 func peer_discovered(id string, address string) {
 	now := now()
@@ -223,12 +240,13 @@ func peer_writer(id string) io.WriteCloser {
 	if id == p2p_id {
 		debug("Sending event to ourself")
 		r, w := io.Pipe()
-		go event_receive(r, p2p_id, "")
+		go event_receive(r, 1, p2p_id, "")
 		return w
 	}
 
 	p := peer_by_id(id)
 	if p == nil {
+		// In a future version, rate limit this
 		//TODO Test once p2p_address is set
 		debug("Peer '%s' unknown, sending pubsub request for it", id)
 		ev := event("", "", "peers", "request")

@@ -17,6 +17,7 @@ type Event struct {
 	To          string `cbor:"to,omitempty"`
 	Service     string `cbor:"service,omitempty"`
 	Action      string `cbor:"action,omitempty"`
+	Signature   string `cbor:"signature,omitempty"`
 	content     map[string]string
 	data        []byte
 	file        string
@@ -34,7 +35,7 @@ func event(from string, to string, service string, action string) *Event {
 }
 
 // Receive event from reader
-func event_receive(r io.Reader, peer string, address string) {
+func event_receive(r io.Reader, version int, peer string, address string) {
 	d := cbor.NewDecoder(r)
 
 	// Get and verify event headers
@@ -72,20 +73,13 @@ func event_receive(r io.Reader, peer string, address string) {
 		return
 	}
 
-	// Get and verify headers signature
-	var signature string
-	err = d.Decode(&signature)
-	if err != nil {
-		info("Dropping event '%s' with invalid signature: %v", e.ID, err)
-		return
-	}
 	if e.From != "" {
 		public := base58_decode(e.From, "")
 		if len(public) != ed25519.PublicKeySize {
 			info("Dropping event '%s' with invalid from length %d!=%d", e.ID, len(public), ed25519.PublicKeySize)
 			return
 		}
-		if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action), base58_decode(signature, "")) {
+		if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action), base58_decode(e.Signature, "")) {
 			info("Dropping event '%s' with incorrect signature", e.ID)
 			return
 		}
@@ -133,13 +127,12 @@ func (e *Event) get(field string, def string) string {
 // Publish an event to a pubsub
 func (e *Event) publish(allow_queue bool) {
 	debug("Event publishing, from='%s', to='%s', service='%s', action='%s'", e.From, e.To, e.Service, e.Action)
+	e.Signature = e.signature()
 	data := cbor_encode(&e)
-	data = append(data, cbor_encode(e.signature())...)
 	data = append(data, cbor_encode(e.content)...)
 
 	if peers_sufficient() {
-		debug("Sending event via libp2p, length=%d", len(data))
-		p2p_broadcast_events.Publish(p2p_context, data)
+		p2p_pubsub_events_1.Publish(p2p_context, data)
 
 	} else if allow_queue {
 		debug("Unable to send broadcast event, adding to queue")
@@ -194,14 +187,15 @@ func (e *Event) send() {
 
 // Do the work of sending
 func (e *Event) send_work() {
+	failed := false
+
 	if e.ID == "" {
 		e.ID = uid()
 	}
+	e.Signature = e.signature()
 
 	peer := entity_peer(e.To)
-
 	debug("Event sending to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
-	failed := false
 
 	w := peer_writer(peer)
 	if w == nil {
@@ -214,15 +208,6 @@ func (e *Event) send_work() {
 		_, err := w.Write(headers)
 		if err != nil {
 			debug("Error sending headers segment: %v", err)
-			failed = true
-		}
-	}
-
-	signature := cbor_encode(e.signature())
-	if !failed {
-		_, err := w.Write(signature)
-		if err != nil {
-			debug("Error sending signature segment: %v", err)
 			failed = true
 		}
 	}
@@ -264,19 +249,17 @@ func (e *Event) send_work() {
 		w.Close()
 	}
 
-	if !failed {
-		debug("Event finished sending to peer")
-		return
-	}
+	if failed {
+		peer_disconnected(peer)
 
-	//TODO Mark peer as disconnected?
-	debug("Event unable to send to '%s', adding to queue", e.To)
-	data := slices.Concat(headers, signature, content, e.data)
-	db := db_open("db/queue.db")
-	if peer == "" {
-		db.exec("replace into entities ( id, entity, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, e.To, data, e.file, now())
-	} else {
-		db.exec("replace into peers ( id, peer, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, peer, data, e.file, now())
+		debug("Event unable to send to '%s', adding to queue", e.To)
+		data := slices.Concat(headers, content, e.data)
+		db := db_open("db/queue.db")
+		if peer == "" {
+			db.exec("replace into entities ( id, entity, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, e.To, data, e.file, now())
+		} else {
+			db.exec("replace into peers ( id, peer, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, peer, data, e.file, now())
+		}
 	}
 }
 
@@ -297,20 +280,18 @@ func (e *Event) signature() string {
 		return ""
 	}
 
-	if e.ID == "" {
-		panic("Event did not specify ID")
-	}
-
 	db := db_open("db/users.db")
 	var from Entity
 	if !db.scan(&from, "select private from entities where id=?", e.From) {
 		warn("Not signing event due unknown sending entity")
 		return ""
 	}
+
 	private := base58_decode(from.Private, "")
 	if string(private) == "" {
 		warn("Not signing event due to invalid private key")
 		return ""
 	}
+
 	return base58_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.Service+e.Action)))
 }

@@ -30,7 +30,7 @@ type ChatMessage struct {
 func init() {
 	a := app("chat")
 	a.home("chat", map[string]string{"en": "Chat"})
-	a.db("chat.db", chat_db_create)
+	a.db("chat/chat.db", chat_db_create)
 
 	a.path("chat", chat_list)
 	a.path("chat/create", chat_create)

@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,7 +20,7 @@ var (
 )
 
 func file_create(path string) {
-	file_mkdir(filepath.Dir(path))
+	file_mkdir_for_file(path)
 	f, err := os.Create(path)
 	check(err)
 	f.Close()
@@ -52,6 +53,10 @@ func file_exists(path string) bool {
 func file_mkdir(path string) {
 	err := os.MkdirAll(path, 0755)
 	check(err)
+}
+
+func file_mkdir_for_file(path string) {
+	file_mkdir(filepath.Dir(path))
 }
 
 func file_mkfifo(path string) {
@@ -103,7 +108,26 @@ func file_size(path string) int64 {
 }
 
 func file_write(path string, data []byte) {
-	file_mkdir(filepath.Dir(path))
+	file_mkdir_for_file(path)
 	err := os.WriteFile(path, data, 0644)
 	check(err)
+}
+
+func file_write_from_reader(path string, r io.Reader) bool {
+	file_mkdir_for_file(path)
+
+	f, err := os.Create(path)
+	defer f.Close()
+	if err != nil {
+		warn("Unable to open file '%s' for writing: %v", path, err)
+		return false
+	}
+
+	_, err = io.Copy(f, r)
+	if err != nil {
+		warn("Unable to write to file '%s': %v", path, err)
+		return false
+	}
+
+	return true
 }

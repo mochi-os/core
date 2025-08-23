@@ -27,7 +27,7 @@ func cache_manager() {
 		time.Sleep(24 * time.Hour)
 		debug("Cache cleaning files older than 30 days")
 		db.exec("delete from attachments where created<?", now()-30*86400)
-		filepath.WalkDir(cache_dir+"/attachments", cache_manager_walk)
+		filepath.WalkDir(cache_dir, cache_manager_walk)
 	}
 }
 
@@ -37,7 +37,7 @@ func cache_manager_walk(path string, d fs.DirEntry, err error) error {
 		return err
 	}
 
-	if path == cache_dir+"/attachments" {
+	if path == cache_dir {
 		return nil
 	}
 

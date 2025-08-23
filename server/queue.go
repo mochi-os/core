@@ -128,7 +128,7 @@ func queue_manager() {
 			db.scans(&qbs, "select * from broadcasts")
 			for _, qb := range qbs {
 				debug("Queue manager sending broadcast event '%s'", qb.ID)
-				p2p_broadcast_events.Publish(p2p_context, qb.Data)
+				p2p_pubsub_events_1.Publish(p2p_context, qb.Data)
 				db.exec("delete from broadcasts where id=?", qb.ID)
 			}
 		}

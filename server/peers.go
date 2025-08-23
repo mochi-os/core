@@ -202,8 +202,8 @@ func peers_manager() {
 // Publish our own information to the pubsub regularly or when requested
 func peers_publish() {
 	for {
-		ev := event("", "", "peers", "publish")
-		ev.publish(false)
+		m := message("", "", "peers", "publish")
+		m.publish(false)
 
 		select {
 		case <-peer_publish_chan:
@@ -240,7 +240,7 @@ func peer_writer(id string) io.WriteCloser {
 	if id == p2p_id {
 		debug("Sending event to ourself")
 		r, w := io.Pipe()
-		go event_receive(r, 1, p2p_id, "")
+		go message_receive(r, 1, p2p_id, "")
 		return w
 	}
 
@@ -249,9 +249,9 @@ func peer_writer(id string) io.WriteCloser {
 		// In a future version, rate limit this
 		//TODO Test once p2p_address is set
 		debug("Peer '%s' unknown, sending pubsub request for it", id)
-		ev := event("", "", "peers", "request")
-		ev.set("id", id)
-		ev.publish(false)
+		m := message("", "", "peers", "request")
+		m.set("id", id)
+		m.publish(false)
 		return nil
 	}
 	if !peer_connect(id) {
@@ -260,7 +260,7 @@ func peer_writer(id string) io.WriteCloser {
 	return p2p_stream(id)
 }
 
-// Check whether we have enough peers to send broadcast events to, or whether to queue them
+// Check whether we have enough peers to send broadcast messages to, or whether to queue them
 func peers_sufficient() bool {
 	total := 0
 	peers_lock.Lock()

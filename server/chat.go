@@ -100,10 +100,10 @@ func chat_create(a *Action) {
 			continue
 		}
 		debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
-		ev := event(a.user.Identity.ID, m.Member, "chat", "new")
-		ev.set("id", chat, "name", name)
-		ev.add(members)
-		ev.send()
+		m := message(a.user.Identity.ID, m.Member, "chat", "new")
+		m.set("id", chat, "name", name)
+		m.add(members)
+		m.send()
 	}
 
 	a.redirect("/chat/" + chat)
@@ -140,9 +140,9 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	m := chat_member(e.db, chat, e.From)
+	m := chat_member(e.db, chat, e.from)
 	if m == nil {
-		info("Chat dropping message from unknown member '%s'", e.From)
+		info("Chat dropping message from unknown member '%s'", e.from)
 		return
 	}
 
@@ -152,12 +152,12 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.ID, chat, now(), e.From, m.Name, body)
+	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.id, chat, now(), e.from, m.Name, body)
 
 	var as []Attachment
 	if e.decode(&as) {
 		debug("Chat recieved attachments %v", as)
-		attachments_save(&as, e.user, e.From, "chat/%s/%s", chat, e.ID)
+		attachments_save(&as, e.user, e.from, "chat/%s/%s", chat, e.id)
 	}
 
 	websockets_send(e.user, "chat", json_encode(Map{"Name": m.Name, "Body": body, "Attachments": &as}))
@@ -212,10 +212,10 @@ func chat_message_send(a *Action) {
 	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
 		debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
-		ev := event(a.user.Identity.ID, m.Member, "chat", "message")
-		ev.set("chat", c.ID, "body", body)
-		ev.add(attachments)
-		ev.send()
+		m := message(a.user.Identity.ID, m.Member, "chat", "message")
+		m.set("chat", c.ID, "body", body)
+		m.add(attachments)
+		m.send()
 	}
 
 	websockets_send(a.user, "chat", json_encode(Map{"Name": a.user.Identity.Name, "Body": body, "Attachments": attachments}))
@@ -233,9 +233,9 @@ func chat_new(a *Action) {
 
 // Received a new chat event from a friend
 func chat_new_event(e *Event) {
-	f := friend(e.user, e.From)
+	f := friend(e.user, e.from)
 	if f == nil {
-		info("Chat dropping new chat from unknown friend '%s'", e.From)
+		info("Chat dropping new chat from unknown friend '%s'", e.from)
 		return
 	}
 
@@ -257,7 +257,7 @@ func chat_new_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, e.To, name, now())
+	e.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, e.to, name, now())
 
 	var ms []ChatMember
 	if e.decode(&ms) {

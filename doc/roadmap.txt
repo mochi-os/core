@@ -1,14 +1,12 @@
 0.1
-	File locations and directory layout
-		Databases
-			Replace public mode
-
+	Messages and events
 	Pubsubs
+	Replace public mode
 	Remove unwanted debugging
 
 0.2
-	Web interface
 	Client API
+	Web interface
 
 	Route on entity
 	Map web URLs to entities
@@ -45,7 +43,6 @@
 		Audio
 		Video
 
-	Wiki app
 	Push notifications to Android and iOS apps
 	Users can categorise updates into feeds
 	Read external RSS feeds
@@ -63,3 +60,4 @@ Ideas for apps
 	File sharing
 	Chess
 	Scrabble playalike
+	Wiki

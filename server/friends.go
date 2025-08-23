@@ -83,14 +83,14 @@ func friend_accept(u *User, db *DB, id string) {
 	if !db.exists("select id from friends where identity=? and id=?", u.Identity.ID, id) {
 		friend_create(u, db, id, fi.Name, "person", false)
 	}
-	ev := event(u.Identity.ID, id, "friends", "accept")
-	ev.send()
+	m := message(u.Identity.ID, id, "friends", "accept")
+	m.send()
 	db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where identity=? and id=? and direction='to'", u.Identity.ID, id) {
-		ev := event(u.Identity.ID, id, "friends", "cancel")
-		ev.send()
+		m := message(u.Identity.ID, id, "friends", "cancel")
+		m.send()
 		db.exec("delete from invites where identity=? and id=? and direction='to'", u.Identity.ID, id)
 	}
 
@@ -111,17 +111,17 @@ func friends_accept(a *Action) {
 // Remote party accepted our invitation
 func friends_accept_event(e *Event) {
 	var fi FriendInvite
-	if e.db.scan(&fi, "select * from invites where identity=? and id=? and direction='to'", e.To, e.From) {
+	if e.db.scan(&fi, "select * from invites where identity=? and id=? and direction='to'", e.to, e.from) {
 		notification(e.user, "friends", "accept", fi.ID, fi.Name+" accepted your friend invitation", "/friends")
-		e.db.exec("delete from invites where identity=? and id=? and direction='to'", e.To, e.From)
-		broadcast(e.user, "friends", "accepted", e.From, nil)
+		e.db.exec("delete from invites where identity=? and id=? and direction='to'", e.to, e.from)
+		broadcast(e.user, "friends", "accepted", e.from, nil)
 	}
 }
 
 // Remote party cancelled their existing invitation
 func friends_cancel_event(e *Event) {
-	e.db.exec("delete from invites where identity=? and id=? and direction='from'", e.To, e.From)
-	broadcast(e.user, "friends", "cancelled", e.From, nil)
+	e.db.exec("delete from invites where identity=? and id=? and direction='from'", e.to, e.from)
+	broadcast(e.user, "friends", "cancelled", e.from, nil)
 }
 
 // Create new friend
@@ -143,15 +143,15 @@ func friend_create(u *User, db *DB, id string, name string, class string, invite
 
 	if db.exists("select id from invites where identity=? and id=? and direction='from'", u.Identity.ID, id) {
 		// We have an existing invitation from them, so accept it automatically
-		ev := event(u.Identity.ID, id, "friends", "accept")
-		ev.send()
+		m := message(u.Identity.ID, id, "friends", "accept")
+		m.send()
 		db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	} else if invite {
 		// Send invitation
-		ev := event(u.Identity.ID, id, "friends", "invite")
-		ev.set("name", u.Identity.Name)
-		ev.send()
+		m := message(u.Identity.ID, id, "friends", "invite")
+		m.set("name", u.Identity.Name)
+		m.send()
 		db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'to', ?, ? )", u.Identity.ID, id, name, now_string())
 	}
 
@@ -209,14 +209,14 @@ func friends_invite_event(e *Event) {
 		return
 	}
 
-	if e.db.exists("select id from invites where identity=? and id=? and direction='to'", e.To, e.From) {
+	if e.db.exists("select id from invites where identity=? and id=? and direction='to'", e.to, e.from) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
-		friend_accept(e.user, e.db, e.From)
+		friend_accept(e.user, e.db, e.from)
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
-		e.db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'from', ?, ? )", e.To, e.From, name, now_string())
+		e.db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'from', ?, ? )", e.to, e.from, name, now_string())
 	}
-	broadcast(e.user, "friends", "invited", e.From, nil)
+	broadcast(e.user, "friends", "invited", e.from, nil)
 }
 
 // Show list of friends

@@ -58,8 +58,8 @@ func directory_download() {
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
 			debug("Directory requesting download from peer '%s'", p.ID)
-			ev := event("", p.ID, "directory", "download")
-			ev.send()
+			m := message("", p.ID, "directory", "download")
+			m.send()
 		}
 	}
 }
@@ -73,18 +73,18 @@ func directory_download_event(e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		ev := event(e.To, e.From, "directory", "publish")
-		ev.add(d)
-		ev.send()
+		m := message(e.to, e.from, "directory", "publish")
+		m.add(d)
+		m.send()
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	ev := event(e.ID, "", "directory", "publish")
-	ev.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
-	ev.publish(allow_queue)
+	m := message(e.ID, "", "directory", "publish")
+	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
+	m.publish(allow_queue)
 }
 
 // Received a directory publish event from another server
@@ -122,7 +122,7 @@ func directory_publish_event(e *Event) {
 		return
 	}
 
-	if e.From == "" {
+	if e.from == "" {
 		found := false
 		for _, p := range peers_bootstrap {
 			if e.p2p_peer == p.ID {
@@ -135,8 +135,8 @@ func directory_publish_event(e *Event) {
 			return
 		}
 
-	} else if e.From != id {
-		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.From)
+	} else if e.from != id {
+		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.from)
 		return
 	}
 
@@ -149,9 +149,9 @@ func directory_publish_event(e *Event) {
 // Request that another server publish a directory event
 // TODO Test directory publish request
 func directory_request(id string) {
-	ev := event("", "", "directory", "request")
-	ev.set("id", id)
-	ev.publish(false)
+	m := message("", "", "directory", "request")
+	m.set("id", id)
+	m.publish(false)
 }
 
 // Reply to a directory request if we have the requested entity

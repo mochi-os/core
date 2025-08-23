@@ -234,17 +234,17 @@ func feeds_comment_create(a *Action) {
 		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				ev := event(f.ID, s.ID, "feeds", "comment/create")
-				ev.add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
-				ev.send()
+				m := message(f.ID, s.ID, "feeds", "comment/create")
+				m.add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
+				m.send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		ev := event(a.user.Identity.ID, f.ID, "feeds", "comment/submit")
-		ev.add(FeedComment{ID: id, Post: post, Parent: parent, Body: body})
-		ev.send()
+		m := message(a.user.Identity.ID, f.ID, "feeds", "comment/submit")
+		m.add(FeedComment{ID: id, Post: post, Parent: parent, Body: body})
+		m.send()
 	}
 
 	a.template("feeds/comment/create", Map{"Feed": f, "Post": post})
@@ -252,7 +252,7 @@ func feeds_comment_create(a *Action) {
 
 // Received a feed comment from owner
 func feeds_comment_create_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.From)
+	f := feed_by_id(e.user, e.db, e.from)
 	if f == nil {
 		info("Feed dropping comment to unknown feed")
 		return
@@ -295,7 +295,7 @@ func feeds_comment_create_event(e *Event) {
 
 // Received a feed comment from subscriber
 func feeds_comment_submit_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.To)
+	f := feed_by_id(e.user, e.db, e.to)
 	if f == nil {
 		info("Feed dropping comment to unknown feed")
 		return
@@ -326,14 +326,14 @@ func feeds_comment_submit_event(e *Event) {
 		return
 	}
 
-	s := feed_subscriber(e.db, f, e.From)
+	s := feed_subscriber(e.db, f, e.from)
 	if s == nil {
-		info("Feed dropping comment from unknown subscriber '%s'", e.From)
+		info("Feed dropping comment from unknown subscriber '%s'", e.from)
 		return
 	}
 
 	c.Created = now()
-	c.Author = e.From
+	c.Author = e.from
 	c.Name = s.Name
 
 	if !valid(c.Body, "text") {
@@ -341,17 +341,17 @@ func feeds_comment_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
+	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 
 	var ss []FeedSubscriber
 	e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 	for _, s := range ss {
-		if s.ID != e.From && s.ID != e.user.Identity.ID {
-			ev := event(f.ID, s.ID, "feeds", "comment/create")
-			ev.add(c)
-			ev.send()
+		if s.ID != e.from && s.ID != e.user.Identity.ID {
+			m := message(f.ID, s.ID, "feeds", "comment/create")
+			m.add(c)
+			m.send()
 		}
 	}
 }
@@ -394,17 +394,17 @@ func feeds_comment_react(a *Action) {
 		a.db.scans(&ss, "select id from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				ev := event(f.ID, s.ID, "feeds", "comment/react")
-				ev.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
-				ev.send()
+				m := message(f.ID, s.ID, "feeds", "comment/react")
+				m.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
+				m.send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		ev := event(a.user.Identity.ID, f.ID, "feeds", "comment/react")
-		ev.add(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction})
-		ev.send()
+		m := message(a.user.Identity.ID, f.ID, "feeds", "comment/react")
+		m.add(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction})
+		m.send()
 	}
 
 	a.template("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
@@ -448,27 +448,27 @@ func feeds_comment_reaction_event(e *Event) {
 
 	if f.entity != nil {
 		// We are the feed owner
-		s := feed_subscriber(e.db, f, e.From)
+		s := feed_subscriber(e.db, f, e.from)
 		if s == nil {
-			info("Feed dropping comment reaction from unknown subscriber '%s'", e.From)
+			info("Feed dropping comment reaction from unknown subscriber '%s'", e.from)
 			return
 		}
 
-		feeds_comment_reaction_set(e.db, &c, e.From, fr.Name, reaction)
+		feeds_comment_reaction_set(e.db, &c, e.from, fr.Name, reaction)
 
 		var ss []FeedSubscriber
 		e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
-			if s.ID != e.From && s.ID != e.user.Identity.ID {
-				ev := event(f.ID, s.ID, "feeds", "comment/react")
-				ev.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: e.From, Name: fr.Name, Reaction: reaction})
-				ev.send()
+			if s.ID != e.from && s.ID != e.user.Identity.ID {
+				m := message(f.ID, s.ID, "feeds", "comment/react")
+				m.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction})
+				m.send()
 			}
 		}
 
 	} else {
 		// We are not feed owner
-		if e.From != c.Feed {
+		if e.from != c.Feed {
 			info("Feed dropping comment reaction from unknown owner")
 			return
 		}
@@ -568,9 +568,9 @@ func feeds_post_create(a *Action) {
 	var ss []FeedSubscriber
 	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
-		ev := event(f.ID, s.ID, "feeds", "post/create")
-		ev.add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments})
-		ev.send()
+		m := message(f.ID, s.ID, "feeds", "post/create")
+		m.add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments})
+		m.send()
 	}
 
 	a.template("feeds/post/create", Map{"Feed": f, "Post": post})
@@ -578,7 +578,7 @@ func feeds_post_create(a *Action) {
 
 // Received a feed post from the owner
 func feeds_post_create_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.From)
+	f := feed_by_id(e.user, e.db, e.from)
 	if f == nil {
 		info("Feed dropping post to unknown feed")
 		return
@@ -655,17 +655,17 @@ func feeds_post_react(a *Action) {
 		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				ev := event(f.ID, s.ID, "feeds", "post/react")
-				ev.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
-				ev.send()
+				m := message(f.ID, s.ID, "feeds", "post/react")
+				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
+				m.send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		ev := event(a.user.Identity.ID, f.ID, "feeds", "post/react")
-		ev.add(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction})
-		ev.send()
+		m := message(a.user.Identity.ID, f.ID, "feeds", "post/react")
+		m.add(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction})
+		m.send()
 	}
 
 	a.template("feeds/post/react", Map{"Feed": f, "ID": p.ID})
@@ -708,27 +708,27 @@ func feeds_post_reaction_event(e *Event) {
 
 	if f.entity != nil {
 		// We are the feed owner
-		s := feed_subscriber(e.db, f, e.From)
+		s := feed_subscriber(e.db, f, e.from)
 		if s == nil {
 			info("Feed dropping post reaction from unknown subscriber")
 			return
 		}
 
-		feeds_post_reaction_set(e.db, &p, e.From, fr.Name, reaction)
+		feeds_post_reaction_set(e.db, &p, e.from, fr.Name, reaction)
 
 		var ss []FeedSubscriber
 		e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
-			if s.ID != e.From && s.ID != e.user.Identity.ID {
-				ev := event(f.ID, s.ID, "feeds", "post/react")
-				ev.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: e.From, Name: fr.Name, Reaction: reaction})
-				ev.send()
+			if s.ID != e.from && s.ID != e.user.Identity.ID {
+				m := message(f.ID, s.ID, "feeds", "post/react")
+				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction})
+				m.send()
 			}
 		}
 
 	} else {
 		// We are not feed owner
-		if e.From != p.Feed {
+		if e.from != p.Feed {
 			info("Feed dropping post reaction from unknown owner")
 			return
 		}
@@ -765,32 +765,32 @@ func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		p.Attachments = attachments(u, "feeds/%s/%s", f.ID, p.ID)
-		ev := event(f.ID, subscriber, "feeds", "post/create")
-		ev.add(p)
-		ev.send()
+		m := message(f.ID, subscriber, "feeds", "post/create")
+		m.add(p)
+		m.send()
 
 		var cs []FeedComment
 		db.scans(&cs, "select * from comments where post=? order by created", p.ID)
 		for _, c := range cs {
-			ev := event(f.ID, subscriber, "feeds", "comment/create")
-			ev.add(c)
-			ev.send()
+			m := message(f.ID, subscriber, "feeds", "comment/create")
+			m.add(c)
+			m.send()
 
 			var frs []FeedReaction
 			db.scans(&frs, "select * from reactions where comment=?", c.ID)
 			for _, fr := range frs {
-				ev := event(f.ID, subscriber, "feeds", "comment/react")
-				ev.add(FeedReaction{Feed: f.ID, Post: p.ID, Comment: c.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
-				ev.send()
+				m := message(f.ID, subscriber, "feeds", "comment/react")
+				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Comment: c.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
+				m.send()
 			}
 		}
 
 		var frs []FeedReaction
 		db.scans(&frs, "select * from reactions where post=?", p.ID)
 		for _, fr := range frs {
-			ev := event(f.ID, subscriber, "feeds", "post/react")
-			ev.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
-			ev.send()
+			m := message(f.ID, subscriber, "feeds", "post/react")
+			m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
+			m.send()
 		}
 	}
 }
@@ -819,16 +819,16 @@ func feeds_subscribe(a *Action) {
 
 	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
 
-	ev := event(a.user.Identity.ID, feed, "feeds", "subscribe")
-	ev.set("name", a.user.Identity.Name)
-	ev.send()
+	m := message(a.user.Identity.ID, feed, "feeds", "subscribe")
+	m.set("name", a.user.Identity.Name)
+	m.send()
 
 	a.template("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
 }
 
 // Received a subscribe from a subscriber
 func feeds_subscribe_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.To)
+	f := feed_by_id(e.user, e.db, e.to)
 	if f == nil {
 		return
 	}
@@ -839,11 +839,11 @@ func feeds_subscribe_event(e *Event) {
 		return
 	}
 
-	e.db.exec("insert or ignore into subscribers ( feed, id, name ) values ( ?, ?, ? )", f.ID, e.From, name)
+	e.db.exec("insert or ignore into subscribers ( feed, id, name ) values ( ?, ?, ? )", f.ID, e.from, name)
 	e.db.exec("update feeds set subscribers=(select count(*) from subscribers where feed=?), updated=? where id=?", f.ID, now(), f.ID)
 
 	feed_update(e.user, e.db, f)
-	feed_send_recent_posts(e.user, e.db, f, e.From)
+	feed_send_recent_posts(e.user, e.db, f, e.from)
 }
 
 // Unsubscribe from feed
@@ -870,8 +870,8 @@ func feeds_unsubscribe(a *Action) {
 	a.db.exec("delete from feeds where id=?", f.ID)
 
 	if f.entity == nil {
-		ev := event(a.user.Identity.ID, f.ID, "feeds", "unsubscribe")
-		ev.send()
+		m := message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe")
+		m.send()
 	}
 
 	a.template("feeds/unsubscribe")
@@ -879,12 +879,12 @@ func feeds_unsubscribe(a *Action) {
 
 // Received an unsubscribe from subscriber
 func feeds_unsubscribe_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.To)
+	f := feed_by_id(e.user, e.db, e.to)
 	if f == nil {
 		return
 	}
 
-	e.db.exec("delete from subscribers where feed=? and id=?", e.To, e.From)
+	e.db.exec("delete from subscribers where feed=? and id=?", e.to, e.from)
 	feed_update(e.user, e.db, f)
 }
 
@@ -896,16 +896,16 @@ func feed_update(u *User, db *DB, f *Feed) {
 
 	for _, s := range ss {
 		if s.ID != u.Identity.ID {
-			ev := event(f.ID, s.ID, "feeds", "update")
-			ev.set("subscribers", string(len(ss)))
-			ev.send()
+			m := message(f.ID, s.ID, "feeds", "update")
+			m.set("subscribers", string(len(ss)))
+			m.send()
 		}
 	}
 }
 
 // Received a feed update event from owner
 func feeds_update_event(e *Event) {
-	f := feed_by_id(e.user, e.db, e.From)
+	f := feed_by_id(e.user, e.db, e.from)
 	if f == nil {
 		return
 	}

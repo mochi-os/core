@@ -29,7 +29,7 @@ var (
 	p2p_context         = context.Background()
 	p2p_id              string
 	p2p_me              p2p_host.Host
-	p2p_pubsub_events_1 *p2p_pubsub.Topic
+	p2p_pubsub_messages_1 *p2p_pubsub.Topic
 )
 
 // Peer discovered using multicast DNS
@@ -86,17 +86,17 @@ func p2p_connect(peer string, addresses []string) bool {
 
 // Join pubsubs
 func p2p_pubsubs() {
-	s, err := p2p_pubsub_events_1.Subscribe()
+	s, err := p2p_pubsub_messages_1.Subscribe()
 	check(err)
 
 	for {
 		m, err := s.Next(p2p_context)
 		check(err)
-		peer := m.ReceivedFrom.String()
+		peer := m.Receive.from.String()
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
 			//TODO Provide source address
-			event_receive(bytes.NewReader(m.Data), 1, peer, "")
+			message_receive(bytes.NewReader(m.Data), 1, peer, "")
 			//TODO Add peer for source at address
 			//peer_discovered(peer, address)
 			//peer_connect(peer)
@@ -110,7 +110,7 @@ func p2p_receive_event_1(s p2p_network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P event from '%s' at '%s'", peer, address)
 
-	event_receive(bufio.NewReader(s), 1, peer, address)
+	message_receive(bufio.NewReader(s), 1, peer, address)
 	peer_discovered(peer, address)
 }
 
@@ -141,7 +141,7 @@ func p2p_start() {
 	info("P2P listening on port %d with id '%s'", port, p2p_id)
 
 	// Listen for connecting peers
-	p2p_me.SetStreamHandler("/mochi/events/1", p2p_receive_event_1)
+	p2p_me.SetStreamHandler("/mochi/messages/1", p2p_receive_event_1)
 
 	// Watch event bus for disconnecting peers
 	go p2p_watch_disconnect()
@@ -166,7 +166,7 @@ func p2p_start() {
 	// Start pubsubs
 	gs, err := p2p_pubsub.NewGossipSub(p2p_context, p2p_me)
 	check(err)
-	p2p_pubsub_events_1, err = gs.Join("mochi/events/1")
+	p2p_pubsub_messages_1, err = gs.Join("mochi/messages/1")
 	check(err)
 	go p2p_pubsubs()
 }
@@ -179,7 +179,7 @@ func p2p_stream(peer string) p2p_network.Stream {
 		return nil
 	}
 
-	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/events/1")
+	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/messages/1")
 	if err != nil {
 		warn("P2P unable to create stream to '%s': %v'", peer, err)
 		return nil
@@ -197,9 +197,9 @@ func p2p_watch_disconnect() {
 	defer sub.Close()
 
 	for e := range sub.Out() {
-		ev := e.(p2p_event.EvtPeerConnectednessChanged)
-		if ev.Connectedness == p2p_network.NotConnected {
-			peer_disconnected(ev.Peer)
+		c := e.(p2p_event.EvtPeerConnectednessChanged)
+		if c.Connectedness == p2p_network.NotConnected {
+			peer_disconnected(c.Peer)
 		}
 	}
 }

@@ -35,7 +35,7 @@ const (
 	maximum_queue_time = 7 * 86400
 )
 
-// Check if there any queued events to an entity, and if so try resending them
+// Check if there any queued messages to an entity, and if so try resending them
 func queue_check_entity(entity string) {
 	var qs []QueueEntity
 	db := db_open("db/queue.db")
@@ -53,7 +53,7 @@ func queue_check_entity(entity string) {
 	}
 }
 
-// Check if there any queued events to a peer, and if so try resending them
+// Check if there any queued messages to a peer, and if so try resending them
 func queue_check_peer(peer string) {
 	var qs []QueuePeer
 	db := db_open("db/queue.db")
@@ -105,7 +105,7 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 	return true
 }
 
-// Manage queued events, nudging them or deleting them if they time out
+// Manage queued messages, nudging them or deleting them if they time out
 func queue_manager() {
 	db := db_open("db/queue.db")
 
@@ -114,13 +114,13 @@ func queue_manager() {
 		if peers_sufficient() {
 			var qe QueueEntity
 			if db.scan(&qe, "select * from entities limit 1 offset abs(random()) % max((select count(*) from entities), 1)") {
-				debug("Queue manager nudging events to entity '%s'", qe.Entity)
+				debug("Queue manager nudging messages to entity '%s'", qe.Entity)
 				queue_check_entity(qe.Entity)
 			}
 
 			var qp QueuePeer
 			if db.scan(&qp, "select * from peers limit 1 offset abs(random()) % max((select count(*) from peers), 1)") {
-				debug("Queue manager nudging events to peer '%s'", qp.Peer)
+				debug("Queue manager nudging messages to peer '%s'", qp.Peer)
 				queue_check_peer(qp.Peer)
 			}
 
@@ -128,7 +128,7 @@ func queue_manager() {
 			db.scans(&qbs, "select * from broadcasts")
 			for _, qb := range qbs {
 				debug("Queue manager sending broadcast event '%s'", qb.ID)
-				p2p_pubsub_events_1.Publish(p2p_context, qb.Data)
+				p2p_pubsub_messages_1.Publish(p2p_context, qb.Data)
 				db.exec("delete from broadcasts where id=?", qb.ID)
 			}
 		}

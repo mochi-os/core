@@ -73,7 +73,7 @@ func db_create() {
 	peers := db_open("db/peers.db")
 	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
 
-	// Queued outbound events
+	// Queued outbound messages
 	queue := db_open("db/queue.db")
 	queue.exec("create table entities ( id text not null primary key, entity text not null, data blob not null, file text not null default '', created integer not null )")
 	queue.exec("create index entities_entity on entities( entity )")

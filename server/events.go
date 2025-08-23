@@ -12,15 +12,12 @@ import (
 )
 
 type Event struct {
-	ID          string `cbor:"id,omitempty"`
-	From        string `cbor:"from,omitempty"`
-	To          string `cbor:"to,omitempty"`
-	Service     string `cbor:"service,omitempty"`
-	Action      string `cbor:"action,omitempty"`
-	Signature   string `cbor:"signature,omitempty"`
+	id          string
+	from        string
+	to          string
+	service     string
+	action      string
 	content     map[string]string
-	data        []byte
-	file        string
 	p2p_peer    string
 	p2p_address string
 	user        *User
@@ -29,87 +26,11 @@ type Event struct {
 	decoder     *cbor.Decoder
 }
 
-// Create a new event
-func event(from string, to string, service string, action string) *Event {
-	return &Event{ID: uid(), From: from, To: to, Service: service, Action: action, content: map[string]string{}}
-}
-
-// Receive event from reader
-func event_receive(r io.Reader, version int, peer string, address string) {
-	d := cbor.NewDecoder(r)
-
-	// Get and verify event headers
-	var e Event
-	err := d.Decode(&e)
-	if err != nil {
-		info("Dropping event with bad headers: %v", err)
-		return
-	}
-
-	debug("Event received from peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
-
-	if !valid(e.ID, "id") {
-		info("Dropping event with invalid id '%s'", e.ID)
-		return
-	}
-
-	if e.From != "" && !valid(e.From, "entity") {
-		info("Dropping event '%s' with invalid from '%s'", e.ID, e.From)
-		return
-	}
-
-	if e.To != "" && !valid(e.To, "entity") {
-		info("Dropping event '%s' with invalid to '%s'", e.ID, e.To)
-		return
-	}
-
-	if e.Service != "" && !valid(e.Service, "constant") {
-		info("Dropping event '%s' with invalid service '%s'", e.ID, e.Service)
-		return
-	}
-
-	if !valid(e.Action, "constant") {
-		info("Dropping event '%s' with invalid action '%s'", e.ID, e.Action)
-		return
-	}
-
-	if e.From != "" {
-		public := base58_decode(e.From, "")
-		if len(public) != ed25519.PublicKeySize {
-			info("Dropping event '%s' with invalid from length %d!=%d", e.ID, len(public), ed25519.PublicKeySize)
-			return
-		}
-		if !ed25519.Verify(public, []byte(e.ID+e.From+e.To+e.Service+e.Action), base58_decode(e.Signature, "")) {
-			info("Dropping event '%s' with incorrect signature", e.ID)
-			return
-		}
-	}
-
-	// Decode the content segment
-	err = d.Decode(&e.content)
-	if err != nil {
-		info("Dropping event with bad content segment: %v", err)
-		return
-	}
-
-	// Route to app
-	e.decoder = d
-	e.reader = r
-	e.p2p_peer = peer
-	e.p2p_address = address
-	e.route()
-}
-
-// Add a CBOR segment to an outgoing event
-func (e *Event) add(v any) {
-	e.data = append(e.data, cbor_encode(v)...)
-}
-
 // Decode the next segment from a received event
 func (e *Event) decode(v any) bool {
 	err := e.decoder.Decode(v)
 	if err != nil {
-		info("Event '%s' unable to decode segment: %v", e.ID, err)
+		info("Event '%s' unable to decode segment: %v", e.id, err)
 		return false
 	}
 	return true
@@ -124,30 +45,13 @@ func (e *Event) get(field string, def string) string {
 	return def
 }
 
-// Publish an event to a pubsub
-func (e *Event) publish(allow_queue bool) {
-	debug("Event publishing, from='%s', to='%s', service='%s', action='%s'", e.From, e.To, e.Service, e.Action)
-	e.Signature = e.signature()
-	data := cbor_encode(&e)
-	data = append(data, cbor_encode(e.content)...)
-
-	if peers_sufficient() {
-		p2p_pubsub_events_1.Publish(p2p_context, data)
-
-	} else if allow_queue {
-		debug("Unable to send broadcast event, adding to queue")
-		db := db_open("db/queue.db")
-		db.exec("replace into broadcasts ( id, data, created ) values ( ?, ?, ? )", e.ID, data, now())
-	}
-}
-
 // Route a received event to the correct app
 func (e *Event) route() {
-	e.user = user_owning_entity(e.To)
+	e.user = user_owning_entity(e.to)
 
-	a := services[e.Service]
+	a := services[e.service]
 	if a == nil {
-		info("Dropping event '%s' to unknown service '%s'", e.ID, e.Service)
+		info("Event dropping '%s' to unknown service '%s'", e.id, e.service)
 		return
 	}
 
@@ -159,139 +63,23 @@ func (e *Event) route() {
 	var f func(*Event)
 	var found bool
 	// Look for app event matching action
-	if e.To == "" {
-		f, found = a.events_broadcast[e.Action]
+	if e.to == "" {
+		f, found = a.events_broadcast[e.action]
 	} else {
-		f, found = a.events[e.Action]
+		f, found = a.events[e.action]
 	}
 	if !found {
 		// Look for app default event
-		if e.To == "" {
+		if e.to == "" {
 			f, found = a.events_broadcast[""]
 		} else {
 			f, found = a.events[""]
 		}
 	}
 	if !found {
-		info("Dropping event '%s' to unknown action '%s' in app '%s' for service '%s'", e.ID, e.Action, a.name, e.Service)
+		info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.name, e.service)
 		return
 	}
 
 	f(e)
-}
-
-// Send a completed outgoing event
-func (e *Event) send() {
-	go e.send_work()
-}
-
-// Do the work of sending
-func (e *Event) send_work() {
-	failed := false
-
-	if e.ID == "" {
-		e.ID = uid()
-	}
-	e.Signature = e.signature()
-
-	peer := entity_peer(e.To)
-	debug("Event sending to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, e.ID, e.From, e.To, e.Service, e.Action)
-
-	w := peer_writer(peer)
-	if w == nil {
-		debug("Unable to open peer for writing")
-		failed = true
-	}
-
-	headers := cbor_encode(e)
-	if !failed {
-		_, err := w.Write(headers)
-		if err != nil {
-			debug("Error sending headers segment: %v", err)
-			failed = true
-		}
-	}
-
-	content := cbor_encode(e.content)
-	if !failed {
-		_, err := w.Write(content)
-		if err != nil {
-			debug("Error sending content segment: %v", err)
-			failed = true
-		}
-	}
-
-	if len(e.data) > 0 && !failed {
-		_, err := w.Write(e.data)
-		if err != nil {
-			debug("Error sending data segment: %v", err)
-			failed = true
-		}
-	}
-
-	if e.file != "" && !failed {
-		f, err := os.Open(e.file)
-		if err != nil {
-			warn("Unable to read file '%s'", e.file)
-			failed = true
-		}
-		defer f.Close()
-		if !failed {
-			_, err := io.Copy(w, f)
-			if err != nil {
-				debug("Error sending file segment: %v", err)
-				failed = true
-			}
-		}
-	}
-
-	if w != nil {
-		w.Close()
-	}
-
-	if failed {
-		peer_disconnected(peer)
-
-		debug("Event unable to send to '%s', adding to queue", e.To)
-		data := slices.Concat(headers, content, e.data)
-		db := db_open("db/queue.db")
-		if peer == "" {
-			db.exec("replace into entities ( id, entity, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, e.To, data, e.file, now())
-		} else {
-			db.exec("replace into peers ( id, peer, data, file, created ) values ( ?, ?, ?, ?, ? )", e.ID, peer, data, e.file, now())
-		}
-	}
-}
-
-// Set the content segment of an outgoing event
-func (e *Event) set(in ...string) {
-	for {
-		e.content[in[0]] = in[1]
-		in = in[2:]
-		if len(in) < 2 {
-			return
-		}
-	}
-}
-
-// Get the signature of an event's headers
-func (e *Event) signature() string {
-	if e.From == "" {
-		return ""
-	}
-
-	db := db_open("db/users.db")
-	var from Entity
-	if !db.scan(&from, "select private from entities where id=?", e.From) {
-		warn("Not signing event due unknown sending entity")
-		return ""
-	}
-
-	private := base58_decode(from.Private, "")
-	if string(private) == "" {
-		warn("Not signing event due to invalid private key")
-		return ""
-	}
-
-	return base58_encode(ed25519.Sign(private, []byte(e.ID+e.From+e.To+e.Service+e.Action)))
 }

@@ -186,9 +186,9 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			action = "get/thumbnail"
 		}
 
-		ev := event(identity, at.Entity, "attachments", action)
-		ev.set("id", id)
-		ev.send()
+		m := message(identity, at.Entity, "attachments", action)
+		m.set("id", id)
+		m.send()
 	}
 
 	// Wait up to 1 minute for response
@@ -250,13 +250,13 @@ func attachments_get_event(e *Event) {
 	defer db.close()
 
 	var at Attachment
-	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, id) {
+	if db.scan(&at, "select * from attachments where entity=? and id=?", e.to, id) {
 		file := fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path)
 		if !file_exists(data_dir + "/" + file) {
-			ev := event(e.To, e.From, "attachments", "send")
-			ev.set("status", "200", "id", id)
-			ev.file = file
-			ev.send()
+			m := message(e.to, e.from, "attachments", "send")
+			m.set("status", "200", "id", id)
+			m.file = file
+			m.send()
 			return
 
 		} else {
@@ -264,12 +264,12 @@ func attachments_get_event(e *Event) {
 		}
 
 	} else {
-		info("Request for unknown attachment '%s'", e.ID)
+		info("Request for unknown attachment '%s'", e.id)
 	}
 
-	ev := event(e.To, e.From, "attachments", "send")
-	ev.set("status", "404", "id", id)
-	ev.send()
+	m := message(e.to, e.from, "attachments", "send")
+	m.set("status", "404", "id", id)
+	m.send()
 }
 
 // Request to get a thumbnail
@@ -285,21 +285,21 @@ func attachments_get_thumbnail_event(e *Event) {
 	defer db.close()
 
 	var at Attachment
-	if db.scan(&at, "select * from attachments where entity=? and id=?", e.To, id) {
+	if db.scan(&at, "select * from attachments where entity=? and id=?", e.to, id) {
 		path, err := thumbnail_create(fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path))
 		if err == nil {
-			ev := event(e.To, e.From, "attachments", "send/thumbnail")
-			ev.set("status", "200", "id", id)
-			ev.file = path
-			ev.send()
+			m := message(e.to, e.from, "attachments", "send/thumbnail")
+			m.set("status", "200", "id", id)
+			m.file = path
+			m.send()
 			return
 		}
 	}
 
-	info("Request for unknown attachment thumbnail '%s'", e.ID)
-	ev := event(e.To, e.From, "attachments", "send/thumbnail")
-	ev.set("status", "404", "id", id)
-	ev.send()
+	info("Request for unknown attachment thumbnail '%s'", e.id)
+	m := message(e.to, e.from, "attachments", "send/thumbnail")
+	m.set("status", "404", "id", id)
+	m.send()
 }
 
 // Clean up list of attachments waiting to be received
@@ -371,7 +371,7 @@ func attachments_send_event_work(e *Event, thumbnail bool) {
 	var survivors []*AttachmentRequest
 	attachments_lock.Lock()
 	for _, r := range attachments_requested {
-		if r.identity == e.To && r.entity == e.From && r.id == id && r.thumbnail == thumbnail {
+		if r.identity == e.to && r.entity == e.from && r.id == id && r.thumbnail == thumbnail {
 			r.response <- e
 		} else {
 			survivors = append(survivors, r)

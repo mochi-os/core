@@ -42,6 +42,7 @@ func web_error(c *gin.Context, code int, message string, values ...any) {
 	web_template(c, code, "error", fmt.Sprintf(message, values...))
 }
 
+// Create an identity for a new user
 func web_identity_create(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
@@ -63,6 +64,7 @@ func web_identity_create(c *gin.Context) {
 	web_redirect(c, "/?action=welcome")
 }
 
+// Log the user in using an email code
 func web_login(c *gin.Context) {
 	code := c.PostForm("code")
 	if code != "" {
@@ -90,12 +92,15 @@ func web_login(c *gin.Context) {
 	web_template(c, 200, "login/email")
 }
 
+// Render markdown as a template.HTML object so that Go's templates don't escape it
 func web_markdown(in string) template.HTML {
 	return template.HTML(markdown([]byte(in)))
 }
 
+// Handle web paths
 func (p *Path) web_path(c *gin.Context) {
 	var user *User = nil
+
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
 	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
 		user = web_auth(c)
@@ -114,28 +119,26 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
+	if p.app.db_file != "" && user != nil {
+		user.db = db_user(user, p.app.db_file, p.app.db_create)
+		defer user.db.close()
+	}
+
 	owner := user
 	if e != nil {
 		owner = user_owning_entity(e.ID)
-	}
-
-	var db *DB = nil
-	if p.app.db_file != "" {
-		if user != nil {
-			db = db_user(user, p.app.db_file, p.app.db_create)
-			defer db.close()
-
-		} else if owner != nil {
-			db = db_user(owner, p.app.db_file, p.app.db_create)
-			defer db.close()
-
-		} else {
-			web_error(c, 401, "Path not public, and not logged in")
-			return
+		if p.app.db_file != "" && owner != nil {
+			owner.db = db_user(owner, p.app.db_file, p.app.db_create)
+			defer owner.db.close()
 		}
 	}
 
-	p.action(&Action{user: user, owner: owner, db: db, web: c, path: p})
+	if user == nil && owner == nil {
+		web_error(c, 401, "Content not public, and not logged in")
+		return
+	}
+
+	p.action(&Action{user: user, owner: owner, web: c, path: p})
 }
 
 func web_ping(c *gin.Context) {
@@ -146,6 +149,7 @@ func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
 
+// Start the web server
 func web_start() {
 	listen := ini_string("web", "listen", "")
 	port := ini_int("web", "port", 80)
@@ -187,7 +191,8 @@ func web_start() {
 	}
 }
 
-// This could probably be better written using c.HTML(), but I can't figure out how to load the templates.
+// Render a web template
+// This could probably be better written using Gin's c.HTML(), but I can't figure out how to load the templates
 func web_template(c *gin.Context, code int, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {

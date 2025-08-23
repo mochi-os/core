@@ -1,7 +1,5 @@
 0.1
-	Messages and events
 	Pubsubs
-	Replace public mode
 	Remove unwanted debugging
 
 0.2

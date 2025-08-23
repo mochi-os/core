@@ -104,7 +104,7 @@ func friends_accept(a *Action) {
 		return
 	}
 
-	friend_accept(a.user, a.db, a.input("id"))
+	friend_accept(a.user, a.user.db, a.input("id"))
 	a.template("friends/accepted")
 }
 
@@ -166,7 +166,7 @@ func friends_create(a *Action) {
 		return
 	}
 
-	err := friend_create(a.user, a.db, a.input("id"), a.input("name"), "person", true)
+	err := friend_create(a.user, a.user.db, a.input("id"), a.input("name"), "person", true)
 	if err != nil {
 		a.error(500, "Unable to create friend: %s", err)
 		return
@@ -182,8 +182,8 @@ func friends_delete(a *Action) {
 	}
 
 	id := a.input("id")
-	a.db.exec("delete from invites where identity=? and id=?", a.user.Identity.ID, id)
-	a.db.exec("delete from friends where identity=? and id=?", a.user.Identity.ID, id)
+	a.user.db.exec("delete from invites where identity=? and id=?", a.user.Identity.ID, id)
+	a.user.db.exec("delete from friends where identity=? and id=?", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "delete", id, nil)
 	a.template("friends/deleted")
 }
@@ -196,7 +196,7 @@ func friends_ignore(a *Action) {
 	}
 
 	id := a.input("id")
-	a.db.exec("delete from invites where identity=? and id=? and direction='from'", a.user.Identity.ID, id)
+	a.user.db.exec("delete from invites where identity=? and id=? and direction='from'", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "ignore", id, nil)
 	a.template("friends/ignored")
 }
@@ -228,9 +228,9 @@ func friends_list(a *Action) {
 	notifications_clear_app(a.user, "friends")
 
 	var f []Friend
-	a.db.scans(&f, "select * from friends order by name, identity, id")
+	a.user.db.scans(&f, "select * from friends order by name, identity, id")
 	var i []FriendInvite
-	a.db.scans(&i, "select * from invites where direction='from' order by updated desc")
+	a.user.db.scans(&i, "select * from invites where direction='from' order by updated desc")
 
 	switch a.input("format") {
 	case "json":

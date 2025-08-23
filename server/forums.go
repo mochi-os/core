@@ -143,8 +143,8 @@ func forums_db_create(db *DB) {
 
 func forum_by_id(u *User, db *DB, id string) *Forum {
 	var f Forum
-	if !db.scan(&f, "select * from forums where id=?", id) {
-		if !db.scan(&f, "select * from forums where fingerprint=?", id) {
+	if !u.db.scan(&f, "select * from forums where id=?", id) {
+		if !u.db.scan(&f, "select * from forums where fingerprint=?", id) {
 			return nil
 		}
 	}
@@ -155,7 +155,7 @@ func forum_by_id(u *User, db *DB, id string) *Forum {
 }
 
 // Get comments recursively
-func forum_comments(u *User, db *DB, f *Forum, m *ForumMember, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
+func forum_comments(u *User, f *Forum, m *ForumMember, p *ForumPost, parent *ForumComment, depth int) *[]ForumComment {
 	if depth > 1000 {
 		return nil
 	}
@@ -165,11 +165,11 @@ func forum_comments(u *User, db *DB, f *Forum, m *ForumMember, p *ForumPost, par
 		id = parent.ID
 	}
 	var cs []ForumComment
-	db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
+	u.db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
 	for j, c := range cs {
 		cs[j].BodyMarkdown = web_markdown(c.Body)
 		cs[j].CreatedString = time_local(u, c.Created)
-		cs[j].Children = forum_comments(u, db, f, m, p, &c, depth+1)
+		cs[j].Children = forum_comments(u, f, m, p, &c, depth+1)
 		cs[j].RoleVoter = forum_role(m, "voter")
 		cs[j].RoleCommenter = forum_role(m, "commenter")
 	}
@@ -185,20 +185,20 @@ func forums_comment_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.user.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
 	post := a.input("post")
-	if !a.db.exists("select id from posts where id=? and forum=?", post, f.ID) {
+	if !a.user.db.exists("select id from posts where id=? and forum=?", post, f.ID) {
 		a.error(404, "Post not found")
 		return
 	}
 
 	parent := a.input("parent")
-	if parent != "" && !a.db.exists("select id from comments where id=? and post=?", parent, post) {
+	if parent != "" && !a.user.db.exists("select id from comments where id=? and post=?", parent, post) {
 		a.error(404, "Parent not found")
 		return
 	}
@@ -210,19 +210,19 @@ func forums_comment_create(a *Action) {
 	}
 
 	id := uid()
-	if a.db.exists("select id from comments where id=?", id) {
+	if a.user.db.exists("select id from comments where id=?", id) {
 		a.error(500, "Duplicate ID")
 		return
 	}
 
-	a.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
-	a.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
-	a.db.exec("update forums set updated=? where id=?", now, f.ID)
+	a.user.db.exec("replace into comments ( id, forum, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
+	a.user.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
+	a.user.db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
 		var ms []ForumMember
-		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
 				m := message(f.ID, m.ID, "forums", "comment/create")
@@ -358,7 +358,7 @@ func forums_comment_new(a *Action) {
 		return
 	}
 
-	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.user.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Received a forum comment update event
@@ -391,23 +391,23 @@ func forums_comment_vote(a *Action) {
 	}
 
 	var c ForumComment
-	if !a.db.scan(&c, "select * from comments where id=?", a.input("comment")) {
+	if !a.user.db.scan(&c, "select * from comments where id=?", a.input("comment")) {
 		a.error(404, "Comment not found")
 		return
 	}
-	f := forum_by_id(a.user, a.db, c.Forum)
+	f := forum_by_id(a.user, a.user.db, c.Forum)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
 	vote := a.input("vote")
-	forums_comment_vote_set(a.db, &c, a.user.Identity.ID, vote)
+	forums_comment_vote_set(a.user.db, &c, a.user.Identity.ID, vote)
 
 	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
 		var ms []ForumMember
-		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
 				m := message(f.ID, m.ID, "forums", "comment/update")
@@ -521,8 +521,8 @@ func forums_create(a *Action) {
 		a.error(500, "Unable to create entity: %s", err)
 		return
 	}
-	a.db.exec("replace into forums ( id, fingerprint, name, role, members, updated ) values ( ?, ?, ?, ?, 1, ? )", i.ID, i.Fingerprint, name, role, now())
-	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, 'administrator' )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
+	a.user.db.exec("replace into forums ( id, fingerprint, name, role, members, updated ) values ( ?, ?, ?, ?, 1, ? )", i.ID, i.Fingerprint, name, role, now())
+	a.user.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, 'administrator' )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
 
 	a.template("forums/create", i.Fingerprint)
 }
@@ -551,14 +551,14 @@ func forums_members_edit(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.user.db, a.input("forum"))
 	if f == nil || f.Entity == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
 	var ms []ForumMember
-	a.db.scans(&ms, "select * from members where forum=? order by name", f.ID)
+	a.user.db.scans(&ms, "select * from members where forum=? order by name", f.ID)
 
 	a.template("forums/members/edit", Map{"User": a.user, "Forum": f, "Members": ms})
 }
@@ -570,14 +570,14 @@ func forums_members_save(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.user.db, a.input("forum"))
 	if f == nil || f.Entity == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
 	var ms []ForumMember
-	a.db.scans(&ms, "select * from members where forum=? and id!=?", f.ID, a.user.Identity.ID)
+	a.user.db.scans(&ms, "select * from members where forum=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, m := range ms {
 		role := a.input("role_" + m.ID)
 		if role != m.Role {
@@ -586,18 +586,16 @@ func forums_members_save(a *Action) {
 				a.error(400, "Invalid role")
 				return
 			}
-			a.db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
-			m := message(f.ID, m.ID, "forums", "member/update")
-			m.set("role", role)
-			m.send()
+			a.user.db.exec("update members set role=? where forum=? and id=?", role, f.ID, m.ID)
+			message(f.ID, m.ID, "forums", "member/update").set("role", role).send()
 
 			if m.Role == "disabled" {
-				forum_send_recent_posts(a.user, a.db, f, m.ID)
+				forum_send_recent_posts(a.user, a.user.db, f, m.ID)
 			}
 		}
 	}
 
-	forum_update(a.user, a.db, f)
+	forum_update(a.user, a.user.db, f)
 	a.template("forums/members/save", Map{"Forum": f})
 }
 
@@ -651,7 +649,7 @@ func forums_post_create(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.user.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -670,19 +668,19 @@ func forums_post_create(a *Action) {
 	}
 
 	post := uid()
-	if a.db.exists("select id from posts where id=?", post) {
+	if a.user.db.exists("select id from posts where id=?", post) {
 		a.error(500, "Duplicate ID")
 		return
 	}
 
-	a.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
-	a.db.exec("update forums set updated=? where id=?", now, f.ID)
+	a.user.db.exec("replace into posts ( id, forum, created, updated, author, name, title, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, now, now, a.user.Identity.ID, a.user.Identity.Name, title, body)
+	a.user.db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
 		attachments := a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)
 		var ms []ForumMember
-		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
 				m := message(f.ID, m.ID, "forums", "post/create")
@@ -760,7 +758,7 @@ func forums_post_new(a *Action) {
 	}
 
 	var fs []Forum
-	a.db.scans(&fs, "select * from forums order by name")
+	a.user.db.scans(&fs, "select * from forums order by name")
 	if len(fs) == 0 {
 		a.error(500, "You are not a member of any forums")
 		return
@@ -850,14 +848,14 @@ func forums_post_update_event(e *Event) {
 // View a post
 func forums_post_view(a *Action) {
 	var p ForumPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
+	if !a.user.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
 	p.BodyMarkdown = web_markdown(p.Body)
 	p.CreatedString = time_local(a.user, p.Created)
 
-	f := forum_by_id(a.user, a.db, p.Forum)
+	f := forum_by_id(a.user, a.user.db, p.Forum)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -865,7 +863,7 @@ func forums_post_view(a *Action) {
 	var m *ForumMember = nil
 	if a.user != nil {
 		m = &ForumMember{}
-		if !a.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
+		if !a.user.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
 			m = nil
 		}
 	}
@@ -874,7 +872,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, a.db, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -885,23 +883,23 @@ func forums_post_vote(a *Action) {
 	}
 
 	var p ForumPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
+	if !a.user.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
-	f := forum_by_id(a.user, a.db, p.Forum)
+	f := forum_by_id(a.user, a.user.db, p.Forum)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
 	vote := a.input("vote")
-	forums_post_vote_set(a.db, &p, a.user.Identity.ID, vote)
+	forums_post_vote_set(a.user.db, &p, a.user.Identity.ID, vote)
 
 	if f.Entity != nil {
 		// We are the forum owner, to send to all members except us
 		var ms []ForumMember
-		a.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
+		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
 				m := message(f.ID, m.ID, "forums", "post/update")
@@ -1058,7 +1056,7 @@ func forums_subscribe(a *Action) {
 		a.error(400, "Invalid ID")
 		return
 	}
-	if forum_by_id(a.user, a.db, forum) != nil {
+	if forum_by_id(a.user, a.user.db, forum) != nil {
 		a.error(400, "You are already subscribed to this forum")
 		return
 	}
@@ -1073,12 +1071,10 @@ func forums_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
-	a.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
+	a.user.db.exec("replace into forums ( id, fingerprint, name, members, updated ) values ( ?, ?, ?, 1, ? )", forum, fingerprint(forum), d.Name, now())
+	a.user.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, ? )", forum, a.user.Identity.ID, a.user.Identity.Name, m.Role)
 
-	m := message(a.user.Identity.ID, forum, "forums", "subscribe")
-	m.set("name", a.user.Identity.Name)
-	m.send()
+	message(a.user.Identity.ID, forum, "forums", "subscribe").set("name", a.user.Identity.Name).send()
 
 	a.template("forums/subscribe", Map{"Forum": forum, "Fingerprint": fingerprint(forum), "Role": m.Role})
 }
@@ -1113,17 +1109,17 @@ func forums_unsubscribe(a *Action) {
 		return
 	}
 
-	f := forum_by_id(a.user, a.db, a.input("forum"))
+	f := forum_by_id(a.user, a.user.db, a.input("forum"))
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
 	}
 
-	a.db.exec("delete from votes where forum=?", f.ID)
-	a.db.exec("delete from comments where forum=?", f.ID)
-	a.db.exec("delete from posts where forum=?", f.ID)
-	a.db.exec("delete from members where forum=?", f.ID)
-	a.db.exec("delete from forums where id=?", f.ID)
+	a.user.db.exec("delete from votes where forum=?", f.ID)
+	a.user.db.exec("delete from comments where forum=?", f.ID)
+	a.user.db.exec("delete from posts where forum=?", f.ID)
+	a.user.db.exec("delete from members where forum=?", f.ID)
+	a.user.db.exec("delete from forums where id=?", f.ID)
 
 	m := message(a.user.Identity.ID, f.ID, "forums", "unsubscribe")
 	m.send()
@@ -1180,11 +1176,7 @@ func forums_view(a *Action) {
 
 	var f *Forum = nil
 	if forum != "" {
-		f = forum_by_id(a.user, a.db, forum)
-		if f == nil {
-			a = a.public_mode()
-			f = forum_by_id(a.user, a.db, forum)
-		}
+		f = forum_by_id(a.owner, a.owner.db, forum)
 	}
 
 	entity := ""
@@ -1200,7 +1192,7 @@ func forums_view(a *Action) {
 	var m *ForumMember = nil
 	if a.user != nil && f != nil {
 		m = &ForumMember{}
-		if !a.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
+		if !a.user.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
 			m = nil
 		}
 	}
@@ -1211,14 +1203,14 @@ func forums_view(a *Action) {
 
 	var ps []ForumPost
 	if f != nil {
-		a.db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
+		a.user.db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
 	} else {
-		a.db.scans(&ps, "select * from posts order by updated desc")
+		a.user.db.scans(&ps, "select * from posts order by updated desc")
 	}
 
 	for i, p := range ps {
 		var f Forum
-		if a.db.scan(&f, "select name from forums where id=?", p.Forum) {
+		if a.user.db.scan(&f, "select name from forums where id=?", p.Forum) {
 			ps[i].ForumName = f.Name
 		}
 		ps[i].BodyMarkdown = web_markdown(p.Body)
@@ -1227,7 +1219,7 @@ func forums_view(a *Action) {
 	}
 
 	var fs []Forum
-	a.db.scans(&fs, "select * from forums order by updated desc")
+	a.user.db.scans(&fs, "select * from forums order by updated desc")
 
 	a.template("forums/view", Map{"Forum": f, "Posts": &ps, "Forums": fs, "User": a.user, "Member": m, "RoleAdministrator": forum_role(m, "administrator")})
 }

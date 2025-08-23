@@ -23,6 +23,7 @@ type User struct {
 	Language string
 	Timezone string
 	Identity *Entity
+	db       *DB // Used by actions
 }
 
 func code_send(email string) bool {

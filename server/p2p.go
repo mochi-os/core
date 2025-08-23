@@ -10,14 +10,14 @@ import (
 	"crypto/rand"
 	"fmt"
 	p2p "github.com/libp2p/go-libp2p"
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
 	p2p_event "github.com/libp2p/go-libp2p/core/event"
-	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	p2p_host "github.com/libp2p/go-libp2p/core/host"
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
-	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
@@ -26,9 +26,9 @@ type mdns_notifee struct {
 }
 
 var (
-	p2p_context         = context.Background()
-	p2p_id              string
-	p2p_me              p2p_host.Host
+	p2p_context           = context.Background()
+	p2p_id                string
+	p2p_me                p2p_host.Host
 	p2p_pubsub_messages_1 *p2p_pubsub.Topic
 )
 
@@ -92,7 +92,7 @@ func p2p_pubsubs() {
 	for {
 		m, err := s.Next(p2p_context)
 		check(err)
-		peer := m.Receive.from.String()
+		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
 			//TODO Provide source address
@@ -199,7 +199,7 @@ func p2p_watch_disconnect() {
 	for e := range sub.Out() {
 		c := e.(p2p_event.EvtPeerConnectednessChanged)
 		if c.Connectedness == p2p_network.NotConnected {
-			peer_disconnected(c.Peer)
+			peer_disconnected(string(c.Peer))
 		}
 	}
 }

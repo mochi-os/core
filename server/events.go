@@ -4,11 +4,8 @@
 package main
 
 import (
-	"crypto/ed25519"
 	cbor "github.com/fxamacker/cbor/v2"
 	"io"
-	"os"
-	"slices"
 )
 
 type Event struct {

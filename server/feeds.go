@@ -194,20 +194,20 @@ func feeds_comment_create(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.input("feed"))
+	f := feed_by_id(a.user, a.user.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
 	}
 
 	post := a.input("post")
-	if !a.db.exists("select id from posts where id=? and feed=?", post, f.ID) {
+	if !a.user.db.exists("select id from posts where id=? and feed=?", post, f.ID) {
 		a.error(404, "Post not found")
 		return
 	}
 
 	parent := a.input("parent")
-	if parent != "" && !a.db.exists("select id from comments where id=? and post=?", parent, post) {
+	if parent != "" && !a.user.db.exists("select id from comments where id=? and post=?", parent, post) {
 		a.error(404, "Parent not found")
 		return
 	}
@@ -219,19 +219,19 @@ func feeds_comment_create(a *Action) {
 	}
 
 	id := uid()
-	if a.db.exists("select id from comments where id=?", id) {
+	if a.user.db.exists("select id from comments where id=?", id) {
 		a.error(500, "Duplicate ID")
 		return
 	}
 
-	a.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
-	a.db.exec("update posts set updated=? where id=?", now, post)
-	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
+	a.user.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
+	a.user.db.exec("update posts set updated=? where id=?", now, post)
+	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
 	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		var ss []FeedSubscriber
-		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
+		a.user.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
 				m := message(f.ID, s.ID, "feeds", "comment/create")
@@ -363,7 +363,7 @@ func feeds_comment_new(a *Action) {
 		return
 	}
 
-	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.user.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Reaction to a comment
@@ -374,24 +374,24 @@ func feeds_comment_react(a *Action) {
 	}
 
 	var c FeedComment
-	if !a.db.scan(&c, "select * from comments where id=?", a.input("comment")) {
+	if !a.user.db.scan(&c, "select * from comments where id=?", a.input("comment")) {
 		a.error(404, "Comment not found")
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, c.Feed)
+	f := feed_by_id(a.user, a.user.db, c.Feed)
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
 	}
 
 	reaction := feeds_reaction_valid(a.input("reaction"))
-	feeds_comment_reaction_set(a.db, &c, a.user.Identity.ID, a.user.Identity.Name, reaction)
+	feeds_comment_reaction_set(a.user.db, &c, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
 	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		var ss []FeedSubscriber
-		a.db.scans(&ss, "select id from subscribers where feed=?", f.ID)
+		a.user.db.scans(&ss, "select id from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
 				m := message(f.ID, s.ID, "feeds", "comment/react")
@@ -499,8 +499,8 @@ func feeds_create(a *Action) {
 		a.error(500, "Unable to create entity: %s", err)
 		return
 	}
-	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", i.ID, i.Fingerprint, name, now())
-	a.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
+	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", i.ID, i.Fingerprint, name, now())
+	a.user.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
 
 	a.template("feeds/create", i.Fingerprint)
 }
@@ -523,7 +523,7 @@ func feed_subscriber(db *DB, f *Feed, subscriber string) *FeedSubscriber {
 func feeds_new(a *Action) {
 	name := ""
 
-	if !a.db.exists("select * from feeds where owner=1 limit 1") {
+	if !a.user.db.exists("select * from feeds where owner=1 limit 1") {
 		// This is our first feed, so suggest our name as the feed name
 		name = a.user.Identity.Name
 	}
@@ -540,7 +540,7 @@ func feeds_post_create(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.input("feed"))
+	f := feed_by_id(a.user, a.user.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
@@ -556,17 +556,17 @@ func feeds_post_create(a *Action) {
 	}
 
 	post := uid()
-	if a.db.exists("select id from posts where id=?", post) {
+	if a.user.db.exists("select id from posts where id=?", post) {
 		a.error(500, "Duplicate ID")
 		return
 	}
 
-	a.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", post, f.ID, now, now, body)
-	a.db.exec("update feeds set updated=? where id=?", now, f.ID)
+	a.user.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", post, f.ID, now, now, body)
+	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
 	attachments := a.upload_attachments("attachments", f.ID, true, "feeds/%s/%s", f.ID, post)
 
 	var ss []FeedSubscriber
-	a.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
+	a.user.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
 		m := message(f.ID, s.ID, "feeds", "post/create")
 		m.add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments})
@@ -619,7 +619,7 @@ func feeds_post_new(a *Action) {
 	}
 
 	var fs []Feed
-	a.db.scans(&fs, "select * from feeds where owner=1 order by name")
+	a.user.db.scans(&fs, "select * from feeds where owner=1 order by name")
 	if len(fs) == 0 {
 		a.error(500, "You do not own any feeds")
 		return
@@ -636,23 +636,23 @@ func feeds_post_react(a *Action) {
 	}
 
 	var p FeedPost
-	if !a.db.scan(&p, "select * from posts where id=?", a.input("post")) {
+	if !a.user.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
-	f := feed_by_id(a.user, a.db, p.Feed)
+	f := feed_by_id(a.user, a.user.db, p.Feed)
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
 	}
 
 	reaction := feeds_reaction_valid(a.input("reaction"))
-	feeds_post_reaction_set(a.db, &p, a.user.Identity.ID, a.user.Identity.Name, reaction)
+	feeds_post_reaction_set(a.user.db, &p, a.user.Identity.ID, a.user.Identity.Name, reaction)
 
 	if f.entity != nil {
 		// We are the feed owner, to send to all subscribers except us
 		var ss []FeedSubscriber
-		a.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
+		a.user.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
 				m := message(f.ID, s.ID, "feeds", "post/react")
@@ -807,7 +807,7 @@ func feeds_subscribe(a *Action) {
 		a.error(400, "Invalid ID")
 		return
 	}
-	if feed_by_id(a.user, a.db, feed) != nil {
+	if feed_by_id(a.user, a.user.db, feed) != nil {
 		a.error(400, "You are already subscribed to this feed")
 		return
 	}
@@ -817,7 +817,7 @@ func feeds_subscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
+	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
 
 	m := message(a.user.Identity.ID, feed, "feeds", "subscribe")
 	m.set("name", a.user.Identity.Name)
@@ -853,7 +853,7 @@ func feeds_unsubscribe(a *Action) {
 		return
 	}
 
-	f := feed_by_id(a.user, a.db, a.input("feed"))
+	f := feed_by_id(a.user, a.user.db, a.input("feed"))
 	if f == nil {
 		a.error(404, "Feed not found")
 		return
@@ -863,11 +863,11 @@ func feeds_unsubscribe(a *Action) {
 		return
 	}
 
-	a.db.exec("delete from reactions where feed=?", f.ID)
-	a.db.exec("delete from comments where feed=?", f.ID)
-	a.db.exec("delete from posts where feed=?", f.ID)
-	a.db.exec("delete from subscribers where feed=?", f.ID)
-	a.db.exec("delete from feeds where id=?", f.ID)
+	a.user.db.exec("delete from reactions where feed=?", f.ID)
+	a.user.db.exec("delete from comments where feed=?", f.ID)
+	a.user.db.exec("delete from posts where feed=?", f.ID)
+	a.user.db.exec("delete from subscribers where feed=?", f.ID)
+	a.user.db.exec("delete from feeds where id=?", f.ID)
 
 	if f.entity == nil {
 		m := message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe")
@@ -925,11 +925,7 @@ func feeds_view(a *Action) {
 
 	var f *Feed = nil
 	if feed != "" {
-		f = feed_by_id(a.user, a.db, feed)
-		if f == nil {
-			a = a.public_mode()
-			f = feed_by_id(a.user, a.db, feed)
-		}
+		f = feed_by_id(a.owner, a.owner.db, feed)
 	}
 
 	entity := ""
@@ -945,16 +941,16 @@ func feeds_view(a *Action) {
 	post := a.input("post")
 	var ps []FeedPost
 	if post != "" {
-		a.db.scans(&ps, "select * from posts where id=?", post)
+		a.user.db.scans(&ps, "select * from posts where id=?", post)
 	} else if f != nil {
-		a.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+		a.user.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
 	} else {
-		a.db.scans(&ps, "select * from posts order by updated desc")
+		a.user.db.scans(&ps, "select * from posts order by updated desc")
 	}
 
 	for i, p := range ps {
 		var f Feed
-		if a.db.scan(&f, "select name from feeds where id=?", p.Feed) {
+		if a.user.db.scan(&f, "select name from feeds where id=?", p.Feed) {
 			ps[i].FeedName = f.Name
 		}
 
@@ -963,24 +959,24 @@ func feeds_view(a *Action) {
 		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
 
 		var r FeedReaction
-		if a.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {
+		if a.user.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {
 			ps[i].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		a.db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, entity)
+		a.user.db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, entity)
 		ps[i].Reactions = &rs
 
-		ps[i].Comments = feed_comments(a.user, a.db, &p, nil, 0)
+		ps[i].Comments = feed_comments(a.user, a.user.db, &p, nil, 0)
 	}
 
 	owner := false
-	if a.db.exists("select id from feeds where owner=1 limit 1") {
+	if a.user.db.exists("select id from feeds where owner=1 limit 1") {
 		owner = true
 	}
 
 	var fs []Feed
-	a.db.scans(&fs, "select * from feeds order by updated desc")
+	a.user.db.scans(&fs, "select * from feeds order by updated desc")
 
 	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

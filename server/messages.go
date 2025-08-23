@@ -92,8 +92,9 @@ func message_receive(r io.Reader, version int, peer string, address string) {
 }
 
 // Add a CBOR segment to an outgoing message
-func (m *Message) add(v any) {
+func (m *Message) add(v any) *Message {
 	m.data = append(m.data, cbor_encode(v)...)
+	return m
 }
 
 // Publish an message to a pubsub
@@ -197,14 +198,15 @@ func (m *Message) send_work() {
 }
 
 // Set the content segment of an outgoing message
-func (m *Message) set(in ...string) {
+func (m *Message) set(in ...string) *Message {
 	for {
 		m.content[in[0]] = in[1]
 		in = in[2:]
 		if len(in) < 2 {
-			return
+			return m
 		}
 	}
+	return m
 }
 
 // Get the signature of an message's headers

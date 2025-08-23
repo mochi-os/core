@@ -83,14 +83,14 @@ func chat_create(a *Action) {
 	}
 
 	debug("Creating chat '%s' with name '%s'", chat, name)
-	a.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
-	a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, a.user.Identity.ID, a.user.Identity.Name)
+	a.user.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
+	a.user.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, a.user.Identity.ID, a.user.Identity.Name)
 	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name}}
 
 	for _, f := range *friends(a.user) {
 		if a.input(f.ID) != "" {
 			debug("Adding %s (%s) to new chat", f.ID, f.Name)
-			a.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, f.ID, f.Name)
+			a.user.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, f.ID, f.Name)
 			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name})
 		}
 	}
@@ -117,7 +117,7 @@ func chat_list(a *Action) {
 	}
 
 	var cs []Chat
-	a.db.scans(&cs, "select * from chats order by updated desc")
+	a.user.db.scans(&cs, "select * from chats order by updated desc")
 
 	a.template("chat/list", cs)
 }
@@ -171,14 +171,14 @@ func chat_messages(a *Action) {
 		return
 	}
 
-	c := chat_by_id(a.db, a.input("chat"))
+	c := chat_by_id(a.user.db, a.input("chat"))
 	if c == nil {
 		a.error(404, "Chat not found")
 		return
 	}
 
 	var ms []ChatMessage
-	a.db.scans(&ms, "select * from messages where chat=? order by id", c.ID)
+	a.user.db.scans(&ms, "select * from messages where chat=? order by id", c.ID)
 
 	for i, m := range ms {
 		ms[i].Attachments = attachments(a.user, "chat/%s/%s", c.ID, m.ID)
@@ -195,7 +195,7 @@ func chat_message_send(a *Action) {
 		return
 	}
 
-	c := chat_by_id(a.db, a.input("chat"))
+	c := chat_by_id(a.user.db, a.input("chat"))
 	if c == nil {
 		a.error(404, "Chat not found")
 		return
@@ -204,12 +204,12 @@ func chat_message_send(a *Action) {
 	id := uid()
 	body := a.input("body")
 	debug("Chat sending message '%s'", body)
-	a.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
+	a.user.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
 
 	var ms []ChatMember
-	a.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
+	a.user.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
 		debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
 		m := message(a.user.Identity.ID, m.Member, "chat", "message")
@@ -286,7 +286,7 @@ func chat_view(a *Action) {
 		return
 	}
 
-	c := chat_by_id(a.db, a.input("chat"))
+	c := chat_by_id(a.user.db, a.input("chat"))
 	if c == nil {
 		a.error(404, "Chat not found")
 		return

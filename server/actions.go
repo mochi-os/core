@@ -10,7 +10,6 @@ import (
 type Action struct {
 	user  *User
 	owner *User
-	db    *DB
 	web   *gin.Context
 	path  *Path
 }
@@ -38,21 +37,6 @@ func (a *Action) input(name string) string {
 
 func (a *Action) json(in any) {
 	a.web.JSON(200, in)
-}
-
-//TODO Replace public_mode()
-func (a *Action) public_mode() *Action {
-	debug("Switching action to public mode")
-	a.user = nil
-
-	if a.db != nil {
-		a.db.close()
-		if a.owner != nil {
-			a.db = db_user(a.owner, a.path.app.db_file, a.path.app.db_create)
-		}
-	}
-
-	return a
 }
 
 func (a *Action) redirect(url string) {

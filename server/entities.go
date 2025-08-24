@@ -78,7 +78,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
 		id := base58_encode(public)
-		fingerprint := fingerprint(string(public))
+		fingerprint := fingerprint(id)
 		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
 			db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
 			e := Entity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}

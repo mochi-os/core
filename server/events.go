@@ -78,5 +78,11 @@ func (e *Event) route() {
 		return
 	}
 
+	defer func() {
+		if r := recover(); r != nil {
+			warn("Event handler crashed with error: %v", r)
+		}
+	}()
+
 	f(e)
 }

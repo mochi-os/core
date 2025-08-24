@@ -115,7 +115,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	}
 
 	var at Attachment
-	if !a.user.db.scan(&at, "select * from attachments where entity=? and id=?", entity, id) {
+	if !a.owner.db.scan(&at, "select * from attachments where entity=? and id=?", entity, id) {
 		a.error(404, "Attachment not found")
 		return
 	}

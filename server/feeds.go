@@ -924,8 +924,11 @@ func feeds_view(a *Action) {
 	feed := a.input("feed")
 
 	var f *Feed = nil
+	db := a.owner.db
 	if feed != "" {
-		f = feed_by_id(a.owner, a.owner.db, feed)
+		f = feed_by_id(a.owner, db, feed)
+	} else if a.user != nil {
+		db = a.user.db
 	}
 
 	entity := ""
@@ -941,16 +944,16 @@ func feeds_view(a *Action) {
 	post := a.input("post")
 	var ps []FeedPost
 	if post != "" {
-		a.user.db.scans(&ps, "select * from posts where id=?", post)
+		db.scans(&ps, "select * from posts where id=?", post)
 	} else if f != nil {
-		a.user.db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+		db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
 	} else {
-		a.user.db.scans(&ps, "select * from posts order by updated desc")
+		db.scans(&ps, "select * from posts order by updated desc")
 	}
 
 	for i, p := range ps {
 		var f Feed
-		if a.user.db.scan(&f, "select name from feeds where id=?", p.Feed) {
+		if db.scan(&f, "select name from feeds where id=?", p.Feed) {
 			ps[i].FeedName = f.Name
 		}
 
@@ -959,24 +962,24 @@ func feeds_view(a *Action) {
 		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
 
 		var r FeedReaction
-		if a.user.db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {
+		if db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {
 			ps[i].MyReaction = r.Reaction
 		}
 
 		var rs []FeedReaction
-		a.user.db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, entity)
+		db.scans(&rs, "select * from reactions where post=? and subscriber!=? and reaction!='' order by name", p.ID, entity)
 		ps[i].Reactions = &rs
 
-		ps[i].Comments = feed_comments(a.user, a.user.db, &p, nil, 0)
+		ps[i].Comments = feed_comments(a.owner, db, &p, nil, 0)
 	}
 
 	owner := false
-	if a.user.db.exists("select id from feeds where owner=1 limit 1") {
+	if db.exists("select id from feeds where owner=1 limit 1") {
 		owner = true
 	}
 
 	var fs []Feed
-	a.user.db.scans(&fs, "select * from feeds order by updated desc")
+	db.scans(&fs, "select * from feeds order by updated desc")
 
 	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

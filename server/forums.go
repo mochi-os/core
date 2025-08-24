@@ -143,8 +143,8 @@ func forums_db_create(db *DB) {
 
 func forum_by_id(u *User, db *DB, id string) *Forum {
 	var f Forum
-	if !u.db.scan(&f, "select * from forums where id=?", id) {
-		if !u.db.scan(&f, "select * from forums where fingerprint=?", id) {
+	if !db.scan(&f, "select * from forums where id=?", id) {
+		if !db.scan(&f, "select * from forums where fingerprint=?", id) {
 			return nil
 		}
 	}
@@ -848,14 +848,14 @@ func forums_post_update_event(e *Event) {
 // View a post
 func forums_post_view(a *Action) {
 	var p ForumPost
-	if !a.user.db.scan(&p, "select * from posts where id=?", a.input("post")) {
+	if !a.owner.db.scan(&p, "select * from posts where id=?", a.input("post")) {
 		a.error(404, "Post not found")
 		return
 	}
 	p.BodyMarkdown = web_markdown(p.Body)
 	p.CreatedString = time_local(a.user, p.Created)
 
-	f := forum_by_id(a.user, a.user.db, p.Forum)
+	f := forum_by_id(a.owner, a.owner.db, p.Forum)
 	if f == nil {
 		a.error(404, "Forum not found")
 		return
@@ -863,7 +863,7 @@ func forums_post_view(a *Action) {
 	var m *ForumMember = nil
 	if a.user != nil {
 		m = &ForumMember{}
-		if !a.user.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
+		if !a.owner.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
 			m = nil
 		}
 	}
@@ -1175,16 +1175,19 @@ func forums_view(a *Action) {
 	forum := a.input("forum")
 
 	var f *Forum = nil
+	db := a.owner.db
 	if forum != "" {
-		f = forum_by_id(a.owner, a.owner.db, forum)
+		f = forum_by_id(a.owner, db, forum)
+	} else if a.user != nil {
+		db = a.user.db
 	}
 
-	entity := ""
+	identity := ""
 	if a.user != nil {
-		entity = a.user.Identity.ID
+		identity = a.user.Identity.ID
 	}
 
-	if entity == "" && f == nil {
+	if identity == "" && f == nil {
 		a.error(404, "No forum specified")
 		return
 	}
@@ -1192,7 +1195,7 @@ func forums_view(a *Action) {
 	var m *ForumMember = nil
 	if a.user != nil && f != nil {
 		m = &ForumMember{}
-		if !a.user.db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
+		if !db.scan(m, "select * from members where forum=? and id=?", f.ID, a.user.Identity.ID) {
 			m = nil
 		}
 	}
@@ -1203,14 +1206,14 @@ func forums_view(a *Action) {
 
 	var ps []ForumPost
 	if f != nil {
-		a.user.db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
+		db.scans(&ps, "select * from posts where forum=? order by updated desc", f.ID)
 	} else {
-		a.user.db.scans(&ps, "select * from posts order by updated desc")
+		db.scans(&ps, "select * from posts order by updated desc")
 	}
 
 	for i, p := range ps {
 		var f Forum
-		if a.user.db.scan(&f, "select name from forums where id=?", p.Forum) {
+		if db.scan(&f, "select name from forums where id=?", p.Forum) {
 			ps[i].ForumName = f.Name
 		}
 		ps[i].BodyMarkdown = web_markdown(p.Body)
@@ -1219,7 +1222,7 @@ func forums_view(a *Action) {
 	}
 
 	var fs []Forum
-	a.user.db.scans(&fs, "select * from forums order by updated desc")
+	db.scans(&fs, "select * from forums order by updated desc")
 
 	a.template("forums/view", Map{"Forum": f, "Posts": &ps, "Forums": fs, "User": a.user, "Member": m, "RoleAdministrator": forum_role(m, "administrator")})
 }

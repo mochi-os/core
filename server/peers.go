@@ -106,6 +106,10 @@ func peer_by_id(id string) *Peer {
 // Connect to a peer if possible
 // Call peer_add_known() or peer_discovered() before calling peer_connect()
 func peer_connect(id string) bool {
+	if id == p2p_id {
+		return true
+	}
+
 	peers_lock.Lock()
 	p, found := peers[id]
 	peers_lock.Unlock()
@@ -198,15 +202,15 @@ func peers_manager() {
 }
 
 // Publish our own information to the pubsub regularly or when requested
+// TODO Test peer publish
 func peers_publish() {
 	for {
-		m := message("", "", "peers", "publish")
-		m.publish(false)
+		message("", "", "peers", "publish").publish(false)
 
 		select {
 		case <-peer_publish_chan:
 			debug("Peer publish requested")
-		case <-time.After(time.Hour):
+		case <-time.After(time.Minute):
 			debug("Peer routine publish")
 		}
 	}
@@ -221,6 +225,7 @@ func peer_publish_event(e *Event) {
 }
 
 // Reply to a peer request if for us
+// TODO Test peer publish on request
 func peer_request_event(e *Event) {
 	debug("Received peer request event '%#v'", e)
 	if e.get("id", "") == p2p_id {
@@ -247,14 +252,14 @@ func peer_writer(id string) io.WriteCloser {
 		// In a future version, rate limit this
 		//TODO Test once p2p_address is set
 		debug("Peer '%s' unknown, sending pubsub request for it", id)
-		m := message("", "", "peers", "request")
-		m.set("id", id)
-		m.publish(false)
+		message("", "", "peers", "request").set("id", id).publish(false)
 		return nil
 	}
+
 	if !peer_connect(id) {
 		return nil
 	}
+
 	return p2p_stream(id)
 }
 

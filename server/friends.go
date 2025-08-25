@@ -83,14 +83,12 @@ func friend_accept(u *User, db *DB, id string) {
 	if !db.exists("select id from friends where identity=? and id=?", u.Identity.ID, id) {
 		friend_create(u, db, id, fi.Name, "person", false)
 	}
-	m := message(u.Identity.ID, id, "friends", "accept")
-	m.send()
+	message(u.Identity.ID, id, "friends", "accept").send()
 	db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	// Cancel any invitation we had sent to them
 	if db.exists("select id from invites where identity=? and id=? and direction='to'", u.Identity.ID, id) {
-		m := message(u.Identity.ID, id, "friends", "cancel")
-		m.send()
+		message(u.Identity.ID, id, "friends", "cancel").send()
 		db.exec("delete from invites where identity=? and id=? and direction='to'", u.Identity.ID, id)
 	}
 
@@ -143,15 +141,12 @@ func friend_create(u *User, db *DB, id string, name string, class string, invite
 
 	if db.exists("select id from invites where identity=? and id=? and direction='from'", u.Identity.ID, id) {
 		// We have an existing invitation from them, so accept it automatically
-		m := message(u.Identity.ID, id, "friends", "accept")
-		m.send()
+		message(u.Identity.ID, id, "friends", "accept").send()
 		db.exec("delete from invites where identity=? and id=? and direction='from'", u.Identity.ID, id)
 
 	} else if invite {
 		// Send invitation
-		m := message(u.Identity.ID, id, "friends", "invite")
-		m.set("name", u.Identity.Name)
-		m.send()
+		message(u.Identity.ID, id, "friends", "invite").set("name", u.Identity.Name).send()
 		db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'to', ?, ? )", u.Identity.ID, id, name, now_string())
 	}
 

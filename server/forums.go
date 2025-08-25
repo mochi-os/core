@@ -344,9 +344,7 @@ func forums_comment_submit_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.from && m.ID != e.user.Identity.ID {
-			m := message(f.ID, m.ID, "forums", "comment/create")
-			m.add(c)
-			m.send()
+			message(f.ID, m.ID, "forums", "comment/create").add(c).send()
 		}
 	}
 }
@@ -410,9 +408,7 @@ func forums_comment_vote(a *Action) {
 		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				m := message(f.ID, m.ID, "forums", "comment/update")
-				m.add(c)
-				m.send()
+				message(f.ID, m.ID, "forums", "comment/update").add(c).send()
 			}
 		}
 
@@ -485,9 +481,7 @@ func forums_comment_vote_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.from && m.ID != e.user.Identity.ID {
-			m := message(f.ID, m.ID, "forums", "comment/update")
-			m.add(c)
-			m.send()
+			message(f.ID, m.ID, "forums", "comment/update").add(c).send()
 		}
 	}
 }
@@ -820,9 +814,7 @@ func forums_post_submit_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.from && m.ID != e.user.Identity.ID {
-			m := message(f.ID, m.ID, "forums", "post/create")
-			m.add(p)
-			m.send()
+			message(f.ID, m.ID, "forums", "post/create").add(p).send()
 		}
 	}
 }
@@ -902,9 +894,7 @@ func forums_post_vote(a *Action) {
 		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				m := message(f.ID, m.ID, "forums", "post/update")
-				m.add(p)
-				m.send()
+				message(f.ID, m.ID, "forums", "post/update").add(p).send()
 			}
 		}
 
@@ -978,9 +968,7 @@ func forums_post_vote_event(e *Event) {
 	e.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 	for _, m := range ms {
 		if m.ID != e.from && m.ID != e.user.Identity.ID {
-			m := message(f.ID, m.ID, "forums", "post/update")
-			m.add(p)
-			m.send()
+			message(f.ID, m.ID, "forums", "post/update").add(p).send()
 		}
 	}
 }
@@ -1028,18 +1016,14 @@ func forum_send_recent_posts(u *User, db *DB, f *Forum, member string) {
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		p.Attachments = attachments(u, "forums/%s/%s", f.ID, p.ID)
-		m := message(f.ID, member, "forums", "post/create")
-		m.add(p)
-		m.send()
+		message(f.ID, member, "forums", "post/create").add(p).send()
 	}
 
 	for _, p := range ps {
 		var cs []ForumComment
 		db.scans(&cs, "select * from comments where post=?", p.ID)
 		for _, c := range cs {
-			m := message(f.ID, member, "forums", "comment/create")
-			m.add(c)
-			m.send()
+			message(f.ID, member, "forums", "comment/create").add(c).send()
 		}
 	}
 }
@@ -1121,8 +1105,7 @@ func forums_unsubscribe(a *Action) {
 	a.user.db.exec("delete from members where forum=?", f.ID)
 	a.user.db.exec("delete from forums where id=?", f.ID)
 
-	m := message(a.user.Identity.ID, f.ID, "forums", "unsubscribe")
-	m.send()
+	message(a.user.Identity.ID, f.ID, "forums", "unsubscribe").send()
 
 	a.template("forums/unsubscribe")
 }
@@ -1146,9 +1129,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {
-			m := message(f.ID, m.ID, "forums", "update")
-			m.set("members", string(len(ms)))
-			m.send()
+			message(f.ID, m.ID, "forums", "update").set("members", string(len(ms))).send()
 		}
 	}
 }

@@ -11,15 +11,16 @@ import (
 type Map map[string]any
 
 var (
-	cache_dir  string
-	data_dir   string
-	email_from string
-	email_host string
-	email_port int
+	build_version string
+	cache_dir     string
+	data_dir      string
+	email_from    string
+	email_host    string
+	email_port    int
 )
 
 func main() {
-	info("Mochi starting")
+	info("Mochi %s starting", build_version)
 
 	var file string
 	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")

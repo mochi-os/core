@@ -44,7 +44,13 @@ func (e *Event) get(field string, def string) string {
 
 // Route a received event to the correct app
 func (e *Event) route() {
-	e.user = user_owning_entity(e.to)
+	if e.to != "" {
+		e.user = user_owning_entity(e.to)
+		if e.user == nil {
+			info("Event dropping '%s' to unknown user '%s'", e.id, e.to)
+			return
+		}
+	}
 
 	a := services[e.service]
 	if a == nil {
@@ -53,6 +59,10 @@ func (e *Event) route() {
 	}
 
 	if a.db_file != "" {
+		if e.user == nil {
+			info("Event dropping broadcast '%s' for service requiring user", e.id)
+			return
+		}
 		e.db = db_user(e.user, a.db_file, a.db_create)
 		defer e.db.close()
 	}
@@ -65,6 +75,7 @@ func (e *Event) route() {
 	} else {
 		f, found = a.events[e.action]
 	}
+
 	if !found {
 		// Look for app default event
 		if e.to == "" {
@@ -73,6 +84,7 @@ func (e *Event) route() {
 			f, found = a.events[""]
 		}
 	}
+
 	if !found {
 		info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.name, e.service)
 		return

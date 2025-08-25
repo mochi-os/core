@@ -100,10 +100,7 @@ func chat_create(a *Action) {
 			continue
 		}
 		debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
-		m := message(a.user.Identity.ID, m.Member, "chat", "new")
-		m.set("id", chat, "name", name)
-		m.add(members)
-		m.send()
+		message(a.user.Identity.ID, m.Member, "chat", "new").set("id", chat, "name", name).add(members).send()
 	}
 
 	a.redirect("/chat/" + chat)
@@ -212,10 +209,7 @@ func chat_message_send(a *Action) {
 	a.user.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
 		debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
-		m := message(a.user.Identity.ID, m.Member, "chat", "message")
-		m.set("chat", c.ID, "body", body)
-		m.add(attachments)
-		m.send()
+		message(a.user.Identity.ID, m.Member, "chat", "message").set("chat", c.ID, "body", body).add(attachments).send()
 	}
 
 	websockets_send(a.user, "chat", json_encode(Map{"Name": a.user.Identity.Name, "Body": body, "Attachments": attachments}))

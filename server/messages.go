@@ -52,7 +52,7 @@ func message_receive(r io.Reader, version int, peer string, address string) {
 		return
 	}
 
-	if m.To != "" && !valid(m.To, "entity") {
+	if m.To != "" && m.To != p2p_id && !valid(m.To, "entity") {
 		info("Dropping message '%s' with invalid to '%s'", m.ID, m.To)
 		return
 	}
@@ -114,22 +114,26 @@ func (m *Message) publish(allow_queue bool) {
 	}
 }
 
-// Send a completed outgoing message in a new thread
+// Send a completed outgoing message
 func (m *Message) send() {
-	go m.send_work()
+	peer := entity_peer(m.To)
+	go m.send_work(peer)
+}
+
+// Send a completed outgoing message to a specified peer
+func (m *Message) send_peer(peer string) {
+	go m.send_work(peer)
 }
 
 // Do the work of sending
-func (m *Message) send_work() {
-	failed := false
-
+func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	m.Signature = m.signature()
-
-	peer := entity_peer(m.To)
 	debug("Message sending to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
+
+	failed := false
+	m.Signature = m.signature()
 
 	w := peer_writer(peer)
 	if w == nil {

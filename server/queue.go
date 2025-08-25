@@ -41,7 +41,7 @@ func queue_check_entity(entity string) {
 	db := db_open("db/queue.db")
 	db.scans(&qs, "select * from entities where entity=?", entity)
 	for _, q := range qs {
-		debug("Trying to send queued event '%s' to entity '%s': %s", q.ID, q.Entity)
+		debug("Trying to send queued event '%s' to entity '%s'", q.ID, q.Entity)
 		peer := entity_peer(q.Entity)
 		if peer != "" {
 			debug("Entity '%s' is at peer '%s'", q.ID, peer)
@@ -59,7 +59,7 @@ func queue_check_peer(peer string) {
 	db := db_open("db/queue.db")
 	db.scans(&qs, "select * from peers where peer=?", peer)
 	for _, q := range qs {
-		debug("Trying to send queued event '%s' to peer '%s': %s", q.ID, q.Peer)
+		debug("Trying to send queued event '%s' to peer '%s'", q.ID, q.Peer)
 		if queue_event_send(db, peer, &q.Data, q.File) {
 			debug("Removing sent event from queue")
 			db.exec("delete from peers where id=?", q.ID)

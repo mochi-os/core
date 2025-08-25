@@ -186,9 +186,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 			action = "get/thumbnail"
 		}
 
-		m := message(identity, at.Entity, "attachments", action)
-		m.set("id", id)
-		m.send()
+		message(identity, at.Entity, "attachments", action).set("id", id).send()
 	}
 
 	// Wait up to 1 minute for response
@@ -267,9 +265,7 @@ func attachments_get_event(e *Event) {
 		info("Request for unknown attachment '%s'", e.id)
 	}
 
-	m := message(e.to, e.from, "attachments", "send")
-	m.set("status", "404", "id", id)
-	m.send()
+	message(e.to, e.from, "attachments", "send").set("status", "404", "id", id).send()
 }
 
 // Request to get a thumbnail
@@ -297,9 +293,7 @@ func attachments_get_thumbnail_event(e *Event) {
 	}
 
 	info("Request for unknown attachment thumbnail '%s'", e.id)
-	m := message(e.to, e.from, "attachments", "send/thumbnail")
-	m.set("status", "404", "id", id)
-	m.send()
+	message(e.to, e.from, "attachments", "send/thumbnail").set("status", "404", "id", id).send()
 }
 
 // Clean up list of attachments waiting to be received

@@ -1,7 +1,8 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024
 
-version = $(shell cat version | tr -d '\n')
+version = 0.1.14
+
 build = /tmp/mochi-server_$(version)_amd64
 deb = $(build).deb
 
@@ -11,10 +12,9 @@ clean:
 	rm -f mochi-server $(deb)
 
 mochi-server: $(shell find server)
-	go build -o mochi-server server/*.go
+	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server server/*.go
 
-$(deb): mochi-server
-	rm -rf $(build) $(deb)
+$(deb): clean mochi-server
 	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/mochi $(build)/var/lib/mochi
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
@@ -26,7 +26,8 @@ $(deb): mochi-server
 	rm -rf $(build)
 	ls -l $(deb)
 
-apt: $(deb)
+apt: clean $(deb)
+	rm ../apt/pool/main/mochi-server_*.deb
 	cp $(deb) ../apt/pool/main
 	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
 	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/

@@ -58,7 +58,7 @@ func directory_download() {
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
 			debug("Directory requesting download from peer '%s'", p.ID)
-			message("", p.ID, "directory", "download").send()
+			message("", "", "directory", "download").send_peer(p.ID)
 		}
 	}
 }
@@ -72,14 +72,15 @@ func directory_download_event(e *Event) {
 	db := db_open("db/directory.db")
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
-		m := message(e.to, e.from, "directory", "publish")
-		m.add(d)
-		m.send()
+		m := message("", "", "directory", "publish")
+		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", "p2p/"+p2p_id, "data", d.Data)
+		m.send_peer(e.p2p_peer)
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // Publish a directory entry to the entire network
+// TODO Test directory publish
 func directory_publish(e *Entity, allow_queue bool) {
 	m := message(e.ID, "", "directory", "publish")
 	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
@@ -88,12 +89,12 @@ func directory_publish(e *Entity, allow_queue bool) {
 
 // Received a directory publish event from another server
 func directory_publish_event(e *Event) {
-	debug("Directory received publish event '%#v'", e)
+	debug("Directory received publish event '%#v', content '%#v'", e, e.content)
 	now := now()
 
 	id := e.get("id", "")
 	if !valid(id, "entity") {
-		debug("Directory dropping event with invalid id '%s'", id)
+		debug("Directory dropping event with invalid entity id '%s'", id)
 		return
 	}
 
@@ -148,18 +149,17 @@ func directory_publish_event(e *Event) {
 // Request that another server publish a directory event
 // TODO Test directory publish request
 func directory_request(id string) {
-	m := message("", "", "directory", "request")
-	m.set("id", id)
-	m.publish(false)
+	message("", id, "directory", "request").publish(false)
 }
 
 // Reply to a directory request if we have the requested entity
+// TODO Test Test directory publish reply
 func directory_request_event(e *Event) {
 	debug("Directory received request event '%#v'", e)
 
 	var r Entity
 	db := db_open("db/users.db")
-	if db.scan(&r, "select * from entities where id=?", e.get("id", "")) {
+	if db.scan(&r, "select * from entities where id=?", e.to) {
 		directory_publish(&r, false)
 	}
 }

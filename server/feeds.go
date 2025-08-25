@@ -349,9 +349,7 @@ func feeds_comment_submit_event(e *Event) {
 	e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 	for _, s := range ss {
 		if s.ID != e.from && s.ID != e.user.Identity.ID {
-			m := message(f.ID, s.ID, "feeds", "comment/create")
-			m.add(c)
-			m.send()
+			message(f.ID, s.ID, "feeds", "comment/create").add(c).send()
 		}
 	}
 }
@@ -765,16 +763,12 @@ func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
 		p.Attachments = attachments(u, "feeds/%s/%s", f.ID, p.ID)
-		m := message(f.ID, subscriber, "feeds", "post/create")
-		m.add(p)
-		m.send()
+		message(f.ID, subscriber, "feeds", "post/create").add(p).send()
 
 		var cs []FeedComment
 		db.scans(&cs, "select * from comments where post=? order by created", p.ID)
 		for _, c := range cs {
-			m := message(f.ID, subscriber, "feeds", "comment/create")
-			m.add(c)
-			m.send()
+			message(f.ID, subscriber, "feeds", "comment/create").add(c).send()
 
 			var frs []FeedReaction
 			db.scans(&frs, "select * from reactions where comment=?", c.ID)
@@ -819,9 +813,7 @@ func feeds_subscribe(a *Action) {
 
 	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 0, 1, ? )", feed, fingerprint(feed), d.Name, now())
 
-	m := message(a.user.Identity.ID, feed, "feeds", "subscribe")
-	m.set("name", a.user.Identity.Name)
-	m.send()
+	message(a.user.Identity.ID, feed, "feeds", "subscribe").set("name", a.user.Identity.Name).send()
 
 	a.template("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
 }
@@ -870,8 +862,7 @@ func feeds_unsubscribe(a *Action) {
 	a.user.db.exec("delete from feeds where id=?", f.ID)
 
 	if f.entity == nil {
-		m := message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe")
-		m.send()
+		message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe").send()
 	}
 
 	a.template("feeds/unsubscribe")
@@ -896,9 +887,7 @@ func feed_update(u *User, db *DB, f *Feed) {
 
 	for _, s := range ss {
 		if s.ID != u.Identity.ID {
-			m := message(f.ID, s.ID, "feeds", "update")
-			m.set("subscribers", string(len(ss)))
-			m.send()
+			message(f.ID, s.ID, "feeds", "update").set("subscribers", string(len(ss))).send()
 		}
 	}
 }

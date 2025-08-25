@@ -1,5 +1,4 @@
 0.1
-	Database files
 	Pubsubs
 	Directory publish and download
 	Remove unwanted debugging

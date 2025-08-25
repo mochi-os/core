@@ -2,5 +2,5 @@ Package: mochi-server
 Version: _VERSION_
 Architecture: amd64
 Maintainer: Mochi developers <dev@mochi-os.com>
-Description: The open source social operating system.
+Description: The open social operating system.
  This package contains the server.

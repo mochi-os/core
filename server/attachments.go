@@ -382,8 +382,7 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 	defer db.close()
 
 	created := now()
-	form, err := a.web.MultipartForm()
-	check(err)
+	form := must(a.web.MultipartForm())
 	var results []Attachment
 
 	for i, f := range form.File[field] {

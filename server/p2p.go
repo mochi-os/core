@@ -36,7 +36,7 @@ var (
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		debug("P2P received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_discovered(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		peer_discovered_address(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_connect(p.ID.String())
 	}
 }
@@ -86,20 +86,16 @@ func p2p_connect(peer string, addresses []string) bool {
 
 // Join pubsubs
 func p2p_pubsubs() {
-	s, err := p2p_pubsub_messages_1.Subscribe()
-	check(err)
+	s := must(p2p_pubsub_messages_1.Subscribe())
 
 	for {
-		m, err := s.Next(p2p_context)
-		check(err)
+		m := must(s.Next(p2p_context))
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
-			//TODO Provide source address
-			message_receive(bytes.NewReader(m.Data), 1, peer, "")
-			//TODO Add peer for source at address
-			//peer_discovered(peer, address)
-			//peer_connect(peer)
+			message_receive(bytes.NewReader(m.Data), 1, peer)
+			peer_discovered(peer)
+			peer_connect(peer)
 		}
 	}
 }
@@ -110,8 +106,8 @@ func p2p_receive_event_1(s p2p_network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P event from '%s' at '%s'", peer, address)
 
-	message_receive(bufio.NewReader(s), 1, peer, address)
-	peer_discovered(peer, address)
+	message_receive(bufio.NewReader(s), 1, peer)
+	peer_discovered_address(peer, address)
 }
 
 // Start p2p
@@ -121,22 +117,18 @@ func p2p_start() {
 	// Read or create private/public key pair
 	var private p2p_crypto.PrivKey
 	if file_exists(data_dir + "/p2p/private.key") {
-		private, err = p2p_crypto.UnmarshalPrivateKey(file_read(data_dir + "/p2p/private.key"))
-		check(err)
+		private = must(p2p_crypto.UnmarshalPrivateKey(file_read(data_dir + "/p2p/private.key")))
 	} else {
 		private, _, err = p2p_crypto.GenerateKeyPairWithReader(p2p_crypto.Ed25519, 256, rand.Reader)
 		check(err)
-		var p []byte
-		p, err = p2p_crypto.MarshalPrivateKey(private)
-		check(err)
+		p := must(p2p_crypto.MarshalPrivateKey(private))
 		file_mkdir(data_dir + "/p2p")
 		file_write(data_dir+"/p2p/private.key", p)
 	}
 
 	// Create p2p instance
 	port := ini_int("p2p", "port", 1443)
-	p2p_me, err = p2p.New(p2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), p2p.Identity(private))
-	check(err)
+	p2p_me = must(p2p.New(p2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), p2p.Identity(private)))
 	p2p_id = p2p_me.ID().String()
 	info("P2P listening on port %d with id '%s'", port, p2p_id)
 
@@ -159,15 +151,11 @@ func p2p_start() {
 	peers_add_from_db(100)
 
 	// Listen via multicast DNS
-	dns := mdns.NewMdnsService(p2p_me, "mochi", &mdns_notifee{h: p2p_me})
-	err = dns.Start()
-	check(err)
+	must(mdns.NewMdnsService(p2p_me, "mochi", &mdns_notifee{h: p2p_me}).Start())
 
 	// Start pubsubs
-	gs, err := p2p_pubsub.NewGossipSub(p2p_context, p2p_me)
-	check(err)
-	p2p_pubsub_messages_1, err = gs.Join("mochi/messages/1")
-	check(err)
+	gs := must(p2p_pubsub.NewGossipSub(p2p_context, p2p_me))
+	p2p_pubsub_messages_1 = must(gs.Join("mochi/messages/1"))
 	go p2p_pubsubs()
 }
 

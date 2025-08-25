@@ -57,8 +57,7 @@ func thumbnail_create(path string) (string, error) {
 	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
 
 	file_mkdir_for_file(thumb)
-	o, err := os.Create(thumb)
-	check(err)
+	o := must(os.Create(thumb))
 	defer o.Close()
 
 	switch format {

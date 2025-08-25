@@ -4,6 +4,7 @@
 package main
 
 import (
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"io"
 	"sync"
 	"time"
@@ -104,7 +105,7 @@ func peer_by_id(id string) *Peer {
 }
 
 // Connect to a peer if possible
-// Call peer_add_known() or peer_discovered() before calling peer_connect()
+// Call peer_add_known(), peer_discovered(), or peer_discovered_address() before calling peer_connect()
 func peer_connect(id string) bool {
 	if id == p2p_id {
 		return true
@@ -149,8 +150,30 @@ func peer_disconnected(id string) {
 	}
 }
 
-// New or existing peer discovered or re-discovered
-func peer_discovered(id string, address string) {
+// New or existing peer discovered or re-discovered at unknown address
+func peer_discovered(id string) {
+	debug("Peer '%s' discovered at unknown address", id)
+	p, err := p2p_peer.Decode(id)
+	if err != nil {
+		return
+	}
+
+	for _, a := range p2p_me.Peerstore().Addrs(p) {
+		debug("Peer '%s' found peerstore address '%s/p2p/%s'", id, a.String(), id)
+		peer_discovered_work(id, a.String()+"/p2p/"+id)
+	}
+
+	go queue_check_peer(id)
+}
+
+// New or existing peer discovered or re-discovered at known address
+func peer_discovered_address(id string, address string) {
+	peer_discovered_work(id, address)
+	go queue_check_peer(id)
+}
+
+// Do the work for the above two function
+func peer_discovered_work(id string, address string) {
 	now := now()
 	save := false
 
@@ -191,8 +214,6 @@ func peer_discovered(id string, address string) {
 	peers_lock.Lock()
 	peers[id] = p
 	peers_lock.Unlock()
-
-	go queue_check_peer(id)
 }
 
 // Clean up stale peers
@@ -205,7 +226,6 @@ func peers_manager() {
 }
 
 // Publish our own information to the pubsub regularly or when requested
-// TODO Test peers publish
 func peers_publish() {
 	for {
 		message("", "", "peers", "publish").publish(false)
@@ -220,15 +240,13 @@ func peers_publish() {
 }
 
 // Received a peer publish event from another server
+// We don't need to do anything here because we've already
+// marked the peer as discovered in p2p_pubsubs()
 func peer_publish_event(e *Event) {
-	debug("Peer '%s' sent publish event from '%s'", e.p2p_peer, e.p2p_address)
-	//TODO Enable and test once p2p_address is set
-	//peer_discovered(e.p2p_peer, e.p2p_address)
-	//peer_connect(e.p2p_peer)
+	debug("Peer publish event received from '%s'", e.peer)
 }
 
 // Reply to a peer request if for us
-// TODO Test peer publish on request
 func peer_request_event(e *Event) {
 	debug("Received peer request event '%+v'", e)
 	if e.get("id", "") == p2p_id {
@@ -246,14 +264,13 @@ func peer_writer(id string) io.WriteCloser {
 	if id == p2p_id {
 		debug("Sending event to ourself")
 		r, w := io.Pipe()
-		go message_receive(r, 1, p2p_id, "")
+		go message_receive(r, 1, p2p_id)
 		return w
 	}
 
 	p := peer_by_id(id)
 	if p == nil {
 		// In a future version, rate limit this
-		//TODO Test once p2p_address is set
 		debug("Peer '%s' unknown, sending pubsub request for it", id)
 		message("", "", "peers", "request").set("id", id).publish(false)
 		return nil

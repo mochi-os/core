@@ -29,7 +29,7 @@ func message(from string, to string, service string, action string) *Message {
 }
 
 // Receive message from reader
-func message_receive(r io.Reader, version int, peer string, address string) {
+func message_receive(r io.Reader, version int, peer string) {
 	d := cbor.NewDecoder(r)
 
 	// Get and verify message headers
@@ -87,7 +87,7 @@ func message_receive(r io.Reader, version int, peer string, address string) {
 	}
 
 	// Create event, and route to app
-	e := Event{id: m.ID, from: m.From, to: m.To, service: m.Service, action: m.Action, content: m.content, decoder: d, reader: r, p2p_peer: peer, p2p_address: address}
+	e := Event{id: m.ID, from: m.From, to: m.To, service: m.Service, action: m.Action, content: m.content, decoder: d, reader: r, peer: peer}
 	e.route()
 }
 

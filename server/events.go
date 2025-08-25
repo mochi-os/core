@@ -9,18 +9,17 @@ import (
 )
 
 type Event struct {
-	id          string
-	from        string
-	to          string
-	service     string
-	action      string
-	content     map[string]string
-	p2p_peer    string
-	p2p_address string
-	user        *User
-	db          *DB
-	reader      io.Reader
-	decoder     *cbor.Decoder
+	id      string
+	from    string
+	to      string
+	service string
+	action  string
+	content map[string]string
+	peer    string
+	user    *User
+	db      *DB
+	reader  io.Reader
+	decoder *cbor.Decoder
 }
 
 // Decode the next segment from a received event

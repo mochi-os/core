@@ -52,9 +52,7 @@ func base58_encode(in []byte) string {
 }
 
 func cbor_encode(in any) []byte {
-	out, err := cbor.Marshal(in)
-	check(err)
-	return out
+	return must(cbor.Marshal(in))
 }
 
 func check(err error) {
@@ -87,13 +85,30 @@ func json_decode(out any, j string) bool {
 }
 
 func json_encode(in any) string {
-	j, err := json.Marshal(in)
-	check(err)
-	return string(j)
+	return string(must(json.Marshal(in)))
 }
 
 func markdown(in []byte) []byte {
 	return md.ToHTML(in, nil, nil)
+}
+
+func must[T any](v T, errors ...error) T {
+	if len(errors) == 0 {
+		switch e := any(v).(type) {
+		case error:
+			if e == nil {
+				return v
+			}
+		default:
+			return v
+		}
+		panic(v)
+	}
+	err := errors[0]
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func now() int64 {
@@ -108,8 +123,7 @@ func random_alphanumeric(length int) string {
 	out := make([]rune, length)
 	l := big.NewInt(int64(len(alphanumeric)))
 	for i := range out {
-		index, err := rand.Int(rand.Reader, l)
-		check(err)
+		index := must(rand.Int(rand.Reader, l))
 		out[i] = rune(alphanumeric[index.Int64()])
 	}
 	return string(out)
@@ -137,8 +151,7 @@ func time_local(u *User, t int64) string {
 }
 
 func uid() string {
-	u, err := uuid.NewV7()
-	check(err)
+	u := must(uuid.NewV7())
 	return match_hyphens.ReplaceAllLiteralString(u.String(), "")
 }
 
@@ -185,8 +198,7 @@ func valid(s string, match string) bool {
 		match = "^[\\w\\-\\/:%@.+?&;=~]*$"
 	}
 
-	m, err := regexp.MatchString(match, s)
-	check(err)
+	m := must(regexp.MatchString(match, s))
 	if !m {
 		return false
 	}

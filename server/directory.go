@@ -74,7 +74,7 @@ func directory_download_event(e *Event) {
 	for _, d := range results {
 		m := message("", "", "directory", "publish")
 		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data)
-		m.send_peer(e.p2p_peer)
+		m.send_peer(e.peer)
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -124,7 +124,7 @@ func directory_publish_event(e *Event) {
 	if e.from == "" {
 		found := false
 		for _, p := range peers_bootstrap {
-			if e.p2p_peer == p.ID {
+			if e.peer == p.ID {
 				found = true
 				break
 			}

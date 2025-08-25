@@ -131,8 +131,7 @@ func db_open(file string) *DB {
 		file_create(path)
 	}
 
-	h, err := sqlx.Open("sqlite3", path)
-	check(err)
+	h := must(sqlx.Open("sqlite3", path))
 	db = &DB{path: path, handle: h, closed: 0}
 
 	databases_lock.Lock()
@@ -184,13 +183,11 @@ func (db *DB) close() {
 }
 
 func (db *DB) exec(query string, values ...any) {
-	_, err := db.handle.Exec(query, values...)
-	check(err)
+	must(db.handle.Exec(query, values...))
 }
 
 func (db *DB) exists(query string, values ...any) bool {
-	r, err := db.handle.Query(query, values...)
-	check(err)
+	r := must(db.handle.Query(query, values...))
 
 	for r.Next() {
 		return true
@@ -200,8 +197,7 @@ func (db *DB) exists(query string, values ...any) bool {
 
 func (db *DB) integer(query string, values ...any) int {
 	var result int
-	err := db.handle.QueryRow(query, values...).Scan(&result)
-	check(err)
+	must(db.handle.QueryRow(query, values...).Scan(&result))
 	return result
 }
 
@@ -211,12 +207,11 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 		if err == sql.ErrNoRows {
 			return false
 		}
-		check(err)
+		panic(err)
 	}
 	return true
 }
 
 func (db *DB) scans(out any, query string, values ...any) {
-	err := db.handle.Select(out, query, values...)
-	check(err)
+	must(db.handle.Select(out, query, values...))
 }

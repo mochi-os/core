@@ -21,8 +21,7 @@ var (
 
 func file_create(path string) {
 	file_mkdir_for_file(path)
-	f, err := os.Create(path)
-	check(err)
+	f := must(os.Create(path))
 	f.Close()
 }
 
@@ -46,13 +45,12 @@ func file_exists(path string) bool {
 	} else if errors.Is(err, os.ErrNotExist) {
 		return false
 	}
-	check(err)
+	panic(err)
 	return false
 }
 
 func file_mkdir(path string) {
-	err := os.MkdirAll(path, 0755)
-	check(err)
+	must(os.MkdirAll(path, 0755))
 }
 
 func file_mkdir_for_file(path string) {
@@ -60,8 +58,7 @@ func file_mkdir_for_file(path string) {
 }
 
 func file_mkfifo(path string) {
-	err := syscall.Mkfifo(path, 0600)
-	check(err)
+	must(syscall.Mkfifo(path, 0600))
 }
 
 func file_name_safe(s string) string {
@@ -96,21 +93,17 @@ func file_name_type(name string) string {
 }
 
 func file_read(path string) []byte {
-	data, err := os.ReadFile(path)
-	check(err)
-	return data
+	return must(os.ReadFile(path))
 }
 
 func file_size(path string) int64 {
-	f, err := os.Stat(path)
-	check(err)
+	f := must(os.Stat(path))
 	return f.Size()
 }
 
 func file_write(path string, data []byte) {
 	file_mkdir_for_file(path)
-	err := os.WriteFile(path, data, 0644)
-	check(err)
+	must(os.WriteFile(path, data, 0644))
 }
 
 func file_write_from_reader(path string, r io.Reader) bool {

@@ -181,13 +181,11 @@ func web_start() {
 
 	if len(domains) > 0 {
 		info("Web listening on HTTPS domains %v", domains)
-		err := autotls.Run(r, domains...)
-		check(err)
+		must(autotls.Run(r, domains...))
 
 	} else {
 		info("Web listening on '%s:%d'", listen, port)
-		err := r.Run(fmt.Sprintf("%s:%d", listen, port))
-		check(err)
+		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
 	}
 }
 

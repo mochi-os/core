@@ -40,7 +40,7 @@ func message_receive(r io.Reader, version int, peer string, address string) {
 		return
 	}
 
-	debug("Message received from peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
+	debug("Message received from peer '%s': id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
 
 	if !valid(m.ID, "id") {
 		info("Dropping message with invalid id '%s'", m.ID)
@@ -99,7 +99,7 @@ func (m *Message) add(v any) *Message {
 
 // Publish an message to a pubsub
 func (m *Message) publish(allow_queue bool) {
-	debug("Message publishing, from='%s', to='%s', service='%s', action='%s'", m.From, m.To, m.Service, m.Action)
+	debug("Message publishing: from='%s', to='%s', service='%s', action='%s'", m.From, m.To, m.Service, m.Action)
 	m.Signature = m.signature()
 	data := cbor_encode(&m)
 	data = append(data, cbor_encode(m.content)...)
@@ -130,7 +130,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s', id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
+	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
 
 	failed := false
 	m.Signature = m.signature()

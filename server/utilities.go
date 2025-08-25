@@ -143,7 +143,7 @@ func uid() string {
 }
 
 func valid(s string, match string) bool {
-	//debug("Validating '%s' (%#v) as %s", s, s, match)
+	//debug("Validating '%s' (%+v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
 		return false
 	}

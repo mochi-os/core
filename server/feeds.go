@@ -587,7 +587,7 @@ func feeds_post_create_event(e *Event) {
 		info("Feed dropping post with invalid data")
 		return
 	}
-	debug("Feed received post %#v", p)
+	debug("Feed received post %+v", p)
 
 	if !valid(p.ID, "id") {
 		info("Feed dropping post with invalid ID '%s'", p.ID)

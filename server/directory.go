@@ -22,6 +22,7 @@ func init() {
 	a := app("directory")
 	a.service("directory")
 	a.event_broadcast("download", directory_download_event)
+	a.event("request", directory_request_event)
 	a.event_broadcast("request", directory_request_event)
 	a.event_broadcast("publish", directory_publish_event)
 }
@@ -52,7 +53,6 @@ func directory_delete(id string) {
 }
 
 // Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
-// TODO Test directory download
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	for _, p := range peers_bootstrap {
@@ -65,7 +65,7 @@ func directory_download() {
 
 // Reply to a directory download request
 func directory_download_event(e *Event) {
-	debug("Directory received download event '%#v'", e)
+	debug("Directory received download event '%+v'", e)
 	time.Sleep(time.Second)
 
 	var results []Directory
@@ -73,14 +73,13 @@ func directory_download_event(e *Event) {
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
 		m := message("", "", "directory", "publish")
-		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", "p2p/"+p2p_id, "data", d.Data)
+		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data)
 		m.send_peer(e.p2p_peer)
 		time.Sleep(time.Millisecond)
 	}
 }
 
 // Publish a directory entry to the entire network
-// TODO Test directory publish
 func directory_publish(e *Entity, allow_queue bool) {
 	m := message(e.ID, "", "directory", "publish")
 	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
@@ -89,7 +88,7 @@ func directory_publish(e *Entity, allow_queue bool) {
 
 // Received a directory publish event from another server
 func directory_publish_event(e *Event) {
-	debug("Directory received publish event '%#v', content '%#v'", e, e.content)
+	debug("Directory received publish event '%+v', content '%+v'", e, e.content)
 	now := now()
 
 	id := e.get("id", "")
@@ -147,15 +146,13 @@ func directory_publish_event(e *Event) {
 }
 
 // Request that another server publish a directory event
-// TODO Test directory publish request
 func directory_request(id string) {
 	message("", id, "directory", "request").publish(false)
 }
 
 // Reply to a directory request if we have the requested entity
-// TODO Test Test directory publish reply
 func directory_request_event(e *Event) {
-	debug("Directory received request event '%#v'", e)
+	debug("Directory received request event '%+v'", e)
 
 	var r Entity
 	db := db_open("db/users.db")

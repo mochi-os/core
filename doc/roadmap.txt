@@ -1,6 +1,5 @@
 0.1
-	Pubsubs
-	Directory publish and download
+	Peer publish
 	Remove unwanted debugging
 
 0.2

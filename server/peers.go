@@ -132,6 +132,9 @@ func peer_connect(id string) bool {
 
 // Peer has become disconnected
 func peer_disconnected(id string) {
+	if id == "" {
+		return
+	}
 	debug("Peer '%s' disconnected", id)
 
 	peers_lock.Lock()
@@ -202,7 +205,7 @@ func peers_manager() {
 }
 
 // Publish our own information to the pubsub regularly or when requested
-// TODO Test peer publish
+// TODO Test peers publish
 func peers_publish() {
 	for {
 		message("", "", "peers", "publish").publish(false)
@@ -227,7 +230,7 @@ func peer_publish_event(e *Event) {
 // Reply to a peer request if for us
 // TODO Test peer publish on request
 func peer_request_event(e *Event) {
-	debug("Received peer request event '%#v'", e)
+	debug("Received peer request event '%+v'", e)
 	if e.get("id", "") == p2p_id {
 		debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true

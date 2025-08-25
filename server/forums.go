@@ -243,7 +243,7 @@ func forums_comment_create(a *Action) {
 
 // Received a forum comment from owner
 func forums_comment_create_event(e *Event) {
-	debug("Forum receieved comment create event '%#v'", e)
+	debug("Forum receieved comment create event '%+v'", e)
 
 	f := forum_by_id(e.user, e.db, e.from)
 	if f == nil {
@@ -288,7 +288,7 @@ func forums_comment_create_event(e *Event) {
 
 // Received a forum comment from member
 func forums_comment_submit_event(e *Event) {
-	debug("Forum receieved comment submit event '%#v'", e)
+	debug("Forum receieved comment submit event '%+v'", e)
 
 	f := forum_by_id(e.user, e.db, e.to)
 	if f == nil {
@@ -361,7 +361,7 @@ func forums_comment_new(a *Action) {
 
 // Received a forum comment update event
 func forums_comment_update_event(e *Event) {
-	debug("Forum receieved comment update event '%#v'", e)
+	debug("Forum receieved comment update event '%+v'", e)
 
 	var c ForumComment
 	if !e.decode(&c) {
@@ -1136,7 +1136,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 
 // Received a forum update event from owner
 func forums_update_event(e *Event) {
-	debug("Forum receieved update event '%#v'", e)
+	debug("Forum receieved update event '%+v'", e)
 
 	f := forum_by_id(e.user, e.db, e.from)
 	if f == nil {

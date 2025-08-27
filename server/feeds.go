@@ -760,7 +760,7 @@ func feeds_search(a *Action) {
 // Send recent posts to a new subscriber
 func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 	var ps []FeedPost
-	db.scans(&ps, "select * from posts where feed=? order by updated desc limit 1000", f.ID)
+	db.scans(&ps, "select * from posts where feed=? order by created desc limit 1000", f.ID)
 	for _, p := range ps {
 		p.Attachments = attachments(u, "feeds/%s/%s", f.ID, p.ID)
 		message(f.ID, subscriber, "feeds", "post/create").add(p).send()
@@ -935,9 +935,9 @@ func feeds_view(a *Action) {
 	if post != "" {
 		db.scans(&ps, "select * from posts where id=?", post)
 	} else if f != nil {
-		db.scans(&ps, "select * from posts where feed=? order by updated desc", f.ID)
+		db.scans(&ps, "select * from posts where feed=? order by created desc", f.ID)
 	} else {
-		db.scans(&ps, "select * from posts order by updated desc")
+		db.scans(&ps, "select * from posts order by created desc")
 	}
 
 	for i, p := range ps {

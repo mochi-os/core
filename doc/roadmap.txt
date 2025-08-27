@@ -1,6 +1,4 @@
 0.1
-	Comments
-	Reactions
 	Remove unwanted debugging
 
 0.2

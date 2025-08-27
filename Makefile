@@ -9,7 +9,7 @@ deb = $(build).deb
 all: mochi-server
 
 clean:
-	rm -f mochi-server $(deb)
+	rm -f mochi-server
 
 mochi-server: $(shell find server)
 	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server server/*.go

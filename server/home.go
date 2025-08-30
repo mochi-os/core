@@ -37,12 +37,12 @@ func home(a *Action) {
 			login_delete(login)
 		}
 		web_cookie_unset(a.web, "login")
-		a.template("login/logout")
+		a.write("login/logout")
 		return
 
 	case "welcome":
 		welcome = true
 	}
 
-	a.template("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user), "Welcome": welcome})
+	a.write("home", Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user), "Welcome": welcome})
 }

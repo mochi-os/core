@@ -4,27 +4,29 @@
 package main
 
 type Chat struct {
-	ID       string
-	Identity string `cbor:"-"`
-	Name     string
-	Updated  int64 `cbor:"-"`
-	Members  *[]ChatMember
+	ID       string        `cbor:"id" json:"id"`
+	Identity string        `cbor:"-" json:"-"`
+	Name     string        `cbor:"name" json:"name"`
+	Updated  int64         `cbor:"-" json:"-"`
+	Members  *[]ChatMember `cbor:members,omitempty" json:"members,omitempty"`
 }
 
 type ChatMember struct {
-	Chat   string
-	Member string
-	Name   string
+	Chat   string `cbor:"chat" json:"chat"`
+	Member string `cbor:"member" json:"member"`
+	Name   string `cbor:"name" json:"name"`
 }
 
 type ChatMessage struct {
-	ID          string
-	Chat        string
-	Time        int64
-	Author      string
-	Name        string
-	Body        string
-	Attachments *[]Attachment `cbor:",omitempty"`
+	ID   string `cbor:"id" json:"id"`
+	Chat string `cbor:"chat" json:"chat"`
+	//TODO Rename time?
+	Time int64 `cbor:"time" json:"time"`
+	//TODO Rename author?
+	Author      string        `cbor:"author" json:"author"`
+	Name        string        `cbor:"name" json:"name"`
+	Body        string        `cbor:"body" json:"body"`
+	Attachments *[]Attachment `cbor:"attachments,omitempty" json:"attachments,omitempty"`
 }
 
 func init() {
@@ -82,14 +84,12 @@ func chat_create(a *Action) {
 		return
 	}
 
-	debug("Creating chat '%s' with name '%s'", chat, name)
 	a.user.db.exec("replace into chats ( id, identity, name, updated ) values ( ?, ?, ?, ? )", chat, a.user.Identity.ID, name, now())
 	a.user.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, a.user.Identity.ID, a.user.Identity.Name)
 	members := []ChatMember{ChatMember{Chat: chat, Member: a.user.Identity.ID, Name: a.user.Identity.Name}}
 
 	for _, f := range *friends(a.user) {
 		if a.input(f.ID) != "" {
-			debug("Adding %s (%s) to new chat", f.ID, f.Name)
 			a.user.db.exec("replace into members ( chat, member, name ) values ( ?, ?, ? )", chat, f.ID, f.Name)
 			members = append(members, ChatMember{Chat: chat, Member: f.ID, Name: f.Name})
 		}
@@ -99,7 +99,6 @@ func chat_create(a *Action) {
 		if m.Member == a.user.Identity.ID {
 			continue
 		}
-		debug("Chat sending new chat to '%s' (%s)", m.Member, m.Name)
 		message(a.user.Identity.ID, m.Member, "chat", "new").set("id", chat, "name", name).add(members).send()
 	}
 
@@ -116,7 +115,7 @@ func chat_list(a *Action) {
 	var cs []Chat
 	a.user.db.scans(&cs, "select * from chats order by updated desc")
 
-	a.template("chat/list", cs)
+	a.write("chat/list", cs)
 }
 
 // Get details of a chat member
@@ -143,22 +142,27 @@ func chat_message_event(e *Event) {
 		return
 	}
 
+	message := e.get("message", "")
+	if !valid(message, "id") {
+		info("Chat dropping message with invalid ID '%s'", message)
+		return
+	}
+
 	body := e.get("body", "")
 	if !valid(body, "text") {
 		info("Chat dropping message with invalid body '%s'", body)
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", e.id, chat, now(), e.from, m.Name, body)
+	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", message, chat, now(), e.from, m.Name, body)
 
 	var as []Attachment
 	if e.decode(&as) {
-		debug("Chat recieved attachments %v", as)
-		attachments_save(&as, e.user, e.from, "chat/%s/%s", chat, e.id)
+		attachments_save(&as, e.user, e.from, "chat/%s/%s", chat, message)
 	}
 
-	websockets_send(e.user, "chat", json_encode(Map{"Name": m.Name, "Body": body, "Attachments": &as}))
-	notification(e.user, "chat", "message", c.ID, m.Name+": "+body, "/chat/"+c.ID)
+	websockets_send(e.user, "chat", json_encode(Map{"name": m.Name, "body": body, "attachments": &as}))
+	notification(e.user, "chat", "message", chat, m.Name+": "+body, "/chat/"+chat)
 }
 
 // Send previous messages to client
@@ -179,7 +183,7 @@ func chat_messages(a *Action) {
 
 	for i, m := range ms {
 		ms[i].Attachments = attachments(a.user, "chat/%s/%s", c.ID, m.ID)
-		debug("Attachments found for 'chat/%s/%s': %d", c.ID, m.ID, len(*ms[i].Attachments))
+		debug("Attachments for '%s': %+v", m.ID, ms[i].Attachments)
 	}
 
 	a.json(ms)
@@ -200,7 +204,6 @@ func chat_message_send(a *Action) {
 
 	id := uid()
 	body := a.input("body")
-	debug("Chat sending message '%s'", body)
 	a.user.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
@@ -208,11 +211,10 @@ func chat_message_send(a *Action) {
 	var ms []ChatMember
 	a.user.db.scans(&ms, "select * from members where chat=? and member!=?", c.ID, a.user.Identity.ID)
 	for _, m := range ms {
-		debug("Sending chat message to '%s' (%s)", m.Member, m.Name)
-		message(a.user.Identity.ID, m.Member, "chat", "message").set("chat", c.ID, "body", body).add(attachments).send()
+		message(a.user.Identity.ID, m.Member, "chat", "message").set("chat", c.ID, "message", id, "body", body).add(attachments).send()
 	}
 
-	websockets_send(a.user, "chat", json_encode(Map{"Name": a.user.Identity.Name, "Body": body, "Attachments": attachments}))
+	websockets_send(a.user, "chat", json_encode(Map{"name": a.user.Identity.Name, "body": body, "attachments": attachments}))
 }
 
 // Ask user who they'd like to chat with
@@ -222,7 +224,7 @@ func chat_new(a *Action) {
 		return
 	}
 
-	a.template("chat/new", Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
+	a.write("chat/new", Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
 }
 
 // Received a new chat event from a friend
@@ -233,7 +235,7 @@ func chat_new_event(e *Event) {
 		return
 	}
 
-	chat := e.get("chat", "")
+	chat := e.get("id", "")
 	if !valid(chat, "id") {
 		info("Chat dropping new chat with invalid ID '%s'", chat)
 		return
@@ -287,5 +289,5 @@ func chat_view(a *Action) {
 	}
 
 	notifications_clear_object(a.user, "chat", c.ID)
-	a.template("chat/view", Map{"Chat": c})
+	a.write("chat/view", Map{"Chat": c})
 }

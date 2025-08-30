@@ -233,7 +233,7 @@ func peers_publish() {
 		select {
 		case <-peer_publish_chan:
 			debug("Peer publish requested")
-		case <-time.After(time.Minute):
+		case <-time.After(time.Hour):
 			debug("Peer routine publish")
 		}
 	}
@@ -253,6 +253,23 @@ func peer_request_event(e *Event) {
 		debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}
+}
+
+// Check whether we have enough peers to send broadcast messages to, or whether to queue them
+func peers_sufficient() bool {
+	total := 0
+	peers_lock.Lock()
+	for _, p := range peers {
+		if p.connected {
+			total++
+		}
+	}
+	peers_lock.Unlock()
+
+	if total >= peers_minimum {
+		return true
+	}
+	return false
 }
 
 // Get a writer to a peer, connecting if necessary
@@ -281,21 +298,4 @@ func peer_writer(id string) io.WriteCloser {
 	}
 
 	return p2p_stream(id)
-}
-
-// Check whether we have enough peers to send broadcast messages to, or whether to queue them
-func peers_sufficient() bool {
-	total := 0
-	peers_lock.Lock()
-	for _, p := range peers {
-		if p.connected {
-			total++
-		}
-	}
-	peers_lock.Unlock()
-
-	if total >= peers_minimum {
-		return true
-	}
-	return false
 }

@@ -1,4 +1,4 @@
-// Mochi server: Identities
+// Mochi server: Entities
 // Copyright Alistair Cunningham 2024-2025
 
 package main
@@ -11,16 +11,16 @@ import (
 )
 
 type Entity struct {
-	ID          string `cbor:"id"`
-	Private     string `cbor:"-"`
-	Fingerprint string `cbor:"-"`
-	User        int    `cbor:"-"`
-	Parent      string `cbor:"-"`
-	Class       string `cbor:"class,omitempty"`
-	Name        string `cbor:"name,omitempty"`
-	Privacy     string `cbor:"-"`
-	Data        string `cbor:"data,omitempty"`
-	Published   int64  `cbor:"-"`
+	ID          string `cbor:"id" json:"id"`
+	Private     string `cbor:"-" json:"-"`
+	Fingerprint string `cbor:"-" json:"fingerprint"`
+	User        int    `cbor:"-" json:"-"`
+	Parent      string `cbor:"-" json:"-"`
+	Class       string `cbor:"class,omitempty" json:"class"`
+	Name        string `cbor:"name,omitempty" json:"name"`
+	Privacy     string `cbor:"-" json:"privacy"`
+	Data        string `cbor:"data,omitempty" json:"data"`
+	Published   int64  `cbor:"-" json:"-"`
 }
 
 // Get an entity by fingerprint
@@ -94,13 +94,13 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	return nil, error_message("Unable to find spare entity ID or fingerprint")
 }
 
-// Re-publish all our entities every day so the network knows they're still active
+// Re-publish all our entities periodically so the network knows they're still active
 // Increase this interval in future versions, especially once the directory gets recent updates
 func entities_manager() {
 	db := db_open("db/users.db")
 
 	for {
-		time.Sleep(time.Minute)
+		time.Sleep(24 * time.Hour)
 		if peers_sufficient() {
 			var es []Entity
 			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
@@ -120,11 +120,6 @@ func entity_peer(id string) string {
 		return p2p_id
 	}
 
-	// Check if a peer
-	if peer_by_id(id) != nil {
-		return id
-	}
-
 	// Check in directory
 	var d Directory
 	if db_open("db/directory.db").scan(&d, "select location from directory where id=?", id) {
@@ -133,6 +128,6 @@ func entity_peer(id string) string {
 	}
 
 	// Not found. Send a directory request and return failure.
-	directory_request(id)
+	message("", id, "directory", "request").publish(false)
 	return ""
 }

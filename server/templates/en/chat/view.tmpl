@@ -46,25 +46,25 @@ function messages_receive( j ) {
 
 function message_render( c ) {
     const m = document.getElementById( 'messages' );
-    m.innerHTML += '<br/>' + escape( c.Name + ': ' + c.Body );
+    m.innerHTML += '<br/>' + escape( c.name + ': ' + c.body );
 
-	if ( c.Attachments != null ) {
+	if ( c.attachments != null ) {
 		var div = document.createElement( 'div' );
 		div.style = 'overflow-x: auto; white-space: nowrap;';
-		for ( var i = 0; i < c.Attachments.length; i++ ) {
-			const at = c.Attachments[i];
+		for ( var i = 0; i < c.attachments.length; i++ ) {
+			const at = c.attachments[i];
 			var a = document.createElement( 'a' );
-			a.href = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID ) + '/' + escape( at.Name );
+			a.href = '/attachments/' + escape( at.entity ) + '/' + escape( at.id ) + '/' + escape( at.name );
 			a.style = 'z-index: 2;';
-			if ( at.Image ) {
+			if ( at.image ) {
 				var img = document.createElement( 'img' );
-				img.src = '/attachments/' + escape( at.Entity ) + '/' + escape( at.ID ) + '/thumbnail';
-				img.title = at.Name;
+				img.src = '/attachments/' + escape( at.entity ) + '/' + escape( at.id ) + '/thumbnail';
+				img.title = at.name;
 				a.appendChild( img );
 			} else {
 				var span = document.createElement( 'span' );
 				span.style = 'display: inline-block; white-space: pre-line;';
-				span.innerHTML = escape( at.Name ) + '<br/>' + at.Size + ' bytes';
+				span.innerHTML = escape( at.name ) + '<br/>' + at.size + ' bytes';
 				a.appendChild( span );
 			}
 			div.appendChild( a );

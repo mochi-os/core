@@ -8,62 +8,63 @@ import (
 )
 
 type Feed struct {
-	ID          string
-	Fingerprint string
-	Name        string
-	Privacy     string
-	Owner       int
-	Subscribers int
-	Updated     int64
-	entity      *Entity
+	ID          string  `cbor:"id" json:"id"`
+	Fingerprint string  `cbor:"-" json:"fingerprint"`
+	Name        string  `cbor:"name" json:"name"`
+	Privacy     string  `cbor:"privacy" json:"privacy"`
+	Owner       int     `cbor:"-" json:"-"`
+	Subscribers int     `cbor:"subscribers" json:"subscribers"`
+	Updated     int64   `cbor:"updated" json:"updated"`
+	entity      *Entity `cbor:"-" json:"-"`
 }
 
 type FeedSubscriber struct {
-	Feed     string
-	ID       string
-	Name     string
-	FeedName string `cbor:"-"`
+	Feed     string `cbor:"feed" json:"feed"`
+	ID       string `cbor:"id" json:"id"`
+	Name     string `cbor:"name" json:"name"`
+	FeedName string `cbor:"-" json:"-"`
 }
 
 type FeedPost struct {
-	ID            string
-	Feed          string `cbor:"-"`
-	FeedName      string `cbor:"-"`
-	Created       int64
-	CreatedString string `cbor:"-"`
-	Updated       int64
-	Body          string
-	BodyMarkdown  template.HTML   `cbor:"-"`
-	MyReaction    string          `cbor:"-"`
-	Attachments   *[]Attachment   `cbor:",omitempty"`
-	Reactions     *[]FeedReaction `cbor:"-"`
-	Comments      *[]FeedComment  `cbor:"-"`
+	ID            string          `cbor:"id" json:"id"`
+	Feed          string          `cbor:"-" json:"feed"`
+	FeedName      string          `cbor:"-" json:"-"`
+	Created       int64           `cbor:"created" json:"created"`
+	CreatedString string          `cbor:"-" json:"-"`
+	Updated       int64           `cbor:"updated" json:"updated"`
+	Body          string          `cbor:"body" json:"body"`
+	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
+	MyReaction    string          `cbor:"-" json:"-"`
+	Attachments   *[]Attachment   `cbor:"attachments,omitempty" json:"attachments,omitempty"`
+	Reactions     *[]FeedReaction `cbor:"-" json:"-"`
+	Comments      *[]FeedComment  `cbor:"-" json:"-"`
 }
 
 type FeedComment struct {
-	ID            string
-	Feed          string `cbor:"-"`
-	Post          string
-	Parent        string
-	Created       int64
-	CreatedString string `cbor:"-"`
-	Author        string
-	Name          string
-	Body          string
-	BodyMarkdown  template.HTML   `cbor:"-"`
-	MyReaction    string          `cbor:"-"`
-	Reactions     *[]FeedReaction `cbor:"-"`
-	Children      *[]FeedComment  `cbor:"-"`
-	User          int             `cbor:"-"`
+	ID            string `cbor:"id" json:"id"`
+	Feed          string `cbor:"-" json:"-"`
+	Post          string `cbor:"post" json:"post"`
+	Parent        string `cbor:"parent" json:"parent"`
+	Created       int64  `cbor:"created" json:"created"`
+	CreatedString string `cbor:"-" json:"-"`
+	//TODO Rename author?
+	Author       string          `cbor:"author" json:"author"`
+	Name         string          `cbor:"name" json:"name"`
+	Body         string          `cbor:"body" json:"body`
+	BodyMarkdown template.HTML   `cbor:"-" json:"-"`
+	MyReaction   string          `cbor:"-" json:"-"`
+	Reactions    *[]FeedReaction `cbor:"-" json:"-"`
+	Children     *[]FeedComment  `cbor:"-" json:"-"`
+	User         int             `cbor:"-" json:"-"`
 }
 
 type FeedReaction struct {
-	Feed       string
-	Post       string
-	Comment    string `cbor:",omitempty"`
-	Subscriber string
-	Name       string
-	Reaction   string
+	Feed       string `cbor:"feed" json:"feed"`
+	Post       string `cbor:"post" json:"post"`
+	Comment    string `cbor:"comment,omitempty" json:"comment,omitempty"`
+	Subscriber string `cbor:"subscriber" json:"subscriber"`
+	Name       string `cbor:"name" json:"name"`
+	Reaction   string `cbor:"reaction" json:"reaction"`
 }
 
 func init() {
@@ -114,18 +115,20 @@ func feeds_db_create(db *DB) {
 	db.exec("create table subscribers ( feed references feeds( id ), id text not null, name text not null default '', primary key ( feed, id ) )")
 	db.exec("create index subscriber_id on subscribers( id )")
 
-	db.exec("create table posts ( id text not null primary key, feed references feed( id ), created integer not null, updated integer not null, body text not null )")
+	db.exec("create table posts ( id text not null primary key, feed references feed( id ), body text not null, created integer not null, updated integer not null )")
 	db.exec("create index posts_feed on posts( feed )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post text not null, parent text not null, created integer not null, author text not null, name text not null, body text not null )")
+	//TODO Rename author field?
+	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post references posts( id ), parent text not null, author text not null, name text not null, body text not null, created integer not null )")
 	db.exec("create index comments_feed on comments( feed )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	db.exec("create table reactions ( feed references feed( id ), post text not null, comment text not null default '', subscriber text not null, name text not null, reaction text not null default '', primary key ( feed, post, comment, subscriber ) )")
+	//TODO Rename subscriber field?
+	db.exec("create table reactions ( feed references feed( id ), post references posts( id ), comment text not null default '', subscriber text not null, name text not null, reaction text not null default '', primary key ( feed, post, comment, subscriber ) )")
 	db.exec("create index reactions_post on reactions( post )")
 	db.exec("create index reactions_comment on reactions( comment )")
 }
@@ -182,6 +185,7 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 
 		cs[j].Children = feed_comments(u, db, p, &c, depth+1)
 	}
+
 	return &cs
 }
 
@@ -224,7 +228,7 @@ func feeds_comment_create(a *Action) {
 		return
 	}
 
-	a.user.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, now, a.user.Identity.ID, a.user.Identity.Name, body)
+	a.user.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, a.user.Identity.ID, a.user.Identity.Name, body, now)
 	a.user.db.exec("update posts set updated=? where id=?", now, post)
 	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
@@ -234,20 +238,16 @@ func feeds_comment_create(a *Action) {
 		a.user.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				m := message(f.ID, s.ID, "feeds", "comment/create")
-				m.add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body})
-				m.send()
+				message(f.ID, s.ID, "feeds", "comment/create").add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body}).send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		m := message(a.user.Identity.ID, f.ID, "feeds", "comment/submit")
-		m.add(FeedComment{ID: id, Post: post, Parent: parent, Body: body})
-		m.send()
+		message(a.user.Identity.ID, f.ID, "feeds", "comment/submit").add(FeedComment{ID: id, Post: post, Parent: parent, Body: body}).send()
 	}
 
-	a.template("feeds/comment/create", Map{"Feed": f, "Post": post})
+	a.write("feeds/comment/create", Map{"Feed": f, "Post": post})
 }
 
 // Received a feed comment from owner
@@ -288,7 +288,7 @@ func feeds_comment_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
+	e.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 }
@@ -341,7 +341,7 @@ func feeds_comment_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, feed, post, parent, created, author, name, body ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Created, c.Author, c.Name, c.Body)
+	e.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 
@@ -361,7 +361,7 @@ func feeds_comment_new(a *Action) {
 		return
 	}
 
-	a.template("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.user.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.write("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.user.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Reaction to a comment
@@ -392,20 +392,16 @@ func feeds_comment_react(a *Action) {
 		a.user.db.scans(&ss, "select id from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				m := message(f.ID, s.ID, "feeds", "comment/react")
-				m.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
-				m.send()
+				message(f.ID, s.ID, "feeds", "comment/react").add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		m := message(a.user.Identity.ID, f.ID, "feeds", "comment/react")
-		m.add(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction})
-		m.send()
+		message(a.user.Identity.ID, f.ID, "feeds", "comment/react").add(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 	}
 
-	a.template("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
+	a.write("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
 }
 
 func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, name string, reaction string) {
@@ -458,9 +454,7 @@ func feeds_comment_reaction_event(e *Event) {
 		e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != e.from && s.ID != e.user.Identity.ID {
-				m := message(f.ID, s.ID, "feeds", "comment/react")
-				m.add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction})
-				m.send()
+				message(f.ID, s.ID, "feeds", "comment/react").add(FeedReaction{Feed: f.ID, Post: c.Post, Comment: c.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction}).send()
 			}
 		}
 
@@ -486,26 +480,27 @@ func feeds_create(a *Action) {
 		a.error(400, "Invalid name")
 		return
 	}
+
 	privacy := a.input("privacy")
 	if !valid(privacy, "^(public|private)$") {
 		a.error(400, "Invalid privacy")
 		return
 	}
 
-	i, err := entity_create(a.user, "feed", name, privacy, "")
+	e, err := entity_create(a.user, "feed", name, privacy, "")
 	if err != nil {
 		a.error(500, "Unable to create entity: %s", err)
 		return
 	}
-	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", i.ID, i.Fingerprint, name, now())
-	a.user.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", i.ID, a.user.Identity.ID, a.user.Identity.Name)
+	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", e.ID, e.Fingerprint, name, now())
+	a.user.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", e.ID, a.user.Identity.ID, a.user.Identity.Name)
 
-	a.template("feeds/create", i.Fingerprint)
+	a.write("feeds/create", e.Fingerprint)
 }
 
 // Enter details of feeds to be subscribed to
 func feeds_find(a *Action) {
-	a.template("feeds/find")
+	a.write("feeds/find")
 }
 
 // Get details of a feed subscriber
@@ -526,7 +521,7 @@ func feeds_new(a *Action) {
 		name = a.user.Identity.Name
 	}
 
-	a.template("feeds/new", Map{"Name": name})
+	a.write("feeds/new", Map{"Name": name})
 }
 
 // New post. Only posts by the owner are supported for now.
@@ -559,19 +554,17 @@ func feeds_post_create(a *Action) {
 		return
 	}
 
-	a.user.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", post, f.ID, now, now, body)
+	a.user.db.exec("replace into posts ( id, feed, body, created, updated ) values ( ?, ?, ?, ?, ? )", post, f.ID, body, now, now)
 	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
 	attachments := a.upload_attachments("attachments", f.ID, true, "feeds/%s/%s", f.ID, post)
 
 	var ss []FeedSubscriber
 	a.user.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)
 	for _, s := range ss {
-		m := message(f.ID, s.ID, "feeds", "post/create")
-		m.add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments})
-		m.send()
+		message(f.ID, s.ID, "feeds", "post/create").add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments}).send()
 	}
 
-	a.template("feeds/post/create", Map{"Feed": f, "Post": post})
+	a.write("feeds/post/create", Map{"Feed": f, "Post": post})
 }
 
 // Received a feed post from the owner
@@ -587,7 +580,6 @@ func feeds_post_create_event(e *Event) {
 		info("Feed dropping post with invalid data")
 		return
 	}
-	debug("Feed received post %+v", p)
 
 	if !valid(p.ID, "id") {
 		info("Feed dropping post with invalid ID '%s'", p.ID)
@@ -603,7 +595,7 @@ func feeds_post_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into posts ( id, feed, created, updated, body ) values ( ?, ?, ?, ?, ? )", p.ID, f.ID, p.Created, p.Created, p.Body)
+	e.db.exec("replace into posts ( id, feed, body, created, updated ) values ( ?, ?, ?, ?, ? )", p.ID, f.ID, p.Body, p.Created, p.Created)
 	attachments_save(p.Attachments, e.user, f.ID, "feeds/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update feeds set updated=? where id=?", now(), f.ID)
@@ -623,7 +615,7 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
-	a.template("feeds/post/new", Map{"Feeds": fs, "Current": a.input("current")})
+	a.write("feeds/post/new", Map{"Feeds": fs, "Current": a.input("current")})
 }
 
 // Reaction to a post
@@ -653,20 +645,16 @@ func feeds_post_react(a *Action) {
 		a.user.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				m := message(f.ID, s.ID, "feeds", "post/react")
-				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction})
-				m.send()
+				message(f.ID, s.ID, "feeds", "post/react").add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 			}
 		}
 
 	} else {
 		// We are not feed owner, so send to the owner
-		m := message(a.user.Identity.ID, f.ID, "feeds", "post/react")
-		m.add(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction})
-		m.send()
+		message(a.user.Identity.ID, f.ID, "feeds", "post/react").add(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 	}
 
-	a.template("feeds/post/react", Map{"Feed": f, "ID": p.ID})
+	a.write("feeds/post/react", Map{"Feed": f, "ID": p.ID})
 }
 
 func feeds_post_reaction_set(db *DB, p *FeedPost, subscriber string, name string, reaction string) {
@@ -718,9 +706,7 @@ func feeds_post_reaction_event(e *Event) {
 		e.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != e.from && s.ID != e.user.Identity.ID {
-				m := message(f.ID, s.ID, "feeds", "post/react")
-				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction})
-				m.send()
+				message(f.ID, s.ID, "feeds", "post/react").add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: e.from, Name: fr.Name, Reaction: reaction}).send()
 			}
 		}
 
@@ -754,7 +740,7 @@ func feeds_search(a *Action) {
 		a.error(400, "No search entered")
 		return
 	}
-	a.template("feeds/search", directory_search(a.user, "feed", search, false))
+	a.write("feeds/search", directory_search(a.user, "feed", search, false))
 }
 
 // Send recent posts to a new subscriber
@@ -773,18 +759,14 @@ func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 			var frs []FeedReaction
 			db.scans(&frs, "select * from reactions where comment=?", c.ID)
 			for _, fr := range frs {
-				m := message(f.ID, subscriber, "feeds", "comment/react")
-				m.add(FeedReaction{Feed: f.ID, Post: p.ID, Comment: c.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
-				m.send()
+				message(f.ID, subscriber, "feeds", "comment/react").add(FeedReaction{Feed: f.ID, Post: p.ID, Comment: c.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction}).send()
 			}
 		}
 
 		var frs []FeedReaction
 		db.scans(&frs, "select * from reactions where post=?", p.ID)
 		for _, fr := range frs {
-			m := message(f.ID, subscriber, "feeds", "post/react")
-			m.add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction})
-			m.send()
+			message(f.ID, subscriber, "feeds", "post/react").add(FeedReaction{Feed: f.ID, Post: p.ID, Subscriber: fr.Subscriber, Name: fr.Name, Reaction: fr.Reaction}).send()
 		}
 	}
 }
@@ -815,7 +797,7 @@ func feeds_subscribe(a *Action) {
 
 	message(a.user.Identity.ID, feed, "feeds", "subscribe").set("name", a.user.Identity.Name).send()
 
-	a.template("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
+	a.write("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
 }
 
 // Received a subscribe from a subscriber
@@ -865,7 +847,7 @@ func feeds_unsubscribe(a *Action) {
 		message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe").send()
 	}
 
-	a.template("feeds/unsubscribe")
+	a.write("feeds/unsubscribe")
 }
 
 // Received an unsubscribe from subscriber
@@ -970,5 +952,5 @@ func feeds_view(a *Action) {
 	var fs []Feed
 	db.scans(&fs, "select * from feeds order by updated desc")
 
-	a.template("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
+	a.write("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

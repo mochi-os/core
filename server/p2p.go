@@ -163,7 +163,7 @@ func p2p_start() {
 func p2p_stream(peer string) p2p_network.Stream {
 	p, err := p2p_peer.Decode(peer)
 	if err != nil {
-		warn("P2P invalid peer '%s'", peer)
+		warn("P2P invalid peer '%s': %v", peer, err)
 		return nil
 	}
 

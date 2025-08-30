@@ -55,7 +55,7 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
-	// Remove once we have new user hooks
+	// Remove once we have hooks
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
 		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))

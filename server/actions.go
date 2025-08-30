@@ -43,15 +43,11 @@ func (a *Action) redirect(url string) {
 	a.web.Redirect(301, url)
 }
 
-func (a *Action) template(template string, values ...any) {
-	web_template(a.web, 200, template, values...)
-}
-
-func (a *Action) write(format string, template string, values ...any) {
-	switch format {
+func (a *Action) write(template string, values ...any) {
+	switch a.input("format") {
 	case "json":
 		a.json(values[0])
 	default:
-		a.template(template, values...)
+		web_template(a.web, 200, template, values...)
 	}
 }

@@ -52,7 +52,7 @@ func message_receive(r io.Reader, version int, peer string) {
 		return
 	}
 
-	if m.To != "" && m.To != p2p_id && !valid(m.To, "entity") {
+	if m.To != "" && !valid(m.To, "entity") {
 		info("Dropping message '%s' with invalid to '%s'", m.ID, m.To)
 		return
 	}
@@ -105,10 +105,11 @@ func (m *Message) publish(allow_queue bool) {
 	data = append(data, cbor_encode(m.content)...)
 
 	if peers_sufficient() {
+		debug("Message sending via P2P pubsub")
 		p2p_pubsub_messages_1.Publish(p2p_context, data)
 
 	} else if allow_queue {
-		debug("Unable to send broadcast message, adding to queue")
+		debug("Not enough peers to publish message, adding to queue")
 		db := db_open("db/queue.db")
 		db.exec("replace into broadcasts ( id, data, created ) values ( ?, ?, ? )", m.ID, data, now())
 	}
@@ -133,14 +134,13 @@ func (m *Message) send_work(peer string) {
 	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
 
 	failed := false
-	m.Signature = m.signature()
-
 	w := peer_writer(peer)
 	if w == nil {
 		debug("Unable to open peer for writing")
 		failed = true
 	}
 
+	m.Signature = m.signature()
 	headers := cbor_encode(m)
 	if !failed {
 		_, err := w.Write(headers)

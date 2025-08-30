@@ -4,18 +4,18 @@
 package main
 
 type Friend struct {
-	Identity string
-	ID       string
-	Name     string
-	Class    string
+	Identity string `cbor:"-" json:"-"`
+	ID       string `cbor:"id" json:"id"`
+	Name     string `cbor:"name" json:"name"`
+	Class    string `cbor:"class" json:"class"`
 }
 
 type FriendInvite struct {
-	Identity  string
-	ID        string
-	Direction string
-	Name      string
-	Updated   int64
+	Identity  string `cbor:"-" json:"-"`
+	ID        string `cbor:"id" json:"id"`
+	Direction string `cbor:"direction" json:"direction"`
+	Name      string `cbor:"name" json:"name"`
+	Updated   int64  `cbor:"updated" json:"updated"`
 }
 
 func init() {
@@ -103,7 +103,7 @@ func friends_accept(a *Action) {
 	}
 
 	friend_accept(a.user, a.user.db, a.input("id"))
-	a.template("friends/accepted")
+	a.write("friends/accepted")
 }
 
 // Remote party accepted our invitation
@@ -127,12 +127,15 @@ func friend_create(u *User, db *DB, id string, name string, class string, invite
 	if !valid(id, "entity") {
 		return error_message("Invalid ID")
 	}
+
 	if !valid(name, "name") {
 		return error_message("Invalid name")
 	}
+
 	if !valid(class, "^person$") {
 		return error_message("Invalid class")
 	}
+
 	if db.exists("select id from friends where identity=? and id=?", u.Identity.ID, id) {
 		return error_message("You are already friends")
 	}
@@ -166,7 +169,7 @@ func friends_create(a *Action) {
 		a.error(500, "Unable to create friend: %s", err)
 		return
 	}
-	a.template("friends/created")
+	a.write("friends/created")
 }
 
 // Delete friend
@@ -180,7 +183,7 @@ func friends_delete(a *Action) {
 	a.user.db.exec("delete from invites where identity=? and id=?", a.user.Identity.ID, id)
 	a.user.db.exec("delete from friends where identity=? and id=?", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "delete", id, nil)
-	a.template("friends/deleted")
+	a.write("friends/deleted")
 }
 
 // Ignore friend invitation
@@ -193,7 +196,7 @@ func friends_ignore(a *Action) {
 	id := a.input("id")
 	a.user.db.exec("delete from invites where identity=? and id=? and direction='from'", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "ignore", id, nil)
-	a.template("friends/ignored")
+	a.write("friends/ignored")
 }
 
 // Remote party sent us a new invitation
@@ -207,10 +210,12 @@ func friends_invite_event(e *Event) {
 	if e.db.exists("select id from invites where identity=? and id=? and direction='to'", e.to, e.from) {
 		// We have an existing invitation to them, so accept theirs automatically and cancel ours
 		friend_accept(e.user, e.db, e.from)
+
 	} else {
 		// Store the invitation, but don't notify the user so we don't have notification spam
 		e.db.exec("replace into invites ( identity, id, direction, name, updated ) values ( ?, ?, 'from', ?, ? )", e.to, e.from, name, now_string())
 	}
+
 	broadcast(e.user, "friends", "invited", e.from, nil)
 }
 
@@ -220,6 +225,7 @@ func friends_list(a *Action) {
 		a.error(401, "Not logged in")
 		return
 	}
+
 	notifications_clear_app(a.user, "friends")
 
 	var f []Friend
@@ -227,17 +233,12 @@ func friends_list(a *Action) {
 	var i []FriendInvite
 	a.user.db.scans(&i, "select * from invites where direction='from' order by updated desc")
 
-	switch a.input("format") {
-	case "json":
-		a.json(f)
-	default:
-		a.template("friends/list", Map{"Friends": f, "Invites": i})
-	}
+	a.write("friends/list", Map{"Friends": f, "Invites": i})
 }
 
 // New friend selector
 func friends_new(a *Action) {
-	a.template("friends/new")
+	a.write("friends/new")
 }
 
 // Search the directory for potential friends
@@ -252,5 +253,6 @@ func friends_search(a *Action) {
 		a.error(400, "No search entered")
 		return
 	}
-	a.template("friends/search", directory_search(a.user, "person", search, false))
+
+	a.write("friends/search", directory_search(a.user, "person", search, false))
 }

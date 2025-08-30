@@ -21,9 +21,8 @@ type Directory struct {
 func init() {
 	a := app("directory")
 	a.service("directory")
-	a.event_broadcast("download", directory_download_event)
 	a.event("request", directory_request_event)
-	a.event_broadcast("request", directory_request_event)
+	a.event_broadcast("download", directory_download_event)
 	a.event_broadcast("publish", directory_publish_event)
 }
 
@@ -143,11 +142,6 @@ func directory_publish_event(e *Event) {
 	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, data, now, now)
 
 	go queue_check_entity(id)
-}
-
-// Request that another server publish a directory event
-func directory_request(id string) {
-	message("", id, "directory", "request").publish(false)
 }
 
 // Reply to a directory request if we have the requested entity

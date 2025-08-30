@@ -1,5 +1,7 @@
 0.1
-	Remove unwanted debugging
+	Create announcements feed
+	Create development forum
+	Create users forum
 
 0.2
 	Client API

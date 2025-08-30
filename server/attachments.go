@@ -12,16 +12,16 @@ import (
 )
 
 type Attachment struct {
-	Entity  string `cbor:"entity,omitempty"`
-	ID      string `cbor:"id"`
-	Object  string `cbor:"object,omitempty"`
-	Rank    int    `cbor:"rank,omitempty"`
-	Name    string `cbor:"name,omitempty"`
-	Path    string `cbor:"-"`
-	Size    int64  `cbor:"size,omitempty"`
-	Created int64  `cbor:"-"`
-	Image   bool   `cbor:"image,omitempty"`
-	Data    []byte `cbor:"-"`
+	Entity  string `cbor:"entity,omitempty" json:"entity"`
+	ID      string `cbor:"id" json:"id"`
+	Object  string `cbor:"object,omitempty" json:"object"`
+	Rank    int    `cbor:"rank,omitempty" json:"rank"`
+	Name    string `cbor:"name,omitempty" json:"name"`
+	Path    string `cbor:"-" json:"-"`
+	Size    int64  `cbor:"size,omitempty" json:"size"`
+	Created int64  `cbor:"-" json:"created"`
+	Image   bool   `cbor:"image,omitempty" json:"image"`
+	Data    []byte `cbor:"-" json:"-"`
 }
 
 type AttachmentRequest struct {
@@ -300,7 +300,7 @@ func attachments_get_thumbnail_event(e *Event) {
 func attachments_manager() {
 	for {
 		var survivors []*AttachmentRequest
-		time.Sleep(time.Hour)
+		time.Sleep(24 * time.Hour)
 		now := now()
 		attachments_lock.Lock()
 		for _, r := range attachments_requested {
@@ -328,10 +328,12 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 			info("Skipping attachment with invalid ID '%s'", at.ID)
 			continue
 		}
+
 		if !valid(at.Object, "path") {
 			info("Skipping attachment with invalid object '%s'", at.Object)
 			continue
 		}
+
 		if !valid(at.Name, "filename") {
 			info("Skipping attachment with invalid name '%s'", at.Name)
 			continue
@@ -390,7 +392,6 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 			info("Skipping uploaded file with invalid name '%s'", f.Filename)
 			continue
 		}
-
 		id := uid()
 
 		if local {
@@ -407,7 +408,6 @@ func (a *Action) upload_attachments(field string, entity string, local bool, for
 
 		} else {
 			// Save information about the attachment locally, but not its data because we're sending that to the owning entity
-
 			// Temporarily save the file and read it back in again. I don't want to
 			// do this, but it appears that Gin does not offer any alternative.
 			tmp := fmt.Sprintf("%s/tmp/%s_%s", cache_dir, id, file_name_safe(f.Filename))

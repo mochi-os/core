@@ -8,7 +8,7 @@ type Chat struct {
 	Identity string        `cbor:"-" json:"-"`
 	Name     string        `cbor:"name" json:"name"`
 	Updated  int64         `cbor:"-" json:"-"`
-	Members  *[]ChatMember `cbor:members,omitempty" json:"members,omitempty"`
+	Members  *[]ChatMember `cbor:"members,omitempty" json:"-"`
 }
 
 type ChatMember struct {
@@ -18,14 +18,12 @@ type ChatMember struct {
 }
 
 type ChatMessage struct {
-	ID   string `cbor:"id" json:"id"`
-	Chat string `cbor:"chat" json:"chat"`
-	//TODO Rename time?
-	Time int64 `cbor:"time" json:"time"`
-	//TODO Rename author?
+	ID          string        `cbor:"id" json:"id"`
+	Chat        string        `cbor:"chat" json:"chat"`
 	Author      string        `cbor:"author" json:"author"`
 	Name        string        `cbor:"name" json:"name"`
 	Body        string        `cbor:"body" json:"body"`
+	Created     int64         `cbor:"created" json:"created"`
 	Attachments *[]Attachment `cbor:"attachments,omitempty" json:"attachments,omitempty"`
 }
 
@@ -57,8 +55,8 @@ func chat_db_create(db *DB) {
 
 	db.exec("create table members ( chat references chats( id ), member text not null, name text not null, primary key ( chat, member ) )")
 
-	db.exec("create table messages ( id text not null primary key, chat references chats( id ), time integer not null, author text not null, name text not null, body text not null )")
-	db.exec("create index messages_chat_time on messages( chat, time )")
+	db.exec("create table messages ( id text not null primary key, chat references chats( id ), author text not null, name text not null, body text not null, created integer not null )")
+	db.exec("create index messages_chat_created on messages( chat, created )")
 }
 
 // Get details of a chat
@@ -154,7 +152,7 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", message, chat, now(), e.from, m.Name, body)
+	e.db.exec("replace into messages ( id, chat, author, name, body, created ) values ( ?, ?, ?, ?, ?, ? )", message, chat, e.from, m.Name, body, now())
 
 	var as []Attachment
 	if e.decode(&as) {
@@ -204,7 +202,7 @@ func chat_message_send(a *Action) {
 
 	id := uid()
 	body := a.input("body")
-	a.user.db.exec("replace into messages ( id, chat, time, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, now(), a.user.Identity.ID, a.user.Identity.Name, body)
+	a.user.db.exec("replace into messages ( id, chat, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, a.user.Identity.ID, a.user.Identity.Name, body, now())
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
 

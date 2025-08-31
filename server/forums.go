@@ -26,10 +26,9 @@ type ForumMember struct {
 }
 
 type ForumPost struct {
-	ID        string `cbor:"id" json:"id"`
-	Forum     string `cbor:"-" json:"forum"`
-	ForumName string `cbor:"-" json:"-"`
-	//TODO Rename author?
+	ID            string        `cbor:"id" json:"id"`
+	Forum         string        `cbor:"-" json:"forum"`
+	ForumName     string        `cbor:"-" json:"-"`
 	Author        string        `cbor:"author" json:"author"`
 	Name          string        `cbor:"name" json:"name"`
 	Title         string        `cbor:"title" json:"title"`
@@ -45,11 +44,10 @@ type ForumPost struct {
 }
 
 type ForumComment struct {
-	ID     string `cbor:"id" json:"id"`
-	Forum  string `cbor:"-" json:"forum"`
-	Post   string `cbor:"post" json:"post"`
-	Parent string `cbor:"parent" json:"parent"`
-	//TODO Rename author?
+	ID            string          `cbor:"id" json:"id"`
+	Forum         string          `cbor:"-" json:"forum"`
+	Post          string          `cbor:"post" json:"post"`
+	Parent        string          `cbor:"parent" json:"parent"`
 	Author        string          `cbor:"author" json:"author"`
 	Name          string          `cbor:"name" json:"name"`
 	Body          string          `cbor:"body" json:"body"`
@@ -131,7 +129,6 @@ func forums_db_create(db *DB) {
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	//TODO Rename author field?
 	db.exec("create table comments ( id text not null primary key, forum references forum( id ), post text not null, parent text not null, author text not null, name text not null, body text not null, up integer not null default 0, down integer not null default 0, created integer not null )")
 	db.exec("create index comments_forum on comments( forum )")
 	db.exec("create index comments_post on comments( post )")

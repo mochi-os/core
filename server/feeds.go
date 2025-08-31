@@ -41,21 +41,20 @@ type FeedPost struct {
 }
 
 type FeedComment struct {
-	ID            string `cbor:"id" json:"id"`
-	Feed          string `cbor:"-" json:"-"`
-	Post          string `cbor:"post" json:"post"`
-	Parent        string `cbor:"parent" json:"parent"`
-	Created       int64  `cbor:"created" json:"created"`
-	CreatedString string `cbor:"-" json:"-"`
-	//TODO Rename author?
-	Author       string          `cbor:"author" json:"author"`
-	Name         string          `cbor:"name" json:"name"`
-	Body         string          `cbor:"body" json:"body`
-	BodyMarkdown template.HTML   `cbor:"-" json:"-"`
-	MyReaction   string          `cbor:"-" json:"-"`
-	Reactions    *[]FeedReaction `cbor:"-" json:"-"`
-	Children     *[]FeedComment  `cbor:"-" json:"-"`
-	User         int             `cbor:"-" json:"-"`
+	ID            string          `cbor:"id" json:"id"`
+	Feed          string          `cbor:"-" json:"-"`
+	Post          string          `cbor:"post" json:"post"`
+	Parent        string          `cbor:"parent" json:"parent"`
+	Created       int64           `cbor:"created" json:"created"`
+	CreatedString string          `cbor:"-" json:"-"`
+	Author        string          `cbor:"author" json:"author"`
+	Name          string          `cbor:"name" json:"name"`
+	Body          string          `cbor:"body" json:"body`
+	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
+	MyReaction    string          `cbor:"-" json:"-"`
+	Reactions     *[]FeedReaction `cbor:"-" json:"-"`
+	Children      *[]FeedComment  `cbor:"-" json:"-"`
+	User          int             `cbor:"-" json:"-"`
 }
 
 type FeedReaction struct {
@@ -120,14 +119,12 @@ func feeds_db_create(db *DB) {
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	//TODO Rename author field?
 	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post references posts( id ), parent text not null, author text not null, name text not null, body text not null, created integer not null )")
 	db.exec("create index comments_feed on comments( feed )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
 	db.exec("create index comments_created on comments( created )")
 
-	//TODO Rename subscriber field?
 	db.exec("create table reactions ( feed references feed( id ), post references posts( id ), comment text not null default '', subscriber text not null, name text not null, reaction text not null default '', primary key ( feed, post, comment, subscriber ) )")
 	db.exec("create index reactions_post on reactions( post )")
 	db.exec("create index reactions_comment on reactions( comment )")

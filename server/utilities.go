@@ -76,6 +76,10 @@ func fingerprint_hyphens(in string) string {
 	return in[:3] + "-" + in[3:6] + "-" + in[6:]
 }
 
+func itoa(in int) string {
+	return strconv.Itoa(in)
+}
+
 func json_decode(out any, j string) bool {
 	err := json.Unmarshal([]byte(j), out)
 	if err != nil {

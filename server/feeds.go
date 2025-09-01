@@ -47,7 +47,7 @@ type FeedComment struct {
 	Parent        string          `cbor:"parent" json:"parent"`
 	Created       int64           `cbor:"created" json:"created"`
 	CreatedString string          `cbor:"-" json:"-"`
-	Author        string          `cbor:"author" json:"author"`
+	Subscriber    string          `cbor:"subscriber" json:"subscriber"`
 	Name          string          `cbor:"name" json:"name"`
 	Body          string          `cbor:"body" json:"body`
 	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
@@ -119,7 +119,7 @@ func feeds_db_create(db *DB) {
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post references posts( id ), parent text not null, author text not null, name text not null, body text not null, created integer not null )")
+	db.exec("create table comments ( id text not null primary key, feed references feed( id ), post references posts( id ), parent text not null, subscriber text not null, name text not null, body text not null, created integer not null )")
 	db.exec("create index comments_feed on comments( feed )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
@@ -225,7 +225,7 @@ func feeds_comment_create(a *Action) {
 		return
 	}
 
-	a.user.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, a.user.Identity.ID, a.user.Identity.Name, body, now)
+	a.user.db.exec("replace into comments ( id, feed, post, parent, subscriber, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, a.user.Identity.ID, a.user.Identity.Name, body, now)
 	a.user.db.exec("update posts set updated=? where id=?", now, post)
 	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
 
@@ -235,7 +235,7 @@ func feeds_comment_create(a *Action) {
 		a.user.db.scans(&ss, "select * from subscribers where feed=?", f.ID)
 		for _, s := range ss {
 			if s.ID != a.user.Identity.ID {
-				message(f.ID, s.ID, "feeds", "comment/create").add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body}).send()
+				message(f.ID, s.ID, "feeds", "comment/create").add(FeedComment{ID: id, Post: post, Parent: parent, Created: now, Subscriber: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body}).send()
 			}
 		}
 
@@ -270,8 +270,8 @@ func feeds_comment_create_event(e *Event) {
 		return
 	}
 
-	if !valid(c.Author, "entity") {
-		info("Feed dropping comment with invalid author '%s'", c.Author)
+	if !valid(c.Subscriber, "entity") {
+		info("Feed dropping comment with invalid subscriber '%s'", c.Subscriber)
 		return
 	}
 
@@ -285,7 +285,7 @@ func feeds_comment_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
+	e.db.exec("replace into comments ( id, feed, post, parent, subscriber, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Subscriber, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 }
@@ -330,7 +330,7 @@ func feeds_comment_submit_event(e *Event) {
 	}
 
 	c.Created = now()
-	c.Author = e.from
+	c.Subscriber = e.from
 	c.Name = s.Name
 
 	if !valid(c.Body, "text") {
@@ -338,7 +338,7 @@ func feeds_comment_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, feed, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
+	e.db.exec("replace into comments ( id, feed, post, parent, subscriber, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Subscriber, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=? where id=?", c.Created, c.Post)
 	e.db.exec("update feeds set updated=? where id=?", c.Created, f.ID)
 

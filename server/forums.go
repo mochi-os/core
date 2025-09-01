@@ -29,7 +29,7 @@ type ForumPost struct {
 	ID            string        `cbor:"id" json:"id"`
 	Forum         string        `cbor:"-" json:"forum"`
 	ForumName     string        `cbor:"-" json:"-"`
-	Author        string        `cbor:"author" json:"author"`
+	Member        string        `cbor:"member" json:"member"`
 	Name          string        `cbor:"name" json:"name"`
 	Title         string        `cbor:"title" json:"title"`
 	Body          string        `cbor:"body" json:"body"`
@@ -48,7 +48,7 @@ type ForumComment struct {
 	Forum         string          `cbor:"-" json:"forum"`
 	Post          string          `cbor:"post" json:"post"`
 	Parent        string          `cbor:"parent" json:"parent"`
-	Author        string          `cbor:"author" json:"author"`
+	Member        string          `cbor:"member" json:"member"`
 	Name          string          `cbor:"name" json:"name"`
 	Body          string          `cbor:"body" json:"body"`
 	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
@@ -124,12 +124,12 @@ func forums_db_create(db *DB) {
 	db.exec("create table members ( forum references forums( id ), id text not null, name text not null default '', role text not null, primary key ( forum, id ) )")
 	db.exec("create index members_id on members( id )")
 
-	db.exec("create table posts ( id text not null primary key, forum references forum( id ), author text not null, name text not null, title text not null, body text not null, comments integer not null default 0, up integer not null default 0, down integer not null default 0, created integer not null, updated integer not null )")
+	db.exec("create table posts ( id text not null primary key, forum references forum( id ), member text not null, name text not null, title text not null, body text not null, comments integer not null default 0, up integer not null default 0, down integer not null default 0, created integer not null, updated integer not null )")
 	db.exec("create index posts_forum on posts( forum )")
 	db.exec("create index posts_created on posts( created )")
 	db.exec("create index posts_updated on posts( updated )")
 
-	db.exec("create table comments ( id text not null primary key, forum references forum( id ), post text not null, parent text not null, author text not null, name text not null, body text not null, up integer not null default 0, down integer not null default 0, created integer not null )")
+	db.exec("create table comments ( id text not null primary key, forum references forum( id ), post text not null, parent text not null, member text not null, name text not null, body text not null, up integer not null default 0, down integer not null default 0, created integer not null )")
 	db.exec("create index comments_forum on comments( forum )")
 	db.exec("create index comments_post on comments( post )")
 	db.exec("create index comments_parent on comments( parent )")
@@ -217,7 +217,7 @@ func forums_comment_create(a *Action) {
 		return
 	}
 
-	a.user.db.exec("replace into comments ( id, forum, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, a.user.Identity.ID, a.user.Identity.Name, body, now)
+	a.user.db.exec("replace into comments ( id, forum, post, parent, member, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, f.ID, post, parent, a.user.Identity.ID, a.user.Identity.Name, body, now)
 	a.user.db.exec("update posts set updated=?, comments=comments+1 where id=?", now, post)
 	a.user.db.exec("update forums set updated=? where id=?", now, f.ID)
 
@@ -227,7 +227,7 @@ func forums_comment_create(a *Action) {
 		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				message(f.ID, m.ID, "forums", "comment/create").add(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body}).send()
+				message(f.ID, m.ID, "forums", "comment/create").add(ForumComment{ID: id, Post: post, Parent: parent, Created: now, Member: a.user.Identity.ID, Name: a.user.Identity.Name, Body: body}).send()
 			}
 		}
 
@@ -264,8 +264,8 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
-	if !valid(c.Author, "entity") {
-		info("Forum dropping comment with invalid author '%s'", c.Author)
+	if !valid(c.Member, "entity") {
+		info("Forum dropping comment with invalid member '%s'", c.Member)
 		return
 	}
 
@@ -279,7 +279,7 @@ func forums_comment_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, forum, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
+	e.db.exec("replace into comments ( id, forum, post, parent, member, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", c.ID, f.ID, c.Post, c.Parent, c.Member, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 }
@@ -324,7 +324,7 @@ func forums_comment_submit_event(e *Event) {
 	}
 
 	c.Created = now()
-	c.Author = e.from
+	c.Member = e.from
 	c.Name = m.Name
 
 	if !valid(c.Body, "text") {
@@ -332,7 +332,7 @@ func forums_comment_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into comments ( id, forum, post, parent, author, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Author, c.Name, c.Body, c.Created)
+	e.db.exec("replace into comments ( id, forum, post, parent, member, name, body, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.id, f.ID, c.Post, c.Parent, c.Member, c.Name, c.Body, c.Created)
 	e.db.exec("update posts set updated=?, comments=comments+1 where id=?", c.Created, c.Post)
 	e.db.exec("update forums set updated=? where id=?", c.Created, f.ID)
 
@@ -668,7 +668,7 @@ func forums_post_create(a *Action) {
 		return
 	}
 
-	a.user.db.exec("replace into posts ( id, forum, author, name, title, body, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, a.user.Identity.ID, a.user.Identity.Name, title, body, now, now)
+	a.user.db.exec("replace into posts ( id, forum, member, name, title, body, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", post, f.ID, a.user.Identity.ID, a.user.Identity.Name, title, body, now, now)
 	a.user.db.exec("update forums set updated=? where id=?", now, f.ID)
 
 	if f.Entity != nil {
@@ -678,7 +678,7 @@ func forums_post_create(a *Action) {
 		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
 			if m.ID != a.user.Identity.ID {
-				message(f.ID, m.ID, "forums", "post/create").add(ForumPost{ID: post, Created: now, Author: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: attachments}).send()
+				message(f.ID, m.ID, "forums", "post/create").add(ForumPost{ID: post, Created: now, Member: a.user.Identity.ID, Name: a.user.Identity.Name, Title: title, Body: body, Attachments: attachments}).send()
 			}
 		}
 
@@ -715,8 +715,8 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
-	if !valid(p.Author, "entity") {
-		info("Forum dropping post with invalid author '%s'", p.Author)
+	if !valid(p.Member, "entity") {
+		info("Forum dropping post with invalid member '%s'", p.Member)
 		return
 	}
 
@@ -735,7 +735,7 @@ func forums_post_create_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into posts ( id, forum, author, name, title, body, up, down ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Author, p.Name, p.Title, p.Body, p.Up, p.Down, p.Created, p.Created)
+	e.db.exec("replace into posts ( id, forum, member, name, title, body, up, down, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Member, p.Name, p.Title, p.Body, p.Up, p.Down, p.Created, p.Created)
 	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
@@ -788,7 +788,7 @@ func forums_post_submit_event(e *Event) {
 	}
 
 	p.Created = now()
-	p.Author = e.from
+	p.Member = e.from
 	p.Name = m.Name
 
 	if !valid(p.Title, "line") {
@@ -801,7 +801,7 @@ func forums_post_submit_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into posts ( id, forum, author, name, title, body, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Author, p.Name, p.Title, p.Body, p.Created, p.Created)
+	e.db.exec("replace into posts ( id, forum, member, name, title, body, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", p.ID, f.ID, p.Member, p.Name, p.Title, p.Body, p.Created, p.Created)
 	attachments_save(p.Attachments, e.user, f.ID, "forums/%s/%s", f.ID, p.ID)
 
 	e.db.exec("update forums set updated=? where id=?", now(), f.ID)
@@ -1131,7 +1131,7 @@ func forum_update(u *User, db *DB, f *Forum) {
 
 	for _, m := range ms {
 		if m.ID != u.Identity.ID {
-			message(f.ID, m.ID, "forums", "update").set("members", string(len(ms))).send()
+			message(f.ID, m.ID, "forums", "update").set("members", itoa(len(ms))).send()
 		}
 	}
 }

@@ -100,7 +100,7 @@ func entities_manager() {
 	db := db_open("db/users.db")
 
 	for {
-		time.Sleep(24 * time.Hour)
+		time.Sleep(time.Hour)
 		if peers_sufficient() {
 			var es []Entity
 			db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)

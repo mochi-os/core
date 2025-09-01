@@ -20,7 +20,7 @@ type ChatMember struct {
 type ChatMessage struct {
 	ID          string        `cbor:"id" json:"id"`
 	Chat        string        `cbor:"chat" json:"chat"`
-	Author      string        `cbor:"author" json:"author"`
+	Member      string        `cbor:"member" json:"member"`
 	Name        string        `cbor:"name" json:"name"`
 	Body        string        `cbor:"body" json:"body"`
 	Created     int64         `cbor:"created" json:"created"`
@@ -55,7 +55,7 @@ func chat_db_create(db *DB) {
 
 	db.exec("create table members ( chat references chats( id ), member text not null, name text not null, primary key ( chat, member ) )")
 
-	db.exec("create table messages ( id text not null primary key, chat references chats( id ), author text not null, name text not null, body text not null, created integer not null )")
+	db.exec("create table messages ( id text not null primary key, chat references chats( id ), member text not null, name text not null, body text not null, created integer not null )")
 	db.exec("create index messages_chat_created on messages( chat, created )")
 }
 
@@ -152,7 +152,7 @@ func chat_message_event(e *Event) {
 		return
 	}
 
-	e.db.exec("replace into messages ( id, chat, author, name, body, created ) values ( ?, ?, ?, ?, ?, ? )", message, chat, e.from, m.Name, body, now())
+	e.db.exec("replace into messages ( id, chat, member, name, body, created ) values ( ?, ?, ?, ?, ?, ? )", message, chat, e.from, m.Name, body, now())
 
 	var as []Attachment
 	if e.decode(&as) {
@@ -202,7 +202,7 @@ func chat_message_send(a *Action) {
 
 	id := uid()
 	body := a.input("body")
-	a.user.db.exec("replace into messages ( id, chat, author, name, body ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, a.user.Identity.ID, a.user.Identity.Name, body, now())
+	a.user.db.exec("replace into messages ( id, chat, member, name, body, created ) values ( ?, ?, ?, ?, ?, ? )", id, c.ID, a.user.Identity.ID, a.user.Identity.Name, body, now())
 
 	attachments := a.upload_attachments("attachments", a.user.Identity.ID, true, "chat/%s/%s", c.ID, id)
 

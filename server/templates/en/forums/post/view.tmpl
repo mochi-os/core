@@ -10,7 +10,7 @@
 
 {{template "attachments" .}}
 
-<p style="font-variant: small-caps;">{{.Forum.Name}}, {{.Post.Name}}, {{.Post.CreatedString}}{{if $.RoleVoter}} <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/vote/up">&uarr;{{.Post.Up}}</a> <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/vote/down">&darr;{{.Post.Down}}</a>{{else}} &uarr;{{.Post.Up}} &darr;{{.Post.Down}}{{end}} &#8618;{{.Post.Comments}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum.ID}}/{{.Post.ID}}/comment">New comment</a>{{end}}</p>
+<p style="font-variant: small-caps;">{{.Forum.Name}}, {{.Post.Name}}, {{.Post.CreatedString}}{{if $.RoleVoter}} <a href="/forums/{{.Forum.Fingerprint}}/{{.Post.ID}}/vote/up">&uarr;{{.Post.Up}}</a> <a href="/forums/{{.Forum.Fingerprint}}/{{.Post.ID}}/vote/down">&darr;{{.Post.Down}}</a>{{else}} &uarr;{{.Post.Up}} &darr;{{.Post.Down}}{{end}} &#8618;{{.Post.Comments}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum.Fingerprint}}/{{.Post.ID}}/comment">New comment</a>{{end}}</p>
 
 <p>{{range .Comments}}{{template "forum_comment" .}}{{end}}</p>
 
@@ -22,6 +22,6 @@
 {{define "forum_comment"}}
 	<hr/>
 	{{.BodyMarkdown}}
-	<p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}}{{if $.RoleCommenter}} <a href="/forums/{{.Forum}}/{{.Post}}/comment?parent={{.ID}}">Reply</a>{{end}}{{if $.RoleVoter}} <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{.Forum}}/{{.Post}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}} &uarr;{{.Up}} &darr;{{.Down}}{{end}}</p>
+	<p style="font-variant: small-caps;">{{.Name}} {{.CreatedString}}{{if $.RoleCommenter}} <a href="/forums/{{.ForumFingerprint}}/{{.Post}}/comment?parent={{.ID}}">Reply</a>{{end}}{{if $.RoleVoter}} <a href="/forums/{{.ForumFingerprint}}/{{.Post}}/{{.ID}}/vote/up">&uarr;{{.Up}}</a> <a href="/forums/{{.ForumFingerprint}}/{{.Post}}/{{.ID}}/vote/down">&darr;{{.Down}}</a>{{else}} &uarr;{{.Up}} &darr;{{.Down}}{{end}}</p>
 	{{range .Children}}<div style="border-left: 2px solid blue; padding-left: 10px;">{{template "forum_comment" .}}</div>{{end}}
 {{end}}

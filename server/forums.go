@@ -26,39 +26,41 @@ type ForumMember struct {
 }
 
 type ForumPost struct {
-	ID            string        `cbor:"id" json:"id"`
-	Forum         string        `cbor:"-" json:"forum"`
-	ForumName     string        `cbor:"-" json:"-"`
-	Member        string        `cbor:"member" json:"member"`
-	Name          string        `cbor:"name" json:"name"`
-	Title         string        `cbor:"title" json:"title"`
-	Body          string        `cbor:"body" json:"body"`
-	BodyMarkdown  template.HTML `cbor:"-" json:"-"`
-	Comments      int           `cbor:"comments" json:"comments"`
-	Up            int           `cbor:"up" json:"up"`
-	Down          int           `cbor:"down" json:"down"`
-	Created       int64         `cbor:"created" json:"created"`
-	CreatedString string        `cbor:"-" json:"-"`
-	Updated       int64         `cbor:"updated" json:"updated"`
-	Attachments   *[]Attachment `cbor:"attachments,omitempty" json:"attachments,omitempty"`
+	ID               string        `cbor:"id" json:"id"`
+	Forum            string        `cbor:"-" json:"forum"`
+	ForumFingerprint string        `cbor:"-" json:"-"`
+	ForumName        string        `cbor:"-" json:"-"`
+	Member           string        `cbor:"member" json:"member"`
+	Name             string        `cbor:"name" json:"name"`
+	Title            string        `cbor:"title" json:"title"`
+	Body             string        `cbor:"body" json:"body"`
+	BodyMarkdown     template.HTML `cbor:"-" json:"-"`
+	Comments         int           `cbor:"comments" json:"comments"`
+	Up               int           `cbor:"up" json:"up"`
+	Down             int           `cbor:"down" json:"down"`
+	Created          int64         `cbor:"created" json:"created"`
+	CreatedString    string        `cbor:"-" json:"-"`
+	Updated          int64         `cbor:"updated" json:"updated"`
+	Attachments      *[]Attachment `cbor:"attachments,omitempty" json:"attachments,omitempty"`
 }
 
 type ForumComment struct {
-	ID            string          `cbor:"id" json:"id"`
-	Forum         string          `cbor:"-" json:"forum"`
-	Post          string          `cbor:"post" json:"post"`
-	Parent        string          `cbor:"parent" json:"parent"`
-	Member        string          `cbor:"member" json:"member"`
-	Name          string          `cbor:"name" json:"name"`
-	Body          string          `cbor:"body" json:"body"`
-	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
-	Up            int             `cbor:"up" json:"up"`
-	Down          int             `cbor:"down" json:"down"`
-	Created       int64           `cbor:"created" json:"created"`
-	CreatedString string          `cbor:"-" json:"-"`
-	Children      *[]ForumComment `cbor:"-" json:"-"`
-	RoleVoter     bool            `cbor:"-" json:"-"`
-	RoleCommenter bool            `cbor:"-" json:"-"`
+	ID               string          `cbor:"id" json:"id"`
+	Forum            string          `cbor:"-" json:"forum"`
+	ForumFingerprint string          `cbor:"-" json:"-"`
+	Post             string          `cbor:"post" json:"post"`
+	Parent           string          `cbor:"parent" json:"parent"`
+	Member           string          `cbor:"member" json:"member"`
+	Name             string          `cbor:"name" json:"name"`
+	Body             string          `cbor:"body" json:"body"`
+	BodyMarkdown     template.HTML   `cbor:"-" json:"-"`
+	Up               int             `cbor:"up" json:"up"`
+	Down             int             `cbor:"down" json:"down"`
+	Created          int64           `cbor:"created" json:"created"`
+	CreatedString    string          `cbor:"-" json:"-"`
+	Children         *[]ForumComment `cbor:"-" json:"-"`
+	RoleVoter        bool            `cbor:"-" json:"-"`
+	RoleCommenter    bool            `cbor:"-" json:"-"`
 }
 
 type ForumVote struct {
@@ -168,6 +170,7 @@ func forum_comments(u *User, f *Forum, m *ForumMember, p *ForumPost, parent *For
 	var cs []ForumComment
 	u.db.scans(&cs, "select * from comments where forum=? and post=? and parent=? order by created desc", f.ID, p.ID, id)
 	for j, c := range cs {
+		cs[j].ForumFingerprint = fingerprint(c.Forum)
 		cs[j].BodyMarkdown = web_markdown(c.Body)
 		cs[j].CreatedString = time_local(u, c.Created)
 		cs[j].Children = forum_comments(u, f, m, p, &c, depth+1)
@@ -1197,6 +1200,7 @@ func forums_view(a *Action) {
 	for i, p := range ps {
 		var f Forum
 		if db.scan(&f, "select name from forums where id=?", p.Forum) {
+			ps[i].ForumFingerprint = fingerprint(f.ID)
 			ps[i].ForumName = f.Name
 		}
 		ps[i].BodyMarkdown = web_markdown(p.Body)

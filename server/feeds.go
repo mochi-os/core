@@ -26,35 +26,37 @@ type FeedSubscriber struct {
 }
 
 type FeedPost struct {
-	ID            string          `cbor:"id" json:"id"`
-	Feed          string          `cbor:"-" json:"feed"`
-	FeedName      string          `cbor:"-" json:"-"`
-	Created       int64           `cbor:"created" json:"created"`
-	CreatedString string          `cbor:"-" json:"-"`
-	Updated       int64           `cbor:"updated" json:"updated"`
-	Body          string          `cbor:"body" json:"body"`
-	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
-	MyReaction    string          `cbor:"-" json:"-"`
-	Attachments   *[]Attachment   `cbor:"attachments,omitempty" json:"attachments,omitempty"`
-	Reactions     *[]FeedReaction `cbor:"-" json:"-"`
-	Comments      *[]FeedComment  `cbor:"-" json:"-"`
+	ID              string          `cbor:"id" json:"id"`
+	Feed            string          `cbor:"-" json:"feed"`
+	FeedFingerprint string          `cbor:"-" json:"-"`
+	FeedName        string          `cbor:"-" json:"-"`
+	Created         int64           `cbor:"created" json:"created"`
+	CreatedString   string          `cbor:"-" json:"-"`
+	Updated         int64           `cbor:"updated" json:"updated"`
+	Body            string          `cbor:"body" json:"body"`
+	BodyMarkdown    template.HTML   `cbor:"-" json:"-"`
+	MyReaction      string          `cbor:"-" json:"-"`
+	Attachments     *[]Attachment   `cbor:"attachments,omitempty" json:"attachments,omitempty"`
+	Reactions       *[]FeedReaction `cbor:"-" json:"-"`
+	Comments        *[]FeedComment  `cbor:"-" json:"-"`
 }
 
 type FeedComment struct {
-	ID            string          `cbor:"id" json:"id"`
-	Feed          string          `cbor:"-" json:"-"`
-	Post          string          `cbor:"post" json:"post"`
-	Parent        string          `cbor:"parent" json:"parent"`
-	Created       int64           `cbor:"created" json:"created"`
-	CreatedString string          `cbor:"-" json:"-"`
-	Subscriber    string          `cbor:"subscriber" json:"subscriber"`
-	Name          string          `cbor:"name" json:"name"`
-	Body          string          `cbor:"body" json:"body`
-	BodyMarkdown  template.HTML   `cbor:"-" json:"-"`
-	MyReaction    string          `cbor:"-" json:"-"`
-	Reactions     *[]FeedReaction `cbor:"-" json:"-"`
-	Children      *[]FeedComment  `cbor:"-" json:"-"`
-	User          int             `cbor:"-" json:"-"`
+	ID              string          `cbor:"id" json:"id"`
+	Feed            string          `cbor:"-" json:"-"`
+	FeedFingerprint string          `cbor:"-" json:"-"`
+	Post            string          `cbor:"post" json:"post"`
+	Parent          string          `cbor:"parent" json:"parent"`
+	Created         int64           `cbor:"created" json:"created"`
+	CreatedString   string          `cbor:"-" json:"-"`
+	Subscriber      string          `cbor:"subscriber" json:"subscriber"`
+	Name            string          `cbor:"name" json:"name"`
+	Body            string          `cbor:"body" json:"body`
+	BodyMarkdown    template.HTML   `cbor:"-" json:"-"`
+	MyReaction      string          `cbor:"-" json:"-"`
+	Reactions       *[]FeedReaction `cbor:"-" json:"-"`
+	Children        *[]FeedComment  `cbor:"-" json:"-"`
+	User            int             `cbor:"-" json:"-"`
 }
 
 type FeedReaction struct {
@@ -164,6 +166,7 @@ func feed_comments(u *User, db *DB, p *FeedPost, parent *FeedComment, depth int)
 	var cs []FeedComment
 	db.scans(&cs, "select * from comments where post=? and parent=? order by created desc", p.ID, id)
 	for j, c := range cs {
+		cs[j].FeedFingerprint = fingerprint(c.Feed)
 		cs[j].BodyMarkdown = web_markdown(c.Body)
 		cs[j].CreatedString = time_local(u, c.Created)
 		cs[j].User = 0
@@ -922,6 +925,7 @@ func feeds_view(a *Action) {
 	for i, p := range ps {
 		var f Feed
 		if db.scan(&f, "select name from feeds where id=?", p.Feed) {
+			ps[i].FeedFingerprint = fingerprint(p.Feed)
 			ps[i].FeedName = f.Name
 		}
 

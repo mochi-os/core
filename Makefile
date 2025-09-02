@@ -1,7 +1,7 @@
 # Makefile for Mochi
-# Copyright Alistair Cunningham 2024
+# Copyright Alistair Cunningham 2024-2025
 
-version = 0.1.16
+version = 0.1.19
 
 build = /tmp/mochi-server_$(version)_amd64
 deb = $(build).deb

@@ -1,7 +1,5 @@
 0.1
-	Create announcements feed
-	Create development forum
-	Create users forum
+	Fork git branch
 
 0.2
 	Client API

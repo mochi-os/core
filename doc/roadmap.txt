@@ -2,6 +2,11 @@
 	Fork git branch
 
 0.2
+	Separate apps from server
+		Resource usage limits
+		App publishing
+		App updates
+
 	Client API
 	Web interface
 
@@ -29,19 +34,10 @@
 	.rpm packages and repository
 
 0.3 or later
-	Separate apps from server
-		Resource usage limits
-		Users choose which apps get which service
-		Users choose which apps get which web path
-		App publishing
-		App updates
-
-	Streaming services
-		Audio
-		Video
-
-	Push notifications to Android and iOS apps
 	Users can categorise updates into feeds
+	Users can choose which apps get which service
+	Users can choose which apps get which web path
+	Push notifications to Android and iOS apps
 	Read external RSS feeds
 	Provide RSS feeds for feeds
 	Inbound email into feeds
@@ -49,6 +45,9 @@
 	Oauth server
 	Feeds app
 		On this day
+	Streaming services
+		Audio
+		Video
 
 Ideas for apps
 	Achievements tracker

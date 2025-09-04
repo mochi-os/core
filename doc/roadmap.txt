@@ -1,6 +1,3 @@
-0.1
-	Fork git branch
-
 0.2
 	Separate apps from server
 		Resource usage limits

@@ -103,7 +103,7 @@ func friends_accept(a *Action) {
 	}
 
 	friend_accept(a.user, a.user.db, a.input("id"))
-	a.write("friends/accepted")
+	a.template("friends/accepted", a.input("format"))
 }
 
 // Remote party accepted our invitation
@@ -169,7 +169,7 @@ func friends_create(a *Action) {
 		a.error(500, "Unable to create friend: %s", err)
 		return
 	}
-	a.write("friends/created")
+	a.template("friends/created", a.input("format"))
 }
 
 // Delete friend
@@ -183,7 +183,7 @@ func friends_delete(a *Action) {
 	a.user.db.exec("delete from invites where identity=? and id=?", a.user.Identity.ID, id)
 	a.user.db.exec("delete from friends where identity=? and id=?", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "delete", id, nil)
-	a.write("friends/deleted")
+	a.template("friends/deleted", a.input("format"))
 }
 
 // Ignore friend invitation
@@ -196,7 +196,7 @@ func friends_ignore(a *Action) {
 	id := a.input("id")
 	a.user.db.exec("delete from invites where identity=? and id=? and direction='from'", a.user.Identity.ID, id)
 	broadcast(a.user, "friends", "ignore", id, nil)
-	a.write("friends/ignored")
+	a.template("friends/ignored", a.input("format"))
 }
 
 // Remote party sent us a new invitation
@@ -233,12 +233,12 @@ func friends_list(a *Action) {
 	var i []FriendInvite
 	a.user.db.scans(&i, "select * from invites where direction='from' order by updated desc")
 
-	a.write("friends/list", Map{"Friends": f, "Invites": i})
+	a.template("friends/list", a.input("format"), Map{"Friends": f, "Invites": i})
 }
 
 // New friend selector
 func friends_new(a *Action) {
-	a.write("friends/new")
+	a.template("friends/new", a.input("format"))
 }
 
 // Search the directory for potential friends
@@ -254,5 +254,5 @@ func friends_search(a *Action) {
 		return
 	}
 
-	a.write("friends/search", directory_search(a.user, "person", search, false))
+	a.template("friends/search", a.input("format"), directory_search(a.user, "person", search, false))
 }

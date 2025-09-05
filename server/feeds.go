@@ -247,7 +247,7 @@ func feeds_comment_create(a *Action) {
 		message(a.user.Identity.ID, f.ID, "feeds", "comment/submit").add(FeedComment{ID: id, Post: post, Parent: parent, Body: body}).send()
 	}
 
-	a.write("feeds/comment/create", Map{"Feed": f, "Post": post})
+	a.template("feeds/comment/create", a.input("format"), Map{"Feed": f, "Post": post})
 }
 
 // Received a feed comment from owner
@@ -361,7 +361,7 @@ func feeds_comment_new(a *Action) {
 		return
 	}
 
-	a.write("feeds/comment/new", Map{"Feed": feed_by_id(a.user, a.user.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("feeds/comment/new", a.input("format"), Map{"Feed": feed_by_id(a.user, a.user.db, a.input("feed")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Reaction to a comment
@@ -401,7 +401,7 @@ func feeds_comment_react(a *Action) {
 		message(a.user.Identity.ID, f.ID, "feeds", "comment/react").add(FeedReaction{Comment: c.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 	}
 
-	a.write("feeds/comment/react", Map{"Feed": f, "Post": c.Post})
+	a.template("feeds/comment/react", a.input("format"), Map{"Feed": f, "Post": c.Post})
 }
 
 func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, name string, reaction string) {
@@ -495,12 +495,12 @@ func feeds_create(a *Action) {
 	a.user.db.exec("replace into feeds ( id, fingerprint, name, owner, subscribers, updated ) values ( ?, ?, ?, 1, 1, ? )", e.ID, e.Fingerprint, name, now())
 	a.user.db.exec("replace into subscribers ( feed, id, name ) values ( ?, ?, ? )", e.ID, a.user.Identity.ID, a.user.Identity.Name)
 
-	a.write("feeds/create", e.Fingerprint)
+	a.template("feeds/create", a.input("format"), e.Fingerprint)
 }
 
 // Enter details of feeds to be subscribed to
 func feeds_find(a *Action) {
-	a.write("feeds/find")
+	a.template("feeds/find", a.input("format"))
 }
 
 // Get details of a feed subscriber
@@ -521,7 +521,7 @@ func feeds_new(a *Action) {
 		name = a.user.Identity.Name
 	}
 
-	a.write("feeds/new", Map{"Name": name})
+	a.template("feeds/new", a.input("format"), Map{"Name": name})
 }
 
 // New post. Only posts by the owner are supported for now.
@@ -564,7 +564,7 @@ func feeds_post_create(a *Action) {
 		message(f.ID, s.ID, "feeds", "post/create").add(FeedPost{ID: post, Created: now, Body: body, Attachments: attachments}).send()
 	}
 
-	a.write("feeds/post/create", Map{"Feed": f, "Post": post})
+	a.template("feeds/post/create", a.input("format"), Map{"Feed": f, "Post": post})
 }
 
 // Received a feed post from the owner
@@ -615,7 +615,7 @@ func feeds_post_new(a *Action) {
 		return
 	}
 
-	a.write("feeds/post/new", Map{"Feeds": fs, "Current": a.input("current")})
+	a.template("feeds/post/new", a.input("format"), Map{"Feeds": fs, "Current": a.input("current")})
 }
 
 // Reaction to a post
@@ -654,7 +654,7 @@ func feeds_post_react(a *Action) {
 		message(a.user.Identity.ID, f.ID, "feeds", "post/react").add(FeedReaction{Post: p.ID, Name: a.user.Identity.Name, Reaction: reaction}).send()
 	}
 
-	a.write("feeds/post/react", Map{"Feed": f, "ID": p.ID})
+	a.template("feeds/post/react", a.input("format"), Map{"Feed": f, "ID": p.ID})
 }
 
 func feeds_post_reaction_set(db *DB, p *FeedPost, subscriber string, name string, reaction string) {
@@ -740,7 +740,7 @@ func feeds_search(a *Action) {
 		a.error(400, "No search entered")
 		return
 	}
-	a.write("feeds/search", directory_search(a.user, "feed", search, false))
+	a.template("feeds/search", a.input("format"), directory_search(a.user, "feed", search, false))
 }
 
 // Send recent posts to a new subscriber
@@ -797,7 +797,7 @@ func feeds_subscribe(a *Action) {
 
 	message(a.user.Identity.ID, feed, "feeds", "subscribe").set("name", a.user.Identity.Name).send()
 
-	a.write("feeds/subscribe", Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
+	a.template("feeds/subscribe", a.input("format"), Map{"Feed": feed, "Fingerprint": fingerprint(feed)})
 }
 
 // Received a subscribe from a subscriber
@@ -847,7 +847,7 @@ func feeds_unsubscribe(a *Action) {
 		message(a.user.Identity.ID, f.ID, "feeds", "unsubscribe").send()
 	}
 
-	a.write("feeds/unsubscribe")
+	a.template("feeds/unsubscribe", a.input("format"))
 }
 
 // Received an unsubscribe from subscriber
@@ -953,5 +953,5 @@ func feeds_view(a *Action) {
 	var fs []Feed
 	db.scans(&fs, "select * from feeds order by updated desc")
 
-	a.write("feeds/view", Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
+	a.template("feeds/view", a.input("format"), Map{"Feed": f, "Posts": &ps, "Feeds": &fs, "Owner": owner, "User": a.user})
 }

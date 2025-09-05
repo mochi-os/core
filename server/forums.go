@@ -239,7 +239,7 @@ func forums_comment_create(a *Action) {
 		message(a.user.Identity.ID, f.ID, "forums", "comment/submit").add(ForumComment{ID: id, Post: post, Parent: parent, Body: body}).send()
 	}
 
-	a.write("forums/comment/create", Map{"Forum": f, "Post": post})
+	a.template("forums/comment/create", a.input("format"), Map{"Forum": f, "Post": post})
 }
 
 // Received a forum comment from owner
@@ -355,7 +355,7 @@ func forums_comment_new(a *Action) {
 		return
 	}
 
-	a.write("forums/comment/new", Map{"Forum": forum_by_id(a.user, a.user.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
+	a.template("forums/comment/new", a.input("format"), Map{"Forum": forum_by_id(a.user, a.user.db, a.input("forum")), "Post": a.input("post"), "Parent": a.input("parent")})
 }
 
 // Received a forum comment update event
@@ -416,7 +416,7 @@ func forums_comment_vote(a *Action) {
 		message(a.user.Identity.ID, f.ID, "forums", "comment/vote").add(ForumVote{Comment: c.ID, Vote: vote}).send()
 	}
 
-	a.write("forums/comment/vote", Map{"Forum": f, "Post": c.Post})
+	a.template("forums/comment/vote", a.input("format"), Map{"Forum": f, "Post": c.Post})
 }
 
 func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string) {
@@ -520,12 +520,12 @@ func forums_create(a *Action) {
 	a.user.db.exec("replace into forums ( id, fingerprint, name, role, members, updated ) values ( ?, ?, ?, ?, 1, ? )", e.ID, e.Fingerprint, name, role, now())
 	a.user.db.exec("replace into members ( forum, id, name, role ) values ( ?, ?, ?, 'administrator' )", e.ID, a.user.Identity.ID, a.user.Identity.Name)
 
-	a.write("forums/create", e.Fingerprint)
+	a.template("forums/create", a.input("format"), e.Fingerprint)
 }
 
 // Enter details of forums to be subscribed to
 func forums_find(a *Action) {
-	a.write("forums/find")
+	a.template("forums/find", a.input("format"))
 }
 
 // Get details of a forum member
@@ -558,7 +558,7 @@ func forums_members_edit(a *Action) {
 	var ms []ForumMember
 	a.user.db.scans(&ms, "select * from members where forum=? order by name", f.ID)
 
-	a.write("forums/members/edit", Map{"User": a.user, "Forum": f, "Members": ms})
+	a.template("forums/members/edit", a.input("format"), Map{"User": a.user, "Forum": f, "Members": ms})
 }
 
 // Save members
@@ -594,7 +594,7 @@ func forums_members_save(a *Action) {
 	}
 
 	forum_update(a.user, a.user.db, f)
-	a.write("forums/members/save", Map{"Forum": f})
+	a.template("forums/members/save", a.input("format"), Map{"Forum": f})
 }
 
 // Member update from owner
@@ -635,7 +635,7 @@ func forums_member_update_event(e *Event) {
 
 // Enter details for new forum to be created
 func forums_new(a *Action) {
-	a.write("forums/new")
+	a.template("forums/new", a.input("format"))
 }
 
 // New post
@@ -691,7 +691,7 @@ func forums_post_create(a *Action) {
 		message(a.user.Identity.ID, f.ID, "forums", "post/submit").add(ForumPost{ID: post, Title: title, Body: body, Attachments: attachments}).send()
 	}
 
-	a.write("forums/post/create", Map{"Forum": f, "Post": post})
+	a.template("forums/post/create", a.input("format"), Map{"Forum": f, "Post": post})
 }
 
 // Received a forum post from owner
@@ -758,7 +758,7 @@ func forums_post_new(a *Action) {
 		return
 	}
 
-	a.write("forums/post/new", Map{"Forums": fs, "Current": a.input("current")})
+	a.template("forums/post/new", a.input("format"), Map{"Forums": fs, "Current": a.input("current")})
 }
 
 // Received a forum post from a member
@@ -865,7 +865,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.write("forums/post/view", Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", a.input("format"), Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -906,7 +906,7 @@ func forums_post_vote(a *Action) {
 		m.send()
 	}
 
-	a.write("forums/post/vote", Map{"Forum": f, "ID": p.ID})
+	a.template("forums/post/vote", a.input("format"), Map{"Forum": f, "ID": p.ID})
 }
 
 func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
@@ -1010,7 +1010,7 @@ func forums_search(a *Action) {
 		return
 	}
 
-	a.write("forums/search", directory_search(a.user, "forum", search, false))
+	a.template("forums/search", a.input("format"), directory_search(a.user, "forum", search, false))
 }
 
 // Send recent posts to a new member
@@ -1065,7 +1065,7 @@ func forums_subscribe(a *Action) {
 
 	message(a.user.Identity.ID, forum, "forums", "subscribe").set("name", a.user.Identity.Name).send()
 
-	a.write("forums/subscribe", Map{"Forum": forum, "Fingerprint": fingerprint(forum), "Role": m.Role})
+	a.template("forums/subscribe", a.input("format"), Map{"Forum": forum, "Fingerprint": fingerprint(forum), "Role": m.Role})
 }
 
 // Received a subscribe from a member
@@ -1112,7 +1112,7 @@ func forums_unsubscribe(a *Action) {
 
 	message(a.user.Identity.ID, f.ID, "forums", "unsubscribe").send()
 
-	a.write("forums/unsubscribe")
+	a.template("forums/unsubscribe", a.input("format"))
 }
 
 // Received an unsubscribe from member
@@ -1211,5 +1211,5 @@ func forums_view(a *Action) {
 	var fs []Forum
 	db.scans(&fs, "select * from forums order by updated desc")
 
-	a.write("forums/view", Map{"Forum": f, "Posts": &ps, "Forums": fs, "User": a.user, "Member": m, "RoleAdministrator": forum_role(m, "administrator")})
+	a.template("forums/view", a.input("format"), Map{"Forum": f, "Posts": &ps, "Forums": fs, "User": a.user, "Member": m, "RoleAdministrator": forum_role(m, "administrator")})
 }

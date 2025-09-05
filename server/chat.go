@@ -113,7 +113,7 @@ func chat_list(a *Action) {
 	var cs []Chat
 	a.user.db.scans(&cs, "select * from chats order by updated desc")
 
-	a.write("chat/list", cs)
+	a.template("chat/list", a.input("format"), cs)
 }
 
 // Get details of a chat member
@@ -222,7 +222,7 @@ func chat_new(a *Action) {
 		return
 	}
 
-	a.write("chat/new", Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
+	a.template("chat/new", a.input("format"), Map{"Friends": friends(a.user), "Name": a.user.Identity.Name})
 }
 
 // Received a new chat event from a friend
@@ -287,5 +287,5 @@ func chat_view(a *Action) {
 	}
 
 	notifications_clear_object(a.user, "chat", c.ID)
-	a.write("chat/view", Map{"Chat": c})
+	a.template("chat/view", a.input("format"), Map{"Chat": c})
 }

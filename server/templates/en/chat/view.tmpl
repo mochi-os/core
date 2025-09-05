@@ -14,8 +14,8 @@ const r = new XMLHttpRequest();
 r.onload = function() { messages_receive( this.responseText ) }
 r.open( 'GET', '/chat/{{.Chat.ID}}/messages' );
 r.send();
-const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-const ws = new WebSocket( protocol + '://' + window.location.host + '/websocket' );
+const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const ws = new WebSocket( protocol + '//' + window.location.host + '/websocket' );
 ws.addEventListener( 'message', (event) => { message_receive( event.data ) } );
 
 function escape( s ) {

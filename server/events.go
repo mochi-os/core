@@ -6,6 +6,7 @@ package main
 import (
 	cbor "github.com/fxamacker/cbor/v2"
 	"io"
+	"runtime/debug"
 )
 
 type Event struct {
@@ -92,7 +93,7 @@ func (e *Event) route() {
 	defer func() {
 		r := recover()
 		if r != nil {
-			warn("Event handler crashed: %v", r)
+			warn("Event handler crashed: %v\n%s", r, string(debug.Stack()))
 		}
 	}()
 

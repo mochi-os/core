@@ -16,7 +16,7 @@
 
 	User management
 	Users can change their settings
-	Users can create hooks to control events
+	Users can create HTTPS hooks to control events using their own code
 	User avatars
 
 	Feeds app
@@ -30,7 +30,7 @@
 		Permissions
 
 	Logging
-	.rpm packages and repository
+	License
 
 0.3 or later
 	Apps multiple versions and tracks
@@ -54,6 +54,8 @@
 	Streaming services
 		Audio
 		Video
+	
+	.rpm packages and repository
 
 Ideas for apps
 	Achievements tracker

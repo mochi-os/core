@@ -15,7 +15,6 @@ mochi-server: $(shell find server)
 	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server server/*.go
 
 $(deb): clean mochi-server
-	git tag -f '$(version)'
 	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/mochi $(build)/var/lib/mochi
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control

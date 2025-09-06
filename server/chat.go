@@ -270,7 +270,7 @@ func chat_new_event(e *Event) {
 		}
 	}
 
-	notification(e.user, "chat", "new", chat, "New chat from "+f.Name+": "+c.Name, "/chat/"+c.ID)
+	notification(e.user, "chat", "new", chat, "New chat from "+f.Name+": "+e.get("name",""), "/chat/"+chat)
 }
 
 // View a chat

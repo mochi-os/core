@@ -172,7 +172,7 @@ func (p *Path) web_path(c *gin.Context) {
 		return
 	}
 
-	a := Action{user: user, owner: owner, web: c, path: p}
+	a := Action{user: user, owner: owner, app: p.app, web: c, path: p}
 
 	switch p.app.Engine {
 	case "internal":
@@ -188,8 +188,13 @@ func (p *Path) web_path(c *gin.Context) {
 			return
 		}
 
+		if user == nil && !p.public {
+			web_error(c, 401, "Content not public, and not logged in")
+			return
+		}
+
 		if p.app.starlark == nil {
-			p.app.starlark = starlark(file_glob(fmt.Sprintf("%s/starlark/*.star", p.app.base)))
+			p.app.starlark = starlark(file_glob(fmt.Sprintf("%s/code/*.star", p.app.base)))
 		}
 		p.app.starlark.thread.SetLocal("action", &a)
 		err := p.app.starlark.call(p.function, map[string]string{"path": p.path}, web_inputs(c))

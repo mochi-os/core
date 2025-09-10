@@ -111,22 +111,12 @@ func (e *Event) route() {
 		f(e)
 
 	case "starlark":
-		var function string
-		var found bool
 		// Look for app event matching action
-		if e.to == "" {
-			function, found = a.Services[e.service].EventsBroadcast[e.action]
-		} else {
-			function, found = a.Services[e.service].Events[e.action]
-		}
+		ev, found := a.Services[e.service].Events[e.action]
 
-		// Look for app default event
 		if !found {
-			if e.to == "" {
-				function, found = a.Services[e.service].EventsBroadcast[""]
-			} else {
-				function, found = a.Services[e.service].Events[""]
-			}
+			// App has no matching handler, check if it has a default handler
+			ev, found = a.Services[e.service].Events[""]
 		}
 
 		if !found {
@@ -134,13 +124,23 @@ func (e *Event) route() {
 			return
 		}
 
+		if e.to == "" && !ev.Broadcast {
+			info("Event dropping broadcast '%s' to non-broadcast", e.id)
+			return
+		}
+
+		if e.to != "" && ev.Broadcast {
+			info("Event dropping non-broadcast '%s' to broadcast", e.id)
+			return
+		}
+
 		if a.starlark == nil {
-			a.starlark = starlark(file_glob(fmt.Sprintf("%s/starlark/*.star", a.base)))
+			a.starlark = starlark(file_glob(fmt.Sprintf("%s/code/*.star", a.base)))
 		}
 		a.starlark.thread.SetLocal("event", e)
-		err := a.starlark.call(function, e)
+		err := a.starlark.call(ev.Function, e)
 		if err != nil {
-			info("Starlark error: %v", err)
+			info("Event Starlark error: %v", err)
 		}
 
 	default:

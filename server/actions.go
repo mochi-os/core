@@ -10,6 +10,7 @@ import (
 type Action struct {
 	user  *User
 	owner *User
+	app   *App
 	web   *gin.Context
 	path  *Path
 }

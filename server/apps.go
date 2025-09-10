@@ -20,11 +20,16 @@ type App struct {
 	} `json:"database"`
 	Icons []Icon `json:"icons"`
 	Paths map[string]struct {
-		Actions map[string]string `json:"actions"`
+		Actions map[string]struct {
+			Function string `json:"function"`
+			Public   bool   `json:"public"`
+		} `json:"actions"`
 	} `json:"paths"`
 	Services map[string]struct {
-		Events          map[string]string `json:"events"`
-		EventsBroadcast map[string]string `json:"events_broadcast"`
+		Events map[string]struct {
+			Function  string `json:"function"`
+			Broadcast bool   `json:"broadcast"`
+		} `json:"events"`
 	} `json:"services"`
 
 	// For Go code use
@@ -46,6 +51,7 @@ type Path struct {
 	app      *App
 	engine   string
 	function string
+	public   bool
 	internal func(*Action)
 }
 
@@ -126,13 +132,13 @@ func app_load(id string, version string) error {
 			return error_message("App bad path '%s'", path)
 		}
 
-		for action, function := range p.Actions {
+		for action, a := range p.Actions {
 			if action != "" && !valid(action, "action") {
 				return error_message("App bad action '%s'", action)
 			}
 
-			if !valid(function, "function") {
-				return error_message("App bad action function '%s'", function)
+			if !valid(a.Function, "function") {
+				return error_message("App bad action function '%s'", a.Function)
 			}
 		}
 	}
@@ -142,23 +148,13 @@ func app_load(id string, version string) error {
 			return error_message("App bad service '%s'", service)
 		}
 
-		for event, function := range s.Events {
+		for event, e := range s.Events {
 			if !valid(event, "constant") {
 				return error_message("App bad event '%s'", event)
 			}
 
-			if !valid(function, "function") {
-				return error_message("App bad event function '%s'", function)
-			}
-		}
-
-		for event, function := range s.EventsBroadcast {
-			if !valid(event, "constant") {
-				return error_message("App bad broadcast event '%s'", event)
-			}
-
-			if !valid(function, "function") {
-				return error_message("App bad broadcast event function '%s'", function)
+			if !valid(e.Function, "function") {
+				return error_message("App bad event function '%s'", e.Function)
 			}
 		}
 	}
@@ -173,12 +169,12 @@ func app_load(id string, version string) error {
 	}
 
 	for path, p := range a.Paths {
-		for action, function := range p.Actions {
+		for action, ac := range p.Actions {
 			full := path
 			if action != "" {
 				full = path + "/" + action
 			}
-			paths[full] = &Path{path: full, app: &a, engine: a.Engine, function: function, internal: nil}
+			paths[full] = &Path{path: full, app: &a, engine: a.Engine, function: ac.Function, public: ac.Public, internal: nil}
 		}
 	}
 

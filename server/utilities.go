@@ -166,12 +166,19 @@ func valid(s string, match string) bool {
 	}
 
 	switch match {
+	case "action":
+		match = "^[0-9a-zA-Z/-:]{1,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/-]{1,100}$"
 	case "entity":
 		match = "^[\\w]{50,51}$"
 	case "filename":
+		//TODO
 		match = "^[^<>\r\n\\;\"'`\\.][^<>\r\n\\;\"'`]{0,253}$"
+	case "filepath":
+		match = "^[0-9a-zA-Z/]{0,1000}[0-9a-zA-Z][0-9a-zA-Z.]{0,253}$"
+	case "function":
+		match = "^[0-9a-zA-Z_]{1,100}$"
 	case "id":
 		match = "^[0-9a-z]{32}"
 	case "integer":
@@ -181,6 +188,7 @@ func valid(s string, match string) bool {
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":
+		//TODO
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
 	case "natural":
 		match = "^\\d{1,9}$"
@@ -200,6 +208,8 @@ func valid(s string, match string) bool {
 			return false
 		}
 		match = "^[\\w\\-\\/:%@.+?&;=~]*$"
+	case "version":
+		match = "^[0-9.]{1,10}$"
 	}
 
 	m := must(regexp.MatchString(match, s))

@@ -10,7 +10,6 @@ import (
 type Starlark struct {
 	thread  *sl.Thread
 	globals sl.StringDict
-	args    []sl.Tuple
 }
 
 func starlark(files []string) *Starlark {
@@ -81,19 +80,18 @@ func starlark_tuple(in ...any) sl.Tuple {
 }
 
 func (s *Starlark) call(function string, args ...any) error {
-	//debug("Starlark running '%s'", function)
-
 	f, found := s.globals[function]
 	if !found {
 		return error_message("App function '%s' not found", function)
 	}
 
-	a := starlark_tuple(args...)
-	if a == nil {
+	t := starlark_tuple(args...)
+	if t == nil {
 		return error_message("Unable to marshall arguments to tuple")
 	}
 
-	_, err := sl.Call(s.thread, f, a, nil)
-	//debug("Starlark finished running")
+	debug("Starlark running '%s': %+v", function, t)
+	_, err := sl.Call(s.thread, f, t, nil)
+	debug("Starlark finished")
 	return err
 }

@@ -20,7 +20,7 @@ type FriendInvite struct {
 
 func init() {
 	a := app("friends")
-	a.home("friends", map[string]string{"en": "Friends"})
+	a.icon("friends", "friends", "Friends", "friends.png")
 	a.db("friends/friends.db", friends_db_create)
 
 	a.path("friends", friends_list)

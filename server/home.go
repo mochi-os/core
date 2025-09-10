@@ -3,13 +3,16 @@
 
 package main
 
-type HomePath struct {
-	Path   string
-	Labels map[string]string
+type Icon struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+	// Remove Name field once we have multi-language label system in place
+	Name string `json:"name"`
+	Icon string `json:"icon"`
 }
 
 var (
-	home_paths = map[string]HomePath{}
+	icons = map[string]Icon{}
 )
 
 func init() {
@@ -44,5 +47,5 @@ func home(a *Action) {
 		welcome = true
 	}
 
-	a.template("home", a.input("format"), Map{"User": a.user, "Paths": home_paths, "Notifications": notifications_list(a.user), "Welcome": welcome})
+	a.template("home", a.input("format"), Map{"User": a.user, "Icons": icons, "Notifications": notifications_list(a.user), "Welcome": welcome})
 }

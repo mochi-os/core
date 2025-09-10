@@ -76,7 +76,7 @@ var (
 
 func init() {
 	a := app("forums")
-	a.home("forums", map[string]string{"en": "Forums"})
+	a.icon("forums", "forums", "Forums", "forums.png")
 	a.entity("forum")
 	a.db("forums/forums.db", forums_db_create)
 

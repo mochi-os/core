@@ -52,6 +52,5 @@ func main() {
 		go directory_download()
 	}
 
-	debug("Paths: %#v", paths)
 	select {}
 }

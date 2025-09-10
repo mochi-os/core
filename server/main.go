@@ -38,6 +38,7 @@ func main() {
 	email_port = ini_int("email", "port", 25)
 
 	new_install := db_start()
+	apps_start()
 	p2p_start()
 	go attachments_manager()
 	go cache_manager()
@@ -51,5 +52,6 @@ func main() {
 		go directory_download()
 	}
 
+	debug("Paths: %#v", paths)
 	select {}
 }

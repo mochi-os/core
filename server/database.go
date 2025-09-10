@@ -93,6 +93,31 @@ func db_create() {
 	cache.exec("create index attachments_created on attachments( created )")
 }
 
+// Open a databse file for an app, creating it if necessary
+func db_app(u *User, a *App) *DB {
+	if a.Database.File == "" {
+		warn("App '%s' asked for database, but no database file specified", a.id)
+		return nil
+	}
+
+	path := fmt.Sprintf("users/%d/%s/%s", u.ID, a.id, a.Database.File)
+	if file_exists(data_dir + "/" + path) {
+		return db_open(path)
+	}
+
+	if a.Database.Create != "" {
+		//TODO Create database using starlark
+		return nil
+	}
+
+	if a.Database.CreateFunction != nil {
+		return db_user(u, a.Database.File, a.Database.CreateFunction)
+	}
+
+	warn("App '%s' has no way to create database file '%s'", a.id, a.Database.File)
+	return nil
+}
+
 func db_manager() {
 	for {
 		time.Sleep(time.Minute)
@@ -167,12 +192,14 @@ func db_upgrade() {
 	}
 }
 
+// Open a database file for a user, creating it if necessary
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(data_dir + "/" + path) {
 		return db_open(path)
 	}
 
+	// File does not exist, so create it
 	db := db_open(path)
 	create(db)
 	return db

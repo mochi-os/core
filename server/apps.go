@@ -3,21 +3,55 @@
 
 package main
 
+import (
+	"fmt"
+)
+
 type App struct {
-	id               string
-	name             string
-	actions          map[string]func(*Action)
-	db_file          string
-	db_create        func(*DB)
-	events           map[string]func(*Event)
-	events_broadcast map[string]func(*Event)
-	entity_field     string
+	// Read from app.json
+	Name     string `json:"name"`
+	Version  string
+	Engine   string `json:"engine"`
+	Protocol int    `json:"protocol"`
+	Database struct {
+		File           string    `json:"file"`
+		Create         string    `json:"create"`
+		CreateFunction func(*DB) `json:"-"`
+	} `json:"database"`
+	Icons []struct {
+		Action string `json:"action"`
+		Label  string `json:"label"`
+		Value  string `json:"value"`
+		Icon   string `json:"icon"`
+	} `json:"icons"`
+	Paths map[string]struct {
+		Actions map[string]string `json:"actions"`
+	} `json:"paths"`
+	Services map[string]struct {
+		Events          map[string]string `json:"events"`
+		EventsBroadcast map[string]string `json:"events_broadcast"`
+	} `json:"services"`
+
+	// For Go code use
+	id           string    `json:"-"`
+	base         string    `json:"-"`
+	entity_field string    `json:"-"`
+	starlark     *Starlark `json:"-"`
+
+	// For internal apps only, possibly to be removed in a future version
+	internal struct {
+		actions          map[string]func(*Action) `json:"-"`
+		events           map[string]func(*Event)  `json:"-"`
+		events_broadcast map[string]func(*Event)  `json:"-"`
+	}
 }
 
 type Path struct {
-	path   string
-	app    *App
-	action func(*Action)
+	path     string
+	app      *App
+	engine   string
+	function string
+	internal func(*Action)
 }
 
 var (
@@ -26,48 +60,61 @@ var (
 	services = map[string]*App{}
 )
 
-/* Not used for now
+func app(name string) *App {
+	a := App{id: name, Name: name, Engine: "internal", entity_field: "entity"}
+	a.internal.actions = make(map[string]func(*Action))
+	a.internal.events = make(map[string]func(*Event))
+	a.internal.events_broadcast = make(map[string]func(*Event))
+	apps[name] = &a
+	return &a
+}
+
+func app_load(id string, version string) {
+	debug("App '%s' loading version '%s'", id, version)
+
+	base := fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version)
+	if !file_exists(base + "/app.json") {
+		debug("App '%s' version '%s' has no app.json file; ignoring", id, version)
+		return
+	}
+	var a App
+	if !json_decode(&a, string(file_read(base+"/app.json"))) {
+		warn("App bad app.json '%s/app.json'; ignoring app", base)
+		return
+	}
+
+	//TODO Validate app.json fields
+
+	a.id = id
+	a.base = base
+	a.starlark = nil
+
+	for path, p := range a.Paths {
+		for action, function := range p.Actions {
+			full := path
+			if action != "" {
+				full = path + "/" + action
+			}
+			debug("App adding path '%s' to function '%s'", full, function)
+			paths[full] = &Path{path: full, app: &a, engine: a.Engine, function: function, internal: nil}
+		}
+	}
+
+	apps[a.Name] = &a
+	debug("App loaded: %+v", a)
+}
+
 func apps_start() {
 	for _, id := range files_dir(data_dir + "/apps") {
 		for _, version := range files_dir(data_dir + "/apps/" + id) {
-			debug("Found installed app ID '%s' version '%s'", id, version)
-			base := data_dir + "/apps/" + id + "/" + version
-
-			if !file_exists(base + "/manifest.json") {
-				debug("App ID '%s' version '%s' has no manifest.json file; ignoring app", id, version)
-				continue
-			}
-			var a App
-			if !json_decode(&a, file_read(base+"/manifest.json")) {
-				warn("Bad manifest.json file '%s/manifest.json'; ignoring app", base)
-				continue
-			}
-			a.id = id
-			apps[a.Name] = &a
-
-			if a.Path != "" {
-				e, found := app_paths[a.Path]
-				if found {
-					warn("Path conflict for '%s' between apps '%s' and '%s'", a.Path, e.Name, a.Name)
-				} else {
-					app_paths[a.Path] = &a
-				}
-			}
+			debug("App '%s' version '%s' found", id, version)
+			app_load(id, version)
 		}
 	}
-} */
-
-func app(name string) *App {
-	a := &App{id: name, name: name, db_file: "", db_create: nil, entity_field: "entity"}
-	a.actions = make(map[string]func(*Action))
-	a.events = make(map[string]func(*Event))
-	a.events_broadcast = make(map[string]func(*Event))
-	apps[name] = a
-	return a
 }
 
 func (a *App) action(action string, f func(*Action)) {
-	a.actions[action] = f
+	a.internal.actions[action] = f
 	actions[action] = f
 }
 
@@ -86,8 +133,8 @@ func (a *App) broadcast(sender string, action string, f func(*User, string, stri
 }
 
 func (a *App) db(file string, create func(*DB)) {
-	a.db_file = file
-	a.db_create = create
+	a.Database.File = file
+	a.Database.CreateFunction = create
 }
 
 func (a *App) entity(field string) {
@@ -95,11 +142,11 @@ func (a *App) entity(field string) {
 }
 
 func (a *App) event(event string, f func(*Event)) {
-	a.events[event] = f
+	a.internal.events[event] = f
 }
 
 func (a *App) event_broadcast(event string, f func(*Event)) {
-	a.events_broadcast[event] = f
+	a.internal.events_broadcast[event] = f
 }
 
 func (a *App) home(path string, labels map[string]string) {
@@ -107,7 +154,7 @@ func (a *App) home(path string, labels map[string]string) {
 }
 
 func (a *App) path(path string, f func(*Action)) {
-	paths[path] = &Path{path: path, app: a, action: f}
+	paths[path] = &Path{path: path, app: a, engine: "internal", internal: f}
 }
 
 func (a *App) service(service string) {

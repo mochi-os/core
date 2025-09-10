@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	"io"
 	rd "runtime/debug"
@@ -14,6 +15,7 @@ type Event struct {
 	from    string
 	to      string
 	service string
+	//TODO Rename to event?
 	action  string
 	content map[string]string
 	peer    string
@@ -52,50 +54,97 @@ func (e *Event) route() {
 		}
 	}
 
+	// Find which app provides this service
 	a := services[e.service]
 	if a == nil {
 		info("Event dropping '%s' to unknown service '%s'", e.id, e.service)
 		return
 	}
 
-	if a.db_file != "" {
+	// Load a database file for the app
+	if a.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping broadcast '%s' for service requiring user", e.id)
 			return
 		}
-		e.db = db_user(e.user, a.db_file, a.db_create)
+		e.db = db_app(e.user, a)
+		if e.db == nil {
+			info("Event app '%s' has no database file", a.id)
+			return
+		}
 		defer e.db.close()
 	}
 
-	var f func(*Event)
-	var found bool
-	// Look for app event matching action
-	if e.to == "" {
-		f, found = a.events_broadcast[e.action]
-	} else {
-		f, found = a.events[e.action]
-	}
-
-	if !found {
-		// Look for app default event
+	// Check which engine the app uses, and run it
+	switch a.Engine {
+	case "internal":
+		var f func(*Event)
+		var found bool
+		// Look for app event matching action
 		if e.to == "" {
-			f, found = a.events_broadcast[""]
+			f, found = a.internal.events_broadcast[e.action]
 		} else {
-			f, found = a.events[""]
+			f, found = a.internal.events[e.action]
 		}
-	}
 
-	if !found {
-		info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.name, e.service)
+		// Look for app default event
+		if !found {
+			if e.to == "" {
+				f, found = a.internal.events_broadcast[""]
+			} else {
+				f, found = a.internal.events[""]
+			}
+		}
+
+		if !found {
+			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
+			return
+		}
+
+		defer func() {
+			r := recover()
+			if r != nil {
+				warn("Event handler crashed: %v\n\n%s", r, string(rd.Stack()))
+			}
+		}()
+
+		f(e)
+
+	case "starlark":
+		var function string
+		var found bool
+		// Look for app event matching action
+		if e.to == "" {
+			function, found = a.Services[e.service].EventsBroadcast[e.action]
+		} else {
+			function, found = a.Services[e.service].Events[e.action]
+		}
+
+		// Look for app default event
+		if !found {
+			if e.to == "" {
+				function, found = a.Services[e.service].EventsBroadcast[""]
+			} else {
+				function, found = a.Services[e.service].Events[""]
+			}
+		}
+
+		if !found {
+			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
+			return
+		}
+
+		if a.starlark == nil {
+			a.starlark = starlark(file_glob(fmt.Sprintf("%s/starlark/*.star", a.base)))
+		}
+		a.starlark.thread.SetLocal("event", e)
+		err := a.starlark.call(function, e)
+		if err != nil {
+			info("Starlark error: %v", err)
+		}
+
+	default:
+		info("Event unknown engine '%s'", a.Engine)
 		return
 	}
-
-	defer func() {
-		r := recover()
-		if r != nil {
-			warn("Event handler crashed: %v\n\n%s", r, string(rd.Stack()))
-		}
-	}()
-
-	f(e)
 }

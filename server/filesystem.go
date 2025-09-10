@@ -49,6 +49,10 @@ func file_exists(path string) bool {
 	return false
 }
 
+func file_glob(match string) []string {
+	return must(filepath.Glob(match))
+}
+
 func file_mkdir(path string) {
 	must(os.MkdirAll(path, 0755))
 }

@@ -64,6 +64,32 @@ func web_identity_create(c *gin.Context) {
 	web_redirect(c, "/?action=welcome")
 }
 
+// Get all inputs
+func web_inputs(c *gin.Context) map[string]string {
+	inputs := map[string]string{}
+
+	err := c.Request.ParseForm()
+	if err == nil {
+		for key, values := range c.Request.PostForm {
+			for _, value := range values {
+				inputs[key] = value
+			}
+		}
+	}
+
+	for key, values := range c.Request.URL.Query() {
+		for _, value := range values {
+			inputs[key] = value
+		}
+	}
+
+	for _, param := range c.Params {
+		inputs[param.Key] = param.Value
+	}
+
+	return inputs
+}
+
 // Log the user in using an email code
 func web_login(c *gin.Context) {
 	code := c.PostForm("code")
@@ -119,26 +145,62 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	if p.app.db_file != "" && user != nil {
-		user.db = db_user(user, p.app.db_file, p.app.db_create)
+	if p.app.Database.File != "" && user != nil {
+		user.db = db_app(user, p.app)
+		if user.db == nil {
+			web_error(c, 500, "No database for app")
+			return
+		}
 		defer user.db.close()
 	}
 
 	owner := user
 	if e != nil {
 		owner = user_owning_entity(e.ID)
-		if p.app.db_file != "" && owner != nil {
-			owner.db = db_user(owner, p.app.db_file, p.app.db_create)
+		if p.app.Database.File != "" && owner != nil {
+			owner.db = db_app(owner, p.app)
+			if owner.db == nil {
+				web_error(c, 500, "No database for app")
+				return
+			}
 			defer owner.db.close()
 		}
 	}
 
-	if p.app.db_file != "" && user == nil && owner == nil {
+	if p.app.Database.File != "" && user == nil && owner == nil {
 		web_error(c, 401, "Content not public, and not logged in")
 		return
 	}
 
-	p.action(&Action{user: user, owner: owner, web: c, path: p})
+	a := Action{user: user, owner: owner, web: c, path: p}
+
+	switch p.app.Engine {
+	case "internal":
+		if p.internal == nil {
+			web_error(c, 500, "No function for internal path")
+			return
+		}
+		p.internal(&a)
+
+	case "starlark":
+		if p.function == "" {
+			web_error(c, 500, "No function for path")
+			return
+		}
+
+		if p.app.starlark == nil {
+			p.app.starlark = starlark(file_glob(fmt.Sprintf("%s/starlark/*.star", p.app.base)))
+		}
+		p.app.starlark.thread.SetLocal("action", &a)
+		err := p.app.starlark.call(p.function, map[string]string{"path": p.path}, web_inputs(c))
+		if err != nil {
+			web_error(c, 500, "%v", err)
+		}
+
+	default:
+		web_error(c, 500, "No engine for path")
+		return
+	}
 }
 
 func web_ping(c *gin.Context) {

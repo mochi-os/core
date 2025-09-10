@@ -3,6 +3,7 @@
 
 package main
 
+/*
 type Chat struct {
 	ID       string        `cbor:"id" json:"id"`
 	Identity string        `cbor:"-" json:"-"`
@@ -289,3 +290,4 @@ func chat_view(a *Action) {
 	notifications_clear_object(a.user, "chat", c.ID)
 	a.template("chat/view", a.input("format"), Map{"Chat": c})
 }
+*/

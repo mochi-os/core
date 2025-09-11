@@ -91,7 +91,7 @@ func starlark_decode(value sl.Value) any {
 
 // Convert a single Go variable to a Starlark value
 func starlark_encode(v any) sl.Value {
-	debug("Encoding '%+v'", v)
+	//debug("Encoding '%+v'", v)
 
 	switch x := v.(type) {
 	case string:
@@ -131,7 +131,7 @@ func starlark_encode(v any) sl.Value {
 
 // Convert one or more Go variables to a Starlark tuple
 func starlark_encode_tuple(in ...any) sl.Tuple {
-	debug("Encoding to tuple '%+v'", in...)
+	//debug("Encoding to tuple '%+v'", in...)
 	t := make(sl.Tuple, len(in))
 	for i, v := range in {
 		t[i] = starlark_encode(v)
@@ -140,19 +140,47 @@ func starlark_encode_tuple(in ...any) sl.Tuple {
 }
 
 // Call a Starlark function
-func (s *Starlark) call(function string, args ...any) error {
+func (s *Starlark) call(function string, args ...any) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
-		return error_message("Starlark app function '%s' not found", function)
+		return nil, error_message("Starlark app function '%s' not found", function)
 	}
 
 	t := starlark_encode_tuple(args...)
 	if t == nil {
-		return error_message("Starlark unable to encode arguments")
+		return nil, error_message("Starlark unable to encode arguments")
 	}
 
 	debug("Starlark running '%s': %+v", function, t)
-	_, err := sl.Call(s.thread, f, t, nil)
-	debug("Starlark finished")
-	return err
+	result, err := sl.Call(s.thread, f, t, nil)
+	if err == nil {
+		debug("Starlark finished")
+	} else {
+		debug("Starlark error: %v", err)
+	}
+	return result, err
+}
+
+// Convert a Starlark value to an int
+func (s *Starlark) int(v sl.Value) int {
+	var i int
+	err := sl.AsInt(v, &i)
+	if err != nil {
+		info("Starlark failed to convert '%s' to int", v)
+		return 0
+	}
+	return i
+}
+
+// Set a Starlark thread variable
+func (s *Starlark) set(key string, value any) {
+	s.thread.SetLocal(key, value)
+}
+
+// Get a new Starlark interpreter for an app
+func (a *App) starlark() *Starlark {
+	if a.starlark_interpreter == nil {
+		a.starlark_interpreter = starlark(file_glob(fmt.Sprintf("%s/code/*.star", a.base)))
+	}
+	return a.starlark_interpreter
 }

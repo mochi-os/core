@@ -3,6 +3,7 @@
 
 package main
 
+/*
 type Friend struct {
 	Identity string `cbor:"-" json:"-"`
 	ID       string `cbor:"id" json:"id"`
@@ -256,3 +257,4 @@ func friends_search(a *Action) {
 
 	a.template("friends/search", a.input("format"), directory_search(a.user, "person", search, false))
 }
+*/

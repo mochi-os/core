@@ -173,7 +173,7 @@ func valid(s string, match string) bool {
 	case "entity":
 		match = "^[\\w]{50,51}$"
 	case "filename":
-		//TODO
+		//TODO Change match to only allowed characters
 		match = "^[^<>\r\n\\;\"'`\\.][^<>\r\n\\;\"'`]{0,253}$"
 	case "filepath":
 		match = "^[0-9a-zA-Z/]{0,1000}[0-9a-zA-Z][0-9a-zA-Z.]{0,253}$"
@@ -188,7 +188,7 @@ func valid(s string, match string) bool {
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":
-		//TODO
+		//TODO Change match to only allowed characters
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
 	case "natural":
 		match = "^\\d{1,9}$"

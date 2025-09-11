@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	"io"
 	rd "runtime/debug"
@@ -78,16 +77,14 @@ func (e *Event) route() {
 	// Check which engine the app uses, and run it
 	switch a.Engine {
 	case "internal":
+		// Look for matching app event, using default if necessary
 		var f func(*Event)
 		var found bool
-		// Look for app event matching action
 		if e.to == "" {
 			f, found = a.internal.events_broadcast[e.action]
 		} else {
 			f, found = a.internal.events[e.action]
 		}
-
-		// Look for app default event
 		if !found {
 			if e.to == "" {
 				f, found = a.internal.events_broadcast[""]
@@ -95,7 +92,6 @@ func (e *Event) route() {
 				f, found = a.internal.events[""]
 			}
 		}
-
 		if !found {
 			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
 			return
@@ -111,14 +107,11 @@ func (e *Event) route() {
 		f(e)
 
 	case "starlark":
-		// Look for app event matching action
+		// Look for matching app event, using default if necessary
 		ev, found := a.Services[e.service].Events[e.action]
-
 		if !found {
-			// App has no matching handler, check if it has a default handler
 			ev, found = a.Services[e.service].Events[""]
 		}
-
 		if !found {
 			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
 			return
@@ -128,20 +121,15 @@ func (e *Event) route() {
 			info("Event dropping broadcast '%s' to non-broadcast", e.id)
 			return
 		}
-
 		if e.to != "" && ev.Broadcast {
 			info("Event dropping non-broadcast '%s' to broadcast", e.id)
 			return
 		}
 
-		if a.starlark == nil {
-			a.starlark = starlark(file_glob(fmt.Sprintf("%s/code/*.star", a.base)))
-		}
-		a.starlark.thread.SetLocal("event", e)
-		err := a.starlark.call(ev.Function, e)
-		if err != nil {
-			info("Event Starlark error: %v", err)
-		}
+		s := a.starlark()
+		s.set("event", e)
+		s.set("db", e.db)
+		s.call(ev.Function, e)
 
 	default:
 		info("Event unknown engine '%s'", a.Engine)

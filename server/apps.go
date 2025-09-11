@@ -30,13 +30,16 @@ type App struct {
 			Function  string `json:"function"`
 			Broadcast bool   `json:"broadcast"`
 		} `json:"events"`
+		Functions map[string]struct {
+			Function string `json:"function"`
+		} `json:"functions"`
 	} `json:"services"`
 
 	// For Go code use
-	id           string    `json:"-"`
-	base         string    `json:"-"`
-	entity_field string    `json:"-"`
-	starlark     *Starlark `json:"-"`
+	id                   string    `json:"-"`
+	base                 string    `json:"-"`
+	entity_field         string    `json:"-"`
+	starlark_interpreter *Starlark `json:"-"`
 
 	// For internal apps only, possibly to be removed in a future version
 	internal struct {
@@ -157,16 +160,28 @@ func app_load(id string, version string) error {
 				return error_message("App bad event function '%s'", e.Function)
 			}
 		}
+
+		for function, f := range s.Functions {
+			if function != "" && !valid(function, "constant") {
+				return error_message("App bad function '%s'", function)
+			}
+
+			if !valid(f.Function, "function") {
+				return error_message("App bad function function '%s'", f.Function)
+			}
+		}
 	}
 
 	// Set app properties
 	a.id = id
 	a.base = base
-	a.starlark = nil
 
 	for _, i := range a.Icons {
 		icons[i.Name] = i
 	}
+
+	// Add app to system
+	apps[a.Name] = &a
 
 	for path, p := range a.Paths {
 		for action, ac := range p.Actions {
@@ -178,8 +193,10 @@ func app_load(id string, version string) error {
 		}
 	}
 
-	// Add to list of apps
-	apps[a.Name] = &a
+	for service, _ := range a.Services {
+		services[service] = &a
+	}
+
 	debug("App loaded: %+v", a)
 	return nil
 }

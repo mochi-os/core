@@ -11,10 +11,17 @@ import (
 )
 
 var (
+	slapi sl.StringDict
+)
+
+func init() {
 	slapi = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"query": sl.NewBuiltin("query", slapi_db_query),
+			}),
+			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
+				"call": sl.NewBuiltin("call", slapi_service_call),
 			}),
 			"web": sls.FromStringDict(sl.String("web"), sl.StringDict{
 				"dump":     sl.NewBuiltin("dump", slapi_web_dump),
@@ -23,13 +30,13 @@ var (
 			}),
 		}),
 	}
-)
+}
 
 // Database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.db.query(): Called from non-action")
+	db := t.Local("db").(*DB)
+	if db == nil {
+		return sl.None, error_message("mochi.db.query() no database connected")
 	}
 
 	if len(args) < 1 || len(args) > 2 {
@@ -38,15 +45,67 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	query, ok := sl.AsString(args[0])
 	if !ok {
-		return sl.None, error_message("mochi.db.query(): Invalid SQL statement '%s'", query)
+		return sl.None, error_message("mochi.db.query() invalid SQL statement '%s'", query)
 	}
 
 	if len(args) > 1 {
-		return starlark_encode(a.user.db.maps(query, starlark_decode(args[1]))), nil
+		return starlark_encode(db.maps(query, starlark_decode(args[1]))), nil
 	}
-	r := starlark_encode(a.user.db.maps(query))
-	debug("API SQL returning '%+v'", r)
+	r := starlark_encode(db.maps(query))
 	return r, nil
+}
+
+// Call a service in another app
+func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO Test maximum recursion
+	depth := 1
+	depth_var := t.Local("depth")
+	if depth_var != nil {
+		depth = depth_var.(int)
+	}
+
+	if depth > 1000 {
+		return sl.None, error_message("mochi.service.call() reached maximum recursion depth")
+	}
+
+	// Get service and function
+	service, ok := sl.AsString(args[0])
+	if !ok {
+		return sl.None, error_message("mochi.service.call() invalid service")
+	}
+	function, ok := sl.AsString(args[1])
+	if !ok {
+		return sl.None, error_message("mochi.service.call() invalid function")
+	}
+
+	// Look for matching app function, using default if necessary
+	a, _ := services[service]
+	if a == nil {
+		return sl.None, error_message("mochi.service.call() unknown service '%s'", service)
+	}
+	fn, found := a.Services[service].Functions[function]
+	if !found {
+		fn, found = a.Services[service].Functions[""]
+	}
+	if !found {
+		return sl.None, error_message("mochi.service.call() unknown function '%s' for service '%s'", function, service)
+	}
+
+	// Call function
+	debug("mochi.service.call() calling service '%s' function '%s' in app '%s' with %d args", service, function, a.Name, len(args)-2)
+	var result sl.Value
+	var err error
+	s := a.starlark()
+	s.set("depth", depth+1)
+	if len(args) > 2 {
+		result, err = s.call(fn.Function, args[2:])
+	} else {
+		result, err = s.call(fn.Function)
+	}
+	s.set("depth", depth)
+	debug("mochi.service.call() got result: %+v", result)
+
+	return result, err
 }
 
 // Dump the variables passed to a web page for debugging
@@ -91,6 +150,7 @@ func slapi_web_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 }
 
 // Web template
+// TODO Add format field?
 func slapi_web_template(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	a := t.Local("action").(*Action)
 	if a == nil {

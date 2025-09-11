@@ -193,11 +193,11 @@ func (p *Path) web_path(c *gin.Context) {
 			return
 		}
 
-		if p.app.starlark == nil {
-			p.app.starlark = starlark(file_glob(fmt.Sprintf("%s/code/*.star", p.app.base)))
-		}
-		p.app.starlark.thread.SetLocal("action", &a)
-		err := p.app.starlark.call(p.function, map[string]string{"path": p.path}, web_inputs(c))
+		s := p.app.starlark()
+		s.set("action", &a)
+		//TODO Set a.owner.db if needed
+		s.set("db", a.user.db)
+		_, err := s.call(p.function, map[string]string{"identity.id": a.user.Identity.ID, "identity.fingerprint": a.user.Identity.Fingerprint, "identity.name": a.user.Identity.Name, "path": p.path}, web_inputs(c))
 		if err != nil {
 			web_error(c, 500, "%v", err)
 		}

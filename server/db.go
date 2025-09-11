@@ -106,8 +106,14 @@ func db_app(u *User, a *App) *DB {
 	}
 
 	if a.Database.Create != "" {
-		//TODO Create database using starlark
-		return nil
+		debug("Creating new database for app '%s' in file '%s' using '%s'", a.Name, a.Database.File, a.Database.Create)
+		db := db_open(path)
+		s := a.starlark()
+		s.set("db", db)
+		version, _ := s.call(a.Database.Create)
+		db.exec("create table _settings ( name text not null primary key, value text not null )")
+		db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", s.int(version))
+		return db
 	}
 
 	if a.Database.CreateFunction != nil {
@@ -257,7 +263,6 @@ func (db *DB) maps(query string, values ...any) *[]map[string]any {
 		results = append(results, row)
 	}
 
-	debug("SQL returning '%+v'", results)
 	return &results
 }
 

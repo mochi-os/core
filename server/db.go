@@ -228,6 +228,39 @@ func (db *DB) integer(query string, values ...any) int {
 	return result
 }
 
+func (db *DB) maps(query string, values ...any) *[]map[string]any {
+	var results []map[string]any
+
+	r, err := db.handle.Queryx(query, values...)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &results
+		}
+		panic(err)
+	}
+	defer r.Close()
+
+	for r.Next() {
+		row := make(map[string]any)
+		err = r.MapScan(row)
+		if err != nil {
+			panic(err)
+		}
+
+		for i, v := range row {
+			bytes, ok := v.([]byte)
+			if ok {
+				row[i] = string(bytes)
+			}
+		}
+
+		results = append(results, row)
+	}
+
+	debug("SQL returning '%+v'", results)
+	return &results
+}
+
 func (db *DB) scan(out any, query string, values ...any) bool {
 	err := db.handle.QueryRowx(query, values...).StructScan(out)
 	if err != nil {

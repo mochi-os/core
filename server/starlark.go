@@ -6,7 +6,6 @@ package main
 import (
 	"fmt"
 	sl "go.starlark.net/starlark"
-	"html/template"
 )
 
 type Starlark struct {
@@ -17,10 +16,7 @@ type Starlark struct {
 // Create a new Starlark interpreter for a set of files
 func starlark(files []string) *Starlark {
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
-
-	s.globals = sl.StringDict{
-		"template": sl.NewBuiltin("template", starlark_template),
-	}
+	s.globals = slapi
 
 	for _, file := range files {
 		debug("Starlark reading file '%s'", file)
@@ -37,6 +33,7 @@ func starlark(files []string) *Starlark {
 
 // Convert a Starlark value to a Go variable
 func starlark_decode(value sl.Value) any {
+	//debug("Decoding '%+v'", value)
 	switch v := value.(type) {
 	case sl.NoneType:
 		return nil
@@ -52,10 +49,12 @@ func starlark_decode(value sl.Value) any {
 		return v.String()
 
 	case sl.Float:
-		return float64(v)
+		f, _ := sl.AsFloat(v)
+		return f
 
 	case sl.String:
-		return string(v)
+		s, _ := sl.AsString(v)
+		return s
 
 	case *sl.List:
 		out := make([]any, v.Len())
@@ -90,84 +89,66 @@ func starlark_decode(value sl.Value) any {
 	}
 }
 
-// Convert one or more of anything to a Starlark tuple
-func starlark_encode(in ...any) sl.Tuple {
-	t := make(sl.Tuple, len(in))
-	for i, v := range in {
-		var sv sl.Value
-		switch x := v.(type) {
-		case string:
-			sv = sl.String(x)
-		case int:
-			sv = sl.MakeInt(x)
-		case bool:
-			sv = sl.Bool(x)
-		case map[string]string:
-			d := sl.NewDict(len(x))
-			for i, value := range x {
-				d.SetKey(sl.String(i), sl.String(value))
-			}
-			sv = d
-		default:
-			warn("Starlark unknown type %T", v)
-			return nil
+// Convert a single Go variable to a Starlark value
+func starlark_encode(v any) sl.Value {
+	debug("Encoding '%+v'", v)
+
+	switch x := v.(type) {
+	case string:
+		return sl.String(x)
+
+	case int:
+		return sl.MakeInt(x)
+
+	case int64:
+		return sl.MakeInt64(x)
+
+	case bool:
+		return sl.Bool(x)
+
+	case map[string]string:
+		d := sl.NewDict(len(x))
+		for i, value := range x {
+			d.SetKey(sl.String(i), sl.String(value))
 		}
-		t[i] = sv
+		return d
+
+	case *[]map[string]any:
+		var t []sl.Value
+		for _, r := range *x {
+			d := sl.NewDict(len(r))
+			for i, v := range r {
+				d.SetKey(sl.String(i), starlark_encode(v))
+			}
+			t = append(t, d)
+		}
+		return sl.Tuple(t)
 	}
-	return t
+
+	warn("Starlark unknown type %T", v)
+	return nil
 }
 
-// Template API function
-func starlark_template(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Get action
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("Starlark template called for non-action")
+// Convert one or more Go variables to a Starlark tuple
+func starlark_encode_tuple(in ...any) sl.Tuple {
+	debug("Encoding to tuple '%+v'", in...)
+	t := make(sl.Tuple, len(in))
+	for i, v := range in {
+		t[i] = starlark_encode(v)
 	}
-	debug("Starlark template got '%+v', '%#v'", args, args)
-
-	// Unpack the arguments from Starlark
-	if len(args) == 0 {
-		return sl.None, error_message("Starlark call to template() without template file")
-	}
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "path") {
-		return sl.None, error_message("Template called with invalid file '%s'", file)
-	}
-
-	// Build the template
-	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work
-	data := file_read(fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, file))
-	include := must(templates.ReadFile("templates/en/include.tmpl"))
-
-	tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
-	if err != nil {
-		return sl.None, error_message("Template error: %v", err)
-	}
-
-	// Execute the template
-	if len(args) > 1 {
-		err = tmpl.Execute(a.web.Writer, starlark_decode(args[1]))
-	} else {
-		err = tmpl.Execute(a.web.Writer, Map{})
-	}
-	if err != nil {
-		return sl.None, error_message("Template error: %v", err)
-	}
-
-	return sl.None, nil
+	return t
 }
 
 // Call a Starlark function
 func (s *Starlark) call(function string, args ...any) error {
 	f, found := s.globals[function]
 	if !found {
-		return error_message("App function '%s' not found", function)
+		return error_message("Starlark app function '%s' not found", function)
 	}
 
-	t := starlark_encode(args...)
+	t := starlark_encode_tuple(args...)
 	if t == nil {
-		return error_message("Unable to encode Starlark arguments")
+		return error_message("Starlark unable to encode arguments")
 	}
 
 	debug("Starlark running '%s': %+v", function, t)

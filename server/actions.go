@@ -19,8 +19,12 @@ var (
 	actions = map[string]func(*Action){}
 )
 
+func (a *Action) dump(values ...any) {
+	debug("Web dump: %+v", values...)
+	web_template(a.web, 200, "dev/dump", values...)
+}
+
 func (a *Action) error(code int, message string, values ...any) {
-	debug(message, values...)
 	web_error(a.web, code, message, values...)
 }
 

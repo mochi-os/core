@@ -8,6 +8,7 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
+	"reflect"
 )
 
 var (
@@ -17,11 +18,11 @@ var (
 func init() {
 	slapi = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
-		   "action": sls.FromStringDict(sl.String("action"), sl.StringDict{
-                "dump":  sl.NewBuiltin("dump", slapi_action_dump),
-                "error": sl.NewBuiltin("error", slapi_action_error),
-                "write": sl.NewBuiltin("write", slapi_action_write),
-            }),
+			"action": sls.FromStringDict(sl.String("action"), sl.StringDict{
+				"dump":  sl.NewBuiltin("dump", slapi_action_dump),
+				"error": sl.NewBuiltin("error", slapi_action_error),
+				"write": sl.NewBuiltin("write", slapi_action_write),
+			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"query": sl.NewBuiltin("query", slapi_db_query),
 			}),
@@ -141,11 +142,13 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 	db := db_var.(*DB)
 
+	var result *[]map[string]any
 	if len(args) > 1 {
-		return starlark_encode(db.maps(query, starlark_decode(args[1]))), nil
+		result = db.maps(query, starlark_decode(args[1]))
+	} else {
+		result = db.maps(query)
 	}
-	r := starlark_encode(db.maps(query))
-	return r, nil
+	return starlark_encode(result), nil
 }
 
 // Call a service in another app
@@ -213,7 +216,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	} else {
 		result, err = s.call(fn.Function)
 	}
-	debug("mochi.service.call() got result: %+v", result)
+	debug("mochi.service.call() got result (type %s): %+v", reflect.TypeOf(result), result)
 
 	return result, err
 }

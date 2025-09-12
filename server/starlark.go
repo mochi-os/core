@@ -33,7 +33,7 @@ func starlark(files []string) *Starlark {
 
 // Convert a Starlark value to a Go variable
 func starlark_decode(value sl.Value) any {
-	//debug("Decoding '%+v'", value)
+	//debug("Decoding '%+v', type '%s'", value, reflect.TypeOf(value))
 	switch v := value.(type) {
 	case sl.NoneType:
 		return nil

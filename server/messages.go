@@ -16,7 +16,7 @@ type Message struct {
 	From      string `cbor:"from,omitempty"`
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
-	Event    string `cbor:"event,omitempty"`
+	Event     string `cbor:"event,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
 	content   map[string]string
 	data      []byte

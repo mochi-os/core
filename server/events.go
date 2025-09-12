@@ -14,7 +14,7 @@ type Event struct {
 	from    string
 	to      string
 	service string
-	event  string
+	event   string
 	content map[string]string
 	peer    string
 	user    *User

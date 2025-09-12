@@ -197,7 +197,17 @@ func (p *Path) web_path(c *gin.Context) {
 		s.set("action", &a)
 		s.set("db.user", a.user.db)
 		s.set("db.owner", a.owner.db)
-		_, err := s.call(p.function, map[string]string{"identity.id": a.user.Identity.ID, "identity.fingerprint": a.user.Identity.Fingerprint, "identity.name": a.user.Identity.Name, "path": p.path}, web_inputs(c))
+
+		fields := map[string]string{
+			"format":               a.input("format"),
+			"identity.id":          a.user.Identity.ID,
+			"identity.fingerprint": a.user.Identity.Fingerprint,
+			"identity.name":        a.user.Identity.Name,
+			"path":                 p.path,
+		}
+
+		_, err := s.call(p.function, fields, web_inputs(c))
+
 		if err != nil {
 			web_error(c, 500, "%v", err)
 		}

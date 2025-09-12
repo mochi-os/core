@@ -17,19 +17,111 @@ var (
 func init() {
 	slapi = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
+		   "action": sls.FromStringDict(sl.String("action"), sl.StringDict{
+                "dump":  sl.NewBuiltin("dump", slapi_action_dump),
+                "error": sl.NewBuiltin("error", slapi_action_error),
+                "write": sl.NewBuiltin("write", slapi_action_write),
+            }),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"query": sl.NewBuiltin("query", slapi_db_query),
 			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("call", slapi_service_call),
 			}),
-			"web": sls.FromStringDict(sl.String("web"), sl.StringDict{
-				"dump":     sl.NewBuiltin("dump", slapi_web_dump),
-				"error":    sl.NewBuiltin("error", slapi_web_error),
-				"template": sl.NewBuiltin("template", slapi_web_template),
-			}),
 		}),
 	}
+}
+
+// Dump the variables passed for debugging
+func slapi_action_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.action.dump() called from non-action")
+	}
+
+	var vars []any
+	for _, v := range args {
+		vars = append(vars, starlark_decode(v))
+	}
+
+	a.dump(vars)
+	return sl.None, nil
+}
+
+// Print an error
+func slapi_action_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl.None, error_message("mochi.action.error() syntax: <code> <message>")
+	}
+
+	code, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl.None, error_message("mochi.action.error() invalid error code")
+	}
+
+	message, ok := sl.AsString(args[1])
+	if !ok {
+		return sl.None, error_message("mochi.action.error() invalid error message")
+	}
+
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.action.error() called from non-action")
+	}
+
+	a.error(code, message)
+	return sl.None, nil
+}
+
+// Write data back to the caller of the action
+func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return sl.None, error_message("mochi.action.write() syntax: <template path> <format> [data]")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "path") {
+		return sl.None, error_message("mochi.action.write() invalid template file '%s'", file)
+	}
+
+	format, ok := sl.AsString(args[1])
+	if !ok {
+		return sl.None, error_message("mochi.action.write() invalid format '%s'", format)
+	}
+
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.action.write() called from non-action")
+	}
+
+	switch format {
+	case "json":
+		if len(args) < 3 {
+			return sl.None, error_message("mochi.action.write() JSON called without data")
+		}
+		a.json(args[2])
+
+	default:
+		// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
+		data := file_read(fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, file))
+		include := must(templates.ReadFile("templates/en/include.tmpl"))
+
+		tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
+		if err != nil {
+			return sl.None, error_message("mochi.action.write(): %v", err)
+		}
+
+		if len(args) > 2 {
+			err = tmpl.Execute(a.web.Writer, starlark_decode(args[2]))
+		} else {
+			err = tmpl.Execute(a.web.Writer, Map{})
+		}
+		if err != nil {
+			return sl.None, error_message("mochi.action.write(): %v", err)
+		}
+	}
+
+	return sl.None, nil
 }
 
 // Database query
@@ -124,83 +216,4 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	debug("mochi.service.call() got result: %+v", result)
 
 	return result, err
-}
-
-// Dump the variables passed to a web page for debugging
-func slapi_web_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.web.dump() called from non-action")
-	}
-
-	var vars []any
-	for _, v := range args {
-		vars = append(vars, starlark_decode(v))
-	}
-
-	a.dump(vars)
-	return sl.None, nil
-}
-
-// Print an error
-func slapi_web_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl.None, error_message("mochi.web.error() syntax: <code> <message>")
-	}
-
-	code, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl.None, error_message("mochi.web.error() invalid error code")
-	}
-
-	message, ok := sl.AsString(args[1])
-	if !ok {
-		return sl.None, error_message("mochi.web.error() invalid error message")
-	}
-
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.web.error() called from non-action")
-	}
-
-	a.error(code, message)
-	return sl.None, nil
-}
-
-// Web template
-// TODO Add format field?
-func slapi_web_template(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return sl.None, error_message("mochi.web.template() syntax: <template file> [parameters]")
-	}
-
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "path") {
-		return sl.None, error_message("mochi.web.template(): Invalid template file '%s'", file)
-	}
-
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.web.template() called from non-action")
-	}
-
-	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
-	data := file_read(fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, file))
-	include := must(templates.ReadFile("templates/en/include.tmpl"))
-
-	tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
-	if err != nil {
-		return sl.None, error_message("mochi.web.template(): %v", err)
-	}
-
-	if len(args) > 1 {
-		err = tmpl.Execute(a.web.Writer, starlark_decode(args[1]))
-	} else {
-		err = tmpl.Execute(a.web.Writer, Map{})
-	}
-	if err != nil {
-		return sl.None, error_message("mochi.web.template(): %v", err)
-	}
-
-	return sl.None, nil
 }

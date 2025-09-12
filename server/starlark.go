@@ -179,8 +179,8 @@ func (s *Starlark) set(key string, value any) {
 
 // Get a new Starlark interpreter for an app
 func (a *App) starlark() *Starlark {
-	if a.starlark_interpreter == nil {
-		a.starlark_interpreter = starlark(file_glob(fmt.Sprintf("%s/code/*.star", a.base)))
+	if a.starlark_runtime == nil {
+		a.starlark_runtime = starlark(a.Files)
 	}
-	return a.starlark_interpreter
+	return a.starlark_runtime
 }

@@ -13,6 +13,7 @@ type App struct {
 	Version  string
 	Engine   string `json:"engine"`
 	Protocol int    `json:"protocol"`
+	Files    []string
 	Database struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
@@ -36,10 +37,10 @@ type App struct {
 	} `json:"services"`
 
 	// For Go code use
-	id                   string    `json:"-"`
-	base                 string    `json:"-"`
-	entity_field         string    `json:"-"`
-	starlark_interpreter *Starlark `json:"-"`
+	id               string    `json:"-"`
+	base             string    `json:"-"`
+	entity_field     string    `json:"-"`
+	starlark_runtime *Starlark `json:"-"`
 
 	// For internal apps only, possibly to be removed in a future version
 	internal struct {
@@ -87,6 +88,9 @@ func app_load(id string, version string) error {
 		return error_message("App bad app.json '%s/app.json'; ignoring app", base)
 	}
 
+	a.id = id
+	a.base = base
+
 	// Vaildate manifest
 	if !valid(a.Name, "name") {
 		return error_message("App bad name '%s'", a.Name)
@@ -102,6 +106,12 @@ func app_load(id string, version string) error {
 
 	if a.Protocol != 1 {
 		return error_message("App bad protocol version %d", a.Protocol)
+	}
+
+	for _, file := range a.Files {
+		if !valid(file, "filepath") {
+			return error_message("App bad executable file '%s'", file)
+		}
 	}
 
 	if a.Database.File != "" && !valid(a.Database.File, "filename") {
@@ -172,16 +182,16 @@ func app_load(id string, version string) error {
 		}
 	}
 
-	// Set app properties
-	a.id = id
-	a.base = base
+	// Add app to system
+	apps[a.Name] = &a
+
+	for i, file := range a.Files {
+		a.Files[i] = a.base + "/" + file
+	}
 
 	for _, i := range a.Icons {
 		icons[i.Name] = i
 	}
-
-	// Add app to system
-	apps[a.Name] = &a
 
 	for path, p := range a.Paths {
 		for action, ac := range p.Actions {

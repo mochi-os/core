@@ -15,6 +15,7 @@ import (
 type DB struct {
 	path   string
 	handle *sqlx.DB
+	user   *User
 	closed int64
 }
 
@@ -93,7 +94,7 @@ func db_create() {
 	cache.exec("create index attachments_created on attachments( created )")
 }
 
-// Open a databse file for an app, creating it if necessary
+// Open a database file for an app, creating it if necessary
 func db_app(u *User, a *App) *DB {
 	if a.Database.File == "" {
 		warn("App '%s' asked for database, but no database file specified", a.id)
@@ -102,22 +103,32 @@ func db_app(u *User, a *App) *DB {
 
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, a.id, a.Database.File)
 	if file_exists(data_dir + "/" + path) {
-		return db_open(path)
+		db := db_open(path)
+		db.user = u
+		return db
 	}
 
 	if a.Database.Create != "" {
 		debug("Creating new database for app '%s' in file '%s' using '%s'", a.Name, a.Database.File, a.Database.Create)
 		db := db_open(path)
+		db.user = u
 		s := a.starlark()
-		s.set("db", db)
-		version, _ := s.call(a.Database.Create)
+		s.set("db.owner", db)
+		version_var, _ := s.call(a.Database.Create)
+		version := s.int(version_var)
+		if version == 0 {
+			info("App '%s' database creation function '%s' did not return a schema version, assuming 1", a.id, a.Database.Create)
+			version = 1
+		}
 		db.exec("create table _settings ( name text not null primary key, value text not null )")
-		db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", s.int(version))
+		db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", version)
 		return db
 	}
 
 	if a.Database.CreateFunction != nil {
-		return db_user(u, a.Database.File, a.Database.CreateFunction)
+		db := db_user(u, a.Database.File, a.Database.CreateFunction)
+		db.user = u
+		return db
 	}
 
 	warn("App '%s' has no way to create database file '%s'", a.id, a.Database.File)
@@ -202,12 +213,15 @@ func db_upgrade() {
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(data_dir + "/" + path) {
-		return db_open(path)
+		db := db_open(path)
+		db.user = u
+		return db
 	}
 
 	// File does not exist, so create it
 	db := db_open(path)
 	create(db)
+	db.user = u
 	return db
 }
 

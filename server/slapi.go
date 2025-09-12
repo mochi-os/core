@@ -34,11 +34,6 @@ func init() {
 
 // Database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	db := t.Local("db").(*DB)
-	if db == nil {
-		return sl.None, error_message("mochi.db.query() no database connected")
-	}
-
 	if len(args) < 1 || len(args) > 2 {
 		return sl.None, error_message("mochi.db.query() syntax: <SQL statement> [parameters]")
 	}
@@ -47,6 +42,12 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	if !ok {
 		return sl.None, error_message("mochi.db.query() invalid SQL statement '%s'", query)
 	}
+
+	db_var := t.Local("db.user")
+	if db_var == nil {
+		return sl.None, error_message("mochi.db.query() no database connected")
+	}
+	db := db_var.(*DB)
 
 	if len(args) > 1 {
 		return starlark_encode(db.maps(query, starlark_decode(args[1]))), nil
@@ -57,17 +58,6 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // Call a service in another app
 func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO Test maximum recursion
-	depth := 1
-	depth_var := t.Local("depth")
-	if depth_var != nil {
-		depth = depth_var.(int)
-	}
-
-	if depth > 1000 {
-		return sl.None, error_message("mochi.service.call() reached maximum recursion depth")
-	}
-
 	// Get service and function
 	service, ok := sl.AsString(args[0])
 	if !ok {
@@ -76,6 +66,16 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	function, ok := sl.AsString(args[1])
 	if !ok {
 		return sl.None, error_message("mochi.service.call() invalid function")
+	}
+
+	// Check for deep recursion
+	depth := 1
+	depth_var := t.Local("depth")
+	if depth_var != nil {
+		depth = depth_var.(int)
+	}
+	if depth > 1000 {
+		return sl.None, error_message("mochi.service.call() reached maximum recursion depth")
 	}
 
 	// Look for matching app function, using default if necessary
@@ -92,17 +92,35 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	// Call function
-	debug("mochi.service.call() calling service '%s' function '%s' in app '%s' with %d args", service, function, a.Name, len(args)-2)
-	var result sl.Value
-	var err error
 	s := a.starlark()
 	s.set("depth", depth+1)
+
+	db := t.Local("db.user")
+	if db != nil {
+		u := db.(*DB).user
+		if u == nil {
+			return sl.None, error_message("mochi.service.call() has database but no database user")
+		}
+		s.set("db.user", db_app(u, a))
+	}
+
+	db = t.Local("db.owner")
+	if db != nil {
+		u := db.(*DB).user
+		if u == nil {
+			return sl.None, error_message("mochi.service.call() has database but no database owner")
+		}
+		s.set("db.owner", db_app(u, a))
+	}
+
+	debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.Name, service, function, args[2:])
+	var result sl.Value
+	var err error
 	if len(args) > 2 {
 		result, err = s.call(fn.Function, args[2:])
 	} else {
 		result, err = s.call(fn.Function)
 	}
-	s.set("depth", depth)
 	debug("mochi.service.call() got result: %+v", result)
 
 	return result, err
@@ -126,11 +144,6 @@ func slapi_web_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // Print an error
 func slapi_web_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.web.error() called from non-action")
-	}
-
 	if len(args) != 2 {
 		return sl.None, error_message("mochi.web.error() syntax: <code> <message>")
 	}
@@ -145,6 +158,11 @@ func slapi_web_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl.None, error_message("mochi.web.error() invalid error message")
 	}
 
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.web.error() called from non-action")
+	}
+
 	a.error(code, message)
 	return sl.None, nil
 }
@@ -152,11 +170,6 @@ func slapi_web_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // Web template
 // TODO Add format field?
 func slapi_web_template(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl.None, error_message("mochi.web.template() called from non-action")
-	}
-
 	if len(args) < 1 || len(args) > 2 {
 		return sl.None, error_message("mochi.web.template() syntax: <template file> [parameters]")
 	}
@@ -164,6 +177,11 @@ func slapi_web_template(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "path") {
 		return sl.None, error_message("mochi.web.template(): Invalid template file '%s'", file)
+	}
+
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.web.template() called from non-action")
 	}
 
 	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.

@@ -148,7 +148,7 @@ func (p *Path) web_path(c *gin.Context) {
 	if p.app.Database.File != "" && user != nil {
 		user.db = db_app(user, p.app)
 		if user.db == nil {
-			web_error(c, 500, "No database for app")
+			web_error(c, 500, "No user database for app")
 			return
 		}
 		defer user.db.close()
@@ -160,7 +160,7 @@ func (p *Path) web_path(c *gin.Context) {
 		if p.app.Database.File != "" && owner != nil {
 			owner.db = db_app(owner, p.app)
 			if owner.db == nil {
-				web_error(c, 500, "No database for app")
+				web_error(c, 500, "No owner database for app")
 				return
 			}
 			defer owner.db.close()
@@ -195,8 +195,8 @@ func (p *Path) web_path(c *gin.Context) {
 
 		s := p.app.starlark()
 		s.set("action", &a)
-		//TODO Set a.owner.db if needed
-		s.set("db", a.user.db)
+		s.set("db.user", a.user.db)
+		s.set("db.owner", a.owner.db)
 		_, err := s.call(p.function, map[string]string{"identity.id": a.user.Identity.ID, "identity.fingerprint": a.user.Identity.Fingerprint, "identity.name": a.user.Identity.Name, "path": p.path}, web_inputs(c))
 		if err != nil {
 			web_error(c, 500, "%v", err)

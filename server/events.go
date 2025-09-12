@@ -128,7 +128,7 @@ func (e *Event) route() {
 
 		s := a.starlark()
 		s.set("event", e)
-		s.set("db", e.db)
+		s.set("owner.db", e.db)
 		s.call(ev.Function, e)
 
 	default:

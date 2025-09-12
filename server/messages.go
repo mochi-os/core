@@ -16,7 +16,7 @@ type Message struct {
 	From      string `cbor:"from,omitempty"`
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
-	Action    string `cbor:"action,omitempty"`
+	Event    string `cbor:"event,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
 	content   map[string]string
 	data      []byte
@@ -24,8 +24,8 @@ type Message struct {
 }
 
 // Create a new message
-func message(from string, to string, service string, action string) *Message {
-	return &Message{ID: uid(), From: from, To: to, Service: service, Action: action, content: map[string]string{}}
+func message(from string, to string, service string, event string) *Message {
+	return &Message{ID: uid(), From: from, To: to, Service: service, Event: event, content: map[string]string{}}
 }
 
 // Receive message from reader
@@ -40,7 +40,7 @@ func message_receive(r io.Reader, version int, peer string) {
 		return
 	}
 
-	debug("Message received from peer '%s': id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
+	debug("Message received from peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event)
 
 	if !valid(m.ID, "id") {
 		info("Dropping message with invalid id '%s'", m.ID)
@@ -62,8 +62,8 @@ func message_receive(r io.Reader, version int, peer string) {
 		return
 	}
 
-	if !valid(m.Action, "constant") {
-		info("Dropping message '%s' with invalid action '%s'", m.ID, m.Action)
+	if !valid(m.Event, "constant") {
+		info("Dropping message '%s' with invalid event '%s'", m.ID, m.Event)
 		return
 	}
 
@@ -73,7 +73,7 @@ func message_receive(r io.Reader, version int, peer string) {
 			info("Dropping message '%s' with invalid from length %d!=%d", m.ID, len(public), ed25519.PublicKeySize)
 			return
 		}
-		if !ed25519.Verify(public, []byte(m.ID+m.From+m.To+m.Service+m.Action), base58_decode(m.Signature, "")) {
+		if !ed25519.Verify(public, []byte(m.ID+m.From+m.To+m.Service+m.Event), base58_decode(m.Signature, "")) {
 			info("Dropping message '%s' with incorrect signature", m.ID)
 			return
 		}
@@ -87,7 +87,7 @@ func message_receive(r io.Reader, version int, peer string) {
 	}
 
 	// Create event, and route to app
-	e := Event{id: m.ID, from: m.From, to: m.To, service: m.Service, action: m.Action, content: m.content, decoder: d, reader: r, peer: peer}
+	e := Event{id: m.ID, from: m.From, to: m.To, service: m.Service, event: m.Event, content: m.content, decoder: d, reader: r, peer: peer}
 	e.route()
 }
 
@@ -99,7 +99,7 @@ func (m *Message) add(v any) *Message {
 
 // Publish an message to a pubsub
 func (m *Message) publish(allow_queue bool) {
-	debug("Message publishing: from='%s', to='%s', service='%s', action='%s'", m.From, m.To, m.Service, m.Action)
+	debug("Message publishing: from='%s', to='%s', service='%s', event='%s'", m.From, m.To, m.Service, m.Event)
 	m.Signature = m.signature()
 	data := cbor_encode(&m)
 	data = append(data, cbor_encode(m.content)...)
@@ -131,7 +131,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', action '%s'", peer, m.ID, m.From, m.To, m.Service, m.Action)
+	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event)
 
 	failed := false
 	w := peer_writer(peer)
@@ -232,5 +232,5 @@ func (m *Message) signature() string {
 		return ""
 	}
 
-	return base58_encode(ed25519.Sign(private, []byte(m.ID+m.From+m.To+m.Service+m.Action)))
+	return base58_encode(ed25519.Sign(private, []byte(m.ID+m.From+m.To+m.Service+m.Event)))
 }

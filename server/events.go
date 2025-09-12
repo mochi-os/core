@@ -14,8 +14,7 @@ type Event struct {
 	from    string
 	to      string
 	service string
-	//TODO Rename to event?
-	action  string
+	event  string
 	content map[string]string
 	peer    string
 	user    *User
@@ -81,9 +80,9 @@ func (e *Event) route() {
 		var f func(*Event)
 		var found bool
 		if e.to == "" {
-			f, found = a.internal.events_broadcast[e.action]
+			f, found = a.internal.events_broadcast[e.event]
 		} else {
-			f, found = a.internal.events[e.action]
+			f, found = a.internal.events[e.event]
 		}
 		if !found {
 			if e.to == "" {
@@ -93,7 +92,7 @@ func (e *Event) route() {
 			}
 		}
 		if !found {
-			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
+			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.Name, e.service)
 			return
 		}
 
@@ -108,12 +107,12 @@ func (e *Event) route() {
 
 	case "starlark":
 		// Look for matching app event, using default if necessary
-		ev, found := a.Services[e.service].Events[e.action]
+		ev, found := a.Services[e.service].Events[e.event]
 		if !found {
 			ev, found = a.Services[e.service].Events[""]
 		}
 		if !found {
-			info("Event dropping '%s' to unknown action '%s' in app '%s' for service '%s'", e.id, e.action, a.Name, e.service)
+			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.Name, e.service)
 			return
 		}
 

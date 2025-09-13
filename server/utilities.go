@@ -191,7 +191,7 @@ func valid(s string, match string) bool {
 	case "natural":
 		match = "^\\d{1,9}$"
 	case "path":
-		match = "^[0-9a-zA-Z-/]{1,1000}$"
+		match = "^[0-9a-zA-Z-/]{0,1000}$"
 	case "postive":
 		match = "^\\d{1,9}$"
 	case "privacy":

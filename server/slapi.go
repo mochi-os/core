@@ -8,7 +8,9 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
+	"maps"
 	"reflect"
+	"slices"
 )
 
 var (
@@ -23,11 +25,17 @@ func init() {
 				"error": sl.NewBuiltin("error", slapi_action_error),
 				"write": sl.NewBuiltin("write", slapi_action_write),
 			}),
+			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
+				"icons": sl.NewBuiltin("icons", slapi_apps_icons),
+			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"query": sl.NewBuiltin("query", slapi_db_query),
 			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("call", slapi_service_call),
+			}),
+			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
+				"get": sl.NewBuiltin("get", slapi_user_get),
 			}),
 		}),
 	}
@@ -125,6 +133,15 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.None, nil
 }
 
+// Get available icons for home
+func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	results := make([]map[string]string, len(icons))
+	for j, i := range slices.Sorted(maps.Keys(icons)) {
+		results[j] = map[string]string{"path": icons[i].Path, "label": icons[i].Label, "name": icons[i].Name, "icon": icons[i].Icon}
+	}
+	return starlark_encode(results), nil
+}
+
 // Database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
@@ -219,4 +236,14 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	debug("mochi.service.call() got result (type %s): %+v", reflect.TypeOf(result), result)
 
 	return result, err
+}
+
+// Get details of the current user
+func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return sl.None, error_message("mochi.user.get() not logged in")
+	}
+
+	return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username}), nil
 }

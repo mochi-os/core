@@ -1,22 +1,20 @@
-0.2
+0.2:
 	Separate apps from server
-		Starlark
-		Yaegi
-
-	App publishing
+		App publishing
 		App updates
 
 	Client API
 	Web interface
-
-	Route on entity
-	Map web URLs to entities
+		Route on entity
+		Map web URLs to entities
 	Find hidden services
 	Directory get recent updates
 
 	User management
 	Users can change their settings
-	Users can create HTTPS hooks to control events using their own code
+	Users can create hooks to control events using their own code
+		Starlark
+		HTTPS
 	User avatars
 
 	Feeds app
@@ -32,13 +30,17 @@
 	Logging
 	License
 
-0.3 or later
+0.3:
 	Apps multiple versions and tracks
 	App market
 
+	User can manage their apps
+		App privileges
+		Users can choose which apps get which service
+		Users can choose which apps get which web path
+
+0.4 or later:
 	Users can categorise updates into feeds
-	Users can choose which apps get which service
-	Users can choose which apps get which web path
 	Verified user identities
 
 	Push notifications to Android and iOS apps
@@ -57,7 +59,7 @@
 	
 	.rpm packages and repository
 
-Ideas for apps
+Ideas for apps:
 	Achievements tracker
 	Business ratings and reviews
 	Bug tracker

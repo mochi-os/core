@@ -9,12 +9,13 @@ import (
 
 type App struct {
 	// Read from app.json
-	Name     string `json:"name"`
-	Version  string
-	Engine   string `json:"engine"`
-	Protocol int    `json:"protocol"`
-	Files    []string
-	Database struct {
+	Name       string   `json:"name"`
+	Version    string   `json:"version"`
+	Privileges []string `json:"privileges"`
+	Engine     string   `json:"engine"`
+	Protocol   int      `json:"protocol"`
+	Files      []string `json:"files"`
+	Database   struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
 		CreateFunction func(*DB) `json:"-"`
@@ -50,6 +51,14 @@ type App struct {
 	}
 }
 
+type Icon struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
+	// Remove Name field once we have multi-language label system in place
+	Name string `json:"name"`
+	Icon string `json:"icon"`
+}
+
 type Path struct {
 	path     string
 	app      *App
@@ -61,6 +70,7 @@ type Path struct {
 
 var (
 	apps     = map[string]*App{}
+	icons    = map[string]Icon{}
 	paths    = map[string]*Path{}
 	services = map[string]*App{}
 )

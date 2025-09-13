@@ -3,23 +3,6 @@
 
 package main
 
-type Icon struct {
-	Path  string `json:"path"`
-	Label string `json:"label"`
-	// Remove Name field once we have multi-language label system in place
-	Name string `json:"name"`
-	Icon string `json:"icon"`
-}
-
-var (
-	icons = map[string]Icon{}
-)
-
-func init() {
-	a := app("home")
-	a.path("", home)
-}
-
 func home(a *Action) {
 	if a.user == nil {
 		web_login(a.web)

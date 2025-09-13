@@ -106,26 +106,36 @@ func starlark_encode(v any) sl.Value {
 	case bool:
 		return sl.Bool(x)
 
-	case map[string]string:
+	case map[string]any:
 		d := sl.NewDict(len(x))
-		for i, value := range x {
-			d.SetKey(sl.String(i), sl.String(value))
+		for i, v := range x {
+			d.SetKey(sl.String(i), starlark_encode(v))
 		}
 		return d
+
+	case map[string]string:
+		d := sl.NewDict(len(x))
+		for i, v := range x {
+			d.SetKey(sl.String(i), sl.String(v))
+		}
+		return d
+
+	case []map[string]string:
+		var t []sl.Value
+		for _, r := range x {
+			t = append(t, starlark_encode(r))
+		}
+		return sl.Tuple(t)
 
 	case *[]map[string]any:
 		var t []sl.Value
 		for _, r := range *x {
-			d := sl.NewDict(len(r))
-			for i, v := range r {
-				d.SetKey(sl.String(i), starlark_encode(v))
-			}
-			t = append(t, d)
+			t = append(t, starlark_encode(r))
 		}
 		return sl.Tuple(t)
 	}
 
-	warn("Starlark unknown type %T", v)
+	warn("Starlark encode unknown type '%T'", v)
 	return nil
 }
 

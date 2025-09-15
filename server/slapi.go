@@ -40,6 +40,7 @@ func init() {
 				"get":    sl.NewBuiltin("get", slapi_user_get),
 				"logout": sl.NewBuiltin("logout", slapi_user_logout),
 			}),
+			"valid": sl.NewBuiltin("valid", slapi_valid),
 		}),
 		"starlark": sls.FromStringDict(sl.String("starlark"), sl.StringDict{
 			"time": sl_time.Module,
@@ -287,4 +288,23 @@ func slapi_user_logout(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	web_cookie_unset(a.web, "login")
 
 	return sl.None, nil
+}
+
+// Check if a string is valid
+func slapi_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error("mochi.valid() syntax: <string to check> <pattern to match>")
+	}
+
+	s, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error("mochi.valid() invalid string to check '%s'", s)
+	}
+
+	match, ok := sl.AsString(args[1])
+	if !ok {
+		return slapi_error("mochi.valid() invalid match pattern '%s'", match)
+	}
+
+	return starlark_encode(valid(s, match)), nil
 }

@@ -118,6 +118,16 @@ func web_login(c *gin.Context) {
 	web_template(c, 200, "login/email")
 }
 
+// Log the user out
+func web_logout(c *gin.Context) {
+	login := web_cookie_get(c, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(c, "login")
+	web_template(c, 200, "login/logout")
+}
+
 // Render markdown as a template.HTML object so that Go's templates don't escape it
 func web_markdown(in string) template.HTML {
 	return template.HTML(markdown([]byte(in)))
@@ -145,6 +155,7 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
+	debug("Path '%+v', app '%+v', user '%+v'", p, p.app, user)
 	if p.app.Database.File != "" && user != nil {
 		user.db = db_app(user, p.app)
 		if user.db == nil {
@@ -168,13 +179,13 @@ func (p *Path) web_path(c *gin.Context) {
 	}
 
 	if p.app.Database.File != "" && user == nil && owner == nil {
-		web_error(c, 401, "Content not public, and not logged in")
+		web_redirect(c, "/login")
 		return
 	}
 
 	a := Action{user: user, owner: owner, app: p.app, web: c, path: p}
 
-	switch p.app.Engine {
+	switch p.app.Engine.Architecture {
 	case "internal":
 		if p.internal == nil {
 			web_error(c, 500, "No function for internal path")
@@ -189,14 +200,15 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 
 		if user == nil && !p.public {
-			web_error(c, 401, "Content not public, and not logged in")
+			web_redirect(c, "/login")
 			return
 		}
 
 		s := p.app.starlark()
 		s.set("action", &a)
-		s.set("db.user", a.user.db)
-		s.set("db.owner", a.owner.db)
+		s.set("app", p.app)
+		s.set("user", a.user)
+		s.set("owner", a.owner)
 
 		fields := map[string]string{
 			"format":               a.input("format"),
@@ -246,8 +258,10 @@ func web_start() {
 		r.GET("/"+p.path, p.web_path)
 		r.POST("/"+p.path, p.web_path)
 	}
+	r.GET("/login", web_login)
 	r.POST("/login", web_login)
 	r.POST("/login/identity", web_identity_create)
+	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 

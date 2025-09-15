@@ -9,12 +9,14 @@ import (
 
 type App struct {
 	// Read from app.json
-	Name       string   `json:"name"`
-	Version    string   `json:"version"`
-	Privileges []string `json:"privileges"`
-	Engine     string   `json:"engine"`
-	Protocol   int      `json:"protocol"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Engine  struct {
+		Architecture string `json:"architecture"`
+		Version      string `json:"version"`
+	} `json:"engine"`
 	Files      []string `json:"files"`
+	Privileges []string `json:"privileges"`
 	Database   struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
@@ -60,8 +62,9 @@ type Icon struct {
 }
 
 type Path struct {
-	path     string
-	app      *App
+	path string
+	app  *App
+	//TODO Remove engine field?
 	engine   string
 	function string
 	public   bool
@@ -76,7 +79,8 @@ var (
 )
 
 func app(name string) *App {
-	a := App{id: name, Name: name, Engine: "internal", entity_field: "entity"}
+	a := App{id: name, Name: name, entity_field: "entity"}
+	a.Engine.Architecture = "internal"
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))
@@ -110,12 +114,8 @@ func app_load(id string, version string) error {
 		return error_message("App bad version '%s'", a.Version)
 	}
 
-	if a.Engine != "starlark" {
-		return error_message("App bad engine '%s'", a.Engine)
-	}
-
-	if a.Protocol != 1 {
-		return error_message("App bad protocol version %d", a.Protocol)
+	if a.Engine.Architecture != "starlark" || a.Engine.Version != "1" {
+		return error_message("App bad engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
 	}
 
 	for _, file := range a.Files {
@@ -209,7 +209,7 @@ func app_load(id string, version string) error {
 			if action != "" {
 				full = path + "/" + action
 			}
-			paths[full] = &Path{path: full, app: &a, engine: a.Engine, function: ac.Function, public: ac.Public, internal: nil}
+			paths[full] = &Path{path: full, app: &a, engine: a.Engine.Architecture, function: ac.Function, public: ac.Public, internal: nil}
 		}
 	}
 

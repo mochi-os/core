@@ -18,14 +18,23 @@
 	User avatars
 
 	Feeds app
+		Edit posts
+		Edit comments
 		Permissions
 		Check-ins
 			Location
 			Travelling to
 
 	Forums app
+		Edit posts
+		Rotate images
 		Moderation
 		Permissions
+
+	Attachments
+		Add
+		Delete
+		Rotate images
 
 	Logging
 	License

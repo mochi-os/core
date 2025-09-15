@@ -74,7 +74,7 @@ func (e *Event) route() {
 	}
 
 	// Check which engine the app uses, and run it
-	switch a.Engine {
+	switch a.Engine.Architecture {
 	case "internal":
 		// Look for matching app event, using default if necessary
 		var f func(*Event)
@@ -127,11 +127,12 @@ func (e *Event) route() {
 
 		s := a.starlark()
 		s.set("event", e)
-		s.set("owner.db", e.db)
+		s.set("app", a)
+		s.set("owner", e.user)
 		s.call(ev.Function, e)
 
 	default:
-		info("Event unknown engine '%s'", a.Engine)
+		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
 		return
 	}
 }

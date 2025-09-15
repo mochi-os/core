@@ -58,8 +58,6 @@ func peers_add_from_db(limit int) {
 
 // Add already known peer to memory if not already present
 func peer_add_known(id string, addresses []string) {
-	debug("Peer adding known '%s' at %v", id, addresses)
-
 	peers_lock.Lock()
 	_, found := peers[id]
 	peers_lock.Unlock()

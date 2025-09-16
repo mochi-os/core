@@ -33,6 +33,9 @@ func init() {
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"query": sl.NewBuiltin("query", slapi_db_query),
 			}),
+			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
+				"search": sl.NewBuiltin("search", slapi_directory_search),
+			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("call", slapi_service_call),
 			}),
@@ -67,7 +70,7 @@ func slapi_action_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // Print an error
 func slapi_action_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return slapi_error("mochi.action.error() syntax: <code> <message>")
+		return slapi_error("mochi.action.error() syntax: <code: integer> <message: string>")
 	}
 
 	code, err := sl.AsInt32(args[0])
@@ -92,7 +95,7 @@ func slapi_action_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Redirect the action
 func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return slapi_error("mochi.action.redirect() syntax: <path>")
+		return slapi_error("mochi.action.redirect() syntax: <path: string>")
 	}
 
 	path, ok := sl.AsString(args[0])
@@ -112,7 +115,7 @@ func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 // Write data back to the caller of the action
 func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return slapi_error("mochi.action.write() syntax: <template path> <format> [data]")
+		return slapi_error("mochi.action.write() syntax: <template path: string> <format: string> [data: dictionary]")
 	}
 
 	path, ok := sl.AsString(args[0])
@@ -176,7 +179,7 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // Database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.db.query() syntax: <SQL statement> [parameters]")
+		return slapi_error("mochi.db.query() syntax: <SQL statement: string> [parameters: list]")
 	}
 
 	query, ok := sl.AsString(args[0])
@@ -204,6 +207,54 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return starlark_encode(result), nil
 }
 
+// Directory search
+func slapi_directory_search(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 3 {
+		return slapi_error("mochi.directory.search() syntax: <class: string> <search: string> <include self: boolean>")
+	}
+
+	class, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error("mochi.directory.search() invalid class '%s'", class)
+	}
+
+	search, ok := sl.AsString(args[1])
+	if !ok {
+		return slapi_error("mochi.directory.search() invalid search '%s'", search)
+	}
+
+	include_self := bool(args[2].Truth())
+	u := t.Local("user").(*User)
+
+	db := db_open("db/directory.db")
+	ds := db.maps("select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
+
+	for _, d := range *ds {
+		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+	}
+
+	if u == nil || include_self || class != "person" {
+		return starlark_encode(ds), nil
+	}
+
+	dbu := db_open("db/users.db")
+	var es []Entity
+	dbu.scans(&es, "select id from entities where user=?", u.ID)
+	me := map[string]bool{}
+	for _, e := range es {
+		me[e.ID] = true
+	}
+
+	var o []map[string]any
+	for _, d := range *ds {
+		_, found := me[d["id"].(string)]
+		if !found {
+			o = append(o, d)
+		}
+	}
+	return starlark_encode(&o), nil
+}
+
 // Helper function to return an error
 func slapi_error(format string, values ...any) (sl.Value, error) {
 	return sl.None, error_message(format, values...)
@@ -212,10 +263,15 @@ func slapi_error(format string, values ...any) (sl.Value, error) {
 // Call a function in another app
 func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Get service and function
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error("mochi.service.call() syntax: <service: string> <function: string> [parameters: variadic]")
+	}
+
 	service, ok := sl.AsString(args[0])
 	if !ok {
 		return slapi_error("mochi.service.call() invalid service")
 	}
+
 	function, ok := sl.AsString(args[1])
 	if !ok {
 		return slapi_error("mochi.service.call() invalid function")
@@ -293,7 +349,7 @@ func slapi_user_logout(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // Check if a string is valid
 func slapi_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.valid() syntax: <string to check> <pattern to match>")
+		return slapi_error("mochi.valid() syntax: <string to check: string> <pattern to match: string>")
 	}
 
 	s, ok := sl.AsString(args[0])

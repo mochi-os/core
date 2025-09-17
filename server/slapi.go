@@ -5,7 +5,6 @@ package main
 
 import (
 	"fmt"
-	sl_time "go.starlark.net/lib/time"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
@@ -25,28 +24,48 @@ func init() {
 				"dump":     sl.NewBuiltin("dump", slapi_action_dump),
 				"error":    sl.NewBuiltin("error", slapi_action_error),
 				"redirect": sl.NewBuiltin("redirect", slapi_action_redirect),
-				"write":    sl.NewBuiltin("write", slapi_action_write),
+				"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
+					"write": sl.NewBuiltin("write", slapi_action_websocket_write),
+				}),
+				"write": sl.NewBuiltin("write", slapi_action_write),
+			}),
+			"attachments": sls.FromStringDict(sl.String("attachments"), sl.StringDict{
+				"get": sl.NewBuiltin("get", slapi_attachments_get),
+				"put": sl.NewBuiltin("put", slapi_attachments_put),
 			}),
 			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
 				"icons": sl.NewBuiltin("icons", slapi_apps_icons),
 			}),
+			"broadcast": sls.FromStringDict(sl.String("broadcast"), sl.StringDict{
+				"publish": sl.NewBuiltin("publish", slapi_broadcast_publish),
+			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
-				"query": sl.NewBuiltin("query", slapi_db_query),
+				"exists": sl.NewBuiltin("query", slapi_db_exists),
+				"query":  sl.NewBuiltin("query", slapi_db_query),
 			}),
 			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
 				"search": sl.NewBuiltin("search", slapi_directory_search),
 			}),
+			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
+				"send": sl.NewBuiltin("search", slapi_message_send),
+			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("call", slapi_service_call),
+			}),
+			"text": sls.FromStringDict(sl.String("text"), sl.StringDict{
+				"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
+					"render": sl.NewBuiltin("render", slapi_text_markdown_render),
+				}),
+				"valid": sl.NewBuiltin("valid", slapi_text_valid),
+			}),
+			"time": sls.FromStringDict(sl.String("time"), sl.StringDict{
+				"local": sl.NewBuiltin("local", slapi_time_local),
+				"now":   sl.NewBuiltin("local", slapi_time_now),
 			}),
 			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
 				"get":    sl.NewBuiltin("get", slapi_user_get),
 				"logout": sl.NewBuiltin("logout", slapi_user_logout),
 			}),
-			"valid": sl.NewBuiltin("valid", slapi_valid),
-		}),
-		"starlark": sls.FromStringDict(sl.String("starlark"), sl.StringDict{
-			"time": sl_time.Module,
 		}),
 	}
 }
@@ -167,6 +186,12 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.None, nil
 }
 
+// Write data back to the caller of the action via websocket
+func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
 // Get available icons for home
 func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	results := make([]map[string]string, len(icons))
@@ -176,10 +201,56 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return starlark_encode(results), nil
 }
 
-// Database query
+// Get attachments for an object
+func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
+// Upload attachments for an object
+func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
+// Publish a broadcast to subscribing apps
+func slapi_broadcast_publish(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
+// Check if database row exists
+func slapi_db_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return slapi_error("mochi.db.exists() syntax: <SQL statement: string> [parameters: strings, variadic]")
+	}
+
+	query, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error("mochi.db.exists() invalid SQL statement '%s'", query)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error("mochi.db.exists() not logged in, so no user database available")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return slapi_error("mochi.db.exists() unknown app")
+	}
+
+	db := db_app(user, app)
+	if db.exists(query, starlark_decode(args[1:]).([]any)...) {
+		return sl.True, nil
+	}
+	return sl.False, nil
+}
+
+// General database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.db.query() syntax: <SQL statement: string> [parameters: list]")
+	if len(args) < 1 {
+		return slapi_error("mochi.db.query() syntax: <SQL statement: string> [parameters: strings, variadic]")
 	}
 
 	query, ok := sl.AsString(args[0])
@@ -198,13 +269,7 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(user, app)
-	var result *[]map[string]any
-	if len(args) > 1 {
-		result = db.maps(query, starlark_decode(args[1]))
-	} else {
-		result = db.maps(query)
-	}
-	return starlark_encode(result), nil
+	return starlark_encode(db.maps(query, starlark_decode(args[1:]).([]any)...)), nil
 }
 
 // Directory search
@@ -260,11 +325,25 @@ func slapi_error(format string, values ...any) (sl.Value, error) {
 	return sl.None, error_message(format, values...)
 }
 
+// Send a message
+func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 4 {
+		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary] [data: bytes] [file: string]")
+	}
+	debug("mochi.message.send() got '%#v'", args)
+
+	// m := message(from, to, service, event)
+	// m.set(content)
+	// m.add(data)
+	// m.file(file)
+	// m.send()
+	return sl.None, nil
+}
+
 // Call a function in another app
 func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Get service and function
 	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.service.call() syntax: <service: string> <function: string> [parameters: variadic]")
+		return slapi_error("mochi.service.call() syntax: <service: string> <function: string> [parameters: any variadic]")
 	}
 
 	service, ok := sl.AsString(args[0])
@@ -320,6 +399,43 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return result, err
 }
 
+// Check if a string is valid
+func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error("mochi.text.valid() syntax: <string to check: string> <pattern to match: string>")
+	}
+
+	s, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error("mochi.text.valid() invalid string to check '%s'", s)
+	}
+
+	match, ok := sl.AsString(args[1])
+	if !ok {
+		return slapi_error("mochi.text.valid() invalid match pattern '%s'", match)
+	}
+
+	return starlark_encode(valid(s, match)), nil
+}
+
+// Render markdown
+func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
+// Return the local time in the user's time zone
+func slapi_time_local(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO
+	return sl.None, nil
+}
+
+// Return the current Unix time
+// TODO Test
+func slapi_time_now(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return starlark_encode(now()), nil
+}
+
 // Get details of the current user
 func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	a := t.Local("action").(*Action)
@@ -344,23 +460,4 @@ func slapi_user_logout(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	web_cookie_unset(a.web, "login")
 
 	return sl.None, nil
-}
-
-// Check if a string is valid
-func slapi_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.valid() syntax: <string to check: string> <pattern to match: string>")
-	}
-
-	s, ok := sl.AsString(args[0])
-	if !ok {
-		return slapi_error("mochi.valid() invalid string to check '%s'", s)
-	}
-
-	match, ok := sl.AsString(args[1])
-	if !ok {
-		return slapi_error("mochi.valid() invalid match pattern '%s'", match)
-	}
-
-	return starlark_encode(valid(s, match)), nil
 }

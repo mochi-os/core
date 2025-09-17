@@ -64,7 +64,7 @@ func starlark_decode(value sl.Value) any {
 		return out
 
 	case sl.Tuple:
-		out := make([]interface{}, len(v))
+		out := make([]any, len(v))
 		for i, e := range v {
 			out[i] = starlark_decode(e)
 		}
@@ -85,7 +85,8 @@ func starlark_decode(value sl.Value) any {
 		return out
 
 	default:
-		return v.String()
+		warn("Starlark decode unknown type '%T'", v)
+		return nil
 	}
 }
 
@@ -133,10 +134,11 @@ func starlark_encode(v any) sl.Value {
 			t = append(t, starlark_encode(r))
 		}
 		return sl.Tuple(t)
-	}
 
-	warn("Starlark encode unknown type '%T'", v)
-	return nil
+	default:
+		warn("Starlark encode unknown type '%T'", v)
+		return nil
+	}
 }
 
 // Convert one or more Go variables to a Starlark tuple

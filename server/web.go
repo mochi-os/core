@@ -155,7 +155,6 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	debug("Path '%+v', app '%+v', user '%+v'", p, p.app, user)
 	if p.app.Database.File != "" && user != nil {
 		user.db = db_app(user, p.app)
 		if user.db == nil {

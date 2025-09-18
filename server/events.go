@@ -140,10 +140,7 @@ func (e *Event) route() {
 			"event":   e.event,
 		}
 
-		_, err := s.call(ev.Function, headers, e.content)
-		if err != nil {
-			info("Starlark event error: %v", err)
-		}
+		s.call(ev.Function, starlark_encode_tuple(headers, e.content))
 
 	default:
 		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)

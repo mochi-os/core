@@ -321,7 +321,6 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if len(args) < 1 || len(args) > 2 {
 		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary]")
 	}
-	debug("mochi.message.send() got '%+v' '%+v'", args[0], args[1])
 
 	headers := starlark_decode_strings(args[0])
 	if headers == nil {
@@ -361,7 +360,7 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // Call a function in another app
 func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) < 2 {
 		return slapi_error("mochi.service.call() syntax: <service: string> <function: string> [parameters: any variadic]")
 	}
 
@@ -411,7 +410,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if len(args) > 2 {
 		result, err = s.call(fn.Function, args[2:])
 	} else {
-		result, err = s.call(fn.Function)
+		result, err = s.call(fn.Function, nil)
 	}
 	debug("mochi.service.call() got result (type %s): %+v", reflect.TypeOf(result), result)
 

@@ -115,7 +115,7 @@ func db_app(u *User, a *App) *DB {
 		s := a.starlark()
 		s.set("app", a)
 		s.set("owner", u)
-		version_var, _ := s.call(a.Database.Create)
+		version_var, _ := s.call(a.Database.Create, nil)
 		version := s.int(version_var)
 		if version == 0 {
 			info("App '%s' database creation function '%s' did not return a schema version, assuming 1", a.id, a.Database.Create)

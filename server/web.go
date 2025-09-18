@@ -217,7 +217,7 @@ func (p *Path) web_path(c *gin.Context) {
 			"path":                 p.path,
 		}
 
-		_, err := s.call(p.function, fields, web_inputs(c))
+		_, err := s.call(p.function, starlark_encode_tuple(fields, web_inputs(c)))
 		if err != nil {
 			web_error(c, 500, "%v", err)
 		}

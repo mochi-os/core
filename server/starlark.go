@@ -151,6 +151,9 @@ func starlark_encode(v any) sl.Value {
 		}
 		return sl.Tuple(t)
 
+	case sl.Tuple:
+		return x
+
 	default:
 		warn("Starlark encode unknown type '%T'", v)
 		return nil
@@ -168,19 +171,14 @@ func starlark_encode_tuple(in ...any) sl.Tuple {
 }
 
 // Call a Starlark function
-func (s *Starlark) call(function string, args ...any) (sl.Value, error) {
+func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
 		return nil, error_message("Starlark app function '%s' not found", function)
 	}
 
-	t := starlark_encode_tuple(args...)
-	if t == nil {
-		return nil, error_message("Starlark unable to encode arguments")
-	}
-
-	debug("Starlark running '%s': %+v", function, t)
-	result, err := sl.Call(s.thread, f, t, nil)
+	debug("Starlark running '%s': %+v", function, args)
+	result, err := sl.Call(s.thread, f, args, nil)
 	if err == nil {
 		debug("Starlark finished")
 	} else {

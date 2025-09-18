@@ -1,7 +1,8 @@
 0.2:
 	Separate apps from server
-		App publishing
-		App updates
+		Resource limits
+		Publishing
+		Updates
 
 	Client API
 	Web interface

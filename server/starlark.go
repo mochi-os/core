@@ -73,19 +73,35 @@ func starlark_decode(value sl.Value) any {
 	case *sl.Dict:
 		out := make(map[string]any)
 		for _, i := range v.Items() {
-			k := starlark_decode(i[0])
-			val := starlark_decode(i[1])
-			ks, ok := k.(string)
-			if ok {
-				out[ks] = val
-			} else {
-				out[fmt.Sprint(k)] = val
-			}
+			out[starlark_decode_string(i[0])] = starlark_decode(i[1])
 		}
 		return out
 
 	default:
 		warn("Starlark decode unknown type '%T'", v)
+		return nil
+	}
+}
+
+func starlark_decode_string(value sl.Value) string {
+	s, ok := sl.AsString(value)
+	if ok {
+		return s
+	}
+	return fmt.Sprint(s)
+}
+
+func starlark_decode_strings(value any) map[string]string {
+	switch v := value.(type) {
+	case *sl.Dict:
+		out := make(map[string]string)
+		for _, i := range v.Items() {
+			out[starlark_decode_string(i[0])] = starlark_decode_string(i[1])
+		}
+		return out
+
+	default:
+		warn("Starlark decode strings unknown type '%T'", v)
 		return nil
 	}
 }

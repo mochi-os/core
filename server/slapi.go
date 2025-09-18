@@ -327,16 +327,44 @@ func slapi_error(format string, values ...any) (sl.Value, error) {
 
 // Send a message
 func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 4 {
-		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary] [data: bytes] [file: string]")
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary]")
 	}
-	debug("mochi.message.send() got '%#v'", args)
+	debug("mochi.message.send() got '%+v' '%+v'", args[0], args[1])
 
-	// m := message(from, to, service, event)
-	// m.set(content)
-	// m.add(data)
-	// m.file(file)
-	// m.send()
+	headers := starlark_decode_strings(args[0])
+	if headers == nil {
+		return slapi_error("mochi.message.send() headers not specified or invalid")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error("mochi.message.send() no user")
+	}
+
+	db := db_open("db/users.db")
+	if !db.exists("select id from entities where id=? and user=?", headers["from"], user.ID) {
+		return slapi_error("mochi.message.send() invalid from header")
+	}
+
+	if !valid(headers["to"], "entity") {
+		return slapi_error("mochi.message.send() invalid to header")
+	}
+
+	if !valid(headers["service"], "constant") {
+		return slapi_error("mochi.message.send() invalid service header")
+	}
+
+	if !valid(headers["event"], "constant") {
+		return slapi_error("mochi.message.send() invalid eventheader")
+	}
+
+	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
+	if len(args) > 1 {
+		m.content = starlark_decode_strings(args[1])
+	}
+	m.send()
+
 	return sl.None, nil
 }
 
@@ -431,7 +459,6 @@ func slapi_time_local(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 }
 
 // Return the current Unix time
-// TODO Test
 func slapi_time_now(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return starlark_encode(now()), nil
 }

@@ -99,7 +99,7 @@ func (e *Event) route() {
 		defer func() {
 			r := recover()
 			if r != nil {
-				warn("Event handler crashed: %v\n\n%s", r, string(rd.Stack()))
+				warn("Event handler error: %v\n\n%s", r, string(rd.Stack()))
 			}
 		}()
 
@@ -120,6 +120,7 @@ func (e *Event) route() {
 			info("Event dropping broadcast '%s' to non-broadcast", e.id)
 			return
 		}
+
 		if e.to != "" && ev.Broadcast {
 			info("Event dropping non-broadcast '%s' to broadcast", e.id)
 			return
@@ -128,8 +129,21 @@ func (e *Event) route() {
 		s := a.starlark()
 		s.set("event", e)
 		s.set("app", a)
+		s.set("user", e.user)
 		s.set("owner", e.user)
-		s.call(ev.Function, e)
+
+		headers := map[string]string{
+			"id":      e.id,
+			"from":    e.from,
+			"to":      e.to,
+			"service": e.service,
+			"event":   e.event,
+		}
+
+		_, err := s.call(ev.Function, headers, e.content)
+		if err != nil {
+			info("Starlark event error: %v", err)
+		}
 
 	default:
 		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)

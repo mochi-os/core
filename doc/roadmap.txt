@@ -1,5 +1,13 @@
 0.2:
 	Separate apps from server
+		Notifications
+		Friends
+		Chat
+
+		Feeds
+		Forums
+
+		Install apps by default
 		Resource limits
 		Publishing
 		Updates

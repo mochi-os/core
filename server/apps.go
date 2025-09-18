@@ -62,10 +62,8 @@ type Icon struct {
 }
 
 type Path struct {
-	path string
-	app  *App
-	//TODO Remove engine field?
-	engine   string
+	path     string
+	app      *App
 	function string
 	public   bool
 	internal func(*Action)
@@ -209,7 +207,7 @@ func app_load(id string, version string) error {
 			if action != "" {
 				full = path + "/" + action
 			}
-			paths[full] = &Path{path: full, app: &a, engine: a.Engine.Architecture, function: ac.Function, public: ac.Public, internal: nil}
+			paths[full] = &Path{path: full, app: &a, function: ac.Function, public: ac.Public, internal: nil}
 		}
 	}
 
@@ -274,7 +272,7 @@ func (a *App) icon(path string, label string, name string, icon string) {
 }
 
 func (a *App) path(path string, f func(*Action)) {
-	paths[path] = &Path{path: path, app: a, engine: "internal", internal: f}
+	paths[path] = &Path{path: path, app: a, internal: f}
 }
 
 func (a *App) service(service string) {

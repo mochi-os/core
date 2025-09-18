@@ -218,7 +218,6 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 
 		_, err := s.call(p.function, fields, web_inputs(c))
-
 		if err != nil {
 			web_error(c, 500, "%v", err)
 		}

@@ -614,6 +614,7 @@ func forums_member_update_event(e *Event) {
 	var o ForumMember
 	if e.db.scan(&o, "select * from members where forum=? and id=?", e.from, e.user.Identity.ID) {
 		if role != o.Role {
+			/* notification() has been removed. When porting to Starlark, replace with service call
 			message := "An error occurred"
 			switch role {
 			case "disabled":
@@ -628,6 +629,7 @@ func forums_member_update_event(e *Event) {
 				message = "You are an administrator"
 			}
 			notification(e.user, "forums", "member/update", f.ID, "Forum "+f.Name+": "+message, "/forums/"+f.ID)
+			*/
 		}
 	}
 	e.db.exec("replace into members ( forum, id, role ) values ( ?, ?, ? )", e.from, e.user.Identity.ID, role)

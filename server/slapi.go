@@ -36,9 +36,6 @@ func init() {
 			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
 				"icons": sl.NewBuiltin("icons", slapi_apps_icons),
 			}),
-			"broadcast": sls.FromStringDict(sl.String("broadcast"), sl.StringDict{
-				"publish": sl.NewBuiltin("publish", slapi_broadcast_publish),
-			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"exists": sl.NewBuiltin("query", slapi_db_exists),
 				"query":  sl.NewBuiltin("query", slapi_db_query),
@@ -188,7 +185,7 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // Write data back to the caller of the action via websocket
 func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
+	//TODO slapi_action_websocket_write()
 	return sl.None, nil
 }
 
@@ -203,19 +200,13 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // Get attachments for an object
 func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
+	//TODO slapi_attachments_get()
 	return sl.None, nil
 }
 
 // Upload attachments for an object
 func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
-	return sl.None, nil
-}
-
-// Publish a broadcast to subscribing apps
-func slapi_broadcast_publish(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
+	//TODO slapi_attachments_put()
 	return sl.None, nil
 }
 
@@ -448,13 +439,13 @@ func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // Render markdown
 func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
+	//TODO slapi_text_markdown_render()
 	return sl.None, nil
 }
 
 // Return the local time in the user's time zone
 func slapi_time_local(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO
+	//TODO slapi_time_local()
 	return sl.None, nil
 }
 

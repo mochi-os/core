@@ -77,7 +77,6 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 	defer w.Close()
 
 	if len(*data) > 0 {
-		debug("Sending combined data segment")
 		_, err := w.Write(*data)
 		if err != nil {
 			debug("Error sending combined data segment: %v", err)
@@ -86,19 +85,17 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 	}
 
 	if file != "" {
-		debug("Sending file segment: %s", file)
 		f, err := os.Open(file)
 		if err != nil {
 			warn("Unable to read file '%s'", file)
 			return false
 		}
 		defer f.Close()
-		n, err := io.Copy(w, f)
+		_, err = io.Copy(w, f)
 		if err != nil {
 			debug("Error sending file segment: %v", err)
 			return false
 		}
-		debug("Finished sending file segment, length %d", n)
 	}
 
 	debug("Queued event sent")

@@ -259,7 +259,7 @@ func feeds_comment_create_event(e *Event) {
 	}
 
 	var c FeedComment
-	if !e.decode(&c) {
+	if !e.segment(&c) {
 		info("Feed dropping comment with invalid data")
 		return
 	}
@@ -302,7 +302,7 @@ func feeds_comment_submit_event(e *Event) {
 	}
 
 	var c FeedComment
-	if !e.decode(&c) {
+	if !e.segment(&c) {
 		info("Feed dropping comment with invalid data")
 		return
 	}
@@ -416,7 +416,7 @@ func feeds_comment_reaction_set(db *DB, c *FeedComment, subscriber string, name 
 // Received a feed comment reaction
 func feeds_comment_reaction_event(e *Event) {
 	var fr FeedReaction
-	if !e.decode(&fr) {
+	if !e.segment(&fr) {
 		info("Feed dropping comment reaction with invalid data")
 		return
 	}
@@ -576,7 +576,7 @@ func feeds_post_create_event(e *Event) {
 	}
 
 	var p FeedPost
-	if !e.decode(&p) {
+	if !e.segment(&p) {
 		info("Feed dropping post with invalid data")
 		return
 	}
@@ -668,7 +668,7 @@ func feeds_post_reaction_set(db *DB, p *FeedPost, subscriber string, name string
 // Received a feed post reaction
 func feeds_post_reaction_event(e *Event) {
 	var fr FeedReaction
-	if !e.decode(&fr) {
+	if !e.segment(&fr) {
 		info("Feed dropping post reaction with invalid data")
 		return
 	}

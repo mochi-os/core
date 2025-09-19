@@ -43,6 +43,9 @@ func init() {
 			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
 				"search": sl.NewBuiltin("search", slapi_directory_search),
 			}),
+			"event": sls.FromStringDict(sl.String("event"), sl.StringDict{
+				"segment": sl.NewBuiltin("search", slapi_event_segment),
+			}),
 			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
 				"send": sl.NewBuiltin("search", slapi_message_send),
 			}),
@@ -53,6 +56,7 @@ func init() {
 				"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
 					"render": sl.NewBuiltin("render", slapi_text_markdown_render),
 				}),
+				"uid":   sl.NewBuiltin("uid", slapi_text_uid),
 				"valid": sl.NewBuiltin("valid", slapi_text_valid),
 			}),
 			"time": sls.FromStringDict(sl.String("time"), sl.StringDict{
@@ -69,17 +73,17 @@ func init() {
 
 // Dump the variables passed for debugging
 func slapi_action_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return slapi_error("mochi.action.dump() called from non-action")
-	}
-
 	var vars []any
 	for _, v := range args {
 		vars = append(vars, starlark_decode(v))
 	}
+	debug("mochi.action.dump(): %+v", vars)
 
-	a.dump(vars)
+	a := t.Local("action").(*Action)
+	if a != nil {
+		a.dump(vars)
+	}
+
 	return sl.None, nil
 }
 
@@ -316,10 +320,35 @@ func slapi_error(format string, values ...any) (sl.Value, error) {
 	return sl.None, error_message(format, values...)
 }
 
+// Decode the next segment of an event
+func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	debug("mochi.event.segment() decoding segment")
+	if len(args) != 1 {
+		return slapi_error("mochi.event.segment() syntax: <v: variable of type to return>")
+	}
+
+	v := starlark_decode(args[0])
+	if v == nil {
+		return slapi_error("mochi.service.call() invalid type")
+	}
+
+	e := t.Local("event").(*Event)
+	if e == nil {
+		return slapi_error("mochi.event.segment() called from non-event")
+	}
+
+	err := e.decoder.Decode(&v)
+	if err != nil {
+		return nil, err
+	}
+	debug("mochi.event.segment() returning: %#v", v)
+	return starlark_encode(v), nil
+}
+
 // Send a message
 func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary]")
+	if len(args) < 1 || len(args) > 3 {
+		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary] [data: bytes]")
 	}
 
 	headers := starlark_decode_strings(args[0])
@@ -351,10 +380,16 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 	if len(args) > 1 {
+		debug("mochi.message.send() content: %+v", starlark_decode_strings(args[1]))
 		m.content = starlark_decode_strings(args[1])
 	}
-	m.send()
 
+	if len(args) > 2 {
+		debug("mochi.message.send() adding segment: %#v", starlark_decode(args[2]))
+		m.add(starlark_decode(args[2]))
+	}
+
+	m.send()
 	return sl.None, nil
 }
 
@@ -417,6 +452,18 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return result, err
 }
 
+// Render markdown
+func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	//TODO slapi_text_markdown_render()
+	return sl.None, nil
+}
+
+// Get a UID
+// TODO Test
+func slapi_text_uid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return starlark_encode(uid()), nil
+}
+
 // Check if a string is valid
 func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
@@ -434,12 +481,6 @@ func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	return starlark_encode(valid(s, match)), nil
-}
-
-// Render markdown
-func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_text_markdown_render()
-	return sl.None, nil
 }
 
 // Return the local time in the user's time zone

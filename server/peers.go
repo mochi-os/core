@@ -180,7 +180,6 @@ func peer_discovered_work(id string, address string) {
 	peers_lock.Unlock()
 
 	if found {
-		debug("Peer '%s' rediscovered at '%s'", id, address)
 		exists := false
 		for _, a := range p.addresses {
 			if a == address {
@@ -197,14 +196,12 @@ func peer_discovered_work(id string, address string) {
 		}
 
 	} else {
-		debug("Peer '%s' discovered at '%s'", id, address)
 		p = Peer{ID: id, addresses: []string{address}}
 		save = true
 	}
 
 	if save {
 		db := db_open("db/peers.db")
-		debug("Peer saving in database: '%s' at '%s'", id, address)
 		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
 		p.Updated = now
 	}

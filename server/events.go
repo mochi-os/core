@@ -24,7 +24,7 @@ type Event struct {
 }
 
 // Decode the next segment from a received event
-func (e *Event) decode(v any) bool {
+func (e *Event) segment(v any) bool {
 	err := e.decoder.Decode(v)
 	if err != nil {
 		info("Event '%s' unable to decode segment: %v", e.id, err)

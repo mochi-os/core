@@ -253,7 +253,7 @@ func forums_comment_create_event(e *Event) {
 	}
 
 	var c ForumComment
-	if !e.decode(&c) {
+	if !e.segment(&c) {
 		info("Forum dropping comment with invalid data")
 		return
 	}
@@ -296,7 +296,7 @@ func forums_comment_submit_event(e *Event) {
 	}
 
 	var c ForumComment
-	if !e.decode(&c) {
+	if !e.segment(&c) {
 		info("Forum dropping comment with invalid data")
 		return
 	}
@@ -363,7 +363,7 @@ func forums_comment_update_event(e *Event) {
 	debug("Forum receieved comment update event '%+v'", e)
 
 	var c ForumComment
-	if !e.decode(&c) {
+	if !e.segment(&c) {
 		info("Forum dropping comment update with invalid data")
 		return
 	}
@@ -451,7 +451,7 @@ func forums_comment_vote_set(db *DB, c *ForumComment, voter string, vote string)
 // Received a forum comment vote from a member
 func forums_comment_vote_event(e *Event) {
 	var v ForumVote
-	if !e.decode(&v) {
+	if !e.segment(&v) {
 		info("Forum dropping comment vote with invalid data")
 		return
 	}
@@ -705,7 +705,7 @@ func forums_post_create_event(e *Event) {
 	}
 
 	var p ForumPost
-	if !e.decode(&p) {
+	if !e.segment(&p) {
 		info("Forum dropping post with invalid data")
 		return
 	}
@@ -772,7 +772,7 @@ func forums_post_submit_event(e *Event) {
 	}
 
 	var p ForumPost
-	if !e.decode(&p) {
+	if !e.segment(&p) {
 		info("Forum dropping post with invalid data")
 		return
 	}
@@ -824,7 +824,7 @@ func forums_post_submit_event(e *Event) {
 // Received a forum post update event
 func forums_post_update_event(e *Event) {
 	var p ForumPost
-	if !e.decode(&p) {
+	if !e.segment(&p) {
 		info("Forum dropping post update with invalid data")
 		return
 	}
@@ -942,7 +942,7 @@ func forums_post_vote_set(db *DB, p *ForumPost, voter string, vote string) {
 // Received a forum post vote from a member
 func forums_post_vote_event(e *Event) {
 	var v ForumVote
-	if !e.decode(&v) {
+	if !e.segment(&v) {
 		info("Forum dropping post vote with invalid data")
 		return
 	}

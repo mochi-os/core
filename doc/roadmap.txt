@@ -1,7 +1,6 @@
 0.2:
 	Separate apps from server
 		Notifications
-		Friends
 		Chat
 
 		Feeds
@@ -21,6 +20,7 @@
 
 	User management
 	Users can change their settings
+		View identity and fingerprint
 	Users can create hooks to control events using their own code
 		Starlark
 		HTTPS

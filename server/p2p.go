@@ -35,7 +35,7 @@ var (
 // Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		debug("P2P received multicast DNS peer event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		debug("P2P received mDNS event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_discovered_address(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_connect(p.ID.String())
 	}

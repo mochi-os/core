@@ -123,6 +123,13 @@ func starlark_encode(v any) sl.Value {
 	case bool:
 		return sl.Bool(x)
 
+	case map[any]any:
+		d := sl.NewDict(len(x))
+		for i, v := range x {
+			d.SetKey(starlark_encode(i), starlark_encode(v))
+		}
+		return d
+
 	case map[string]any:
 		d := sl.NewDict(len(x))
 		for i, v := range x {
@@ -136,6 +143,13 @@ func starlark_encode(v any) sl.Value {
 			d.SetKey(sl.String(i), sl.String(v))
 		}
 		return d
+
+	case []any:
+		var t []sl.Value
+		for _, r := range x {
+			t = append(t, starlark_encode(r))
+		}
+		return sl.Tuple(t)
 
 	case []map[string]string:
 		var t []sl.Value

@@ -323,20 +323,12 @@ func slapi_error(format string, values ...any) (sl.Value, error) {
 // Decode the next segment of an event
 func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	debug("mochi.event.segment() decoding segment")
-	if len(args) != 1 {
-		return slapi_error("mochi.event.segment() syntax: <v: variable of type to return>")
-	}
-
-	v := starlark_decode(args[0])
-	if v == nil {
-		return slapi_error("mochi.service.call() invalid type")
-	}
-
 	e := t.Local("event").(*Event)
 	if e == nil {
 		return slapi_error("mochi.event.segment() called from non-event")
 	}
 
+	var v any
 	err := e.decoder.Decode(&v)
 	if err != nil {
 		return nil, err
@@ -459,7 +451,6 @@ func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwar
 }
 
 // Get a UID
-// TODO Test
 func slapi_text_uid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return starlark_encode(uid()), nil
 }

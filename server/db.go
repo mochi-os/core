@@ -114,6 +114,7 @@ func db_app(u *User, a *App) *DB {
 		db.user = u
 		s := a.starlark()
 		s.set("app", a)
+		s.set("user", u)
 		s.set("owner", u)
 		version_var, _ := s.call(a.Database.Create, nil)
 		version := s.int(version_var)

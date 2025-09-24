@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	sl "go.starlark.net/starlark"
+	"reflect"
 )
 
 type Starlark struct {
@@ -165,6 +166,13 @@ func starlark_encode(v any) sl.Value {
 		}
 		return sl.Tuple(t)
 
+	case *[]Attachment:
+		var t []sl.Value
+		for _, r := range *x {
+			t = append(t, starlark_encode_struct(r))
+		}
+		return sl.Tuple(t)
+
 	case sl.Tuple:
 		return x
 
@@ -172,6 +180,25 @@ func starlark_encode(v any) sl.Value {
 		warn("Starlark encode unknown type '%T'", v)
 		return nil
 	}
+}
+
+// Convert any struct or *struct to a Starlark value
+func starlark_encode_struct(v any) sl.Value {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		warn("Starlark encode struct called with non-struct")
+		return nil
+	}
+
+	rt := rv.Type()
+	d := sl.NewDict(rv.NumField())
+	for i := 0; i < rv.NumField(); i++ {
+		d.SetKey(sl.String(rt.Field(i).Name), starlark_encode(rv.Field(i)))
+	}
+	return d
 }
 
 // Convert one or more Go variables to a Starlark tuple

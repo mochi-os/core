@@ -1,7 +1,7 @@
 0.2:
 	Separate apps from server
-		Notifications
 		Chat
+			Reconnect to websocket
 
 		Feeds
 		Forums

@@ -139,7 +139,7 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	path, ok := sl.AsString(args[0])
-	if !ok || !valid(path, "path") {
+	if !ok || (path != "" && !valid(path, "path")) {
 		return slapi_error("mochi.action.write() invalid template file '%s'", path)
 	}
 
@@ -158,7 +158,8 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 		if len(args) < 3 {
 			return slapi_error("mochi.action.write() JSON called without data")
 		}
-		a.json(args[2])
+		debug("Writing JSON for: %#v", starlark_decode(args[2]))
+		a.json(starlark_decode(args[2]))
 
 	default:
 		// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
@@ -189,7 +190,21 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // Write data back to the caller of the action via websocket
 func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_action_websocket_write()
+	if len(args) != 2 {
+		return slapi_error("mochi.action.websocket.write() syntax: <app: string> <content: any>")
+	}
+
+	app, ok := sl.AsString(args[0])
+	if !ok || !valid(app, "constant") {
+		return slapi_error("mochi.action.websocket.write() invalid app '%s'", app)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error("mochi.action.websocket.write() no user")
+	}
+
+	websockets_send(user, app, starlark_decode(args[1]))
 	return sl.None, nil
 }
 
@@ -210,8 +225,33 @@ func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 
 // Upload attachments for an object
 func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_attachments_put()
-	return sl.None, nil
+	if len(args) < 4 {
+		return slapi_error("mochi.attachments.put() syntax: <field: string> <entity: string> <object: string> <save locally: boolean>")
+	}
+
+	field, ok := sl.AsString(args[0])
+	if !ok || !valid(field, "constant") {
+		return slapi_error("mochi.attachments.put() invalid field '%s'", field)
+	}
+
+	entity, ok := sl.AsString(args[1])
+	if !ok || !valid(entity, "entity") {
+		return slapi_error("mochi.attachments.put() invalid entity '%s'", entity)
+	}
+
+	object, ok := sl.AsString(args[2])
+	if !ok || !valid(object, "path") {
+		return slapi_error("mochi.attachments.put() invalid object '%s'", object)
+	}
+
+	local := bool(args[3].Truth())
+
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return slapi_error("mochi.attachments.put() called from non-action")
+	}
+
+	return starlark_encode(a.upload_attachments(field, entity, object, local)), nil
 }
 
 // Check if database row exists

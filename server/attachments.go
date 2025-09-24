@@ -378,8 +378,7 @@ func attachments_send_event_work(e *Event, thumbnail bool) {
 }
 
 // Get list of uploaded attachments, save them, and optionally save their data
-func (a *Action) upload_attachments(field string, entity string, local bool, format string, values ...any) *[]Attachment {
-	object := fmt.Sprintf(format, values...)
+func (a *Action) upload_attachments(field string, entity string, object string, local bool) *[]Attachment {
 	db := db_user(a.user, "attachments/attachments.db", attachments_db_create)
 	defer db.close()
 

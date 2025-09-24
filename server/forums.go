@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
 )
 
@@ -678,7 +679,7 @@ func forums_post_create(a *Action) {
 
 	if f.Entity != nil {
 		// We are the forum owner, so send to all members except us
-		attachments := a.upload_attachments("attachments", f.ID, true, "forums/%s/%s", f.ID, post)
+		attachments := a.upload_attachments("attachments", f.ID, fmt.Sprintf("forums/%s/%s", f.ID, post), true)
 		var ms []ForumMember
 		a.user.db.scans(&ms, "select * from members where forum=? and role!='disabled'", f.ID)
 		for _, m := range ms {
@@ -689,7 +690,7 @@ func forums_post_create(a *Action) {
 
 	} else {
 		// We are not forum owner, so send to the owner
-		attachments := a.upload_attachments("attachments", f.ID, false, "forums/%s/%s", f.ID, post)
+		attachments := a.upload_attachments("attachments", f.ID, fmt.Sprintf("forums/%s/%s", f.ID, post), false)
 		message(a.user.Identity.ID, f.ID, "forums", "post/submit").add(ForumPost{ID: post, Title: title, Body: body, Attachments: attachments}).send()
 	}
 

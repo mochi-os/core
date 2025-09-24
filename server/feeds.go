@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
 )
 
@@ -556,7 +557,7 @@ func feeds_post_create(a *Action) {
 
 	a.user.db.exec("replace into posts ( id, feed, body, created, updated ) values ( ?, ?, ?, ?, ? )", post, f.ID, body, now, now)
 	a.user.db.exec("update feeds set updated=? where id=?", now, f.ID)
-	attachments := a.upload_attachments("attachments", f.ID, true, "feeds/%s/%s", f.ID, post)
+	attachments := a.upload_attachments("attachments", f.ID, fmt.Sprintf("feeds/%s/%s", f.ID, post), true)
 
 	var ss []FeedSubscriber
 	a.user.db.scans(&ss, "select * from subscribers where feed=? and id!=?", f.ID, a.user.Identity.ID)

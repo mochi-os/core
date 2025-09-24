@@ -258,7 +258,8 @@ func (db *DB) maps(query string, values ...any) *[]map[string]any {
 		if err == sql.ErrNoRows {
 			return &results
 		}
-		panic(err)
+		info("DB maps error: %v", err)
+		return nil
 	}
 	defer r.Close()
 
@@ -266,7 +267,8 @@ func (db *DB) maps(query string, values ...any) *[]map[string]any {
 		row := make(map[string]any)
 		err = r.MapScan(row)
 		if err != nil {
-			panic(err)
+			info("DB maps error: %v", err)
+			return nil
 		}
 
 		for i, v := range row {
@@ -288,7 +290,8 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 		if err == sql.ErrNoRows {
 			return false
 		}
-		panic(err)
+		info("DB scan error: %v", err)
+		return false
 	}
 	return true
 }

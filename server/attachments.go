@@ -12,16 +12,16 @@ import (
 )
 
 type Attachment struct {
-	Entity  string `cbor:"entity,omitempty" json:"entity"`
-	ID      string `cbor:"id" json:"id"`
-	Object  string `cbor:"object,omitempty" json:"object"`
-	Rank    int    `cbor:"rank,omitempty" json:"rank"`
-	Name    string `cbor:"name,omitempty" json:"name"`
-	Path    string `cbor:"-" json:"-"`
-	Size    int64  `cbor:"size,omitempty" json:"size"`
-	Created int64  `cbor:"-" json:"created"`
-	Image   bool   `cbor:"image,omitempty" json:"image"`
-	Data    []byte `cbor:"-" json:"-"`
+	Entity  string `cbor:"entity,omitempty" json:"entity" map:"-"`
+	ID      string `cbor:"id" json:"id" map:"id"`
+	Object  string `cbor:"object,omitempty" json:"object" map:"object"`
+	Rank    int    `cbor:"rank,omitempty" json:"rank" map:"rank"`
+	Name    string `cbor:"name,omitempty" json:"name" map:"name"`
+	Path    string `cbor:"-" json:"-" map:"-"`
+	Size    int64  `cbor:"size,omitempty" json:"size" map:"size"`
+	Created int64  `cbor:"-" json:"created" map:"created"`
+	Image   bool   `cbor:"image,omitempty" json:"image" map:"image"`
+	Data    []byte `cbor:"-" json:"-" map:"-"`
 }
 
 type AttachmentRequest struct {

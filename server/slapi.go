@@ -9,7 +9,6 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
 	"maps"
-	"reflect"
 	"slices"
 )
 
@@ -21,57 +20,58 @@ func init() {
 	slapi = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"action": sls.FromStringDict(sl.String("action"), sl.StringDict{
-				"dump":     sl.NewBuiltin("dump", slapi_action_dump),
-				"error":    sl.NewBuiltin("error", slapi_action_error),
-				"redirect": sl.NewBuiltin("redirect", slapi_action_redirect),
+				"dump":     sl.NewBuiltin("mochi.action.dump", slapi_action_dump),
+				"error":    sl.NewBuiltin("mochi.action.error", slapi_action_error),
+				"redirect": sl.NewBuiltin("mochi.action.redirect", slapi_action_redirect),
 				"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
-					"write": sl.NewBuiltin("write", slapi_action_websocket_write),
+					"write": sl.NewBuiltin("mochi.action.websocket.write", slapi_action_websocket_write),
 				}),
 				"write": sl.NewBuiltin("write", slapi_action_write),
 			}),
 			"attachments": sls.FromStringDict(sl.String("attachments"), sl.StringDict{
-				"get":  sl.NewBuiltin("get", slapi_attachments_get),
-				"put":  sl.NewBuiltin("put", slapi_attachments_put),
-				"save": sl.NewBuiltin("save", slapi_attachments_save),
+				"get":  sl.NewBuiltin("mochi.attachments.get", slapi_attachments_get),
+				"put":  sl.NewBuiltin("mochi.attachments.put", slapi_attachments_put),
+				"save": sl.NewBuiltin("mochi.attachments.save", slapi_attachments_save),
 			}),
 			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
-				"icons": sl.NewBuiltin("icons", slapi_apps_icons),
+				"icons": sl.NewBuiltin("mochi.apps.icons", slapi_apps_icons),
 			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
-				"exists": sl.NewBuiltin("query", slapi_db_exists),
-				"query":  sl.NewBuiltin("query", slapi_db_query),
+				"exists": sl.NewBuiltin("mochi.db.exists", slapi_db_query),
+				"query":  sl.NewBuiltin("mochi.db.query", slapi_db_query),
+				"row":    sl.NewBuiltin("mochi.db.row", slapi_db_query),
 			}),
 			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
-				"search": sl.NewBuiltin("search", slapi_directory_search),
+				"search": sl.NewBuiltin("mochi.directory.search", slapi_directory_search),
 			}),
 			"event": sls.FromStringDict(sl.String("event"), sl.StringDict{
-				"segment": sl.NewBuiltin("search", slapi_event_segment),
+				"segment": sl.NewBuiltin("mochi.event.segment", slapi_event_segment),
 			}),
 			"log": sls.FromStringDict(sl.String("log"), sl.StringDict{
-				"debug": sl.NewBuiltin("debug", slapi_log),
-				"info":  sl.NewBuiltin("info", slapi_log),
-				"warn":  sl.NewBuiltin("warn", slapi_log),
+				"debug": sl.NewBuiltin("mochi.log.debug", slapi_log),
+				"info":  sl.NewBuiltin("mochi.log.info", slapi_log),
+				"warn":  sl.NewBuiltin("mochi.log.warn", slapi_log),
 			}),
 			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
-				"send": sl.NewBuiltin("search", slapi_message_send),
+				"send": sl.NewBuiltin("mochi.message.send", slapi_message_send),
 			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
-				"call": sl.NewBuiltin("call", slapi_service_call),
+				"call": sl.NewBuiltin("mochi.service.call", slapi_service_call),
 			}),
 			"text": sls.FromStringDict(sl.String("text"), sl.StringDict{
 				"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
-					"render": sl.NewBuiltin("render", slapi_text_markdown_render),
+					"render": sl.NewBuiltin("mochi.text.markdown.render", slapi_text_markdown_render),
 				}),
-				"uid":   sl.NewBuiltin("uid", slapi_text_uid),
-				"valid": sl.NewBuiltin("valid", slapi_text_valid),
+				"uid":   sl.NewBuiltin("mochi.text.uid", slapi_text_uid),
+				"valid": sl.NewBuiltin("mochi.text.valid", slapi_text_valid),
 			}),
 			"time": sls.FromStringDict(sl.String("time"), sl.StringDict{
-				"local": sl.NewBuiltin("local", slapi_time_local),
-				"now":   sl.NewBuiltin("local", slapi_time_now),
+				"local": sl.NewBuiltin("mochi.time.local", slapi_time_local),
+				"now":   sl.NewBuiltin("mochi.time.now", slapi_time_now),
 			}),
 			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
-				"get":    sl.NewBuiltin("get", slapi_user_get),
-				"logout": sl.NewBuiltin("logout", slapi_user_logout),
+				"get":    sl.NewBuiltin("mochi.user.get", slapi_user_get),
+				"logout": sl.NewBuiltin("mochi.user.logout", slapi_user_logout),
 			}),
 		}),
 	}
@@ -303,34 +303,6 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.None, nil
 }
 
-// Check if database row exists
-func slapi_db_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 {
-		return slapi_error(f, "syntax: <SQL statement: string> [parameters: strings, variadic]")
-	}
-
-	query, ok := sl.AsString(args[0])
-	if !ok {
-		return slapi_error(f, "invalid SQL statement '%s'", query)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return slapi_error(f, "no user")
-	}
-
-	app := t.Local("app").(*App)
-	if app == nil {
-		return slapi_error(f, "unknown app")
-	}
-
-	db := db_app(user, app)
-	if db.exists(query, starlark_decode(args[1:]).([]any)...) {
-		return sl.True, nil
-	}
-	return sl.False, nil
-}
-
 // General database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
@@ -342,6 +314,9 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return slapi_error(f, "invalid SQL statement '%s'", query)
 	}
 
+	as := starlark_decode(args[1:]).([]any)
+	debug("%s '%s' '%+v'", f.Name(), query, as)
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return slapi_error(f, "no user")
@@ -353,7 +328,22 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(user, app)
-	return starlark_encode(db.maps(query, starlark_decode(args[1:]).([]any)...)), nil
+
+	switch f.Name() {
+	case "mochi.db.exists":
+		if db.exists(query, as...) {
+			return sl.True, nil
+		}
+		return sl.False, nil
+
+	case "mochi.db.row":
+		return starlark_encode(db.row(query, as...)), nil
+
+	case "mochi.db.query":
+		return starlark_encode(db.rows(query, as...)), nil
+	}
+
+	return slapi_error(f, "invalid database query '%s'", f.Name())
 }
 
 // Directory search
@@ -376,9 +366,9 @@ func slapi_directory_search(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 	u := t.Local("user").(*User)
 
 	db := db_open("db/directory.db")
-	ds := db.maps("select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
+	ds := db.rows("select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
 
-	for _, d := range *ds {
+	for _, d := range ds {
 		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
 	}
 
@@ -395,7 +385,7 @@ func slapi_directory_search(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	var o []map[string]any
-	for _, d := range *ds {
+	for _, d := range ds {
 		_, found := me[d["id"].(string)]
 		if !found {
 			o = append(o, d)
@@ -454,13 +444,13 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 	}
 
 	switch f.Name() {
-	case "debug":
+	case "mochi.log.debug":
 		debug(format, values...)
 
-	case "info":
+	case "mochi.log.info":
 		info(format, values...)
 
-	case "warn":
+	case "mochi.log.warn":
 		warn(format, values...)
 	}
 
@@ -561,7 +551,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.Name, service, function, args[2:])
+	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.Name, service, function, args[2:])
 	var result sl.Value
 	var err error
 	if len(args) > 2 {
@@ -569,7 +559,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	} else {
 		result, err = s.call(fn.Function, nil)
 	}
-	debug("mochi.service.call() got result (type %s): %+v", reflect.TypeOf(result), result)
+	//debug("mochi.service.call() got result '%+v', type %T", result, result)
 
 	return result, err
 }

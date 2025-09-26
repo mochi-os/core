@@ -167,7 +167,12 @@ func structs_to_maps[T any](v []T) *[]map[string]any {
 			m := make(map[string]any)
 			for i := 0; i < sv.NumField(); i++ {
 				f := st.Field(i)
-				m[strings.ToLower(f.Name)] = sv.Field(i).Interface()
+				name := strings.ToLower(f.Name)
+				tag := f.Tag.Get("map")
+				if tag != "" && tag != "-" {
+					name = tag
+				}
+				m[name] = sv.Field(i).Interface()
 			}
 			result = append(result, m)
 		}

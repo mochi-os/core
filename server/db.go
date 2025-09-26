@@ -250,13 +250,45 @@ func (db *DB) integer(query string, values ...any) int {
 	return result
 }
 
-func (db *DB) maps(query string, values ...any) *[]map[string]any {
+func (db *DB) row(query string, values ...any) map[string]any {
+	r, err := db.handle.Queryx(query, values...)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		info("DB map error: %v", err)
+		return nil
+	}
+	defer r.Close()
+
+	for r.Next() {
+		row := make(map[string]any)
+		err = r.MapScan(row)
+		if err != nil {
+			info("DB maps error: %v", err)
+			return nil
+		}
+
+		for i, v := range row {
+			bytes, ok := v.([]byte)
+			if ok {
+				row[i] = string(bytes)
+			}
+		}
+
+		return row
+	}
+
+	return nil
+}
+
+func (db *DB) rows(query string, values ...any) []map[string]any {
 	var results []map[string]any
 
 	r, err := db.handle.Queryx(query, values...)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return &results
+			return results
 		}
 		info("DB maps error: %v", err)
 		return nil
@@ -281,7 +313,7 @@ func (db *DB) maps(query string, values ...any) *[]map[string]any {
 		results = append(results, row)
 	}
 
-	return &results
+	return results
 }
 
 func (db *DB) scan(out any, query string, values ...any) bool {

@@ -71,9 +71,13 @@ func starlark_decode(value sl.Value) any {
 		return out
 
 	case *sl.Dict:
-		out := make(map[string]any)
+		out := make(map[string]any, v.Len())
 		for _, i := range v.Items() {
-			out[starlark_decode_string(i[0])] = starlark_decode(i[1])
+			key, ok := sl.AsString(i[0])
+			if !ok {
+				continue
+			}
+			out[key] = starlark_decode(i[1])
 		}
 		return out
 
@@ -83,22 +87,39 @@ func starlark_decode(value sl.Value) any {
 	}
 }
 
-// Decode a single Starlark value to a string
-func starlark_decode_string(value sl.Value) string {
-	//debug("Decoding to string '%+v'", value)
-	s, ok := sl.AsString(value)
-	if ok {
-		return s
+// Decode Starlark value to a string
+func starlark_decode_string(value any) string {
+	//debug("Decoding to string '%v', type %T", value, value)
+	switch v := value.(type) {
+	case []any:
+		return ""
+
+	case sl.Int:
+		var i int
+		err := sl.AsInt(v, &i)
+		if err == nil {
+			return itoa(i)
+		}
+		return ""
+
+	case sl.Value:
+		s, ok := sl.AsString(v)
+		if ok {
+			return s
+		}
+		return ""
+
+	default:
+		return fmt.Sprint(v)
 	}
-	return fmt.Sprint(value)
 }
 
 // Decode a single Starlark value to a map of strings to strings
 func starlark_decode_strings(value any) map[string]string {
-	//debug("Decoding to strings '%+v'", value)
+	//debug("Decoding to strings '%#v'", value)
 	switch v := value.(type) {
 	case *sl.Dict:
-		out := make(map[string]string)
+		out := make(map[string]string, v.Len())
 		for _, i := range v.Items() {
 			out[starlark_decode_string(i[0])] = starlark_decode_string(i[1])
 		}
@@ -192,6 +213,13 @@ func starlark_encode(v any) sl.Value {
 		}
 		return sl.Tuple(t)
 
+	case []map[string]any:
+		t := make([]sl.Value, len(x))
+		for i, r := range x {
+			t[i] = starlark_encode(r)
+		}
+		return sl.Tuple(t)
+
 	case *[]map[string]any:
 		t := make([]sl.Value, len(*x))
 		for i, r := range *x {
@@ -232,7 +260,12 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	if err == nil {
 		debug("Starlark finished")
 	} else {
-		debug("Starlark error: %v", err)
+		a, ok := s.thread.Local("app").(*App)
+		if a == nil {
+			debug("%s(): %v", function, err)
+		} else if ok {
+			debug("App %s:%s() %v", a.Name, function, err)
+		}
 	}
 	return result, err
 }

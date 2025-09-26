@@ -99,7 +99,7 @@ func (m *Message) add(v any) *Message {
 
 // Publish an message to a pubsub
 func (m *Message) publish(allow_queue bool) {
-	debug("Message publishing: from='%s', to='%s', service='%s', event='%s'", m.From, m.To, m.Service, m.Event)
+	debug("Message publishing: id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
 	m.Signature = m.signature()
 	data := cbor_encode(&m)
 	data = append(data, cbor_encode(m.content)...)
@@ -131,7 +131,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event)
+	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content)
 
 	failed := false
 	w := peer_writer(peer)

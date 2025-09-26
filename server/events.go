@@ -43,7 +43,6 @@ func (e *Event) get(field string, def string) string {
 }
 
 // Route a received event to the correct app
-// TODO Lock app for user
 func (e *Event) route() {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)

@@ -66,8 +66,7 @@ func attachments_db_create(db *DB) {
 }
 
 // Get list of attachments for an object
-func attachments(u *User, format string, values ...any) *[]Attachment {
-	object := fmt.Sprintf(format, values...)
+func attachments(u *User, object string) *[]Attachment {
 	db := db_user(u, "attachments/attachments.db", attachments_db_create)
 	defer db.close()
 

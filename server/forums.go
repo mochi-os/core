@@ -868,7 +868,7 @@ func forums_post_view(a *Action) {
 		return
 	}
 
-	a.template("forums/post/view", a.input("format"), Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, "forums/%s/%s", f.ID, p.ID), "Comments": forum_comments(a.owner, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
+	a.template("forums/post/view", a.input("format"), Map{"Forum": f, "Post": &p, "Attachments": attachments(a.owner, fmt.Sprintf("forums/%s/%s", f.ID, p.ID)), "Comments": forum_comments(a.owner, f, m, &p, nil, 0), "RoleVoter": forum_role(m, "voter"), "RoleCommenter": forum_role(m, "commenter")})
 }
 
 // Vote on a post
@@ -1021,7 +1021,7 @@ func forum_send_recent_posts(u *User, db *DB, f *Forum, member string) {
 	var ps []ForumPost
 	db.scans(&ps, "select * from posts where forum=? order by updated desc limit 1000", f.ID)
 	for _, p := range ps {
-		p.Attachments = attachments(u, "forums/%s/%s", f.ID, p.ID)
+		p.Attachments = attachments(u, fmt.Sprintf("forums/%s/%s", f.ID, p.ID))
 		message(f.ID, member, "forums", "post/create").add(p).send()
 	}
 
@@ -1208,7 +1208,7 @@ func forums_view(a *Action) {
 		}
 		ps[i].BodyMarkdown = web_markdown(p.Body)
 		ps[i].CreatedString = time_local(a.user, p.Created)
-		ps[i].Attachments = attachments(a.owner, "forums/%s/%s", p.Forum, p.ID)
+		ps[i].Attachments = attachments(a.owner, fmt.Sprintf("forums/%s/%s", p.Forum, p.ID))
 	}
 
 	var fs []Forum

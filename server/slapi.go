@@ -30,8 +30,9 @@ func init() {
 				"write": sl.NewBuiltin("write", slapi_action_write),
 			}),
 			"attachments": sls.FromStringDict(sl.String("attachments"), sl.StringDict{
-				"get": sl.NewBuiltin("get", slapi_attachments_get),
-				"put": sl.NewBuiltin("put", slapi_attachments_put),
+				"get":  sl.NewBuiltin("get", slapi_attachments_get),
+				"put":  sl.NewBuiltin("put", slapi_attachments_put),
+				"save": sl.NewBuiltin("save", slapi_attachments_save),
 			}),
 			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
 				"icons": sl.NewBuiltin("icons", slapi_apps_icons),
@@ -219,14 +220,27 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // Get attachments for an object
 func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_attachments_get()
-	return sl.None, nil
+	if len(args) != 1 {
+		return slapi_error("mochi.attachments.get() syntax: <object: string>")
+	}
+
+	object, ok := sl.AsString(args[0])
+	if !ok || !valid(object, "path") {
+		return slapi_error("mochi.attachments.get() invalid object '%s'", object)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error("mochi.attachments.get() not logged in")
+	}
+
+	return starlark_encode(attachments(user, object)), nil
 }
 
 // Upload attachments for an object
 func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 4 {
-		return slapi_error("mochi.attachments.put() syntax: <field: string> <entity: string> <object: string> <save locally: boolean>")
+	if len(args) != 4 {
+		return slapi_error("mochi.attachments.put() syntax: <field: string> <object: string> <entity: string> <save locally: boolean>")
 	}
 
 	field, ok := sl.AsString(args[0])
@@ -234,14 +248,14 @@ func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 		return slapi_error("mochi.attachments.put() invalid field '%s'", field)
 	}
 
-	entity, ok := sl.AsString(args[1])
-	if !ok || !valid(entity, "entity") {
-		return slapi_error("mochi.attachments.put() invalid entity '%s'", entity)
-	}
-
-	object, ok := sl.AsString(args[2])
+	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
 		return slapi_error("mochi.attachments.put() invalid object '%s'", object)
+	}
+
+	entity, ok := sl.AsString(args[2])
+	if !ok || !valid(entity, "entity") {
+		return slapi_error("mochi.attachments.put() invalid entity '%s'", entity)
 	}
 
 	local := bool(args[3].Truth())
@@ -251,7 +265,39 @@ func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 		return slapi_error("mochi.attachments.put() called from non-action")
 	}
 
-	return starlark_encode(a.upload_attachments(field, entity, object, local)), nil
+	attachments := a.upload_attachments(field, entity, object, local)
+	return starlark_encode(structs_to_maps(*attachments)), nil
+}
+
+// Save attachments
+func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 3 {
+		return slapi_error("mochi.event.attachments() syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
+	}
+
+	attachments, ok := starlark_decode(args[0]).([]Attachment)
+	if !ok {
+		return sl.None, nil
+	}
+	debug("slapi_attachments_save() got: %+v", attachments)
+
+	object, ok := sl.AsString(args[1])
+	if !ok || !valid(object, "path") {
+		return slapi_error("mochi.attachments.save() invalid object '%s'", object)
+	}
+
+	entity, ok := sl.AsString(args[2])
+	if !ok || !valid(entity, "entity") {
+		return slapi_error("mochi.attachments.save() invalid entity '%s'", entity)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error("mochi.attachments.save() not logged in")
+	}
+
+	attachments_save(&attachments, user, entity, object)
+	return sl.None, nil
 }
 
 // Check if database row exists

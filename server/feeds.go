@@ -749,7 +749,7 @@ func feed_send_recent_posts(u *User, db *DB, f *Feed, subscriber string) {
 	var ps []FeedPost
 	db.scans(&ps, "select * from posts where feed=? order by created desc limit 1000", f.ID)
 	for _, p := range ps {
-		p.Attachments = attachments(u, "feeds/%s/%s", f.ID, p.ID)
+		p.Attachments = attachments(u, fmt.Sprintf("feeds/%s/%s", f.ID, p.ID))
 		message(f.ID, subscriber, "feeds", "post/create").add(p).send()
 
 		var cs []FeedComment
@@ -932,7 +932,7 @@ func feeds_view(a *Action) {
 
 		ps[i].BodyMarkdown = web_markdown(p.Body)
 		ps[i].CreatedString = time_local(a.user, p.Created)
-		ps[i].Attachments = attachments(a.owner, "feeds/%s/%s", p.Feed, p.ID)
+		ps[i].Attachments = attachments(a.owner, fmt.Sprintf("feeds/%s/%s", p.Feed, p.ID))
 
 		var r FeedReaction
 		if db.scan(&r, "select reaction from reactions where post=? and subscriber=?", p.ID, entity) {

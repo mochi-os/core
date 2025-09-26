@@ -15,8 +15,10 @@ import (
 	md "github.com/gomarkdown/markdown"
 	"github.com/google/uuid"
 	"math/big"
+	"reflect"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -25,6 +27,8 @@ const (
 )
 
 var (
+	locks              = map[string]*sync.Mutex{}
+	locks_lock         sync.Mutex
 	match_filename     = regexp.MustCompile("^[0-9a-zA-Z][0-9a-zA-Z-._ ()]{0,254}$")
 	match_hyphens      = regexp.MustCompile(`-`)
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
@@ -92,6 +96,18 @@ func json_encode(in any) string {
 	return string(must(json.Marshal(in)))
 }
 
+func lock(key string) *sync.Mutex {
+	locks_lock.Lock()
+	defer locks_lock.Unlock()
+
+	_, found := locks[key]
+	if !found {
+		locks[key] = &sync.Mutex{}
+	}
+
+	return locks[key]
+}
+
 func markdown(in []byte) []byte {
 	return md.ToHTML(in, nil, nil)
 }
@@ -137,6 +153,26 @@ func sha1(in []byte) string {
 	s := sha.New()
 	s.Write(in)
 	return hex.EncodeToString(s.Sum(nil))
+}
+
+func structs_to_maps[T any](v []T) *[]map[string]any {
+	result := make([]map[string]any, 0, len(v))
+
+	for _, s := range v {
+		sv := reflect.ValueOf(s)
+		st := reflect.TypeOf(s)
+
+		if sv.Kind() == reflect.Struct {
+			m := make(map[string]any)
+			for i := 0; i < sv.NumField(); i++ {
+				f := st.Field(i)
+				m[f.Name] = sv.Field(i).Interface()
+			}
+			result = append(result, m)
+		}
+	}
+
+	return &result
 }
 
 func time_local(u *User, t int64) string {

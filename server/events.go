@@ -5,6 +5,7 @@ package main
 
 import (
 	cbor "github.com/fxamacker/cbor/v2"
+	"fmt"
 	"io"
 	rd "runtime/debug"
 )
@@ -58,6 +59,11 @@ func (e *Event) route() {
 		info("Event dropping '%s' to unknown service '%s'", e.id, e.service)
 		return
 	}
+
+	// Lock everything below here to prevent concurrent database creations in db_app()
+	l := lock(fmt.Sprintf("%d-%s", e.user.ID, a.id))
+	l.Lock()
+	defer l.Unlock()
 
 	// Load a database file for the app
 	if a.Database.File != "" {

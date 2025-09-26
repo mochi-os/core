@@ -47,6 +47,7 @@ func websocket_connection(c *gin.Context) {
 	}
 }
 
+//TODO Add object
 func websockets_send(u *User, app string, content any) {
 	j := ""
 

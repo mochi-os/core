@@ -47,6 +47,11 @@ func init() {
 			"event": sls.FromStringDict(sl.String("event"), sl.StringDict{
 				"segment": sl.NewBuiltin("search", slapi_event_segment),
 			}),
+			"log": sls.FromStringDict(sl.String("log"), sl.StringDict{
+				"debug": sl.NewBuiltin("debug", slapi_log),
+				"info":  sl.NewBuiltin("info", slapi_log),
+				"warn":  sl.NewBuiltin("warn", slapi_log),
+			}),
 			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
 				"send": sl.NewBuiltin("search", slapi_message_send),
 			}),
@@ -421,6 +426,43 @@ func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 	debug("mochi.event.segment() returning: %#v", v)
 	return starlark_encode(v), nil
+}
+
+// Log message from app
+func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return slapi_error(f.Name() + "() syntax: <format: string> [values: strings, variadic]")
+	}
+
+	format, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error(f.Name() + "() invalid format")
+	}
+
+	a, ok := t.Local("app").(*App)
+	if a == nil {
+		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
+	} else if ok {
+		format = fmt.Sprintf("App %s:%s(): %s", a.Name, t.Local("function"), format)
+	}
+
+	values := make([]any, len(args)-1)
+	for i, a := range args[1:] {
+		values[i] = starlark_decode(a)
+	}
+
+	switch f.Name() {
+	case "debug":
+		debug(format, values...)
+
+	case "info":
+		info(format, values...)
+
+	case "warn":
+		warn(format, values...)
+	}
+
+	return sl.None, nil
 }
 
 // Send a message

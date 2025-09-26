@@ -108,7 +108,7 @@ func starlark_decode_strings(value any) map[string]string {
 
 // Convert a single Go variable to a Starlark value
 func starlark_encode(v any) sl.Value {
-	debug("Encoding '%#v'", v)
+	//debug("Encoding '%#v'", v)
 
 	switch x := v.(type) {
 	case nil:
@@ -195,6 +195,8 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	}
 
 	debug("Starlark running '%s': %+v", function, args)
+	s.thread.SetLocal("function", function)
+
 	result, err := sl.Call(s.thread, f, args, nil)
 	if err == nil {
 		debug("Starlark finished")

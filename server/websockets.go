@@ -48,7 +48,6 @@ func websocket_connection(c *gin.Context) {
 }
 
 func websockets_send(u *User, app string, content any) {
-	debug("Websocket asked to send: %#v", content)
 	j := ""
 
 	for id, ws := range websockets[u.ID] {

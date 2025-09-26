@@ -131,7 +131,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content)
+	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v', data %d bytes, file '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
 
 	failed := false
 	w := peer_writer(peer)

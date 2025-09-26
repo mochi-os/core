@@ -83,7 +83,7 @@ func slapi_action_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	for _, v := range args {
 		vars = append(vars, starlark_decode(v))
 	}
-	debug("mochi.action.dump(): %+v", vars)
+	debug("%s() %+v", f.Name(), vars)
 
 	a := t.Local("action").(*Action)
 	if a != nil {
@@ -96,22 +96,22 @@ func slapi_action_dump(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // Print an error
 func slapi_action_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return slapi_error("mochi.action.error() syntax: <code: integer> <message: string>")
+		return slapi_error(f, "syntax: <code: integer> <message: string>")
 	}
 
 	code, err := sl.AsInt32(args[0])
 	if err != nil {
-		return slapi_error("mochi.action.error() invalid error code")
+		return slapi_error(f, "invalid error code")
 	}
 
 	message, ok := sl.AsString(args[1])
 	if !ok {
-		return slapi_error("mochi.action.error() invalid error message")
+		return slapi_error(f, "invalid error message")
 	}
 
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.action.error() called from non-action")
+		return slapi_error(f, "called from non-action")
 	}
 
 	a.error(code, message)
@@ -121,17 +121,17 @@ func slapi_action_error(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Redirect the action
 func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return slapi_error("mochi.action.redirect() syntax: <path: string>")
+		return slapi_error(f, "syntax: <path: string>")
 	}
 
 	path, ok := sl.AsString(args[0])
 	if !ok || !valid(path, "path") {
-		return slapi_error("mochi.action.redirect() invalid path '%s'", path)
+		return slapi_error(f, "invalid path '%s'", path)
 	}
 
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.action.redirect() called from non-action")
+		return slapi_error(f, "called from non-action")
 	}
 
 	a.redirect(path)
@@ -141,28 +141,28 @@ func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 // Write data back to the caller of the action
 func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return slapi_error("mochi.action.write() syntax: <template path: string> <format: string> [data: dictionary]")
+		return slapi_error(f, "syntax: <template path: string> <format: string> [data: dictionary]")
 	}
 
 	path, ok := sl.AsString(args[0])
 	if !ok || (path != "" && !valid(path, "path")) {
-		return slapi_error("mochi.action.write() invalid template file '%s'", path)
+		return slapi_error(f, "invalid template file '%s'", path)
 	}
 
 	format, ok := sl.AsString(args[1])
 	if !ok {
-		return slapi_error("mochi.action.write() invalid format '%s'", format)
+		return slapi_error(f, "invalid format '%s'", format)
 	}
 
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.action.write() called from non-action")
+		return slapi_error(f, "called from non-action")
 	}
 
 	switch format {
 	case "json":
 		if len(args) < 3 {
-			return slapi_error("mochi.action.write() JSON called without data")
+			return slapi_error(f, "JSON called without data")
 		}
 		debug("Writing JSON for: %#v", starlark_decode(args[2]))
 		a.json(starlark_decode(args[2]))
@@ -171,14 +171,14 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 		// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
 		file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, path)
 		if !file_exists(file) {
-			return slapi_error("mochi.action.write() template '%s' not found", path)
+			return slapi_error(f, "template '%s' not found", path)
 		}
 		data := file_read(file)
 		include := must(templates.ReadFile("templates/en/include.tmpl"))
 
 		tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
 		if err != nil {
-			return slapi_error("mochi.action.write(): %v", err)
+			return slapi_error(f, "%v", err)
 		}
 
 		if len(args) > 2 {
@@ -187,7 +187,7 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 			err = tmpl.Execute(a.web.Writer, Map{})
 		}
 		if err != nil {
-			return slapi_error("mochi.action.write(): %v", err)
+			return slapi_error(f, "%v", err)
 		}
 	}
 
@@ -197,17 +197,17 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Write data back to the caller of the action via websocket
 func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return slapi_error("mochi.action.websocket.write() syntax: <app: string> <content: any>")
+		return slapi_error(f, "syntax: <app: string> <content: any>")
 	}
 
 	app, ok := sl.AsString(args[0])
 	if !ok || !valid(app, "constant") {
-		return slapi_error("mochi.action.websocket.write() invalid app '%s'", app)
+		return slapi_error(f, "invalid app '%s'", app)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.action.websocket.write() no user")
+		return slapi_error(f, "no user")
 	}
 
 	websockets_send(user, app, starlark_decode(args[1]))
@@ -226,48 +226,49 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // Get attachments for an object
 func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return slapi_error("mochi.attachments.get() syntax: <object: string>")
+		return slapi_error(f, "syntax: <object: string>")
 	}
 
 	object, ok := sl.AsString(args[0])
 	if !ok || !valid(object, "path") {
-		return slapi_error("mochi.attachments.get() invalid object '%s'", object)
+		return slapi_error(f, "invalid object '%s'", object)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.attachments.get() not logged in")
+		return slapi_error(f, "no user")
 	}
 
-	return starlark_encode(attachments(user, object)), nil
+	attachments := attachments(user, object)
+	return starlark_encode(structs_to_maps(*attachments)), nil
 }
 
 // Upload attachments for an object
 func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 4 {
-		return slapi_error("mochi.attachments.put() syntax: <field: string> <object: string> <entity: string> <save locally: boolean>")
+		return slapi_error(f, "syntax: <field: string> <object: string> <entity: string> <save locally: boolean>")
 	}
 
 	field, ok := sl.AsString(args[0])
 	if !ok || !valid(field, "constant") {
-		return slapi_error("mochi.attachments.put() invalid field '%s'", field)
+		return slapi_error(f, "field '%s'", field)
 	}
 
 	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
-		return slapi_error("mochi.attachments.put() invalid object '%s'", object)
+		return slapi_error(f, "invalid object '%s'", object)
 	}
 
 	entity, ok := sl.AsString(args[2])
 	if !ok || !valid(entity, "entity") {
-		return slapi_error("mochi.attachments.put() invalid entity '%s'", entity)
+		return slapi_error(f, "invalid entity '%s'", entity)
 	}
 
 	local := bool(args[3].Truth())
 
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.attachments.put() called from non-action")
+		return slapi_error(f, "called from non-action")
 	}
 
 	attachments := a.upload_attachments(field, entity, object, local)
@@ -277,7 +278,7 @@ func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 // Save attachments
 func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return slapi_error("mochi.event.attachments() syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
+		return slapi_error(f, "syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
 	}
 
 	attachments, ok := starlark_decode(args[0]).([]Attachment)
@@ -288,17 +289,17 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 
 	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
-		return slapi_error("mochi.attachments.save() invalid object '%s'", object)
+		return slapi_error(f, "invalid object '%s'", object)
 	}
 
 	entity, ok := sl.AsString(args[2])
 	if !ok || !valid(entity, "entity") {
-		return slapi_error("mochi.attachments.save() invalid entity '%s'", entity)
+		return slapi_error(f, "invalid entity '%s'", entity)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.attachments.save() not logged in")
+		return slapi_error(f, "no user")
 	}
 
 	attachments_save(&attachments, user, entity, object)
@@ -308,22 +309,22 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 // Check if database row exists
 func slapi_db_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return slapi_error("mochi.db.exists() syntax: <SQL statement: string> [parameters: strings, variadic]")
+		return slapi_error(f, "syntax: <SQL statement: string> [parameters: strings, variadic]")
 	}
 
 	query, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error("mochi.db.exists() invalid SQL statement '%s'", query)
+		return slapi_error(f, "invalid SQL statement '%s'", query)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.db.exists() not logged in, so no user database available")
+		return slapi_error(f, "no user")
 	}
 
 	app := t.Local("app").(*App)
 	if app == nil {
-		return slapi_error("mochi.db.exists() unknown app")
+		return slapi_error(f, "unknown app")
 	}
 
 	db := db_app(user, app)
@@ -336,22 +337,22 @@ func slapi_db_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // General database query
 func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return slapi_error("mochi.db.query() syntax: <SQL statement: string> [parameters: strings, variadic]")
+		return slapi_error(f, "syntax: <SQL statement: string> [parameters: strings, variadic]")
 	}
 
 	query, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error("mochi.db.query() invalid SQL statement '%s'", query)
+		return slapi_error(f, "invalid SQL statement '%s'", query)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.db.query() not logged in, so no user database available")
+		return slapi_error(f, "no user")
 	}
 
 	app := t.Local("app").(*App)
 	if app == nil {
-		return slapi_error("mochi.db.query() unknown app")
+		return slapi_error(f, "unknown app")
 	}
 
 	db := db_app(user, app)
@@ -361,17 +362,17 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 // Directory search
 func slapi_directory_search(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return slapi_error("mochi.directory.search() syntax: <class: string> <search: string> <include self: boolean>")
+		return slapi_error(f, "syntax: <class: string> <search: string> <include self: boolean>")
 	}
 
 	class, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error("mochi.directory.search() invalid class '%s'", class)
+		return slapi_error(f, "invalid class '%s'", class)
 	}
 
 	search, ok := sl.AsString(args[1])
 	if !ok {
-		return slapi_error("mochi.directory.search() invalid search '%s'", search)
+		return slapi_error(f, "invalid search '%s'", search)
 	}
 
 	include_self := bool(args[2].Truth())
@@ -407,8 +408,12 @@ func slapi_directory_search(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // Helper function to return an error
-func slapi_error(format string, values ...any) (sl.Value, error) {
-	return sl.None, error_message(format, values...)
+func slapi_error(f *sl.Builtin, format string, values ...any) (sl.Value, error) {
+	if f == nil {
+		return sl.None, error_message(format, values...)
+	} else {
+		return sl.None, error_message(fmt.Sprintf("%s() %s", f.Name(), format), values...)
+	}
 }
 
 // Decode the next segment of an event
@@ -416,7 +421,7 @@ func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 	debug("mochi.event.segment() decoding segment")
 	e := t.Local("event").(*Event)
 	if e == nil {
-		return slapi_error("mochi.event.segment() called from non-event")
+		return slapi_error(f, "called from non-event")
 	}
 
 	var v any
@@ -431,19 +436,19 @@ func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 // Log message from app
 func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return slapi_error(f.Name() + "() syntax: <format: string> [values: strings, variadic]")
+		return slapi_error(f, "syntax: <format: string> [values: strings, variadic]")
 	}
 
 	format, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error(f.Name() + "() invalid format")
+		return slapi_error(f, "invalid format")
 	}
 
 	a, ok := t.Local("app").(*App)
 	if a == nil {
 		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
 	} else if ok {
-		format = fmt.Sprintf("App %s:%s(): %s", a.Name, t.Local("function"), format)
+		format = fmt.Sprintf("App %s:%s() %s", a.Name, t.Local("function"), format)
 	}
 
 	values := make([]any, len(args)-1)
@@ -468,34 +473,34 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 // Send a message
 func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
-		return slapi_error("mochi.message.send() syntax: <headers: dictionary> [content: dictionary] [data: bytes]")
+		return slapi_error(f, "syntax: <headers: dictionary> [content: dictionary] [data: bytes]")
 	}
 
 	headers := starlark_decode_strings(args[0])
 	if headers == nil {
-		return slapi_error("mochi.message.send() headers not specified or invalid")
+		return slapi_error(f, "headers not specified or invalid")
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error("mochi.message.send() no user")
+		return slapi_error(f, "no user")
 	}
 
 	db := db_open("db/users.db")
 	if !db.exists("select id from entities where id=? and user=?", headers["from"], user.ID) {
-		return slapi_error("mochi.message.send() invalid from header")
+		return slapi_error(f, "invalid from header")
 	}
 
 	if !valid(headers["to"], "entity") {
-		return slapi_error("mochi.message.send() invalid to header")
+		return slapi_error(f, "invalid to header")
 	}
 
 	if !valid(headers["service"], "constant") {
-		return slapi_error("mochi.message.send() invalid service header")
+		return slapi_error(f, "invalid service header")
 	}
 
 	if !valid(headers["event"], "constant") {
-		return slapi_error("mochi.message.send() invalid eventheader")
+		return slapi_error(f, "invalid event header")
 	}
 
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
@@ -516,17 +521,17 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Call a function in another app
 func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
-		return slapi_error("mochi.service.call() syntax: <service: string> <function: string> [parameters: any variadic]")
+		return slapi_error(f, "syntax: <service: string> <function: string> [parameters: any variadic]")
 	}
 
 	service, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error("mochi.service.call() invalid service")
+		return slapi_error(f, "invalid service")
 	}
 
 	function, ok := sl.AsString(args[1])
 	if !ok {
-		return slapi_error("mochi.service.call() invalid function")
+		return slapi_error(f, "invalid function")
 	}
 
 	// Check for deep recursion
@@ -536,20 +541,20 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 		depth = depth_var.(int)
 	}
 	if depth > 1000 {
-		return slapi_error("mochi.service.call() reached maximum recursion depth")
+		return slapi_error(f, "reached maximum recursion depth")
 	}
 
 	// Look for matching app function, using default if necessary
 	a, _ := services[service]
 	if a == nil {
-		return slapi_error("mochi.service.call() unknown service '%s'", service)
+		return slapi_error(f, "unknown service '%s'", service)
 	}
 	fn, found := a.Services[service].Functions[function]
 	if !found {
 		fn, found = a.Services[service].Functions[""]
 	}
 	if !found {
-		return slapi_error("mochi.service.call() unknown function '%s' for service '%s'", function, service)
+		return slapi_error(f, "unknown function '%s' for service '%s'", function, service)
 	}
 
 	// Call function
@@ -586,17 +591,17 @@ func slapi_text_uid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 // Check if a string is valid
 func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return slapi_error("mochi.text.valid() syntax: <string to check: string> <pattern to match: string>")
+		return slapi_error(f, "syntax: <string to check: string> <pattern to match: string>")
 	}
 
 	s, ok := sl.AsString(args[0])
 	if !ok {
-		return slapi_error("mochi.text.valid() invalid string to check '%s'", s)
+		return slapi_error(f, "invalid string to check '%s'", s)
 	}
 
 	match, ok := sl.AsString(args[1])
 	if !ok {
-		return slapi_error("mochi.text.valid() invalid match pattern '%s'", match)
+		return slapi_error(f, "invalid match pattern '%s'", match)
 	}
 
 	return starlark_encode(valid(s, match)), nil
@@ -617,7 +622,7 @@ func slapi_time_now(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.user.get() not logged in")
+		return slapi_error(f, "no user")
 	}
 
 	return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username}), nil
@@ -627,7 +632,7 @@ func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 func slapi_user_logout(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	a := t.Local("action").(*Action)
 	if a == nil {
-		return slapi_error("mochi.user.logout() called from non-action")
+		return slapi_error(f, "called from non-action")
 	}
 
 	login := web_cookie_get(a.web, "login", "")

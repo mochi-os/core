@@ -35,7 +35,7 @@ func starlark(files []string) *Starlark {
 func starlark_decode(value sl.Value) any {
 	//debug("Decoding '%+v', type '%s'", value, reflect.TypeOf(value))
 	switch v := value.(type) {
-	case sl.NoneType:
+	case sl.NoneType, nil:
 		return nil
 
 	case sl.Bool:
@@ -83,6 +83,7 @@ func starlark_decode(value sl.Value) any {
 	}
 }
 
+// Decode a single Starlark value to a string
 func starlark_decode_string(value sl.Value) string {
 	s, ok := sl.AsString(value)
 	if ok {
@@ -91,7 +92,9 @@ func starlark_decode_string(value sl.Value) string {
 	return fmt.Sprint(s)
 }
 
+// Decode a single Starlark value to a map of strings to strings
 func starlark_decode_strings(value any) map[string]string {
+	//debug("Decoding to strings '%+v'", value)
 	switch v := value.(type) {
 	case *sl.Dict:
 		out := make(map[string]string)
@@ -123,6 +126,16 @@ func starlark_encode(v any) sl.Value {
 	case int64:
 		return sl.MakeInt64(x)
 
+	case uint64:
+		return sl.MakeUint64(x)
+
+	case []uint8:
+		t := make([]sl.Value, len(x))
+		for i, r := range x {
+			t[i] = sl.MakeInt(int(r))
+		}
+		return sl.Tuple(t)
+
 	case bool:
 		return sl.Bool(x)
 
@@ -148,23 +161,23 @@ func starlark_encode(v any) sl.Value {
 		return d
 
 	case []any:
-		var t []sl.Value
-		for _, r := range x {
-			t = append(t, starlark_encode(r))
+		t := make([]sl.Value, len(x))
+		for i, r := range x {
+			t[i] = starlark_encode(r)
 		}
 		return sl.Tuple(t)
 
 	case []map[string]string:
-		var t []sl.Value
-		for _, r := range x {
-			t = append(t, starlark_encode(r))
+		t := make([]sl.Value, len(x))
+		for i, r := range x {
+			t[i] = starlark_encode(r)
 		}
 		return sl.Tuple(t)
 
 	case *[]map[string]any:
-		var t []sl.Value
-		for _, r := range *x {
-			t = append(t, starlark_encode(r))
+		t := make([]sl.Value, len(*x))
+		for i, r := range *x {
+			t[i] = starlark_encode(r)
 		}
 		return sl.Tuple(t)
 

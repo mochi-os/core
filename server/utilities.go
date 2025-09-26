@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -166,7 +167,7 @@ func structs_to_maps[T any](v []T) *[]map[string]any {
 			m := make(map[string]any)
 			for i := 0; i < sv.NumField(); i++ {
 				f := st.Field(i)
-				m[f.Name] = sv.Field(i).Interface()
+				m[strings.ToLower(f.Name)] = sv.Field(i).Interface()
 			}
 			result = append(result, m)
 		}

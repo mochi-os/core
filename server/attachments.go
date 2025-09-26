@@ -349,6 +349,58 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 	}
 }
 
+// Take an array of attachment maps, and save them locally
+func attachments_save_maps(as *[]map[string]string, u *User, entity string, format string, values ...any) {
+	if as == nil {
+		return
+	}
+
+	object := fmt.Sprintf(format, values...)
+	db := db_user(u, "attachments/attachments.db", attachments_db_create)
+	defer db.close()
+
+	for _, a := range *as {
+		if !valid(a["id"], "id") {
+			info("Skipping attachment with invalid ID '%s'", a["id"])
+			continue
+		}
+
+		if !valid(a["object"], "path") {
+			info("Skipping attachment with invalid object '%s'", a["object"])
+			continue
+		}
+
+		if !valid(a["rank"], "integer") {
+			info("Skipping attachment with invalid rank '%s'", a["rank"])
+			continue
+		}
+
+		if !valid(a["name"], "filename") {
+			info("Skipping attachment with invalid name '%s'", a["name"])
+			continue
+		}
+
+		if !valid(a["size"], "integer") {
+			info("Skipping attachment with invalid size '%s'", a["size"])
+			continue
+		}
+
+		if !valid(a["created"], "integer") {
+			info("Skipping attachment with invalid created time '%s'", a["created"])
+			continue
+		}
+
+		path := ""
+		if len(a["data"]) > 0 {
+			path = fmt.Sprintf("%s/%s_%s", object, a["id"], file_name_safe(a["name"]))
+			file_write(fmt.Sprintf("%s/users/%d/%s", data_dir, u.ID, path), []byte(a["data"]))
+		}
+
+		debug("Attachments creating '%s'", path)
+		db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, a["id"], a["object"], a["rank"], a["name"], path, a["size"], a["created"])
+	}
+}
+
 // Receive a send event, and send it to the channel of any actions waiting for it
 func attachments_send_event(e *Event) {
 	attachments_send_event_work(e, false)

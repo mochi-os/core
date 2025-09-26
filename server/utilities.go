@@ -218,7 +218,7 @@ func valid(s string, match string) bool {
 	case "id":
 		match = "^[0-9a-z]{32}"
 	case "integer":
-		match = "^(-)?\\d{1,9}$"
+		match = "^(-)?\\d{1,12}$"
 	case "json":
 		match = "^[0-9a-zA-Z{}:\"]{1,1000}$"
 	case "line":

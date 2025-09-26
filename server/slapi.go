@@ -281,10 +281,7 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 		return slapi_error(f, "syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
 	}
 
-	attachments, ok := starlark_decode(args[0]).([]Attachment)
-	if !ok {
-		return sl.None, nil
-	}
+	attachments := starlark_decode_multi_strings(args[0])
 	debug("slapi_attachments_save() got: %+v", attachments)
 
 	object, ok := sl.AsString(args[1])
@@ -302,7 +299,7 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 		return slapi_error(f, "no user")
 	}
 
-	attachments_save(&attachments, user, entity, object)
+	attachments_save_maps(attachments, user, entity, object)
 	return sl.None, nil
 }
 

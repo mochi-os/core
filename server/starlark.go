@@ -85,11 +85,12 @@ func starlark_decode(value sl.Value) any {
 
 // Decode a single Starlark value to a string
 func starlark_decode_string(value sl.Value) string {
+	//debug("Decoding to string '%+v'", value)
 	s, ok := sl.AsString(value)
 	if ok {
 		return s
 	}
-	return fmt.Sprint(s)
+	return fmt.Sprint(value)
 }
 
 // Decode a single Starlark value to a map of strings to strings
@@ -105,6 +106,23 @@ func starlark_decode_strings(value any) map[string]string {
 
 	default:
 		warn("Starlark decode strings unknown type '%T'", v)
+		return nil
+	}
+}
+
+// Decode a Starlark array to an array of map of strings to strings
+func starlark_decode_multi_strings(value any) *[]map[string]string {
+	//debug("Decoding to multi strings '%+v'", value)
+	switch v := value.(type) {
+	case sl.Tuple:
+		out := make([]map[string]string, len(v))
+		for i, e := range v {
+			out[i] = starlark_decode_strings(e)
+		}
+		return &out
+
+	default:
+		warn("Starlark decode multi strings unknown type '%T'", v)
 		return nil
 	}
 }

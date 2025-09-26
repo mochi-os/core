@@ -4,8 +4,8 @@
 package main
 
 import (
-	cbor "github.com/fxamacker/cbor/v2"
 	"fmt"
+	cbor "github.com/fxamacker/cbor/v2"
 	"io"
 	rd "runtime/debug"
 )

@@ -50,7 +50,7 @@ func queue_check_entity(entity string) {
 				db.exec("delete from entities where id=?", q.ID)
 			}
 		}
-		//TODO Add delay
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -65,7 +65,7 @@ func queue_check_peer(peer string) {
 			debug("Removing sent event from queue")
 			db.exec("delete from peers where id=?", q.ID)
 		}
-		//TODO Add delay
+		time.Sleep(time.Millisecond)
 	}
 }
 

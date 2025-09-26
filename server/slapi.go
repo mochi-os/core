@@ -315,7 +315,7 @@ func slapi_db_query(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	as := starlark_decode(args[1:]).([]any)
-	debug("%s '%s' '%+v'", f.Name(), query, as)
+	//debug("%s '%s' '%+v'", f.Name(), query, as)
 
 	user := t.Local("user").(*User)
 	if user == nil {

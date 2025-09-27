@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"maps"
 	"slices"
+	"strconv"
 )
 
 var (
@@ -44,6 +45,9 @@ func init() {
 			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
 				"search": sl.NewBuiltin("mochi.directory.search", slapi_directory_search),
 			}),
+			"entity": sls.FromStringDict(sl.String("directory"), sl.StringDict{
+				"create": sl.NewBuiltin("mochi.entity.create", slapi_entity_create),
+			}),
 			"event": sls.FromStringDict(sl.String("event"), sl.StringDict{
 				"segment": sl.NewBuiltin("mochi.event.segment", slapi_event_segment),
 			}),
@@ -58,6 +62,7 @@ func init() {
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("mochi.service.call", slapi_service_call),
 			}),
+			//TODO Change the text functions?
 			"text": sls.FromStringDict(sl.String("text"), sl.StringDict{
 				"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
 					"render": sl.NewBuiltin("mochi.text.markdown.render", slapi_text_markdown_render),
@@ -282,7 +287,6 @@ func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	attachments := starlark_decode_multi_strings(args[0])
-	debug("slapi_attachments_save() got: %+v", attachments)
 
 	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
@@ -403,9 +407,15 @@ func slapi_error(f *sl.Builtin, format string, values ...any) (sl.Value, error) 
 	}
 }
 
+// Create a new entity
+// TODO Create entity
+func slapi_entity_create(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.None, nil
+}
+
 // Decode the next segment of an event
 func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	debug("mochi.event.segment() decoding segment")
+	debug("mochi.event.segment() decoding next segment")
 	e := t.Local("event").(*Event)
 	if e == nil {
 		return slapi_error(f, "called from non-event")
@@ -416,7 +426,6 @@ func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return nil, err
 	}
-	debug("mochi.event.segment() returning: %#v", v)
 	return starlark_encode(v), nil
 }
 
@@ -492,12 +501,10 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 	if len(args) > 1 {
-		debug("mochi.message.send() content: %+v", starlark_decode_strings(args[1]))
 		m.content = starlark_decode_strings(args[1])
 	}
 
 	if len(args) > 2 {
-		debug("mochi.message.send() adding segment: %#v", starlark_decode(args[2]))
 		m.add(starlark_decode(args[2]))
 	}
 
@@ -559,7 +566,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	} else {
 		result, err = s.call(fn.Function, nil)
 	}
-	//debug("mochi.service.call() got result '%+v', type %T", result, result)
+	//debug("mochi.service.call() result '%+v', type %T", result, result)
 
 	return result, err
 }
@@ -596,8 +603,41 @@ func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // Return the local time in the user's time zone
 func slapi_time_local(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_time_local()
-	return sl.None, nil
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <timestamp: int64>")
+	}
+
+	var time int64
+	var err error
+	v := starlark_decode(args[0])
+
+	switch x := v.(type) {
+	case int:
+		time = int64(x)
+
+	case int64:
+		time = x
+
+	case string:
+		s, ok := sl.AsString(args[0])
+		if !ok {
+			return slapi_error(f, "invalid timestamp '%v'", args[0])
+		}
+		time, err = strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return slapi_error(f, "invalid timestamp '%v': %v", args[0], err)
+		}
+
+	default:
+		return slapi_error(f, "invalid time type %T", x)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	return starlark_encode(time_local(user, time)), nil
 }
 
 // Return the current Unix time

@@ -40,8 +40,6 @@ func message_receive(r io.Reader, version int, peer string) {
 		return
 	}
 
-	debug("Message received from peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event)
-
 	if !valid(m.ID, "id") {
 		info("Dropping message with invalid id '%s'", m.ID)
 		return
@@ -85,6 +83,8 @@ func message_receive(r io.Reader, version int, peer string) {
 		info("Dropping message with bad content segment: %v", err)
 		return
 	}
+
+	debug("Message received from peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%#v'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content)
 
 	// Create event, and route to app
 	e := Event{id: m.ID, from: m.From, to: m.To, service: m.Service, event: m.Event, content: m.content, decoder: d, reader: r, peer: peer}
@@ -131,7 +131,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v', data %d bytes, file '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
+	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%#v', data %d bytes, file '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
 
 	failed := false
 	w := peer_writer(peer)

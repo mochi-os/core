@@ -467,7 +467,7 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 
 // Render markdown
 // TODO slapi_markdown_render()
-func slapi__markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func slapi_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.None, nil
 }
 

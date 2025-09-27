@@ -1,8 +1,5 @@
 0.2:
 	Separate apps from server
-		Chat
-			Reconnect to websocket
-
 		Feeds
 		Forums
 

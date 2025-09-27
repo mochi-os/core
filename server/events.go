@@ -61,7 +61,11 @@ func (e *Event) route() {
 	}
 
 	// Lock everything below here to prevent concurrent database creations in db_app()
-	l := lock(fmt.Sprintf("%d-%s", e.user.ID, a.id))
+	user := 0
+	if e.user != nil {
+		user = e.user.ID
+	}
+	l := lock(fmt.Sprintf("%d-%s", user, a.id))
 	l.Lock()
 	defer l.Unlock()
 

@@ -46,7 +46,9 @@
 	License
 
 0.3:
-	Apps multiple versions and tracks
+	Apps
+		Multiple versions and tracks
+		Dependencies between apps
 	App market
 
 	User can manage their apps

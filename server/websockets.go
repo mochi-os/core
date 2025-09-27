@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	websockets        = map[int]map[string]*websocket.Conn{}
+	websockets        = map[int]map[string]map[string]*websocket.Conn{}
 	websocket_context = context.Background()
 )
 
@@ -24,19 +24,25 @@ func websocket_connection(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	key := c.Query("key")
 	id := uid()
-	defer websocket_terminate(ws, u, id)
+	defer websocket_terminate(ws, u, key, id)
 
 	_, found := websockets[u.ID]
 	if !found {
-		websockets[u.ID] = map[string]*websocket.Conn{}
+		websockets[u.ID] = map[string]map[string]*websocket.Conn{}
 	}
-	websockets[u.ID][id] = ws
+	_, found = websockets[u.ID][key]
+	if !found {
+		websockets[u.ID][key] = map[string]*websocket.Conn{}
+	}
+	websockets[u.ID][key][id] = ws
+	//debug("Websocket connection user %d, key '%s', id '%s'", u.ID, key, id)
 
 	for {
 		t, j, err := ws.Read(websocket_context)
 		if err != nil {
-			websocket_terminate(ws, u, id)
+			websocket_terminate(ws, u, key, id)
 			return
 		}
 		if t != websocket.MessageText {
@@ -47,23 +53,30 @@ func websocket_connection(c *gin.Context) {
 	}
 }
 
-// TODO Add object
-func websockets_send(u *User, app string, content any) {
+func websockets_send(u *User, key string, content any) {
+	//debug("Websocket sending to user %d, key '%s': %+v", u.ID, key, content)
 	j := ""
 
-	for id, ws := range websockets[u.ID] {
+	for id, ws := range websockets[u.ID][key] {
 		if j == "" {
-			j = json_encode(map[string]any{"app": app, "content": content})
+			j = json_encode(content)
 		}
-		debug("Websocket sending '%s'", j)
 		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
-			websocket_terminate(ws, u, id)
+			websocket_terminate(ws, u, key, id)
 		}
 	}
 }
 
-func websocket_terminate(ws *websocket.Conn, u *User, id string) {
+func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	ws.CloseNow()
-	delete(websockets[u.ID], id)
+	delete(websockets[u.ID][key], id)
+
+	if len(websockets[u.ID][key]) == 0 {
+		delete(websockets[u.ID], key)
+	}
+
+	if len(websockets[u.ID]) == 0 {
+		delete(websockets, u.ID)
+	}
 }

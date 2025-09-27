@@ -56,28 +56,28 @@ func init() {
 				"info":  sl.NewBuiltin("mochi.log.info", slapi_log),
 				"warn":  sl.NewBuiltin("mochi.log.warn", slapi_log),
 			}),
+			"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
+				"render": sl.NewBuiltin("mochi.markdown.render", slapi_markdown_render),
+			}),
 			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
 				"send": sl.NewBuiltin("mochi.message.send", slapi_message_send),
 			}),
+			"random": sls.FromStringDict(sl.String("random"), sl.StringDict{
+				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", slapi_random_alphanumeric),
+			}),
 			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
 				"call": sl.NewBuiltin("mochi.service.call", slapi_service_call),
-			}),
-			//TODO Change the text functions?
-			"text": sls.FromStringDict(sl.String("text"), sl.StringDict{
-				"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
-					"render": sl.NewBuiltin("mochi.text.markdown.render", slapi_text_markdown_render),
-				}),
-				"uid":   sl.NewBuiltin("mochi.text.uid", slapi_text_uid),
-				"valid": sl.NewBuiltin("mochi.text.valid", slapi_text_valid),
 			}),
 			"time": sls.FromStringDict(sl.String("time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", slapi_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", slapi_time_now),
 			}),
+			"uid": sl.NewBuiltin("mochi.uid", slapi_uid),
 			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
 				"get":    sl.NewBuiltin("mochi.user.get", slapi_user_get),
 				"logout": sl.NewBuiltin("mochi.user.logout", slapi_user_logout),
 			}),
+			"valid": sl.NewBuiltin("mochi.valid", slapi_valid),
 		}),
 	}
 }
@@ -169,7 +169,6 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 		if len(args) < 3 {
 			return slapi_error(f, "JSON called without data")
 		}
-		debug("Writing JSON for: %#v", starlark_decode(args[2]))
 		a.json(starlark_decode(args[2]))
 
 	default:
@@ -202,12 +201,12 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Write data back to the caller of the action via websocket
 func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return slapi_error(f, "syntax: <app: string> <content: any>")
+		return slapi_error(f, "syntax: <key: string> <content: any>")
 	}
 
-	app, ok := sl.AsString(args[0])
-	if !ok || !valid(app, "constant") {
-		return slapi_error(f, "invalid app '%s'", app)
+	key, ok := sl.AsString(args[0])
+	if !ok || !valid(key, "constant") {
+		return slapi_error(f, "invalid key '%s'", key)
 	}
 
 	user := t.Local("user").(*User)
@@ -215,7 +214,7 @@ func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kw
 		return slapi_error(f, "no user")
 	}
 
-	websockets_send(user, app, starlark_decode(args[1]))
+	websockets_send(user, key, starlark_decode(args[1]))
 	return sl.None, nil
 }
 
@@ -408,7 +407,7 @@ func slapi_error(f *sl.Builtin, format string, values ...any) (sl.Value, error) 
 }
 
 // Create a new entity
-// TODO Create entity
+// TODO slapi_entity_create()
 func slapi_entity_create(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.None, nil
 }
@@ -466,6 +465,12 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 	return sl.None, nil
 }
 
+// Render markdown
+// TODO slapi_markdown_render()
+func slapi__markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.None, nil
+}
+
 // Send a message
 func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
@@ -510,6 +515,20 @@ func slapi_message_send(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	m.send()
 	return sl.None, nil
+}
+
+// Return a random alphanumeric string
+func slapi_random_alphanumeric(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <length: integer>")
+	}
+
+	length, err := sl.AsInt32(args[0])
+	if err != nil || length < 1 || length > 1000 {
+		return slapi_error(f, "invalid length")
+	}
+
+	return starlark_encode(random_alphanumeric(length)), nil
 }
 
 // Call a function in another app
@@ -571,36 +590,6 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return result, err
 }
 
-// Render markdown
-func slapi_text_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	//TODO slapi_text_markdown_render()
-	return sl.None, nil
-}
-
-// Get a UID
-func slapi_text_uid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return starlark_encode(uid()), nil
-}
-
-// Check if a string is valid
-func slapi_text_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return slapi_error(f, "syntax: <string to check: string> <pattern to match: string>")
-	}
-
-	s, ok := sl.AsString(args[0])
-	if !ok {
-		return slapi_error(f, "invalid string to check '%s'", s)
-	}
-
-	match, ok := sl.AsString(args[1])
-	if !ok {
-		return slapi_error(f, "invalid match pattern '%s'", match)
-	}
-
-	return starlark_encode(valid(s, match)), nil
-}
-
 // Return the local time in the user's time zone
 func slapi_time_local(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -645,6 +634,11 @@ func slapi_time_now(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return starlark_encode(now()), nil
 }
 
+// Get a UID
+func slapi_uid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return starlark_encode(uid()), nil
+}
+
 // Get details of the current user
 func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	a := t.Local("action").(*Action)
@@ -669,4 +663,23 @@ func slapi_user_logout(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	web_cookie_unset(a.web, "login")
 
 	return sl.None, nil
+}
+
+// Check if a string is valid
+func slapi_valid(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error(f, "syntax: <string to check: string> <pattern to match: string>")
+	}
+
+	s, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error(f, "invalid string to check '%s'", s)
+	}
+
+	match, ok := sl.AsString(args[1])
+	if !ok {
+		return slapi_error(f, "invalid match pattern '%s'", match)
+	}
+
+	return starlark_encode(valid(s, match)), nil
 }

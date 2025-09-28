@@ -24,6 +24,7 @@
 	User avatars
 
 	Feeds app
+		Limit posts shown on load
 		Edit posts
 		Edit comments
 		Permissions
@@ -32,8 +33,8 @@
 			Travelling to
 
 	Forums app
+		Limit posts shown on load
 		Edit posts
-		Rotate images
 		Moderation
 		Permissions
 
@@ -51,6 +52,16 @@
 		Dependencies between apps
 	App market
 
+	Chat app
+		Load older messages on scroll
+
+	Feeds app
+		Load older posts on scroll
+		On this day
+
+	Forums app
+		Load older posts on scroll
+
 	User can manage their apps
 		App privileges
 		Users can choose which apps get which service
@@ -67,10 +78,7 @@
 	Outbound email from feeds
 	Oauth server
 
-	Feeds app
-		On this day
-
-	Streaming services
+	Chat app
 		Audio
 		Video
 	

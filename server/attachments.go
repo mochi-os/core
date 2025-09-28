@@ -180,12 +180,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 
 	// Send request to entity storing file
 	if !found {
-		action := "get"
+		event := "get"
 		if thumbnail {
-			action = "get/thumbnail"
+			event = "get/thumbnail"
 		}
 
-		message(identity, at.Entity, "attachments", action).set("id", id).send()
+		message(identity, at.Entity, "attachments", event).set("id", id).send()
 	}
 
 	// Wait up to 1 minute for response

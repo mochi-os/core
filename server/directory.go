@@ -80,7 +80,6 @@ func directory_download_event(e *Event) {
 
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
-	debug("Pubishing directory entry %+v, allow queue %d", e, allow_queue)
 	m := message(e.ID, "", "directory", "publish")
 	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
 	m.publish(allow_queue)
@@ -133,6 +132,7 @@ func directory_publish_event(e *Event) {
 			info("Directory dropping anonymous event from untrusted peer")
 			return
 		}
+		//TODO Use created time from bootstrap peers
 
 	} else if e.from != id {
 		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.from)

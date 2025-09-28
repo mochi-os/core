@@ -15,7 +15,8 @@ type App struct {
 		Architecture string `json:"architecture"`
 		Version      string `json:"version"`
 	} `json:"engine"`
-	Files      []string `json:"files"`
+	Files []string `json:"files"`
+	//TODO Rename to permissions?
 	Privileges []string `json:"privileges"`
 	Database   struct {
 		File           string    `json:"file"`
@@ -69,6 +70,15 @@ type Path struct {
 	internal func(*Action)
 }
 
+const (
+	apps_install_by_default = []string{
+		"12qMc1J5PZJDmgbdxtjB1b8xWeA6zhFJUbz5wWUEJSK3gyeFUPb", // Home
+		"123jjo8q9kx8HZHmxbQ6DMfWPsMSByongGbG3wTrywcm2aA5b8x", // Notifications
+		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
+		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
+	}
+)
+
 var (
 	apps     = map[string]*App{}
 	icons    = map[string]Icon{}
@@ -76,6 +86,7 @@ var (
 	services = map[string]*App{}
 )
 
+// Create data structure for new internal app
 func app(name string) *App {
 	a := App{id: name, Name: name, entity_field: "entity"}
 	a.Engine.Architecture = "internal"
@@ -86,6 +97,12 @@ func app(name string) *App {
 	return &a
 }
 
+func app_check_install(id string) {
+	//TODO Check and install/update app
+	debug("TODO App '%s' checking installation", id)
+}
+
+// Load details of an installed app from the filesystems
 func app_load(id string, version string) error {
 	debug("App '%s' version '%s' loading", id, version)
 
@@ -219,6 +236,38 @@ func app_load(id string, version string) error {
 	return nil
 }
 
+// Manage which apps and their versions are installed
+func apps_manager() {
+	time.Sleep(time.Second)
+	for {
+		var todo map[string]bool
+
+		for _, id := range apps_install_by_default {
+			todo[id] = true
+		}
+
+		for _, id := range files_dir(data_dir + "/apps") {
+			if valid(id, "entity") {
+				todo[id] = true
+			}
+		}
+
+		failed := false
+		for id := range todo {
+			if !app_check_install(id) {
+				failed = true
+			}
+		}
+
+		if failed {
+			time.Sleep(time.Minute)
+		} else {
+			time.Sleep(24 * time.Hour)
+		}
+	}
+}
+
+// Check which apps are installed, and load them
 func apps_start() {
 	for _, id := range files_dir(data_dir + "/apps") {
 		for _, version := range files_dir(data_dir + "/apps/" + id) {
@@ -231,11 +280,13 @@ func apps_start() {
 	}
 }
 
+// Register an action for an internal app
 func (a *App) action(action string, f func(*Action)) {
 	a.internal.actions[action] = f
 	actions[action] = f
 }
 
+// Register a broadcast for an internal app
 func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
 	s, sender_found := broadcasts_by_sender[sender]
 	if sender_found {
@@ -250,31 +301,39 @@ func (a *App) broadcast(sender string, action string, f func(*User, string, stri
 	}
 }
 
+// Register the user database file for an internal app
 func (a *App) db(file string, create func(*DB)) {
 	a.Database.File = file
 	a.Database.CreateFunction = create
 }
 
+// Register the entity field for an internal app
 func (a *App) entity(field string) {
 	a.entity_field = field
 }
 
+// Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
 	a.internal.events[event] = f
 }
 
+// Register a broadcast event handler for an internal app
+// This will probably be removed at some point
 func (a *App) event_broadcast(event string, f func(*Event)) {
 	a.internal.events_broadcast[event] = f
 }
 
+// Register an icon for an internal app
 func (a *App) icon(path string, label string, name string, icon string) {
 	icons[path] = Icon{Path: path, Label: label, Name: name, Icon: icon}
 }
 
+// Register a path for actions for an internal app
 func (a *App) path(path string, f func(*Action)) {
 	paths[path] = &Path{path: path, app: a, internal: f}
 }
 
+// Register a service for an internal app
 func (a *App) service(service string) {
 	services[service] = a
 }

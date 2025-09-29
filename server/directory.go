@@ -69,7 +69,7 @@ func directory_download_event(e *Event) {
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	db.scans(&results, "select * from directory order by id")
+	db.scans(&results, "select * from directory order by created, id")
 	for _, d := range results {
 		m := message("", "", "directory", "publish")
 		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data, "created", i64toa(d.Created))

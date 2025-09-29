@@ -93,6 +93,10 @@ func itoa(in int) string {
 	return strconv.Itoa(in)
 }
 
+func i64toa(in int64) string {
+	return strconv.FormatInt(in, 10)
+}
+
 func json_decode(out any, j string) bool {
 	err := json.Unmarshal([]byte(j), out)
 	if err != nil {

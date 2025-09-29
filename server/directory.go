@@ -42,7 +42,7 @@ func directory_create(e *Entity) {
 	now := now()
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, p2p_id, e.Data, now, now)
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
 }
 
 // Delete a directory entry
@@ -51,7 +51,7 @@ func directory_delete(id string) {
 	db.exec("delete from directory where id=?", id)
 }
 
-// Ask known peers to send us a full copy of the directory, after a short delay to give time to connect to them
+// Ask known peers to/ send us a full copy of the directory, after a short delay to give time to connect to them
 func directory_download() {
 	time.Sleep(10 * time.Second)
 	for _, p := range peers_bootstrap {
@@ -72,7 +72,7 @@ func directory_download_event(e *Event) {
 	db.scans(&results, "select * from directory order by id")
 	for _, d := range results {
 		m := message("", "", "directory", "publish")
-		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data)
+		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data, "created", i64toa(d.Created))
 		m.send_peer(e.peer)
 		time.Sleep(time.Millisecond)
 	}
@@ -120,6 +120,8 @@ func directory_publish_event(e *Event) {
 		return
 	}
 
+	created := now
+
 	if e.from == "" {
 		found := false
 		for _, p := range peers_bootstrap {
@@ -132,7 +134,8 @@ func directory_publish_event(e *Event) {
 			info("Directory dropping anonymous event from untrusted peer")
 			return
 		}
-		//TODO Use created time from bootstrap peers
+
+		created = atoi(e.get("created", ""), created)
 
 	} else if e.from != id {
 		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.from)
@@ -140,7 +143,7 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, data, now, now)
+	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, data, created, now)
 
 	go queue_check_entity(id)
 }

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
-	"time"
 )
 
 type Attachment struct {
@@ -24,20 +22,6 @@ type Attachment struct {
 	Data    []byte `cbor:"-" json:"-" map:"-"`
 }
 
-type AttachmentRequest struct {
-	identity  string
-	entity    string
-	id        string
-	thumbnail bool
-	response  chan *Event
-	time      int64
-}
-
-var (
-	attachments_requested []*AttachmentRequest
-	attachments_lock      = &sync.Mutex{}
-)
-
 func init() {
 	a := app("attachments")
 	a.db("attachments/attachments.db", attachments_db_create)
@@ -49,8 +33,6 @@ func init() {
 	a.service("attachments")
 	a.event("get", attachments_get_event)
 	a.event("get/thumbnail", attachments_get_thumbnail_event)
-	a.event("send", attachments_send_event)
-	a.event("send/thumbnail", attachments_send_thumbnail_event)
 }
 
 // Create app database
@@ -165,41 +147,17 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		}
 	}
 
-	// Check if we already have a request in progress, and if not add to list
-	found := false
-	attachments_lock.Lock()
-	for _, ar := range attachments_requested {
-		if ar.identity == identity && ar.entity == at.Entity && ar.id == id && ar.thumbnail == thumbnail {
-			found = true
-			break
-		}
+	// Request from owning entity
+	event := "get"
+	if thumbnail {
+		event = "get/thumbnail"
 	}
-	ar := AttachmentRequest{identity: identity, entity: at.Entity, id: id, thumbnail: thumbnail, response: make(chan *Event), time: now()}
-	attachments_requested = append(attachments_requested, &ar)
-	attachments_lock.Unlock()
+	s := stream(identity, at.Entity, "attachments", event)
+	s.write_content("id", id)
 
-	// Send request to entity storing file
-	if !found {
-		event := "get"
-		if thumbnail {
-			event = "get/thumbnail"
-		}
-
-		message(identity, at.Entity, "attachments", event).set("id", id).send()
-	}
-
-	// Wait up to 1 minute for response
-	var e *Event
-	select {
-	case e = <-ar.response:
-	case <-time.After(time.Minute):
-		a.error(500, "Timeout fetching remote file")
-		return
-	}
-	status := e.get("status", "")
-	if status != "200" {
-		info("Attachment received negative response for '%s': %s", id, status)
-		a.error(500, "Unable to fetch remote file: %s", status)
+	response := s.read_content()
+	if response["status"] != "200" {
+		a.error(500, "Unable to fetch remote file: %s", response["status"])
 		return
 	}
 
@@ -215,7 +173,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	}
 	path := fmt.Sprintf("%d/%s/%s%s/%s_%s", user, identity, at.Entity, thumbnail_dir, id, safe)
 	full := cache_dir + "/" + path
-	if !file_write_from_reader(full, e.reader) {
+	if !file_write_from_reader(full, s.reader) {
 		a.error(500, "Unable to write file to cache")
 		return
 	}
@@ -237,9 +195,11 @@ func attachments_get_work(a *Action, thumbnail bool) {
 // Request to get a file
 func attachments_get_event(e *Event) {
 	id := e.get("id", "")
+	s := e.stream
 
 	if !valid(id, "id") {
 		info("Request for attachment with invalid ID '%s'", id)
+		s.write_content("status", "400")
 		return
 	}
 
@@ -249,11 +209,9 @@ func attachments_get_event(e *Event) {
 	var at Attachment
 	if db.scan(&at, "select * from attachments where entity=? and id=?", e.to, id) {
 		file := fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path)
-		if !file_exists(data_dir + "/" + file) {
-			m := message(e.to, e.from, "attachments", "send")
-			m.set("status", "200", "id", id)
-			m.file = file
-			m.send()
+		if file_exists(file) {
+			s.write_content("status", "200")
+			s.write_file(file)
 			return
 
 		} else {
@@ -264,12 +222,13 @@ func attachments_get_event(e *Event) {
 		info("Request for unknown attachment '%s'", e.id)
 	}
 
-	message(e.to, e.from, "attachments", "send").set("status", "404", "id", id).send()
+	s.write_content("status", "404")
 }
 
 // Request to get a thumbnail
 func attachments_get_thumbnail_event(e *Event) {
 	id := e.get("id", "")
+	s := e.stream
 
 	if !valid(id, "id") {
 		info("Request for thumbnail with invalid ID '%s'", id)
@@ -281,35 +240,16 @@ func attachments_get_thumbnail_event(e *Event) {
 
 	var at Attachment
 	if db.scan(&at, "select * from attachments where entity=? and id=?", e.to, id) {
-		path, err := thumbnail_create(fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path))
+		file, err := thumbnail_create(fmt.Sprintf("%s/users/%d/%s", data_dir, e.user.ID, at.Path))
 		if err == nil {
-			m := message(e.to, e.from, "attachments", "send/thumbnail")
-			m.set("status", "200", "id", id)
-			m.file = path
-			m.send()
+			s.write_content("status", "200")
+			s.write_file(file)
 			return
 		}
 	}
 
 	info("Request for unknown attachment thumbnail '%s'", e.id)
-	message(e.to, e.from, "attachments", "send/thumbnail").set("status", "404", "id", id).send()
-}
-
-// Clean up list of attachments waiting to be received
-func attachments_manager() {
-	for {
-		var survivors []*AttachmentRequest
-		time.Sleep(24 * time.Hour)
-		now := now()
-		attachments_lock.Lock()
-		for _, r := range attachments_requested {
-			if r.time >= now-86400 {
-				survivors = append(survivors, r)
-			}
-		}
-		attachments_requested = survivors
-		attachments_lock.Unlock()
-	}
+	s.write_content("status", "404")
 }
 
 // Take an array of attachment objects, and save them locally
@@ -399,33 +339,6 @@ func attachments_save_maps(as *[]map[string]string, u *User, entity string, form
 		debug("Attachments creating '%s'", path)
 		db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, a["id"], a["object"], a["rank"], a["name"], path, a["size"], a["created"])
 	}
-}
-
-// Receive a send event, and send it to the channel of any actions waiting for it
-func attachments_send_event(e *Event) {
-	attachments_send_event_work(e, false)
-}
-
-// Receive a thumbnail event, and send it to the channel of any actions waiting for it
-func attachments_send_thumbnail_event(e *Event) {
-	attachments_send_event_work(e, true)
-}
-
-// Do the work for the above two functions
-func attachments_send_event_work(e *Event, thumbnail bool) {
-	id := e.get("id", "")
-
-	var survivors []*AttachmentRequest
-	attachments_lock.Lock()
-	for _, r := range attachments_requested {
-		if r.identity == e.to && r.entity == e.from && r.id == id && r.thumbnail == thumbnail {
-			r.response <- e
-		} else {
-			survivors = append(survivors, r)
-		}
-	}
-	attachments_requested = survivors
-	attachments_lock.Unlock()
 }
 
 // Get list of uploaded attachments, save them, and optionally save their data

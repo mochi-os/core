@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -19,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	multiaddr "github.com/multiformats/go-multiaddr"
+	"io"
 )
 
 type mdns_notifee struct {
@@ -93,7 +93,7 @@ func p2p_pubsubs() {
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
 			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
-			message_receive(bytes.NewReader(m.Data), 1, peer)
+			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
 			peer_discovered(peer)
 			peer_connect(peer)
 		}
@@ -106,7 +106,7 @@ func p2p_receive_event_1(s p2p_network.Stream) {
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P event from '%s' at '%s'", peer, address)
 
-	message_receive(bufio.NewReader(s), 1, peer)
+	stream_receive(stream_rw(s, s), 1, peer)
 	peer_discovered_address(peer, address)
 }
 
@@ -160,7 +160,7 @@ func p2p_start() {
 }
 
 // Create stream to an already connected peer
-func p2p_stream(peer string) p2p_network.Stream {
+func p2p_stream(peer string) *Stream {
 	p, err := p2p_peer.Decode(peer)
 	if err != nil {
 		warn("P2P invalid peer '%s': %v", peer, err)
@@ -172,7 +172,8 @@ func p2p_stream(peer string) p2p_network.Stream {
 		warn("P2P unable to create stream to '%s': %v'", peer, err)
 		return nil
 	}
-	return s
+
+	return stream_rw(io.ReadCloser(s), io.WriteCloser(s))
 }
 
 // Watch event bus for disconnecting peers

@@ -40,7 +40,6 @@ func main() {
 	new_install := db_start()
 	apps_start()
 	p2p_start()
-	go attachments_manager()
 	go cache_manager()
 	go entities_manager()
 	go peers_manager()

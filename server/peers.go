@@ -250,34 +250,17 @@ func peer_request_event(e *Event) {
 	}
 }
 
-// Check whether we have enough peers to send broadcast messages to, or whether to queue them
-func peers_sufficient() bool {
-	total := 0
-	peers_lock.Lock()
-	for _, p := range peers {
-		if p.connected {
-			total++
-		}
-	}
-	peers_lock.Unlock()
-
-	if total >= peers_minimum {
-		return true
-	}
-	return false
-}
-
-// Get a writer to a peer, connecting if necessary
-func peer_writer(id string) io.WriteCloser {
+// Get a reader and writer to a peer, connecting if necessary
+func peer_stream(id string) *Stream {
 	if id == "" {
 		return nil
 	}
 
 	if id == p2p_id {
 		debug("Sending event to ourself")
-		r, w := io.Pipe()
-		go message_receive(r, 1, p2p_id)
-		return w
+		s := stream_rw(io.Pipe())
+		go stream_receive(s, 1, p2p_id)
+		return s
 	}
 
 	p := peer_by_id(id)
@@ -293,4 +276,21 @@ func peer_writer(id string) io.WriteCloser {
 	}
 
 	return p2p_stream(id)
+}
+
+// Check whether we have enough peers to send broadcast messages to, or whether to queue them
+func peers_sufficient() bool {
+	total := 0
+	peers_lock.Lock()
+	for _, p := range peers {
+		if p.connected {
+			total++
+		}
+	}
+	peers_lock.Unlock()
+
+	if total >= peers_minimum {
+		return true
+	}
+	return false
 }

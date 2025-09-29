@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 type App struct {
@@ -70,16 +71,13 @@ type Path struct {
 	internal func(*Action)
 }
 
-const (
+var (
 	apps_install_by_default = []string{
 		"12qMc1J5PZJDmgbdxtjB1b8xWeA6zhFJUbz5wWUEJSK3gyeFUPb", // Home
 		"123jjo8q9kx8HZHmxbQ6DMfWPsMSByongGbG3wTrywcm2aA5b8x", // Notifications
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
 	}
-)
-
-var (
 	apps     = map[string]*App{}
 	icons    = map[string]Icon{}
 	paths    = map[string]*Path{}
@@ -97,9 +95,10 @@ func app(name string) *App {
 	return &a
 }
 
-func app_check_install(id string) {
+func app_check_install(id string) bool {
 	//TODO Check and install/update app
 	debug("TODO App '%s' checking installation", id)
+	return true
 }
 
 // Load details of an installed app from the filesystems
@@ -240,7 +239,7 @@ func app_load(id string, version string) error {
 func apps_manager() {
 	time.Sleep(time.Second)
 	for {
-		var todo map[string]bool
+		todo := map[string]bool{}
 
 		for _, id := range apps_install_by_default {
 			todo[id] = true

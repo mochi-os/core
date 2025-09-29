@@ -421,7 +421,7 @@ func slapi_event_segment(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	var v any
-	err := e.decoder.Decode(&v)
+	err := e.stream.decoder.Decode(&v)
 	if err != nil {
 		return nil, err
 	}

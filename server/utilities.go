@@ -56,6 +56,14 @@ func base58_encode(in []byte) string {
 	return base58.CheckEncode(in, 0)
 }
 
+func cbor_decode(out any, in []byte) bool {
+	err := cbor.Unmarshal(in, out)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 func cbor_encode(in any) []byte {
 	return must(cbor.Marshal(in))
 }

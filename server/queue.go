@@ -4,8 +4,6 @@
 package main
 
 import (
-	"io"
-	"os"
 	"time"
 )
 
@@ -71,33 +69,18 @@ func queue_check_peer(peer string) {
 
 // Send a queue event
 func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
-	w := peer_writer(peer)
-	if w == nil {
+	s := peer_stream(peer)
+	if s == nil {
 		debug("Unable to create stream to peer, keeping in queue")
 		return false
 	}
-	defer w.Close()
 
-	if len(*data) > 0 {
-		_, err := w.Write(*data)
-		if err != nil {
-			debug("Error sending combined data segment: %v", err)
-			return false
-		}
+	if len(*data) > 0 && !s.write(*data) {
+		return false
 	}
 
-	if file != "" {
-		f, err := os.Open(file)
-		if err != nil {
-			warn("Unable to read file '%s'", file)
-			return false
-		}
-		defer f.Close()
-		_, err = io.Copy(w, f)
-		if err != nil {
-			debug("Error sending file segment: %v", err)
-			return false
-		}
+	if file != "" && !s.write_file(file) {
+		return false
 	}
 
 	debug("Queued event sent")

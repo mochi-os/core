@@ -131,3 +131,25 @@ func entity_peer(id string) string {
 	message("", id, "directory", "request").publish(false)
 	return ""
 }
+
+// Sign a string using an entity's private key
+func entity_sign(entity string, s string) string {
+	if entity == "" {
+		return ""
+	}
+
+	db := db_open("db/users.db")
+	var e Entity
+	if !db.scan(&e, "select private from entities where id=?", entity) {
+		warn("Signature entity '%s' not found", entity)
+		return ""
+	}
+
+	private := base58_decode(e.Private, "")
+	if string(private) == "" {
+		warn("Signature entity '%s' empty private key", entity)
+		return ""
+	}
+
+	return base58_encode(ed25519.Sign(private, []byte(s)))
+}

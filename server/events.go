@@ -5,8 +5,6 @@ package main
 
 import (
 	"fmt"
-	cbor "github.com/fxamacker/cbor/v2"
-	"io"
 	rd "runtime/debug"
 )
 
@@ -16,22 +14,11 @@ type Event struct {
 	to      string
 	service string
 	event   string
-	content map[string]string
 	peer    string
+	content map[string]string
 	user    *User
 	db      *DB
-	reader  io.Reader
-	decoder *cbor.Decoder
-}
-
-// Decode the next segment from a received event
-func (e *Event) segment(v any) bool {
-	err := e.decoder.Decode(v)
-	if err != nil {
-		info("Event '%s' unable to decode segment: %v", e.id, err)
-		return false
-	}
-	return true
+	stream  *Stream
 }
 
 // Get a field from the content segment of a received event
@@ -156,4 +143,14 @@ func (e *Event) route() {
 		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
 		return
 	}
+}
+
+// Decode the next segment from a received event
+func (e *Event) segment(v any) bool {
+	err := e.stream.decoder.Decode(v)
+	if err != nil {
+		info("Event '%s' unable to decode segment: %v", e.id, err)
+		return false
+	}
+	return true
 }

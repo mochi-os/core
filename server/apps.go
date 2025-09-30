@@ -17,8 +17,6 @@ type App struct {
 		Version      string `json:"version"`
 	} `json:"engine"`
 	Files []string `json:"files"`
-	//TODO Rename to permissions?
-	Privileges []string `json:"privileges"`
 	Database   struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
@@ -97,7 +95,10 @@ func app(name string) *App {
 
 func app_check_install(id string) bool {
 	//TODO Check and install/update app
-	debug("TODO App '%s' checking installation", id)
+	s := stream("", id, "app", "versions")
+    s.write_content()
+    //response := s.read_content()
+
 	return true
 }
 

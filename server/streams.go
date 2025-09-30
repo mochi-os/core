@@ -15,6 +15,8 @@ type Stream struct {
 	decoder *cbor.Decoder
 }
 
+//TODO Set timeouts
+
 // Create a new stream with specified headers
 func stream(from string, to string, service string, event string) *Stream {
 	peer := entity_peer(to)
@@ -103,11 +105,16 @@ func (s *Stream) read_decode(v any) bool {
 
 // Write a segment to a stream
 func (s *Stream) write(b []byte) bool {
+	if s == nil || s.writer == nil {
+		return false
+	}
+
 	_, err := s.writer.Write(b)
 	if err != nil {
 		warn("Stream error sending segment: %v", err)
 		return false
 	}
+
 	return true
 }
 

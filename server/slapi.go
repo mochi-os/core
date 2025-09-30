@@ -407,9 +407,45 @@ func slapi_error(f *sl.Builtin, format string, values ...any) (sl.Value, error) 
 }
 
 // Create a new entity
-// TODO slapi_entity_create()
 func slapi_entity_create(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.None, nil
+	if len(args) < 3 || len(args) > 4 {
+		return slapi_error(f, "syntax: <class: string> <name: string> <privacy: string> [data: string]")
+	}
+
+	class, ok := sl.AsString(args[0])
+	if !ok || !valid(class, "constant") {
+		return slapi_error(f, "invalid class '%s'", class)
+	}
+
+	name, ok := sl.AsString(args[1])
+	if !ok || !valid(name, "name") {
+		return slapi_error(f, "invalid name '%s'", name)
+	}
+
+	privacy, ok := sl.AsString(args[2])
+	if !ok || !valid(privacy, "^(private|public)$") {
+		return slapi_error(f, "invalid privacy '%s'", privacy)
+	}
+
+	data := ""
+	if len(args) > 3 {
+		data, ok = sl.AsString(args[3])
+		if !ok || !valid(data, "text") {
+			return slapi_error(f, "invalid data '%s'", data)
+		}
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	e, err := entity_create(user, class, name, privacy, data)
+	if err != nil {
+		return slapi_error(f, "unable to create entity: ", err)
+	}
+
+	return starlark_encode(e.ID), nil
 }
 
 // Decode the next segment of an event

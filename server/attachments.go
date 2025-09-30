@@ -192,7 +192,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	a.web.DataFromReader(http.StatusOK, file_size(full), file_name_type(at.Name), f, map[string]string{"Content-Disposition": "inline; filename=\"" + safe + "\""})
 }
 
-// Request to get a file
+// Receieved a request to get a file
 func attachments_get_event(e *Event) {
 	id := e.get("id", "")
 	s := e.stream

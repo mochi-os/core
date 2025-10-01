@@ -95,6 +95,7 @@ func db_create() {
 }
 
 // Open a database file for an app, creating it if necessary
+// TODO Put in db subdirectory?
 func db_app(u *User, a *App) *DB {
 	if a.Database.File == "" {
 		warn("App '%s' asked for database, but no database file specified", a.id)

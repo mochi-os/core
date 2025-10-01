@@ -16,8 +16,8 @@ type App struct {
 		Architecture string `json:"architecture"`
 		Version      string `json:"version"`
 	} `json:"engine"`
-	Files []string `json:"files"`
-	Database   struct {
+	Files    []string `json:"files"`
+	Database struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
 		CreateFunction func(*DB) `json:"-"`
@@ -96,8 +96,8 @@ func app(name string) *App {
 func app_check_install(id string) bool {
 	//TODO Check and install/update app
 	s := stream("", id, "app", "versions")
-    s.write_content()
-    //response := s.read_content()
+	s.write_content()
+	//response := s.read_content()
 
 	return true
 }

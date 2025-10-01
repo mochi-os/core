@@ -29,10 +29,10 @@ func init() {
 				}),
 				"write": sl.NewBuiltin("write", slapi_action_write),
 			}),
-			"attachments": sls.FromStringDict(sl.String("attachments"), sl.StringDict{
-				"get":  sl.NewBuiltin("mochi.attachments.get", slapi_attachments_get),
-				"put":  sl.NewBuiltin("mochi.attachments.put", slapi_attachments_put),
-				"save": sl.NewBuiltin("mochi.attachments.save", slapi_attachments_save),
+			"attachment": sls.FromStringDict(sl.String("attachments"), sl.StringDict{
+				"get":  sl.NewBuiltin("mochi.attachment.get", slapi_attachment_get),
+				"put":  sl.NewBuiltin("mochi.attachment.put", slapi_attachment_put),
+				"save": sl.NewBuiltin("mochi.attachment.save", slapi_attachment_save),
 			}),
 			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
 				"icons": sl.NewBuiltin("mochi.apps.icons", slapi_apps_icons),
@@ -228,7 +228,7 @@ func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 }
 
 // Get attachments for an object
-func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func slapi_attachment_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <object: string>")
 	}
@@ -248,7 +248,7 @@ func slapi_attachments_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Upload attachments for an object
-func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func slapi_attachment_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 4 {
 		return slapi_error(f, "syntax: <field: string> <object: string> <entity: string> <save locally: boolean>")
 	}
@@ -280,7 +280,7 @@ func slapi_attachments_put(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Save attachments
-func slapi_attachments_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func slapi_attachment_save(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return slapi_error(f, "syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
 	}

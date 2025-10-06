@@ -3,11 +3,10 @@
 		Feeds
 		Forums
 
-		Install apps by default
-		Multiple versions and tracks
-		Resource limits
-		Publishing
+		App Market
 		Updates
+		Install apps by default
+		Resource limits
 
 	Client API
 	Web interface
@@ -47,7 +46,7 @@
 0.3:
 	Apps
 		Dependencies between apps
-	App market
+		Multiple versions running at once
 
 	Chat app
 		Load older messages on scroll

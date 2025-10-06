@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -76,10 +77,11 @@ var (
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
 	}
-	apps     = map[string]*App{}
-	icons    = map[string]Icon{}
-	paths    = map[string]*Path{}
-	services = map[string]*App{}
+	apps      = map[string]*App{}
+	apps_lock = &sync.Mutex{}
+	icons     = map[string]Icon{}
+	paths     = map[string]*Path{}
+	services  = map[string]*App{}
 )
 
 // Create data structure for new internal app
@@ -153,7 +155,8 @@ func app_install(id string, version string, file string) (*App, error) {
 	} else {
 		debug("App '%s' installing version '%s' from '%s'", id, version, file)
 	}
-	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", cache_dir, id, random_alphanumeric(8))
+	file_mkdir(data_dir + "/tmp")
+	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", data_dir, id, random_alphanumeric(8))
 
 	err := unzip(file, tmp)
 	if err != nil {
@@ -384,9 +387,11 @@ func (a *App) icon(path string, label string, name string, icon string) {
 
 // Load details of an app and make it available to users
 // TODO Update web paths
-// TODO Add locking
 func (a *App) load() {
 	debug("App loading '%+v", a)
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
 	apps[a.id] = a
 
 	for i, file := range a.Files {

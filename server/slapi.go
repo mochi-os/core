@@ -303,8 +303,8 @@ func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kw
 
 // Install an app
 func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return slapi_error(f, "syntax: <app id: string> <file: string>")
+	if len(args) < 2 || len(args) > 3 {
+		return slapi_error(f, "syntax: <app id: string> <file: string> [check only: boolean]")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -317,6 +317,12 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return slapi_error(f, "invalid file '%s'", file)
 	}
 
+	check_only := false
+	if len(args) > 2 {
+		check_only = bool(args[2].Truth())
+		debug("slapi_app_install() check only '%v'", check_only)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return slapi_error(f, "no user")
@@ -327,11 +333,13 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return slapi_error(f, "no app")
 	}
 
-	a, err := app_install(id, "", slapi_file(user, app, file))
+	a, err := app_install(id, "", slapi_file(user, app, file), check_only)
 	if err != nil {
 		return slapi_error(f, fmt.Sprintf("App install failed: '%v'", err))
 	}
-	a.load()
+	if !check_only {
+		a.load()
+	}
 
 	return starlark_encode(a.Version), nil
 }

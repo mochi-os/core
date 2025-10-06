@@ -136,7 +136,7 @@ func app_check_install(id string) bool {
 			return false
 		}
 
-		a, err := app_install(id, version, zip)
+		a, err := app_install(id, version, zip, false)
 		if err != nil {
 			file_delete(zip)
 			return false
@@ -149,7 +149,7 @@ func app_check_install(id string) bool {
 }
 
 // Install an app from a zip file, but not load it
-func app_install(id string, version string, file string) (*App, error) {
+func app_install(id string, version string, file string, check_only bool) (*App, error) {
 	if version == "" {
 		debug("App '%s' installing from '%s'", id, file)
 	} else {
@@ -176,6 +176,12 @@ func app_install(id string, version string, file string) (*App, error) {
 	if version != "" && version != a.Version {
 		file_delete_all(tmp)
 		return nil, error_message("Specified version does not match file version")
+	}
+
+	if check_only {
+		debug("App '%s' not installing", id)
+		file_delete_all(tmp)
+		return a, nil
 	}
 
 	a.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, a.Version)

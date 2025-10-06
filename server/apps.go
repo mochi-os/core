@@ -99,6 +99,9 @@ func app_check_install(id string) bool {
 	debug("App '%s' checking install status", id)
 
 	s := stream("", id, "app", "version")
+	if s == nil {
+		return false
+	}
 	s.write_content("track", "production")
 	debug("App '%s' waiting for response", id)
 	response := s.read_content()
@@ -118,7 +121,7 @@ func app_check_install(id string) bool {
 		debug("App '%s' downloading version '%s'", id, version)
 		s := stream("", id, "app", "get")
 		defer s.close()
-		s.write_content()
+		s.write_content("version", version)
 
 		debug("App '%s' waiting for response", id)
 		response := s.read_content()

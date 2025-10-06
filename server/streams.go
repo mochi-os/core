@@ -91,10 +91,8 @@ func (s *Stream) read_content() map[string]string {
 
 // Read a CBOR encoded segment from a stream
 func (s *Stream) read_decode(v any) bool {
-	debug("STREAM='%#v'", s)
-	debug("DECODER='%#v'", s.decoder)
 	if s == nil {
-		info("Stream empty")
+		return false
 	}
 	if s.decoder == nil {
 		s.decoder = cbor.NewDecoder(s.reader)

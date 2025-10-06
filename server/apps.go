@@ -93,147 +93,91 @@ func app(name string) *App {
 	return &a
 }
 
+// Check whether app is the correct version, and if not download and install new version
+// TODO Test app check after wasabi is upgraded to 0.2.
 func app_check_install(id string) bool {
-	//TODO Check and install/update app
-	s := stream("", id, "app", "versions")
-	s.write_content()
-	//response := s.read_content()
+	debug("App '%s' checking install status", id)
+
+	s := stream("", id, "app", "version")
+	s.write_content("track", "production")
+	debug("App '%s' waiting for response", id)
+	response := s.read_content()
+	s.close()
+
+	if response["status"] != "200" {
+		return false
+	}
+
+	version := response["version"]
+	if !valid(version, "version") {
+		return false
+	}
+
+	a := apps[id]
+	if a == nil || a.Version != version {
+		debug("App '%s' downloading version '%s'", id, version)
+		s := stream("", id, "app", "get")
+		defer s.close()
+		s.write_content()
+
+		debug("App '%s' waiting for response", id)
+		response := s.read_content()
+		if response["status"] != "200" {
+			return false
+		}
+
+		zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
+		if !file_write_from_reader(zip, s.reader) {
+			file_delete(zip)
+			return false
+		}
+
+		a, err := app_install(id, version, zip)
+		if err != nil {
+			file_delete(zip)
+			return false
+		}
+		a.load()
+		debug("App '%s' version '%s' loaded", id, version)
+	}
 
 	return true
 }
 
-// Load details of an installed app from the filesystems
-func app_load(id string, version string) error {
-	debug("App '%s' version '%s' loading", id, version)
+// Install an app from a zip file, but not load it
+func app_install(id string, version string, file string) (*App, error) {
+	if version == "" {
+		debug("App '%s' installing from '%s'", id, file)
+	} else {
+		debug("App '%s' installing version '%s' from '%s'", id, version, file)
+	}
+	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", cache_dir, id, random_alphanumeric(8))
 
-	// Load app manifest from app.json
-	base := fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version)
-	if !file_exists(base + "/app.json") {
-		return error_message("App '%s' version '%s' has no app.json file; ignoring", id, version)
+	err := unzip(file, tmp)
+	if err != nil {
+		file_delete_all(tmp)
+		return nil, err
 	}
 
-	var a App
-	if !json_decode(&a, string(file_read(base+"/app.json"))) {
-		return error_message("App bad app.json '%s/app.json'; ignoring app", base)
+	a, err := app_read(id, tmp)
+	if err != nil {
+		file_delete_all(tmp)
+		return nil, err
 	}
 
-	a.id = id
-	a.base = base
-
-	// Vaildate manifest
-	if !valid(a.Name, "name") {
-		return error_message("App bad name '%s'", a.Name)
+	if version != "" && version != a.Version {
+		file_delete_all(tmp)
+		return nil, error_message("Specified version does not match file version")
 	}
 
-	if !valid(a.Version, "version") {
-		return error_message("App bad version '%s'", a.Version)
+	a.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, a.Version)
+	if file_exists(a.base) {
+		file_delete_all(a.base)
 	}
+	file_move(tmp, a.base)
 
-	if a.Engine.Architecture != "starlark" || a.Engine.Version != "1" {
-		return error_message("App bad engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
-	}
-
-	for _, file := range a.Files {
-		if !valid(file, "filepath") {
-			return error_message("App bad executable file '%s'", file)
-		}
-	}
-
-	if a.Database.File != "" && !valid(a.Database.File, "filename") {
-		return error_message("App bad database file '%s'", a.Database.File)
-	}
-
-	if a.Database.Create != "" && !valid(a.Database.Create, "function") {
-		return error_message("App bad database create function '%s'", a.Database.Create)
-	}
-
-	for _, i := range a.Icons {
-		if i.Path != "" && !valid(i.Path, "constant") {
-			return error_message("App bad icon path '%s'", i.Path)
-		}
-
-		if i.Label != "" && !valid(i.Label, "constant") {
-			return error_message("App bad icon label '%s'", i.Label)
-		}
-
-		if i.Name != "" && !valid(i.Name, "name") {
-			return error_message("App bad icon name '%s'", i.Name)
-		}
-
-		if !valid(i.Icon, "filepath") {
-			return error_message("App bad icon '%s'", i.Icon)
-		}
-	}
-
-	for path, p := range a.Paths {
-		if !valid(path, "path") {
-			return error_message("App bad path '%s'", path)
-		}
-
-		for action, a := range p.Actions {
-			if action != "" && !valid(action, "action") {
-				return error_message("App bad action '%s'", action)
-			}
-
-			if !valid(a.Function, "function") {
-				return error_message("App bad action function '%s'", a.Function)
-			}
-		}
-	}
-
-	for service, s := range a.Services {
-		if !valid(service, "constant") {
-			return error_message("App bad service '%s'", service)
-		}
-
-		for event, e := range s.Events {
-			if !valid(event, "constant") {
-				return error_message("App bad event '%s'", event)
-			}
-
-			if !valid(e.Function, "function") {
-				return error_message("App bad event function '%s'", e.Function)
-			}
-		}
-
-		for function, f := range s.Functions {
-			if function != "" && !valid(function, "constant") {
-				return error_message("App bad function '%s'", function)
-			}
-
-			if !valid(f.Function, "function") {
-				return error_message("App bad function function '%s'", f.Function)
-			}
-		}
-	}
-
-	// Add app to system
-	apps[a.Name] = &a
-
-	for i, file := range a.Files {
-		a.Files[i] = a.base + "/" + file
-	}
-
-	for _, i := range a.Icons {
-		icons[i.Name] = i
-	}
-
-	for path, p := range a.Paths {
-		for action, ac := range p.Actions {
-			full := path
-			if action != "" {
-				full = path + "/" + action
-			}
-			paths[full] = &Path{path: full, app: &a, function: ac.Function, public: ac.Public, internal: nil}
-		}
-	}
-
-	for service, _ := range a.Services {
-		services[service] = &a
-	}
-
-	debug("App loaded: %+v", a)
-	return nil
+	debug("App '%s' version '%s' installed", id, a.Version)
+	return a, nil
 }
 
 // Manage which apps and their versions are installed
@@ -267,15 +211,123 @@ func apps_manager() {
 	}
 }
 
+// Read in an app from a directory
+func app_read(id string, base string) (*App, error) {
+	debug("App '%s' loading from '%s'", id, base)
+
+	// Load app manifest from app.json
+	if !file_exists(base + "/app.json") {
+		return nil, error_message("App '%s' in '%s' has no app.json file; ignoring", id, base)
+	}
+
+	var a App
+	if !json_decode(&a, string(file_read(base+"/app.json"))) {
+		return nil, error_message("App bad app.json '%s/app.json'; ignoring app", base)
+	}
+
+	a.id = id
+	a.base = base
+
+	// Vaildate manifest
+	if !valid(a.Name, "name") {
+		return nil, error_message("App bad name '%s'", a.Name)
+	}
+
+	if !valid(a.Version, "version") {
+		return nil, error_message("App bad version '%s'", a.Version)
+	}
+
+	if a.Engine.Architecture != "starlark" || a.Engine.Version != "1" {
+		return nil, error_message("App bad engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
+	}
+
+	for _, file := range a.Files {
+		if !valid(file, "filepath") {
+			return nil, error_message("App bad executable file '%s'", file)
+		}
+	}
+
+	if a.Database.File != "" && !valid(a.Database.File, "filename") {
+		return nil, error_message("App bad database file '%s'", a.Database.File)
+	}
+
+	if a.Database.Create != "" && !valid(a.Database.Create, "function") {
+		return nil, error_message("App bad database create function '%s'", a.Database.Create)
+	}
+
+	for _, i := range a.Icons {
+		if i.Path != "" && !valid(i.Path, "constant") {
+			return nil, error_message("App bad icon path '%s'", i.Path)
+		}
+
+		if i.Label != "" && !valid(i.Label, "constant") {
+			return nil, error_message("App bad icon label '%s'", i.Label)
+		}
+
+		if i.Name != "" && !valid(i.Name, "name") {
+			return nil, error_message("App bad icon name '%s'", i.Name)
+		}
+
+		if !valid(i.Icon, "filepath") {
+			return nil, error_message("App bad icon '%s'", i.Icon)
+		}
+	}
+
+	for path, p := range a.Paths {
+		if !valid(path, "path") {
+			return nil, error_message("App bad path '%s'", path)
+		}
+
+		for action, a := range p.Actions {
+			if action != "" && !valid(action, "action") {
+				return nil, error_message("App bad action '%s'", action)
+			}
+
+			if !valid(a.Function, "function") {
+				return nil, error_message("App bad action function '%s'", a.Function)
+			}
+		}
+	}
+
+	for service, s := range a.Services {
+		if !valid(service, "constant") {
+			return nil, error_message("App bad service '%s'", service)
+		}
+
+		for event, e := range s.Events {
+			if !valid(event, "constant") {
+				return nil, error_message("App bad event '%s'", event)
+			}
+
+			if !valid(e.Function, "function") {
+				return nil, error_message("App bad event function '%s'", e.Function)
+			}
+		}
+
+		for function, f := range s.Functions {
+			if function != "" && !valid(function, "constant") {
+				return nil, error_message("App bad function '%s'", function)
+			}
+
+			if !valid(f.Function, "function") {
+				return nil, error_message("App bad function function '%s'", f.Function)
+			}
+		}
+	}
+
+	return &a, nil
+}
+
 // Check which apps are installed, and load them
 func apps_start() {
 	for _, id := range files_dir(data_dir + "/apps") {
 		for _, version := range files_dir(data_dir + "/apps/" + id) {
 			debug("App '%s' version '%s' found", id, version)
-			err := app_load(id, version)
+			a, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {
 				info("App load error: %v", err)
 			}
+			a.load()
 		}
 	}
 }
@@ -326,6 +378,38 @@ func (a *App) event_broadcast(event string, f func(*Event)) {
 // Register an icon for an internal app
 func (a *App) icon(path string, label string, name string, icon string) {
 	icons[path] = Icon{Path: path, Label: label, Name: name, Icon: icon}
+}
+
+// Load details of an app and make it available to users
+// TODO Update web paths
+// TODO Add locking
+func (a *App) load() {
+	debug("App loading '%+v", a)
+	apps[a.id] = a
+
+	for i, file := range a.Files {
+		a.Files[i] = a.base + "/" + file
+	}
+
+	for _, i := range a.Icons {
+		icons[i.Name] = i
+	}
+
+	for path, p := range a.Paths {
+		for action, ac := range p.Actions {
+			full := path
+			if action != "" {
+				full = path + "/" + action
+			}
+			paths[full] = &Path{path: full, app: a, function: ac.Function, public: ac.Public, internal: nil}
+		}
+	}
+
+	for service, _ := range a.Services {
+		services[service] = a
+	}
+
+	debug("App loaded")
 }
 
 // Register a path for actions for an internal app

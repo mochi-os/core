@@ -26,7 +26,11 @@ func file_create(path string) {
 }
 
 func file_delete(path string) {
-	os.Remove(path)
+	must(os.Remove(path))
+}
+
+func file_delete_all(path string) {
+	must(os.RemoveAll(path))
 }
 
 func files_dir(path string) []string {
@@ -63,6 +67,11 @@ func file_mkdir_for_file(path string) {
 
 func file_mkfifo(path string) {
 	must(syscall.Mkfifo(path, 0600))
+}
+
+func file_move(old string, new string) {
+	file_mkdir_for_file(new)
+	must(os.Rename(old, new))
 }
 
 func file_name_safe(s string) string {

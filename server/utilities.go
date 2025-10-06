@@ -4,6 +4,7 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/rand"
 	sha "crypto/sha1"
 	"encoding/hex"
@@ -14,7 +15,10 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 	md "github.com/gomarkdown/markdown"
 	"github.com/google/uuid"
+	"io"
 	"math/big"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -213,6 +217,51 @@ func uid() string {
 	return match_hyphens.ReplaceAllLiteralString(u.String(), "")
 }
 
+func unzip(file string, destination string) error {
+	r, err := zip.OpenReader(file)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		path := filepath.Join(destination, f.Name)
+
+		if !strings.HasPrefix(path, filepath.Clean(destination)+string(os.PathSeparator)) {
+			return error_message("Invalid file path '%s'", path)
+		}
+
+		if f.FileInfo().IsDir() {
+			file_mkdir(path)
+			continue
+		}
+
+		file_mkdir_for_file(path)
+
+		d, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+
+		fa, err := f.Open()
+		if err != nil {
+			d.Close()
+			return err
+		}
+
+		_, err = io.Copy(d, fa)
+
+		d.Close()
+		fa.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func valid(s string, match string) bool {
 	//debug("Validating '%s' (%+v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
@@ -261,7 +310,7 @@ func valid(s string, match string) bool {
 		}
 		match = "^[\\w\\-\\/:%@.+?&;=~]*$"
 	case "version":
-		match = "^[0-9.]{1,10}$"
+		match = "^[0-9a-zA-Z.-_]{1,20}$"
 	}
 
 	m := must(regexp.MatchString(match, s))

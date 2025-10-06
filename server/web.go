@@ -251,10 +251,6 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	r.Use(func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store, no-cache, must-revalidate")
-		c.Next()
-	})
 
 	for _, p := range paths {
 		r.GET("/"+p.path, p.web_path)

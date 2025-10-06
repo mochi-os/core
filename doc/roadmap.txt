@@ -4,6 +4,7 @@
 		Forums
 
 		Install apps by default
+		Multiple versions and tracks
 		Resource limits
 		Publishing
 		Updates
@@ -18,9 +19,6 @@
 	User management
 	Users can change their settings
 		View identity and fingerprint
-	Users can create hooks to control events using their own code
-		Starlark
-		HTTPS
 	User avatars
 
 	Feeds app
@@ -48,7 +46,6 @@
 
 0.3:
 	Apps
-		Multiple versions and tracks
 		Dependencies between apps
 	App market
 
@@ -67,10 +64,15 @@
 		Users can choose which apps get which service
 		Users can choose which apps get which web path
 
+	Users can create hooks to control events using their own code
+		Starlark
+		HTTPS
+
 0.4 or later:
 	Users can categorise updates into feeds
 	Verified user identities
 
+	Browser notifications
 	Push notifications to Android and iOS apps
 	Read external RSS feeds
 	Provide RSS feeds for feeds

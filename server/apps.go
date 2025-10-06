@@ -157,15 +157,18 @@ func app_install(id string, version string, file string) (*App, error) {
 	}
 	file_mkdir(data_dir + "/tmp")
 	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", data_dir, id, random_alphanumeric(8))
+	debug("App unzipping into tmp directory '%s'", tmp)
 
 	err := unzip(file, tmp)
 	if err != nil {
+		info("App unzip failed: %v", err)
 		file_delete_all(tmp)
 		return nil, err
 	}
 
 	a, err := app_read(id, tmp)
 	if err != nil {
+		info("App read failed: %v", err)
 		file_delete_all(tmp)
 		return nil, err
 	}
@@ -177,8 +180,10 @@ func app_install(id string, version string, file string) (*App, error) {
 
 	a.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, a.Version)
 	if file_exists(a.base) {
+		debug("App '%s' removing old copy of version '%s' in '%s'", id, a.Version, a.base)
 		file_delete_all(a.base)
 	}
+	debug("Moving unzipped app from '%s' to '%s'", tmp, a.base)
 	file_move(tmp, a.base)
 
 	debug("App '%s' version '%s' installed", id, a.Version)

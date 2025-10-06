@@ -94,7 +94,6 @@ func app(name string) *App {
 }
 
 // Check whether app is the correct version, and if not download and install new version
-// TODO Test app check after wasabi is upgraded to 0.2.
 func app_check_install(id string) bool {
 	debug("App '%s' checking install status", id)
 

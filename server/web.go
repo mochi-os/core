@@ -6,11 +6,12 @@ package main
 import (
 	"embed"
 	"fmt"
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
 	"html/template"
 	"net/http"
 	"net/url"
+
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -232,6 +233,144 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
+// Handle generic API requests for Starlark apps
+func handleAPI(c *gin.Context) {
+	appID := c.Param("app")
+	actionName := c.Param("action")
+	
+	debug("API request: app='%s', action='%s'", appID, actionName)
+	
+	// Find the app by ID first, then by name
+	app, exists := apps[appID]
+	if !exists {
+		// Try to find by name
+		for _, a := range apps {
+			if a.Name == appID {
+				app = a
+				exists = true
+				debug("Found app by name: %s (ID: %s)", a.Name, a.id)
+				break
+			}
+		}
+	} else {
+		debug("Found app by ID: %s", appID)
+	}
+	
+	if !exists {
+		debug("App not found: %s", appID)
+		c.JSON(404, gin.H{"error": "App not found"})
+		return
+	}
+	
+	// Find the action in the app's paths
+	var actionFunction string
+	var isPublic bool
+	found := false
+	
+	debug("Looking for action '%s' in app '%s'", actionName, app.Name)
+	for pathName, path := range app.Paths {
+		debug("Checking path '%s' with %d actions", pathName, len(path.Actions))
+		// Debug: show all available actions
+		for actionKey := range path.Actions {
+			debug("Available action: '%s'", actionKey)
+		}
+		if action, exists := path.Actions[actionName]; exists {
+			actionFunction = action.Function
+			isPublic = action.Public
+			found = true
+			debug("Found action '%s' -> function '%s'", actionName, actionFunction)
+			break
+		}
+	}
+	
+	if !found {
+		debug("Action '%s' not found in app '%s'", actionName, app.Name)
+		c.JSON(404, gin.H{"error": "Action not found"})
+		return
+	}
+	
+	// Get user authentication
+	user := web_auth(c)
+	if user == nil && !isPublic {
+		c.JSON(401, gin.H{"error": "Authentication required"})
+		return
+	}
+	
+	// Set up database if needed
+	if app.Database.File != "" && user != nil {
+		user.db = db_app(user, app)
+		if user.db == nil {
+			c.JSON(500, gin.H{"error": "Database error"})
+			return
+		}
+		defer user.db.close()
+	}
+	
+	// Create action context
+	action := Action{user: user, owner: user, app: app, web: c, path: nil}
+	
+	// Prepare inputs from query parameters and JSON body
+	inputs := make(map[string]interface{})
+	
+	// Add query parameters
+	for key, values := range c.Request.URL.Query() {
+		if len(values) > 0 {
+			inputs[key] = values[0]
+		}
+	}
+	
+	// Add JSON body if present
+	if c.Request.Header.Get("Content-Type") == "application/json" {
+		var jsonData map[string]interface{}
+		if err := c.ShouldBindJSON(&jsonData); err == nil {
+			for key, value := range jsonData {
+				inputs[key] = value
+			}
+		}
+	}
+	
+	// Prepare action context for Starlark
+	fields := map[string]string{
+		"format":               "json",
+		"identity.id":          "",
+		"identity.fingerprint": "",
+		"identity.name":        "",
+		"path":                 actionName,
+	}
+	
+	if user != nil && user.Identity != nil {
+		fields["identity.id"] = user.Identity.ID
+		fields["identity.fingerprint"] = user.Identity.Fingerprint
+		fields["identity.name"] = user.Identity.Name
+	}
+	
+	// Call the Starlark function
+	s := app.starlark()
+	s.set("action", &action)
+	s.set("app", app)
+	s.set("user", user)
+	s.set("owner", user)
+	
+	result, err := s.call(actionFunction, starlark_encode_tuple(fields, inputs))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	
+	// Check if the result is a JSON response format
+	if resultMap, ok := starlark_decode(result).(map[string]interface{}); ok {
+		if format, hasFormat := resultMap["format"]; hasFormat && format == "json" {
+			if data, hasData := resultMap["data"]; hasData {
+				c.JSON(200, data)
+				return
+			}
+		}
+	}
+	
+	// Fallback: return the raw result
+	c.JSON(200, starlark_decode(result))
+}
+
 func web_redirect(c *gin.Context, url string) {
 	web_template(c, 200, "redirect", url)
 }
@@ -262,6 +401,7 @@ func web_start() {
 	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
+	r.Any("/api/:app/:action", handleAPI)
 
 	// Replace when we implement URL mapping
 	if ini_string("web", "special", "") == "packages" {

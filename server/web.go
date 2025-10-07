@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,22 @@ var (
 	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
 	templates embed.FS
 )
+
+// Simple CORS middleware to allow browser clients
+func corsMiddleware(c *gin.Context) {
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Login")
+	// If you later need cookies over CORS, set Allow-Credentials and restrict origin
+	// c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	if c.Request.Method == "OPTIONS" {
+		c.AbortWithStatus(204)
+		return
+	}
+
+	c.Next()
+}
 
 func web_auth(c *gin.Context) *User {
 	return user_by_login(web_cookie_get(c, "login", ""))
@@ -289,15 +306,52 @@ func handleAPI(c *gin.Context) {
 		return
 	}
 	
-	// Get user authentication
+	// Get user authentication via cookie
 	user := web_auth(c)
+
+	// If no cookie auth, try token-based authentication
+	if user == nil {
+		token := ""
+		
+		// Check Authorization header (Bearer token)
+		authHeader := c.GetHeader("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		
+		// Check X-Login header
+		if token == "" {
+			token = c.GetHeader("X-Login")
+		}
+		
+		// Check login query parameter
+		if token == "" {
+			token = c.Query("login")
+		}
+		
+		// Authenticate with token
+		if token != "" {
+			if u := user_by_login(token); u != nil {
+				user = u
+				debug("API login token accepted for user %d", u.ID)
+			}
+		}
+	}
+
+	// Require authentication for non-public actions
 	if user == nil && !isPublic {
 		c.JSON(401, gin.H{"error": "Authentication required"})
 		return
 	}
 	
+	// Require authentication for database-backed apps
+	if user == nil && app.Database.File != "" {
+		c.JSON(401, gin.H{"error": "Authentication required for database access"})
+		return
+	}
+	
 	// Set up database if needed
-	if app.Database.File != "" && user != nil {
+	if app.Database.File != "" {
 		user.db = db_app(user, app)
 		if user.db == nil {
 			c.JSON(500, gin.H{"error": "Database error"})
@@ -390,6 +444,7 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
+	r.Use(corsMiddleware)
 
 	for _, p := range paths {
 		r.GET("/"+p.path, p.web_path)

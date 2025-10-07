@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/autotls"
@@ -252,8 +253,8 @@ func web_ping(c *gin.Context) {
 
 // Handle generic API requests for Starlark apps
 func handleAPI(c *gin.Context) {
-	appID := c.Param("app")
-	actionName := c.Param("action")
+    appID := c.Param("app")
+    actionName := strings.TrimPrefix(c.Param("action"), "/")
 	
 	debug("API request: app='%s', action='%s'", appID, actionName)
 	
@@ -279,23 +280,91 @@ func handleAPI(c *gin.Context) {
 		return
 	}
 	
-	// Find the action in the app's paths
+	// Find the action in the app's paths (supports dynamic segments like :chat/messages)
 	var actionFunction string
 	var isPublic bool
 	found := false
-	
+	patternParams := map[string]string{}
+
 	debug("Looking for action '%s' in app '%s'", actionName, app.Name)
+	
+	// Collect all actions from all paths
+	type actionCandidate struct {
+		key      string
+		function string
+		public   bool
+		segments int
+		literals int
+	}
+	var candidates []actionCandidate
+	
 	for pathName, path := range app.Paths {
 		debug("Checking path '%s' with %d actions", pathName, len(path.Actions))
-		// Debug: show all available actions
-		for actionKey := range path.Actions {
+		for actionKey, action := range path.Actions {
 			debug("Available action: '%s'", actionKey)
+			segs := strings.Split(actionKey, "/")
+			lits := 0
+			for _, s := range segs {
+				if !strings.HasPrefix(s, ":") {
+					lits++
+				}
+			}
+			candidates = append(candidates, actionCandidate{
+				key:      actionKey,
+				function: action.Function,
+				public:   action.Public,
+				segments: len(segs),
+				literals: lits,
+			})
 		}
-		if action, exists := path.Actions[actionName]; exists {
-			actionFunction = action.Function
-			isPublic = action.Public
+	}
+	
+	// Sort candidates: more segments first, then more literals first
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].segments != candidates[j].segments {
+			return candidates[i].segments > candidates[j].segments
+		}
+		return candidates[i].literals > candidates[j].literals
+	})
+	
+	// Try to match in order of specificity
+	for _, cand := range candidates {
+		actionKey := cand.key
+		
+		// Try exact match first
+		if actionKey == actionName {
+			actionFunction = cand.function
+			isPublic = cand.public
 			found = true
-			debug("Found action '%s' -> function '%s'", actionName, actionFunction)
+			debug("Found action '%s' -> function '%s' (direct)", actionName, actionFunction)
+			break
+		}
+
+		// Try dynamic match
+		keySegs := strings.Split(actionKey, "/")
+		valSegs := strings.Split(actionName, "/")
+		if len(keySegs) != len(valSegs) {
+			continue
+		}
+		tmp := map[string]string{}
+		ok := true
+		for i := 0; i < len(keySegs); i++ {
+			ks := keySegs[i]
+			vs := valSegs[i]
+			if strings.HasPrefix(ks, ":") {
+				name := ks[1:]
+				tmp[name] = vs
+			} else if ks != vs {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			actionFunction = cand.function
+			isPublic = cand.public
+			patternParams = tmp
+			found = true
+			debug("Found action '%s' -> function '%s' (pattern match)", actionKey, actionFunction)
 			break
 		}
 	}
@@ -363,13 +432,19 @@ func handleAPI(c *gin.Context) {
 	// Create action context
 	action := Action{user: user, owner: user, app: app, web: c, path: nil}
 	
-	// Prepare inputs from query parameters and JSON body
+	// Prepare inputs from path params, query parameters and JSON body
 	inputs := make(map[string]interface{})
+	// Add extracted path params first
+	for k, v := range patternParams {
+		inputs[k] = v
+	}
 	
 	// Add query parameters
 	for key, values := range c.Request.URL.Query() {
 		if len(values) > 0 {
-			inputs[key] = values[0]
+			if _, exists := inputs[key]; !exists {
+				inputs[key] = values[0]
+			}
 		}
 	}
 	
@@ -445,6 +520,8 @@ func web_start() {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 	r.Use(corsMiddleware)
+	// Avoid 301 redirects on API preflights (which break CORS)
+	r.RedirectTrailingSlash = false
 
 	for _, p := range paths {
 		r.GET("/"+p.path, p.web_path)
@@ -456,7 +533,9 @@ func web_start() {
 	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
-	r.Any("/api/:app/:action", handleAPI)
+	// Support both /api/:app and /api/:app/<action...>
+	r.Any("/api/:app", handleAPI)
+	r.Any("/api/:app/*action", handleAPI)
 
 	// Replace when we implement URL mapping
 	if ini_string("web", "special", "") == "packages" {

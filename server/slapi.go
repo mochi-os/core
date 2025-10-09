@@ -380,12 +380,12 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // Get list of installed apps
 func slapi_app_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	ids := make([]string, len(apps))
-	i := 0
+	var ids []string
 	apps_lock.Lock()
 	for id, _ := range apps {
-		ids[i] = id
-		i++
+		if valid(id, "entity") {
+			ids = append(ids, id)
+		}
 	}
 	apps_lock.Unlock()
 

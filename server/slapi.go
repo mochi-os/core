@@ -10,7 +10,9 @@ import (
 	"html/template"
 	"maps"
 	"slices"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -303,8 +305,24 @@ func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kw
 }
 
 // Get details of an app
-// TODO slapi_app_get()
 func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error(f, "invalid ID '%s'", id)
+	}
+
+	apps_lock.Lock()
+	a, found := apps[id]
+	apps_lock.Unlock()
+
+	if found {
+		return starlark_encode(map[string]string{"id": a.id, "name": a.Name, "version": a.Version}), nil
+	}
+
 	return sl.None, nil
 }
 
@@ -361,9 +379,29 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // Get list of installed apps
-// TODO slapi_app_list()
 func slapi_app_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.None, nil
+	ids := make([]string, len(apps))
+	i := 0
+	apps_lock.Lock()
+	for id, _ := range apps {
+		ids[i] = id
+		i++
+	}
+	apps_lock.Unlock()
+
+	sort.Slice(ids, func(i, j int) bool {
+		return strings.ToLower(apps[ids[i]].Name) < strings.ToLower(apps[ids[j]].Name)
+	})
+
+	as := make([]map[string]string, len(ids))
+	apps_lock.Lock()
+	for i, id := range ids {
+		a := apps[id]
+		as[i] = map[string]string{"id": a.id, "name": a.Name, "version": a.Version}
+	}
+	apps_lock.Unlock()
+
+	return starlark_encode(as), nil
 }
 
 // Get attachments for an object

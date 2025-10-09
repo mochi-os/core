@@ -10,7 +10,9 @@ import (
 	"html/template"
 	"maps"
 	"slices"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -39,10 +41,10 @@ func init() {
 				"save": sl.NewBuiltin("mochi.attachment.save", slapi_attachment_save),
 			}),
 			"app": sls.FromStringDict(sl.String("app"), sl.StringDict{
+				"get":     sl.NewBuiltin("mochi.app.get", slapi_app_get),
+				"icons":   sl.NewBuiltin("mochi.app.icons", slapi_app_icons),
 				"install": sl.NewBuiltin("mochi.app.install", slapi_app_install),
-			}),
-			"apps": sls.FromStringDict(sl.String("apps"), sl.StringDict{
-				"icons": sl.NewBuiltin("mochi.apps.icons", slapi_apps_icons),
+				"list":    sl.NewBuiltin("mochi.app.list", slapi_app_list),
 			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", slapi_db_query),
@@ -55,6 +57,7 @@ func init() {
 			"entity": sls.FromStringDict(sl.String("directory"), sl.StringDict{
 				"create":      sl.NewBuiltin("mochi.entity.create", slapi_entity_create),
 				"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", slapi_entity_fingerprint),
+				"get":         sl.NewBuiltin("mochi.entity.get", slapi_entity_get),
 			}),
 			"event": sls.FromStringDict(sl.String("event"), sl.StringDict{
 				"segment": sl.NewBuiltin("mochi.event.segment", slapi_event_segment),
@@ -301,6 +304,37 @@ func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kw
 	return sl.None, nil
 }
 
+// Get details of an app
+func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error(f, "invalid ID '%s'", id)
+	}
+
+	apps_lock.Lock()
+	a, found := apps[id]
+	apps_lock.Unlock()
+
+	if found {
+		return starlark_encode(map[string]string{"id": a.id, "name": a.Name, "version": a.Version}), nil
+	}
+
+	return sl.None, nil
+}
+
+// Get available icons for home
+func slapi_app_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	results := make([]map[string]string, len(icons))
+	for j, i := range slices.Sorted(maps.Keys(icons)) {
+		results[j] = map[string]string{"path": icons[i].Path, "label": icons[i].Label, "name": icons[i].Name, "icon": icons[i].Icon}
+	}
+	return starlark_encode(results), nil
+}
+
 // Install an app
 func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
@@ -344,13 +378,30 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return starlark_encode(a.Version), nil
 }
 
-// Get available icons for home
-func slapi_apps_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	results := make([]map[string]string, len(icons))
-	for j, i := range slices.Sorted(maps.Keys(icons)) {
-		results[j] = map[string]string{"path": icons[i].Path, "label": icons[i].Label, "name": icons[i].Name, "icon": icons[i].Icon}
+// Get list of installed apps
+func slapi_app_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var ids []string
+	apps_lock.Lock()
+	for id, _ := range apps {
+		if valid(id, "entity") {
+			ids = append(ids, id)
+		}
 	}
-	return starlark_encode(results), nil
+	apps_lock.Unlock()
+
+	sort.Slice(ids, func(i, j int) bool {
+		return strings.ToLower(apps[ids[i]].Name) < strings.ToLower(apps[ids[j]].Name)
+	})
+
+	as := make([]map[string]string, len(ids))
+	apps_lock.Lock()
+	for i, id := range ids {
+		a := apps[id]
+		as[i] = map[string]string{"id": a.id, "name": a.Name, "version": a.Version}
+	}
+	apps_lock.Unlock()
+
+	return starlark_encode(as), nil
 }
 
 // Get attachments for an object
@@ -575,7 +626,6 @@ func slapi_entity_create(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl
 }
 
 // Get the fingerprint of an entity
-// TODO Test slapi_entity_fingerprint()
 func slapi_entity_fingerprint(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return slapi_error(f, "syntax: <id: string> [include hyphens: boolean]")
@@ -591,6 +641,31 @@ func slapi_entity_fingerprint(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs
 	} else {
 		return starlark_encode(fingerprint(id)), nil
 	}
+}
+
+// Get an entity
+func slapi_entity_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return slapi_error(f, "invalid id '%s'", id)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	db := db_open("db/users.db")
+	var e Entity
+	if db.scan(&e, "select id, fingerprint, parent, class, name, privacy, data, updated from entities where id=? and user=?", id, user.ID) {
+		return starlark_encode(e), nil
+	}
+
+	return sl.None, nil
 }
 
 // Decode the next segment of an event

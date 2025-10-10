@@ -745,9 +745,36 @@ func slapi_file_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // List files
-// TODO slapi_file_list()
+// TODO Test slapi_file_list()
 func slapi_file_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.None, nil
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <directory: string>")
+	}
+
+	dir, ok := sl.AsString(args[0])
+	if !ok || !valid(dir, "filepath") {
+		return slapi_error(f, "invalid directory '%s'", dir)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return slapi_error(f, "no app")
+	}
+
+	path := slapi_file(user, app, dir)
+	if !file_exists(path) {
+		return slapi_error(f, "does not exist")
+	}
+	if !file_is_directory(path) {
+		return slapi_error(f, "not a directory")
+	}
+
+	return starlark_encode(file_list(path)), nil
 }
 
 // Read a file into memory

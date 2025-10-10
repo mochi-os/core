@@ -206,7 +206,7 @@ func apps_manager() {
 			todo[id] = true
 		}
 
-		for _, id := range files_dir(data_dir + "/apps") {
+		for _, id := range file_list(data_dir + "/apps") {
 			if valid(id, "entity") {
 				todo[id] = true
 			}
@@ -336,8 +336,8 @@ func app_read(id string, base string) (*App, error) {
 
 // Check which apps are installed, and load them
 func apps_start() {
-	for _, id := range files_dir(data_dir + "/apps") {
-		for _, version := range files_dir(data_dir + "/apps/" + id) {
+	for _, id := range file_list(data_dir + "/apps") {
+		for _, version := range file_list(data_dir + "/apps/" + id) {
 			debug("App '%s' version '%s' found", id, version)
 			a, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {

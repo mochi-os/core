@@ -845,9 +845,18 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 }
 
 // Render markdown
-// TODO slapi_markdown_render()
+// TODO Test slapi_markdown_render()
 func slapi_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.None, nil
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <markdown: string>")
+	}
+
+	in, ok := sl.AsString(args[0])
+	if !ok {
+		return slapi_error(f, "invalid markdown")
+	}
+
+	return starlark_encode(markdown([]byte(in))), nil
 }
 
 // Send a message

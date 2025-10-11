@@ -253,11 +253,11 @@ func web_ping(c *gin.Context) {
 
 // Handle generic API requests for Starlark apps
 func handleAPI(c *gin.Context) {
-    appID := c.Param("app")
-    actionName := strings.TrimPrefix(c.Param("action"), "/")
-	
+	appID := c.Param("app")
+	actionName := strings.TrimPrefix(c.Param("action"), "/")
+
 	debug("API request: app='%s', action='%s'", appID, actionName)
-	
+
 	// Find the app by ID first, then by name
 	app, exists := apps[appID]
 	if !exists {
@@ -273,13 +273,13 @@ func handleAPI(c *gin.Context) {
 	} else {
 		debug("Found app by ID: %s", appID)
 	}
-	
+
 	if !exists {
 		debug("App not found: %s", appID)
 		c.JSON(404, gin.H{"error": "App not found"})
 		return
 	}
-	
+
 	// Find the action in the app's paths (supports dynamic segments like :chat/messages)
 	var actionFunction string
 	var isPublic bool
@@ -287,7 +287,7 @@ func handleAPI(c *gin.Context) {
 	patternParams := map[string]string{}
 
 	debug("Looking for action '%s' in app '%s'", actionName, app.Name)
-	
+
 	// Collect all actions from all paths
 	type actionCandidate struct {
 		key      string
@@ -297,7 +297,7 @@ func handleAPI(c *gin.Context) {
 		literals int
 	}
 	var candidates []actionCandidate
-	
+
 	for pathName, path := range app.Paths {
 		debug("Checking path '%s' with %d actions", pathName, len(path.Actions))
 		for actionKey, action := range path.Actions {
@@ -318,7 +318,7 @@ func handleAPI(c *gin.Context) {
 			})
 		}
 	}
-	
+
 	// Sort candidates: more segments first, then more literals first
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].segments != candidates[j].segments {
@@ -326,11 +326,11 @@ func handleAPI(c *gin.Context) {
 		}
 		return candidates[i].literals > candidates[j].literals
 	})
-	
+
 	// Try to match in order of specificity
 	for _, cand := range candidates {
 		actionKey := cand.key
-		
+
 		// Try exact match first
 		if actionKey == actionName {
 			actionFunction = cand.function
@@ -368,41 +368,50 @@ func handleAPI(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	if !found {
 		debug("Action '%s' not found in app '%s'", actionName, app.Name)
 		c.JSON(404, gin.H{"error": "Action not found"})
 		return
 	}
-	
+
 	// Get user authentication via cookie
 	user := web_auth(c)
 
-	// If no cookie auth, try token-based authentication
+	// If no cookie auth, try token-based authentication.
+	// First attempt JWT (Bearer) tokens, then fall back to legacy login tokens.
 	if user == nil {
 		token := ""
-		
+
 		// Check Authorization header (Bearer token)
 		authHeader := c.GetHeader("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
 		}
-		
+
 		// Check X-Login header
 		if token == "" {
 			token = c.GetHeader("X-Login")
 		}
-		
+
 		// Check login query parameter
 		if token == "" {
 			token = c.Query("login")
 		}
-		
-		// Authenticate with token
+
+		// Try JWT verification first
 		if token != "" {
-			if u := user_by_login(token); u != nil {
-				user = u
-				debug("API login token accepted for user %d", u.ID)
+			if uid, err := jwt_verify(token); err == nil && uid > 0 {
+				if u := user_by_id(uid); u != nil {
+					user = u
+					debug("API JWT token accepted for user %d", u.ID)
+				}
+			} else {
+				// Fallback: legacy login token stored in DB
+				if u := user_by_login(token); u != nil {
+					user = u
+					debug("API login token accepted for user %d", u.ID)
+				}
 			}
 		}
 	}
@@ -412,13 +421,13 @@ func handleAPI(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "Authentication required"})
 		return
 	}
-	
+
 	// Require authentication for database-backed apps
 	if user == nil && app.Database.File != "" {
 		c.JSON(401, gin.H{"error": "Authentication required for database access"})
 		return
 	}
-	
+
 	// Set up database if needed
 	if app.Database.File != "" {
 		user.db = db_app(user, app)
@@ -428,17 +437,17 @@ func handleAPI(c *gin.Context) {
 		}
 		defer user.db.close()
 	}
-	
+
 	// Create action context
 	action := Action{user: user, owner: user, app: app, web: c, path: nil}
-	
+
 	// Prepare inputs from path params, query parameters and JSON body
 	inputs := make(map[string]interface{})
 	// Add extracted path params first
 	for k, v := range patternParams {
 		inputs[k] = v
 	}
-	
+
 	// Add query parameters
 	for key, values := range c.Request.URL.Query() {
 		if len(values) > 0 {
@@ -447,7 +456,7 @@ func handleAPI(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// Add JSON body if present
 	if c.Request.Header.Get("Content-Type") == "application/json" {
 		var jsonData map[string]interface{}
@@ -457,7 +466,7 @@ func handleAPI(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// Prepare action context for Starlark
 	fields := map[string]string{
 		"format":               "json",
@@ -466,26 +475,26 @@ func handleAPI(c *gin.Context) {
 		"identity.name":        "",
 		"path":                 actionName,
 	}
-	
+
 	if user != nil && user.Identity != nil {
 		fields["identity.id"] = user.Identity.ID
 		fields["identity.fingerprint"] = user.Identity.Fingerprint
 		fields["identity.name"] = user.Identity.Name
 	}
-	
+
 	// Call the Starlark function
 	s := app.starlark()
 	s.set("action", &action)
 	s.set("app", app)
 	s.set("user", user)
 	s.set("owner", user)
-	
+
 	result, err := s.call(actionFunction, starlark_encode_tuple(fields, inputs))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	// Check if the result is a JSON response format
 	if resultMap, ok := starlark_decode(result).(map[string]interface{}); ok {
 		if format, hasFormat := resultMap["format"]; hasFormat && format == "json" {
@@ -495,7 +504,7 @@ func handleAPI(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// Fallback: return the raw result
 	c.JSON(200, starlark_decode(result))
 }
@@ -527,6 +536,7 @@ func web_start() {
 		r.GET("/"+p.path, p.web_path)
 		r.POST("/"+p.path, p.web_path)
 	}
+	r.POST("/api/login/auth", api_login_auth)
 	r.GET("/login", web_login)
 	r.POST("/login", web_login)
 	r.POST("/login/identity", web_identity_create)

@@ -9,6 +9,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/gin-gonic/autotls v1.1.3
 	github.com/gin-gonic/gin v1.10.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/gomarkdown/markdown v0.0.0-20250810172220-2e2c11897d1a
 	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.3.5
@@ -18,6 +19,7 @@ require (
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
 	github.com/wneessen/go-mail v0.6.2
+	go.starlark.net v0.0.0-20250906160240-bf296ed553ea
 	gopkg.in/ini.v1 v1.67.0
 	nhooyr.io/websocket v1.8.11
 )
@@ -114,7 +116,6 @@ require (
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.starlark.net v0.0.0-20250906160240-bf296ed553ea // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/mock v0.5.2 // indirect

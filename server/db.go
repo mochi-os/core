@@ -6,10 +6,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
 	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type DB struct {
@@ -46,7 +47,9 @@ func db_create() {
 	users.exec("create index codes_expires on codes( expires )")
 
 	// Logins
-	users.exec("create table logins ( user references users( id ), code text not null, name text not null default '', expires integer not null, primary key ( user, code ) )")
+	// code: the login token string presented by clients
+	// secret: a per-login secret used to sign JWTs for that specific device/login
+	users.exec("create table logins ( user references users( id ), code text not null, secret text not null default '', name text not null default '', expires integer not null, primary key ( user, code ) )")
 	users.exec("create unique index logins_code on logins( code )")
 	users.exec("create index logins_expires on logins( expires )")
 

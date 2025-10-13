@@ -38,15 +38,6 @@ func code_send(email string) bool {
 	return true
 }
 
-func (u *User) identity() *Entity {
-	db := db_open("db/users.db")
-	var i Entity
-	if db.scan(&i, "select * from entities where user=? and class='person' order by id limit 1", u.ID) {
-		return &i
-	}
-	return nil
-}
-
 func login_create(user int) string {
 	code := random_alphanumeric(20)
 	db := db_open("db/users.db")
@@ -162,4 +153,20 @@ func user_owning_entity(id string) *User {
 	}
 
 	return &u
+}
+
+func (u *User) administrator() bool {
+	if u.Role == "administrator" {
+		return true
+	}
+	return false
+}
+
+func (u *User) identity() *Entity {
+	db := db_open("db/users.db")
+	var i Entity
+	if db.scan(&i, "select * from entities where user=? and class='person' order by id limit 1", u.ID) {
+		return &i
+	}
+	return nil
 }

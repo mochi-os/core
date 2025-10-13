@@ -356,6 +356,19 @@ func slapi_app_install_entity(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs
 		return slapi_error(f, "invalid version '%s'", version)
 	}
 
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+	if !user.administrator() {
+		return slapi_error(f, "not administrator")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return slapi_error(f, "no app")
+	}
+
 	return sl.None, nil
 }
 
@@ -390,6 +403,9 @@ func slapi_app_install_file(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 	user := t.Local("user").(*User)
 	if user == nil {
 		return slapi_error(f, "no user")
+	}
+	if !user.administrator() {
+		return slapi_error(f, "not administrator")
 	}
 
 	app, ok := t.Local("app").(*App)

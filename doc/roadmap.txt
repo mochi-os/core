@@ -1,8 +1,9 @@
 Alistair:
-	App Market
-	Test updates 
-	Install apps by default
 	Only admins can install apps
+	Install app from entity
+	Test updating apps
+	App Market
+	Install app from market
 	App names
 
 Numan:
@@ -48,6 +49,7 @@ Zubair:
 		Rotate images
 
 	Logging
+	Install apps by default
 	License
 
 0.3:

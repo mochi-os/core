@@ -115,7 +115,12 @@ func user_from_code(code string) *User {
 		return &u
 	}
 
-	db.exec("replace into users ( username, role, language, timezone ) values ( ?, 'user', 'en', '' )", c.Username)
+	role := "user"
+	if !db.exists("select id from users limit 1") {
+		role = "administrator"
+	}
+
+	db.exec("replace into users ( username, role, language, timezone ) values ( ?, ?, 'en', '' )", c.Username, role)
 
 	// Remove once we have hooks
 	admin := ini_string("email", "admin", "")

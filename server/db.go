@@ -109,7 +109,6 @@ func db_app(u *User, a *App) *DB {
 	}
 
 	if a.Database.Create != "" {
-		debug("Creating new database for app '%s' in file '%s' using '%s'", a.Name, a.Database.File, a.Database.Create)
 		db := db_open(path)
 		db.user = u
 		s := a.starlark()

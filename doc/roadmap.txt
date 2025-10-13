@@ -4,7 +4,6 @@ Alistair:
 	Test updating apps
 	App Market
 	Install app from market
-	App names
 
 Numan:
 	Client API

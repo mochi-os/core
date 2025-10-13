@@ -8,8 +8,6 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
-	"maps"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -324,7 +322,8 @@ func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	apps_lock.Unlock()
 
 	if found {
-		return starlark_encode(map[string]string{"id": a.id, "name": a.Name, "version": a.Version}), nil
+		user := t.Local("user").(*User)
+		return starlark_encode(map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}), nil
 	}
 
 	return sl.None, nil
@@ -332,10 +331,17 @@ func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 // Get available icons for home
 func slapi_app_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+
 	results := make([]map[string]string, len(icons))
-	for j, i := range slices.Sorted(maps.Keys(icons)) {
-		results[j] = map[string]string{"path": icons[i].Path, "label": icons[i].Label, "name": icons[i].Name, "icon": icons[i].Icon}
+	for j, i := range icons {
+		results[j] = map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon}
 	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
 	return starlark_encode(results), nil
 }
 
@@ -435,19 +441,20 @@ func slapi_app_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 	apps_lock.Unlock()
 
-	sort.Slice(ids, func(i, j int) bool {
-		return strings.ToLower(apps[ids[i]].Name) < strings.ToLower(apps[ids[j]].Name)
-	})
-
-	as := make([]map[string]string, len(ids))
+	user := t.Local("user").(*User)
+	results := make([]map[string]string, len(ids))
 	apps_lock.Lock()
 	for i, id := range ids {
 		a := apps[id]
-		as[i] = map[string]string{"id": a.id, "name": a.Name, "version": a.Version}
+		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}
 	}
 	apps_lock.Unlock()
 
-	return starlark_encode(as), nil
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
+	return starlark_encode(results), nil
 }
 
 // Get attachments for an object
@@ -890,7 +897,7 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 	if !ok || a == nil {
 		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
 	} else {
-		format = fmt.Sprintf("App %s:%s() %s", a.Name, t.Local("function"), format)
+		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), format)
 	}
 
 	values := make([]any, len(args)-1)
@@ -1032,7 +1039,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.Name, service, function, args[2:])
+	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.id, service, function, args[2:])
 	var result sl.Value
 	var err error
 	if len(args) > 2 {

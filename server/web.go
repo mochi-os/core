@@ -263,14 +263,17 @@ func handleAPI(c *gin.Context) {
 	app, exists := apps[appID]
 	if !exists {
 		// Try to find by name
-		for _, a := range apps {
-			if a.Name == appID {
-				app = a
-				exists = true
-				debug("Found app by name: %s (ID: %s)", a.Name, a.id)
-				break
+		//TODO Remove
+		/*
+			for _, a := range apps {
+				if a.Name == appID {
+					app = a
+					exists = true
+					debug("Found app by name: %s (ID: %s)", a.Name, a.id)
+					break
+				}
 			}
-		}
+		*/
 	} else {
 		debug("Found app by ID: %s", appID)
 	}
@@ -287,7 +290,7 @@ func handleAPI(c *gin.Context) {
 	found := false
 	patternParams := map[string]string{}
 
-	debug("Looking for action '%s' in app '%s'", actionName, app.Name)
+	debug("Looking for action '%s' in app '%s'", actionName, app.id)
 
 	// Collect all actions from all paths
 	type actionCandidate struct {
@@ -371,7 +374,7 @@ func handleAPI(c *gin.Context) {
 	}
 
 	if !found {
-		debug("Action '%s' not found in app '%s'", actionName, app.Name)
+		debug("Action '%s' not found in app '%s'", actionName, app.id)
 		c.JSON(404, gin.H{"error": "Action not found"})
 		return
 	}

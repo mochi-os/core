@@ -264,7 +264,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		if a == nil {
 			debug("%s(): %v", function, err)
 		} else if ok {
-			debug("App %s:%s() %v", a.Name, function, err)
+			debug("App %s:%s() %v", a.id, function, err)
 		}
 	}
 	return result, err

@@ -420,7 +420,7 @@ func (a *App) label(u *User, key string, values ...any) string {
 }
 
 // Load details of an app and make it available to users
-// TODO Update everything on upgrade
+// TODO Reload everything on upgrade
 func (a *App) load() {
 	if a == nil {
 		return
@@ -472,12 +472,9 @@ func (a *App) load() {
 
 		s := bufio.NewScanner(f)
 		for s.Scan() {
-			line := s.Text()
-			parts := strings.SplitN(line, "=", 2)
+			parts := strings.SplitN(s.Text(), "=", 2)
 			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				a.labels[language][key] = value
+				a.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
 		}
 	}

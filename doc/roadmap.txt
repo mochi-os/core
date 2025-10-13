@@ -1,17 +1,24 @@
-0.2:
-	Separate apps from server
-		Feeds
-		Forums
+Alistair:
+	App Market
+	Test updates 
+	Install apps by default
+	Only admins can install apps
+	App names
 
-		App Market
-		Updates
-		Install apps by default
-		Resource limits
-
+Numan:
 	Client API
 	Web interface
-		Route on entity
-		Map web URLs to entities
+
+Rob:
+	Feeds
+	Forums
+
+Zubair:
+	Resource limits
+
+0.2:
+	Route on entity
+	Map web URLs to entities
 	Find hidden services
 	Directory get recent updates
 
@@ -47,6 +54,9 @@
 	Apps
 		Dependencies between apps
 		Multiple versions running at once
+		App privileges
+		Users can choose which apps get which service
+		Users can choose which apps get which web path
 
 	Chat app
 		Load older messages on scroll
@@ -57,11 +67,6 @@
 
 	Forums app
 		Load older posts on scroll
-
-	User can manage their apps
-		App privileges
-		Users can choose which apps get which service
-		Users can choose which apps get which web path
 
 	Users can create hooks to control events using their own code
 		Starlark

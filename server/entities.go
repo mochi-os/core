@@ -74,24 +74,39 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 		parent = u.Identity.ID
 	}
 
-	for j := 0; j < 1000; j++ {
+	public, private, fingerprint := entity_id()
+	if public == "" {
+		return nil, error_message("Unable to find spare entity ID or fingerprint")
+	}
+
+	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.ID, parent, class, name, privacy, data)
+
+	e := Entity{ID: public, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+
+	if privacy == "public" {
+		directory_create(&e)
+		directory_publish(&e, true)
+	}
+
+	return &e, nil
+}
+
+// Get a public/private key pair for a new entity
+func entity_id() (string, string, string) {
+	db := db_open("db/users.db")
+
+	for j := 0; j < 10000; j++ {
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		check(err)
 		id := base58_encode(public)
 		fingerprint := fingerprint(id)
 		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
-			db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", id, base58_encode(private), fingerprint, u.ID, parent, class, name, privacy, data)
-			e := Entity{ID: id, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
-			if privacy == "public" {
-				directory_create(&e)
-				directory_publish(&e, true)
-			}
-			return &e, nil
+			return id, base58_encode(private), fingerprint
 		}
 		debug("Identity '%s', fingerprint '%s' already in use. Trying another...", id, fingerprint)
 	}
 
-	return nil, error_message("Unable to find spare entity ID or fingerprint")
+	return "", "", ""
 }
 
 // Re-publish all our entities periodically so the network knows they're still active

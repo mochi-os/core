@@ -252,6 +252,7 @@ func web_ping(c *gin.Context) {
 }
 
 // Handle generic API requests for Starlark apps
+// TODO Change variables coding style
 func handleAPI(c *gin.Context) {
 	appID := c.Param("app")
 	actionName := strings.TrimPrefix(c.Param("action"), "/")

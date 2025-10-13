@@ -33,7 +33,7 @@ func init() {
 				"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
 					"write": sl.NewBuiltin("mochi.action.websocket.write", slapi_action_websocket_write),
 				}),
-				"write": sl.NewBuiltin("write", slapi_action_write),
+				"write": sl.NewBuiltin("mochi.action.write", slapi_action_write),
 			}),
 			"attachment": sls.FromStringDict(sl.String("attachment"), sl.StringDict{
 				"get":  sl.NewBuiltin("mochi.attachment.get", slapi_attachment_get),
@@ -41,10 +41,13 @@ func init() {
 				"save": sl.NewBuiltin("mochi.attachment.save", slapi_attachment_save),
 			}),
 			"app": sls.FromStringDict(sl.String("app"), sl.StringDict{
-				"get":     sl.NewBuiltin("mochi.app.get", slapi_app_get),
-				"icons":   sl.NewBuiltin("mochi.app.icons", slapi_app_icons),
-				"install": sl.NewBuiltin("mochi.app.install", slapi_app_install),
-				"list":    sl.NewBuiltin("mochi.app.list", slapi_app_list),
+				"get":   sl.NewBuiltin("mochi.app.get", slapi_app_get),
+				"icons": sl.NewBuiltin("mochi.app.icons", slapi_app_icons),
+				"install": sls.FromStringDict(sl.String("install"), sl.StringDict{
+					"entity": sl.NewBuiltin("mochi.app.install.entity", slapi_app_install_entity),
+					"file":   sl.NewBuiltin("mochi.app.install.file", slapi_app_install_file),
+				}),
+				"list": sl.NewBuiltin("mochi.app.list", slapi_app_list),
 			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", slapi_db_query),
@@ -230,6 +233,7 @@ func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Write data back to the caller of the action
+// TODO Replace this if we're using React?
 func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return slapi_error(f, "syntax: <template path: string> <format: string> [data: dictionary]")
@@ -335,15 +339,41 @@ func slapi_app_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return starlark_encode(results), nil
 }
 
-// Install an app
-func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// Install an app given its publisher's entity
+// TODO slapi_app_install_entity()
+func slapi_app_install_entity(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return slapi_error(f, "syntax: <entity: string> <version: string>")
+	}
+
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return slapi_error(f, "invalid entity '%s'", entity)
+	}
+
+	version, ok := sl.AsString(args[1])
+	if !ok || !valid(version, "version") {
+		return slapi_error(f, "invalid version '%s'", version)
+	}
+
+	return sl.None, nil
+}
+
+// Install an app from a .zip file
+func slapi_app_install_file(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return slapi_error(f, "syntax: <app id: string> <file: string> [check only: boolean]")
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (id != "" && !valid(id, "entity")) {
 		return slapi_error(f, "invalid ID '%s'", id)
+	}
+	if id == "" {
+		id, _, _ = entity_id()
+		if id == "" {
+			return slapi_error(f, "unable to allocate id")
+		}
 	}
 
 	file, ok := sl.AsString(args[1])
@@ -354,7 +384,7 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	check_only := false
 	if len(args) > 2 {
 		check_only = bool(args[2].Truth())
-		debug("slapi_app_install() check only '%v'", check_only)
+		debug("slapi_app_install_file() check only '%v'", check_only)
 	}
 
 	user := t.Local("user").(*User)
@@ -690,7 +720,6 @@ func slapi_file(u *User, a *App, file string) string {
 }
 
 // Delete a file
-// TODO Test slapi_file_delete()
 func slapi_file_delete(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -716,7 +745,6 @@ func slapi_file_delete(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // Return whether a file exists
-// TODO Test slapi_file_exists()
 func slapi_file_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -745,7 +773,6 @@ func slapi_file_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // List files
-// TODO Test slapi_file_list()
 func slapi_file_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <directory: string>")
@@ -778,7 +805,6 @@ func slapi_file_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 }
 
 // Read a file into memory
-// TODO Test slapi_file_read()
 func slapi_file_read(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -803,7 +829,6 @@ func slapi_file_read(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 }
 
 // Write a file from memory
-// TODO Test slapi_file_write()
 func slapi_file_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return slapi_error(f, "syntax: <file: string> <data: array of bytes>")
@@ -872,7 +897,6 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 }
 
 // Render markdown
-// TODO Test slapi_markdown_render()
 func slapi_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <markdown: string>")

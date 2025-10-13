@@ -27,6 +27,7 @@ func init() {
 					"name":  sl.NewBuiltin("mochi.action.file.name", slapi_action_file_name),
 					"write": sl.NewBuiltin("mochi.action.file.write", slapi_action_file_write),
 				}),
+				"json":     sl.NewBuiltin("mochi.action.json", slapi_action_json),
 				"redirect": sl.NewBuiltin("mochi.action.redirect", slapi_action_redirect),
 				"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
 					"write": sl.NewBuiltin("mochi.action.websocket.write", slapi_action_websocket_write),
@@ -210,6 +211,22 @@ func slapi_action_file_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs 
 	return sl.None, nil
 }
 
+// Write JSON back to the caller of the function
+func slapi_action_json(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <data: dictionary>")
+	}
+
+	a := t.Local("action").(*Action)
+	if a == nil {
+		return slapi_error(f, "called from non-action")
+	}
+
+	a.json(starlark_decode(args[0]))
+
+	return sl.None, nil
+}
+
 // Redirect the action
 func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
@@ -230,8 +247,28 @@ func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
+// Write data back to the caller of the action via websocket
+func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return slapi_error(f, "syntax: <key: string> <content: any>")
+	}
+
+	key, ok := sl.AsString(args[0])
+	if !ok || !valid(key, "constant") {
+		return slapi_error(f, "invalid key '%s'", key)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	websockets_send(user, key, starlark_decode(args[1]))
+	return sl.None, nil
+}
+
 // Write data back to the caller of the action
-// TODO Replace this if we're using React?
+// This can be removed when all apps have been transitioned to React
 func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return slapi_error(f, "syntax: <template path: string> <format: string> [data: dictionary]")
@@ -283,26 +320,6 @@ func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 	}
 
-	return sl.None, nil
-}
-
-// Write data back to the caller of the action via websocket
-func slapi_action_websocket_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return slapi_error(f, "syntax: <key: string> <content: any>")
-	}
-
-	key, ok := sl.AsString(args[0])
-	if !ok || !valid(key, "constant") {
-		return slapi_error(f, "invalid key '%s'", key)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return slapi_error(f, "no user")
-	}
-
-	websockets_send(user, key, starlark_decode(args[1]))
 	return sl.None, nil
 }
 

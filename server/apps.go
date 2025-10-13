@@ -420,7 +420,7 @@ func (a *App) label(u *User, key string, values ...any) string {
 }
 
 // Load details of an app and make it available to users
-// TODO Reload everything on upgrade
+// TODO Reload icons, web paths, and services on upgrade. If possible, make it handle multiple versions in future
 func (a *App) load() {
 	if a == nil {
 		return

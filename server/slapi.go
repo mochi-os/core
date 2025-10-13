@@ -8,8 +8,6 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
-	"maps"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,7 +31,7 @@ func init() {
 				"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
 					"write": sl.NewBuiltin("mochi.action.websocket.write", slapi_action_websocket_write),
 				}),
-				"write": sl.NewBuiltin("write", slapi_action_write),
+				"write": sl.NewBuiltin("mochi.action.write", slapi_action_write),
 			}),
 			"attachment": sls.FromStringDict(sl.String("attachment"), sl.StringDict{
 				"get":  sl.NewBuiltin("mochi.attachment.get", slapi_attachment_get),
@@ -41,10 +39,13 @@ func init() {
 				"save": sl.NewBuiltin("mochi.attachment.save", slapi_attachment_save),
 			}),
 			"app": sls.FromStringDict(sl.String("app"), sl.StringDict{
-				"get":     sl.NewBuiltin("mochi.app.get", slapi_app_get),
-				"icons":   sl.NewBuiltin("mochi.app.icons", slapi_app_icons),
-				"install": sl.NewBuiltin("mochi.app.install", slapi_app_install),
-				"list":    sl.NewBuiltin("mochi.app.list", slapi_app_list),
+				"get":   sl.NewBuiltin("mochi.app.get", slapi_app_get),
+				"icons": sl.NewBuiltin("mochi.app.icons", slapi_app_icons),
+				"install": sls.FromStringDict(sl.String("install"), sl.StringDict{
+					"entity": sl.NewBuiltin("mochi.app.install.entity", slapi_app_install_entity),
+					"file":   sl.NewBuiltin("mochi.app.install.file", slapi_app_install_file),
+				}),
+				"list": sl.NewBuiltin("mochi.app.list", slapi_app_list),
 			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", slapi_db_query),
@@ -230,6 +231,7 @@ func slapi_action_redirect(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Write data back to the caller of the action
+// TODO Replace this if we're using React?
 func slapi_action_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return slapi_error(f, "syntax: <template path: string> <format: string> [data: dictionary]")
@@ -320,7 +322,8 @@ func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	apps_lock.Unlock()
 
 	if found {
-		return starlark_encode(map[string]string{"id": a.id, "name": a.Name, "version": a.Version}), nil
+		user := t.Local("user").(*User)
+		return starlark_encode(map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}), nil
 	}
 
 	return sl.None, nil
@@ -328,22 +331,68 @@ func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 // Get available icons for home
 func slapi_app_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+
 	results := make([]map[string]string, len(icons))
-	for j, i := range slices.Sorted(maps.Keys(icons)) {
-		results[j] = map[string]string{"path": icons[i].Path, "label": icons[i].Label, "name": icons[i].Name, "icon": icons[i].Icon}
+	for j, i := range icons {
+		results[j] = map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon}
 	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
 	return starlark_encode(results), nil
 }
 
-// Install an app
-func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// Install an app given its publisher's entity
+// TODO slapi_app_install_entity()
+func slapi_app_install_entity(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return slapi_error(f, "syntax: <entity: string> <version: string>")
+	}
+
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return slapi_error(f, "invalid entity '%s'", entity)
+	}
+
+	version, ok := sl.AsString(args[1])
+	if !ok || !valid(version, "version") {
+		return slapi_error(f, "invalid version '%s'", version)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+	if !user.administrator() {
+		return slapi_error(f, "not administrator")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return slapi_error(f, "no app")
+	}
+
+	return sl.None, nil
+}
+
+// Install an app from a .zip file
+func slapi_app_install_file(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return slapi_error(f, "syntax: <app id: string> <file: string> [check only: boolean]")
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (id != "" && !valid(id, "entity")) {
 		return slapi_error(f, "invalid ID '%s'", id)
+	}
+	if id == "" {
+		id, _, _ = entity_id()
+		if id == "" {
+			return slapi_error(f, "unable to allocate id")
+		}
 	}
 
 	file, ok := sl.AsString(args[1])
@@ -354,12 +403,15 @@ func slapi_app_install(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	check_only := false
 	if len(args) > 2 {
 		check_only = bool(args[2].Truth())
-		debug("slapi_app_install() check only '%v'", check_only)
+		debug("slapi_app_install_file() check only '%v'", check_only)
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
 		return slapi_error(f, "no user")
+	}
+	if !user.administrator() {
+		return slapi_error(f, "not administrator")
 	}
 
 	app, ok := t.Local("app").(*App)
@@ -389,19 +441,20 @@ func slapi_app_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 	apps_lock.Unlock()
 
-	sort.Slice(ids, func(i, j int) bool {
-		return strings.ToLower(apps[ids[i]].Name) < strings.ToLower(apps[ids[j]].Name)
-	})
-
-	as := make([]map[string]string, len(ids))
+	user := t.Local("user").(*User)
+	results := make([]map[string]string, len(ids))
 	apps_lock.Lock()
 	for i, id := range ids {
 		a := apps[id]
-		as[i] = map[string]string{"id": a.id, "name": a.Name, "version": a.Version}
+		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}
 	}
 	apps_lock.Unlock()
 
-	return starlark_encode(as), nil
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
+	return starlark_encode(results), nil
 }
 
 // Get attachments for an object
@@ -690,7 +743,6 @@ func slapi_file(u *User, a *App, file string) string {
 }
 
 // Delete a file
-// TODO Test slapi_file_delete()
 func slapi_file_delete(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -716,7 +768,6 @@ func slapi_file_delete(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // Return whether a file exists
-// TODO Test slapi_file_exists()
 func slapi_file_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -745,13 +796,38 @@ func slapi_file_exists(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // List files
-// TODO slapi_file_list()
 func slapi_file_list(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.None, nil
+	if len(args) != 1 {
+		return slapi_error(f, "syntax: <directory: string>")
+	}
+
+	dir, ok := sl.AsString(args[0])
+	if !ok || !valid(dir, "filepath") {
+		return slapi_error(f, "invalid directory '%s'", dir)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return slapi_error(f, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return slapi_error(f, "no app")
+	}
+
+	path := slapi_file(user, app, dir)
+	if !file_exists(path) {
+		return slapi_error(f, "does not exist")
+	}
+	if !file_is_directory(path) {
+		return slapi_error(f, "not a directory")
+	}
+
+	return starlark_encode(file_list(path)), nil
 }
 
 // Read a file into memory
-// TODO Test slapi_file_read()
 func slapi_file_read(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <file: string>")
@@ -776,7 +852,6 @@ func slapi_file_read(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 }
 
 // Write a file from memory
-// TODO Test slapi_file_write()
 func slapi_file_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return slapi_error(f, "syntax: <file: string> <data: array of bytes>")
@@ -822,7 +897,7 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 	if !ok || a == nil {
 		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
 	} else {
-		format = fmt.Sprintf("App %s:%s() %s", a.Name, t.Local("function"), format)
+		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), format)
 	}
 
 	values := make([]any, len(args)-1)
@@ -845,7 +920,6 @@ func slapi_log(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (s
 }
 
 // Render markdown
-// TODO Test slapi_markdown_render()
 func slapi_markdown_render(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return slapi_error(f, "syntax: <markdown: string>")
@@ -965,7 +1039,7 @@ func slapi_service_call(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.Name, service, function, args[2:])
+	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.id, service, function, args[2:])
 	var result sl.Value
 	var err error
 	if len(args) > 2 {

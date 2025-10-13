@@ -4,20 +4,26 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
 type App struct {
-	// Read from app.json
-	Name    string `json:"name"`
 	Version string `json:"version"`
+	Label   string `json:"label"`
 	Engine  struct {
 		Architecture string `json:"architecture"`
 		Version      string `json:"version"`
 	} `json:"engine"`
-	Files    []string `json:"files"`
+	Files []string `json:"files"`
+	//TODO Requires role
+	Requires struct {
+		Role string `json:"role"`
+	} `json:"requires"`
 	Database struct {
 		File           string    `json:"file"`
 		Create         string    `json:"create"`
@@ -41,10 +47,11 @@ type App struct {
 	} `json:"services"`
 
 	// For Go code use
-	id               string    `json:"-"`
-	base             string    `json:"-"`
-	entity_field     string    `json:"-"`
-	starlark_runtime *Starlark `json:"-"`
+	id               string                       `json:"-"`
+	base             string                       `json:"-"`
+	entity_field     string                       `json:"-"`
+	labels           map[string]map[string]string `json:"-"`
+	starlark_runtime *Starlark                    `json:"-"`
 
 	// For internal apps only, possibly to be removed in a future version
 	internal struct {
@@ -57,9 +64,8 @@ type App struct {
 type Icon struct {
 	Path  string `json:"path"`
 	Label string `json:"label"`
-	// Remove Name field once we have multi-language label system in place
-	Name string `json:"name"`
-	Icon string `json:"icon"`
+	Icon  string `json:"icon"`
+	app   *App
 }
 
 type Path struct {
@@ -76,17 +82,18 @@ var (
 		"123jjo8q9kx8HZHmxbQ6DMfWPsMSByongGbG3wTrywcm2aA5b8x", // Notifications
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
+		//TODO Add other default apps
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
-	icons     = map[string]Icon{}
+	icons     []Icon
 	paths     = map[string]*Path{}
 	services  = map[string]*App{}
 )
 
 // Create data structure for new internal app
 func app(name string) *App {
-	a := App{id: name, Name: name, entity_field: "entity"}
+	a := App{id: name, entity_field: "entity"}
 	a.Engine.Architecture = "internal"
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
@@ -197,6 +204,7 @@ func app_install(id string, version string, file string, check_only bool) (*App,
 }
 
 // Manage which apps and their versions are installed
+// TODO Test automatic app upgrades
 func apps_manager() {
 	time.Sleep(time.Second)
 	for {
@@ -206,7 +214,7 @@ func apps_manager() {
 			todo[id] = true
 		}
 
-		for _, id := range files_dir(data_dir + "/apps") {
+		for _, id := range file_list(data_dir + "/apps") {
 			if valid(id, "entity") {
 				todo[id] = true
 			}
@@ -244,13 +252,13 @@ func app_read(id string, base string) (*App, error) {
 	a.id = id
 	a.base = base
 
-	// Vaildate manifest
-	if !valid(a.Name, "name") {
-		return nil, error_message("App bad name '%s'", a.Name)
-	}
-
+	// Validate manifest
 	if !valid(a.Version, "version") {
 		return nil, error_message("App bad version '%s'", a.Version)
+	}
+
+	if !valid(a.Label, "constant") {
+		return nil, error_message("App bad label '%s'", a.Label)
 	}
 
 	if a.Engine.Architecture != "starlark" || a.Engine.Version != "1" {
@@ -276,12 +284,8 @@ func app_read(id string, base string) (*App, error) {
 			return nil, error_message("App bad icon path '%s'", i.Path)
 		}
 
-		if i.Label != "" && !valid(i.Label, "constant") {
+		if !valid(i.Label, "constant") {
 			return nil, error_message("App bad icon label '%s'", i.Label)
-		}
-
-		if i.Name != "" && !valid(i.Name, "name") {
-			return nil, error_message("App bad icon name '%s'", i.Name)
 		}
 
 		if !valid(i.Icon, "filepath") {
@@ -336,8 +340,8 @@ func app_read(id string, base string) (*App, error) {
 
 // Check which apps are installed, and load them
 func apps_start() {
-	for _, id := range files_dir(data_dir + "/apps") {
-		for _, version := range files_dir(data_dir + "/apps/" + id) {
+	for _, id := range file_list(data_dir + "/apps") {
+		for _, version := range file_list(data_dir + "/apps/" + id) {
 			debug("App '%s' version '%s' found", id, version)
 			a, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {
@@ -392,13 +396,35 @@ func (a *App) event_broadcast(event string, f func(*Event)) {
 }
 
 // Register an icon for an internal app
-func (a *App) icon(path string, label string, name string, icon string) {
-	icons[path] = Icon{Path: path, Label: label, Name: name, Icon: icon}
+func (a *App) icon(path string, label string, icon string) {
+	icons = append(icons, Icon{Path: path, Label: label, Icon: icon, app: a})
+}
+
+// Resolve an app label
+func (a *App) label(u *User, key string, values ...any) string {
+	language := "en"
+	if u != nil {
+		language = u.Language
+	}
+
+	format, exists := a.labels[language][key]
+	if !exists {
+		format, exists = a.labels["en"][key]
+	}
+	if !exists {
+		info("App label '%s' in language '%s' not set", key, language)
+		return key
+	}
+
+	return fmt.Sprintf(format, values...)
 }
 
 // Load details of an app and make it available to users
-// TODO Update web paths
+// TODO Reload everything on upgrade
 func (a *App) load() {
+	if a == nil {
+		return
+	}
 	debug("App loading '%+v", a)
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
@@ -410,7 +436,8 @@ func (a *App) load() {
 	}
 
 	for _, i := range a.Icons {
-		icons[i.Name] = i
+		i.app = a
+		icons = append(icons, i)
 	}
 
 	for path, p := range a.Paths {
@@ -425,6 +452,31 @@ func (a *App) load() {
 
 	for service, _ := range a.Services {
 		services[service] = a
+	}
+
+	a.labels = make(map[string]map[string]string)
+	for _, file := range file_list(a.base + "/labels") {
+		language := strings.TrimSuffix(file, ".conf")
+		if !valid(language, "constant") {
+			continue
+		}
+		a.labels[language] = make(map[string]string)
+
+		path := fmt.Sprintf("%s/labels/%s", a.base, file)
+		f, err := os.Open(path)
+		if err != nil {
+			info("App unable to read labels file '%s': %v", path, err)
+			continue
+		}
+		defer f.Close()
+
+		s := bufio.NewScanner(f)
+		for s.Scan() {
+			parts := strings.SplitN(s.Text(), "=", 2)
+			if len(parts) == 2 {
+				a.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
 	}
 
 	debug("App loaded")

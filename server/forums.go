@@ -77,7 +77,7 @@ var (
 
 func init() {
 	a := app("forums")
-	a.icon("forums", "forums", "Forums", "forums.png")
+	a.icon("forums", "Forums", "forums.png")
 	a.entity("forum")
 	a.db("forums/forums.db", forums_db_create)
 

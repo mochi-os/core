@@ -33,15 +33,6 @@ func file_delete_all(path string) {
 	must(os.RemoveAll(path))
 }
 
-func files_dir(path string) []string {
-	var files []string
-	found, _ := os.ReadDir(path)
-	for _, f := range found {
-		files = append(files, f.Name())
-	}
-	return files
-}
-
 func file_exists(path string) bool {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -55,6 +46,23 @@ func file_exists(path string) bool {
 
 func file_glob(match string) []string {
 	return must(filepath.Glob(match))
+}
+
+func file_is_directory(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func file_list(path string) []string {
+	var files []string
+	found, _ := os.ReadDir(path)
+	for _, f := range found {
+		files = append(files, f.Name())
+	}
+	return files
 }
 
 func file_mkdir(path string) {

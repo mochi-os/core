@@ -71,7 +71,7 @@ type FeedReaction struct {
 
 func init() {
 	a := app("feeds")
-	a.icon("feeds", "feeds", "Feeds", "feeds.png")
+	a.icon("feeds", "Feeds", "feeds.png")
 	a.entity("feed")
 	a.db("feeds/feeds.db", feeds_db_create)
 

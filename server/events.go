@@ -89,7 +89,7 @@ func (e *Event) route() {
 			}
 		}
 		if !found {
-			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.Name, e.service)
+			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.id, e.service)
 			return
 		}
 
@@ -109,7 +109,7 @@ func (e *Event) route() {
 			ev, found = a.Services[e.service].Events[""]
 		}
 		if !found {
-			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.Name, e.service)
+			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.id, e.service)
 			return
 		}
 

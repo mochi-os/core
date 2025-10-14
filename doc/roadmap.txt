@@ -1,5 +1,4 @@
 Alistair:
-	Only admins can install apps
 	Install app from entity
 	Test updating apps
 	App Market

@@ -349,10 +349,13 @@ func slapi_app_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 // Get available icons for home
 func slapi_app_icons(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
+	var results []map[string]string
 
-	results := make([]map[string]string, len(icons))
-	for j, i := range icons {
-		results[j] = map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon}
+	for _, i := range icons {
+		if i.app.Requires.Role == "administrator" && user.Role != "administrator" {
+			continue
+		}
+		results = append(results, map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon})
 	}
 
 	sort.Slice(results, func(i, j int) bool {

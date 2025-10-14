@@ -1125,7 +1125,7 @@ func slapi_user_get(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return slapi_error(f, "no user")
 	}
 
-	return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username}), nil
+	return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
 }
 
 // Log the user out

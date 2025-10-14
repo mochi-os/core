@@ -22,7 +22,7 @@ var (
 )
 
 // Simple CORS middleware to allow browser clients
-func corsMiddleware(c *gin.Context) {
+func cors_middleware(c *gin.Context) {
 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Login")
@@ -253,14 +253,14 @@ func web_ping(c *gin.Context) {
 
 // Handle generic API requests for Starlark apps
 // TODO Change variables coding style
-func handleAPI(c *gin.Context) {
-	appID := c.Param("app")
-	actionName := strings.TrimPrefix(c.Param("action"), "/")
+func handle_api(c *gin.Context) {
+	app_id := c.Param("app")
+	action_name := strings.TrimPrefix(c.Param("action"), "/")
 
-	debug("API request: app='%s', action='%s'", appID, actionName)
+	debug("API request: app='%s', action='%s'", app_id, action_name)
 
 	// Find the app by ID first, then by name
-	app, exists := apps[appID]
+	app, exists := apps[app_id]
 	if !exists {
 		// Try to find by name
 		//TODO Remove
@@ -275,46 +275,46 @@ func handleAPI(c *gin.Context) {
 			}
 		*/
 	} else {
-		debug("Found app by ID: %s", appID)
+		debug("Found app by ID: %s", app_id)
 	}
 
 	if !exists {
-		debug("App not found: %s", appID)
+		debug("App not found: %s", app_id)
 		c.JSON(404, gin.H{"error": "App not found"})
 		return
 	}
 
 	// Find the action in the app's paths (supports dynamic segments like :chat/messages)
-	var actionFunction string
-	var isPublic bool
+	var action_function string
+	var is_public bool
 	found := false
-	patternParams := map[string]string{}
+	pattern_params := map[string]string{}
 
-	debug("Looking for action '%s' in app '%s'", actionName, app.id)
+	debug("Looking for action '%s' in app '%s'", action_name, app.id)
 
 	// Collect all actions from all paths
-	type actionCandidate struct {
+	type action_candidate struct {
 		key      string
 		function string
 		public   bool
 		segments int
 		literals int
 	}
-	var candidates []actionCandidate
+	var candidates []action_candidate
 
-	for pathName, path := range app.Paths {
-		debug("Checking path '%s' with %d actions", pathName, len(path.Actions))
-		for actionKey, action := range path.Actions {
-			debug("Available action: '%s'", actionKey)
-			segs := strings.Split(actionKey, "/")
+	for path_name, path := range app.Paths {
+		debug("Checking path '%s' with %d actions", path_name, len(path.Actions))
+		for action_key, action := range path.Actions {
+			debug("Available action: '%s'", action_key)
+			segs := strings.Split(action_key, "/")
 			lits := 0
 			for _, s := range segs {
 				if !strings.HasPrefix(s, ":") {
 					lits++
 				}
 			}
-			candidates = append(candidates, actionCandidate{
-				key:      actionKey,
+			candidates = append(candidates, action_candidate{
+				key:      action_key,
 				function: action.Function,
 				public:   action.Public,
 				segments: len(segs),
@@ -333,20 +333,20 @@ func handleAPI(c *gin.Context) {
 
 	// Try to match in order of specificity
 	for _, cand := range candidates {
-		actionKey := cand.key
+		action_key := cand.key
 
 		// Try exact match first
-		if actionKey == actionName {
-			actionFunction = cand.function
-			isPublic = cand.public
+		if action_key == action_name {
+			action_function = cand.function
+			is_public = cand.public
 			found = true
-			debug("Found action '%s' -> function '%s' (direct)", actionName, actionFunction)
+			debug("Found action '%s' -> function '%s' (direct)", action_name, action_function)
 			break
 		}
 
 		// Try dynamic match
-		keySegs := strings.Split(actionKey, "/")
-		valSegs := strings.Split(actionName, "/")
+		keySegs := strings.Split(action_key, "/")
+		valSegs := strings.Split(action_name, "/")
 		if len(keySegs) != len(valSegs) {
 			continue
 		}
@@ -364,17 +364,17 @@ func handleAPI(c *gin.Context) {
 			}
 		}
 		if ok {
-			actionFunction = cand.function
-			isPublic = cand.public
-			patternParams = tmp
+			action_function = cand.function
+			is_public = cand.public
+			pattern_params = tmp
 			found = true
-			debug("Found action '%s' -> function '%s' (pattern match)", actionKey, actionFunction)
+			debug("Found action '%s' -> function '%s' (pattern match)", action_key, action_function)
 			break
 		}
 	}
 
 	if !found {
-		debug("Action '%s' not found in app '%s'", actionName, app.id)
+		debug("Action '%s' not found in app '%s'", action_name, app.id)
 		c.JSON(404, gin.H{"error": "Action not found"})
 		return
 	}
@@ -421,7 +421,7 @@ func handleAPI(c *gin.Context) {
 	}
 
 	// Require authentication for non-public actions
-	if user == nil && !isPublic {
+	if user == nil && !is_public {
 		c.JSON(401, gin.H{"error": "Authentication required"})
 		return
 	}
@@ -448,7 +448,7 @@ func handleAPI(c *gin.Context) {
 	// Prepare inputs from path params, query parameters and JSON body
 	inputs := make(map[string]interface{})
 	// Add extracted path params first
-	for k, v := range patternParams {
+	for k, v := range pattern_params {
 		inputs[k] = v
 	}
 
@@ -477,7 +477,7 @@ func handleAPI(c *gin.Context) {
 		"identity.id":          "",
 		"identity.fingerprint": "",
 		"identity.name":        "",
-		"path":                 actionName,
+		"path":                 action_name,
 	}
 
 	if user != nil && user.Identity != nil {
@@ -493,7 +493,7 @@ func handleAPI(c *gin.Context) {
 	s.set("user", user)
 	s.set("owner", user)
 
-	result, err := s.call(actionFunction, starlark_encode_tuple(fields, inputs))
+	result, err := s.call(action_function, starlark_encode_tuple(fields, inputs))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -532,7 +532,7 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	r.Use(corsMiddleware)
+	r.Use(cors_middleware)
 	// Avoid 301 redirects on API preflights (which break CORS)
 	r.RedirectTrailingSlash = false
 
@@ -548,8 +548,8 @@ func web_start() {
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 	// Support both /api/:app and /api/:app/<action...>
-	r.Any("/api/:app", handleAPI)
-	r.Any("/api/:app/*action", handleAPI)
+	r.Any("/api/:app", handle_api)
+	r.Any("/api/:app/*action", handle_api)
 
 	// Replace when we implement URL mapping
 	if ini_string("web", "special", "") == "packages" {

@@ -21,7 +21,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 1
+	schema_version = 2
 )
 
 var (
@@ -200,16 +200,74 @@ func db_start() bool {
 	return false
 }
 
-// Does nothing yet
 func db_upgrade() {
 	schema := atoi(setting_get("schema", ""), 1)
+
 	for schema < schema_version {
 		schema++
 		info("Upgrading database schema to version %d", schema)
 		if schema == 2 {
+			// Migration: ensure logins table has a 'secret' column for per-login JWT secrets.
+			// This runs for existing deployments which were created before the column was added.
+			{
+				db := db_open("db/users.db")
+				// Check pragma for logins table columns
+				rows, err := db.handle.Query("PRAGMA table_info(logins)")
+				if err == nil {
+					defer rows.Close()
+					has_secret := false
+					for rows.Next() {
+						var cid int
+						var col_name string
+						var col_type string
+						var col_notnull int
+						var dflt_value sql.NullString
+						var pk int
+						// pragma table_info returns: cid,name,type,notnull,dflt_value,pk
+						if err := rows.Scan(&cid, &col_name, &col_type, &col_notnull, &dflt_value, &pk); err == nil {
+							if col_name == "secret" {
+								has_secret = true
+								break
+							}
+						}
+					}
+
+					if !has_secret {
+						// Ensure the logins table actually exists before attempting ALTER
+						if !db.exists("select name from sqlite_master where type='table' and name='logins'") {
+							info("DB migration: 'logins' table not present, skipping secret migration")
+						} else {
+							info("DB migration: adding 'secret' column to logins table")
+							// Add the column with a safe default
+							db.exec("alter table logins add column secret text not null default ''")
+
+							// Backfill existing rows with generated secrets inside a transaction
+							db.exec("BEGIN")
+							rows2, err := db.handle.Query("select user, code, secret from logins")
+							if err == nil {
+								defer rows2.Close()
+								for rows2.Next() {
+									var user_id int
+									var code string
+									var secret_val sql.NullString
+									if err := rows2.Scan(&user_id, &code, &secret_val); err != nil {
+										continue
+									}
+									if secret_val.Valid && secret_val.String != "" {
+										continue
+									}
+									new_secret := random_alphanumeric(32)
+									db.exec("update logins set secret=? where user=? and code=?", new_secret, user_id, code)
+								}
+							}
+							db.exec("COMMIT")
+						}
+					}
+				}
+			}
 		} else if schema == 3 {
 		}
-		setting_set("schema", string(schema))
+		setting_set("schema", itoa(int(schema)))
 	}
 }
 

@@ -10,33 +10,33 @@ import (
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
 var (
-	jwtExpiry = int64(3600)
+	jwt_expiry = int64(3600)
 )
 
 func init() {
 	// Attempt to read from ini if loaded
 	if ini_file != nil {
-		e := ini_int("jwt", "expiry", int(jwtExpiry))
-		jwtExpiry = int64(e)
+		e := ini_int("jwt", "expiry", int(jwt_expiry))
+		jwt_expiry = int64(e)
 	}
-	if jwtExpiry == 0 {
+	if jwt_expiry == 0 {
 		if v := ini_string("jwt", "expiry", ""); v != "" {
 			// ini_int already handled the numeric case above; leave as-is
 		}
 	}
 }
 
-type MochiClaims struct {
+type mochi_claims struct {
 	User int `json:"user"`
 	jwt.RegisteredClaims
 }
 
 // Create a JWT using a specific HMAC secret
-func jwt_create_with_secret(userID int, secret []byte) (string, error) {
-	claims := MochiClaims{
-		User: userID,
+func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
+	claims := mochi_claims{
+		User: user_id,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwtExpiry, 0)),
+			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
 			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
 		},
 	}
@@ -52,9 +52,9 @@ func jwt_create_with_secret(userID int, secret []byte) (string, error) {
 // Verify a JWT and return the user id, or -1 if invalid.
 // If the token header contains a "kid" referencing a login code, attempt to verify
 // using that login's secret. Otherwise fall back to the global secret.
-func jwt_verify(tokenString string) (int, error) {
+func jwt_verify(token_string string) (int, error) {
 	// First parse the token without verification to read header/kid
-	token, _, err := new(jwt.Parser).ParseUnverified(tokenString, &MochiClaims{})
+	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
 	if err != nil {
 		return -1, err
 	}
@@ -73,9 +73,8 @@ func jwt_verify(tokenString string) (int, error) {
 		return -1, errors.New("login has no secret")
 	}
 	secret := []byte(l.Secret)
-
-	var claims MochiClaims
-	tkn, err := jwt.ParseWithClaims(tokenString, &claims, func(token *jwt.Token) (interface{}, error) {
+	var claims mochi_claims
+	tkn, err := jwt.ParseWithClaims(token_string, &claims, func(token *jwt.Token) (interface{}, error) {
 		return secret, nil
 	})
 	if err != nil {
@@ -124,10 +123,10 @@ func api_login_auth(c *gin.Context) {
 	secret := []byte(l.Secret)
 
 	// Build token with kid header set to the login code so verification can find the secret
-	claims := MochiClaims{
+	claims := mochi_claims{
 		User: user.ID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwtExpiry, 0)),
+			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
 			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
 		},
 	}

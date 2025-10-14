@@ -25,7 +25,7 @@ func init() {
 				"error": sl.NewBuiltin("mochi.action.error", slapi_action_error),
 				"file": sls.FromStringDict(sl.String("file"), sl.StringDict{
 					"name":  sl.NewBuiltin("mochi.action.file.name", slapi_action_file_name),
-					"write": sl.NewBuiltin("mochi.action.file.write", slapi_action_file_write),
+					"upload": sl.NewBuiltin("mochi.action.file.upload", slapi_action_file_upload),
 				}),
 				"json":     sl.NewBuiltin("mochi.action.json", slapi_action_json),
 				"redirect": sl.NewBuiltin("mochi.action.redirect", slapi_action_redirect),
@@ -168,7 +168,7 @@ func slapi_action_file_name(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // Write the contents of an uploaded file
-func slapi_action_file_write(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func slapi_action_file_upload(t *sl.Thread, f *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return slapi_error(f, "syntax: <field: string> <file: string>")
 	}

@@ -19,8 +19,7 @@ type App struct {
 		Architecture string `json:"architecture"`
 		Version      string `json:"version"`
 	} `json:"engine"`
-	Files []string `json:"files"`
-	//TODO Requires role
+	Files    []string `json:"files"`
 	Requires struct {
 		Role string `json:"role"`
 	} `json:"requires"`

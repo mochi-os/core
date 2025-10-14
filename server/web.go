@@ -201,6 +201,12 @@ func (p *Path) web_path(c *gin.Context) {
 		return
 	}
 
+	// Require role if app requires it
+	if p.app.Requires.Role == "administrator" && user.Role != "administrator" {
+		web_error(c, 403, "Forbidden")
+		return
+	}
+
 	a := Action{user: user, owner: owner, app: p.app, web: c, path: p}
 
 	switch p.app.Engine.Architecture {
@@ -420,6 +426,13 @@ func handleAPI(c *gin.Context) {
 	// Require authentication for database-backed apps
 	if user == nil && app.Database.File != "" {
 		c.JSON(401, gin.H{"error": "Authentication required for database access"})
+		return
+	}
+
+	// Require role if app requires it
+	debug("ROLE REQUIRED '%s', HAVE '%s'", app.Requires.Role, user.Role)
+	if app.Requires.Role == "administrator" && user.Role != "administrator" {
+		c.JSON(403, gin.H{"error": "Forbidden"})
 		return
 	}
 

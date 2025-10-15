@@ -13,6 +13,7 @@ type Login struct {
 	User    int
 	Code    string
 	Name    string
+	Secret  string
 	Expires int
 }
 
@@ -40,8 +41,10 @@ func code_send(email string) bool {
 
 func login_create(user int) string {
 	code := random_alphanumeric(20)
+	// Create a per-login secret for signing JWTs for this login/device
+	secret := random_alphanumeric(32)
 	db := db_open("db/users.db")
-	db.exec("replace into logins ( user, code, expires ) values ( ?, ?, ? )", user, code, now()+365*86400)
+	db.exec("replace into logins ( user, code, secret, expires ) values ( ?, ?, ?, ? )", user, code, secret, now()+365*86400)
 	return code
 }
 

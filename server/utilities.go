@@ -274,7 +274,7 @@ func valid(s string, match string) bool {
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "entity":
-		match = "^[\\w]{50,51}$"
+		match = "^[\\w]{49,51}$"
 	case "filename":
 		match = "^[0-9a-zA-Z -_~()][0-9a-zA-Z -_~().]{0,254}$"
 	case "filepath":

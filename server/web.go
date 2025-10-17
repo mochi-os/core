@@ -6,14 +6,14 @@ package main
 import (
 	"embed"
 	"fmt"
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 	"html/template"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
-
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -207,7 +207,7 @@ func (p *Path) web_path(c *gin.Context) {
 		return
 	}
 
-	a := Action{user: user, owner: owner, app: p.app, web: c, path: p}
+	a := Action{id: action_id(), user: user, owner: owner, app: p.app, web: c, path: p}
 
 	switch p.app.Engine.Architecture {
 	case "internal":
@@ -242,7 +242,13 @@ func (p *Path) web_path(c *gin.Context) {
 			"path":                 p.path,
 		}
 
-		_, err := s.call(p.function, starlark_encode_tuple(fields, web_inputs(c)))
+		var err error
+		if p.app.Engine.Version == 1 {
+			_, err = s.call(p.function, starlark_encode_tuple(fields, web_inputs(c)))
+		} else {
+			_, err = s.call(p.function, sl.Tuple{&a})
+		}
+
 		if err != nil {
 			web_error(c, 500, "%v", err)
 		}
@@ -258,32 +264,13 @@ func web_ping(c *gin.Context) {
 }
 
 // Handle generic API requests for Starlark apps
-// TODO Change variables coding style
 func handle_api(c *gin.Context) {
 	app_id := c.Param("app")
 	action_name := strings.TrimPrefix(c.Param("action"), "/")
 
 	debug("API request: app='%s', action='%s'", app_id, action_name)
 
-	// Find the app by ID first, then by name
 	app, exists := apps[app_id]
-	if !exists {
-		// Try to find by name
-		//TODO Remove
-		/*
-			for _, a := range apps {
-				if a.Name == appID {
-					app = a
-					exists = true
-					debug("Found app by name: %s (ID: %s)", a.Name, a.id)
-					break
-				}
-			}
-		*/
-	} else {
-		debug("Found app by ID: %s", app_id)
-	}
-
 	if !exists {
 		debug("App not found: %s", app_id)
 		c.JSON(404, gin.H{"error": "App not found"})
@@ -456,7 +443,7 @@ func handle_api(c *gin.Context) {
 	}
 
 	// Create action context
-	action := Action{user: user, owner: user, app: app, web: c, path: nil}
+	action := Action{id: action_id(), user: user, owner: user, app: app, web: c, path: nil}
 
 	// Prepare inputs from path params, query parameters and JSON body
 	inputs := make(map[string]interface{})
@@ -506,7 +493,14 @@ func handle_api(c *gin.Context) {
 	s.set("user", user)
 	s.set("owner", user)
 
-	result, err := s.call(action_function, starlark_encode_tuple(fields, inputs))
+	var result sl.Value
+	var err error
+	if app.Engine.Version == 1 {
+		result, err = s.call(action_function, starlark_encode_tuple(fields, inputs))
+	} else {
+		result, err = s.call(action_function, sl.Tuple{&action})
+	}
+
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

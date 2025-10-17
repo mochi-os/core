@@ -6,6 +6,8 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
+	sl "go.starlark.net/starlark"
 	"strings"
 	"time"
 )
@@ -167,4 +169,38 @@ func entity_sign(entity string, s string) string {
 	}
 
 	return base58_encode(ed25519.Sign(private, []byte(s)))
+}
+
+// Starlark methods
+func (e *Entity) AttrNames() []string {
+	return []string{"id", "name"}
+}
+
+func (e *Entity) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "id":
+		return sl.String(e.ID), nil
+	case "name":
+		return sl.String(e.Name), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (e *Entity) Freeze() {}
+
+func (e *Entity) Hash() (uint32, error) {
+	return sl.String(e.ID).Hash()
+}
+
+func (e *Entity) String() string {
+	return fmt.Sprintf("Entity %s", e.ID)
+}
+
+func (e *Entity) Truth() sl.Bool {
+	return sl.True
+}
+
+func (e *Entity) Type() string {
+	return "Entity"
 }

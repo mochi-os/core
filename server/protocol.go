@@ -8,10 +8,9 @@ import (
 )
 
 type Headers struct {
-	From    string `cbor:"from,omitempty"`
-	To      string `cbor:"to,omitempty"`
-	Service string `cbor:"service,omitempty"`
-	//TODO Rename event header?
+	From      string `cbor:"from,omitempty"`
+	To        string `cbor:"to,omitempty"`
+	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
 }

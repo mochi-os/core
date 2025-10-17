@@ -219,7 +219,7 @@ func attachments_get_event(e *Event) {
 		}
 
 	} else {
-		info("Request for unknown attachment '%s'", e.id)
+		info("Request for unknown attachment '%s'", id)
 	}
 
 	s.write_content("status", "404")
@@ -248,7 +248,7 @@ func attachments_get_thumbnail_event(e *Event) {
 		}
 	}
 
-	info("Request for unknown attachment thumbnail '%s'", e.id)
+	info("Request for unknown attachment thumbnail '%s'", id)
 	s.write_content("status", "404")
 }
 

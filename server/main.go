@@ -47,7 +47,7 @@ func main() {
 	go queue_manager()
 	go web_start()
 	//TODO Enable and test apps manager once wasabi is running 0.2.
-	go apps_manager()
+	//go apps_manager()
 
 	if new_install {
 		go directory_download()

@@ -91,26 +91,26 @@ func stream_receive(s *Stream, version int, peer string) {
 
 // Read a content segment from a stream
 func (s *Stream) read_content() map[string]string {
-    debug("Stream %d reading content segment", s.id)
-    //TODO Remove this delay once we figure out the partial CBOR problem
-    time.Sleep(time.Millisecond)
+	debug("Stream %d reading content segment", s.id)
+	//TODO Remove this delay once we figure out the partial CBOR problem
+	time.Sleep(time.Millisecond)
 
-    if s == nil {
-        info("Stream %d not open", s.id)
-        return nil
-    }
-    if s.decoder == nil {
-        s.decoder = cbor.NewDecoder(s.reader)
-    }
+	if s == nil {
+		info("Stream %d not open", s.id)
+		return nil
+	}
+	if s.decoder == nil {
+		s.decoder = cbor.NewDecoder(s.reader)
+	}
 
 	var content map[string]string
-    err := s.decoder.Decode(&content)
-    if err != nil {
-        info("Stream %d unable to read content segment: %v", s.id, err)
-        return nil
-    }
-    debug("Stream %d read content segment: %#v", s.id, content)
-    return content
+	err := s.decoder.Decode(&content)
+	if err != nil {
+		info("Stream %d unable to read content segment: %v", s.id, err)
+		return nil
+	}
+	debug("Stream %d read content segment: %#v", s.id, content)
+	return content
 }
 
 // Read a CBOR encoded segment from a stream

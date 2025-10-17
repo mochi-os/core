@@ -126,30 +126,34 @@ func app_check_install(id string) bool {
 	}
 
 	a := apps[id]
-	if a == nil || a.Version != version {
-		debug("App '%s' upgrading from '%s' to '%s'", id, a.Version, version)
-		s := stream("", id, "app", "get")
-		s.write_content("version", version)
-
-		response := s.read_content()
-		if response["status"] != "200" {
-			return false
-		}
-
-		zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
-		if !file_write_from_reader(zip, s.reader) {
-			file_delete(zip)
-			return false
-		}
-
-		a, err := app_install(id, version, zip, false)
-		if err != nil {
-			file_delete(zip)
-			return false
-		}
-		a.load()
-		debug("App '%s' version '%s' loaded", id, version)
+	if a != nil && a.Version == version {
+		debug("App '%s' keeping at version '%s'", id, a.Version)
+		return true
 	}
+
+	debug("App '%s' upgrading from '%s' to '%s'", id, a.Version, version)
+
+	s = stream("", id, "app", "get")
+	s.write_content("version", version)
+
+	response := s.read_content()
+	if response["status"] != "200" {
+		return false
+	}
+
+	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
+	if !file_write_from_reader(zip, s.reader) {
+		file_delete(zip)
+		return false
+	}
+
+	a, err := app_install(id, version, zip, false)
+	if err != nil {
+		file_delete(zip)
+		return false
+	}
+	a.load()
+	debug("App '%s' version '%s' loaded", id, version)
 
 	return true
 }

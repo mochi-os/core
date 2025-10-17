@@ -147,6 +147,23 @@ func web_logout(c *gin.Context) {
 	web_template(c, 200, "login/logout")
 }
 
+func api_login(c *gin.Context) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" {
+		c.JSON(400, gin.H{"error": "Missing email"})
+		return
+	}
+
+	if !code_send(req.Email) {
+		c.JSON(400, gin.H{"error": "Invalid email address"})
+		return
+	}
+
+	c.JSON(200, gin.H{"data": gin.H{"email": req.Email}})
+}
+
 // Render markdown as a template.HTML object so that Go's templates don't escape it
 func web_markdown(in string) template.HTML {
 	return template.HTML(markdown([]byte(in)))
@@ -547,6 +564,7 @@ func web_start() {
 		r.GET("/"+p.path, p.web_path)
 		r.POST("/"+p.path, p.web_path)
 	}
+	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)
 	r.GET("/login", web_login)
 	r.POST("/login", web_login)

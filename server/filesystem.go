@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"syscall"
 )
 
@@ -62,6 +63,7 @@ func file_list(path string) []string {
 	for _, f := range found {
 		files = append(files, f.Name())
 	}
+	sort.Strings(files)
 	return files
 }
 

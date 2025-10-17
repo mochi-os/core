@@ -17,7 +17,7 @@ type App struct {
 	Label   string `json:"label"`
 	Engine  struct {
 		Architecture string `json:"architecture"`
-		Version      string `json:"version"`
+		Version      int    `json:"version"`
 	} `json:"engine"`
 	Files    []string `json:"files"`
 	Requires struct {
@@ -75,6 +75,11 @@ type Path struct {
 	internal func(*Action)
 }
 
+const (
+	app_version_minimum = 1
+	app_version_maximum = 2
+)
+
 var (
 	apps_install_by_default = []string{
 		"12qMc1J5PZJDmgbdxtjB1b8xWeA6zhFJUbz5wWUEJSK3gyeFUPb", // Home
@@ -110,27 +115,22 @@ func app_check_install(id string) bool {
 		return false
 	}
 	s.write_content("track", "production")
-	debug("App '%s' waiting for response", id)
-	response := s.read_content()
-	s.close()
 
-	if response["status"] != "200" {
+	if s.read_content()["status"] != "200" {
 		return false
 	}
 
-	version := response["version"]
+	version := s.read_content()["version"]
 	if !valid(version, "version") {
 		return false
 	}
 
 	a := apps[id]
 	if a == nil || a.Version != version {
-		debug("App '%s' downloading version '%s'", id, version)
+		debug("App '%s' upgrading from '%s' to '%s'", id, a.Version, version)
 		s := stream("", id, "app", "get")
-		defer s.close()
 		s.write_content("version", version)
 
-		debug("App '%s' waiting for response", id)
 		response := s.read_content()
 		if response["status"] != "200" {
 			return false
@@ -203,7 +203,6 @@ func app_install(id string, version string, file string, check_only bool) (*App,
 }
 
 // Manage which apps and their versions are installed
-// TODO Test automatic app upgrades
 func apps_manager() {
 	time.Sleep(time.Second)
 	for {
@@ -260,8 +259,14 @@ func app_read(id string, base string) (*App, error) {
 		return nil, error_message("App bad label '%s'", a.Label)
 	}
 
-	if a.Engine.Architecture != "starlark" || a.Engine.Version != "1" {
-		return nil, error_message("App bad engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
+	if a.Engine.Architecture != "starlark" {
+		return nil, error_message("App bad engine '%s' version %d", a.Engine.Architecture, a.Engine.Version)
+	}
+	if a.Engine.Version < app_version_minimum {
+		return nil, error_message("App is too old. Version %d is less than minimum version %d", a.Engine.Version, app_version_minimum)
+	}
+	if a.Engine.Version > app_version_maximum {
+		return nil, error_message("App is too new. Version %d is greater than maximum version %d", a.Engine.Version, app_version_maximum)
 	}
 
 	for _, file := range a.Files {
@@ -337,10 +342,12 @@ func app_read(id string, base string) (*App, error) {
 	return &a, nil
 }
 
-// Check which apps are installed, and load them
+// Check which apps are installed, and load them. For now, only load latest version.
 func apps_start() {
 	for _, id := range file_list(data_dir + "/apps") {
-		for _, version := range file_list(data_dir + "/apps/" + id) {
+		versions := file_list(data_dir + "/apps/" + id)
+		if len(versions) > 0 {
+			version := versions[len(versions)-1]
 			debug("App '%s' version '%s' found", id, version)
 			a, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {

@@ -1,6 +1,4 @@
 Alistair:
-	Install app from entity
-	Test updating apps
 	App Market
 	Install app from market
 

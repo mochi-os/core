@@ -5,11 +5,13 @@ package main
 
 import (
 	"fmt"
+	sl "go.starlark.net/starlark"
 	rd "runtime/debug"
+	"sync"
 )
 
 type Event struct {
-	id      string
+	id      int64
 	from    string
 	to      string
 	service string
@@ -19,6 +21,19 @@ type Event struct {
 	user    *User
 	db      *DB
 	stream  *Stream
+}
+
+var (
+	events_lock       = &sync.Mutex{}
+	event_next  int64 = 1
+)
+
+func event_id() int64 {
+	events_lock.Lock()
+	id := event_next
+	event_next = event_next + 1
+	events_lock.Unlock()
+	return id
 }
 
 // Get a field from the content segment of a received event
@@ -35,7 +50,7 @@ func (e *Event) route() {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {
-			info("Event dropping '%s' to unknown user '%s'", e.id, e.to)
+			info("Event dropping to unknown user '%s'", e.to)
 			return
 		}
 	}
@@ -43,7 +58,7 @@ func (e *Event) route() {
 	// Find which app provides this service
 	a := services[e.service]
 	if a == nil {
-		info("Event dropping '%s' to unknown service '%s'", e.id, e.service)
+		info("Event dropping to unknown service '%s'", e.service)
 		return
 	}
 
@@ -59,7 +74,7 @@ func (e *Event) route() {
 	// Load a database file for the app
 	if a.Database.File != "" {
 		if e.user == nil {
-			info("Event dropping broadcast '%s' for service requiring user", e.id)
+			info("Event dropping broadcast for service requiring user")
 			return
 		}
 		e.db = db_app(e.user, a)
@@ -89,7 +104,7 @@ func (e *Event) route() {
 			}
 		}
 		if !found {
-			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.id, e.service)
+			info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
 			return
 		}
 
@@ -109,17 +124,17 @@ func (e *Event) route() {
 			ev, found = a.Services[e.service].Events[""]
 		}
 		if !found {
-			info("Event dropping '%s' to unknown event '%s' in app '%s' for service '%s'", e.id, e.event, a.id, e.service)
+			info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
 			return
 		}
 
 		if e.to == "" && !ev.Broadcast {
-			info("Event dropping broadcast '%s' to non-broadcast", e.id)
+			info("Event dropping broadcast to non-broadcast")
 			return
 		}
 
 		if e.to != "" && ev.Broadcast {
-			info("Event dropping non-broadcast '%s' to broadcast", e.id)
+			info("Event dropping non-broadcast to broadcast")
 			return
 		}
 
@@ -130,14 +145,17 @@ func (e *Event) route() {
 		s.set("owner", e.user)
 
 		headers := map[string]string{
-			"id":      e.id,
 			"from":    e.from,
 			"to":      e.to,
 			"service": e.service,
 			"event":   e.event,
 		}
 
-		s.call(ev.Function, starlark_encode_tuple(headers, e.content))
+		if a.Engine.Version == 1 {
+			s.call(ev.Function, starlark_encode_tuple(headers, e.content))
+		} else {
+			s.call(ev.Function, sl.Tuple{e})
+		}
 
 	default:
 		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
@@ -149,8 +167,81 @@ func (e *Event) route() {
 func (e *Event) segment(v any) bool {
 	err := e.stream.decoder.Decode(v)
 	if err != nil {
-		info("Event '%s' unable to decode segment: %v", e.id, err)
+		info("Event unable to decode segment: %v", err)
 		return false
 	}
 	return true
+}
+
+// Starlark methods
+func (e *Event) AttrNames() []string {
+	return []string{"content", "event", "from", "read", "read_to_file", "service", "stream", "to", "write", "write_from_file"}
+}
+
+func (e *Event) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "content":
+		return sl.NewBuiltin("content", e.sl_content), nil
+	case "event":
+		return sl.String(e.event), nil
+	case "from":
+		return sl.String(e.from), nil
+	case "read":
+		return sl.NewBuiltin("read", e.stream.sl_read), nil
+	case "read_to_file":
+		return sl.NewBuiltin("read_to_file", e.stream.sl_read_to_file), nil
+	case "service":
+		return sl.String(e.service), nil
+	case "stream":
+		return e.stream, nil
+	case "to":
+		return sl.String(e.to), nil
+	case "write":
+		return sl.NewBuiltin("write", e.stream.sl_write), nil
+	case "write_from_file":
+		return sl.NewBuiltin("write_from_file", e.stream.sl_write_from_file), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (e *Event) Freeze() {}
+
+func (e *Event) Hash() (uint32, error) {
+	return sl.String(e.id).Hash()
+}
+
+func (e *Event) String() string {
+	return fmt.Sprintf("Event %d", e.id)
+}
+
+func (e *Event) Truth() sl.Bool {
+	return sl.True
+}
+
+func (e *Event) Type() string {
+	return "Event"
+}
+
+// Get a content field
+func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return slapi_error(fn, "syntax: <field: string> [default: string]")
+	}
+
+	field, ok := sl.AsString(args[0])
+	if !ok || !valid(field, "constant") {
+		return slapi_error(fn, "invalid field '%s'", field)
+	}
+
+	value, found := e.content[field]
+	if found {
+		return starlark_encode(value), nil
+	}
+
+	if len(args) > 1 {
+		return args[1], nil
+	}
+
+	return starlark_encode(""), nil
 }

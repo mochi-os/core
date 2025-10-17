@@ -91,8 +91,8 @@ func (m *Message) send_work(peer string) {
 		ok = s.write_file(m.file)
 	}
 
-	if s != nil {
-		s.close()
+	if s != nil && s.writer != nil {
+		s.writer.Close()
 	}
 
 	if !ok {

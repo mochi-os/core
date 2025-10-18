@@ -261,7 +261,7 @@ func (p *Path) web_path(c *gin.Context) {
 
 		var err error
 		if p.app.Engine.Version == 1 {
-			_, err = s.call(p.function, starlark_encode_tuple(fields, web_inputs(c)))
+			_, err = s.call(p.function, sl_encode_tuple(fields, web_inputs(c)))
 		} else {
 			_, err = s.call(p.function, sl.Tuple{&a})
 		}
@@ -513,7 +513,7 @@ func handle_api(c *gin.Context) {
 	var result sl.Value
 	var err error
 	if app.Engine.Version == 1 {
-		result, err = s.call(action_function, starlark_encode_tuple(fields, inputs))
+		result, err = s.call(action_function, sl_encode_tuple(fields, inputs))
 	} else {
 		result, err = s.call(action_function, sl.Tuple{&action})
 	}
@@ -524,7 +524,7 @@ func handle_api(c *gin.Context) {
 	}
 
 	// Check if the result is a JSON response format
-	if resultMap, ok := starlark_decode(result).(map[string]interface{}); ok {
+	if resultMap, ok := sl_decode(result).(map[string]interface{}); ok {
 		if format, hasFormat := resultMap["format"]; hasFormat && format == "json" {
 			if data, hasData := resultMap["data"]; hasData {
 				c.JSON(200, data)
@@ -534,7 +534,7 @@ func handle_api(c *gin.Context) {
 	}
 
 	// Fallback: return the raw result
-	c.JSON(200, starlark_decode(result))
+	c.JSON(200, sl_decode(result))
 }
 
 func web_redirect(c *gin.Context, url string) {

@@ -136,7 +136,7 @@ func (a *Action) Type() string {
 func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var vars []any
 	for _, v := range args {
-		vars = append(vars, starlark_decode(v))
+		vars = append(vars, sl_decode(v))
 	}
 	debug("%s() %+v", fn.Name(), vars)
 	a.dump(vars)
@@ -148,7 +148,7 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var vars []any
 	for _, v := range args {
-		vars = append(vars, starlark_decode(v))
+		vars = append(vars, sl_decode(v))
 	}
 	debug("%s() %+v", fn.Name(), vars)
 	a.dump(vars)
@@ -161,7 +161,7 @@ func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	var field string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
 	if err != nil {
-		return slapi_error(fn, "%v", err)
+		return sl_error(fn, "%v", err)
 	}
 
 	return sl.String(a.input(field)), nil
@@ -172,7 +172,7 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	var v any
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "data", &v)
 	if err != nil {
-		return slapi_error(fn, "%v", err)
+		return sl_error(fn, "%v", err)
 	}
 
 	a.web.JSON(200, v)
@@ -184,10 +184,10 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	var path string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path)
 	if err != nil {
-		return slapi_error(fn, "%v", err)
+		return sl_error(fn, "%v", err)
 	}
 	if !valid(path, "path") {
-		return slapi_error(fn, "invalid path '%s'", path)
+		return sl_error(fn, "invalid path '%s'", path)
 	}
 
 	a.web.Redirect(301, path)
@@ -197,35 +197,35 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // Print template
 func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return slapi_error(fn, "syntax: <template path: string> [data: dictionary]")
+		return sl_error(fn, "syntax: <template path: string> [data: dictionary]")
 	}
 
 	path, ok := sl.AsString(args[0])
 	if !ok || (path != "" && !valid(path, "path")) {
-		return slapi_error(fn, "invalid template file '%s'", path)
+		return sl_error(fn, "invalid template file '%s'", path)
 	}
 
 	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
 	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, path)
 	if !file_exists(file) {
-		return slapi_error(fn, "template '%s' not found", path)
+		return sl_error(fn, "template '%s' not found", path)
 	}
 	data := file_read(file)
 	include := must(templates.ReadFile("templates/en/include.tmpl"))
 
 	tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
 	if err != nil {
-		return slapi_error(fn, "%v", err)
+		return sl_error(fn, "%v", err)
 	}
 
 	if len(args) > 1 {
-		err = tmpl.Execute(a.web.Writer, starlark_decode(args[1]))
+		err = tmpl.Execute(a.web.Writer, sl_decode(args[1]))
 	} else {
 		err = tmpl.Execute(a.web.Writer, Map{})
 	}
 
 	if err != nil {
-		return slapi_error(fn, "%v", err)
+		return sl_error(fn, "%v", err)
 	}
 
 	return sl.None, nil
@@ -234,32 +234,32 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // Write the contents of an uploaded file
 func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return slapi_error(fn, "syntax: <field: string> <file: string>")
+		return sl_error(fn, "syntax: <field: string> <file: string>")
 	}
 
 	field, ok := sl.AsString(args[0])
 	if !ok || !valid(field, "constant") {
-		return slapi_error(fn, "invalid field '%s'", field)
+		return sl_error(fn, "invalid field '%s'", field)
 	}
 
 	file, ok := sl.AsString(args[1])
 	if !ok || !valid(field, "filepath") {
-		return slapi_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file '%s'", file)
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
-		return slapi_error(fn, "no app")
+		return sl_error(fn, "no app")
 	}
 
 	ff, err := a.web.FormFile(field)
 	if err != nil {
-		return slapi_error(fn, "unable to get file field '%s': %v", field, err)
+		return sl_error(fn, "unable to get file field '%s': %v", field, err)
 	}
 
-	err = a.web.SaveUploadedFile(ff, slapi_file(a.user, app, file))
+	err = a.web.SaveUploadedFile(ff, api_file(a.user, app, file))
 	if err != nil {
-		return slapi_error(fn, "unable to write file for field '%s': %v", field, err)
+		return sl_error(fn, "unable to write file for field '%s': %v", field, err)
 	}
 
 	return sl.None, nil
@@ -268,7 +268,7 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // Get details of the logged in user
 func (a *Action) sl_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if a.user != nil {
-		return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
+		return sl_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
 	}
 	return sl.None, nil
 }

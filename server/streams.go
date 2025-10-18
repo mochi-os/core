@@ -236,7 +236,7 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	if s == nil {
 		info("Stream %d not open", s.id)
-		return slapi_error(fn, "stream not open")
+		return sl_error(fn, "stream not open")
 	}
 	if s.decoder == nil {
 		s.decoder = cbor.NewDecoder(s.reader)
@@ -246,10 +246,10 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	err := s.decoder.Decode(&v)
 	if err != nil {
 		info("Stream %d unable to decode segment: %v", s.id, err)
-		return slapi_error(fn, "unable to decode segment")
+		return sl_error(fn, "unable to decode segment")
 	}
 	debug("Stream %d read segment: %#v", s.id, v)
-	return starlark_encode(v), nil
+	return sl_encode(v), nil
 }
 
 // Read the rest of the stream as raw bytes, and write to a file
@@ -260,26 +260,26 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	time.Sleep(time.Millisecond)
 
 	if len(args) != 1 {
-		return slapi_error(fn, "syntax: <file: string>")
+		return sl_error(fn, "syntax: <file: string>")
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error(fn, "no user")
+		return sl_error(fn, "no user")
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
-		return slapi_error(fn, "no app")
+		return sl_error(fn, "no app")
 	}
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return slapi_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file '%s'", file)
 	}
 
-	if !file_write_from_reader(slapi_file(user, app, file), s.reader) {
-		return slapi_error(fn, "unable to save file '%s'", file)
+	if !file_write_from_reader(api_file(user, app, file), s.reader) {
+		return sl_error(fn, "unable to save file '%s'", file)
 	}
 
 	debug("Stream %d read to file", s.id)
@@ -289,8 +289,8 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 // Write one or more segments
 func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	for _, a := range args {
-		if !s.write(starlark_decode(a)) {
-			return slapi_error(fn, "error writing stream")
+		if !s.write(sl_decode(a)) {
+			return sl_error(fn, "error writing stream")
 		}
 	}
 	return sl.None, nil
@@ -301,26 +301,26 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	debug("Stream %d writing from file", s.id)
 	defer s.writer.Close()
 	if len(args) != 1 {
-		return slapi_error(fn, "syntax: <file: string>")
+		return sl_error(fn, "syntax: <file: string>")
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		return slapi_error(fn, "no user")
+		return sl_error(fn, "no user")
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
-		return slapi_error(fn, "no app")
+		return sl_error(fn, "no app")
 	}
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return slapi_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file '%s'", file)
 	}
 
-	if !s.write_file(slapi_file(user, app, file)) {
-		return slapi_error(fn, "unable to send file")
+	if !s.write_file(api_file(user, app, file)) {
+		return sl_error(fn, "unable to send file")
 	}
 
 	debug("Stream %d wrote from file", s.id)

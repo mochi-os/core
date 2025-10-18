@@ -17,6 +17,7 @@ var (
 	slapi sl.StringDict
 )
 
+// TODO Add mochi.url.get() and mochi.url.post()
 func init() {
 	slapi = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
@@ -87,7 +88,6 @@ func init() {
 			}),
 			"uid": sl.NewBuiltin("mochi.uid", slapi_uid),
 			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
-				"get":    sl.NewBuiltin("mochi.user.get", slapi_user_get),
 				"logout": sl.NewBuiltin("mochi.user.logout", slapi_user_logout),
 			}),
 			"valid": sl.NewBuiltin("mochi.valid", slapi_valid),
@@ -1084,16 +1084,6 @@ func slapi_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // Get a UID
 func slapi_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return starlark_encode(uid()), nil
-}
-
-// Get details of the current user
-func slapi_user_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return slapi_error(fn, "no user")
-	}
-
-	return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
 }
 
 // Log the user out

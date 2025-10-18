@@ -84,11 +84,11 @@ func (a *Action) template(template string, format string, values ...any) {
 	}
 }
 
+// Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"dump", "error", "identity", "input", "json", "redirect", "template", "upload"}
+	return []string{"dump", "error", "identity", "input", "json", "redirect", "template", "upload", "user"}
 }
 
-// Starlark methods
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "dump":
@@ -107,6 +107,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("template", a.sl_template), nil
 	case "upload":
 		return sl.NewBuiltin("upload", a.sl_upload), nil
+	case "user":
+		return sl.NewBuiltin("user", a.sl_user), nil
 	default:
 		return nil, nil
 	}
@@ -245,11 +247,6 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return slapi_error(fn, "invalid file '%s'", file)
 	}
 
-	user := t.Local("user").(*User)
-	if user == nil {
-		return slapi_error(fn, "no user")
-	}
-
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
 		return slapi_error(fn, "no app")
@@ -260,10 +257,18 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return slapi_error(fn, "unable to get file field '%s': %v", field, err)
 	}
 
-	err = a.web.SaveUploadedFile(ff, slapi_file(user, app, file))
+	err = a.web.SaveUploadedFile(ff, slapi_file(a.user, app, file))
 	if err != nil {
 		return slapi_error(fn, "unable to write file for field '%s': %v", field, err)
 	}
 
+	return sl.None, nil
+}
+
+// Get details of the logged in user
+func (a *Action) sl_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if a.user != nil {
+		return starlark_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
+	}
 	return sl.None, nil
 }

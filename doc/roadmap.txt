@@ -1,6 +1,8 @@
 Alistair:
 	App Market
 	Install app from market
+	Find hidden services
+	Directory get recent updates
 
 Numan:
 	Client API
@@ -16,8 +18,6 @@ Zubair:
 0.2:
 	Route on entity
 	Map web URLs to entities
-	Find hidden services
-	Directory get recent updates
 
 	User management
 	Users can change their settings

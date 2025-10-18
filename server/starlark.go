@@ -16,7 +16,7 @@ type Starlark struct {
 // Create a new Starlark interpreter for a set of files
 func starlark(files []string) *Starlark {
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
-	s.globals = slapi
+	s.globals = api_globals
 
 	for _, file := range files {
 		debug("Starlark reading file '%s'", file)
@@ -32,7 +32,7 @@ func starlark(files []string) *Starlark {
 }
 
 // Convert a Starlark value to a Go variable
-func starlark_decode(value sl.Value) any {
+func sl_decode(value sl.Value) any {
 	//debug("Decoding '%+v', type '%T'", value, value)
 	switch v := value.(type) {
 	case sl.NoneType, nil:
@@ -56,14 +56,14 @@ func starlark_decode(value sl.Value) any {
 	case *sl.List:
 		out := make([]any, v.Len())
 		for i := 0; i < v.Len(); i++ {
-			out[i] = starlark_decode(v.Index(i))
+			out[i] = sl_decode(v.Index(i))
 		}
 		return out
 
 	case sl.Tuple:
 		out := make([]any, len(v))
 		for i, e := range v {
-			out[i] = starlark_decode(e)
+			out[i] = sl_decode(e)
 		}
 		return out
 
@@ -74,7 +74,7 @@ func starlark_decode(value sl.Value) any {
 			if !ok {
 				continue
 			}
-			out[key] = starlark_decode(i[1])
+			out[key] = sl_decode(i[1])
 		}
 		return out
 
@@ -85,7 +85,7 @@ func starlark_decode(value sl.Value) any {
 }
 
 // Decode Starlark value to a string
-func starlark_decode_string(value any) string {
+func sl_decode_string(value any) string {
 	//debug("Decoding to string '%v', type %T", value, value)
 	switch v := value.(type) {
 	case []any:
@@ -115,13 +115,13 @@ func starlark_decode_string(value any) string {
 }
 
 // Decode a single Starlark value to a map of strings to strings
-func starlark_decode_strings(value any) map[string]string {
+func sl_decode_strings(value any) map[string]string {
 	//debug("Decoding to strings '%#v'", value)
 	switch v := value.(type) {
 	case *sl.Dict:
 		out := make(map[string]string, v.Len())
 		for _, i := range v.Items() {
-			out[starlark_decode_string(i[0])] = starlark_decode_string(i[1])
+			out[sl_decode_string(i[0])] = sl_decode_string(i[1])
 		}
 		return out
 
@@ -132,13 +132,13 @@ func starlark_decode_strings(value any) map[string]string {
 }
 
 // Decode a Starlark array to an array of map of strings to strings
-func starlark_decode_multi_strings(value any) *[]map[string]string {
+func sl_decode_multi_strings(value any) *[]map[string]string {
 	//debug("Decoding to multi strings '%+v'", value)
 	switch v := value.(type) {
 	case sl.Tuple:
 		out := make([]map[string]string, len(v))
 		for i, e := range v {
-			out[i] = starlark_decode_strings(e)
+			out[i] = sl_decode_strings(e)
 		}
 		return &out
 
@@ -149,7 +149,7 @@ func starlark_decode_multi_strings(value any) *[]map[string]string {
 }
 
 // Convert a single Go variable to a Starlark value
-func starlark_encode(v any) sl.Value {
+func sl_encode(v any) sl.Value {
 	//debug("Encoding '%+v', type %T", v, v)
 
 	switch x := v.(type) {
@@ -181,49 +181,49 @@ func starlark_encode(v any) sl.Value {
 	case map[any]any:
 		d := sl.NewDict(len(x))
 		for i, v := range x {
-			d.SetKey(starlark_encode(i), starlark_encode(v))
+			d.SetKey(sl_encode(i), sl_encode(v))
 		}
 		return d
 
 	case map[string]any:
 		d := sl.NewDict(len(x))
 		for i, v := range x {
-			d.SetKey(starlark_encode(i), starlark_encode(v))
+			d.SetKey(sl_encode(i), sl_encode(v))
 		}
 		return d
 
 	case map[string]string:
 		d := sl.NewDict(len(x))
 		for i, v := range x {
-			d.SetKey(starlark_encode(i), starlark_encode(v))
+			d.SetKey(sl_encode(i), sl_encode(v))
 		}
 		return d
 
 	case []any:
 		t := make([]sl.Value, len(x))
 		for i, r := range x {
-			t[i] = starlark_encode(r)
+			t[i] = sl_encode(r)
 		}
 		return sl.Tuple(t)
 
 	case []map[string]string:
 		t := make([]sl.Value, len(x))
 		for i, r := range x {
-			t[i] = starlark_encode(r)
+			t[i] = sl_encode(r)
 		}
 		return sl.Tuple(t)
 
 	case []map[string]any:
 		t := make([]sl.Value, len(x))
 		for i, r := range x {
-			t[i] = starlark_encode(r)
+			t[i] = sl_encode(r)
 		}
 		return sl.Tuple(t)
 
 	case *[]map[string]any:
 		t := make([]sl.Value, len(*x))
 		for i, r := range *x {
-			t[i] = starlark_encode(r)
+			t[i] = sl_encode(r)
 		}
 		return sl.Tuple(t)
 
@@ -237,13 +237,22 @@ func starlark_encode(v any) sl.Value {
 }
 
 // Convert one or more Go variables to a Starlark tuple
-func starlark_encode_tuple(in ...any) sl.Tuple {
+func sl_encode_tuple(in ...any) sl.Tuple {
 	//debug("Encoding to tuple '%+v', type %T", in)
 	t := make(sl.Tuple, len(in))
 	for i, v := range in {
-		t[i] = starlark_encode(v)
+		t[i] = sl_encode(v)
 	}
 	return t
+}
+
+// Helper function to return an error
+func sl_error(fn *sl.Builtin, format string, values ...any) (sl.Value, error) {
+	if fn == nil {
+		return sl.None, error_message(format, values...)
+	} else {
+		return sl.None, error_message(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+	}
 }
 
 // Call a Starlark function

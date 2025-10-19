@@ -94,10 +94,6 @@ func init() {
 				"post":   sl.NewBuiltin("mochi.url.post", api_url_request),
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
-			//TODO Move to a.user.*
-			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
-				"logout": sl.NewBuiltin("mochi.user.logout", api_user_logout),
-			}),
 			"valid": sl.NewBuiltin("mochi.valid", api_valid),
 			"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
 				"write": sl.NewBuiltin("mochi.websocket.write", api_websocket_write),
@@ -1120,22 +1116,6 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	data, _ := io.ReadAll(r.Body)
 	return sl_encode(map[string]any{"status": r.StatusCode, "headers": r.Header, "body": string(data)}), nil
-}
-
-// Log the user out
-func api_user_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl_error(fn, "called from non-action")
-	}
-
-	login := web_cookie_get(a.web, "login", "")
-	if login != "" {
-		login_delete(login)
-	}
-	web_cookie_unset(a.web, "login")
-
-	return sl.None, nil
 }
 
 // Check if a string is valid

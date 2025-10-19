@@ -3,6 +3,11 @@
 
 package main
 
+import (
+	"fmt"
+	sl "go.starlark.net/starlark"
+)
+
 type Code struct {
 	Code     string
 	Username string
@@ -177,4 +182,40 @@ func (u *User) identity() *Entity {
 		return &i
 	}
 	return nil
+}
+
+// Starlark methods
+func (u *User) AttrNames() []string {
+	return []string{"identity", "role", "username"}
+}
+
+func (u *User) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "identity":
+		return u.Identity, nil
+	case "role":
+		return sl.String(u.Role), nil
+	case "username":
+		return sl.String(u.Username), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (u *User) Freeze() {}
+
+func (u *User) Hash() (uint32, error) {
+	return sl.String(u.ID).Hash()
+}
+
+func (u *User) String() string {
+	return fmt.Sprintf("User %d", u.ID)
+}
+
+func (u *User) Truth() sl.Bool {
+	return sl.True
+}
+
+func (u *User) Type() string {
+	return "User"
 }

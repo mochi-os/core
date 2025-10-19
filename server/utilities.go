@@ -326,6 +326,8 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z -_~()][0-9a-zA-Z -_~().]{0,254}$"
 	case "filepath":
 		match = "^[0-9a-zA-Z/]{0,1000}[0-9a-zA-Z -_~()][0-9a-zA-Z -_~().]{0,254}$"
+	case "fingerprint":
+		match = "^[0-9a-zA-Z]{9}$"
 	case "function":
 		match = "^[0-9a-zA-Z_]{1,100}$"
 	case "id":

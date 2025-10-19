@@ -134,12 +134,17 @@ func (a *Action) Type() string {
 
 // Dump the variables passed for debugging
 func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var vars []any
-	for _, v := range args {
-		vars = append(vars, sl_decode(v))
+	if len(args) > 0 {
+		var vars []any
+		for _, v := range args {
+			vars = append(vars, sl_decode(v))
+		}
+		debug("%s() %+v", fn.Name(), vars)
+		a.dump(vars)
+
+	} else {
+		a.dump(a.web.Request.Form)
 	}
-	debug("%s() %+v", fn.Name(), vars)
-	a.dump(vars)
 
 	return sl.None, nil
 }

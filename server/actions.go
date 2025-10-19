@@ -86,7 +86,7 @@ func (a *Action) template(template string, format string, values ...any) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"dump", "error", "identity", "input", "json", "redirect", "template", "upload", "user"}
+	return []string{"dump", "error", "input", "json", "logout", "redirect", "template", "upload", "user"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -95,12 +95,12 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
 		return sl.NewBuiltin("error", a.sl_error), nil
-	case "identity":
-		return a.user.Identity, nil
 	case "input":
 		return sl.NewBuiltin("input", a.sl_input), nil
 	case "json":
 		return sl.NewBuiltin("json", a.sl_json), nil
+	case "logout":
+		return sl.NewBuiltin("logout", a.sl_logout), nil
 	case "redirect":
 		return sl.NewBuiltin("redirect", a.sl_redirect), nil
 	case "template":
@@ -108,7 +108,7 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 	case "upload":
 		return sl.NewBuiltin("upload", a.sl_upload), nil
 	case "user":
-		return sl.NewBuiltin("user", a.sl_user), nil
+		return a.user, nil
 	default:
 		return nil, nil
 	}
@@ -181,6 +181,17 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	a.web.JSON(200, v)
+	return sl.None, nil
+}
+
+// Log the current user out
+func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	login := web_cookie_get(a.web, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(a.web, "login")
+
 	return sl.None, nil
 }
 
@@ -267,13 +278,5 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "unable to write file for field '%s': %v", field, err)
 	}
 
-	return sl.None, nil
-}
-
-// Get details of the logged in user
-func (a *Action) sl_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if a.user != nil {
-		return sl_encode(map[string]any{"id": a.user.ID, "username": a.user.Username, "role": a.user.Role}), nil
-	}
 	return sl.None, nil
 }

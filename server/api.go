@@ -8,6 +8,7 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"html/template"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,7 +18,6 @@ var (
 	api_globals sl.StringDict
 )
 
-// TODO Add mochi.url.get() and mochi.url.post()
 func init() {
 	api_globals = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
@@ -87,6 +87,13 @@ func init() {
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
 			}),
 			"uid": sl.NewBuiltin("mochi.uid", api_uid),
+			"url": sls.FromStringDict(sl.String("url"), sl.StringDict{
+				"delete": sl.NewBuiltin("mochi.url.delete", api_url_request),
+				"get":    sl.NewBuiltin("mochi.url.get", api_url_request),
+				"patch":  sl.NewBuiltin("mochi.url.patch", api_url_request),
+				"post":   sl.NewBuiltin("mochi.url.post", api_url_request),
+				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
+			}),
 			//TODO Move to a.user.*
 			"user": sls.FromStringDict(sl.String("user"), sl.StringDict{
 				"logout": sl.NewBuiltin("mochi.user.logout", api_user_logout),
@@ -1076,6 +1083,43 @@ func api_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 // Get a UID
 func api_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(uid()), nil
+}
+
+// Request a URL
+func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 4 {
+		return sl_error(fn, "syntax: <url: string> [options: dictionary] [headers: dictionary] [body: string|dictionary]")
+	}
+
+	url, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid URL")
+	}
+
+	var options map[string]string
+	if len(args) > 1 {
+		options = sl_decode_strings(args[1])
+	}
+
+	var headers map[string]string
+	if len(args) > 2 {
+		headers = sl_decode_strings(args[2])
+	}
+
+	var body any
+	if len(args) > 3 {
+		body = sl_decode(args[3])
+	}
+
+	parts := strings.Split(fn.Name(), ".")
+	r, err := url_request(parts[len(parts)-1], url, options, headers, body)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	defer r.Body.Close()
+
+	data, _ := io.ReadAll(r.Body)
+	return sl_encode(map[string]any{"status": r.StatusCode, "headers": r.Header, "body": string(data)}), nil
 }
 
 // Log the user out

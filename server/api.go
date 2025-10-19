@@ -676,7 +676,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	db := db_open("db/users.db")
 	var e Entity
-	if db.scan(&e, "select id, fingerprint, parent, class, name, privacy, data, updated from entities where id=? and user=?", id, user.ID) {
+	if db.scan(&e, "select id, fingerprint, parent, class, name, privacy, data, published from entities where id=? and user=?", id, user.ID) {
 		return sl_encode(e), nil
 	}
 

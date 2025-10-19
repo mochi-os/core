@@ -5,6 +5,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/rand"
 	sha "crypto/sha1"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"io"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -260,6 +262,51 @@ func unzip(file string, destination string) error {
 	}
 
 	return nil
+}
+
+func url_request(method string, url string, options map[string]string, headers map[string]string, body any) (*http.Response, error) {
+	if method == "" {
+		method = "GET"
+	}
+
+	var br io.Reader
+	if body != nil {
+		switch b := body.(type) {
+		case string:
+			br = strings.NewReader(b)
+
+		case []byte:
+			br = bytes.NewReader(b)
+
+		default:
+			br = strings.NewReader(json_encode(b))
+			_, found := headers["Content-Type"]
+			if !found {
+				headers["Content-Type"] = "application/json"
+			}
+		}
+	}
+
+	r, err := http.NewRequest(strings.ToUpper(method), url, br)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+
+	timeout := 30 * time.Second
+	t, found := options["timeout"]
+	if found {
+		seconds, err := strconv.Atoi(t)
+		if err == nil && seconds > 0 {
+			timeout = time.Duration(seconds) * time.Second
+		}
+	}
+
+	c := &http.Client{Timeout: timeout}
+	return c.Do(r)
 }
 
 func valid(s string, match string) bool {

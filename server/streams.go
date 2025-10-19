@@ -89,6 +89,29 @@ func stream_receive(s *Stream, version int, peer string) {
 	e.route()
 }
 
+// Read a CBOR encoded segment from a stream
+func (s *Stream) read(v any) bool {
+	debug("Stream %d reading segment type %T", s.id, v)
+	//TODO Remove this delay once we figure out the partial CBOR problem
+	time.Sleep(time.Millisecond)
+
+	if s == nil {
+		info("Stream %d not open", s.id)
+		return false
+	}
+	if s.decoder == nil {
+		s.decoder = cbor.NewDecoder(s.reader)
+	}
+
+	err := s.decoder.Decode(&v)
+	if err != nil {
+		info("Stream %d unable to read segment: %v", s.id, err)
+		return false
+	}
+	debug("Stream %d read segment: %#v", s.id, v)
+	return true
+}
+
 // Read a content segment from a stream
 func (s *Stream) read_content() map[string]string {
 	debug("Stream %d reading content segment", s.id)
@@ -111,29 +134,6 @@ func (s *Stream) read_content() map[string]string {
 	}
 	debug("Stream %d read content segment: %#v", s.id, content)
 	return content
-}
-
-// Read a CBOR encoded segment from a stream
-func (s *Stream) read(v any) bool {
-	debug("Stream %d reading segment type %T", s.id, v)
-	//TODO Remove this delay once we figure out the partial CBOR problem
-	time.Sleep(time.Millisecond)
-
-	if s == nil {
-		info("Stream %d not open", s.id)
-		return false
-	}
-	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
-	}
-
-	err := s.decoder.Decode(&v)
-	if err != nil {
-		info("Stream %d unable to read segment: %v", s.id, err)
-		return false
-	}
-	debug("Stream %d read segment: %#v", s.id, v)
-	return true
 }
 
 // Write a CBOR encoded segment to a stream

@@ -247,11 +247,25 @@ func sl_encode_tuple(in ...any) sl.Tuple {
 }
 
 // Helper function to return an error
-func sl_error(fn *sl.Builtin, format string, values ...any) (sl.Value, error) {
+func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
+	format := "Unknown error type"
+
+	switch v := e.(type) {
+	case error:
+		if v == nil {
+			format = "Nil error"
+		} else {
+			format = v.Error()
+		}
+
+	case string:
+		format = v
+	}
+
 	if fn == nil {
-		return sl.None, error_message(format, values...)
+		return sl.None, fmt.Errorf(format, values...)
 	} else {
-		return sl.None, error_message(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+		return sl.None, fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
 	}
 }
 
@@ -259,7 +273,7 @@ func sl_error(fn *sl.Builtin, format string, values ...any) (sl.Value, error) {
 func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
-		return nil, error_message("Starlark app function '%s' not found", function)
+		return nil, fmt.Errorf("Starlark app function '%s' not found", function)
 	}
 
 	debug("Starlark running '%s': %+v", function, args)
@@ -297,8 +311,9 @@ func (s *Starlark) set(key string, value any) {
 
 // Get a new Starlark interpreter for an app
 func (a *App) starlark() *Starlark {
-	if a.starlark_runtime == nil {
-		a.starlark_runtime = starlark(a.Files)
-	}
+	//TODO Re-enable caching loading Starlark files
+	//if a.starlark_runtime == nil {
+	a.starlark_runtime = starlark(a.Files)
+	//}
 	return a.starlark_runtime
 }

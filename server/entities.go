@@ -59,16 +59,16 @@ func entity_by_user_id(u *User, id string) *Entity {
 func entity_create(u *User, class string, name string, privacy string, data string) (*Entity, error) {
 	db := db_open("db/users.db")
 	if !valid(name, "name") {
-		return nil, error_message("Invalid name")
+		return nil, fmt.Errorf("Invalid name")
 	}
 	if !db.exists("select id from users where id=?", u.ID) {
-		return nil, error_message("User not found")
+		return nil, fmt.Errorf("User not found")
 	}
 	if !valid(class, "constant") {
-		return nil, error_message("Invalid class")
+		return nil, fmt.Errorf("Invalid class")
 	}
 	if !valid(privacy, "privacy") {
-		return nil, error_message("Invalid privacy")
+		return nil, fmt.Errorf("Invalid privacy")
 	}
 
 	parent := ""
@@ -78,7 +78,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 
 	public, private, fingerprint := entity_id()
 	if public == "" {
-		return nil, error_message("Unable to find spare entity ID or fingerprint")
+		return nil, fmt.Errorf("Unable to find spare entity ID or fingerprint")
 	}
 
 	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.ID, parent, class, name, privacy, data)

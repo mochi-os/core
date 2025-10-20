@@ -10,7 +10,6 @@ import (
 	sha "crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/btcsuite/btcutil/base58"
 	cbor "github.com/fxamacker/cbor/v2"
@@ -78,10 +77,6 @@ func check(err error) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-func error_message(message string, values ...any) error {
-	return errors.New(fmt.Sprintf(message, values...))
 }
 
 func fingerprint(in string) string {
@@ -230,7 +225,7 @@ func unzip(file string, destination string) error {
 		path := filepath.Join(destination, f.Name)
 
 		if !strings.HasPrefix(path, filepath.Clean(destination)+string(os.PathSeparator)) {
-			return error_message("Invalid file path '%s'", path)
+			return fmt.Errorf("Invalid file path '%s'", path)
 		}
 
 		if f.FileInfo().IsDir() {

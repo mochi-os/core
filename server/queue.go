@@ -75,11 +75,11 @@ func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
 		return false
 	}
 
-	if len(*data) > 0 && !s.write(*data) {
+	if len(*data) > 0 && s.write(*data) != nil {
 		return false
 	}
 
-	if file != "" && !s.write_file(file) {
+	if file != "" && s.write_file(file) != nil {
 		return false
 	}
 

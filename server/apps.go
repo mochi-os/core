@@ -86,7 +86,6 @@ var (
 		"123jjo8q9kx8HZHmxbQ6DMfWPsMSByongGbG3wTrywcm2aA5b8x", // Notifications
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
-		//TODO Add other default apps
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
@@ -116,11 +115,16 @@ func app_check_install(id string) bool {
 	}
 	s.write_content("track", "production")
 
-	if s.read_content()["status"] != "200" {
+	status, err := s.read_content()
+	if err != nil || status["status"] != "200" {
 		return false
 	}
 
-	version := s.read_content()["version"]
+	v, err := s.read_content()
+	if err != nil {
+		return false
+	}
+	version := v["version"]
 	if !valid(version, "version") {
 		return false
 	}
@@ -134,10 +138,13 @@ func app_check_install(id string) bool {
 	debug("App '%s' upgrading from '%s' to '%s'", id, a.Version, version)
 
 	s = stream("", id, "app", "get")
-	s.write_content("version", version)
+	err = s.write_content("version", version)
+	if err != nil {
+		return false
+	}
 
-	response := s.read_content()
-	if response["status"] != "200" {
+	response, err := s.read_content()
+	if err != nil || response["status"] != "200" {
 		return false
 	}
 
@@ -147,12 +154,12 @@ func app_check_install(id string) bool {
 		return false
 	}
 
-	a, err := app_install(id, version, zip, false)
+	new, err := app_install(id, version, zip, false)
 	if err != nil {
 		file_delete(zip)
 		return false
 	}
-	a.load()
+	new.load()
 	debug("App '%s' version '%s' loaded", id, version)
 
 	return true
@@ -185,7 +192,7 @@ func app_install(id string, version string, file string, check_only bool) (*App,
 
 	if version != "" && version != a.Version {
 		file_delete_all(tmp)
-		return nil, error_message("Specified version does not match file version")
+		return nil, fmt.Errorf("Specified version does not match file version")
 	}
 
 	if check_only {
@@ -243,12 +250,12 @@ func app_read(id string, base string) (*App, error) {
 
 	// Load app manifest from app.json
 	if !file_exists(base + "/app.json") {
-		return nil, error_message("App '%s' in '%s' has no app.json file; ignoring", id, base)
+		return nil, fmt.Errorf("App '%s' in '%s' has no app.json file; ignoring", id, base)
 	}
 
 	var a App
 	if !json_decode(&a, string(file_read(base+"/app.json"))) {
-		return nil, error_message("App bad app.json '%s/app.json'; ignoring app", base)
+		return nil, fmt.Errorf("App bad app.json '%s/app.json'; ignoring app", base)
 	}
 
 	a.id = id
@@ -256,89 +263,89 @@ func app_read(id string, base string) (*App, error) {
 
 	// Validate manifest
 	if !valid(a.Version, "version") {
-		return nil, error_message("App bad version '%s'", a.Version)
+		return nil, fmt.Errorf("App bad version '%s'", a.Version)
 	}
 
 	if !valid(a.Label, "constant") {
-		return nil, error_message("App bad label '%s'", a.Label)
+		return nil, fmt.Errorf("App bad label '%s'", a.Label)
 	}
 
 	if a.Engine.Architecture != "starlark" {
-		return nil, error_message("App bad engine '%s' version %d", a.Engine.Architecture, a.Engine.Version)
+		return nil, fmt.Errorf("App bad engine '%s' version %d", a.Engine.Architecture, a.Engine.Version)
 	}
 	if a.Engine.Version < app_version_minimum {
-		return nil, error_message("App is too old. Version %d is less than minimum version %d", a.Engine.Version, app_version_minimum)
+		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", a.Engine.Version, app_version_minimum)
 	}
 	if a.Engine.Version > app_version_maximum {
-		return nil, error_message("App is too new. Version %d is greater than maximum version %d", a.Engine.Version, app_version_maximum)
+		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", a.Engine.Version, app_version_maximum)
 	}
 
 	for _, file := range a.Files {
 		if !valid(file, "filepath") {
-			return nil, error_message("App bad executable file '%s'", file)
+			return nil, fmt.Errorf("App bad executable file '%s'", file)
 		}
 	}
 
 	if a.Database.File != "" && !valid(a.Database.File, "filename") {
-		return nil, error_message("App bad database file '%s'", a.Database.File)
+		return nil, fmt.Errorf("App bad database file '%s'", a.Database.File)
 	}
 
 	if a.Database.Create != "" && !valid(a.Database.Create, "function") {
-		return nil, error_message("App bad database create function '%s'", a.Database.Create)
+		return nil, fmt.Errorf("App bad database create function '%s'", a.Database.Create)
 	}
 
 	for _, i := range a.Icons {
 		if i.Path != "" && !valid(i.Path, "constant") {
-			return nil, error_message("App bad icon path '%s'", i.Path)
+			return nil, fmt.Errorf("App bad icon path '%s'", i.Path)
 		}
 
 		if !valid(i.Label, "constant") {
-			return nil, error_message("App bad icon label '%s'", i.Label)
+			return nil, fmt.Errorf("App bad icon label '%s'", i.Label)
 		}
 
 		if !valid(i.Icon, "filepath") {
-			return nil, error_message("App bad icon '%s'", i.Icon)
+			return nil, fmt.Errorf("App bad icon '%s'", i.Icon)
 		}
 	}
 
 	for path, p := range a.Paths {
 		if !valid(path, "path") {
-			return nil, error_message("App bad path '%s'", path)
+			return nil, fmt.Errorf("App bad path '%s'", path)
 		}
 
 		for action, a := range p.Actions {
 			if action != "" && !valid(action, "action") {
-				return nil, error_message("App bad action '%s'", action)
+				return nil, fmt.Errorf("App bad action '%s'", action)
 			}
 
 			if !valid(a.Function, "function") {
-				return nil, error_message("App bad action function '%s'", a.Function)
+				return nil, fmt.Errorf("App bad action function '%s'", a.Function)
 			}
 		}
 	}
 
 	for service, s := range a.Services {
 		if !valid(service, "constant") {
-			return nil, error_message("App bad service '%s'", service)
+			return nil, fmt.Errorf("App bad service '%s'", service)
 		}
 
 		for event, e := range s.Events {
 			if !valid(event, "constant") {
-				return nil, error_message("App bad event '%s'", event)
+				return nil, fmt.Errorf("App bad event '%s'", event)
 			}
 
 			if !valid(e.Function, "function") {
-				return nil, error_message("App bad event function '%s'", e.Function)
+				return nil, fmt.Errorf("App bad event function '%s'", e.Function)
 			}
 		}
 
 		for function, f := range s.Functions {
 			if function != "" && !valid(function, "constant") {
-				return nil, error_message("App bad function '%s'", function)
+				return nil, fmt.Errorf("App bad function '%s'", function)
 			}
 
 			if !valid(f.Function, "function") {
-				return nil, error_message("App bad function function '%s'", f.Function)
+				return nil, fmt.Errorf("App bad function function '%s'", f.Function)
 			}
 		}
 	}

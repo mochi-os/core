@@ -151,6 +151,7 @@ func (e *Event) route() {
 			"event":   e.event,
 		}
 
+		debug("App event %s:%s(): %v", a.id, ev.Function, e)
 		if a.Engine.Version == 1 {
 			s.call(ev.Function, sl_encode_tuple(headers, e.content))
 		} else {
@@ -175,16 +176,19 @@ func (e *Event) segment(v any) bool {
 
 // Starlark methods
 func (e *Event) AttrNames() []string {
-	return []string{"content", "event", "from", "read", "read_to_file", "service", "stream", "to", "write", "write_from_file"}
+	return []string{"content", "dump", "event", "from", "read", "read_to_file", "service", "stream", "to", "write", "write_from_file"}
 }
 
 func (e *Event) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "content":
 		return sl.NewBuiltin("content", e.sl_content), nil
+	case "dump":
+		return sl.NewBuiltin("dump", e.sl_dump), nil
 	case "event":
 		return sl.String(e.event), nil
 	case "from":
+		//TODO Fix from attribute
 		return sl.String(e.from), nil
 	case "read":
 		return sl.NewBuiltin("read", e.stream.sl_read), nil
@@ -244,4 +248,9 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	return sl_encode(""), nil
+}
+
+// Dump the event contents
+func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "content": e.content}), nil
 }

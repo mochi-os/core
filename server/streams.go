@@ -4,13 +4,13 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
 	"io"
 	"os"
 	"sync"
-	"time"
 )
 
 type Stream struct {
@@ -21,12 +21,14 @@ type Stream struct {
 	encoder *cbor.Encoder
 }
 
+const encoding = "json"
+
 var (
 	streams_lock       = &sync.Mutex{}
 	stream_next  int64 = 1
 )
 
-//TODO Set timeouts
+//TODO Set write and read timeouts
 
 // Create a new stream with specified headers
 func stream(from string, to string, service string, event string) *Stream {
@@ -39,11 +41,12 @@ func stream(from string, to string, service string, event string) *Stream {
 	}
 	debug("Stream %d open to peer '%s': from '%s', to '%s', service '%s', event '%s'", s.id, peer, from, to, service, event)
 
-	if s.write(Headers{From: from, To: to, Service: service, Event: event, Signature: entity_sign(from, from+to+service+event)}) {
-		return s
+	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Signature: entity_sign(from, from+to+service+event)})
+	if err != nil {
+		return nil
 	}
 
-	return nil
+	return s
 }
 
 // Get next stream ID
@@ -62,23 +65,18 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 
 // Receive stream
 func stream_receive(s *Stream, version int, peer string) {
-	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
-	}
-
 	// Get and verify message headers
 	var h Headers
-	err := s.decoder.Decode(&h)
+	err := s.read(&h)
 	if err != nil || !h.valid() {
 		info("Stream closing due to bad headers")
 		return
 	}
 
 	// Decode the content segment
-	content := map[string]string{}
-	err = s.decoder.Decode(&content)
+	content, err := s.read_content()
 	if err != nil {
-		info("Stream closing due to bad content segment: %v", err)
+		info("Stream closing due to bad content")
 		return
 	}
 
@@ -90,75 +88,94 @@ func stream_receive(s *Stream, version int, peer string) {
 }
 
 // Read a CBOR encoded segment from a stream
-func (s *Stream) read(v any) bool {
+func (s *Stream) read(v any) error {
 	debug("Stream %d reading segment type %T", s.id, v)
-	//TODO Remove this delay once we figure out the partial CBOR problem
-	time.Sleep(time.Millisecond)
 
 	if s == nil {
-		info("Stream %d not open", s.id)
-		return false
-	}
-	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
+		debug("Stream %d not open", s.id)
+		return fmt.Errorf("Stream not open")
 	}
 
-	err := s.decoder.Decode(&v)
-	if err != nil {
-		info("Stream %d unable to read segment: %v", s.id, err)
-		return false
+	switch encoding {
+	case "cbor":
+		if s.decoder == nil {
+			debug("Stream %d new CBOR decoder", s.id)
+			s.decoder = cbor.NewDecoder(s.reader)
+		}
+		debug("Stream %d decoding CBOR", s.id)
+		err := s.decoder.Decode(&v)
+		if err != nil {
+			debug("Stream %d unable to read segment: %v", s.id, err)
+			return fmt.Errorf("Stream unable to read segment: %v", err)
+		}
+
+	case "json":
+		br := bufio.NewReader(s.reader)
+		line, err := br.ReadString('\n')
+		if err == io.EOF {
+			if len(line) > 0 {
+				debug("Stream %d received incomplete JSON '%s'", s.id, line)
+				return fmt.Errorf("Stream received incomplete JSON '%s'", line)
+			}
+		}
+		if err != nil {
+			debug("Stream %d read error %v", s.id, err)
+			return fmt.Errorf("Stream read error: %v", err)
+		}
+		debug("Stream %d read JSON '%s'", s.id, line)
+		if !json_decode(&v, line) {
+			debug("Stream %d unable to decode JSON", s.id)
+			return fmt.Errorf("Stream unable to decode JSON")
+		}
 	}
+
 	debug("Stream %d read segment: %#v", s.id, v)
-	return true
+	return nil
 }
 
 // Read a content segment from a stream
-func (s *Stream) read_content() map[string]string {
-	debug("Stream %d reading content segment", s.id)
-	//TODO Remove this delay once we figure out the partial CBOR problem
-	time.Sleep(time.Millisecond)
-
-	if s == nil {
-		info("Stream %d not open", s.id)
-		return nil
-	}
-	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
-	}
-
-	var content map[string]string
-	err := s.decoder.Decode(&content)
+func (s *Stream) read_content() (map[string]string, error) {
+	content := map[string]string{}
+	err := s.read(&content)
 	if err != nil {
-		info("Stream %d unable to read content segment: %v", s.id, err)
-		return nil
+		return nil, err
 	}
-	debug("Stream %d read content segment: %#v", s.id, content)
-	return content
+	return content, nil
 }
 
 // Write a CBOR encoded segment to a stream
-func (s *Stream) write(v any) bool {
+func (s *Stream) write(v any) error {
 	debug("Stream %d writing segment: %#v", s.id, v)
 	if s == nil || s.writer == nil {
-		info("Stream %d not open", s.id)
-		return false
-	}
-	if s.encoder == nil {
-		s.encoder = cbor.NewEncoder(s.writer)
+		debug("Stream %d not open", s.id)
+		return fmt.Errorf("Stream not open")
 	}
 
-	err := s.encoder.Encode(v)
-	if err != nil {
-		warn("Stream %d error writing segment: %v", s.id, err)
-		return false
+	switch encoding {
+	case "cbor":
+		if s.encoder == nil {
+			debug("Stream %d new CBOR encoder", s.id)
+			s.encoder = cbor.NewEncoder(s.writer)
+		}
+		debug("Stream %d encoding CBOR", s.id)
+		err := s.encoder.Encode(v)
+		if err != nil {
+			debug("Stream %d error writing segment: %v", s.id, err)
+			return fmt.Errorf("Stream error writing segment: %v", err)
+		}
+
+	case "json":
+		j := json_encode(v) + "\n"
+		debug("Stream %d writing JSON '%s'", s.id, j)
+		s.writer.Write([]byte(j))
 	}
 
 	debug("Stream %d wrote segment", s.id)
-	return true
+	return nil
 }
 
 // Write field/value pairs to a stream as a CBOR encoded segment
-func (s *Stream) write_content(in ...string) bool {
+func (s *Stream) write_content(in ...string) error {
 	content := map[string]string{}
 
 	for {
@@ -173,21 +190,21 @@ func (s *Stream) write_content(in ...string) bool {
 }
 
 // Write a file to a stream as raw bytes
-func (s *Stream) write_file(path string) bool {
+func (s *Stream) write_file(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		warn("Stream unable to read file '%s'", path)
-		return false
+		debug("Stream %d unable to read file '%s'", s.id, path)
+		return fmt.Errorf("Stream unable to read file '%s'", path)
 	}
 	defer f.Close()
 
 	_, err = io.Copy(s.writer, f)
 	if err != nil {
-		debug("Stream error sending file segment: %v", err)
-		return false
+		debug("Stream %d error sending file segment: %v", s.id, err)
+		return fmt.Errorf("Stream error sending file segment: %v", err)
 	}
 
-	return true
+	return nil
 }
 
 // Starlark methods
@@ -230,25 +247,11 @@ func (s *Stream) Type() string {
 
 // Read a segment
 func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	debug("Stream %d reading segment", s.id)
-	//TODO Remove this delay once we figure out the partial CBOR problem
-	time.Sleep(time.Millisecond)
-
-	if s == nil {
-		info("Stream %d not open", s.id)
-		return sl_error(fn, "stream not open")
-	}
-	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
-	}
-
 	var v any
-	err := s.decoder.Decode(&v)
+	err := s.read(&v)
 	if err != nil {
-		info("Stream %d unable to decode segment: %v", s.id, err)
-		return sl_error(fn, "unable to decode segment")
+		return sl_error(fn, err)
 	}
-	debug("Stream %d read segment: %#v", s.id, v)
 	return sl_encode(v), nil
 }
 
@@ -256,8 +259,6 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	debug("Stream %d reading rest of stream to file", s.id)
 	defer s.reader.Close()
-	//TODO Remove this delay once we figure out the partial CBOR problem
-	time.Sleep(time.Millisecond)
 
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -289,8 +290,9 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 // Write one or more segments
 func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	for _, a := range args {
-		if !s.write(sl_decode(a)) {
-			return sl_error(fn, "error writing stream")
+		err := s.write(sl_decode(a))
+		if err != nil {
+			return sl_error(fn, err)
 		}
 	}
 	return sl.None, nil
@@ -319,7 +321,7 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "invalid file '%s'", file)
 	}
 
-	if !s.write_file(api_file(user, app, file)) {
+	if s.write_file(api_file(user, app, file)) != nil {
 		return sl_error(fn, "unable to send file")
 	}
 

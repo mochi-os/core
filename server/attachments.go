@@ -155,8 +155,8 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	s := stream(identity, at.Entity, "attachments", event)
 	s.write_content("id", id)
 
-	response := s.read_content()
-	if response["status"] != "200" {
+	response, err := s.read_content()
+	if err != nil || response["status"] != "200" {
 		a.error(500, "Unable to fetch remote file: %s", response["status"])
 		return
 	}

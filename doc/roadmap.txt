@@ -1,7 +1,5 @@
 Alistair:
 	App Market
-	Install app from market
-	Find hidden services
 	Directory get recent updates
 
 Numan:
@@ -16,18 +14,24 @@ Zubair:
 	Resource limits
 
 0.2:
-	Route on entity
-	Map web URLs to entities
+	Web path layout
+		Route on entity
+		Map web URLs to entities
 
 	User management
 	Users can change their settings
 		View identity and fingerprint
 	User avatars
 
+	Chat app
+		Limit messages shown on load
+			Load older messages on scroll
+
 	Feeds app
 		Limit posts shown on load
-		Edit posts
-		Edit comments
+			Load older posts on scroll
+		Edit and delete posts and comments
+		Subscribe to feeds not in directory
 		Permissions
 		Check-ins
 			Location
@@ -35,17 +39,21 @@ Zubair:
 
 	Forums app
 		Limit posts shown on load
-		Edit posts
+			Load older posts on scroll
+		Edit and delete posts and comments
+		Subscribe to forums not in directory
 		Moderation
 		Permissions
 
 	Attachments
-		Add
-		Delete
-		Rotate images
+		Edit existing objects
+			Add attachments
+			Delete attachments
+			Re-order attachments
+		Rotate images correctly
 
 	Logging
-	Install apps by default
+	Choose which apps to install by default
 	License
 
 0.3:
@@ -56,15 +64,8 @@ Zubair:
 		Users can choose which apps get which service
 		Users can choose which apps get which web path
 
-	Chat app
-		Load older messages on scroll
-
 	Feeds app
-		Load older posts on scroll
 		On this day
-
-	Forums app
-		Load older posts on scroll
 
 	Users can create hooks to control events using their own code
 		Starlark
@@ -83,8 +84,7 @@ Zubair:
 	Oauth server
 
 	Chat app
-		Audio
-		Video
+		Audio and video calls
 	
 	.rpm packages and repository
 

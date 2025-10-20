@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Stream struct {
@@ -110,20 +112,13 @@ func (s *Stream) read(v any) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-	switch encoding {
-	case "cbor":
-		if s.decoder == nil {
-			debug("Stream %d new CBOR decoder", s.id)
-			s.decoder = cbor.NewDecoder(s.reader)
-		}
-		debug("Stream %d decoding CBOR", s.id)
-		err := s.decoder.Decode(&v)
-		if err != nil {
-			debug("Stream %d unable to read segment: %v", s.id, err)
-			return fmt.Errorf("Stream unable to read segment: %v", err)
-		}
+	first, err := s.peek_rune()
+	if err != nil {
+		return fmt.Errorf("Stream unable to check encoding")
+	}
 
-	case "json":
+	if first == '{' || first == '[' {
+		// Sender is sending JSON
 		br := bufio.NewReader(s.reader)
 		line, err := br.ReadString('\n')
 		if err == io.EOF {
@@ -140,6 +135,19 @@ func (s *Stream) read(v any) error {
 		if !json_decode(&v, line) {
 			debug("Stream %d unable to decode JSON", s.id)
 			return fmt.Errorf("Stream unable to decode JSON")
+		}
+
+	} else {
+		// Sender is sending CBOR
+		if s.decoder == nil {
+			debug("Stream %d new CBOR decoder", s.id)
+			s.decoder = cbor.NewDecoder(s.reader)
+		}
+		debug("Stream %d decoding CBOR", s.id)
+		err := s.decoder.Decode(&v)
+		if err != nil {
+			debug("Stream %d unable to read segment: %v", s.id, err)
+			return fmt.Errorf("Stream unable to read segment: %v", err)
 		}
 	}
 
@@ -230,6 +238,38 @@ func (s *Stream) write_file(path string) error {
 	}
 
 	return nil
+}
+
+// Get the first rune from a stream without removing it from the stream
+func (s *Stream) peek_rune() (rune, error) {
+	if s == nil || s.reader == nil {
+		return 0, io.ErrClosedPipe
+	}
+
+	buf := make([]byte, 4)
+	n, err := s.reader.Read(buf[:1])
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+
+	r, _ := utf8.DecodeRune(buf[:n])
+	for r == utf8.RuneError && n < len(buf) {
+		m, err := s.reader.Read(buf[n : n+1])
+		if err != nil {
+			return 0, err
+		}
+		if m == 0 {
+			break
+		}
+		n += m
+		r, _ = utf8.DecodeRune(buf[:n])
+	}
+
+	s.reader = io.NopCloser(io.MultiReader(bytes.NewReader(buf[:n]), s.reader))
+	return r, nil
 }
 
 // Starlark methods

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 type Stream struct {
@@ -19,6 +20,10 @@ type Stream struct {
 	writer  io.WriteCloser
 	decoder *cbor.Decoder
 	encoder *cbor.Encoder
+	timeout struct {
+		read  int
+		write int
+	}
 }
 
 const encoding = "json"
@@ -27,8 +32,6 @@ var (
 	streams_lock       = &sync.Mutex{}
 	stream_next  int64 = 1
 )
-
-//TODO Set write and read timeouts
 
 // Create a new stream with specified headers
 func stream(from string, to string, service string, event string) *Stream {
@@ -96,6 +99,15 @@ func (s *Stream) read(v any) error {
 		return fmt.Errorf("Stream not open")
 	}
 
+	timeout := s.timeout.read
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	_ = s.reader.(interface{ SetReadDeadline(time.Time) error }).SetReadDeadline(deadline)
+	defer s.reader.(interface{ SetReadDeadline(time.Time) error }).SetReadDeadline(time.Time{})
+
 	switch encoding {
 	case "cbor":
 		if s.decoder == nil {
@@ -150,6 +162,15 @@ func (s *Stream) write(v any) error {
 		debug("Stream %d not open", s.id)
 		return fmt.Errorf("Stream not open")
 	}
+
+	timeout := s.timeout.write
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	_ = s.writer.(interface{ SetWriteDeadline(time.Time) error }).SetWriteDeadline(deadline)
+	defer s.writer.(interface{ SetWriteDeadline(time.Time) error }).SetWriteDeadline(time.Time{})
 
 	switch encoding {
 	case "cbor":

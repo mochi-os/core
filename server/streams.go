@@ -105,8 +105,10 @@ func (s *Stream) read(v any) error {
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	_ = s.reader.(interface{ SetReadDeadline(time.Time) error }).SetReadDeadline(deadline)
-	defer s.reader.(interface{ SetReadDeadline(time.Time) error }).SetReadDeadline(time.Time{})
+	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = r.SetReadDeadline(deadline)
+		defer r.SetReadDeadline(time.Time{})
+	}
 
 	switch encoding {
 	case "cbor":
@@ -169,8 +171,10 @@ func (s *Stream) write(v any) error {
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	_ = s.writer.(interface{ SetWriteDeadline(time.Time) error }).SetWriteDeadline(deadline)
-	defer s.writer.(interface{ SetWriteDeadline(time.Time) error }).SetWriteDeadline(time.Time{})
+	if w, ok := s.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = w.SetWriteDeadline(deadline)
+		defer w.SetWriteDeadline(time.Time{})
+	}
 
 	switch encoding {
 	case "cbor":

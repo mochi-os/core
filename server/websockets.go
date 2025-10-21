@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"nhooyr.io/websocket"
 )
@@ -17,7 +19,21 @@ var (
 func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
-		return
+		// Check Authorization header (Bearer token)
+		authHeader := c.GetHeader("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if userId, err := jwt_verify(token); err == nil && userId > 0 {
+				if user := user_by_id(userId); u != nil {
+					u = user
+					debug("API JWT token accepted for user %d", u.ID)
+				}
+			}
+		}
+
+		if u == nil {
+			return
+		}
 	}
 
 	ws, err := websocket.Accept(c.Writer, c.Request, nil)

@@ -583,7 +583,7 @@ func (a *App) service(service string) {
 
 // Get a new Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
-	if a.starlark_runtime == nil {
+	if av.starlark_runtime == nil {
 		av.starlark_runtime = starlark(av.Files)
 	}
 	return av.starlark_runtime

@@ -176,7 +176,7 @@ func (e *Event) segment(v any) bool {
 
 // Starlark methods
 func (e *Event) AttrNames() []string {
-	return []string{"content", "dump", "event", "from", "read", "read_to_file", "service", "stream", "to", "write", "write_from_file"}
+	return []string{"content", "dump", "header", "read", "read_to_file", "stream", "write", "write_from_file"}
 }
 
 func (e *Event) Attr(name string) (sl.Value, error) {
@@ -185,21 +185,14 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("content", e.sl_content), nil
 	case "dump":
 		return sl.NewBuiltin("dump", e.sl_dump), nil
-	case "event":
-		return sl.String(e.event), nil
-	case "from":
-		//TODO Fix from attribute
-		return sl.String(e.from), nil
+	case "header":
+		return sl.NewBuiltin("header", e.sl_header), nil
 	case "read":
 		return sl.NewBuiltin("read", e.stream.sl_read), nil
 	case "read_to_file":
 		return sl.NewBuiltin("read_to_file", e.stream.sl_read_to_file), nil
-	case "service":
-		return sl.String(e.service), nil
 	case "stream":
 		return e.stream, nil
-	case "to":
-		return sl.String(e.to), nil
 	case "write":
 		return sl.NewBuiltin("write", e.stream.sl_write), nil
 	case "write_from_file":
@@ -234,7 +227,7 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	field, ok := sl.AsString(args[0])
-	if !ok || !valid(field, "constant") {
+	if !ok {
 		return sl_error(fn, "invalid field '%s'", field)
 	}
 
@@ -253,4 +246,29 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // Dump the event contents
 func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "content": e.content}), nil
+}
+
+// Get a header
+func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <header: string>")
+	}
+
+	header, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid header '%s'", header)
+	}
+
+	switch header {
+	case "from":
+		return sl_encode(e.from), nil
+	case "to":
+		return sl_encode(e.to), nil
+	case "service":
+		return sl_encode(e.service), nil
+	case "event":
+		return sl_encode(e.event), nil
+	default:
+		return sl_error(fn, "invalid header '%s'", header)
+	}
 }

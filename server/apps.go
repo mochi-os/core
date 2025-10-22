@@ -13,6 +13,17 @@ import (
 )
 
 type App struct {
+	id       string                 `json:"id"`
+	versions map[string]*AppVersion `json:"-"`
+	active   *AppVersion            `json:"-"`
+	internal struct {
+		actions          map[string]func(*Action) `json:"-"`
+		events           map[string]func(*Event)  `json:"-"`
+		events_broadcast map[string]func(*Event)  `json:"-"`
+	}
+}
+
+type AppVersion struct {
 	Version string `json:"version"`
 	Label   string `json:"label"`
 	Engine  struct {
@@ -45,19 +56,11 @@ type App struct {
 		} `json:"functions"`
 	} `json:"services"`
 
-	// For Go code use
-	id               string                       `json:"-"`
+	app              *App                         `json:"-"`
 	base             string                       `json:"-"`
 	entity_field     string                       `json:"-"`
 	labels           map[string]map[string]string `json:"-"`
 	starlark_runtime *Starlark                    `json:"-"`
-
-	// For internal apps only, possibly to be removed in a future version
-	internal struct {
-		actions          map[string]func(*Action) `json:"-"`
-		events           map[string]func(*Event)  `json:"-"`
-		events_broadcast map[string]func(*Event)  `json:"-"`
-	}
 }
 
 type Icon struct {
@@ -96,13 +99,13 @@ var (
 
 // Create data structure for new internal app
 func app(name string) *App {
-	a := App{id: name, entity_field: "entity"}
-	a.Engine.Architecture = "internal"
+	a := &App{id: name}
+	a.active = &AppVersion{}
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))
-	apps[name] = &a
-	return &a
+	apps[name] = a
+	return a
 }
 
 // Check whether app is the correct version, and if not download and install new version
@@ -130,12 +133,16 @@ func app_check_install(id string) bool {
 	}
 
 	a := apps[id]
-	if a != nil && a.Version == version {
-		debug("App '%s' keeping at version '%s'", id, a.Version)
+	if a != nil && a.active != nil && a.active.Version == version {
+		debug("App '%s' keeping at version '%s'", id, a.active.Version)
 		return true
 	}
 
-	debug("App '%s' upgrading from '%s' to '%s'", id, a.Version, version)
+	oldVersion := ""
+	if a != nil && a.active != nil {
+		oldVersion = a.active.Version
+	}
+	debug("App '%s' upgrading from '%s' to '%s'", id, oldVersion, version)
 
 	s = stream("", id, "app", "get")
 	err = s.write_content("version", version)
@@ -159,14 +166,22 @@ func app_check_install(id string) bool {
 		file_delete(zip)
 		return false
 	}
-	new.load()
+
+	apps_lock.Lock()
+	if apps[id] == nil {
+		apps[id] = &App{id: id}
+	}
+	a = apps[id]
+	apps_lock.Unlock()
+
+	a.load_version(new)
 	debug("App '%s' version '%s' loaded", id, version)
 
 	return true
 }
 
-// Install an app from a zip file, but not load it
-func app_install(id string, version string, file string, check_only bool) (*App, error) {
+// Install an app from a zip file, but do not load it
+func app_install(id string, version string, file string, check_only bool) (*AppVersion, error) {
 	if version == "" {
 		debug("App '%s' installing from '%s'", id, file)
 	} else {
@@ -183,14 +198,14 @@ func app_install(id string, version string, file string, check_only bool) (*App,
 		return nil, err
 	}
 
-	a, err := app_read(id, tmp)
+	av, err := app_read(id, tmp)
 	if err != nil {
 		info("App read failed: %v", err)
 		file_delete_all(tmp)
 		return nil, err
 	}
 
-	if version != "" && version != a.Version {
+	if version != "" && version != av.Version {
 		file_delete_all(tmp)
 		return nil, fmt.Errorf("Specified version does not match file version")
 	}
@@ -198,19 +213,19 @@ func app_install(id string, version string, file string, check_only bool) (*App,
 	if check_only {
 		debug("App '%s' not installing", id)
 		file_delete_all(tmp)
-		return a, nil
+		return av, nil
 	}
 
-	a.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, a.Version)
-	if file_exists(a.base) {
-		debug("App '%s' removing old copy of version '%s' in '%s'", id, a.Version, a.base)
-		file_delete_all(a.base)
+	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
+	if file_exists(av.base) {
+		debug("App '%s' removing old copy of version '%s' in '%s'", id, av.Version, av.base)
+		file_delete_all(av.base)
 	}
-	debug("Moving unzipped app from '%s' to '%s'", tmp, a.base)
-	file_move(tmp, a.base)
+	debug("Moving unzipped app from '%s' to '%s'", tmp, av.base)
+	file_move(tmp, av.base)
 
-	debug("App '%s' version '%s' installed", id, a.Version)
-	return a, nil
+	debug("App '%s' version '%s' installed", id, av.Version)
+	return av, nil
 }
 
 // Manage which apps and their versions are installed
@@ -244,8 +259,8 @@ func apps_manager() {
 	}
 }
 
-// Read in an app from a directory
-func app_read(id string, base string) (*App, error) {
+// Read in an external app version from a directory
+func app_read(id string, base string) (*AppVersion, error) {
 	debug("App '%s' loading from '%s'", id, base)
 
 	// Load app manifest from app.json
@@ -253,48 +268,47 @@ func app_read(id string, base string) (*App, error) {
 		return nil, fmt.Errorf("App '%s' in '%s' has no app.json file; ignoring", id, base)
 	}
 
-	var a App
-	if !json_decode(&a, string(file_read(base+"/app.json"))) {
+	var av AppVersion
+	if !json_decode(&av, string(file_read(base+"/app.json"))) {
 		return nil, fmt.Errorf("App bad app.json '%s/app.json'; ignoring app", base)
 	}
 
-	a.id = id
-	a.base = base
+	av.base = base
 
 	// Validate manifest
-	if !valid(a.Version, "version") {
-		return nil, fmt.Errorf("App bad version '%s'", a.Version)
+	if !valid(av.Version, "version") {
+		return nil, fmt.Errorf("App bad version '%s'", av.Version)
 	}
 
-	if !valid(a.Label, "constant") {
-		return nil, fmt.Errorf("App bad label '%s'", a.Label)
+	if !valid(av.Label, "constant") {
+		return nil, fmt.Errorf("App bad label '%s'", av.Label)
 	}
 
-	if a.Engine.Architecture != "starlark" {
-		return nil, fmt.Errorf("App bad engine '%s' version %d", a.Engine.Architecture, a.Engine.Version)
+	if av.Engine.Architecture != "starlark" {
+		return nil, fmt.Errorf("App bad engine '%s' version %d", av.Engine.Architecture, av.Engine.Version)
 	}
-	if a.Engine.Version < app_version_minimum {
-		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", a.Engine.Version, app_version_minimum)
+	if av.Engine.Version < app_version_minimum {
+		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Engine.Version, app_version_minimum)
 	}
-	if a.Engine.Version > app_version_maximum {
-		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", a.Engine.Version, app_version_maximum)
+	if av.Engine.Version > app_version_maximum {
+		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", av.Engine.Version, app_version_maximum)
 	}
 
-	for _, file := range a.Files {
+	for _, file := range av.Files {
 		if !valid(file, "filepath") {
 			return nil, fmt.Errorf("App bad executable file '%s'", file)
 		}
 	}
 
-	if a.Database.File != "" && !valid(a.Database.File, "filename") {
-		return nil, fmt.Errorf("App bad database file '%s'", a.Database.File)
+	if av.Database.File != "" && !valid(av.Database.File, "filename") {
+		return nil, fmt.Errorf("App bad database file '%s'", av.Database.File)
 	}
 
-	if a.Database.Create != "" && !valid(a.Database.Create, "function") {
-		return nil, fmt.Errorf("App bad database create function '%s'", a.Database.Create)
+	if av.Database.Create != "" && !valid(av.Database.Create, "function") {
+		return nil, fmt.Errorf("App bad database create function '%s'", av.Database.Create)
 	}
 
-	for _, i := range a.Icons {
+	for _, i := range av.Icons {
 		if i.Path != "" && !valid(i.Path, "constant") {
 			return nil, fmt.Errorf("App bad icon path '%s'", i.Path)
 		}
@@ -308,7 +322,7 @@ func app_read(id string, base string) (*App, error) {
 		}
 	}
 
-	for path, p := range a.Paths {
+	for path, p := range av.Paths {
 		if !valid(path, "path") {
 			return nil, fmt.Errorf("App bad path '%s'", path)
 		}
@@ -324,7 +338,7 @@ func app_read(id string, base string) (*App, error) {
 		}
 	}
 
-	for service, s := range a.Services {
+	for service, s := range av.Services {
 		if !valid(service, "constant") {
 			return nil, fmt.Errorf("App bad service '%s'", service)
 		}
@@ -350,21 +364,29 @@ func app_read(id string, base string) (*App, error) {
 		}
 	}
 
-	return &a, nil
+	return &av, nil
 }
 
-// Check which apps are installed, and load them. For now, only load latest version.
+// Load all installed apps
 func apps_start() {
 	for _, id := range file_list(data_dir + "/apps") {
 		versions := file_list(data_dir + "/apps/" + id)
-		if len(versions) > 0 {
-			version := versions[len(versions)-1]
+		if len(versions) == 0 {
+			continue
+		}
+		if apps[id] == nil {
+			apps[id] = &App{id: id}
+		}
+		a := apps[id]
+
+		for _, version := range versions {
 			debug("App '%s' version '%s' found", id, version)
-			a, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
+			av, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {
 				info("App load error: %v", err)
+				continue
 			}
-			a.load()
+			a.load_version(av)
 		}
 	}
 }
@@ -392,13 +414,13 @@ func (a *App) broadcast(sender string, action string, f func(*User, string, stri
 
 // Register the user database file for an internal app
 func (a *App) db(file string, create func(*DB)) {
-	a.Database.File = file
-	a.Database.CreateFunction = create
+	a.active.Database.File = file
+	a.active.Database.CreateFunction = create
 }
 
 // Register the entity field for an internal app
 func (a *App) entity(field string) {
-	a.entity_field = field
+	a.active.entity_field = field
 }
 
 // Register an event handler for an internal app
@@ -424,11 +446,19 @@ func (a *App) label(u *User, key string, values ...any) string {
 		language = u.Language
 	}
 
-	format, exists := a.labels[language][key]
-	if !exists {
-		format, exists = a.labels["en"][key]
+	labels := a.active.labels
+	if labels == nil {
+		labels = map[string]map[string]string{}
 	}
-	if !exists {
+
+	format := ""
+	if labels[language] != nil {
+		format = labels[language][key]
+	}
+	if format == "" && labels["en"] != nil {
+		format = labels["en"][key]
+	}
+	if format == "" {
 		info("App label '%s' in language '%s' not set", key, language)
 		return key
 	}
@@ -436,50 +466,35 @@ func (a *App) label(u *User, key string, values ...any) string {
 	return fmt.Sprintf(format, values...)
 }
 
-// Load details of an app and make it available to users
-// TODO Reload icons, web paths, and services on upgrade. If possible, make it handle multiple versions in future
-func (a *App) load() {
-	if a == nil {
+// Loads details of a new version, and if it's the latest activate it
+func (a *App) load_version(av *AppVersion) {
+	if a == nil || av == nil {
 		return
 	}
-	debug("App loading '%+v", a)
+	debug("App '%s' loading version '%s'", a.id, av.Version)
+
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 
-	apps[a.id] = a
+	av.app = a
+	if a.versions == nil {
+		a.versions = make(map[string]*AppVersion)
+	}
+	a.versions[av.Version] = av
 
-	for i, file := range a.Files {
-		a.Files[i] = a.base + "/" + file
+	for i, file := range av.Files {
+		av.Files[i] = av.base + "/" + file
 	}
 
-	for _, i := range a.Icons {
-		i.app = a
-		icons = append(icons, i)
-	}
-
-	for path, p := range a.Paths {
-		for action, ac := range p.Actions {
-			full := path
-			if action != "" {
-				full = path + "/" + action
-			}
-			paths[full] = &Path{path: full, app: a, function: ac.Function, public: ac.Public, internal: nil}
-		}
-	}
-
-	for service, _ := range a.Services {
-		services[service] = a
-	}
-
-	a.labels = make(map[string]map[string]string)
-	for _, file := range file_list(a.base + "/labels") {
+	av.labels = make(map[string]map[string]string)
+	for _, file := range file_list(av.base + "/labels") {
 		language := strings.TrimSuffix(file, ".conf")
 		if !valid(language, "constant") {
 			continue
 		}
-		a.labels[language] = make(map[string]string)
+		av.labels[language] = make(map[string]string)
 
-		path := fmt.Sprintf("%s/labels/%s", a.base, file)
+		path := fmt.Sprintf("%s/labels/%s", av.base, file)
 		f, err := os.Open(path)
 		if err != nil {
 			info("App unable to read labels file '%s': %v", path, err)
@@ -491,9 +506,67 @@ func (a *App) load() {
 		for s.Scan() {
 			parts := strings.SplitN(s.Text(), "=", 2)
 			if len(parts) == 2 {
-				a.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				av.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
 		}
+	}
+
+	latest := ""
+	for v := range a.versions {
+		if v > latest {
+			latest = v
+		}
+	}
+
+	if latest == av.Version {
+		a.active = av
+
+		// Remove old active version from globals
+		for p := range paths {
+			if paths[p].app != nil && paths[p].app.id == a.id {
+				delete(paths, p)
+				//TODO Remove Gin path on unload old app version
+			}
+		}
+
+		for service := range services {
+			if services[service] != nil && services[service].id == a.id {
+				delete(services, service)
+			}
+		}
+
+		new_icons := []Icon{}
+		for _, ic := range icons {
+			if ic.app == nil || ic.app.id != a.id {
+				new_icons = append(new_icons, ic)
+			}
+		}
+		icons = new_icons
+
+		// Add new version to globals
+		for path, p := range av.Paths {
+			for action, ac := range p.Actions {
+				full := path
+				if action != "" {
+					full = path + "/" + action
+				}
+				paths[full] = &Path{path: full, app: a, function: ac.Function, public: ac.Public, internal: nil}
+			}
+		}
+
+		for service := range av.Services {
+			services[service] = a
+		}
+
+		for _, i := range av.Icons {
+			i.app = a
+			icons = append(icons, i)
+		}
+
+		debug("App '%s' version '%s' loaded and activated", a.id, av.Version)
+
+	} else {
+		debug("App '%s' version '%s' loaded, but not activated", a.id, av.Version)
 	}
 
 	debug("App loaded")
@@ -507,4 +580,13 @@ func (a *App) path(path string, f func(*Action)) {
 // Register a service for an internal app
 func (a *App) service(service string) {
 	services[service] = a
+}
+
+// Get a new Starlark interpreter for an app version
+func (av *AppVersion) starlark() *Starlark {
+	//TODO Re-enable caching loading Starlark files
+	//if a.starlark_runtime == nil {
+	av.starlark_runtime = starlark(av.Files)
+	//}
+	return av.starlark_runtime
 }

@@ -72,12 +72,12 @@ func (e *Event) route() {
 	defer l.Unlock()
 
 	// Load a database file for the app
-	if a.Database.File != "" {
+	if a.active.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping broadcast for service requiring user")
 			return
 		}
-		e.db = db_app(e.user, a)
+		e.db = db_app(e.user, a.active)
 		if e.db == nil {
 			info("Event app '%s' has no database file", a.id)
 			return
@@ -86,7 +86,7 @@ func (e *Event) route() {
 	}
 
 	// Check which engine the app uses, and run it
-	switch a.Engine.Architecture {
+	switch a.active.Engine.Architecture {
 	case "internal":
 		// Look for matching app event, using default if necessary
 		var f func(*Event)
@@ -119,9 +119,9 @@ func (e *Event) route() {
 
 	case "starlark":
 		// Look for matching app event, using default if necessary
-		ev, found := a.Services[e.service].Events[e.event]
+		ev, found := a.active.Services[e.service].Events[e.event]
 		if !found {
-			ev, found = a.Services[e.service].Events[""]
+			ev, found = a.active.Services[e.service].Events[""]
 		}
 		if !found {
 			info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
@@ -138,7 +138,7 @@ func (e *Event) route() {
 			return
 		}
 
-		s := a.starlark()
+		s := a.active.starlark()
 		s.set("event", e)
 		s.set("app", a)
 		s.set("user", e.user)
@@ -152,14 +152,14 @@ func (e *Event) route() {
 		}
 
 		debug("App event %s:%s(): %v", a.id, ev.Function, e)
-		if a.Engine.Version == 1 {
+		if a.active.Engine.Version == 1 {
 			s.call(ev.Function, sl_encode_tuple(headers, e.content))
 		} else {
 			s.call(ev.Function, sl.Tuple{e})
 		}
 
 	default:
-		info("Event unknown engine '%s' version '%s'", a.Engine.Architecture, a.Engine.Version)
+		info("Event unknown engine '%s' version '%s'", a.active.Engine.Architecture, a.active.Engine.Version)
 		return
 	}
 }

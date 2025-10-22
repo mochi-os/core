@@ -38,9 +38,10 @@ func init() {
 				"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
 			}),
 			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
+				"get":    sl.NewBuiltin("mochi.directory.get", api_directory_get),
 				"search": sl.NewBuiltin("mochi.directory.search", api_directory_search),
 			}),
-			"entity": sls.FromStringDict(sl.String("directory"), sl.StringDict{
+			"entity": sls.FromStringDict(sl.String("entity"), sl.StringDict{
 				"create":      sl.NewBuiltin("mochi.entity.create", api_entity_create),
 				"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
 				"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
@@ -335,6 +336,24 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_error(fn, "invalid database query '%s'", fn.Name())
 }
 
+// Get a directory entry
+func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid ID '%s'", id)
+	}
+
+	db := db_open("db/directory.db")
+	d := db.row("select * from directory where id=?", id)
+	d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+
+	return sl_encode(d), nil
+}
+
 // Directory search
 func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
@@ -460,12 +479,9 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_open("db/users.db")
-	var e Entity
-	if db.scan(&e, "select * from entities where id=? and user=?", id, user.ID) {
-		return sl_encode(map[string]any{"id": e.ID, "fingerprint": e.Fingerprint, "parent": e.Parent, "class": e.Class, "name": e.Name, "data": e.Data, "published": e.Published}), nil
-	}
+	e := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
 
-	return sl.None, nil
+	return sl_encode(e), nil
 }
 
 // Helper function to get the path of a file

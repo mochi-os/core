@@ -143,14 +143,7 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		a.dump(vars)
 
 	} else {
-		results := map[string]string{}
-		for k, vs := range a.web.Request.Form {
-			results[k] = vs[0]
-		}
-		for _, p := range a.web.Params {
-			results[p.Key] = p.Value
-		}
-		a.dump(results)
+		a.dump(map[string]any{"form": a.web.Request.PostForm, "query": a.web.Request.URL.Query(), "url": a.web.Params})
 	}
 
 	return sl.None, nil

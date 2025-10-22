@@ -222,7 +222,7 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
-	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.base, path)
+	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.active.base, path)
 	if !file_exists(file) {
 		return sl_error(fn, "template '%s' not found", path)
 	}

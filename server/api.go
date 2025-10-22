@@ -110,7 +110,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 
 	if found {
 		user := t.Local("user").(*User)
-		return sl_encode(map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}), nil
+		return sl_encode(map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}), nil
 	}
 
 	return sl.None, nil
@@ -122,7 +122,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	var results []map[string]string
 
 	for _, i := range icons {
-		if i.app.Requires.Role == "administrator" && user.Role != "administrator" {
+		if i.app.active.Requires.Role == "administrator" && user.Role != "administrator" {
 			continue
 		}
 		results = append(results, map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon})
@@ -176,15 +176,23 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no app")
 	}
 
-	a, err := app_install(id, "", api_file(user, app, file), check_only)
+	av, err := app_install(id, "", api_file(user, app, file), check_only)
 	if err != nil {
 		return sl_error(fn, fmt.Sprintf("App install failed: '%v'", err))
 	}
+
 	if !check_only {
-		a.load()
+		apps_lock.Lock()
+		if apps[id] == nil {
+			apps[id] = &App{id: id}
+		}
+		a := apps[id]
+		apps_lock.Unlock()
+
+		a.load_version(av)
 	}
 
-	return sl_encode(a.Version), nil
+	return sl_encode(av.Version), nil
 }
 
 // Get list of installed apps
@@ -203,7 +211,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	apps_lock.Lock()
 	for i, id := range ids {
 		a := apps[id]
-		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.Label), "version": a.Version}
+		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}
 	}
 	apps_lock.Unlock()
 
@@ -317,7 +325,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "unknown app")
 	}
 
-	db := db_app(user, app)
+	db := db_app(user, app.active)
 
 	switch fn.Name() {
 	case "mochi.db.exists":
@@ -771,16 +779,16 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if a == nil {
 		return sl_error(fn, "unknown service '%s'", service)
 	}
-	f, found := a.Services[service].Functions[function]
+	f, found := a.active.Services[service].Functions[function]
 	if !found {
-		f, found = a.Services[service].Functions[""]
+		f, found = a.active.Services[service].Functions[""]
 	}
 	if !found {
 		return sl_error(fn, "unknown function '%s' for service '%s'", function, service)
 	}
 
 	// Call function
-	s := a.starlark()
+	s := a.active.starlark()
 	s.set("app", a)
 	s.set("user", t.Local("user").(*User))
 	s.set("owner", t.Local("owner").(*User))

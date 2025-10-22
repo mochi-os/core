@@ -97,31 +97,36 @@ func db_create() {
 	cache.exec("create index attachments_created on attachments( created )")
 }
 
-// Open a database file for an app, creating it if necessary
-func db_app(u *User, a *App) *DB {
-	if a.Database.File == "" {
-		warn("App '%s' asked for database, but no database file specified", a.id)
+// Open a database file for an app version, creating it if necessary
+func db_app(u *User, av *AppVersion) *DB {
+	if av.app == nil {
+		warn("Attempt to create database for unloaded app version")
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%d/%s/%s", u.ID, a.id, a.Database.File)
+	if av.Database.File == "" {
+		warn("App '%s' version '%s' asked for database, but no database file specified", av.app.id, av.Version)
+		return nil
+	}
+
+	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
 	if file_exists(data_dir + "/" + path) {
 		db := db_open(path)
 		db.user = u
 		return db
 	}
 
-	if a.Database.Create != "" {
+	if av.Database.Create != "" {
 		db := db_open(path)
 		db.user = u
-		s := a.starlark()
-		s.set("app", a)
+		s := av.starlark()
+		s.set("app", av.app)
 		s.set("user", u)
 		s.set("owner", u)
-		version_var, _ := s.call(a.Database.Create, nil)
+		version_var, _ := s.call(av.Database.Create, nil)
 		version := s.int(version_var)
 		if version == 0 {
-			info("App '%s' database creation function '%s' did not return a schema version, assuming 1", a.id, a.Database.Create)
+			info("App '%s' version '%s' database creation function '%s' did not return a schema version, assuming 1", av.app.id, av.Version, av.Database.Create)
 			version = 1
 		}
 		db.exec("create table _settings ( name text not null primary key, value text not null )")
@@ -129,13 +134,13 @@ func db_app(u *User, a *App) *DB {
 		return db
 	}
 
-	if a.Database.CreateFunction != nil {
-		db := db_user(u, a.Database.File, a.Database.CreateFunction)
+	if av.Database.CreateFunction != nil {
+		db := db_user(u, av.Database.File, av.Database.CreateFunction)
 		db.user = u
 		return db
 	}
 
-	warn("App '%s' has no way to create database file '%s'", a.id, a.Database.File)
+	warn("App '%s' version '%s' has no way to create database file '%s'", av.app.id, av.Version, av.Database.File)
 	return nil
 }
 

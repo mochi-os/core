@@ -183,7 +183,7 @@ func (p *Path) web_path(c *gin.Context) {
 	}
 
 	var e *Entity = nil
-	entity := c.Param(p.app.entity_field)
+	entity := c.Param(p.app.active.entity_field)
 	if entity != "" {
 		e = entity_by_fingerprint(entity)
 		if e == nil {
@@ -191,8 +191,8 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	if p.app.Database.File != "" && user != nil {
-		user.db = db_app(user, p.app)
+	if p.app.active.Database.File != "" && user != nil {
+		user.db = db_app(user, p.app.active)
 		if user.db == nil {
 			web_error(c, 500, "No user database for app")
 			return
@@ -203,8 +203,8 @@ func (p *Path) web_path(c *gin.Context) {
 	owner := user
 	if e != nil {
 		owner = user_owning_entity(e.ID)
-		if p.app.Database.File != "" && owner != nil {
-			owner.db = db_app(owner, p.app)
+		if p.app.active.Database.File != "" && owner != nil {
+			owner.db = db_app(owner, p.app.active)
 			if owner.db == nil {
 				web_error(c, 500, "No owner database for app")
 				return
@@ -213,20 +213,20 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 	}
 
-	if p.app.Database.File != "" && user == nil && owner == nil {
+	if p.app.active.Database.File != "" && user == nil && owner == nil {
 		web_redirect(c, "/login")
 		return
 	}
 
 	// Require role if app requires it
-	if p.app.Requires.Role == "administrator" && user.Role != "administrator" {
+	if p.app.active.Requires.Role == "administrator" && user.Role != "administrator" {
 		web_error(c, 403, "Forbidden")
 		return
 	}
 
 	a := Action{id: action_id(), user: user, owner: owner, app: p.app, web: c, path: p}
 
-	switch p.app.Engine.Architecture {
+	switch p.app.active.Engine.Architecture {
 	case "internal":
 		if p.internal == nil {
 			web_error(c, 500, "No function for internal path")
@@ -245,7 +245,7 @@ func (p *Path) web_path(c *gin.Context) {
 			return
 		}
 
-		s := p.app.starlark()
+		s := p.app.active.starlark()
 		s.set("action", &a)
 		s.set("app", p.app)
 		s.set("user", a.user)
@@ -260,7 +260,7 @@ func (p *Path) web_path(c *gin.Context) {
 		}
 
 		var err error
-		if p.app.Engine.Version == 1 {
+		if p.app.active.Engine.Version == 1 {
 			_, err = s.call(p.function, sl_encode_tuple(fields, web_inputs(c)))
 		} else {
 			_, err = s.call(p.function, sl.Tuple{&a})
@@ -312,7 +312,7 @@ func handle_api(c *gin.Context) {
 	}
 	var candidates []action_candidate
 
-	for path_name, path := range app.Paths {
+	for path_name, path := range app.active.Paths {
 		debug("Checking path '%s' with %d actions", path_name, len(path.Actions))
 		for action_key, action := range path.Actions {
 			debug("Available action: '%s'", action_key)
@@ -437,21 +437,20 @@ func handle_api(c *gin.Context) {
 	}
 
 	// Require authentication for database-backed apps
-	if user == nil && app.Database.File != "" {
+	if user == nil && app.active.Database.File != "" {
 		c.JSON(401, gin.H{"error": "Authentication required for database access"})
 		return
 	}
 
 	// Require role if app requires it
-	debug("ROLE REQUIRED '%s', HAVE '%s'", app.Requires.Role, user.Role)
-	if app.Requires.Role == "administrator" && user.Role != "administrator" {
+	if app.active.Requires.Role == "administrator" && user.Role != "administrator" {
 		c.JSON(403, gin.H{"error": "Forbidden"})
 		return
 	}
 
 	// Set up database if needed
-	if app.Database.File != "" {
-		user.db = db_app(user, app)
+	if app.active.Database.File != "" {
+		user.db = db_app(user, app.active)
 		if user.db == nil {
 			c.JSON(500, gin.H{"error": "Database error"})
 			return
@@ -504,7 +503,7 @@ func handle_api(c *gin.Context) {
 	}
 
 	// Call the Starlark function
-	s := app.starlark()
+	s := app.active.starlark()
 	s.set("action", &action)
 	s.set("app", app)
 	s.set("user", user)
@@ -512,7 +511,7 @@ func handle_api(c *gin.Context) {
 
 	var result sl.Value
 	var err error
-	if app.Engine.Version == 1 {
+	if app.active.Engine.Version == 1 {
 		result, err = s.call(action_function, sl_encode_tuple(fields, inputs))
 	} else {
 		result, err = s.call(action_function, sl.Tuple{&action})

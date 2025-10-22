@@ -308,12 +308,3 @@ func (s *Starlark) int(v sl.Value) int {
 func (s *Starlark) set(key string, value any) {
 	s.thread.SetLocal(key, value)
 }
-
-// Get a new Starlark interpreter for an app
-func (a *App) starlark() *Starlark {
-	//TODO Re-enable caching loading Starlark files
-	//if a.starlark_runtime == nil {
-	a.starlark_runtime = starlark(a.Files)
-	//}
-	return a.starlark_runtime
-}

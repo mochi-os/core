@@ -29,8 +29,7 @@ func init() {
 				"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
 				"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
 				"install": sl.NewBuiltin("mochi.app.install", api_app_install),
-				//TODO Rename to mochi.apps.list()?
-				"list": sl.NewBuiltin("mochi.app.list", api_app_list),
+				"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
 			}),
 			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
@@ -49,10 +48,9 @@ func init() {
 			"file": sls.FromStringDict(sl.String("file"), sl.StringDict{
 				"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 				"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
-				//TODO Rename to mochi.files.list()?
-				"list":  sl.NewBuiltin("mochi.file.list", api_file_list),
-				"read":  sl.NewBuiltin("mochi.file.read", api_file_read),
-				"write": sl.NewBuiltin("mochi.file.write", api_file_write),
+				"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
+				"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
+				"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
 			}),
 			"log": sls.FromStringDict(sl.String("log"), sl.StringDict{
 				"debug": sl.NewBuiltin("mochi.log.debug", api_log),
@@ -85,7 +83,6 @@ func init() {
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
 			"valid": sl.NewBuiltin("mochi.valid", api_valid),
-			//TODO Rename to mochi.websockets.write()?
 			"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
 				"write": sl.NewBuiltin("mochi.websocket.write", api_websocket_write),
 			}),

@@ -525,7 +525,6 @@ func (a *App) load_version(av *AppVersion) {
 		for p := range paths {
 			if paths[p].app != nil && paths[p].app.id == a.id {
 				delete(paths, p)
-				//TODO Remove Gin path on unload old app version
 			}
 		}
 
@@ -584,9 +583,8 @@ func (a *App) service(service string) {
 
 // Get a new Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
-	//TODO Re-enable caching loading Starlark files
-	//if a.starlark_runtime == nil {
-	av.starlark_runtime = starlark(av.Files)
-	//}
+	if a.starlark_runtime == nil {
+		av.starlark_runtime = starlark(av.Files)
+	}
 	return av.starlark_runtime
 }

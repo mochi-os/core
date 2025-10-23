@@ -118,7 +118,8 @@ func (s *Stream) read(v any) error {
 
 	first, err := s.peek_rune()
 	if err != nil {
-		return fmt.Errorf("Stream unable to check encoding")
+		debug("Stream %d unable to check encoding; assuming empty segment", s.id)
+		return nil
 	}
 
 	if first == '{' || first == '[' {

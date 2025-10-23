@@ -74,16 +74,18 @@ func stream_receive(s *Stream, version int, peer string) {
 	// Get and verify message headers
 	var h Headers
 	err := s.read(&h)
-	debug("Stream receive got headers %#v", h)
-	if err != nil || !h.valid() {
-		info("Stream closing due to bad headers")
+	if err != nil {
+		info("Stream %d error reading headers: %v", s.id, err)
+	}
+	if !h.valid() {
+		info("Stream %d received invalid headers", s.id)
 		return
 	}
 
 	// Decode the content segment
 	content, err := s.read_content()
 	if err != nil {
-		info("Stream closing due to bad content")
+		info("Stream %d error reading content: %v", s.id, err)
 		return
 	}
 

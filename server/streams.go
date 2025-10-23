@@ -4,14 +4,12 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -28,8 +26,6 @@ type Stream struct {
 		write int
 	}
 }
-
-const encoding = "cbor"
 
 var (
 	streams_lock       = &sync.Mutex{}
@@ -116,35 +112,13 @@ func (s *Stream) read(v any) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-	if encoding == "json" {
-		// Sender is sending JSON
-		br := bufio.NewReader(s.reader)
-		line, err := br.ReadString('\n')
-		if err == io.EOF {
-			if len(line) > 0 {
-				return fmt.Errorf("Stream received incomplete JSON '%s'", line)
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("Stream read error: %v", err)
-		}
-		debug("Stream %d read JSON '%s'", s.id, strings.TrimSuffix(line, "\n"))
-		if !json_decode(v, line) {
-			return fmt.Errorf("Stream unable to decode JSON")
-		}
-
-	} else {
-		// Sender is sending CBOR
 		if s.decoder == nil {
-			debug("Stream %d new CBOR decoder", s.id)
 			s.decoder = cbor.NewDecoder(s.reader)
 		}
-		debug("Stream %d reading CBOR", s.id)
 		err := s.decoder.Decode(v)
 		if err != nil {
 			return fmt.Errorf("Stream unable to read segment: %v", err)
 		}
-	}
 
 	debug("Stream %d read segment: %#v", s.id, v)
 	return nil
@@ -179,23 +153,13 @@ func (s *Stream) write(v any) error {
 		defer w.SetWriteDeadline(time.Time{})
 	}
 
-	switch encoding {
-	case "cbor":
 		if s.encoder == nil {
-			debug("Stream %d new CBOR encoder", s.id)
 			s.encoder = cbor.NewEncoder(s.writer)
 		}
-		debug("Stream %d writing CBOR", s.id)
 		err := s.encoder.Encode(v)
 		if err != nil {
 			return fmt.Errorf("Stream error writing segment: %v", err)
 		}
-
-	case "json":
-		j := json_encode(v)
-		debug("Stream %d writing JSON '%s'", s.id, j)
-		s.writer.Write([]byte(j + "\n"))
-	}
 
 	debug("Stream %d wrote segment", s.id)
 	return nil

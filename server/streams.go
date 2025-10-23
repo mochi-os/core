@@ -143,7 +143,7 @@ func (s *Stream) read(v any) error {
 			s.decoder = cbor.NewDecoder(s.reader)
 		}
 		debug("Stream %d decoding CBOR", s.id)
-		err := s.decoder.Decode(&v)
+		err := s.decoder.Decode(v)
 		if err != nil {
 			return fmt.Errorf("Stream unable to read segment: %v", err)
 		}

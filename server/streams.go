@@ -11,6 +11,7 @@ import (
 	sl "go.starlark.net/starlark"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -73,6 +74,7 @@ func stream_receive(s *Stream, version int, peer string) {
 	// Get and verify message headers
 	var h Headers
 	err := s.read(&h)
+	debug("Stream receive got headers %#v", h)
 	if err != nil || !h.valid() {
 		info("Stream closing due to bad headers")
 		return
@@ -123,17 +125,14 @@ func (s *Stream) read(v any) error {
 		line, err := br.ReadString('\n')
 		if err == io.EOF {
 			if len(line) > 0 {
-				debug("Stream %d received incomplete JSON '%s'", s.id, line)
 				return fmt.Errorf("Stream received incomplete JSON '%s'", line)
 			}
 		}
 		if err != nil {
-			debug("Stream %d read error %v", s.id, err)
 			return fmt.Errorf("Stream read error: %v", err)
 		}
-		debug("Stream %d read JSON '%s'", s.id, line)
+		debug("Stream %d read JSON '%s'", s.id, strings.TrimSuffix(line, "\n"))
 		if !json_decode(&v, line) {
-			debug("Stream %d unable to decode JSON", s.id)
 			return fmt.Errorf("Stream unable to decode JSON")
 		}
 
@@ -146,7 +145,6 @@ func (s *Stream) read(v any) error {
 		debug("Stream %d decoding CBOR", s.id)
 		err := s.decoder.Decode(&v)
 		if err != nil {
-			debug("Stream %d unable to read segment: %v", s.id, err)
 			return fmt.Errorf("Stream unable to read segment: %v", err)
 		}
 	}
@@ -193,14 +191,13 @@ func (s *Stream) write(v any) error {
 		debug("Stream %d encoding CBOR", s.id)
 		err := s.encoder.Encode(v)
 		if err != nil {
-			debug("Stream %d error writing segment: %v", s.id, err)
 			return fmt.Errorf("Stream error writing segment: %v", err)
 		}
 
 	case "json":
-		j := json_encode(v) + "\n"
+		j := json_encode(v)
 		debug("Stream %d writing JSON '%s'", s.id, j)
-		s.writer.Write([]byte(j))
+		s.writer.Write([]byte(j + "\n"))
 	}
 
 	debug("Stream %d wrote segment", s.id)

@@ -3,7 +3,7 @@ To run Mochi server from git:
  1. Ensure that the machine can send email from the command line using the "mail" command or similar.
  2. Run the following commands:
 
-    git clone git@github.com:mochi-project/core.git
+    git clone git@github.com:mochi-os/core.git
     cd core
     make
 	sudo mkdir /etc/mochi /var/cache/mochi /var/lib/mochi

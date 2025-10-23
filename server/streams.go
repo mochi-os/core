@@ -29,7 +29,7 @@ type Stream struct {
 	}
 }
 
-const encoding = "json"
+const encoding = "cbor"
 
 var (
 	streams_lock       = &sync.Mutex{}
@@ -116,13 +116,7 @@ func (s *Stream) read(v any) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-	first, err := s.peek_rune()
-	if err != nil {
-		debug("Stream %d unable to check encoding; assuming empty segment", s.id)
-		return nil
-	}
-
-	if first == '{' || first == '[' {
+	if encoding == "json" {
 		// Sender is sending JSON
 		br := bufio.NewReader(s.reader)
 		line, err := br.ReadString('\n')
@@ -135,7 +129,7 @@ func (s *Stream) read(v any) error {
 			return fmt.Errorf("Stream read error: %v", err)
 		}
 		debug("Stream %d read JSON '%s'", s.id, strings.TrimSuffix(line, "\n"))
-		if !json_decode(&v, line) {
+		if !json_decode(v, line) {
 			return fmt.Errorf("Stream unable to decode JSON")
 		}
 
@@ -145,7 +139,7 @@ func (s *Stream) read(v any) error {
 			debug("Stream %d new CBOR decoder", s.id)
 			s.decoder = cbor.NewDecoder(s.reader)
 		}
-		debug("Stream %d decoding CBOR", s.id)
+		debug("Stream %d reading CBOR", s.id)
 		err := s.decoder.Decode(v)
 		if err != nil {
 			return fmt.Errorf("Stream unable to read segment: %v", err)
@@ -191,7 +185,7 @@ func (s *Stream) write(v any) error {
 			debug("Stream %d new CBOR encoder", s.id)
 			s.encoder = cbor.NewEncoder(s.writer)
 		}
-		debug("Stream %d encoding CBOR", s.id)
+		debug("Stream %d writing CBOR", s.id)
 		err := s.encoder.Encode(v)
 		if err != nil {
 			return fmt.Errorf("Stream error writing segment: %v", err)

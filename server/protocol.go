@@ -17,8 +17,6 @@ type Headers struct {
 
 // Check if headers are valid
 func (h *Headers) valid() bool {
-	debug("Protocol checking headers %#v", h)
-
 	if h.From != "" && !valid(h.From, "entity") {
 		info("Invalid from header '%s'", h.From)
 		return false

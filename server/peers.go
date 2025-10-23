@@ -5,6 +5,7 @@ package main
 
 import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	"io"
 	"sync"
 	"time"
 )
@@ -257,9 +258,10 @@ func peer_stream(id string) *Stream {
 
 	if id == p2p_id {
 		debug("Sending event to ourself")
-		s := pipe_stream()
-		go stream_receive(s, 1, p2p_id)
-		return s
+		r1, w1 := io.Pipe()
+		r2, w2 := io.Pipe()
+		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, p2p_id)
+		return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r2}, writer: &pipe_writer{PipeWriter: w1}}
 	}
 
 	p := peer_by_id(id)

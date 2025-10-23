@@ -107,8 +107,3 @@ func (w *pipe_writer) Write(p []byte) (int, error) {
 		return 0, os.ErrDeadlineExceeded
 	}
 }
-
-func pipe_stream() *Stream {
-	r, w := io.Pipe()
-	return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r}, writer: &pipe_writer{PipeWriter: w}}
-}

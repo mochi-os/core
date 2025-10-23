@@ -1,5 +1,4 @@
 Alistair:
-	Dev machine
 	Directory get recent updates
 	App Market
 

@@ -149,7 +149,7 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.None, nil
 }
 
-// print an error
+// Print an error
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
 		a.dump(args)

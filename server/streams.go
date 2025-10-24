@@ -33,22 +33,24 @@ var (
 )
 
 // Create a new stream with specified headers
-func stream(from string, to string, service string, event string) *Stream {
+func stream(from string, to string, service string, event string) (*Stream, error) {
 	peer := entity_peer(to)
+	if peer == "" {
+		return nil, fmt.Errorf("Stream unable to determine location of entity '%s'", to)
+	}
 
 	s := peer_stream(peer)
 	if s == nil {
-		debug("Stream unable to open to peer '%s'", peer)
-		return nil
+		return nil, fmt.Errorf("Stream unable to open to peer '%s' for entity '%s'", peer, to)
 	}
 	debug("Stream %d open to peer '%s': from '%s', to '%s', service '%s', event '%s'", s.id, peer, from, to, service, event)
 
 	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Signature: entity_sign(from, from+to+service+event)})
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
-	return s
+	return s, nil
 }
 
 // Get next stream ID
@@ -94,12 +96,10 @@ func stream_receive(s *Stream, version int, peer string) {
 
 // Read a CBOR encoded segment from a stream
 func (s *Stream) read(v any) error {
-	debug("Stream %d reading segment type %T", s.id, v)
-
-	if s == nil {
-		debug("Stream %d not open", s.id)
-		return fmt.Errorf("Stream not open")
+	if s == nil || s.reader == nil {
+		return fmt.Errorf("Stream not open for reading")
 	}
+	debug("Stream %d reading segment type %T", s.id, v)
 
 	timeout := s.timeout.read
 	if timeout <= 0 {
@@ -136,11 +136,10 @@ func (s *Stream) read_content() (map[string]string, error) {
 
 // Write a CBOR encoded segment to a stream
 func (s *Stream) write(v any) error {
-	debug("Stream %d writing segment: %#v", s.id, v)
 	if s == nil || s.writer == nil {
-		debug("Stream %d not open", s.id)
-		return fmt.Errorf("Stream not open")
+		return fmt.Errorf("Stream not open for writing")
 	}
+	debug("Stream %d writing segment: %#v", s.id, v)
 
 	timeout := s.timeout.write
 	if timeout <= 0 {

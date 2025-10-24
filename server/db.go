@@ -123,10 +123,15 @@ func db_app(u *User, av *AppVersion) *DB {
 		s.set("app", av.app)
 		s.set("user", u)
 		s.set("owner", u)
-		version_var, _ := s.call(av.Database.Create, nil)
+
+		version_var, err := s.call(av.Database.Create, nil)
+		if err != nil {
+			warn("App '%s' call to create database error: %v", err)
+			return nil
+		}
 
 		var version int
-		err := sl.AsInt(version_var, &version)
+		err = sl.AsInt(version_var, &version)
 		if err != nil || version == 0 {
 			info("App '%s' version '%s' database creation function '%s' did not return a schema version, assuming 1", av.app.id, av.Version, av.Database.Create)
 			version = 1

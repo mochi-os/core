@@ -20,62 +20,62 @@ var (
 func init() {
 	api_globals = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
-			"attachment": sls.FromStringDict(sl.String("attachment"), sl.StringDict{
+			"attachment": sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
 				"get":  sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
 				"put":  sl.NewBuiltin("mochi.attachment.put", api_attachment_put),
 				"save": sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
 			}),
-			"app": sls.FromStringDict(sl.String("app"), sl.StringDict{
+			"app": sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 				"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
 				"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
 				"install": sl.NewBuiltin("mochi.app.install", api_app_install),
 				"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
 			}),
-			"db": sls.FromStringDict(sl.String("db"), sl.StringDict{
+			"db": sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
 				"query":  sl.NewBuiltin("mochi.db.query", api_db_query),
 				"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
 			}),
-			"directory": sls.FromStringDict(sl.String("directory"), sl.StringDict{
+			"directory": sls.FromStringDict(sl.String("mochi.directory"), sl.StringDict{
 				"get":    sl.NewBuiltin("mochi.directory.get", api_directory_get),
 				"search": sl.NewBuiltin("mochi.directory.search", api_directory_search),
 			}),
-			"entity": sls.FromStringDict(sl.String("entity"), sl.StringDict{
+			"entity": sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 				"create":      sl.NewBuiltin("mochi.entity.create", api_entity_create),
 				"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
 				"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
 			}),
-			"file": sls.FromStringDict(sl.String("file"), sl.StringDict{
+			"file": sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
 				"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 				"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
 				"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
 				"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
 				"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
 			}),
-			"log": sls.FromStringDict(sl.String("log"), sl.StringDict{
+			"log": sls.FromStringDict(sl.String("mochi.log"), sl.StringDict{
 				"debug": sl.NewBuiltin("mochi.log.debug", api_log),
 				"info":  sl.NewBuiltin("mochi.log.info", api_log),
 				"warn":  sl.NewBuiltin("mochi.log.warn", api_log),
 			}),
-			"markdown": sls.FromStringDict(sl.String("markdown"), sl.StringDict{
+			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
-			"message": sls.FromStringDict(sl.String("message"), sl.StringDict{
+			"message": sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
 				"send": sl.NewBuiltin("mochi.message.send", api_message_send),
 			}),
-			"random": sls.FromStringDict(sl.String("random"), sl.StringDict{
+			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
-			"service": sls.FromStringDict(sl.String("service"), sl.StringDict{
+			"service": sls.FromStringDict(sl.String("mochi.service"), sl.StringDict{
 				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
 			}),
 			"stream": sl.NewBuiltin("mochi.stream", api_stream),
-			"time": sls.FromStringDict(sl.String("time"), sl.StringDict{
+			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
 			}),
 			"uid": sl.NewBuiltin("mochi.uid", api_uid),
-			"url": sls.FromStringDict(sl.String("url"), sl.StringDict{
+			"url": sls.FromStringDict(sl.String("mochi.url"), sl.StringDict{
 				"delete": sl.NewBuiltin("mochi.url.delete", api_url_request),
 				"get":    sl.NewBuiltin("mochi.url.get", api_url_request),
 				"patch":  sl.NewBuiltin("mochi.url.patch", api_url_request),
@@ -83,7 +83,7 @@ func init() {
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
 			"valid": sl.NewBuiltin("mochi.valid", api_valid),
-			"websocket": sls.FromStringDict(sl.String("websocket"), sl.StringDict{
+			"websocket": sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
 				"write": sl.NewBuiltin("mochi.websocket.write", api_websocket_write),
 			}),
 		}),
@@ -208,6 +208,12 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	apps_lock.Lock()
 	for i, id := range ids {
 		a := apps[id]
+		if a == nil {
+			return sl_error(fn, "App '%s' is nil", id)
+		}
+		if a.active == nil {
+			return sl_error(fn, "App '%s' has no active version", id)
+		}
 		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}
 	}
 	apps_lock.Unlock()
@@ -837,7 +843,10 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "invalid event header")
 	}
 
-	s := stream(headers["from"], headers["to"], headers["service"], headers["event"])
+	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"])
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	s.write(sl_decode(args[1]))
 	return s, nil
 }

@@ -47,7 +47,7 @@ func main() {
 	go queue_manager()
 	go web_start()
 	go directory_download()
-	//TODO Enable and test apps manager once wasabi is running 0.2.
+	//TODO Enable and test apps manager once wasabi is running 0.2
 	//go apps_manager()
 
 	select {}

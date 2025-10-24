@@ -152,7 +152,12 @@ func attachments_get_work(a *Action, thumbnail bool) {
 	if thumbnail {
 		event = "get/thumbnail"
 	}
-	s := stream(identity, at.Entity, "attachments", event)
+	s, err := stream(identity, at.Entity, "attachments", event)
+	if err != nil {
+		debug("%v", err)
+		return
+	}
+
 	s.write_content("id", id)
 
 	response, err := s.read_content()

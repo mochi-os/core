@@ -113,19 +113,22 @@ func app(name string) *App {
 func app_check_install(id string) bool {
 	debug("App '%s' checking install status", id)
 
-	s := stream("", id, "app", "version")
-	if s == nil {
+	s, err := stream("", id, "app", "version")
+	if err != nil {
+		debug("%v", err)
 		return false
 	}
 	s.write_content("track", "production")
 
 	status, err := s.read_content()
 	if err != nil || status["status"] != "200" {
+		debug("%v", err)
 		return false
 	}
 
 	v, err := s.read_content()
 	if err != nil {
+		debug("%v", err)
 		return false
 	}
 	version := v["version"]
@@ -145,7 +148,12 @@ func app_check_install(id string) bool {
 	}
 	debug("App '%s' upgrading from '%s' to '%s'", id, oldVersion, version)
 
-	s = stream("", id, "app", "get")
+	s, err = stream("", id, "app", "get")
+	if err != nil {
+		debug("%v", err)
+		return false
+	}
+
 	err = s.write_content("version", version)
 	if err != nil {
 		return false
@@ -375,10 +383,13 @@ func apps_start() {
 		if len(versions) == 0 {
 			continue
 		}
+
+		var a *App
 		if apps[id] == nil {
-			apps[id] = &App{id: id}
+			a = &App{id: id}
+		} else {
+			a = apps[id]
 		}
-		a := apps[id]
 
 		for _, version := range versions {
 			debug("App '%s' version '%s' found", id, version)
@@ -388,6 +399,7 @@ func apps_start() {
 				continue
 			}
 			a.load_version(av)
+			apps[id] = a
 		}
 	}
 }

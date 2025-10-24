@@ -151,12 +151,24 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // print an error
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 {
+		a.dump(args)
+		return sl.None, nil
+	}
+
+	var code int
+	var format string
+	err := sl.UnpackArgs(fn.Name(), args, kwargs, "code", &code, "format", &format)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	var vars []any
-	for _, v := range args {
+	for _, v := range args[1:] {
 		vars = append(vars, sl_decode(v))
 	}
-	debug("%s() %+v", fn.Name(), vars)
-	a.dump(vars)
+	debug("%s() %d %s %+v", fn.Name(), code, format, vars)
+	a.error(code, format, vars...)
 
 	return sl.None, nil
 }

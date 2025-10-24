@@ -13,10 +13,10 @@ Zubair:
 	Resource limits
 
 0.2:
+	Update Gin paths on app install and upgrade
 	Web path layout
 		Route on entity
 		Map web URLs to entities
-		Update Gin paths on app install and upgrade
 
 	User management
 	Users can change their settings

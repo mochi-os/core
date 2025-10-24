@@ -1,7 +1,7 @@
 Alistair:
 	User management
-	    Users can change their settings
-        View identity and fingerprint
+    Users can change their settings
+		View identity and fingerprint
 
 Numan:
 	Client API

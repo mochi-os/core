@@ -60,7 +60,7 @@ func directory_download() {
 
 		s := peer_stream(p.ID)
 		if s == nil {
-			debug("Stream %d unable to open to peer '%s'", s.id, p.ID)
+			debug("Stream unable to open to peer '%s'", p.ID)
 			continue
 		}
 		debug("Stream %d open to peer '%s': from '', to '', service 'directory', event 'download'", s.id, p.ID)

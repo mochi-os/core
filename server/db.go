@@ -6,11 +6,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"sync"
-	"time"
-
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
+	sl "go.starlark.net/starlark"
+	"sync"
+	"time"
 )
 
 type DB struct {
@@ -124,8 +124,10 @@ func db_app(u *User, av *AppVersion) *DB {
 		s.set("user", u)
 		s.set("owner", u)
 		version_var, _ := s.call(av.Database.Create, nil)
-		version := s.int(version_var)
-		if version == 0 {
+
+		var version int
+		err := sl.AsInt(version_var, &version)
+		if err != nil || version == 0 {
 			info("App '%s' version '%s' database creation function '%s' did not return a schema version, assuming 1", av.app.id, av.Version, av.Database.Create)
 			version = 1
 		}

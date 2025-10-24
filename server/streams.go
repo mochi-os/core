@@ -38,7 +38,7 @@ func stream(from string, to string, service string, event string) *Stream {
 
 	s := peer_stream(peer)
 	if s == nil {
-		debug("Stream %d unable to open to peer '%s'", s.id, peer)
+		debug("Stream unable to open to peer '%s'", peer)
 		return nil
 	}
 	debug("Stream %d open to peer '%s': from '%s', to '%s', service '%s', event '%s'", s.id, peer, from, to, service, event)

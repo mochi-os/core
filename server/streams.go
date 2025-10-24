@@ -38,7 +38,7 @@ func stream(from string, to string, service string, event string) *Stream {
 
 	s := peer_stream(peer)
 	if s == nil {
-		debug("Stream unable to open to peer '%s'", peer)
+		debug("Stream %d unable to open to peer '%s'", s.id, peer)
 		return nil
 	}
 	debug("Stream %d open to peer '%s': from '%s', to '%s', service '%s', event '%s'", s.id, peer, from, to, service, event)
@@ -112,13 +112,13 @@ func (s *Stream) read(v any) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-		if s.decoder == nil {
-			s.decoder = cbor.NewDecoder(s.reader)
-		}
-		err := s.decoder.Decode(v)
-		if err != nil {
-			return fmt.Errorf("Stream unable to read segment: %v", err)
-		}
+	if s.decoder == nil {
+		s.decoder = cbor.NewDecoder(s.reader)
+	}
+	err := s.decoder.Decode(v)
+	if err != nil {
+		return fmt.Errorf("Stream unable to read segment: %v", err)
+	}
 
 	debug("Stream %d read segment: %#v", s.id, v)
 	return nil
@@ -153,13 +153,13 @@ func (s *Stream) write(v any) error {
 		defer w.SetWriteDeadline(time.Time{})
 	}
 
-		if s.encoder == nil {
-			s.encoder = cbor.NewEncoder(s.writer)
-		}
-		err := s.encoder.Encode(v)
-		if err != nil {
-			return fmt.Errorf("Stream error writing segment: %v", err)
-		}
+	if s.encoder == nil {
+		s.encoder = cbor.NewEncoder(s.writer)
+	}
+	err := s.encoder.Encode(v)
+	if err != nil {
+		return fmt.Errorf("Stream error writing segment: %v", err)
+	}
 
 	debug("Stream %d wrote segment", s.id)
 	return nil

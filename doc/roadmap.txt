@@ -1,5 +1,4 @@
 Alistair:
-	Directory get recent updates
 	App Market
 
 Numan:
@@ -54,8 +53,12 @@ Zubair:
 		Rotate images correctly
 
 	Logging
-	Choose which apps to install by default
 	License
+
+	Update wasabi to 0.2
+		Choose which apps to install by default
+		Test apps manager
+		Test directory download recent updates
 
 0.3:
 	Apps

@@ -6,6 +6,7 @@ package main
 import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"io"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -36,6 +37,10 @@ func init() {
 	a.service("peers")
 	a.event_broadcast("request", peer_request_event)
 	a.event_broadcast("publish", peer_publish_event)
+
+	rand.Shuffle(len(peers_bootstrap), func(i, j int) {
+		peers_bootstrap[i], peers_bootstrap[j] = peers_bootstrap[j], peers_bootstrap[i]
+	})
 }
 
 // Add some peers we already know about from the database

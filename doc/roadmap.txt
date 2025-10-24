@@ -1,5 +1,7 @@
 Alistair:
-	App Market
+	User management
+	    Users can change their settings
+        View identity and fingerprint
 
 Numan:
 	Client API
@@ -18,9 +20,6 @@ Zubair:
 		Route on entity
 		Map web URLs to entities
 
-	User management
-	Users can change their settings
-		View identity and fingerprint
 	User avatars
 
 	Chat app
@@ -59,6 +58,7 @@ Zubair:
 		Choose which apps to install by default
 		Test apps manager
 		Test directory download recent updates
+		Add apps to App Market
 
 0.3:
 	Apps

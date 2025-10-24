@@ -51,31 +51,68 @@ func directory_delete(id string) {
 	db.exec("delete from directory where id=?", id)
 }
 
-// Ask known peers to/ send us a full copy of the directory, after a short delay to give time to connect to them
+// Ask known peers to send us any updates since the newest update in our copy of the directory
+// TODO Test directory downloads once wasabi is running 0.2
 func directory_download() {
-	time.Sleep(10 * time.Second)
+	time.Sleep(3 * time.Second)
 	for _, p := range peers_bootstrap {
-		if p.ID != p2p_id {
-			debug("Directory requesting download from peer '%s'", p.ID)
-			message("", "", "directory", "download").send_peer(p.ID)
+		debug("Directory downloading from peer '%s'", p.ID)
+
+		s := peer_stream(p.ID)
+		if s == nil {
+			debug("Stream %d unable to open to peer '%s'", s.id, p.ID)
+			continue
+		}
+		debug("Stream %d open to peer '%s': from '', to '', service 'directory', event 'download'", s.id, p.ID)
+
+		err := s.write(Headers{Service: "directory", Event: "download"})
+		if err != nil {
+			continue
+		}
+
+		start := int64(0)
+		var u Directory
+		db := db_open("db/directory.db")
+		if db.scan(&u, "select updated from directory order by updated desc limit 1") {
+			start = u.Updated
+		}
+		debug("Directory asking for directory updates since %d", start)
+		s.write_content("start", i64toa(start))
+
+		for {
+			var d Directory
+			debug("Directory reading update")
+			err := s.read(&d)
+			if err != nil {
+				debug("Directory read error: %v", err)
+				return
+			}
+
+			debug("Directory got update %#v", d)
+			db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
+			go queue_check_entity(d.ID)
 		}
 	}
+
+	debug("Directory download finished")
 }
 
 // Reply to a directory download request
 func directory_download_event(e *Event) {
-	debug("Directory received download event '%+v'", e)
-	time.Sleep(time.Second)
+	debug("Directory received download request")
+
+	start := atoi(e.content["start"], 0)
+	debug("Directory sending updates since %d", start)
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	db.scans(&results, "select * from directory order by created, id")
+	db.scans(&results, "select * from directory where updated>=? order by created, id", start)
 	for _, d := range results {
-		m := message("", "", "directory", "publish")
-		m.set("id", d.ID, "name", d.Name, "class", d.Class, "location", d.Location, "data", d.Data, "created", i64toa(d.Created))
-		m.send_peer(e.peer)
-		time.Sleep(time.Millisecond)
+		debug("Directory sending update %#v", d)
+		e.stream.write(d)
 	}
+
+	debug("Directory finished sending updates")
 }
 
 // Publish a directory entry to the entire network

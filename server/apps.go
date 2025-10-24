@@ -101,6 +101,7 @@ var (
 func app(name string) *App {
 	a := &App{id: name}
 	a.active = &AppVersion{}
+	a.active.Engine.Architecture = "internal"
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))

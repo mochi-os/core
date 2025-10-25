@@ -13,19 +13,6 @@ var (
 	jwt_expiry = int64(3600)
 )
 
-func init() {
-	// Attempt to read from ini if loaded
-	if ini_file != nil {
-		e := ini_int("jwt", "expiry", int(jwt_expiry))
-		jwt_expiry = int64(e)
-	}
-	if jwt_expiry == 0 {
-		if v := ini_string("jwt", "expiry", ""); v != "" {
-			// ini_int already handled the numeric case above; leave as-is
-		}
-	}
-}
-
 type mochi_claims struct {
 	User int `json:"user"`
 	jwt.RegisteredClaims

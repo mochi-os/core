@@ -52,7 +52,6 @@ func directory_delete(id string) {
 }
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory
-// TODO Test directory downloads once wasabi is running 0.2
 func directory_download() {
 	time.Sleep(3 * time.Second)
 	for _, p := range peers_bootstrap {

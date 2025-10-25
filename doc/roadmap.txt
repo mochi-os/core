@@ -1,7 +1,4 @@
 Alistair:
-	User management
-    Users can change their settings
-		View identity and fingerprint
 
 Numan:
 	Client API
@@ -12,6 +9,7 @@ Rob:
 	Forums
 
 Zubair:
+	App API documentation
 	Resource limits
 
 0.2:
@@ -21,6 +19,9 @@ Zubair:
 		Map web URLs to entities
 
 	User avatars
+	User management
+	Users can change their settings
+		View identity and fingerprint
 
 	Chat app
 		Limit messages shown on load
@@ -55,10 +56,10 @@ Zubair:
 	License
 
 	Update wasabi to 0.2
-		Choose which apps to install by default
-		Test apps manager
-		Test directory download recent updates
 		Add apps to App Market
+		Choose which apps to install by default
+		Enable and test apps manager
+		Test directory download recent updates
 
 0.3:
 	Apps

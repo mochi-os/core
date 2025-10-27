@@ -416,7 +416,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 // Create a new entity
 func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
-		return sl_error(fn, "syntax: <class: string> <name: string> <privacy: string> [data: string]")
+		return sl_error(fn, "syntax: <class: string>, <name: string>, <privacy: string>, [data: string]")
 	}
 
 	class, ok := sl.AsString(args[0])

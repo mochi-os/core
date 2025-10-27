@@ -76,6 +76,7 @@ func stream_receive(s *Stream, version int, peer string) {
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
 	}
+	debug("Stream %d received headers %#v", s.id, headers)
 	h := Headers{From: headers["from"], To: headers["to"], Service: headers["service"], Event: headers["event"]}
 	if !h.valid() {
 		info("Stream %d received invalid headers", s.id)

@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"go.starlark.net/resolve"
 	sl "go.starlark.net/starlark"
 )
 
@@ -15,6 +16,7 @@ type Starlark struct {
 
 // Create a new Starlark interpreter for a set of files
 func starlark(files []string) *Starlark {
+	resolve.AllowRecursion = true
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
 	s.globals = api_globals
 

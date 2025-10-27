@@ -174,7 +174,6 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Get input parameter
-//TODO Add default
 func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)

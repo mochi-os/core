@@ -773,8 +773,8 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if depth_var != nil {
 		depth = depth_var.(int)
 	}
-	if depth > 1000 {
-		return sl_error(fn, "reached maximum recursion depth")
+	if depth > 10000 {
+		return sl_error(fn, "reached maximum service recursion depth")
 	}
 
 	// Look for matching app function, using default if necessary

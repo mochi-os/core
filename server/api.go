@@ -368,7 +368,7 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Directory search
 func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <class: string> <search: string> <include self: boolean>")
+		return sl_error(fn, "syntax: <class: string>, <search: string>, <include self: boolean>")
 	}
 
 	class, ok := sl.AsString(args[0])

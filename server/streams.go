@@ -70,11 +70,13 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 // Receive stream
 func stream_receive(s *Stream, version int, peer string) {
 	// Get and verify message headers
-	var h Headers
-	err := s.read(&h)
+	//var h Headers
+	//err := s.read(&h)
+	headers, err := s.read_content()
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
 	}
+	h := Headers{From: headers["from"], To: headers["to"], Service: headers["service"], Event: headers["event"]}
 	if !h.valid() {
 		info("Stream %d received invalid headers", s.id)
 		return

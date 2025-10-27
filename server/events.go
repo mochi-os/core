@@ -225,7 +225,7 @@ func (e *Event) Type() string {
 // Get a content field
 func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <field: string> [default: string]")
+		return sl_error(fn, "syntax: <field: string>, [default: string]")
 	}
 
 	field, ok := sl.AsString(args[0])

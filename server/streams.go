@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
 
 type Stream struct {
@@ -200,36 +198,31 @@ func (s *Stream) write_file(path string) error {
 	return nil
 }
 
-// Get the first rune from a stream without removing it from the stream
-func (s *Stream) peek_rune() (rune, error) {
-	if s == nil || s.reader == nil {
-		return 0, io.ErrClosedPipe
-	}
+// Write a raw, unencoded or pre-encoded, segment
+func (s *Stream) write_raw(data []byte) error {
+    if s == nil || s.writer == nil {
+        return fmt.Errorf("Stream not open for writing")
+    }
+    debug("Stream %d writing raw segment: %v", s.id, data)
 
-	buf := make([]byte, 4)
-	n, err := s.reader.Read(buf[:1])
-	if err != nil {
-		return 0, err
-	}
-	if n == 0 {
-		return 0, io.EOF
-	}
+    timeout := s.timeout.write
+    if timeout <= 0 {
+        timeout = 30
+    }
 
-	r, _ := utf8.DecodeRune(buf[:n])
-	for r == utf8.RuneError && n < len(buf) {
-		m, err := s.reader.Read(buf[n : n+1])
-		if err != nil {
-			return 0, err
-		}
-		if m == 0 {
-			break
-		}
-		n += m
-		r, _ = utf8.DecodeRune(buf[:n])
-	}
+    deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+    if w, ok := s.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+        _ = w.SetWriteDeadline(deadline)
+        defer w.SetWriteDeadline(time.Time{})
+    }
 
-	s.reader = io.NopCloser(io.MultiReader(bytes.NewReader(buf[:n]), s.reader))
-	return r, nil
+    _, err := s.writer.Write(data)
+    if err != nil {
+        return fmt.Errorf("Stream error writing raw segment: %v", err)
+    }
+
+    debug("Stream %d wrote raw segment", s.id)
+    return nil
 }
 
 // Starlark methods

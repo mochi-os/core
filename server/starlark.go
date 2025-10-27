@@ -16,7 +16,10 @@ type Starlark struct {
 
 // Create a new Starlark interpreter for a set of files
 func starlark(files []string) *Starlark {
+	resolve.AllowSet = true
+	resolve.AllowGlobalReassign = true
 	resolve.AllowRecursion = true
+
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
 	s.globals = api_globals
 

@@ -75,16 +75,16 @@ func (m *Message) send_work(peer string) {
 	m.Signature = entity_sign(m.From, m.From+m.To+m.Service+m.Event)
 	headers := cbor_encode(m)
 	if ok {
-		ok = s.write(headers) == nil
+		ok = s.write_raw(headers) == nil
 	}
 
 	content := cbor_encode(m.content)
 	if ok {
-		ok = s.write(content) == nil
+		ok = s.write_raw(content) == nil
 	}
 
 	if len(m.data) > 0 && ok {
-		ok = s.write(m.data) == nil
+		ok = s.write_raw(m.data) == nil
 	}
 
 	if m.file != "" && ok {

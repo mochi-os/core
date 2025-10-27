@@ -458,7 +458,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // Get the fingerprint of an entity
 func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <id: string> [include hyphens: boolean]")
+		return sl_error(fn, "syntax: <id: string>, [include hyphens: boolean]")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -553,10 +553,10 @@ func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 }
 
-// List files
+// List files in a subdirectory
 func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <directory: string>")
+		return sl_error(fn, "syntax: <subdirectory: string>")
 	}
 
 	dir, ok := sl.AsString(args[0])
@@ -612,7 +612,7 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 // Write a file from memory
 func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <file: string> <data: array of bytes>")
+		return sl_error(fn, "syntax: <file: string>, <data: array of bytes>")
 	}
 
 	file, ok := sl.AsString(args[0])
@@ -643,7 +643,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // Log message from app
 func api_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return sl_error(fn, "syntax: <format: string> [values: strings, variadic]")
+		return sl_error(fn, "syntax: <format: string>, [values: variadic strings]")
 	}
 
 	format, ok := sl.AsString(args[0])
@@ -694,7 +694,7 @@ func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // Send a message
 func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
-		return sl_error(fn, "syntax: <headers: dictionary> [content: dictionary] [data: bytes]")
+		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
 	}
 
 	headers := sl_decode_strings(args[0])
@@ -754,7 +754,7 @@ func api_random_alphanumeric(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // Call a function in another app
 func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
-		return sl_error(fn, "syntax: <service: string> <function: string> [parameters: any variadic]")
+		return sl_error(fn, "syntax: <service: string>, <function: string>, [parameters: variadic any]")
 	}
 
 	service, ok := sl.AsString(args[0])
@@ -813,7 +813,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // Create a stream
 func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <headers: dictionary> <content: dictionary>")
+		return sl_error(fn, "syntax: <headers: dictionary>, <content: dictionary>")
 	}
 
 	headers := sl_decode_strings(args[0])
@@ -903,7 +903,7 @@ func api_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl
 // Request a URL
 func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 4 {
-		return sl_error(fn, "syntax: <url: string> [options: dictionary] [headers: dictionary] [body: string|dictionary]")
+		return sl_error(fn, "syntax: <url: string>, [options: dictionary], [headers: dictionary], [body: string|dictionary]")
 	}
 
 	url, ok := sl.AsString(args[0])
@@ -940,7 +940,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // Check if a string is valid
 func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <string to check: string> <pattern to match: string>")
+		return sl_error(fn, "syntax: <string to check: string>, <pattern to match: string>")
 	}
 
 	s, ok := sl.AsString(args[0])
@@ -959,7 +959,7 @@ func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (
 // Write data to all user's websockets listening on a given key
 func api_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <key: string> <content: any>")
+		return sl_error(fn, "syntax: <key: string>, <content: any>")
 	}
 
 	key, ok := sl.AsString(args[0])

@@ -174,6 +174,7 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // Get input parameter
+//TODO Add default
 func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
@@ -225,7 +226,7 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // Print template
 func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <template path: string> [data: dictionary]")
+		return sl_error(fn, "syntax: <template path: string>, [data: dictionary]")
 	}
 
 	path, ok := sl.AsString(args[0])
@@ -262,7 +263,7 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // Write the contents of an uploaded file
 func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <field: string> <file: string>")
+		return sl_error(fn, "syntax: <field: string>, <file: string>")
 	}
 
 	field, ok := sl.AsString(args[0])

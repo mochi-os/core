@@ -1,4 +1,7 @@
 Alistair:
+	API documentation
+	Verified identities
+	Market app
 
 Numan:
 	Client API
@@ -13,9 +16,9 @@ Zubair:
 	Resource limits
 
 0.2:
-	Update Gin paths on app install and upgrade
-	Web path layout
-		Route on entity
+	Web paths
+		Update Gin paths on app install and upgrade
+		Route on entity and fingerprint
 		Map web URLs to entities
 
 	User avatars
@@ -24,6 +27,10 @@ Zubair:
 		View identity and fingerprint
 
 	Chat app
+		Manage users
+			List users
+			Add a user
+			Remove a user
 		Limit messages shown on load
 			Load older messages on scroll
 
@@ -55,7 +62,7 @@ Zubair:
 	Logging
 	License
 
-	Update wasabi to 0.2
+	Update wasabi to 0.2; then,
 		Add apps to App Market
 		Choose which apps to install by default
 		Enable and test apps manager
@@ -76,12 +83,12 @@ Zubair:
 		Starlark
 		HTTPS
 
-0.4 or later:
-	Users can categorise updates into feeds
-	Verified user identities
-
 	Browser notifications
 	Push notifications to Android and iOS apps
+
+	.rpm packages and repository
+
+0.4 or later:
 	Read external RSS feeds
 	Provide RSS feeds for feeds
 	Inbound email into feeds
@@ -90,15 +97,12 @@ Zubair:
 
 	Chat app
 		Audio and video calls
-	
-	.rpm packages and repository
 
 Ideas for apps:
 	Achievements tracker
 	Business ratings and reviews
 	Bug tracker
 	Kanban
-	File sharing
 	Chess
 	Scrabble playalike
 	Wiki

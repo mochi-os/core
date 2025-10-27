@@ -20,16 +20,16 @@ var (
 func init() {
 	api_globals = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
-			"attachment": sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-				"get":  sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-				"put":  sl.NewBuiltin("mochi.attachment.put", api_attachment_put),
-				"save": sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-			}),
 			"app": sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 				"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
 				"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
 				"install": sl.NewBuiltin("mochi.app.install", api_app_install),
 				"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
+			}),
+			"attachment": sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
+				"get":  sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
+				"put":  sl.NewBuiltin("mochi.attachment.put", api_attachment_put),
+				"save": sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
 			}),
 			"db": sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
@@ -135,7 +135,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 // Install an app from a .zip file
 func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return sl_error(fn, "syntax: <app id: string> <file: string> [check only: boolean]")
+		return sl_error(fn, "syntax: <app id: string>, <file: string>, [ check only: boolean]")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -248,7 +248,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 // Upload attachments for an object
 func api_attachment_put(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 4 {
-		return sl_error(fn, "syntax: <field: string> <object: string> <entity: string> <save locally: boolean>")
+		return sl_error(fn, "syntax: <field: string>, <object: string>, <entity: string>, <save locally: boolean>")
 	}
 
 	field, ok := sl.AsString(args[0])
@@ -280,7 +280,7 @@ func api_attachment_put(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 // Save attachments
 func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <attachments: array of dictionaries> <object: string> <entity: string>")
+		return sl_error(fn, "syntax: <attachments: array of dictionaries>, <object: string>, <entity: string>")
 	}
 
 	attachments := sl_decode_multi_strings(args[0])
@@ -307,7 +307,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // General database query
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
-		return sl_error(fn, "syntax: <SQL statement: string> [parameters: strings, variadic]")
+		return sl_error(fn, "syntax: <SQL statement: string>, [parameters: variadic strings]")
 	}
 
 	query, ok := sl.AsString(args[0])
@@ -688,7 +688,7 @@ func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid markdown")
 	}
 
-	return sl_encode(markdown([]byte(in))), nil
+	return sl_encode(string(markdown([]byte(in)))), nil
 }
 
 // Send a message

@@ -176,7 +176,7 @@ func (e *Event) segment(v any) bool {
 
 // Starlark methods
 func (e *Event) AttrNames() []string {
-	return []string{"content", "dump", "header", "read", "read_to_file", "stream", "write", "write_from_file"}
+	return []string{"content", "dump", "header", "read", "read_to_file", "stream", "user", "write", "write_from_file"}
 }
 
 func (e *Event) Attr(name string) (sl.Value, error) {
@@ -193,6 +193,8 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("read_to_file", e.stream.sl_read_to_file), nil
 	case "stream":
 		return e.stream, nil
+	case "user":
+		return e.user, nil
 	case "write":
 		return sl.NewBuiltin("write", e.stream.sl_write), nil
 	case "write_from_file":

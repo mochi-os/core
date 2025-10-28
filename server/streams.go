@@ -68,14 +68,12 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 // Receive stream
 func stream_receive(s *Stream, version int, peer string) {
 	// Get and verify message headers
-	//var h Headers
-	//err := s.read(&h)
-	headers, err := s.read_content()
+	var h Headers
+	err := s.read(&h)
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
 	}
-	debug("Stream %d received headers %#v", s.id, headers)
-	h := Headers{From: headers["from"], To: headers["to"], Service: headers["service"], Event: headers["event"]}
+	debug("Stream %d received headers %#v", s.id, h)
 	if !h.valid() {
 		info("Stream %d received invalid headers", s.id)
 		return
@@ -200,29 +198,29 @@ func (s *Stream) write_file(path string) error {
 
 // Write a raw, unencoded or pre-encoded, segment
 func (s *Stream) write_raw(data []byte) error {
-    if s == nil || s.writer == nil {
-        return fmt.Errorf("Stream not open for writing")
-    }
-    debug("Stream %d writing raw segment: %v", s.id, data)
+	if s == nil || s.writer == nil {
+		return fmt.Errorf("Stream not open for writing")
+	}
+	debug("Stream %d writing raw segment: %v", s.id, data)
 
-    timeout := s.timeout.write
-    if timeout <= 0 {
-        timeout = 30
-    }
+	timeout := s.timeout.write
+	if timeout <= 0 {
+		timeout = 30
+	}
 
-    deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-    if w, ok := s.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
-        _ = w.SetWriteDeadline(deadline)
-        defer w.SetWriteDeadline(time.Time{})
-    }
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	if w, ok := s.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = w.SetWriteDeadline(deadline)
+		defer w.SetWriteDeadline(time.Time{})
+	}
 
-    _, err := s.writer.Write(data)
-    if err != nil {
-        return fmt.Errorf("Stream error writing raw segment: %v", err)
-    }
+	_, err := s.writer.Write(data)
+	if err != nil {
+		return fmt.Errorf("Stream error writing raw segment: %v", err)
+	}
 
-    debug("Stream %d wrote raw segment", s.id)
-    return nil
+	debug("Stream %d wrote raw segment", s.id)
+	return nil
 }
 
 // Starlark methods

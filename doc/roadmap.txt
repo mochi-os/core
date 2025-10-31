@@ -1,5 +1,5 @@
 Alistair:
-	API documentation
+	Clean old directory entries
 	Verified identities
 	Market app
 
@@ -12,7 +12,6 @@ Rob:
 	Forums
 
 Zubair:
-	App API documentation
 	Resource limits
 
 0.2:

@@ -6,7 +6,20 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 )
+
+func init() {
+	log.SetFlags(0)
+	log.SetOutput(new(logWriter))
+}
+
+type logWriter struct {
+}
+
+func (writer logWriter) Write(bytes []byte) (int, error) {
+	return fmt.Print(time.Now().Format("2006-01-02 15:04:05.000000") + " " + string(bytes))
+}
 
 func debug(message string, values ...any) {
 	out := fmt.Sprintf(message, values...)

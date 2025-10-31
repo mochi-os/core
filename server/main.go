@@ -42,11 +42,11 @@ func main() {
 	p2p_start()
 	go cache_manager()
 	go entities_manager()
+	go directory_manager()
 	go peers_manager()
 	go peers_publish()
 	go queue_manager()
 	go web_start()
-	go directory_download()
 	//go apps_manager()
 
 	select {}

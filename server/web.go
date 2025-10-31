@@ -6,14 +6,15 @@ package main
 import (
 	"embed"
 	"fmt"
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
-	sl "go.starlark.net/starlark"
 	"html/template"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 var (

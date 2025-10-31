@@ -53,7 +53,6 @@ func directory_delete(id string) {
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
-	time.Sleep(3 * time.Second)
 	for _, p := range peers_bootstrap {
 		debug("Directory downloading from peer '%s'", p.ID)
 
@@ -112,6 +111,20 @@ func directory_download_event(e *Event) {
 	}
 
 	debug("Directory finished sending updates")
+}
+
+// Manage the directory
+func directory_manager() {
+	time.Sleep(3 * time.Second)
+	directory_download()
+	time.Sleep(30 * time.Minute)
+
+	for {
+		debug("Directory deleting stale entries")
+		db := db_open("db/directory.db")
+		db.exec("delete from directory where updated<?", now()-30*86400)
+		time.Sleep(24 * time.Hour)
+	}
 }
 
 // Publish a directory entry to the entire network

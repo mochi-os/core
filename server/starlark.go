@@ -15,20 +15,27 @@ import (
 var starlarkSem chan struct{}
 var starlarkDefaultTimeout time.Duration
 
-func init() {
-	// concurrency: how many Starlark evaluations may run concurrently
+// starlarkConfigure reads runtime settings from the loaded INI and applies them.
+// Call this after ini_load(...) so configuration from the file takes effect.
+func starlark_configure() {
+	// if ini_file is nil, don't change current settings
+	if ini_file == nil {
+		return
+	}
+
 	c := ini_int("starlark", "concurrency", 4)
 	if c < 1 {
 		c = 1
 	}
 	starlarkSem = make(chan struct{}, c)
 
-	// default timeout seconds per evaluation
 	secs := ini_int("starlark", "timeout_seconds", 2)
 	if secs < 1 {
 		secs = 1
 	}
 	starlarkDefaultTimeout = time.Duration(secs) * time.Second
+
+	info("Starlark configured: concurrency=%d timeout_seconds=%d", c, secs)
 }
 
 type Starlark struct {

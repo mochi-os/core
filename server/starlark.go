@@ -5,9 +5,31 @@ package main
 
 import (
 	"fmt"
+	"time"
+
 	"go.starlark.net/resolve"
 	sl "go.starlark.net/starlark"
 )
+
+// Runtime controls (configurable via ini)
+var starlarkSem chan struct{}
+var starlarkDefaultTimeout time.Duration
+
+func init() {
+	// concurrency: how many Starlark evaluations may run concurrently
+	c := ini_int("starlark", "concurrency", 4)
+	if c < 1 {
+		c = 1
+	}
+	starlarkSem = make(chan struct{}, c)
+
+	// default timeout seconds per evaluation
+	secs := ini_int("starlark", "timeout_seconds", 2)
+	if secs < 1 {
+		secs = 1
+	}
+	starlarkDefaultTimeout = time.Duration(secs) * time.Second
+}
 
 type Starlark struct {
 	thread  *sl.Thread
@@ -284,18 +306,40 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	debug("Starlark running '%s': %+v", function, args)
 	s.thread.SetLocal("function", function)
 
-	result, err := sl.Call(s.thread, f, args, nil)
-	if err == nil {
-		debug("Starlark finished")
-	} else {
-		a, ok := s.thread.Local("app").(*App)
-		if a == nil {
-			debug("%s(): %v", function, err)
-		} else if ok {
-			debug("App %s:%s() %v", a.id, function, err)
+	// Acquire semaphore to limit concurrency
+	starlarkSem <- struct{}{}
+	defer func() { <-starlarkSem }()
+
+	// Run the call in a goroutine so we can interrupt on timeout
+	done := make(chan struct{})
+	var result sl.Value
+	var callErr error
+
+	go func() {
+		result, callErr = sl.Call(s.thread, f, args, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if callErr == nil {
+			debug("Starlark finished")
+		} else {
+			a, ok := s.thread.Local("app").(*App)
+			if a == nil {
+				debug("%s(): %v", function, callErr)
+			} else if ok {
+				debug("App %s:%s() %v", a.id, function, callErr)
+			}
 		}
+		return result, callErr
+	case <-time.After(starlarkDefaultTimeout):
+		debug("Starlark %s() timed out after %s; returning timeout error (goroutine may still be running)", function, starlarkDefaultTimeout)
+		if callErr == nil {
+			callErr = fmt.Errorf("starlark: timeout after %s", starlarkDefaultTimeout)
+		}
+		return nil, callErr
 	}
-	return result, err
 }
 
 // Convert a Starlark value to an int

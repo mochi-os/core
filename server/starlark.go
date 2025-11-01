@@ -25,7 +25,7 @@ func starlark_configure() {
 
 	c := ini_int("starlark", "concurrency", 4)
 	if c < 1 {
-		c = 1
+		c = 4
 	}
 	starlark_sem = make(chan struct{}, c)
 

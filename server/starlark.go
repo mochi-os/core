@@ -12,10 +12,10 @@ import (
 )
 
 // Runtime controls (configurable via ini)
-var starlarkSem chan struct{}
-var starlarkDefaultTimeout time.Duration
+var starlark_sem chan struct{}
+var starlark_default_timeout time.Duration
 
-// starlarkConfigure reads runtime settings from the loaded INI and applies them.
+// starlark_configure reads runtime settings from the loaded INI and applies them.
 // Call this after ini_load(...) so configuration from the file takes effect.
 func starlark_configure() {
 	// if ini_file is nil, don't change current settings
@@ -27,15 +27,15 @@ func starlark_configure() {
 	if c < 1 {
 		c = 1
 	}
-	starlarkSem = make(chan struct{}, c)
+	starlark_sem = make(chan struct{}, c)
 
-	secs := ini_int("starlark", "timeout_seconds", 2)
+	secs := ini_int("starlark", "timeout", 60)
 	if secs < 1 {
-		secs = 1
+		secs = 60
 	}
-	starlarkDefaultTimeout = time.Duration(secs) * time.Second
+	starlark_default_timeout = time.Duration(secs) * time.Second
 
-	info("Starlark configured: concurrency=%d timeout_seconds=%d", c, secs)
+	info("Starlark configured: concurrency=%d timeout=%d", c, secs)
 }
 
 type Starlark struct {
@@ -314,8 +314,8 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	s.thread.SetLocal("function", function)
 
 	// Acquire semaphore to limit concurrency
-	starlarkSem <- struct{}{}
-	defer func() { <-starlarkSem }()
+	starlark_sem <- struct{}{}
+	defer func() { <-starlark_sem }()
 
 	// Run the call in a goroutine so we can interrupt on timeout
 	done := make(chan struct{})
@@ -340,10 +340,10 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 			}
 		}
 		return result, callErr
-	case <-time.After(starlarkDefaultTimeout):
-		debug("Starlark %s() timed out after %s; returning timeout error (goroutine may still be running)", function, starlarkDefaultTimeout)
+	case <-time.After(starlark_default_timeout):
+		debug("Starlark %s() timed out after %s; returning timeout error (goroutine may still be running)", function, starlark_default_timeout)
 		if callErr == nil {
-			callErr = fmt.Errorf("starlark: timeout after %s", starlarkDefaultTimeout)
+			callErr = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
 		}
 		return nil, callErr
 	}

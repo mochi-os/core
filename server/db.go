@@ -116,7 +116,7 @@ func db_app(u *User, av *AppVersion) *DB {
 		return db
 	}
 
-	if av.Database.Create != "" {
+	if av.Database.Create.Function != "" {
 		db := db_open(path)
 		db.user = u
 		s := av.starlark()
@@ -124,9 +124,9 @@ func db_app(u *User, av *AppVersion) *DB {
 		s.set("user", u)
 		s.set("owner", u)
 
-		version_var, err := s.call(av.Database.Create, nil)
+		version_var, err := s.call(av.Database.Create.Function, nil)
 		if err != nil {
-			warn("App '%s' call to create database error: %v", err)
+			warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
 			return nil
 		}
 

@@ -1,5 +1,6 @@
 Alistair:
-	Clean old directory entries
+	Database schema upgrades and downgrades
+	Service versions
 	Verified identities
 	Market app
 

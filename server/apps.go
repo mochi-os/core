@@ -35,8 +35,17 @@ type AppVersion struct {
 		Role string `json:"role"`
 	} `json:"requires"`
 	Database struct {
-		File           string    `json:"file"`
-		Create         string    `json:"create"`
+		Version int    `json:"version"`
+		File    string `json:"file"`
+		Create  struct {
+			Function string `json:"function"`
+		} `json:"create"`
+		Upgrade struct {
+			Function string `json:"function"`
+		} `json:"upgrade"`
+		Downgrade struct {
+			Function string `json:"function"`
+		} `json:"downgrade"`
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons []Icon `json:"icons"`
@@ -313,8 +322,16 @@ func app_read(id string, base string) (*AppVersion, error) {
 		return nil, fmt.Errorf("App bad database file '%s'", av.Database.File)
 	}
 
-	if av.Database.Create != "" && !valid(av.Database.Create, "function") {
-		return nil, fmt.Errorf("App bad database create function '%s'", av.Database.Create)
+	if av.Database.Create.Function != "" && !valid(av.Database.Create.Function, "function") {
+		return nil, fmt.Errorf("App bad database create function '%s'", av.Database.Create.Function)
+	}
+
+	if av.Database.Upgrade.Function != "" && !valid(av.Database.Upgrade.Function, "function") {
+		return nil, fmt.Errorf("App bad database upgrade function '%s'", av.Database.Upgrade.Function)
+	}
+
+	if av.Database.Downgrade.Function != "" && !valid(av.Database.Downgrade.Function, "function") {
+		return nil, fmt.Errorf("App bad database downgrade function '%s'", av.Database.Downgrade.Function)
 	}
 
 	for _, i := range av.Icons {
@@ -575,7 +592,7 @@ func (a *App) load_version(av *AppVersion) {
 			icons = append(icons, i)
 		}
 
-		debug("App '%s' version '%s' loaded and activated", a.id, av.Version)
+		debug("App '%s' version '%s' loaded and activated: %#v", a.id, av.Version, av)
 
 	} else {
 		debug("App '%s' version '%s' loaded, but not activated", a.id, av.Version)

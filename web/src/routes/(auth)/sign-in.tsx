@@ -1,0 +1,49 @@
+import { z } from 'zod'
+import { createFileRoute } from '@tanstack/react-router'
+import { useAuthStore } from '@/stores/auth-store'
+import { SignIn } from '@/features/auth/sign-in'
+
+const searchSchema = z.object({
+  redirect: z.string().optional(),
+})
+
+export const Route = createFileRoute('/(auth)/sign-in')({
+  beforeLoad: ({ search }) => {
+    const store = useAuthStore.getState()
+
+    // Sync from cookies if not initialized (handles page refresh)
+    if (!store.isInitialized) {
+      store.syncFromCookie()
+    }
+
+    // If already authenticated, redirect away from sign-in page
+    if (store.isAuthenticated) {
+      // Use redirect param if provided and valid
+      const redirectUrl = search.redirect
+      if (redirectUrl && typeof redirectUrl === 'string') {
+        // Validate it's a relative URL (security: prevent open redirect)
+        try {
+          const url = new URL(redirectUrl, window.location.origin)
+          // Only allow same-origin redirects
+          if (url.origin === window.location.origin) {
+            // Use window.location for cross-app navigation
+            window.location.href = url.pathname + url.search + url.hash
+            // Return early to prevent route from loading
+            return
+          }
+        } catch {
+          // Invalid URL, fall through to default
+        }
+      }
+
+      // Default: redirect to chat app (cross-app navigation)
+      window.location.href = '/apps/chat/'
+      // Return early to prevent route from loading
+      return
+    }
+
+    // Not authenticated, allow sign-in page to render
+  },
+  component: SignIn,
+  validateSearch: searchSchema,
+})

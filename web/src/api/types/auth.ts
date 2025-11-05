@@ -1,0 +1,61 @@
+export interface AuthUser {
+  email: string
+  name?: string
+  accountNo?: string
+  role?: string[]
+  exp?: number
+  avatar?: string
+}
+
+export interface RequestCodeRequest {
+  email: string
+}
+
+export interface RequestCodeResponse {
+  data: {
+    email: string
+    code?: string
+  }
+}
+
+export interface SignupRequest {
+  email: string
+}
+
+export interface SignupResponse {
+  success: boolean
+  message?: string
+}
+
+export interface VerifyCodeRequest {
+  code: string
+}
+
+export interface VerifyCodeResponse {
+  success: boolean
+  token?: string
+  accessToken?: string
+  login?: string
+  user?: AuthUser
+  message?: string
+  refreshToken?: string
+  expiresIn?: number
+  expires_in?: number
+}
+
+export interface RefreshTokenRequest {
+  refreshToken: string
+}
+
+export interface RefreshTokenResponse {
+  token: string
+  refreshToken?: string
+  login?: string
+  user?: AuthUser
+  expiresIn?: number
+  expires_in?: number
+}
+
+export interface MeResponse {
+  user: AuthUser
+}

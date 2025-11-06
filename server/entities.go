@@ -112,7 +112,6 @@ func entity_id() (string, string, string) {
 }
 
 // Re-publish all our entities periodically so the network knows they're still active
-// Increase this interval in future versions, especially once the directory gets recent updates
 func entities_manager() {
 	db := db_open("db/users.db")
 

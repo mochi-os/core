@@ -592,7 +592,7 @@ func (a *App) load_version(av *AppVersion) {
 			icons = append(icons, i)
 		}
 
-		debug("App '%s' version '%s' loaded and activated: %#v", a.id, av.Version, av)
+		debug("App '%s' version '%s' loaded and activated", a.id, av.Version)
 
 	} else {
 		debug("App '%s' version '%s' loaded, but not activated", a.id, av.Version)

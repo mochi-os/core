@@ -34,8 +34,6 @@ func starlark_configure() {
 		secs = 60
 	}
 	starlark_default_timeout = time.Duration(secs) * time.Second
-
-	info("Starlark configured: concurrency=%d timeout=%d", c, secs)
 }
 
 type Starlark struct {

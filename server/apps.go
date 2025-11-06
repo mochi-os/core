@@ -50,8 +50,11 @@ type AppVersion struct {
 	} `json:"database"`
 	Icons []Icon `json:"icons"`
 	Paths map[string]struct {
+		//TODO Consider removing actions part
 		Actions map[string]struct {
 			Function string `json:"function"`
+			File string `json:"file"`
+			Files string `json:"files"`
 			Public   bool   `json:"public"`
 		} `json:"actions"`
 	} `json:"paths"`
@@ -83,6 +86,8 @@ type Path struct {
 	path     string
 	app      *App
 	function string
+	file string
+	files string
 	public   bool
 	internal func(*Action)
 }
@@ -358,8 +363,16 @@ func app_read(id string, base string) (*AppVersion, error) {
 				return nil, fmt.Errorf("App bad action '%s'", action)
 			}
 
-			if !valid(a.Function, "function") {
+			if a.Function != "" && !valid(a.Function, "function") {
 				return nil, fmt.Errorf("App bad action function '%s'", a.Function)
+			}
+
+			if a.File != "" && !valid(a.File, "filepath") {
+				return nil, fmt.Errorf("App bad file path '%s'", a.File)
+			}
+
+			if a.Files != "" && !valid(a.Files, "filepath") {
+				return nil, fmt.Errorf("App bad files path '%s'", a.Files)
 			}
 		}
 	}
@@ -409,7 +422,6 @@ func apps_start() {
 		}
 
 		for _, version := range versions {
-			debug("App '%s' version '%s' found", id, version)
 			av, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {
 				info("App load error: %v", err)
@@ -501,7 +513,6 @@ func (a *App) load_version(av *AppVersion) {
 	if a == nil || av == nil {
 		return
 	}
-	debug("App '%s' loading version '%s'", a.id, av.Version)
 
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
@@ -579,7 +590,7 @@ func (a *App) load_version(av *AppVersion) {
 				if action != "" {
 					full = path + "/" + action
 				}
-				paths[full] = &Path{path: full, app: a, function: ac.Function, public: ac.Public, internal: nil}
+				paths[full] = &Path{path: full, app: a, function: ac.Function, file: ac.File, files: ac.Files, public: ac.Public, internal: nil}
 			}
 		}
 
@@ -597,8 +608,6 @@ func (a *App) load_version(av *AppVersion) {
 	} else {
 		debug("App '%s' version '%s' loaded, but not activated", a.id, av.Version)
 	}
-
-	debug("App loaded")
 }
 
 // Register a path for actions for an internal app

@@ -307,6 +307,8 @@ func handle_api(c *gin.Context) {
 	type action_candidate struct {
 		key      string
 		function string
+		file     string
+		files    string
 		public   bool
 		segments int
 		literals int
@@ -327,6 +329,8 @@ func handle_api(c *gin.Context) {
 			candidates = append(candidates, action_candidate{
 				key:      action_key,
 				function: action.Function,
+				file:     action.File,
+				files:    action.Files,
 				public:   action.Public,
 				segments: len(segs),
 				literals: lits,
@@ -549,9 +553,8 @@ func web_start() {
 		return
 	}
 	domains := ini_strings_commas("web", "domains")
-	debug := ini_bool("web", "debug", false)
 
-	if !debug {
+	if ini_bool("web", "debug", false) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.Default()
@@ -561,9 +564,20 @@ func web_start() {
 	r.RedirectTrailingSlash = false
 
 	for _, p := range paths {
-		r.GET("/"+p.path, p.web_path)
-		r.POST("/"+p.path, p.web_path)
+		if p.function != "" {
+			r.GET("/"+p.path, p.web_path)
+			r.POST("/"+p.path, p.web_path)
+
+		} else if p.file != "" {
+			debug("Web static file '/%s' at '%s'", p.path, p.app.active.base+"/"+p.file)
+			r.StaticFile("/"+p.path, p.app.active.base+"/"+p.file)
+
+		} else if p.files != "" {
+			debug("Web static files '/%s' at '%s'", p.path, p.app.active.base+"/"+p.files)
+			r.Static("/"+p.path, p.app.active.base+"/"+p.files)
+		}
 	}
+
 	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)
 	r.GET("/login", web_login)

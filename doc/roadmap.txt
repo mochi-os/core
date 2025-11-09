@@ -1,11 +1,11 @@
 Alistair:
+	Web interface
 	Database schema upgrades and downgrades
 	Service versions
 	Verified identities
 	Market app
 
 Numan:
-	Client API
 	Web interface
 
 Rob:
@@ -13,7 +13,7 @@ Rob:
 	Forums
 
 Zubair:
-	Resource limits
+	Rotate images correctly
 
 0.2:
 	Web paths
@@ -57,7 +57,6 @@ Zubair:
 			Add attachments
 			Delete attachments
 			Re-order attachments
-		Rotate images correctly
 
 	Logging
 	License

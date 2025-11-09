@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
-	sl "go.starlark.net/starlark"
 	"sync"
 	"time"
 )
@@ -113,31 +112,55 @@ func db_app(u *User, av *AppVersion) *DB {
 	if file_exists(data_dir + "/" + path) {
 		db := db_open(path)
 		db.user = u
+
+		schema := db.integer("select cast(value as integer) from _settings where name='schema'")
+
+		if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
+			debug("Database '%s' upgrading from schema version %d to %d", path, schema, av.Database.Schema)
+			s := av.starlark()
+			s.set("app", av.app)
+			s.set("user", u)
+			s.set("owner", u)
+			_, err := s.call(av.Database.Upgrade.Function, sl_encode_tuple(schema, av.Database.Schema))
+			if err != nil {
+				warn("App '%s' version '%s' database upgrade error: %v", av.app.id, av.Version, err)
+				return db
+			}
+			db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", av.Database.Schema)
+
+		} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
+			debug("Database '%s' downgrading from schema version %d to %d", path, schema, av.Database.Schema)
+			s := av.starlark()
+			s.set("app", av.app)
+			s.set("user", u)
+			s.set("owner", u)
+			_, err := s.call(av.Database.Downgrade.Function, sl_encode_tuple(schema, av.Database.Schema))
+			if err != nil {
+				warn("App '%s' version '%s' database downgrade error: %v", av.app.id, av.Version, err)
+				return db
+			}
+			db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", av.Database.Schema)
+		}
+
 		return db
 	}
 
 	if av.Database.Create.Function != "" {
 		db := db_open(path)
 		db.user = u
+
 		s := av.starlark()
 		s.set("app", av.app)
 		s.set("user", u)
 		s.set("owner", u)
-
-		version_var, err := s.call(av.Database.Create.Function, nil)
+		_, err := s.call(av.Database.Create.Function, nil)
 		if err != nil {
 			warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
 			return nil
 		}
 
-		var version int
-		err = sl.AsInt(version_var, &version)
-		if err != nil || version == 0 {
-			info("App '%s' version '%s' database creation function '%s' did not return a schema version, assuming 1", av.app.id, av.Version, av.Database.Create)
-			version = 1
-		}
 		db.exec("create table _settings ( name text not null primary key, value text not null )")
-		db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", version)
+		db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", av.Database.Schema)
 		return db
 	}
 

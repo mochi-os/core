@@ -5,7 +5,7 @@ export const Route = createFileRoute('/_authenticated/')({
   component: () => {
     useEffect(() => {
       // Redirect to chat app after successful authentication
-      window.location.href = '/apps/chat/'
+      window.location.href = '/chat/'
     }, [])
     
     return (

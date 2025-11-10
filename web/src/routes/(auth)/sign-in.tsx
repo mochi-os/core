@@ -37,7 +37,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
       }
 
       // Default: redirect to chat app (cross-app navigation)
-      window.location.href = '/apps/chat/'
+      window.location.href = '/chat/'
       // Return early to prevent route from loading
       return
     }

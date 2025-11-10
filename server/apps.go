@@ -36,8 +36,8 @@ type AppVersion struct {
 	} `json:"requires"`
 	Database struct {
 		Schema int    `json:"schema"`
-		File    string `json:"file"`
-		Create  struct {
+		File   string `json:"file"`
+		Create struct {
 			Function string `json:"function"`
 		} `json:"create"`
 		Upgrade struct {
@@ -53,8 +53,8 @@ type AppVersion struct {
 	Paths map[string]struct {
 		Actions map[string]struct {
 			Function string `json:"function"`
-			File string `json:"file"`
-			Files string `json:"files"`
+			File     string `json:"file"`
+			Files    string `json:"files"`
 			Public   bool   `json:"public"`
 		} `json:"actions"`
 	} `json:"paths"`
@@ -86,8 +86,8 @@ type Path struct {
 	path     string
 	app      *App
 	function string
-	file string
-	files string
+	file     string
+	files    string
 	public   bool
 	internal func(*Action)
 }

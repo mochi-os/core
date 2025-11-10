@@ -6,6 +6,7 @@ toolchain go1.24.2
 
 require (
 	github.com/btcsuite/btcutil v1.0.2
+	github.com/disintegration/imaging v1.6.2
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/gin-gonic/autotls v1.1.3
 	github.com/gin-gonic/gin v1.10.0
@@ -18,6 +19,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/wneessen/go-mail v0.6.2
 	go.starlark.net v0.0.0-20250906160240-bf296ed553ea
 	gopkg.in/ini.v1 v1.67.0
@@ -124,6 +126,7 @@ require (
 	golang.org/x/arch v0.8.0 // indirect
 	golang.org/x/crypto v0.39.0 // indirect
 	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
+	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8 // indirect
 	golang.org/x/mod v0.25.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sync v0.15.0 // indirect

@@ -1,7 +1,5 @@
 Alistair:
 	Web interface
-	Database schema upgrades and downgrades
-	Service versions
 	Verified identities
 	Market app
 

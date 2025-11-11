@@ -1,11 +1,13 @@
 Alistair:
-	Database schema upgrades and downgrades
-	Service versions
+	Web interface
+	Web paths
+		Update Gin paths on app install and upgrade
+		Route on entity and fingerprint
 	Verified identities
-	Market app
+	Map web URLs to entities
+	Attachments
 
 Numan:
-	Client API
 	Web interface
 
 Rob:
@@ -13,14 +15,8 @@ Rob:
 	Forums
 
 Zubair:
-	Resource limits
 
 0.2:
-	Web paths
-		Update Gin paths on app install and upgrade
-		Route on entity and fingerprint
-		Map web URLs to entities
-
 	User avatars
 	User management
 	Users can change their settings
@@ -57,7 +53,6 @@ Zubair:
 			Add attachments
 			Delete attachments
 			Re-order attachments
-		Rotate images correctly
 
 	Logging
 	License
@@ -67,6 +62,7 @@ Zubair:
 		Choose which apps to install by default
 		Enable and test apps manager
 		Test directory download recent updates
+		Market app
 
 0.3:
 	Apps

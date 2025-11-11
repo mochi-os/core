@@ -35,9 +35,9 @@ type AppVersion struct {
 		Role string `json:"role"`
 	} `json:"requires"`
 	Database struct {
-		Version int    `json:"version"`
-		File    string `json:"file"`
-		Create  struct {
+		Schema int    `json:"schema"`
+		File   string `json:"file"`
+		Create struct {
 			Function string `json:"function"`
 		} `json:"create"`
 		Upgrade struct {
@@ -49,12 +49,12 @@ type AppVersion struct {
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons []Icon `json:"icons"`
+	//TODO Redesign paths structure
 	Paths map[string]struct {
-		//TODO Consider removing actions part
 		Actions map[string]struct {
 			Function string `json:"function"`
-			File string `json:"file"`
-			Files string `json:"files"`
+			File     string `json:"file"`
+			Files    string `json:"files"`
 			Public   bool   `json:"public"`
 		} `json:"actions"`
 	} `json:"paths"`
@@ -86,8 +86,8 @@ type Path struct {
 	path     string
 	app      *App
 	function string
-	file string
-	files string
+	file     string
+	files    string
 	public   bool
 	internal func(*Action)
 }

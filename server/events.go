@@ -77,7 +77,7 @@ func (e *Event) route() {
 			info("Event dropping broadcast for service requiring user")
 			return
 		}
-		e.db = db_app(e.user, a.active)
+		e.db = db_app(e.user, a.active, true)
 		if e.db == nil {
 			info("Event app '%s' has no database file", a.id)
 			return

@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth-store'
  * It checks for authentication and redirects to login if not authenticated.
  * 
  * Authentication Strategy:
- * 1. Check store for credentials (rawLogin or accessToken)
+ * 1. Check store for credentials (login)
  * 2. Sync from cookies if needed (handles page refresh)
  * 3. Redirect to login if no credentials found
  * 4. Save return URL for redirect after login
@@ -25,7 +25,7 @@ export const Route = createFileRoute('/_authenticated')({
       store.syncFromCookie()
     }
     
-    // Check if authenticated (has login OR token)
+    // Check if authenticated (has login)
     const isAuthenticated = store.isAuthenticated
     
     // If not authenticated, redirect to login

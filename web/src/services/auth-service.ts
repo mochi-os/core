@@ -5,6 +5,7 @@ import authApi, {
   type VerifyCodeResponse,
 } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth-store'
+import { setCookie, getCookie } from '@/lib/cookies'
 
 const devConsole = globalThis.console
 
@@ -31,24 +32,6 @@ const extractNameFromEmail = (email: string): string => {
 }
 
 /**
- * Extract access token from verify response
- * Handles both `token` and `accessToken` fields from backend
- */
-const normalizeAccessToken = (
-  response: VerifyCodeResponse
-): string | undefined => {
-  if (response.accessToken) {
-    return response.accessToken
-  }
-
-  if (response.token && typeof response.token === 'string') {
-    return response.token
-  }
-
-  return undefined
-}
-
-/**
  * Request verification code for email
  *
  * @param email - User's email address
@@ -60,9 +43,16 @@ export const requestCode = async (
   try {
     const response = await authApi.requestCode({ email })
 
-    // Store email in auth store for display purposes
+    // Store email in cookie and auth store
     // This allows us to show user info even before verification completes
     if (response.data?.email) {
+      setCookie('user_email', response.data.email, {
+        maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
+        path: '/',
+        sameSite: 'strict',
+        secure: window.location.protocol === 'https:',
+      })
+
       const currentUser = useAuthStore.getState().user
       useAuthStore.getState().setUser({
         ...currentUser,
@@ -83,39 +73,37 @@ export const requestCode = async (
  *
  * Authentication Flow:
  * 1. Call backend to verify the code
- * 2. Extract `login` field (primary credential) from response
- * 3. Extract optional `token`/`accessToken` field (fallback credential)
- * 4. Extract user email from `login` or `user.email` field
- * 5. Store credentials in cookies and Zustand store via setAuth()
+ * 2. Extract `login` field (primary credential) from response (ignore `token` field)
+ * 3. Get user email from `user_email` cookie (set during requestCode)
+ * 4. Store `login` in cookie and Zustand store via setAuth()
  *
  * The `login` value is the primary credential and will be used as-is
- * in the Authorization header. The token is optional fallback.
+ * in the Authorization header.
  *
  * @param code - Verification code from email
- * @returns Response with token and user info
+ * @returns Response with login and user info
  */
 export const verifyCode = async (
   code: string
-): Promise<VerifyCodeResponse & { accessToken?: string; success: boolean }> => {
+): Promise<VerifyCodeResponse & { success: boolean }> => {
   try {
     const response = await authApi.verifyCode({ code })
 
-    // Extract credentials from response
-    const rawLogin = response.login || '' // Primary credential
-    const accessToken = normalizeAccessToken(response) // Optional fallback
+    // Extract login from response (ignore token field completely)
+    const login = response.login || ''
 
-    // Extract email from user object or from current store (we saved it during requestCode)
-    const storedUser = useAuthStore.getState().user
-    const email = response.user?.email || storedUser?.email
+    // Get email from cookie (set during requestCode) or from response
+    const emailFromCookie = getCookie('user_email')
+    const email = response.user?.email || emailFromCookie
 
-    // Determine success based on presence of credentials
+    // Determine success based on presence of login
     const isSuccess =
       response.success !== undefined
         ? Boolean(response.success)
-        : Boolean(rawLogin || accessToken)
+        : Boolean(login)
 
     // Store credentials and user data if successful
-    if (isSuccess && (rawLogin || accessToken)) {
+    if (isSuccess && login) {
       // Create user object if we have email
       const user: AuthUser | null = email
         ? {
@@ -126,15 +114,14 @@ export const verifyCode = async (
             role: response.user?.role,
             exp: response.user?.exp,
           }
-        : storedUser // Keep the stored user if no email in response
+        : null
 
       // Store in auth store (which will also persist to cookies)
-      useAuthStore.getState().setAuth(user, rawLogin, accessToken)
+      useAuthStore.getState().setAuth(user, login)
     }
 
     return {
       ...response,
-      accessToken,
       success: isSuccess,
     }
   } catch (error) {
@@ -147,7 +134,7 @@ export const verifyCode = async (
  * Validate current session by fetching user info
  *
  * This function checks if the current session is valid by:
- * 1. Checking for credentials (login or token) in store
+ * 1. Checking for credentials (login) in store
  * 2. Optionally calling /me endpoint to validate with backend
  * 3. Updating user data if successful
  * 4. Clearing auth if validation fails
@@ -156,10 +143,10 @@ export const verifyCode = async (
  */
 export const validateSession = async (): Promise<AuthUser | null> => {
   try {
-    // Check if we have any credentials
-    const { rawLogin, accessToken, user } = useAuthStore.getState()
+    // Check if we have credentials
+    const { login, user } = useAuthStore.getState()
 
-    if (!rawLogin && !accessToken) {
+    if (!login) {
       return null
     }
 
@@ -224,9 +211,9 @@ export const logout = async (): Promise<void> => {
 export const loadUserProfile = async (): Promise<AuthUser | null> => {
   try {
     // Check if we have credentials first
-    const { rawLogin, accessToken } = useAuthStore.getState()
+    const { login } = useAuthStore.getState()
 
-    if (!rawLogin && !accessToken) {
+    if (!login) {
       return null
     }
 

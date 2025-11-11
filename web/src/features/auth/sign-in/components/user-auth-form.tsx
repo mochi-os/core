@@ -98,7 +98,7 @@ export function UserAuthForm({
       
       // verifyCode handles setting auth in the store
       // Just check if it was successful
-      if (result.success && (result.accessToken || result.token)) {
+      if (result.success && result.login) {
         toast.success('Welcome back!', {
           description: `Successfully signed in`,
         })

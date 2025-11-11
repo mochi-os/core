@@ -33,12 +33,10 @@ export interface VerifyCodeRequest {
 
 export interface VerifyCodeResponse {
   success: boolean
-  token?: string
-  accessToken?: string
+  token?: string // Backend returns this but we ignore it
   login?: string
   user?: AuthUser
   message?: string
-  refreshToken?: string
   expiresIn?: number
   expires_in?: number
 }

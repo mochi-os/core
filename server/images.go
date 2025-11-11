@@ -95,7 +95,7 @@ func thumbnail_create(path string) (string, error) {
 		return "", err
 	}
 	// ensure tmp is closed and removed on error
-	closeAndRemoveTmp := func(remove bool) {
+	close_and_remove_tmp := func(remove bool) {
 		_ = o.Close()
 		if remove {
 			_ = os.Remove(tmp)
@@ -110,12 +110,12 @@ func thumbnail_create(path string) (string, error) {
 	case "png":
 		err = png.Encode(o, t)
 	default:
-		closeAndRemoveTmp(true)
+		close_and_remove_tmp(true)
 		return "", nil
 	}
 
 	if err != nil {
-		closeAndRemoveTmp(true)
+		close_and_remove_tmp(true)
 		info("Unable to encode image file '%s' to create thumbnail: %v", path, err)
 		return "", err
 	}

@@ -115,7 +115,33 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 		db.user = u
 
 		if allow_upgrade {
+			// Check if _settings table exists, if not create it with schema 0
+			if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
+				debug("Database '%s' missing _settings table; initializing with schema 0", path)
+				db.schema(0)
+			}
+			
 			schema := db.integer("select cast(value as integer) from _settings where name='schema'")
+
+			// Check if app tables exist - if not, call database_create()
+			if av.Database.Create.Function != "" {
+				// Check if any user tables exist (excluding _settings)
+				has_tables := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
+				if !has_tables {
+					debug("Database '%s' exists but has no app tables; calling database_create()", path)
+					s := av.starlark()
+					s.set("app", av.app)
+					s.set("user", u)
+					s.set("owner", u)
+					_, err := s.call(av.Database.Create.Function, nil)
+					if err != nil {
+						warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
+						return db
+					}
+					db.schema(av.Database.Schema)
+					schema = av.Database.Schema
+				}
+			}
 
 			if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
 				for version := schema + 1; version <= av.Database.Schema; version++ {

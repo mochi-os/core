@@ -193,7 +193,7 @@ func (p *Path) web_path(c *gin.Context) {
 	}
 
 	if p.app.active.Database.File != "" && user != nil {
-		user.db = db_app(user, p.app.active)
+		user.db = db_app(user, p.app.active, true)
 		if user.db == nil {
 			web_error(c, 500, "No user database for app")
 			return
@@ -205,7 +205,7 @@ func (p *Path) web_path(c *gin.Context) {
 	if e != nil {
 		owner = user_owning_entity(e.ID)
 		if p.app.active.Database.File != "" && owner != nil {
-			owner.db = db_app(owner, p.app.active)
+			owner.db = db_app(owner, p.app.active, true)
 			if owner.db == nil {
 				web_error(c, 500, "No owner database for app")
 				return
@@ -455,7 +455,7 @@ func handle_api(c *gin.Context) {
 
 	// Set up database if needed
 	if app.active.Database.File != "" {
-		user.db = db_app(user, app.active)
+		user.db = db_app(user, app.active, true)
 		if user.db == nil {
 			c.JSON(500, gin.H{"error": "Database error"})
 			return

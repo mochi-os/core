@@ -20,16 +20,14 @@ import { useAuthStore, type AuthUser } from '@/stores/auth-store'
  */
 export function useAuth() {
   const user = useAuthStore((state) => state.user)
-  const rawLogin = useAuthStore((state) => state.rawLogin)
-  const accessToken = useAuthStore((state) => state.accessToken)
+  const login = useAuthStore((state) => state.login)
   const isLoading = useAuthStore((state) => state.isLoading)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const isInitialized = useAuthStore((state) => state.isInitialized)
 
   const setAuth = useAuthStore((state) => state.setAuth)
   const setUser = useAuthStore((state) => state.setUser)
-  const setRawLogin = useAuthStore((state) => state.setRawLogin)
-  const setAccessToken = useAuthStore((state) => state.setAccessToken)
+  const setLogin = useAuthStore((state) => state.setLogin)
   const setLoading = useAuthStore((state) => state.setLoading)
   const syncFromCookie = useAuthStore((state) => state.syncFromCookie)
   const clearAuth = useAuthStore((state) => state.clearAuth)
@@ -37,8 +35,7 @@ export function useAuth() {
   return {
     // State
     user,
-    rawLogin,
-    accessToken,
+    login,
     isLoading,
     isAuthenticated,
     isInitialized,
@@ -46,8 +43,7 @@ export function useAuth() {
     // Actions
     setAuth,
     setUser,
-    setRawLogin,
-    setAccessToken,
+    setLogin,
     setLoading,
     syncFromCookie,
     logout: clearAuth,

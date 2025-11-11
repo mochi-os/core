@@ -16,15 +16,15 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
-  const { accessToken, user } = useAuthStore()
+  const { login, user } = useAuthStore()
 
   // Optional: Load user profile if authenticated but user data not loaded
   useEffect(() => {
-    if (accessToken && !user) {
+    if (login && !user) {
       // Load user profile from /me endpoint (when implemented)
       loadUserProfile()
     }
-  }, [accessToken, user])
+  }, [login, user])
 
   return (
     <SearchProvider>

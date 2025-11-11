@@ -563,20 +563,66 @@ func web_start() {
 	// Avoid 301 redirects on API preflights (which break CORS)
 	r.RedirectTrailingSlash = false
 
+	// Serve core/web at root path - register BEFORE paths loop to take precedence
+	coreWebPath := "/opt/mochi/core/web/dist"
+	
+	// Serve static assets
+	r.Static("/assets", coreWebPath+"/assets")
+	r.Static("/images", coreWebPath+"/images")
+	
+	// Explicitly handle root path to serve core/web
+	r.GET("/", func(c *gin.Context) {
+		c.File(coreWebPath + "/index.html")
+	})
+
+	// Register paths from apps (skip root path if it exists)
 	for _, p := range paths {
+		// Skip root path since we're handling it above
+		if p.path == "" {
+			continue
+		}
+		
 		if p.function != "" {
 			r.GET("/"+p.path, p.web_path)
 			r.POST("/"+p.path, p.web_path)
 
 		} else if p.file != "" {
 			debug("Web static file '/%s' at '%s'", p.path, p.app.active.base+"/"+p.file)
-			r.StaticFile("/"+p.path, p.app.active.base+"/"+p.file)
+			if strings.HasSuffix(strings.ToLower(p.file), ".html") {
+				// Redirect /chat to /chat/ (with trailing slash)
+				r.GET("/"+p.path, func(c *gin.Context) {
+					c.Redirect(http.StatusMovedPermanently, "/"+p.path+"/")
+				})
+				// Serve HTML file at /chat/
+				r.StaticFile("/"+p.path+"/", p.app.active.base+"/"+p.file)
+			} else {
+				r.StaticFile("/"+p.path, p.app.active.base+"/"+p.file)
+			}
 
 		} else if p.files != "" {
 			debug("Web static files '/%s' at '%s'", p.path, p.app.active.base+"/"+p.files)
 			r.Static("/"+p.path, p.app.active.base+"/"+p.files)
 		}
 	}
+
+	// SPA catch-all: serve index.html for all non-API, non-login routes
+	r.NoRoute(func(c *gin.Context) {
+		// Don't interfere with API routes
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(404, gin.H{"error": "Not found"})
+			return
+		}
+		// Don't interfere with login/logout/ping/websocket routes
+		if c.Request.URL.Path == "/login" || 
+		   c.Request.URL.Path == "/logout" || 
+		   c.Request.URL.Path == "/ping" || 
+		   c.Request.URL.Path == "/websocket" {
+			c.Next()
+			return
+		}
+		// Serve core/web index.html for all other routes (SPA routing)
+		c.File(coreWebPath + "/index.html")
+	})
 
 	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)

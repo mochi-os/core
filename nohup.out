@@ -1,0 +1,221 @@
+2025-11-11 12:12:42.050055 Mochi 0.2.0 starting
+2025-11-11 12:12:42.051966 App 'app' loading from '/var/lib/mochi/apps/app/1.0'
+2025-11-11 12:12:42.063958 App 'app' version '1.0' loaded and activated
+2025-11-11 12:12:42.064002 App 'apps' loading from '/var/lib/mochi/apps/apps/1.0'
+2025-11-11 12:12:42.070420 App 'apps' version '1.0' loaded and activated
+2025-11-11 12:12:42.070466 App 'chat' loading from '/var/lib/mochi/apps/chat/1.0'
+2025-11-11 12:12:42.079345 App 'chat' version '1.0' loaded and activated
+2025-11-11 12:12:42.079381 App 'feeds' loading from '/var/lib/mochi/apps/feeds/1.0'
+2025-11-11 12:12:42.091967 App 'feeds' version '1.0' loaded and activated
+2025-11-11 12:12:42.092010 App 'forums' loading from '/var/lib/mochi/apps/forums/1.0'
+2025-11-11 12:12:42.102428 App 'forums' version '1.0' loaded and activated
+2025-11-11 12:12:42.102465 App 'friends' loading from '/var/lib/mochi/apps/friends/1.0'
+2025-11-11 12:12:42.114204 App 'friends' version '1.0' loaded and activated
+2025-11-11 12:12:42.114248 App 'home' loading from '/var/lib/mochi/apps/home/1.0'
+2025-11-11 12:12:42.117777 App 'home' version '1.0' loaded and activated
+2025-11-11 12:12:42.117865 App 'notifications' loading from '/var/lib/mochi/apps/notifications/1.0'
+2025-11-11 12:12:42.120213 App 'notifications' version '1.0' loaded and activated
+2025-11-11 12:12:42.131989 P2P listening on port 1443 with id '12D3KooWH3b1Bq3ga8YnWN9cy9KwQuSMoieunE9jMEFD8o3tU6Mm'
+2025-11-11 12:12:42.132051 Adding bootstrap peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH' at [/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH]
+2025-11-11 12:12:42.132363 P2P connecting to peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH' at [/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH]
+2025-11-11 12:12:42.137342 Adding database peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH' at [/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH]
+2025-11-11 12:12:42.137486 P2P connecting to peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH' at [/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH]
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /assets/*filepath         --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /assets/*filepath         --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /images/*filepath         --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /images/*filepath         --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /                         --> main.web_start.func1 (4 handlers)
+[GIN-debug] GET    /apps/information/:id     --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/information/:id     --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138318 Web static files '/friends/images' at '/var/lib/mochi/apps/friends/1.0/web/dist/images'
+[GIN-debug] GET    /friends/images/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /friends/images/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /friends/ignore           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/ignore           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/search             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/search             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/subscribe  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/subscribe  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/:app/:name           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/:app/:name           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps                     --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps                     --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/:chat/:name         --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/:chat/:name         --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138404 Web static files '/friends/assets' at '/var/lib/mochi/apps/friends/1.0/web/dist/assets'
+[GIN-debug] GET    /friends/assets/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /friends/assets/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /feeds/:feed/:post/:comment/react/:reaction --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/:post/:comment/react/:reaction --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/:post/:comment/vote/:vote --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/:post/:comment/vote/:vote --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/:chat/messages      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/:chat/messages      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/:post/react/:reaction --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/:post/react/:reaction --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/post         --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/post         --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/create            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/create            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/find              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/find              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/new                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/new                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/:post/create --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/:post/create --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/install             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/install             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /friends/create           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/create           --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138572 Message publishing: id '019a72d5231a782f8a49ef81386e8bd3', from '', to '', service 'peers', event 'publish', content 'map[]'
+[GIN-debug] GET    /feeds/:feed/subscribe    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/subscribe    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/:chat               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/:chat               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /friends/delete           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/delete           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/members/save --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/members/save --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/:app/version/create  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/:app/version/create  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/:chat/send          --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/:chat/send          --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/:id                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/:id                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/post/create        --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/post/create        --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /friends/list             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/list             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/unsubscribe --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/unsubscribe --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/:post/vote/:vote --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/:post/vote/:vote --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/:app/track/create    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/:app/track/create    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /friends/accept           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/accept           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/create             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/create             --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/:app                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/:app                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /friends/search           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/search           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/new                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/new                 --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/post/new          --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/post/new          --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/search            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/search            --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/:post      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/:post      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/create               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/create               --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138798 Web static files '/chat/images' at '/var/lib/mochi/apps/chat/1.0/web/dist/images'
+[GIN-debug] GET    /chat/images/*filepath    --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /chat/images/*filepath    --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /friends/new              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /friends/new              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums                   --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums                   --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds                    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds                    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/unsubscribe  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/unsubscribe  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/:post/comment --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/:post/comment --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/post/new           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/post/new           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/new               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/new               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app                      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app                      --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/information/:id/:name --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/information/:id/:name --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/:post/create --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/:post/create --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/new                  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/new                  --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/information         --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/information         --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138936 Web static files '/chat/assets' at '/var/lib/mochi/apps/chat/1.0/web/dist/assets'
+[GIN-debug] GET    /chat/assets/*filepath    --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] HEAD   /chat/assets/*filepath    --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (4 handlers)
+[GIN-debug] GET    /chat/create              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/create              --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /chat/list                --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /chat/list                --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.138990 Web static file '/friends' at '/var/lib/mochi/apps/friends/1.0/web/dist/index.html'
+[GIN-debug] GET    /friends                  --> main.web_start.func2 (4 handlers)
+[GIN-debug] GET    /friends/                 --> main.web_start.(*RouterGroup).StaticFile.func4 (4 handlers)
+[GIN-debug] HEAD   /friends/                 --> main.web_start.(*RouterGroup).StaticFile.func4 (4 handlers)
+[GIN-debug] GET    /feeds/:feed/create       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/create       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/find               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/find               --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/:feed/:post        --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/:feed/:post        --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /feeds/new                --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /feeds/new                --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/:forum/:post/comment --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/:post/comment --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /app/:app/track/new       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /app/:app/track/new       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /apps/:id/:name           --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /apps/:id/:name           --> main.(*Path).web_path-fm (4 handlers)
+2025-11-11 12:12:42.139081 Web static file '/chat' at '/var/lib/mochi/apps/chat/1.0/web/dist/index.html'
+[GIN-debug] GET    /chat                     --> main.web_start.func2 (4 handlers)
+[GIN-debug] GET    /chat/                    --> main.web_start.(*RouterGroup).StaticFile.func4 (4 handlers)
+[GIN-debug] HEAD   /chat/                    --> main.web_start.(*RouterGroup).StaticFile.func4 (4 handlers)
+[GIN-debug] GET    /forums/:forum/members    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/:forum/members    --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] GET    /forums/post/create       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /forums/post/create       --> main.(*Path).web_path-fm (4 handlers)
+[GIN-debug] POST   /api/login                --> main.api_login (4 handlers)
+[GIN-debug] POST   /api/login/auth           --> main.api_login_auth (4 handlers)
+[GIN-debug] GET    /login                    --> main.web_login (4 handlers)
+[GIN-debug] POST   /login                    --> main.web_login (4 handlers)
+[GIN-debug] POST   /login/identity           --> main.web_identity_create (4 handlers)
+[GIN-debug] GET    /logout                   --> main.web_logout (4 handlers)
+[GIN-debug] GET    /ping                     --> main.web_ping (4 handlers)
+[GIN-debug] GET    /websocket                --> main.websocket_connection (4 handlers)
+[GIN-debug] GET    /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] POST   /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] PUT    /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] PATCH  /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] HEAD   /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] OPTIONS /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] DELETE /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] CONNECT /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] TRACE  /api/:app                 --> main.handle_api (4 handlers)
+[GIN-debug] GET    /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] POST   /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] PUT    /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] PATCH  /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] HEAD   /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] OPTIONS /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] DELETE /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] CONNECT /api/:app/*action         --> main.handle_api (4 handlers)
+[GIN-debug] TRACE  /api/:app/*action         --> main.handle_api (4 handlers)
+2025-11-11 12:12:42.139262 Web listening on HTTPS domains [sansho.mochi-os.org]
+2025-11-11 12:12:42.388531 P2P connected to peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH'
+2025-11-11 12:12:42.388570 P2P connected to peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH'
+2025-11-11 12:12:45.138345 Directory downloading from peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH'
+2025-11-11 12:12:45.138654 Stream 1 open to peer '12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH': from '', to '', service 'directory', event 'download'
+2025-11-11 12:12:45.138678 Stream 1 writing segment: main.Headers{From:"", To:"", Service:"directory", Event:"download", Signature:""}
+2025-11-11 12:12:45.138728 Stream 1 wrote segment
+2025-11-11 12:12:45.141722 Directory asking for directory updates since 1762852717
+2025-11-11 12:12:45.141742 Stream 1 writing segment: map[string]string{"start":"1762852717"}
+2025-11-11 12:12:45.141769 Stream 1 wrote segment
+2025-11-11 12:12:45.141774 Directory reading update
+2025-11-11 12:12:45.141778 Stream 1 reading segment type *main.Directory
+2025-11-11 12:13:15.141913 Directory read error: Stream unable to read segment: i/o deadline reached

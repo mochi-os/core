@@ -4,10 +4,7 @@ import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
 import { getCookie } from '@/lib/cookies'
 
-// Use relative URL by default to match the page protocol (HTTP/HTTPS)
-// This prevents mixed content errors when served over HTTPS
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || '/api'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 const devConsole = globalThis.console
 
@@ -17,23 +14,6 @@ const devConsole = globalThis.console
 const logDevError = (message: string, error: unknown) => {
   if (import.meta.env.DEV) {
     devConsole?.error?.(message, error)
-  }
-}
-
-/**
- * Parse token from cookie value
- * Handles both plain strings and JSON-encoded strings
- */
-const parseToken = (value?: string): string => {
-  if (!value) {
-    return ''
-  }
-
-  try {
-    const parsed = JSON.parse(value)
-    return typeof parsed === 'string' ? parsed : value
-  } catch (_error) {
-    return value
   }
 }
 
@@ -52,28 +32,21 @@ export const apiClient = axios.create({
  * Request Interceptor
  *
  * Authentication Strategy:
- * 1. Primary: Use `login` cookie value with "Login" scheme (Authorization: Login <value>)
- * 2. Fallback: Use `token` cookie with "Bearer" scheme (Authorization: Bearer <token>)
- * 3. Store values are checked first (most up-to-date), then cookies
- *
- * The "Login" scheme provides clarity and follows HTTP authentication scheme conventions,
- * making it easier to distinguish from Bearer tokens in logs and debugging.
+ * 1. Use `login` cookie value with "Bearer" scheme (Authorization: Bearer <login>)
+ * 2. Store values are checked first (most up-to-date), then cookies
  */
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     // Get auth values from store (most up-to-date)
-    const storeLogin = useAuthStore.getState().rawLogin
-    const storeToken = useAuthStore.getState().accessToken
+    const storeLogin = useAuthStore.getState().login
 
     // Get auth values from cookies (fallback/persistence)
     const cookieLogin = getCookie('login')
-    const cookieToken = parseToken(getCookie('token'))
 
     // Determine which credentials to use (store takes precedence)
     const login = storeLogin || cookieLogin
-    const token = storeToken || cookieToken
 
-    // Set Authorization header with appropriate scheme
+    // Set Authorization header with Bearer scheme
     config.headers = config.headers ?? {}
     if (login) {
       // Add Bearer prefix if not already present
@@ -85,15 +58,6 @@ apiClient.interceptors.request.use(
         devConsole?.log?.(
           `[API Auth] Using Bearer scheme with login credential`
         )
-      }
-    } else if (token) {
-      // Add Bearer prefix if not already present
-      ;(config.headers as Record<string, string>).Authorization =
-        token.startsWith('Bearer ') ? token : `Bearer ${token}`
-
-      // Log auth method in development for debugging
-      if (import.meta.env.DEV) {
-        devConsole?.log?.(`[API Auth] Using Bearer scheme (fallback)`)
       }
     }
 
@@ -140,23 +104,24 @@ apiClient.interceptors.response.use(
         // Unauthorized - session expired or invalid credentials
         logDevError('[API] 401 Unauthorized', error)
 
-        // Only show toast and clear auth in production for non-auth endpoints
-        // In development, let components handle it to avoid loops
-        if (import.meta.env.PROD) {
-          const isAuthEndpoint =
-            error.config?.url?.includes('/login') ||
-            error.config?.url?.includes('/auth') ||
-            error.config?.url?.includes('/verify')
+        const isAuthEndpoint =
+          error.config?.url?.includes('/login') ||
+          error.config?.url?.includes('/auth') ||
+          error.config?.url?.includes('/verify')
 
-          if (!isAuthEndpoint) {
+        if (!isAuthEndpoint) {
+          // Clear auth state and redirect to sign-in
+          useAuthStore.getState().clearAuth()
+
+          // Redirect to sign-in (mochi-core's own route)
+          if (import.meta.env.PROD) {
             toast.error('Session expired', {
               description: 'Please log in again to continue.',
             })
-
-            // Clear auth state (but don't redirect here to avoid loops)
-            // Let route guards handle the redirect
-            useAuthStore.getState().clearAuth()
           }
+
+          // Redirect to sign-in page
+          window.location.href = import.meta.env.VITE_AUTH_SIGN_IN_URL
         }
         break
       }

@@ -5,6 +5,9 @@ package main
 
 import (
 	"bytes"
+	    "github.com/disintegration/imaging"
+    "github.com/nfnt/resize"
+    "github.com/rwcarlsen/goexif/exif"
 	"image"
 	"image/gif"
 	"image/jpeg"
@@ -13,10 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/disintegration/imaging"
-	"github.com/nfnt/resize"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 func is_image(file string) bool {

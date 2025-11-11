@@ -65,9 +65,44 @@ export function UserAuthForm({
                 variant="ghost"
                 size="sm"
                 className="h-6 w-6 p-0"
-                onClick={() => {
-                  navigator.clipboard.writeText(result.data.code!)
-                  toast.success('Code copied to clipboard!')
+                onClick={async (e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  const code = result.data.code!
+                  
+                  try {
+                    // Try modern clipboard API first
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                      await navigator.clipboard.writeText(code)
+                      toast.success('Code copied to clipboard!')
+                    } else {
+                      // Fallback for older browsers
+                      const textArea = document.createElement('textarea')
+                      textArea.value = code
+                      textArea.style.position = 'fixed'
+                      textArea.style.left = '-999999px'
+                      textArea.style.top = '-999999px'
+                      document.body.appendChild(textArea)
+                      textArea.focus()
+                      textArea.select()
+                      
+                      try {
+                        const successful = document.execCommand('copy')
+                        if (successful) {
+                          toast.success('Code copied to clipboard!')
+                        } else {
+                          throw new Error('Copy command failed')
+                        }
+                      } finally {
+                        document.body.removeChild(textArea)
+                      }
+                    }
+                  } catch (error) {
+                    console.error('Failed to copy code:', error)
+                    toast.error('Failed to copy code', {
+                      description: 'Please copy manually: ' + code,
+                    })
+                  }
                 }}
               >
                 <Copy className="h-3 w-3" />

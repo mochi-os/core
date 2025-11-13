@@ -120,7 +120,7 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 				debug("Database '%s' missing _settings table; initializing with schema 0", path)
 				db.schema(0)
 			}
-			
+
 			schema := db.integer("select cast(value as integer) from _settings where name='schema'")
 
 			// Check if app tables exist - if not, call database_create()

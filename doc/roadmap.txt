@@ -1,10 +1,10 @@
 Alistair:
 	Web interface
 	Web paths
-		Update Gin paths on app install and upgrade
+		Update paths on app install and upgrade
 		Route on entity and fingerprint
-	Verified identities
 	Map web URLs to entities
+	Verified identities
 	Attachments
 
 Numan:

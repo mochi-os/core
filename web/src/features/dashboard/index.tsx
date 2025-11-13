@@ -13,7 +13,6 @@ import { Main } from '@/components/layout/main'
 // import { TopNav } from '@/components/layout/top-nav' // Commented for future use
 // import { ProfileDropdown } from '@/components/profile-dropdown' // Commented for future use
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import { Analytics } from './components/analytics'
 import { Overview } from './components/overview'
 import { RecentSales } from './components/recent-sales'
@@ -26,7 +25,6 @@ export function Dashboard() {
         {/* <TopNav links={topNav} /> */}
         <div className='ms-auto flex items-center space-x-4'>
           <Search />
-          <ThemeSwitch />
           {/* <ConfigDrawer /> */}
           {/* <ProfileDropdown /> */}
         </div>

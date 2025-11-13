@@ -16,7 +16,6 @@ import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 // import { ProfileDropdown } from '@/components/profile-dropdown' // Commented for future use
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import { apps } from './data/apps'
 
 const route = getRouteApi('/_authenticated/apps/')
@@ -87,7 +86,6 @@ export function Apps() {
       <Header>
         <Search />
         <div className='ms-auto flex items-center gap-4'>
-          <ThemeSwitch />
           {/* <ConfigDrawer /> */}
           {/* <ProfileDropdown /> */}
         </div>

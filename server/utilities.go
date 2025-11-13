@@ -91,7 +91,7 @@ func fingerprint_hyphens(in string) string {
 }
 
 func fingerprint_no_hyphens(in string) string {
-    return strings.ReplaceAll(in, "-", "")
+	return strings.ReplaceAll(in, "-", "")
 }
 
 func itoa(in int) string {

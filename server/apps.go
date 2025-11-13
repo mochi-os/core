@@ -26,13 +26,13 @@ type App struct {
 }
 
 type AppAction struct {
-	Function   string   `json:"function"`
-	File       string   `json:"file"`
-	Files      string   `json:"files"`
-	Public     bool     `json:"public"`
-	name       string   `json:"-"`
-	segments   int `json:"-"`
-	literals   int `json:"-"`
+	Function   string            `json:"function"`
+	File       string            `json:"file"`
+	Files      string            `json:"files"`
+	Public     bool              `json:"public"`
+	name       string            `json:"-"`
+	segments   int               `json:"-"`
+	literals   int               `json:"-"`
 	parameters map[string]string `json:"-"`
 }
 

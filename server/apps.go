@@ -13,10 +13,11 @@ import (
 )
 
 type App struct {
-	id       string                 `json:"id"`
-	versions map[string]*AppVersion `json:"-"`
-	active   *AppVersion            `json:"-"`
-	internal struct {
+	id          string                 `json:"id"`
+	fingerprint string                 `json:"-"`
+	versions    map[string]*AppVersion `json:"-"`
+	active      *AppVersion            `json:"-"`
+	internal    struct {
 		actions          map[string]func(*Action) `json:"-"`
 		events           map[string]func(*Event)  `json:"-"`
 		events_broadcast map[string]func(*Event)  `json:"-"`
@@ -48,7 +49,8 @@ type AppVersion struct {
 		} `json:"downgrade"`
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
-	Icons []Icon `json:"icons"`
+	Icons   []Icon   `json:"icons"`
+	Classes []string `json:"classes"`
 	//TODO Redesign paths structure
 	Paths map[string]struct {
 		Actions map[string]struct {
@@ -58,6 +60,9 @@ type AppVersion struct {
 			Public   bool   `json:"public"`
 		} `json:"actions"`
 	} `json:"paths"`
+	//TODO Rename
+	PreferredPaths []string `json:"preferred"`
+	//TODO Redesign services structure
 	Services map[string]struct {
 		Events map[string]struct {
 			Function  string `json:"function"`
@@ -113,7 +118,7 @@ var (
 
 // Create data structure for new internal app
 func app(name string) *App {
-	a := &App{id: name}
+	a := &App{id: name, fingerprint: fingerprint(name)}
 	a.active = &AppVersion{}
 	a.active.Engine.Architecture = "internal"
 	a.internal.actions = make(map[string]func(*Action))
@@ -192,7 +197,7 @@ func app_check_install(id string) bool {
 
 	apps_lock.Lock()
 	if apps[id] == nil {
-		apps[id] = &App{id: id}
+		apps[id] = &App{id: id, fingerprint: fingerprint(id)}
 	}
 	a = apps[id]
 	apps_lock.Unlock()
@@ -351,6 +356,12 @@ func app_read(id string, base string) (*AppVersion, error) {
 		}
 	}
 
+	for _, class := range av.Classes {
+		if !valid(class, "constant") {
+			return nil, fmt.Errorf("App bad class '%s'", class)
+		}
+	}
+
 	for path, p := range av.Paths {
 		if !valid(path, "path") {
 			return nil, fmt.Errorf("App bad path '%s'", path)
@@ -414,7 +425,7 @@ func apps_start() {
 
 		var a *App
 		if apps[id] == nil {
-			a = &App{id: id}
+			a = &App{id: id, fingerprint: fingerprint(id)}
 		} else {
 			a = apps[id]
 		}

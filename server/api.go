@@ -181,7 +181,7 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if !check_only {
 		apps_lock.Lock()
 		if apps[id] == nil {
-			apps[id] = &App{id: id}
+			apps[id] = &App{id: id, fingerprint: fingerprint(id)}
 		}
 		a := apps[id]
 		apps_lock.Unlock()

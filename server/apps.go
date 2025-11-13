@@ -198,8 +198,6 @@ func app_check_install(id string) bool {
 	apps_lock.Unlock()
 
 	a.load_version(new)
-	debug("App '%s' version '%s' loaded", id, version)
-
 	return true
 }
 
@@ -284,7 +282,7 @@ func apps_manager() {
 
 // Read in an external app version from a directory
 func app_read(id string, base string) (*AppVersion, error) {
-	debug("App '%s' loading from '%s'", id, base)
+	debug("App loading from '%s'", base)
 
 	// Load app manifest from app.json
 	if !file_exists(base + "/app.json") {
@@ -603,10 +601,10 @@ func (a *App) load_version(av *AppVersion) {
 			icons = append(icons, i)
 		}
 
-		debug("App '%s' version '%s' loaded and activated", a.id, av.Version)
+		debug("App '%s', '%s' version '%s' loaded and activated", av.labels["en"][av.Label], a.id, av.Version)
 
 	} else {
-		debug("App '%s' version '%s' loaded, but not activated", a.id, av.Version)
+		debug("App '%s', '%s' version '%s' loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
 	}
 }
 

@@ -27,17 +27,25 @@ const verificationSchema = z.object({
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
   redirectTo?: string
+  step?: 'email' | 'verification'
+  setStep?: (step: 'email' | 'verification') => void
 }
 
 export function UserAuthForm({
   className,
   redirectTo,
+  step: externalStep,
+  setStep: externalSetStep,
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
-  const [step, setStep] = useState<'email' | 'verification'>('email')
+  const [internalStep, setInternalStep] = useState<'email' | 'verification'>('email')
   const [userEmail, setUserEmail] = useState('')
   const navigate = useNavigate()
+
+  // Use external step/setStep if provided, otherwise use internal state
+  const step = externalStep ?? internalStep
+  const setStep = externalSetStep ?? setInternalStep
 
   const emailForm = useForm<z.infer<typeof emailSchema>>({
     resolver: zodResolver(emailSchema),
@@ -167,9 +175,9 @@ export function UserAuthForm({
     return (
       <div className={cn('grid gap-4', className)}>
         <div className="text-center space-y-2">
-          <h3 className="text-lg font-semibold">Enter Login Token</h3>
+          <h3 className="text-lg font-semibold">Enter Login Code</h3>
           <p className="text-sm text-muted-foreground">
-            Paste your login token from the external platform
+            Paste your login code
           </p>
           <p className="text-sm font-medium">{userEmail}</p>
         </div>
@@ -186,7 +194,7 @@ export function UserAuthForm({
                 <FormItem>
                   <FormControl>
                     <Input 
-                      placeholder="Login Token"
+                      placeholder="Code"
                       className="text-center font-mono tracking-wider"
                       {...field} 
                     />
@@ -203,7 +211,7 @@ export function UserAuthForm({
                 disabled={isLoading}
               >
                 {isLoading ? <Loader2 className="animate-spin" /> : <Mail />}
-                Authenticate with Token
+                Authenticate
               </Button>
               
               <Button

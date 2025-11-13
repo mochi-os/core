@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,17 @@ type App struct {
 		events           map[string]func(*Event)  `json:"-"`
 		events_broadcast map[string]func(*Event)  `json:"-"`
 	}
+}
+
+type AppAction struct {
+	Function   string   `json:"function"`
+	File       string   `json:"file"`
+	Files      string   `json:"files"`
+	Public     bool     `json:"public"`
+	name       string   `json:"-"`
+	segments   int `json:"-"`
+	literals   int `json:"-"`
+	parameters map[string]string `json:"-"`
 }
 
 type AppVersion struct {
@@ -53,12 +65,7 @@ type AppVersion struct {
 	Classes []string `json:"classes"`
 	//TODO Redesign paths structure
 	Paths map[string]struct {
-		Actions map[string]struct {
-			Function string `json:"function"`
-			File     string `json:"file"`
-			Files    string `json:"files"`
-			Public   bool   `json:"public"`
-		} `json:"actions"`
+		Actions map[string]AppAction `json:"actions"`
 	} `json:"paths"`
 	//TODO Rename
 	PreferredPaths []string `json:"preferred"`
@@ -126,6 +133,51 @@ func app(name string) *App {
 	a.internal.events_broadcast = make(map[string]func(*Event))
 	apps[name] = a
 	return a
+}
+
+// Get an app by id, fingerprint, or path
+func app_by_any(s string) *App {
+	if s == "" {
+		return nil
+	}
+
+	// Check for id
+	a, ok := apps[s]
+	if ok {
+		return a
+	}
+
+	fp := fingerprint_no_hyphens(s)
+	//TODO Lock apps
+	for _, a := range apps {
+		av := a.active
+		if av == nil {
+			continue
+		}
+
+		// Check for fingerprint, with or without hyphens
+		if fingerprint_no_hyphens(a.fingerprint) == fp {
+			return a
+		}
+
+		// Check for path
+		//TODO Re-write
+		for _, p := range av.PreferredPaths {
+			if p == s {
+				return a
+			}
+		}
+
+		// Check for old path
+		//TODO Remove
+		for path, _ := range av.Paths {
+			if path == s {
+				return a
+			}
+		}
+	}
+
+	return nil
 }
 
 // Check whether app is the correct version, and if not download and install new version
@@ -627,6 +679,71 @@ func (a *App) path(path string, f func(*Action)) {
 // Register a service for an internal app
 func (a *App) service(service string) {
 	services[service] = a
+}
+
+// Find the action best matching the specified name
+func (av *AppVersion) find_action(name string) *AppAction {
+	var candidates []AppAction
+
+	for _, p := range av.Paths {
+		for action, aa := range p.Actions {
+			aa.name = action
+			segments := strings.Split(action, "/")
+			aa.segments = len(segments)
+			aa.literals = 0
+			for _, s := range segments {
+				if !strings.HasPrefix(s, ":") {
+					aa.literals++
+				}
+			}
+			aa.parameters = map[string]string{}
+			candidates = append(candidates, aa)
+		}
+	}
+
+	// Sort candidates: more segments first, then more literals first
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].segments != candidates[j].segments {
+			return candidates[i].segments > candidates[j].segments
+		}
+		return candidates[i].literals > candidates[j].literals
+	})
+
+	for _, aa := range candidates {
+		// Try exact match first
+		if aa.name == name {
+			debug("App found direct action '%s' with function '%s'", name, aa.Function)
+			return &aa
+		}
+
+		// Try dynamic match
+		key_segments := strings.Split(aa.name, "/")
+		value_segments := strings.Split(name, "/")
+		if len(key_segments) != len(value_segments) {
+			continue
+		}
+
+		ok := true
+		for i := 0; i < len(key_segments); i++ {
+			ks := key_segments[i]
+			vs := value_segments[i]
+			if strings.HasPrefix(ks, ":") {
+				name := ks[1:]
+				aa.parameters[name] = vs
+			} else if ks != vs {
+				ok = false
+				break
+			}
+		}
+
+		if ok {
+			debug("App found action '%s' with function '%s' via pattern '%s'", name, aa.Function, aa.name)
+			return &aa
+		}
+	}
+
+	info("App '%s' version '%s' has no action matching '%s'", av.app.id, av.Version, name)
+	return nil
 }
 
 // Get a new Starlark interpreter for an app version

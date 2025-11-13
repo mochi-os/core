@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
-	"time"
-
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
+	"net/http"
+	"time"
 )
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
@@ -18,59 +18,22 @@ type mochi_claims struct {
 	jwt.RegisteredClaims
 }
 
-// Create a JWT using a specific HMAC secret
-func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
-	claims := mochi_claims{
-		User: user_id,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
-			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
-		},
+// API login: request a code by email
+func api_login(c *gin.Context) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(secret)
-	if err != nil {
-		return "", err
-	}
-	return signed, nil
-}
-
-// Verify a JWT and return the user id, or -1 if invalid.
-// If the token header contains a "kid" referencing a login code, attempt to verify
-// using that login's secret. Otherwise fall back to the global secret.
-func jwt_verify(token_string string) (int, error) {
-	// First parse the token without verification to read header/kid
-	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
-	if err != nil {
-		return -1, err
+	if !code_send(input.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
+		return
 	}
 
-	// Require kid header (login code) to look up per-login secret
-	kid, ok := token.Header["kid"].(string)
-	if !ok || kid == "" {
-		return -1, errors.New("token missing kid header referencing login code")
-	}
-	var l Login
-	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", kid, now()) {
-		return -1, errors.New("login not found for kid")
-	}
-	if l.Secret == "" {
-		return -1, errors.New("login has no secret")
-	}
-	secret := []byte(l.Secret)
-	var claims mochi_claims
-	tkn, err := jwt.ParseWithClaims(token_string, &claims, func(token *jwt.Token) (interface{}, error) {
-		return secret, nil
-	})
-	if err != nil {
-		return -1, err
-	}
-	if !tkn.Valid {
-		return -1, errors.New("invalid token")
-	}
-	return claims.User, nil
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // API handler: exchange a login code for a JWT token
@@ -126,4 +89,59 @@ func api_login_auth(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"token": signed, "login": login})
+}
+
+// Create a JWT using a specific HMAC secret
+func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
+	claims := mochi_claims{
+		User: user_id,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
+			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		return "", err
+	}
+	return signed, nil
+}
+
+// Verify a JWT and return the user id, or -1 if invalid.
+// If the token header contains a "kid" referencing a login code, attempt to verify
+// using that login's secret. Otherwise fall back to the global secret.
+func jwt_verify(token_string string) (int, error) {
+	// First parse the token without verification to read header/kid
+	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
+	if err != nil {
+		return -1, err
+	}
+
+	// Require kid header (login code) to look up per-login secret
+	kid, ok := token.Header["kid"].(string)
+	if !ok || kid == "" {
+		return -1, errors.New("token missing kid header referencing login code")
+	}
+	var l Login
+	db := db_open("db/users.db")
+	if !db.scan(&l, "select * from logins where code=? and expires>=?", kid, now()) {
+		return -1, errors.New("login not found for kid")
+	}
+	if l.Secret == "" {
+		return -1, errors.New("login has no secret")
+	}
+	secret := []byte(l.Secret)
+	var claims mochi_claims
+	tkn, err := jwt.ParseWithClaims(token_string, &claims, func(token *jwt.Token) (interface{}, error) {
+		return secret, nil
+	})
+	if err != nil {
+		return -1, err
+	}
+	if !tkn.Valid {
+		return -1, errors.New("invalid token")
+	}
+	return claims.User, nil
 }

@@ -39,7 +39,7 @@ export function useLogout() {
 
       // Redirect to login page
       navigate({
-        to: '/sign-in',
+        to: '/login',
         replace: true,
       })
     } catch (error) {
@@ -49,7 +49,7 @@ export function useLogout() {
       toast.error('Logged out (with errors)')
       
       navigate({
-        to: '/sign-in',
+        to: '/login',
         replace: true,
       })
     } finally {

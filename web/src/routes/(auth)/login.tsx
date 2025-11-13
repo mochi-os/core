@@ -7,7 +7,7 @@ const searchSchema = z.object({
   redirect: z.string().optional(),
 })
 
-export const Route = createFileRoute('/(auth)/sign-in')({
+export const Route = createFileRoute('/(auth)/login')({
   beforeLoad: ({ search }) => {
     const store = useAuthStore.getState()
 
@@ -16,7 +16,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
       store.syncFromCookie()
     }
 
-    // If already authenticated, redirect away from sign-in page
+    // If already authenticated, redirect away from login page
     if (store.isAuthenticated) {
       // Use redirect param if provided and valid
       const redirectUrl = search.redirect
@@ -42,7 +42,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
       return
     }
 
-    // Not authenticated, allow sign-in page to render
+    // Not authenticated, allow login page to render
   },
   component: SignIn,
   validateSearch: searchSchema,

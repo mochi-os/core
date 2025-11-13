@@ -18,9 +18,9 @@ import { useAuth } from './useAuth'
  * }
  * ```
  * 
- * @param redirectTo - Optional custom redirect path (default: '/sign-in')
+ * @param redirectTo - Optional custom redirect path (default: '/login')
  */
-export function useRequireAuth(redirectTo: string = '/sign-in') {
+export function useRequireAuth(redirectTo: string = '/login') {
   const { isAuthenticated, isInitialized, isLoading } = useAuth()
   const navigate = useNavigate()
 

@@ -272,13 +272,13 @@ func web_path(c *gin.Context) {
 			return
 		}
 
-		// Entity route: /<app>/<entity>[/<action...>]
+		// Route on /<app>/<entity>[/<action...>]
 		e := entity_by_any(second)
 		if e != nil && web_action(c, a, strings.Join(segments[2:], "/"), e) {
 			return
 		}
 
-		// App-level action: /<app>/<action...>
+		// Route on /<app>/<action...>
 		web_action(c, a, strings.Join(segments[1:], "/"), nil)
 		return
 	}

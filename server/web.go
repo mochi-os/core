@@ -563,25 +563,21 @@ func web_start() {
 	// Avoid 301 redirects on API preflights (which break CORS)
 	r.RedirectTrailingSlash = false
 
-	// Serve core/web at root path - register BEFORE paths loop to take precedence
-	coreWebPath := "/opt/mochi/core/web/dist"
-	
 	// Serve static assets
-	r.Static("/assets", coreWebPath+"/assets")
-	r.Static("/images", coreWebPath+"/images")
-	
-	// Explicitly handle root path to serve core/web
+	share := ini_string("directories", "share", "/usr/share/mochi")
+	r.Static("/assets", share+"/assets")
+	r.Static("/images", share+"/images")
 	r.GET("/", func(c *gin.Context) {
-		c.File(coreWebPath + "/index.html")
+		c.File(share + "/index.html")
 	})
 
-	// Register paths from apps (skip root path if it exists)
+	// Register paths from apps
 	for _, p := range paths {
 		// Skip root path since we're handling it above
 		if p.path == "" {
 			continue
 		}
-		
+
 		if p.function != "" {
 			r.GET("/"+p.path, p.web_path)
 			r.POST("/"+p.path, p.web_path)
@@ -613,15 +609,15 @@ func web_start() {
 			return
 		}
 		// Don't interfere with login/logout/ping/websocket routes
-		if c.Request.URL.Path == "/login" || 
-		   c.Request.URL.Path == "/logout" || 
-		   c.Request.URL.Path == "/ping" || 
-		   c.Request.URL.Path == "/websocket" {
+		if c.Request.URL.Path == "/login" ||
+			c.Request.URL.Path == "/logout" ||
+			c.Request.URL.Path == "/ping" ||
+			c.Request.URL.Path == "/websocket" {
 			c.Next()
 			return
 		}
 		// Serve core/web index.html for all other routes (SPA routing)
-		c.File(coreWebPath + "/index.html")
+		c.File(share + "/index.html")
 	})
 
 	r.POST("/api/login", api_login)

@@ -5,9 +5,9 @@ package main
 
 import (
 	"bytes"
-	    "github.com/disintegration/imaging"
-    "github.com/nfnt/resize"
-    "github.com/rwcarlsen/goexif/exif"
+	"github.com/disintegration/imaging"
+	"github.com/nfnt/resize"
+	"github.com/rwcarlsen/goexif/exif"
 	"image"
 	"image/gif"
 	"image/jpeg"

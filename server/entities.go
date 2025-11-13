@@ -183,25 +183,25 @@ func entity_sign(entity string, s string) string {
 	return base58_encode(ed25519.Sign(private, []byte(s)))
 }
 
-//TODO Replace with classes global?
+// TODO Replace with classes global?
 func (e *Entity) class_app() *App {
-    if e == nil {
-        return nil
-    }
+	if e == nil {
+		return nil
+	}
 
 	//TODO Lock apps
-    for _, a := range apps {
-        if a.active == nil {
-            continue
-        }
-        for _, class := range a.active.Classes {
-            if class == e.Class {
-                return a
-            }
-        }
-    }
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, class := range a.active.Classes {
+			if class == e.Class {
+				return a
+			}
+		}
+	}
 
-    return nil
+	return nil
 }
 
 // Starlark methods

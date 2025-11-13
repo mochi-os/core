@@ -117,7 +117,7 @@ func (s *Stream) read(v any) error {
 		return fmt.Errorf("Stream %d unable to read segment: %v", s.id, err)
 	}
 
-	debug("Stream %d read segment %+v of type %T", s.id, v, v)
+	debug("Stream %d read segment: %+v", s.id, v)
 	return nil
 }
 
@@ -136,7 +136,7 @@ func (s *Stream) write(v any) error {
 	if s == nil || s.writer == nil {
 		return fmt.Errorf("Stream not open for writing")
 	}
-	debug("Stream %d writing segment %+v of type %T", s.id, v, v)
+	debug("Stream %d writing segment: %+v", s.id, v)
 
 	timeout := s.timeout.write
 	if timeout <= 0 {

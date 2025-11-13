@@ -1,10 +1,5 @@
 Alistair:
-	Web interface
-	Web paths
-		Update paths on app install and upgrade
-		Route on entity and fingerprint
 	Map web URLs to entities
-	Verified identities
 	Attachments
 
 Numan:
@@ -15,6 +10,9 @@ Rob:
 	Forums
 
 Zubair:
+	Web paths
+		Update paths on app install and upgrade
+		Route on entity and fingerprint
 
 0.2:
 	User avatars
@@ -81,6 +79,7 @@ Zubair:
 
 	Browser notifications
 	Push notifications to Android and iOS apps
+	Verified identities
 
 	.rpm packages and repository
 

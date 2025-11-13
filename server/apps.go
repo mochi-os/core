@@ -131,6 +131,7 @@ func app(name string) *App {
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))
+	//TODO Lock apps
 	apps[name] = a
 	return a
 }
@@ -142,6 +143,7 @@ func app_by_any(s string) *App {
 	}
 
 	// Check for id
+	//TODO Lock apps
 	a, ok := apps[s]
 	if ok {
 		return a
@@ -207,6 +209,7 @@ func app_check_install(id string) bool {
 		return false
 	}
 
+	//TODO Lock apps
 	a := apps[id]
 	if a != nil && a.active != nil && a.active.Version == version {
 		debug("App '%s' keeping at version '%s'", id, a.active.Version)

@@ -155,14 +155,12 @@ func peer_disconnected(id string) {
 
 // New or existing peer discovered or re-discovered at unknown address
 func peer_discovered(id string) {
-	debug("Peer '%s' discovered at unknown address", id)
 	p, err := p2p_peer.Decode(id)
 	if err != nil {
 		return
 	}
 
 	for _, a := range p2p_me.Peerstore().Addrs(p) {
-		debug("Peer '%s' found peerstore address '%s/p2p/%s'", id, a.String(), id)
 		peer_discovered_work(id, a.String()+"/p2p/"+id)
 	}
 
@@ -221,7 +219,7 @@ func peers_manager() {
 	for {
 		time.Sleep(24 * time.Hour)
 		db := db_open("db/peers.db")
-		db.exec("delete from peers where updated<?", now()-100*86400)
+		db.exec("delete from peers where updated<?", now()-30*86400)
 	}
 }
 

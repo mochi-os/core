@@ -554,7 +554,7 @@ func web_start() {
 	}
 	domains := ini_strings_commas("web", "domains")
 
-	if ini_bool("web", "debug", false) {
+	if !ini_bool("web", "debug", false) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.Default()

@@ -73,7 +73,6 @@ func stream_receive(s *Stream, version int, peer string) {
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
 	}
-	debug("Stream %d received headers %#v", s.id, h)
 	if !h.valid() {
 		info("Stream %d received invalid headers", s.id)
 		return
@@ -86,7 +85,7 @@ func stream_receive(s *Stream, version int, peer string) {
 		return
 	}
 
-	debug("Stream %d open from peer '%s': from '%s', to '%s', service '%s', event '%s', content '%#v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
+	debug("Stream %d open from peer '%s': from '%s', to '%s', service '%s', event '%s', content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
 	// Create event, and route to app
 	e := Event{id: event_id(), from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
@@ -98,7 +97,6 @@ func (s *Stream) read(v any) error {
 	if s == nil || s.reader == nil {
 		return fmt.Errorf("Stream not open for reading")
 	}
-	debug("Stream %d reading segment type %T", s.id, v)
 
 	timeout := s.timeout.read
 	if timeout <= 0 {
@@ -116,10 +114,10 @@ func (s *Stream) read(v any) error {
 	}
 	err := s.decoder.Decode(v)
 	if err != nil {
-		return fmt.Errorf("Stream unable to read segment: %v", err)
+		return fmt.Errorf("Stream %d unable to read segment: %v", s.id, err)
 	}
 
-	debug("Stream %d read segment: %#v", s.id, v)
+	debug("Stream %d read segment %+v of type %T", s.id, v, v)
 	return nil
 }
 
@@ -138,7 +136,7 @@ func (s *Stream) write(v any) error {
 	if s == nil || s.writer == nil {
 		return fmt.Errorf("Stream not open for writing")
 	}
-	debug("Stream %d writing segment: %#v", s.id, v)
+	debug("Stream %d writing segment %+v of type %T", s.id, v, v)
 
 	timeout := s.timeout.write
 	if timeout <= 0 {
@@ -159,7 +157,6 @@ func (s *Stream) write(v any) error {
 		return fmt.Errorf("Stream error writing segment: %v", err)
 	}
 
-	debug("Stream %d wrote segment", s.id)
 	return nil
 }
 

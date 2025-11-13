@@ -91,8 +91,6 @@ func directory_download() {
 			go queue_check_entity(d.ID)
 		}
 	}
-
-	debug("Directory download finished")
 }
 
 // Reply to a directory download request

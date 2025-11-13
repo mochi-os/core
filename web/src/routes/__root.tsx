@@ -15,10 +15,10 @@ export const Route = createRootRouteWithContext<{
   queryClient: QueryClient
 }>()({
   beforeLoad: ({ location }) => {
-    // Redirect root path to sign-in
+    // Redirect root path to login
     if (location.pathname === '/' || location.pathname === '') {
       throw redirect({
-        to: '/sign-in',
+        to: '/login',
         replace: true,
       })
     }

@@ -148,6 +148,15 @@ func web_logout(c *gin.Context) {
 	web_template(c, 200, "login/logout")
 }
 
+func api_logout(c *gin.Context) {
+	login := web_cookie_get(c, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(c, "login")
+	c.JSON(200, gin.H{"data": ""})
+}
+
 func api_login(c *gin.Context) {
 	var req struct {
 		Email string `json:"email"`
@@ -608,9 +617,8 @@ func web_start() {
 			c.JSON(404, gin.H{"error": "Not found"})
 			return
 		}
-		// Don't interfere with login/logout/ping/websocket routes
-		if c.Request.URL.Path == "/login" ||
-			c.Request.URL.Path == "/logout" ||
+		// Don't interfere with logout/ping/websocket routes (but allow /login to fall through)
+		if c.Request.URL.Path == "/logout" ||
 			c.Request.URL.Path == "/ping" ||
 			c.Request.URL.Path == "/websocket" {
 			c.Next()
@@ -622,8 +630,7 @@ func web_start() {
 
 	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)
-	r.GET("/login", web_login)
-	r.POST("/login", web_login)
+	r.GET("/api/logout", api_logout)
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)

@@ -183,13 +183,13 @@ func entity_sign(entity string, s string) string {
 	return base58_encode(ed25519.Sign(private, []byte(s)))
 }
 
-// TODO Replace with classes global?
 func (e *Entity) class_app() *App {
 	if e == nil {
 		return nil
 	}
 
-	//TODO Lock apps
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
 	for _, a := range apps {
 		if a.active == nil {
 			continue

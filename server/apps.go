@@ -134,8 +134,9 @@ func app(name string) *App {
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))
-	//TODO Lock apps
+	apps_lock.Lock()
 	apps[name] = a
+	apps_lock.Unlock()
 	return a
 }
 
@@ -146,14 +147,16 @@ func app_by_any(s string) *App {
 	}
 
 	// Check for id
-	//TODO Lock apps
+	apps_lock.Lock()
 	a, ok := apps[s]
+	apps_lock.Unlock()
 	if ok {
 		return a
 	}
 
 	fp := fingerprint_no_hyphens(s)
-	//TODO Lock apps
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
 	for _, a := range apps {
 		av := a.active
 		if av == nil {
@@ -212,8 +215,9 @@ func app_check_install(id string) bool {
 		return false
 	}
 
-	//TODO Lock apps
+	apps_lock.Lock()
 	a := apps[id]
+	apps_lock.Unlock()
 	if a != nil && a.active != nil && a.active.Version == version {
 		debug("App '%s' keeping at version '%s'", id, a.active.Version)
 		return true

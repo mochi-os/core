@@ -118,8 +118,11 @@ var (
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
+	//TODO Replace icons array with app lookup?
 	icons     []Icon
+	//TODO Remove paths map
 	paths     = map[string]*Path{}
+	//TODO Replace services map with app lookup?
 	services  = map[string]*App{}
 )
 
@@ -627,6 +630,7 @@ func (a *App) load_version(av *AppVersion) {
 		a.active = av
 
 		// Remove old active version from globals
+		//TODO Remove?
 		for p := range paths {
 			if paths[p].app != nil && paths[p].app.id == a.id {
 				delete(paths, p)

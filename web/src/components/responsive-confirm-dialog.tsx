@@ -54,7 +54,7 @@ export function ResponsiveConfirmDialog(props: ResponsiveConfirmDialogProps) {
           </ResponsiveDialogDescription>
         </ResponsiveDialogHeader>
         {children}
-        <ResponsiveDialogFooter className='gap-2 sm:gap-0'>
+        <ResponsiveDialogFooter className='gap-2'>
           <ResponsiveDialogClose asChild>
             <Button variant='outline' disabled={isLoading}>
               {cancelBtnText ?? 'Cancel'}

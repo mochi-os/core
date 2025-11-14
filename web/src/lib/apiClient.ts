@@ -110,17 +110,17 @@ apiClient.interceptors.response.use(
           error.config?.url?.includes('/verify')
 
         if (!isAuthEndpoint) {
-          // Clear auth state and redirect to sign-in
+          // Clear auth state and redirect to login
           useAuthStore.getState().clearAuth()
 
-          // Redirect to sign-in (mochi-core's own route)
+          // Redirect to login (mochi-core's own route)
           if (import.meta.env.PROD) {
             toast.error('Session expired', {
               description: 'Please log in again to continue.',
             })
           }
 
-          // Redirect to sign-in page
+          // Redirect to login page
           window.location.href = import.meta.env.VITE_AUTH_SIGN_IN_URL
         }
         break

@@ -1,4 +1,6 @@
 Alistair:
+	Web paths
+		Redesign app.json
 	Map web URLs to entities
 	Attachments
 

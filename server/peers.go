@@ -241,14 +241,11 @@ func peers_publish() {
 // We don't need to do anything here because we've already
 // marked the peer as discovered in p2p_pubsubs()
 func peer_publish_event(e *Event) {
-	debug("Peer publish event received from '%s'", e.peer)
 }
 
 // Reply to a peer request if for us
 func peer_request_event(e *Event) {
-	debug("Received peer request event '%+v'", e)
 	if e.get("id", "") == p2p_id {
-		debug("Peer request is for us; requesting a re-publish")
 		peer_publish_chan <- true
 	}
 }

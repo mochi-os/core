@@ -92,7 +92,7 @@ func p2p_pubsubs() {
 		m := must(s.Next(p2p_context))
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
-			debug("P2P received pubsub event from peer '%s', length=%d", peer, len(m.Data))
+			debug("P2P received pubsub event from peer '%s'", peer)
 			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
 			peer_discovered(peer)
 			peer_connect(peer)

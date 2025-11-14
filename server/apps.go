@@ -49,7 +49,6 @@ type AppVersion struct {
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons []Icon `json:"icons"`
-	//TODO Redesign paths structure
 	Paths map[string]struct {
 		Actions map[string]struct {
 			Function string `json:"function"`

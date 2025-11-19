@@ -42,7 +42,7 @@ export function useLogout() {
         to: '/login',
         replace: true,
       })
-    } catch (error) {
+    } catch (_error) {
       // Even if backend call fails, clear local auth
       clearAuth()
       

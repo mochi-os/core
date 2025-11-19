@@ -5,7 +5,10 @@ import authApi, {
   type VerifyCodeResponse,
 } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth-store'
-import { setCookie, getCookie } from '@/lib/cookies'
+import {
+  mergeProfileCookie,
+  readProfileCookie,
+} from '@/lib/profile-cookie'
 
 const devConsole = globalThis.console
 
@@ -16,19 +19,6 @@ const logError = (context: string, error: unknown) => {
   if (import.meta.env.DEV) {
     devConsole?.error?.(`[Auth Service] ${context}`, error)
   }
-}
-
-/**
- * Extract name from email (part before @)
- * Capitalizes and formats nicely for display
- */
-const extractNameFromEmail = (email: string): string => {
-  const name = email.split('@')[0]
-  // Capitalize first letter and replace dots/underscores with spaces
-  return name
-    .split(/[._-]/)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
 }
 
 /**
@@ -43,21 +33,18 @@ export const requestCode = async (
   try {
     const response = await authApi.requestCode({ email })
 
-    // Store email in cookie and auth store
-    // This allows us to show user info even before verification completes
+    // Store email in mochi_me profile cookie immediately
+    // This ensures the cookie exists even if identity page is skipped
     if (response.data?.email) {
-      setCookie('user_email', response.data.email, {
-        maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
-        path: '/',
-        sameSite: 'strict',
-        secure: window.location.protocol === 'https:',
+      mergeProfileCookie({
+        email: response.data.email,
+        // Don't store extracted name yet - only store if identity form is shown
       })
 
       const currentUser = useAuthStore.getState().user
       useAuthStore.getState().setUser({
         ...currentUser,
         email: response.data.email,
-        name: extractNameFromEmail(response.data.email),
       })
     }
 
@@ -74,7 +61,7 @@ export const requestCode = async (
  * Authentication Flow:
  * 1. Call backend to verify the code
  * 2. Extract `login` field (primary credential) from response (ignore `token` field)
- * 3. Get user email from `user_email` cookie (set during requestCode)
+ * 3. Get user email from profile cookie (set during requestCode)
  * 4. Store `login` in cookie and Zustand store via setAuth()
  *
  * The `login` value is the primary credential and will be used as-is
@@ -92,8 +79,9 @@ export const verifyCode = async (
     // Extract login from response (ignore token field completely)
     const login = response.login || ''
 
-    // Get email from cookie (set during requestCode) or from response
-    const emailFromCookie = getCookie('user_email')
+    // Get email from profile cookie (set during requestCode) or from response
+    const profile = readProfileCookie()
+    const emailFromCookie = profile.email
     const email = response.user?.email || emailFromCookie
 
     // Determine success based on presence of login
@@ -104,19 +92,23 @@ export const verifyCode = async (
 
     // Store credentials and user data if successful
     if (isSuccess && login) {
-      // Create user object if we have email
+      // Ensure email persists in profile cookie (it was set during requestCode)
+      if (email && !profile.email) {
+        mergeProfileCookie({ email })
+      }
+
+      // Create user object - rely solely on stored identity data
       const user: AuthUser | null = email
         ? {
             email,
-            name: extractNameFromEmail(email),
-            // Add other fields if available from response
+            ...(profile.name ? { name: profile.name } : {}),
             accountNo: response.user?.accountNo,
             role: response.user?.role,
             exp: response.user?.exp,
           }
         : null
 
-      // Store in auth store (which will also persist to cookies)
+      // Store in auth store (which will preserve existing profile cookie data)
       useAuthStore.getState().setAuth(user, login)
     }
 
@@ -238,5 +230,45 @@ export const loadUserProfile = async (): Promise<AuthUser | null> => {
 
 // Alias for backward compatibility
 export const sendVerificationCode = requestCode
+
+type IdentityPayload = {
+  name: string
+  privacy: 'public' | 'private'
+}
+
+/**
+ * Submit identity details to /login/identity
+ *
+ * Sends an x-www-form-urlencoded payload with name + privacy. On success,
+ * identity data is persisted to cookies + auth store.
+ */
+export const submitIdentity = async ({
+  name,
+  privacy,
+}: IdentityPayload): Promise<void> => {
+  try {
+    const body = new URLSearchParams()
+    body.set('name', name)
+    body.set('privacy', privacy)
+
+    const response = await fetch(`${window.location.origin}/login/identity`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      credentials: 'include', // ensure login cookie is sent
+      body,
+    })
+
+    if (!response.ok) {
+      throw new Error(`Identity request failed with status ${response.status}`)
+    }
+
+    useAuthStore.getState().setIdentity(name, privacy)
+  } catch (error) {
+    logError('Failed to submit identity', error)
+    throw error
+  }
+}
 
 export type { AuthUser, RequestCodeResponse, VerifyCodeResponse }

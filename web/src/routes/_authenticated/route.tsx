@@ -25,15 +25,23 @@ export const Route = createFileRoute('/_authenticated')({
       store.syncFromCookie()
     }
     
-    // Check if authenticated (has login)
     const isAuthenticated = store.isAuthenticated
+    const hasIdentity = store.hasIdentity
     
-    // If not authenticated, redirect to login
     if (!isAuthenticated) {
       throw redirect({
         to: '/login',
         search: {
           redirect: location.href, // Save original destination
+        },
+      })
+    }
+
+    if (!hasIdentity) {
+      throw redirect({
+        to: '/identity',
+        search: {
+          redirect: location.href,
         },
       })
     }

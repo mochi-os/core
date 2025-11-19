@@ -5,6 +5,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -58,6 +59,43 @@ func web_cookie_unset(c *gin.Context, name string) {
 	c.SetCookie(name, "", -1, "/", "", false, true)
 }
 
+const profileCookieName = "mochi_me"
+
+func web_profile_cookie_set(c *gin.Context, user *User) {
+	if user == nil || user.Identity == nil {
+		web_profile_cookie_clear(c)
+		return
+	}
+
+	profile := map[string]string{}
+	if user.Username != "" {
+		profile["email"] = user.Username
+	}
+	if user.Identity.Name != "" {
+		profile["name"] = user.Identity.Name
+	}
+	if user.Identity.Privacy != "" {
+		profile["privacy"] = user.Identity.Privacy
+	}
+
+	if len(profile) == 0 {
+		web_profile_cookie_clear(c)
+		return
+	}
+
+	body, err := json.Marshal(profile)
+	if err != nil {
+		warn("Unable to marshal profile cookie: %v", err)
+		return
+	}
+
+	c.SetCookie(profileCookieName, string(body), 365*86400, "/", "", false, true)
+}
+
+func web_profile_cookie_clear(c *gin.Context) {
+	c.SetCookie(profileCookieName, "", -1, "/", "", false, true)
+}
+
 func web_error(c *gin.Context, code int, message string, values ...any) {
 	web_template(c, code, "error", fmt.Sprintf(message, values...))
 }
@@ -69,11 +107,14 @@ func web_identity_create(c *gin.Context) {
 		return
 	}
 
-	_, err := entity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
+	identity, err := entity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
 	if err != nil {
 		web_error(c, 400, "Unable to create identity: %s", err)
 		return
 	}
+
+	u.Identity = identity
+	web_profile_cookie_set(c, u)
 
 	// Remove once we have hooks
 	admin := ini_string("email", "admin", "")
@@ -120,6 +161,11 @@ func web_login(c *gin.Context) {
 			return
 		}
 		web_cookie_set(c, "login", login_create(u.ID))
+		if u.Identity != nil {
+			web_profile_cookie_set(c, u)
+		} else {
+			web_profile_cookie_clear(c)
+		}
 
 		web_redirect(c, "/")
 		return
@@ -145,6 +191,7 @@ func web_logout(c *gin.Context) {
 		login_delete(login)
 	}
 	web_cookie_unset(c, "login")
+	web_profile_cookie_clear(c)
 	web_template(c, 200, "login/logout")
 }
 
@@ -154,6 +201,7 @@ func api_logout(c *gin.Context) {
 		login_delete(login)
 	}
 	web_cookie_unset(c, "login")
+	web_profile_cookie_clear(c)
 	c.JSON(200, gin.H{"data": ""})
 }
 
@@ -186,6 +234,13 @@ func (p *Path) web_path(c *gin.Context) {
 	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
 	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
 		user = web_auth(c)
+		if user != nil {
+			if user.Identity != nil {
+				web_profile_cookie_set(c, user)
+			} else {
+				web_profile_cookie_clear(c)
+			}
+		}
 		if user != nil && user.Identity == nil {
 			web_template(c, 200, "login/identity")
 			return

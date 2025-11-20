@@ -96,8 +96,10 @@ func db_create() {
 	cache.exec("create index attachments_created on attachments( created )")
 }
 
-// Open a database file for an app version, creating it if necessary
-func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
+// Open a database file for an app version, creating, upgrading, or downgrading it as necessary
+// If called from within a Starlark fucntion to create, upgrade, or downgrade the database
+// schema, in_schema_change will be set to true to avoid locking within an existing lock
+func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
 	if av.app == nil {
 		warn("Attempt to create database for unloaded app version")
 		return nil
@@ -110,11 +112,18 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
 
+	if !in_schema_change {
+		// Lock everything below here to prevent race conditions in schema changes
+		l := lock(fmt.Sprintf("%d-%s", u.ID, av.app.id))
+		l.Lock()
+		defer l.Unlock()
+	}
+
 	if file_exists(data_dir + "/" + path) {
 		db := db_open(path)
 		db.user = u
 
-		if allow_upgrade {
+		if !in_schema_change {
 			// Check if _settings table exists, if not create it with schema 0
 			if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
 				debug("Database '%s' missing _settings table; initializing with schema 0", path)
@@ -133,6 +142,7 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 					s.set("app", av.app)
 					s.set("user", u)
 					s.set("owner", u)
+					s.set("db_schema", true)
 					_, err := s.call(av.Database.Create.Function, nil)
 					if err != nil {
 						warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
@@ -179,7 +189,7 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 
 		return db
 
-	} else if allow_upgrade {
+	} else if !in_schema_change {
 		debug("Database file '%s' does not exist; creating", path)
 
 		if av.Database.Create.Function != "" {
@@ -189,6 +199,7 @@ func db_app(u *User, av *AppVersion, allow_upgrade bool) *DB {
 			s.set("app", av.app)
 			s.set("user", u)
 			s.set("owner", u)
+			s.set("db_schema", true)
 			_, err := s.call(av.Database.Create.Function, nil)
 			if err != nil {
 				warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)

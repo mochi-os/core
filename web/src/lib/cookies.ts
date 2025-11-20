@@ -5,7 +5,7 @@
  *
  * Cookie Names for Authentication:
  * - 'login': Primary credential (raw value used as Authorization header)
- * - 'user_email': User email address (for display and persistence)
+ * - 'mochi_me': Combined profile (email/name/privacy) for client UX
  *
  * Cookie Configuration:
  * - Secure: true in production (HTTPS only)
@@ -15,6 +15,8 @@
  */
 import Cookies from 'js-cookie'
 
+const devConsole = globalThis.console
+
 const DEFAULT_MAX_AGE = 60 * 60 * 24 * 7 // 7 days in seconds
 
 /**
@@ -23,7 +25,7 @@ const DEFAULT_MAX_AGE = 60 * 60 * 24 * 7 // 7 days in seconds
  */
 export const AUTH_COOKIES = {
   LOGIN: 'login', // Primary credential
-  USER_EMAIL: 'user_email', // User email address
+  PROFILE: 'mochi_me', // Consolidated identity/email data
 } as const
 
 /**
@@ -93,7 +95,7 @@ export function setCookie(
 
   // Log warning if HttpOnly is requested (cannot be set via JS)
   if (httpOnly && import.meta.env.DEV) {
-    console.warn(
+    devConsole?.warn?.(
       `[Cookies] HttpOnly flag requested for "${name}" but cannot be set via JavaScript. ` +
         `HttpOnly cookies must be set server-side using Set-Cookie header.`
     )

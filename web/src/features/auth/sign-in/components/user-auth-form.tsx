@@ -3,10 +3,11 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useNavigate } from '@tanstack/react-router'
+import { sendVerificationCode, verifyCode } from '@/services/auth-service'
 import { Loader2, Mail, ArrowLeft, Copy } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
-import { sendVerificationCode, verifyCode } from '@/services/auth-service'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -16,6 +17,8 @@ import {
   FormControl,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+
+const devConsole = globalThis.console
 
 const emailSchema = z.object({
   email: z.string().email('Please enter a valid email'),
@@ -39,7 +42,9 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
-  const [internalStep, setInternalStep] = useState<'email' | 'verification'>('email')
+  const [internalStep, setInternalStep] = useState<'email' | 'verification'>(
+    'email'
+  )
   const [userEmail, setUserEmail] = useState('')
   const navigate = useNavigate()
 
@@ -63,21 +68,21 @@ export function UserAuthForm({
 
     try {
       const result = await sendVerificationCode(data.email)
-      
+
       if (result.data && result.data.email) {
         toast.success('Verification code sent!', {
           description: result.data.code ? (
-            <div className="flex items-center gap-2">
+            <div className='flex items-center gap-2'>
               <span>Your code is: {result.data.code}</span>
               <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
+                variant='ghost'
+                size='sm'
+                className='h-6 w-6 p-0'
                 onClick={async (e) => {
                   e.preventDefault()
                   e.stopPropagation()
                   const code = result.data.code!
-                  
+
                   try {
                     // Try modern clipboard API first
                     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -93,7 +98,7 @@ export function UserAuthForm({
                       document.body.appendChild(textArea)
                       textArea.focus()
                       textArea.select()
-                      
+
                       try {
                         const successful = document.execCommand('copy')
                         if (successful) {
@@ -106,17 +111,19 @@ export function UserAuthForm({
                       }
                     }
                   } catch (error) {
-                    console.error('Failed to copy code:', error)
+                    devConsole?.error?.('Failed to copy code:', error)
                     toast.error('Failed to copy code', {
                       description: 'Please copy manually: ' + code,
                     })
                   }
                 }}
               >
-                <Copy className="h-3 w-3" />
+                <Copy className='h-3 w-3' />
               </Button>
             </div>
-          ) : 'Check your email for the verification code.',
+          ) : (
+            'Check your email for the verification code.'
+          ),
         })
         setStep('verification')
       } else {
@@ -133,12 +140,14 @@ export function UserAuthForm({
     }
   }
 
-  async function onSubmitVerification(data: z.infer<typeof verificationSchema>) {
+  async function onSubmitVerification(
+    data: z.infer<typeof verificationSchema>
+  ) {
     setIsLoading(true)
 
     try {
       const result = await verifyCode(data.code)
-      
+
       // verifyCode handles setting auth in the store
       // Just check if it was successful
       if (result.success && result.login) {
@@ -147,14 +156,27 @@ export function UserAuthForm({
         })
 
         // Small delay to ensure store state is updated and cookies are synced
-        await new Promise(resolve => setTimeout(resolve, 250))
+        await new Promise((resolve) => setTimeout(resolve, 250))
 
-        // Redirect to the stored location or default to home
-        const targetPath = redirectTo || '/'
-        navigate({ to: targetPath, replace: true })
+        const { hasIdentity } = useAuthStore.getState()
+        const fallback = import.meta.env.VITE_DEFAULT_APP_URL || '/'
+        const targetPath = redirectTo || fallback
+
+        if (hasIdentity) {
+          window.location.href = targetPath
+        } else {
+          navigate({
+            to: '/identity',
+            search: {
+              redirect: targetPath,
+            },
+            replace: true,
+          })
+        }
       } else {
         toast.error('Invalid verification code', {
-          description: result.message || 'Please check your email and try again.',
+          description:
+            result.message || 'Please check your email and try again.',
         })
       }
     } catch (_error) {
@@ -174,53 +196,47 @@ export function UserAuthForm({
   if (step === 'verification') {
     return (
       <div className={cn('grid gap-4', className)}>
-        <div className="text-center space-y-2">
-          <h3 className="text-lg font-semibold">Enter Login Code</h3>
-          <p className="text-sm text-muted-foreground">
-            Paste your login code
-          </p>
-          <p className="text-sm font-medium">{userEmail}</p>
+        <div className='space-y-2 text-center'>
+          <h3 className='text-lg font-semibold'>Enter Login Code</h3>
+          <p className='text-muted-foreground text-sm'>Paste your login code</p>
+          <p className='text-sm font-medium'>{userEmail}</p>
         </div>
 
         <Form {...verificationForm}>
           <form
             onSubmit={verificationForm.handleSubmit(onSubmitVerification)}
-            className="grid gap-4"
+            className='grid gap-4'
           >
             <FormField
               control={verificationForm.control}
-              name="code"
+              name='code'
               render={({ field }) => (
                 <FormItem>
                   <FormControl>
-                    <Input 
-                      placeholder="Code"
-                      className="text-center font-mono tracking-wider"
-                      {...field} 
+                    <Input
+                      placeholder='Code'
+                      className='text-center font-mono tracking-wider'
+                      {...field}
                     />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
-            
-            <div className="space-y-2">
-              <Button 
-                type="submit" 
-                className="w-full" 
-                disabled={isLoading}
-              >
-                {isLoading ? <Loader2 className="animate-spin" /> : <Mail />}
+
+            <div className='space-y-2'>
+              <Button type='submit' className='w-full' disabled={isLoading}>
+                {isLoading ? <Loader2 className='animate-spin' /> : <Mail />}
                 Authenticate
               </Button>
-              
+
               <Button
-                type="button"
-                variant="ghost"
+                type='button'
+                variant='ghost'
                 onClick={goBackToEmail}
-                className="w-full"
+                className='w-full'
               >
-                <ArrowLeft className="mr-2 h-4 w-4" />
+                <ArrowLeft className='mr-2 h-4 w-4' />
                 Back to email
               </Button>
             </div>
@@ -239,19 +255,19 @@ export function UserAuthForm({
       >
         <FormField
           control={emailForm.control}
-          name="email"
+          name='email'
           render={({ field }) => (
             <FormItem>
               <FormControl>
-                <Input placeholder="Email" {...field} />
+                <Input placeholder='Email' {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
-        
-        <Button className="mt-2" disabled={isLoading}>
-          {isLoading ? <Loader2 className="animate-spin" /> : <Mail />}
+
+        <Button className='mt-2' disabled={isLoading}>
+          {isLoading ? <Loader2 className='animate-spin' /> : <Mail />}
           Send Verification Code
         </Button>
       </form>

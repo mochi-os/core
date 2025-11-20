@@ -1,27 +1,19 @@
 // feat(auth): implement login-header based auth flow
 import { create } from 'zustand'
 import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
+import {
+  clearProfileCookie,
+  mergeProfileCookie,
+  readProfileCookie,
+  type IdentityPrivacy,
+} from '@/lib/profile-cookie'
 
 /**
  * Cookie names for authentication
  * - login: Primary credential (raw value used as Authorization header)
- * - user_email: User email for display purposes (persists across reloads)
+ * - mochi_me: Combined profile data (email/name/privacy)
  */
 const LOGIN_COOKIE = 'login'
-const EMAIL_COOKIE = 'user_email'
-
-/**
- * Extract name from email (part before @)
- * Capitalizes and formats nicely for display
- */
-const extractNameFromEmail = (email: string): string => {
-  const name = email.split('@')[0]
-  // Capitalize first letter and replace dots/underscores with spaces
-  return name
-    .split(/[._-]/)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
 
 /**
  * User information interface
@@ -29,7 +21,7 @@ const extractNameFromEmail = (email: string): string => {
  */
 export interface AuthUser {
   email: string // User's email address
-  name?: string // Display name (extracted from email or provided by backend)
+  name?: string // Display name (provided by backend/cookie)
   accountNo?: string // Account number/ID
   role?: string[] // User roles/permissions
   exp?: number // Token expiration timestamp
@@ -50,9 +42,12 @@ interface AuthState {
   login: string // Primary credential (raw login value)
   isLoading: boolean
   isInitialized: boolean
+  identityName: string
+  identityPrivacy: IdentityPrivacy | ''
 
   // Computed
   isAuthenticated: boolean
+  hasIdentity: boolean
 
   // Actions
   setAuth: (user: AuthUser | null, login: string) => void
@@ -62,6 +57,8 @@ interface AuthState {
   syncFromCookie: () => void
   clearAuth: () => void
   initialize: () => void
+  setIdentity: (name: string, privacy: IdentityPrivacy) => void
+  clearIdentity: () => void
 }
 
 /**
@@ -82,15 +79,19 @@ interface AuthState {
 export const useAuthStore = create<AuthState>()((set, get) => {
   // Initialize from cookies on store creation
   const initialLogin = getCookie(LOGIN_COOKIE) || ''
-  const initialEmail = getCookie(EMAIL_COOKIE) || ''
+  const profile = readProfileCookie()
+  const initialEmail = profile.email || ''
+  const initialIdentityName = profile.name || ''
+  const initialIdentityPrivacy: IdentityPrivacy | '' = profile.privacy || ''
 
   // Create user object from email if available
-  const initialUser = initialEmail
-    ? {
-        email: initialEmail,
-        name: extractNameFromEmail(initialEmail),
-      }
-    : null
+  const initialUser =
+    initialEmail !== ''
+      ? {
+          email: initialEmail,
+          ...(profile.name ? { name: profile.name } : {}),
+        }
+      : null
 
   return {
     // Initial state from cookies
@@ -98,8 +99,11 @@ export const useAuthStore = create<AuthState>()((set, get) => {
     login: initialLogin,
     isLoading: false,
     isInitialized: false,
+    identityName: initialIdentityName,
+    identityPrivacy: initialIdentityPrivacy,
     // Authenticated if we have login
     isAuthenticated: Boolean(initialLogin),
+    hasIdentity: Boolean(initialIdentityName),
 
     /**
      * Set authentication state (typically after login)
@@ -108,32 +112,35 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      * @param login - Primary credential from backend (required)
      */
     setAuth: (user, login) => {
-      // Store credentials in cookies for persistence with secure defaults
-      const cookieOptions = {
-        maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
-        path: '/',
-        sameSite: 'strict' as const,
-        secure: window.location.protocol === 'https:',
-      }
-
       if (login) {
-        setCookie(LOGIN_COOKIE, login, cookieOptions)
+        setCookie(LOGIN_COOKIE, login, {
+          maxAge: 60 * 60 * 24 * 7,
+          path: '/',
+          sameSite: 'strict',
+          secure: window.location.protocol === 'https:',
+        })
       } else {
         removeCookie(LOGIN_COOKIE)
       }
 
-      // Store email for persistence across reloads
-      if (user?.email) {
-        setCookie(EMAIL_COOKIE, user.email, cookieOptions)
-      } else {
-        removeCookie(EMAIL_COOKIE)
-      }
+      // Preserve existing profile cookie data (email, name, privacy)
+      // Only update email if provided, don't overwrite name/privacy if they exist
+      const currentProfile = readProfileCookie()
+      const mergedProfile = mergeProfileCookie({
+        email: user?.email ?? currentProfile.email ?? null,
+        // Don't overwrite name/privacy if they already exist (from identity form)
+        // Only set name if it's explicitly provided and we don't have one
+        name: currentProfile.name || user?.name || undefined,
+      })
 
       set({
         user,
         login,
         // Authenticated if we have login
         isAuthenticated: Boolean(login),
+        identityName: mergedProfile.name || '',
+        identityPrivacy: mergedProfile.privacy || '',
+        hasIdentity: Boolean(mergedProfile.name),
         isInitialized: true,
       })
     },
@@ -142,19 +149,13 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      * Update user information only (for profile updates)
      */
     setUser: (user) => {
-      // Store email in cookie for persistence with secure defaults
-      const cookieOptions = {
-        maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
-        path: '/',
-        sameSite: 'strict' as const,
-        secure: window.location.protocol === 'https:',
-      }
-
-      if (user?.email) {
-        setCookie(EMAIL_COOKIE, user.email, cookieOptions)
-      } else {
-        removeCookie(EMAIL_COOKIE)
-      }
+      // Preserve existing profile cookie data (don't overwrite name/privacy if they exist)
+      const currentProfile = readProfileCookie()
+      mergeProfileCookie({
+        email: user?.email ?? currentProfile.email ?? null,
+        // Don't overwrite name/privacy if they already exist (from identity form)
+        name: currentProfile.name || user?.name || undefined,
+      })
 
       set({
         user,
@@ -167,15 +168,13 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      * Update login credential only
      */
     setLogin: (login) => {
-      const cookieOptions = {
-        maxAge: 60 * 60 * 24 * 7, // 7 days in seconds
-        path: '/',
-        sameSite: 'strict' as const,
-        secure: window.location.protocol === 'https:',
-      }
-
       if (login) {
-        setCookie(LOGIN_COOKIE, login, cookieOptions)
+        setCookie(LOGIN_COOKIE, login, {
+          maxAge: 60 * 60 * 24 * 7,
+          path: '/',
+          sameSite: 'strict',
+          secure: window.location.protocol === 'https:',
+        })
       } else {
         removeCookie(LOGIN_COOKIE)
       }
@@ -199,23 +198,37 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      */
     syncFromCookie: () => {
       const cookieLogin = getCookie(LOGIN_COOKIE) || ''
-      const cookieEmail = getCookie(EMAIL_COOKIE) || ''
+      const profile = readProfileCookie()
+      const cookieEmail = profile.email || ''
+      const cookieIdentityName = profile.name || ''
+      const cookieIdentityPrivacy: IdentityPrivacy | '' = profile.privacy || ''
       const storeLogin = get().login
       const storeEmail = get().user?.email
+      const storeIdentityName = get().identityName
+      const storeIdentityPrivacy = get().identityPrivacy
 
       // If cookies differ from store, sync to store (cookies are source of truth)
-      if (cookieLogin !== storeLogin || cookieEmail !== storeEmail) {
-        const user: AuthUser | null = cookieEmail
-          ? {
-              email: cookieEmail,
-              name: extractNameFromEmail(cookieEmail),
-            }
-          : get().user // Keep existing user if no email
+      if (
+        cookieLogin !== storeLogin ||
+        cookieEmail !== storeEmail ||
+        cookieIdentityName !== storeIdentityName ||
+        cookieIdentityPrivacy !== storeIdentityPrivacy
+      ) {
+        const user: AuthUser | null =
+          cookieEmail !== ''
+            ? {
+                email: cookieEmail,
+                ...(profile.name ? { name: profile.name } : {}),
+              }
+            : get().user // Keep existing user if no email
 
         set({
           login: cookieLogin,
           user,
           isAuthenticated: Boolean(cookieLogin),
+          identityName: cookieIdentityName,
+          identityPrivacy: cookieIdentityPrivacy,
+          hasIdentity: Boolean(cookieIdentityName),
           isInitialized: true,
         })
       } else {
@@ -229,12 +242,15 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      */
     clearAuth: () => {
       removeCookie(LOGIN_COOKIE, '/')
-      removeCookie(EMAIL_COOKIE, '/')
+      clearProfileCookie()
 
       set({
         user: null,
         login: '',
+        identityName: '',
+        identityPrivacy: '',
         isAuthenticated: false,
+        hasIdentity: false,
         isLoading: false,
         isInitialized: true,
       })
@@ -246,6 +262,26 @@ export const useAuthStore = create<AuthState>()((set, get) => {
      */
     initialize: () => {
       get().syncFromCookie()
+    },
+
+    setIdentity: (name, privacy) => {
+      // Merge name and privacy into existing profile cookie (preserves email)
+      const profile = mergeProfileCookie({ name, privacy })
+
+      set({
+        identityName: profile.name || '',
+        identityPrivacy: profile.privacy || '',
+        hasIdentity: Boolean(profile.name),
+      })
+    },
+
+    clearIdentity: () => {
+      mergeProfileCookie({ name: null, privacy: null })
+      set({
+        identityName: '',
+        identityPrivacy: '',
+        hasIdentity: false,
+      })
     },
   }
 })

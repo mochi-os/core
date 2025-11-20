@@ -62,14 +62,18 @@ func (e *Event) route() {
 		return
 	}
 
-	// Lock everything below here to prevent concurrent database creations in db_app()
-	user := 0
-	if e.user != nil {
-		user = e.user.ID
-	}
-	l := lock(fmt.Sprintf("%d-%s", user, a.id))
-	l.Lock()
-	defer l.Unlock()
+	// Lock everything below here to prevent concurrent database creations in db_app().
+	// Disabled for now because we do the locking in db_app() so that actions also lock.
+	// Consider removing if the lock in db_app() works correctly.
+	/*
+		user := 0
+		if e.user != nil {
+			user = e.user.ID
+		}
+		l := lock(fmt.Sprintf("%d-%s", user, a.id))
+		l.Lock()
+		defer l.Unlock()
+	*/
 
 	// Load a database file for the app
 	if a.active.Database.File != "" {
@@ -77,7 +81,7 @@ func (e *Event) route() {
 			info("Event dropping broadcast for service requiring user")
 			return
 		}
-		e.db = db_app(e.user, a.active, true)
+		e.db = db_app(e.user, a.active, false)
 		if e.db == nil {
 			info("Event app '%s' has no database file", a.id)
 			return

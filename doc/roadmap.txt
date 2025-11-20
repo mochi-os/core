@@ -17,6 +17,7 @@ Zubair:
 		Route on entity and fingerprint
 
 0.2:
+	Make unavailable services non-fatal
 	User avatars
 	User management
 	Users can change their settings

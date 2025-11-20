@@ -24,6 +24,9 @@ export function useAuth() {
   const isLoading = useAuthStore((state) => state.isLoading)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const isInitialized = useAuthStore((state) => state.isInitialized)
+  const hasIdentity = useAuthStore((state) => state.hasIdentity)
+  const identityName = useAuthStore((state) => state.identityName)
+  const identityPrivacy = useAuthStore((state) => state.identityPrivacy)
 
   const setAuth = useAuthStore((state) => state.setAuth)
   const setUser = useAuthStore((state) => state.setUser)
@@ -31,6 +34,8 @@ export function useAuth() {
   const setLoading = useAuthStore((state) => state.setLoading)
   const syncFromCookie = useAuthStore((state) => state.syncFromCookie)
   const clearAuth = useAuthStore((state) => state.clearAuth)
+  const setIdentity = useAuthStore((state) => state.setIdentity)
+  const clearIdentity = useAuthStore((state) => state.clearIdentity)
 
   return {
     // State
@@ -39,6 +44,9 @@ export function useAuth() {
     isLoading,
     isAuthenticated,
     isInitialized,
+    hasIdentity,
+    identityName,
+    identityPrivacy,
 
     // Actions
     setAuth,
@@ -47,6 +55,8 @@ export function useAuth() {
     setLoading,
     syncFromCookie,
     logout: clearAuth,
+    setIdentity,
+    clearIdentity,
   }
 }
 

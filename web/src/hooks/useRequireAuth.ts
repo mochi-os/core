@@ -21,7 +21,7 @@ import { useAuth } from './useAuth'
  * @param redirectTo - Optional custom redirect path (default: '/login')
  */
 export function useRequireAuth(redirectTo: string = '/login') {
-  const { isAuthenticated, isInitialized, isLoading } = useAuth()
+  const { isAuthenticated, isInitialized, isLoading, hasIdentity } = useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -37,8 +37,20 @@ export function useRequireAuth(redirectTo: string = '/login') {
         },
         replace: true,
       })
+      return
     }
-  }, [isAuthenticated, isInitialized, isLoading, navigate, redirectTo])
+
+    if (isInitialized && isAuthenticated && !hasIdentity && !isLoading) {
+      const currentPath = window.location.pathname + window.location.search
+      navigate({
+        to: '/identity',
+        search: {
+          redirect: currentPath,
+        },
+        replace: true,
+      })
+    }
+  }, [isAuthenticated, isInitialized, isLoading, hasIdentity, navigate, redirectTo])
 
   return {
     isLoading: !isInitialized || isLoading,

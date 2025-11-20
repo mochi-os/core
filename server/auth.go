@@ -125,5 +125,14 @@ func api_login_auth(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"token": signed, "login": login})
+	response := gin.H{
+		"token": signed,
+		"login": login,
+	}
+
+	if user.Identity != nil && user.Identity.Name != "" {
+		response["name"] = user.Identity.Name
+	}
+
+	c.JSON(200, response)
 }

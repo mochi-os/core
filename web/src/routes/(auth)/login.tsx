@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useAuthStore } from '@/stores/auth-store'
 import { SignIn } from '@/features/auth/sign-in'
 
@@ -18,6 +18,15 @@ export const Route = createFileRoute('/(auth)/login')({
 
     // If already authenticated, redirect away from login page
     if (store.isAuthenticated) {
+      if (!store.hasIdentity) {
+        throw redirect({
+          to: '/identity',
+          search: {
+            redirect: search.redirect,
+          },
+        })
+      }
+
       // Use redirect param if provided and valid
       const redirectUrl = search.redirect
       if (redirectUrl && typeof redirectUrl === 'string') {

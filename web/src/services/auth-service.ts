@@ -84,6 +84,8 @@ export const verifyCode = async (
     const emailFromCookie = profile.email
     const email = response.user?.email || emailFromCookie
 
+    const nameFromResponse = response.name || response.user?.name
+
     // Determine success based on presence of login
     const isSuccess =
       response.success !== undefined
@@ -101,7 +103,11 @@ export const verifyCode = async (
       const user: AuthUser | null = email
         ? {
             email,
-            ...(profile.name ? { name: profile.name } : {}),
+            ...(nameFromResponse
+              ? { name: nameFromResponse }
+              : profile.name
+              ? { name: profile.name }
+              : {}),
             accountNo: response.user?.accountNo,
             role: response.user?.role,
             exp: response.user?.exp,

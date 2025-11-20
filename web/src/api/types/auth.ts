@@ -36,6 +36,7 @@ export interface VerifyCodeResponse {
   token?: string // Backend returns this but we ignore it
   login?: string
   user?: AuthUser
+  name?: string
   message?: string
   expiresIn?: number
   expires_in?: number

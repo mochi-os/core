@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
+import { ArrowRight, Loader2 } from 'lucide-react'
 import { submitIdentity } from '@/services/auth-service'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -129,7 +130,17 @@ export function IdentityForm({ redirectTo }: IdentityFormProps) {
         />
 
         <Button className="w-full" disabled={isSubmitting}>
-          {isSubmitting ? 'Saving…' : 'Continue'}
+          {isSubmitting ? (
+            <>
+              <Loader2 className='size-4 animate-spin' />
+              Saving…
+            </>
+          ) : (
+            <>
+              <ArrowRight className='size-4' />
+              Continue
+            </>
+          )}
         </Button>
       </form>
     </Form>

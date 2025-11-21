@@ -20,9 +20,7 @@ export function SignIn() {
         {step === 'email' && (
           <CardHeader>
             <CardTitle className='text-lg tracking-tight'>Sign in</CardTitle>
-            <CardDescription>
-              Enter your email address 
-            </CardDescription>
+            <CardDescription>Enter your email address</CardDescription>
           </CardHeader>
         )}
         <CardContent>

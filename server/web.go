@@ -22,11 +22,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if a == nil || a.active == nil {
 		return false
 	}
-
 	debug("Web app '%s' action '%s'", a.id, name)
 
 	aa := a.active.find_action(name)
-	if aa == nil || aa.Function == "" {
+	if aa == nil {
 		debug("No action found for app '%s' action '%s'", a.id, name)
 		return false
 	}
@@ -81,18 +80,48 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Require authentication for database-backed apps
-	if a.active.Database.File != "" && user == nil && owner == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
-		return true
-	}
-
 	// Role checks
 	if a.active.Requires.Role == "administrator" {
 		if user == nil || user.Role != "administrator" {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
 			return true
 		}
+	}
+
+	// Serve static file
+	if aa.File != "" {
+		file := a.active.base + "/" + aa.File
+		debug("Serving single file for app '%s': %s", a.id, file)
+		c.File(file)
+		return true
+	}
+
+	// Serve static files from a directory
+	if aa.Files != "" {
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) == 2 {
+			if !valid(parts[1], "filepath") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
+			}
+			file := a.active.base + "/" + aa.Files + "/" + parts[1]
+			debug("Serving file from directory for app '%s': %s", a.id, file)
+			c.File(file)
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
+		}
+		return true
+	}
+
+	// Only Starlark functions below here
+	if aa.Function == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+		return true
+	}
+
+	// Require authentication for database-backed apps
+	if a.active.Database.File != "" && user == nil && owner == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
+		return true
 	}
 
 	// Set up database connections if needed
@@ -236,6 +265,7 @@ func web_markdown(in string) template.HTML {
 
 // Handle app paths
 func web_path(c *gin.Context) {
+	debug("Web path %q", c.Request.URL.Path)
 	raw := strings.Trim(c.Request.URL.Path, "/")
 	if raw == "" {
 		web_root(c)
@@ -245,7 +275,7 @@ func web_path(c *gin.Context) {
 	segments := strings.Split(raw, "/")
 	first := segments[0]
 
-	//TODO Remove
+	//TODO Remove once web code is updated
 	if first == "api" {
 		segments = segments[1:]
 		first = segments[0]
@@ -261,15 +291,6 @@ func web_path(c *gin.Context) {
 		second := ""
 		if len(segments) > 1 {
 			second = segments[1]
-		}
-
-		// Assets
-		//TODO Check the files field rather than hard code assets and images
-		if second == "assets" || second == "images" {
-			file := a.active.base + "/" + strings.Join(segments[1:], "/")
-			debug("Static file for app '%s' file '%s'", a.id, file)
-			c.File(file)
-			return
 		}
 
 		// Route on /<app>/<entity>[/<action...>]

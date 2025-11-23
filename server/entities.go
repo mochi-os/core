@@ -25,6 +25,19 @@ type Entity struct {
 	Published   int64  `cbor:"-" json:"-"`
 }
 
+// Get an entity by id or fingerprint
+func entity_by_any(s string) *Entity {
+	db := db_open("db/users.db")
+	var e Entity
+	if db.scan(&e, "select * from entities where id=?", s) {
+		return &e
+	}
+	if db.scan(&e, "select * from entities where fingerprint=?", s) {
+		return &e
+	}
+	return nil
+}
+
 // Get an entity by fingerprint
 func entity_by_fingerprint(in string) *Entity {
 	db := db_open("db/users.db")
@@ -168,6 +181,27 @@ func entity_sign(entity string, s string) string {
 	}
 
 	return base58_encode(ed25519.Sign(private, []byte(s)))
+}
+
+func (e *Entity) class_app() *App {
+	if e == nil {
+		return nil
+	}
+
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, class := range a.active.Classes {
+			if class == e.Class {
+				return a
+			}
+		}
+	}
+
+	return nil
 }
 
 // Starlark methods

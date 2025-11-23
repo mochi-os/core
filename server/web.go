@@ -1,47 +1,231 @@
 // Mochi server: Sample web interface
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham
 
 package main
 
 import (
 	"embed"
 	"fmt"
-	"html/template"
-	"net/http"
-	"net/url"
-	"sort"
-	"strings"
-
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
+	"html/template"
+	"net/http"
+	"strings"
 )
 
-var (
-	//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
-	templates embed.FS
-)
+//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
+var templates embed.FS
 
-// Simple CORS middleware to allow browser clients
-func cors_middleware(c *gin.Context) {
-	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Login")
-	// If you later need cookies over CORS, set Allow-Credentials and restrict origin
-	// c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+// Call a web action
+func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
+	if a == nil || a.active == nil {
+		return false
+	}
+	debug("Web app '%s' action '%s'", a.id, name)
 
-	if c.Request.Method == "OPTIONS" {
-		c.AbortWithStatus(204)
-		return
+	aa := a.active.find_action(name)
+	if aa == nil {
+		debug("No action found for app '%s' action '%s'", a.id, name)
+		return false
 	}
 
-	c.Next()
+	// Get user authentication via cookie
+	user := web_auth(c)
+
+	// If no cookie auth, try header / query-based authentication
+	if user == nil {
+		token := ""
+
+		// Authorization: Bearer <token>
+		auth_header := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth_header, "Bearer ") {
+			token = strings.TrimPrefix(auth_header, "Bearer ")
+		}
+		if token == "" {
+			token = c.GetHeader("X-Login")
+		}
+		if token == "" {
+			token = c.Query("login")
+		}
+
+		if token != "" {
+			// Prefer JWT
+			if uid, err := jwt_verify(token); err == nil && uid > 0 {
+				if u := user_by_id(uid); u != nil {
+					user = u
+					debug("API JWT token accepted for user %d", u.ID)
+				}
+			} else {
+				// Fallback: legacy login token
+				if u := user_by_login(token); u != nil {
+					user = u
+					debug("API login token accepted for user %d", u.ID)
+				}
+			}
+		}
+	}
+
+	// Compute owner based on entity, if present
+	var owner *User = user
+	if e != nil {
+		if o := user_owning_entity(e.ID); o != nil {
+			owner = o
+		}
+	}
+
+	// Require authentication for non-public actions
+	if user == nil && !aa.Public {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return true
+	}
+
+	// Role checks
+	if a.active.Requires.Role == "administrator" {
+		if user == nil || user.Role != "administrator" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+			return true
+		}
+	}
+
+	// Serve static file
+	if aa.File != "" {
+		file := a.active.base + "/" + aa.File
+		debug("Serving single file for app '%s': %s", a.id, file)
+		c.File(file)
+		return true
+	}
+
+	// Serve static files from a directory
+	if aa.Files != "" {
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) == 2 {
+			if !valid(parts[1], "filepath") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
+			}
+			file := a.active.base + "/" + aa.Files + "/" + parts[1]
+			debug("Serving file from directory for app '%s': %s", a.id, file)
+			c.File(file)
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
+		}
+		return true
+	}
+
+	// Only Starlark functions below here
+	if aa.Function == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+		return true
+	}
+
+	// Require authentication for database-backed apps
+	if a.active.Database.File != "" && user == nil && owner == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
+		return true
+	}
+
+	// Set up database connections if needed
+	if a.active.Database.File != "" {
+		if user != nil {
+			user.db = db_app(user, a.active, true)
+			if user.db == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return true
+			}
+			defer user.db.close()
+		}
+		if owner != nil && (user == nil || owner.ID != user.ID) {
+			owner.db = db_app(owner, a.active, true)
+			if owner.db == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return true
+			}
+			defer owner.db.close()
+		}
+	}
+
+	// Create action context
+	action := Action{
+		id:    action_id(),
+		user:  user,
+		owner: owner,
+		app:   a,
+		web:   c,
+		path:  nil,
+	}
+
+	// Build inputs: path params, query params, JSON body
+	inputs := make(map[string]interface{})
+
+	// Path parameters from pattern match
+	for k, v := range aa.parameters {
+		inputs[k] = v
+	}
+
+	// Query params
+	for key, values := range c.Request.URL.Query() {
+		if len(values) > 0 {
+			if _, exists := inputs[key]; !exists {
+				inputs[key] = values[0]
+			}
+		}
+	}
+
+	// JSON body
+	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
+		var json_data map[string]interface{}
+		if err := c.ShouldBindJSON(&json_data); err == nil {
+			for key, value := range json_data {
+				inputs[key] = value
+			}
+		}
+	}
+
+	// Prepare fields for Starlark
+	fields := map[string]string{
+		"format":               "json",
+		"identity.id":          "",
+		"identity.fingerprint": "",
+		"identity.name":        "",
+		"path":                 name,
+	}
+
+	if user != nil && user.Identity != nil {
+		fields["identity.id"] = user.Identity.ID
+		fields["identity.fingerprint"] = user.Identity.Fingerprint
+		fields["identity.name"] = user.Identity.Name
+	}
+
+	// Call Starlark function
+	s := a.active.starlark()
+	s.set("action", &action)
+	s.set("app", a)
+	s.set("user", user)
+	s.set("owner", owner)
+
+	var result sl.Value
+	var err error
+	if a.active.Engine.Version == 1 {
+		result, err = s.call(aa.Function, sl_encode_tuple(fields, inputs))
+	} else {
+		result, err = s.call(aa.Function, sl.Tuple{&action})
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return true
+	}
+
+	c.JSON(http.StatusOK, sl_decode(result))
+	return true
 }
 
+// Get user for login cookie
 func web_auth(c *gin.Context) *User {
 	return user_by_login(web_cookie_get(c, "login", ""))
 }
 
+// Get the value of a cookie
 func web_cookie_get(c *gin.Context, name string, def string) string {
 	value, err := c.Cookie(name)
 	if err != nil {
@@ -50,12 +234,99 @@ func web_cookie_get(c *gin.Context, name string, def string) string {
 	return value
 }
 
+// Set a cookie
 func web_cookie_set(c *gin.Context, name string, value string) {
 	c.SetCookie(name, value, 365*86400, "/", "", false, true)
 }
 
+// Unset a cookie
 func web_cookie_unset(c *gin.Context, name string) {
 	c.SetCookie(name, "", -1, "/", "", false, true)
+}
+
+// Simple CORS middleware to allow browser clients
+func web_cors_middleware(c *gin.Context) {
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Login")
+	c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	if c.Request.Method == http.MethodOptions {
+		c.AbortWithStatus(http.StatusNoContent)
+		return
+	}
+	c.Next()
+}
+
+// Render markdown as a template.HTML object so that Go's templates don't escape it
+func web_markdown(in string) template.HTML {
+	return template.HTML(markdown([]byte(in)))
+}
+
+// Handle app paths
+func web_path(c *gin.Context) {
+	debug("Web path %q", c.Request.URL.Path)
+	raw := strings.Trim(c.Request.URL.Path, "/")
+	if raw == "" {
+		web_root(c)
+		return
+	}
+
+	segments := strings.Split(raw, "/")
+	first := segments[0]
+
+	//TODO Remove once web code is updated
+	if first == "api" {
+		segments = segments[1:]
+		first = segments[0]
+	}
+
+	debug("Looking for app or entity for '%s'", first)
+
+	// Check for app matching first segment
+	a := app_by_any(first)
+	if a != nil {
+		debug("Found app '%s' for '%s'", a.id, first)
+
+		second := ""
+		if len(segments) > 1 {
+			second = segments[1]
+		}
+
+		// Route on /<app>/<entity>[/<action...>]
+		e := entity_by_any(second)
+		if e != nil && web_action(c, a, strings.Join(segments[2:], "/"), e) {
+			return
+		}
+
+		// Route on /<app>/<action...>
+		web_action(c, a, strings.Join(segments[1:], "/"), nil)
+		return
+	}
+
+	// Check for entity matching first segment
+	e := entity_by_any(first)
+	if e != nil {
+		debug("Found entity '%s' for '%s'", e.ID, first)
+
+		a := e.class_app()
+		if a == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity class"})
+			return
+		}
+
+		action := e.Fingerprint
+		if len(segments) > 1 {
+			action = e.Fingerprint + "/" + strings.Join(segments[1:], "/")
+		}
+
+		web_action(c, a, action, e)
+		return
+	}
+
+	// No path found, pass to web_root()
+	debug("Web path not found, calling root")
+	web_root(c)
 }
 
 func web_error(c *gin.Context, code int, message string, values ...any) {
@@ -66,76 +337,60 @@ func web_error(c *gin.Context, code int, message string, values ...any) {
 func web_identity_create(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
+		// Not logged in; redirect to login
+		web_redirect(c, "/login")
 		return
 	}
 
 	_, err := entity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
 	if err != nil {
-		web_error(c, 400, "Unable to create identity: %s", err)
+		web_error(c, http.StatusBadRequest, "Unable to create identity: %s", err)
 		return
 	}
 
-	// Remove once we have hooks
+	// Simple notification hook (same spirit as original)
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
 		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))
 	}
 
-	web_redirect(c, "/?action=welcome")
+	web_redirect(c, "/")
 }
 
-// Get all inputs
-func web_inputs(c *gin.Context) map[string]string {
-	inputs := map[string]string{}
-
-	err := c.Request.ParseForm()
-	if err == nil {
-		for key, values := range c.Request.PostForm {
-			for _, value := range values {
-				inputs[key] = value
-			}
-		}
-	}
-
-	for key, values := range c.Request.URL.Query() {
-		for _, value := range values {
-			inputs[key] = value
-		}
-	}
-
-	for _, param := range c.Params {
-		inputs[param.Key] = param.Value
-	}
-
-	return inputs
-}
-
-// Log the user in using an email code
+// Basic login page + code handling
 func web_login(c *gin.Context) {
-	code := c.PostForm("code")
-	if code != "" {
-		u := user_from_code(code)
-		if u == nil {
-			web_error(c, 400, "Invalid code")
-			return
-		}
-		web_cookie_set(c, "login", login_create(u.ID))
-
+	// If we already have a valid session, just go home
+	if u := web_auth(c); u != nil && u.Identity != nil {
 		web_redirect(c, "/")
 		return
 	}
 
-	email := c.PostForm("email")
-	if email != "" {
-		if !code_send(email) {
-			web_error(c, 400, "Invalid email address")
+	// Login by code
+	code := c.PostForm("code")
+	if code != "" {
+		u := user_from_code(code)
+		if u == nil {
+			web_error(c, http.StatusBadRequest, "Invalid code")
 			return
 		}
-		web_template(c, 200, "login/code", email)
+		web_cookie_set(c, "login", login_create(u.ID))
+		web_redirect(c, "/")
 		return
 	}
 
-	web_template(c, 200, "login/email")
+	// Login by email (send code)
+	email := c.PostForm("email")
+	if email != "" {
+		if !code_send(email) {
+			web_error(c, http.StatusBadRequest, "Unable to send login email")
+			return
+		}
+		web_template(c, http.StatusOK, "login/email_sent")
+		return
+	}
+
+	// Default: show login form
+	web_template(c, http.StatusOK, "login/email")
 }
 
 // Log the user out
@@ -145,413 +400,20 @@ func web_logout(c *gin.Context) {
 		login_delete(login)
 	}
 	web_cookie_unset(c, "login")
-	web_template(c, 200, "login/logout")
-}
-
-func api_logout(c *gin.Context) {
-	login := web_cookie_get(c, "login", "")
-	if login != "" {
-		login_delete(login)
-	}
-	web_cookie_unset(c, "login")
-	c.JSON(200, gin.H{"data": ""})
-}
-
-func api_login(c *gin.Context) {
-	var req struct {
-		Email string `json:"email"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" {
-		c.JSON(400, gin.H{"error": "Missing email"})
-		return
-	}
-
-	if !code_send(req.Email) {
-		c.JSON(400, gin.H{"error": "Invalid email address"})
-		return
-	}
-
-	c.JSON(200, gin.H{"data": gin.H{"email": req.Email}})
-}
-
-// Render markdown as a template.HTML object so that Go's templates don't escape it
-func web_markdown(in string) template.HTML {
-	return template.HTML(markdown([]byte(in)))
-}
-
-// Handle web paths
-func (p *Path) web_path(c *gin.Context) {
-	var user *User = nil
-
-	referrer, err := url.Parse(c.Request.Header.Get("Referer"))
-	if err == nil && (referrer.Host == "" || referrer.Host == c.Request.Host) {
-		user = web_auth(c)
-		if user != nil && user.Identity == nil {
-			web_template(c, 200, "login/identity")
-			return
-		}
-	}
-
-	var e *Entity = nil
-	entity := c.Param(p.app.active.entity_field)
-	if entity != "" {
-		e = entity_by_fingerprint(entity)
-		if e == nil {
-			e = entity_by_id(entity)
-		}
-	}
-
-	if p.app.active.Database.File != "" && user != nil {
-		user.db = db_app(user, p.app.active, false)
-		if user.db == nil {
-			web_error(c, 500, "No user database for app")
-			return
-		}
-		defer user.db.close()
-	}
-
-	owner := user
-	if e != nil {
-		owner = user_owning_entity(e.ID)
-		if p.app.active.Database.File != "" && owner != nil {
-			owner.db = db_app(owner, p.app.active, false)
-			if owner.db == nil {
-				web_error(c, 500, "No owner database for app")
-				return
-			}
-			defer owner.db.close()
-		}
-	}
-
-	if p.app.active.Database.File != "" && user == nil && owner == nil {
-		web_redirect(c, "/login")
-		return
-	}
-
-	// Require role if app requires it
-	if p.app.active.Requires.Role == "administrator" && user.Role != "administrator" {
-		web_error(c, 403, "Forbidden")
-		return
-	}
-
-	a := Action{id: action_id(), user: user, owner: owner, app: p.app, web: c, path: p}
-
-	switch p.app.active.Engine.Architecture {
-	case "internal":
-		if p.internal == nil {
-			web_error(c, 500, "No function for internal path")
-			return
-		}
-		p.internal(&a)
-
-	case "starlark":
-		if p.function == "" {
-			web_error(c, 500, "No function for path")
-			return
-		}
-
-		if user == nil && !p.public {
-			web_redirect(c, "/login")
-			return
-		}
-
-		s := p.app.active.starlark()
-		s.set("action", &a)
-		s.set("app", p.app)
-		s.set("user", a.user)
-		s.set("owner", a.owner)
-
-		fields := map[string]string{
-			"format":               a.input("format"),
-			"identity.id":          a.user.Identity.ID,
-			"identity.fingerprint": a.user.Identity.Fingerprint,
-			"identity.name":        a.user.Identity.Name,
-			"path":                 p.path,
-		}
-
-		var err error
-		if p.app.active.Engine.Version == 1 {
-			_, err = s.call(p.function, sl_encode_tuple(fields, web_inputs(c)))
-		} else {
-			_, err = s.call(p.function, sl.Tuple{&a})
-		}
-
-		if err != nil {
-			web_error(c, 500, "%v", err)
-		}
-
-	default:
-		web_error(c, 500, "No engine for path")
-		return
-	}
+	web_template(c, http.StatusOK, "login/logout")
 }
 
 func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-// Handle generic API requests for Starlark apps
-func handle_api(c *gin.Context) {
-	app_id := c.Param("app")
-	action_name := strings.TrimPrefix(c.Param("action"), "/")
-
-	debug("API request: app='%s', action='%s'", app_id, action_name)
-
-	app, exists := apps[app_id]
-	if !exists {
-		debug("App not found: %s", app_id)
-		c.JSON(404, gin.H{"error": "App not found"})
-		return
-	}
-
-	// Find the action in the app's paths (supports dynamic segments like :chat/messages)
-	var action_function string
-	var is_public bool
-	found := false
-	pattern_params := map[string]string{}
-
-	debug("Looking for action '%s' in app '%s'", action_name, app.id)
-
-	// Collect all actions from all paths
-	type action_candidate struct {
-		key      string
-		function string
-		file     string
-		files    string
-		public   bool
-		segments int
-		literals int
-	}
-	var candidates []action_candidate
-
-	for path_name, path := range app.active.Paths {
-		debug("Checking path '%s' with %d actions", path_name, len(path.Actions))
-		for action_key, action := range path.Actions {
-			debug("Available action: '%s'", action_key)
-			segs := strings.Split(action_key, "/")
-			lits := 0
-			for _, s := range segs {
-				if !strings.HasPrefix(s, ":") {
-					lits++
-				}
-			}
-			candidates = append(candidates, action_candidate{
-				key:      action_key,
-				function: action.Function,
-				file:     action.File,
-				files:    action.Files,
-				public:   action.Public,
-				segments: len(segs),
-				literals: lits,
-			})
-		}
-	}
-
-	// Sort candidates: more segments first, then more literals first
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].segments != candidates[j].segments {
-			return candidates[i].segments > candidates[j].segments
-		}
-		return candidates[i].literals > candidates[j].literals
-	})
-
-	// Try to match in order of specificity
-	for _, cand := range candidates {
-		action_key := cand.key
-
-		// Try exact match first
-		if action_key == action_name {
-			action_function = cand.function
-			is_public = cand.public
-			found = true
-			debug("Found action '%s' -> function '%s' (direct)", action_name, action_function)
-			break
-		}
-
-		// Try dynamic match
-		keySegs := strings.Split(action_key, "/")
-		valSegs := strings.Split(action_name, "/")
-		if len(keySegs) != len(valSegs) {
-			continue
-		}
-		tmp := map[string]string{}
-		ok := true
-		for i := 0; i < len(keySegs); i++ {
-			ks := keySegs[i]
-			vs := valSegs[i]
-			if strings.HasPrefix(ks, ":") {
-				name := ks[1:]
-				tmp[name] = vs
-			} else if ks != vs {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			action_function = cand.function
-			is_public = cand.public
-			pattern_params = tmp
-			found = true
-			debug("Found action '%s' -> function '%s' (pattern match)", action_key, action_function)
-			break
-		}
-	}
-
-	if !found {
-		debug("Action '%s' not found in app '%s'", action_name, app.id)
-		c.JSON(404, gin.H{"error": "Action not found"})
-		return
-	}
-
-	// Get user authentication via cookie
-	user := web_auth(c)
-
-	// If no cookie auth, try token-based authentication.
-	// First attempt JWT (Bearer) tokens, then fall back to legacy login tokens.
-	if user == nil {
-		token := ""
-
-		// Check Authorization header (Bearer token)
-		authHeader := c.GetHeader("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-
-		// Check X-Login header
-		if token == "" {
-			token = c.GetHeader("X-Login")
-		}
-
-		// Check login query parameter
-		if token == "" {
-			token = c.Query("login")
-		}
-
-		// Try JWT verification first
-		if token != "" {
-			if uid, err := jwt_verify(token); err == nil && uid > 0 {
-				if u := user_by_id(uid); u != nil {
-					user = u
-					debug("API JWT token accepted for user %d", u.ID)
-				}
-			} else {
-				// Fallback: legacy login token stored in DB
-				if u := user_by_login(token); u != nil {
-					user = u
-					debug("API login token accepted for user %d", u.ID)
-				}
-			}
-		}
-	}
-
-	// Require authentication for non-public actions
-	if user == nil && !is_public {
-		c.JSON(401, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	// Require authentication for database-backed apps
-	if user == nil && app.active.Database.File != "" {
-		c.JSON(401, gin.H{"error": "Authentication required for database access"})
-		return
-	}
-
-	// Require role if app requires it
-	if app.active.Requires.Role == "administrator" && user.Role != "administrator" {
-		c.JSON(403, gin.H{"error": "Forbidden"})
-		return
-	}
-
-	// Set up database if needed
-	if app.active.Database.File != "" {
-		user.db = db_app(user, app.active, false)
-		if user.db == nil {
-			c.JSON(500, gin.H{"error": "Database error"})
-			return
-		}
-		defer user.db.close()
-	}
-
-	// Create action context
-	action := Action{id: action_id(), user: user, owner: user, app: app, web: c, path: nil}
-
-	// Prepare inputs from path params, query parameters and JSON body
-	inputs := make(map[string]interface{})
-	// Add extracted path params first
-	for k, v := range pattern_params {
-		inputs[k] = v
-	}
-
-	// Add query parameters
-	for key, values := range c.Request.URL.Query() {
-		if len(values) > 0 {
-			if _, exists := inputs[key]; !exists {
-				inputs[key] = values[0]
-			}
-		}
-	}
-
-	// Add JSON body if present
-	if c.Request.Header.Get("Content-Type") == "application/json" {
-		var jsonData map[string]interface{}
-		if err := c.ShouldBindJSON(&jsonData); err == nil {
-			for key, value := range jsonData {
-				inputs[key] = value
-			}
-		}
-	}
-
-	// Prepare action context for Starlark
-	fields := map[string]string{
-		"format":               "json",
-		"identity.id":          "",
-		"identity.fingerprint": "",
-		"identity.name":        "",
-		"path":                 action_name,
-	}
-
-	if user != nil && user.Identity != nil {
-		fields["identity.id"] = user.Identity.ID
-		fields["identity.fingerprint"] = user.Identity.Fingerprint
-		fields["identity.name"] = user.Identity.Name
-	}
-
-	// Call the Starlark function
-	s := app.active.starlark()
-	s.set("action", &action)
-	s.set("app", app)
-	s.set("user", user)
-	s.set("owner", user)
-
-	var result sl.Value
-	var err error
-	if app.active.Engine.Version == 1 {
-		result, err = s.call(action_function, sl_encode_tuple(fields, inputs))
-	} else {
-		result, err = s.call(action_function, sl.Tuple{&action})
-	}
-
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Check if the result is a JSON response format
-	if resultMap, ok := sl_decode(result).(map[string]interface{}); ok {
-		if format, hasFormat := resultMap["format"]; hasFormat && format == "json" {
-			if data, hasData := resultMap["data"]; hasData {
-				c.JSON(200, data)
-				return
-			}
-		}
-	}
-
-	// Fallback: return the raw result
-	c.JSON(200, sl_decode(result))
+func web_redirect(c *gin.Context, url string) {
+	web_template(c, http.StatusOK, "redirect", url)
 }
 
-func web_redirect(c *gin.Context, url string) {
-	web_template(c, 200, "redirect", url)
+// Handle / and any paths not handled by web_path()
+func web_root(c *gin.Context) {
+	c.File(ini_string("directories", "share", "/usr/share/mochi") + "/index.html")
 }
 
 // Start the web server
@@ -568,100 +430,49 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	r.Use(cors_middleware)
-	// Avoid 301 redirects on API preflights (which break CORS)
-	r.RedirectTrailingSlash = false
+	r.Use(web_cors_middleware)
+	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
 
-	// Serve static assets
+	// Serve built-in paths
 	share := ini_string("directories", "share", "/usr/share/mochi")
+	r.GET("/", web_root)
 	r.Static("/assets", share+"/assets")
 	r.Static("/images", share+"/images")
-	r.GET("/", func(c *gin.Context) {
-		c.File(share + "/index.html")
-	})
-
-	// Register paths from apps
-	for _, p := range paths {
-		// Skip root path since we're handling it above
-		if p.path == "" {
-			continue
-		}
-
-		if p.function != "" {
-			r.GET("/"+p.path, p.web_path)
-			r.POST("/"+p.path, p.web_path)
-
-		} else if p.file != "" {
-			debug("Web static file '/%s' at '%s'", p.path, p.app.active.base+"/"+p.file)
-			if strings.HasSuffix(strings.ToLower(p.file), ".html") {
-				// Redirect /chat to /chat/ (with trailing slash)
-				r.GET("/"+p.path, func(c *gin.Context) {
-					c.Redirect(http.StatusMovedPermanently, "/"+p.path+"/")
-				})
-				// Serve HTML file at /chat/
-				r.StaticFile("/"+p.path+"/", p.app.active.base+"/"+p.file)
-			} else {
-				r.StaticFile("/"+p.path, p.app.active.base+"/"+p.file)
-			}
-
-		} else if p.files != "" {
-			debug("Web static files '/%s' at '%s'", p.path, p.app.active.base+"/"+p.files)
-			r.Static("/"+p.path, p.app.active.base+"/"+p.files)
-		}
-	}
-
-	// SPA catch-all: serve index.html for all non-API, non-login routes
-	r.NoRoute(func(c *gin.Context) {
-		// Don't interfere with API routes
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(404, gin.H{"error": "Not found"})
-			return
-		}
-		// Don't interfere with logout/ping/websocket routes (but allow /login to fall through)
-		if c.Request.URL.Path == "/logout" ||
-			c.Request.URL.Path == "/ping" ||
-			c.Request.URL.Path == "/websocket" {
-			c.Next()
-			return
-		}
-		// Serve core/web index.html for all other routes (SPA routing)
-		c.File(share + "/index.html")
-	})
-
 	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)
 	r.GET("/api/logout", api_logout)
+	r.GET("/login", web_login)
+	r.POST("/login", web_login)
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
-	// Support both /api/:app and /api/:app/<action...>
-	r.Any("/api/:app", handle_api)
-	r.Any("/api/:app/*action", handle_api)
 
-	// Replace when we implement URL mapping
+	// Remove once we get URL mapping
 	if ini_string("web", "special", "") == "packages" {
 		r.Static("/apt", "/srv/apt")
 	}
 
+	// All other paths are handled by web_path()
+	r.NoRoute(web_path)
+
 	if len(domains) > 0 {
 		info("Web listening on HTTPS domains %v", domains)
 		must(autotls.Run(r, domains...))
-
 	} else {
 		info("Web listening on '%s:%d'", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
 	}
 }
 
-// Render a web template
-// This could probably be better written using Gin's c.HTML(), but I can't figure out how to load the templates
+// Render a web template using embedded FS
 func web_template(c *gin.Context, code int, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {
-		web_error(c, 500, "Web template error")
-		panic("Web template error: " + err.Error())
+		c.Status(http.StatusInternalServerError)
+		panic("Web template error: " + err.Error()) // Avoid recursion by not calling web_error here again
 	}
+	c.Status(code)
 	if len(values) > 0 {
 		err = t.Execute(c.Writer, values[0])
 	} else {

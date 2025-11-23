@@ -7,20 +7,33 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 type App struct {
-	id       string                 `json:"id"`
-	versions map[string]*AppVersion `json:"-"`
-	active   *AppVersion            `json:"-"`
-	internal struct {
+	id          string                 `json:"id"`
+	fingerprint string                 `json:"-"`
+	versions    map[string]*AppVersion `json:"-"`
+	active      *AppVersion            `json:"-"`
+	internal    struct {
 		actions          map[string]func(*Action) `json:"-"`
 		events           map[string]func(*Event)  `json:"-"`
 		events_broadcast map[string]func(*Event)  `json:"-"`
 	}
+}
+
+type AppAction struct {
+	Function   string            `json:"function"`
+	File       string            `json:"file"`
+	Files      string            `json:"files"`
+	Public     bool              `json:"public"`
+	name       string            `json:"-"`
+	segments   int               `json:"-"`
+	literals   int               `json:"-"`
+	parameters map[string]string `json:"-"`
 }
 
 type AppVersion struct {
@@ -48,15 +61,15 @@ type AppVersion struct {
 		} `json:"downgrade"`
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
-	Icons []Icon `json:"icons"`
+	Icons   []Icon   `json:"icons"`
+	Classes []string `json:"classes"`
+	//TODO Redesign paths structure
 	Paths map[string]struct {
-		Actions map[string]struct {
-			Function string `json:"function"`
-			File     string `json:"file"`
-			Files    string `json:"files"`
-			Public   bool   `json:"public"`
-		} `json:"actions"`
+		Actions map[string]AppAction `json:"actions"`
 	} `json:"paths"`
+	//TODO Rename
+	PreferredPaths []string `json:"preferred"`
+	//TODO Redesign services structure
 	Services map[string]struct {
 		Events map[string]struct {
 			Function  string `json:"function"`
@@ -105,21 +118,74 @@ var (
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
-	icons     []Icon
-	paths     = map[string]*Path{}
-	services  = map[string]*App{}
+	//TODO Replace icons array with app lookup?
+	icons []Icon
+	//TODO Remove paths map
+	paths = map[string]*Path{}
+	//TODO Replace services map with app lookup?
+	services = map[string]*App{}
 )
 
 // Create data structure for new internal app
 func app(name string) *App {
-	a := &App{id: name}
+	a := &App{id: name, fingerprint: fingerprint(name)}
 	a.active = &AppVersion{}
 	a.active.Engine.Architecture = "internal"
 	a.internal.actions = make(map[string]func(*Action))
 	a.internal.events = make(map[string]func(*Event))
 	a.internal.events_broadcast = make(map[string]func(*Event))
+	apps_lock.Lock()
 	apps[name] = a
+	apps_lock.Unlock()
 	return a
+}
+
+// Get an app by id, fingerprint, or path
+func app_by_any(s string) *App {
+	if s == "" {
+		return nil
+	}
+
+	// Check for id
+	apps_lock.Lock()
+	a, ok := apps[s]
+	apps_lock.Unlock()
+	if ok {
+		return a
+	}
+
+	fp := fingerprint_no_hyphens(s)
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	for _, a := range apps {
+		av := a.active
+		if av == nil {
+			continue
+		}
+
+		// Check for fingerprint, with or without hyphens
+		if fingerprint_no_hyphens(a.fingerprint) == fp {
+			return a
+		}
+
+		// Check for path
+		//TODO Re-write
+		for _, p := range av.PreferredPaths {
+			if p == s {
+				return a
+			}
+		}
+
+		// Check for old path
+		//TODO Remove
+		for path, _ := range av.Paths {
+			if path == s {
+				return a
+			}
+		}
+	}
+
+	return nil
 }
 
 // Check whether app is the correct version, and if not download and install new version
@@ -149,7 +215,9 @@ func app_check_install(id string) bool {
 		return false
 	}
 
+	apps_lock.Lock()
 	a := apps[id]
+	apps_lock.Unlock()
 	if a != nil && a.active != nil && a.active.Version == version {
 		debug("App '%s' keeping at version '%s'", id, a.active.Version)
 		return true
@@ -191,7 +259,7 @@ func app_check_install(id string) bool {
 
 	apps_lock.Lock()
 	if apps[id] == nil {
-		apps[id] = &App{id: id}
+		apps[id] = &App{id: id, fingerprint: fingerprint(id)}
 	}
 	a = apps[id]
 	apps_lock.Unlock()
@@ -350,6 +418,12 @@ func app_read(id string, base string) (*AppVersion, error) {
 		}
 	}
 
+	for _, class := range av.Classes {
+		if !valid(class, "constant") {
+			return nil, fmt.Errorf("App bad class '%s'", class)
+		}
+	}
+
 	for path, p := range av.Paths {
 		if !valid(path, "path") {
 			return nil, fmt.Errorf("App bad path '%s'", path)
@@ -413,7 +487,7 @@ func apps_start() {
 
 		var a *App
 		if apps[id] == nil {
-			a = &App{id: id}
+			a = &App{id: id, fingerprint: fingerprint(id)}
 		} else {
 			a = apps[id]
 		}
@@ -560,6 +634,7 @@ func (a *App) load_version(av *AppVersion) {
 		a.active = av
 
 		// Remove old active version from globals
+		//TODO Remove?
 		for p := range paths {
 			if paths[p].app != nil && paths[p].app.id == a.id {
 				delete(paths, p)
@@ -615,6 +690,90 @@ func (a *App) path(path string, f func(*Action)) {
 // Register a service for an internal app
 func (a *App) service(service string) {
 	services[service] = a
+}
+
+// Find the action best matching the specified name
+func (av *AppVersion) find_action(name string) *AppAction {
+	var candidates []AppAction
+
+	for _, p := range av.Paths {
+		for action, aa := range p.Actions {
+			aa.name = action
+			segments := strings.Split(action, "/")
+			aa.segments = len(segments)
+			aa.literals = 0
+			for _, s := range segments {
+				if !strings.HasPrefix(s, ":") {
+					aa.literals++
+				}
+			}
+			aa.parameters = map[string]string{}
+			candidates = append(candidates, aa)
+		}
+	}
+
+	// Sort candidates: type files first, then more segments first, then more literals first
+	sort.Slice(candidates, func(i, j int) bool {
+		if (candidates[i].Files != "") != (candidates[j].Files != "") {
+			return candidates[i].Files != ""
+		} else if candidates[i].segments != candidates[j].segments {
+			return candidates[i].segments > candidates[j].segments
+		} else {
+			return candidates[i].literals > candidates[j].literals
+		}
+	})
+
+	for _, aa := range candidates {
+		// Try exact match first
+		if aa.name == name {
+			debug("App found direct action %q with function %q", name, aa.Function)
+			return &aa
+		}
+
+		// If type files, check for matching parent
+		if aa.Files != "" {
+			match := name
+			for {
+				parts := strings.SplitN(match, "/", 2)
+				match = parts[0]
+				if aa.name == match {
+					debug("App found files action %q via pattern %q", name, aa.name)
+					return &aa
+				}
+				if len(parts) < 2 {
+					break
+				}
+			}
+		}
+
+		// Try dynamic match
+		key_segments := strings.Split(aa.name, "/")
+		value_segments := strings.Split(name, "/")
+		if len(key_segments) != len(value_segments) {
+			continue
+		}
+
+		ok := true
+		for i := 0; i < len(key_segments); i++ {
+			ks := key_segments[i]
+			vs := value_segments[i]
+			if strings.HasPrefix(ks, ":") {
+				name := ks[1:]
+				aa.parameters[name] = vs
+			} else if ks != vs {
+				ok = false
+				break
+			}
+		}
+
+		if ok {
+			debug("App found action %q with function %q via pattern %q", name, aa.Function, aa.name)
+			return &aa
+		}
+	}
+
+	info("App '%s' version '%s' has no action matching '%s'", av.app.id, av.Version, name)
+	return nil
 }
 
 // Get a new Starlark interpreter for an app version

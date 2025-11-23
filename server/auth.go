@@ -101,12 +101,12 @@ func api_login_auth(c *gin.Context) {
 }
 
 func api_logout(c *gin.Context) {
-    login := web_cookie_get(c, "login", "")
-    if login != "" {
-        login_delete(login)
-    }
-    web_cookie_unset(c, "login")
-    c.JSON(200, gin.H{"data": ""})
+	login := web_cookie_get(c, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(c, "login")
+	c.JSON(200, gin.H{"data": ""})
 }
 
 // Create a JWT using a specific HMAC secret

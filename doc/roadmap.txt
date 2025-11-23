@@ -1,20 +1,19 @@
 Alistair:
 	Web paths
+		Update paths on app install and upgrade
+		Route on entity and fingerprint
+		Browser caching of web files
 		Redesign app.json
+
 	Map web URLs to entities
 	Attachments
 
 Numan:
 	Web interface
 
-Rob:
+Zubair:
 	Feeds
 	Forums
-
-Zubair:
-	Web paths
-		Update paths on app install and upgrade
-		Route on entity and fingerprint
 
 0.2:
 	Make unavailable services non-fatal

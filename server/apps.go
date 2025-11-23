@@ -119,11 +119,11 @@ var (
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
 	//TODO Replace icons array with app lookup?
-	icons     []Icon
+	icons []Icon
 	//TODO Remove paths map
-	paths     = map[string]*Path{}
+	paths = map[string]*Path{}
 	//TODO Replace services map with app lookup?
-	services  = map[string]*App{}
+	services = map[string]*App{}
 )
 
 // Create data structure for new internal app
@@ -712,19 +712,38 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 	}
 
-	// Sort candidates: more segments first, then more literals first
+	// Sort candidates: type files first, then more segments first, then more literals first
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].segments != candidates[j].segments {
+		if (candidates[i].Files != "") != (candidates[j].Files != "") {
+			return candidates[i].Files != ""
+		} else if candidates[i].segments != candidates[j].segments {
 			return candidates[i].segments > candidates[j].segments
+		} else {
+			return candidates[i].literals > candidates[j].literals
 		}
-		return candidates[i].literals > candidates[j].literals
 	})
 
 	for _, aa := range candidates {
 		// Try exact match first
 		if aa.name == name {
-			debug("App found direct action '%s' with function '%s'", name, aa.Function)
+			debug("App found direct action %q with function %q", name, aa.Function)
 			return &aa
+		}
+
+		// If type files, check for matching parent
+		if aa.Files != "" {
+			match := name
+			for {
+				parts := strings.SplitN(match, "/", 2)
+				match = parts[0]
+				if aa.name == match {
+					debug("App found files action %q via pattern %q", name, aa.name)
+					return &aa
+				}
+				if len(parts) < 2 {
+					break
+				}
+			}
 		}
 
 		// Try dynamic match
@@ -748,7 +767,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 
 		if ok {
-			debug("App found action '%s' with function '%s' via pattern '%s'", name, aa.Function, aa.name)
+			debug("App found action %q with function %q via pattern %q", name, aa.Function, aa.name)
 			return &aa
 		}
 	}

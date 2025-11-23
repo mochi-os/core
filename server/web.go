@@ -1,5 +1,5 @@
 // Mochi server: Sample web interface
-// Copyright Alistair Cunningham
+// Copyright Alistair Cunningham 2024-2025
 
 package main
 
@@ -438,6 +438,7 @@ func web_start() {
 	r.GET("/", web_root)
 	r.Static("/assets", share+"/assets")
 	r.Static("/images", share+"/images")
+	//TODO Remove the /api/* paths once the web has been updated
 	r.POST("/api/login", api_login)
 	r.POST("/api/login/auth", api_login_auth)
 	r.GET("/api/logout", api_logout)

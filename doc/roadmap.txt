@@ -1,12 +1,8 @@
 Alistair:
 	Web paths
-		Update paths on app install and upgrade
-		Route on entity and fingerprint
-		Browser caching of web files
-		Redesign app.json
-
-	Map web URLs to entities
-	Attachments
+	Browser caching of web files
+	Redesign app.json
+		Reload icons, etc, on app update
 
 Numan:
 	Web interface
@@ -16,6 +12,7 @@ Zubair:
 	Forums
 
 0.2:
+	Map web URLs to entities
 	Make unavailable services non-fatal
 	User avatars
 	User management
@@ -54,15 +51,14 @@ Zubair:
 			Delete attachments
 			Re-order attachments
 
-	Logging
-	License
-
 	Update wasabi to 0.2; then,
 		Add apps to App Market
 		Choose which apps to install by default
 		Enable and test apps manager
 		Test directory download recent updates
 		Market app
+	
+	License
 
 0.3:
 	Apps

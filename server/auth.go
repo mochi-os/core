@@ -19,6 +19,7 @@ type mochi_claims struct {
 }
 
 // API login: request a code by email
+// TODO Remove api_login()?
 func api_login(c *gin.Context) {
 	var input struct {
 		Email string `json:"email"`
@@ -100,6 +101,7 @@ func api_login_auth(c *gin.Context) {
 	c.JSON(200, response)
 }
 
+// TODO Remove api_logout()?
 func api_logout(c *gin.Context) {
 	login := web_cookie_get(c, "login", "")
 	if login != "" {

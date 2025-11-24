@@ -76,10 +76,11 @@ type AppVersion struct {
 	Events    map[string]AppEvent    `json:"events"`
 	Functions map[string]AppFunction `json:"functions"`
 
-	app              *App                         `json:"-"`
-	base             string                       `json:"-"`
-	labels           map[string]map[string]string `json:"-"`
-	starlark_runtime *Starlark                    `json:"-"`
+	app              *App                                                `json:"-"`
+	base             string                                              `json:"-"`
+	labels           map[string]map[string]string                        `json:"-"`
+	starlark_runtime *Starlark                                           `json:"-"`
+	broadcasts       map[string]func(*User, string, string, string, any) `json:"-"`
 }
 
 type Icon struct {
@@ -488,19 +489,8 @@ func (a *App) action(action string, f func(*Action)) {
 }
 
 // Register a broadcast for an internal app
-// TODO Replace broadcasts
 func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
-	s, sender_found := broadcasts_by_sender[sender]
-	if sender_found {
-		_, action_found := s[action]
-		if action_found {
-			s[action] = append(s[action], f)
-		} else {
-			s[action] = broadcast_action_functions{f}
-		}
-	} else {
-		broadcasts_by_sender[sender] = broadcast_actions{action: broadcast_action_functions{f}}
-	}
+	a.active.broadcasts[sender+"/"+action] = f
 }
 
 // Register the user database file for an internal app

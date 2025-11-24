@@ -9,6 +9,7 @@ type (
 )
 
 var (
+	//TODO Replace broadcasts_by_sender with app lookup
 	broadcasts_by_sender = map[string]broadcast_actions{}
 )
 

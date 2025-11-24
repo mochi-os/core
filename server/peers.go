@@ -35,8 +35,8 @@ var (
 func init() {
 	a := app("peers")
 	a.service("peers")
-	a.event_broadcast("request", peer_request_event)
-	a.event_broadcast("publish", peer_publish_event)
+	a.event("request", peer_request_event)
+	a.event("publish", peer_publish_event)
 
 	rand.Shuffle(len(peers_bootstrap), func(i, j int) {
 		peers_bootstrap[i], peers_bootstrap[j] = peers_bootstrap[j], peers_bootstrap[i]

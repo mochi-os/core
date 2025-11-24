@@ -1,23 +1,37 @@
 Alistair:
-	Web paths
-	Browser caching of web files
-	Redesign app.json
-		Reload icons, etc, on app update
+	Attachments
 
 Numan:
 	Web interface
 
 Zubair:
-	Feeds
-	Forums
+	Feeds app
+	Forums app
 
 0.2:
+	Update wasabi to 0.2; then,
+		Add apps to App Market
+		Migrate attachments
+		Choose which apps to install by default
+		Enable and test apps manager
+		Test directory download recent updates
+
+	Attachments
+		Edit existing objects
+			Add attachments
+			Delete attachments
+			Re-order attachments
+
 	Map web URLs to entities
+	Web caching and compression
 	Make unavailable services non-fatal
-	User avatars
-	User management
-	Users can change their settings
+	Icons
+
+	User preferences app
 		View identity and fingerprint
+	
+	System settings app
+		User management
 
 	Chat app
 		Manage users
@@ -45,22 +59,24 @@ Zubair:
 		Moderation
 		Permissions
 
-	Attachments
-		Edit existing objects
-			Add attachments
-			Delete attachments
-			Re-order attachments
+	Wiki app
 
-	Update wasabi to 0.2; then,
-		Add apps to App Market
-		Choose which apps to install by default
-		Enable and test apps manager
-		Test directory download recent updates
-		Market app
-	
+	Repositories app
+		Git server
+
+	Tickets app
+		Kanban interface
+
+	Market app
+		Market server app
+
+	Remove unused templates
 	License
 
 0.3:
+	Verified identities
+	User avatars
+
 	Apps
 		Dependencies between apps
 		Multiple versions running at once
@@ -68,20 +84,22 @@ Zubair:
 		Users can choose which apps get which service
 		Users can choose which apps get which web path
 
-	Feeds app
-		On this day
-
 	Users can create hooks to control events using their own code
 		Starlark
 		HTTPS
 
-	Browser notifications
-	Push notifications to Android and iOS apps
-	Verified identities
+	Notifications
+		Browser
+		Push notifications to Android and iOS apps
+		Email
+		Users can manage which notifications go where
 
 	.rpm packages and repository
 
-0.4 or later:
+	Feeds app
+		On this day
+
+0.4:
 	Read external RSS feeds
 	Provide RSS feeds for feeds
 	Inbound email into feeds
@@ -94,9 +112,5 @@ Zubair:
 Ideas for apps:
 	Achievements tracker
 	Business ratings and reviews
-	Bug tracker
-	Git and source code management
-	Kanban
 	Chess
 	Scrabble playalike
-	Wiki

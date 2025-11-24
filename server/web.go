@@ -112,12 +112,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Only Starlark functions below here
-	if aa.Function == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
-		return true
-	}
-
 	// Require authentication for database-backed apps
 	if a.active.Database.File != "" && user == nil && owner == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
@@ -134,6 +128,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			defer user.db.close()
 		}
+
 		if owner != nil && (user == nil || owner.ID != user.ID) {
 			owner.db = db_app(owner, a.active, true)
 			if owner.db == nil {
@@ -144,79 +139,59 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Create action context
-	action := Action{
-		id:    action_id(),
-		user:  user,
-		owner: owner,
-		app:   a,
-		web:   c,
-		path:  nil,
-	}
+	// Create action
+	action := Action{id: action_id(), user: user, owner: owner, app: a, web: c, inputs: make(map[string]string)}
 
-	// Build inputs: path params, query params, JSON body
-	inputs := make(map[string]interface{})
-
-	// Path parameters from pattern match
 	for k, v := range aa.parameters {
-		inputs[k] = v
+		action.inputs[k] = v
 	}
 
-	// Query params
-	for key, values := range c.Request.URL.Query() {
-		if len(values) > 0 {
-			if _, exists := inputs[key]; !exists {
-				inputs[key] = values[0]
-			}
-		}
-	}
-
-	// JSON body
 	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
-		var json_data map[string]interface{}
-		if err := c.ShouldBindJSON(&json_data); err == nil {
-			for key, value := range json_data {
-				inputs[key] = value
+		//TODO Change to map[string]any?
+		var data map[string]string
+		err := c.ShouldBindJSON(&data)
+		if err == nil {
+			for key, value := range data {
+				action.inputs[key] = value
 			}
 		}
 	}
 
-	// Prepare fields for Starlark
-	fields := map[string]string{
-		"format":               "json",
-		"identity.id":          "",
-		"identity.fingerprint": "",
-		"identity.name":        "",
-		"path":                 name,
+	// Check which engine the app uses, and run it
+	switch a.active.Architecture.Engine {
+	case "": // Internal app
+		if aa.internal == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+			return true
+		}
+
+		aa.internal(&action)
+		c.JSON(http.StatusOK, nil)
+
+	case "starlark":
+		if aa.Function == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+			return true
+		}
+
+		// Call Starlark function
+		s := a.active.starlark()
+		s.set("action", &action)
+		s.set("app", a)
+		s.set("user", user)
+		s.set("owner", owner)
+
+		result, err := s.call(aa.Function, sl.Tuple{&action})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return true
+		}
+		c.JSON(http.StatusOK, sl_decode(result))
+
+	default:
+		info("Action unknown engine '%s' version '%s'", a.active.Architecture.Engine, a.active.Architecture.Version)
 	}
 
-	if user != nil && user.Identity != nil {
-		fields["identity.id"] = user.Identity.ID
-		fields["identity.fingerprint"] = user.Identity.Fingerprint
-		fields["identity.name"] = user.Identity.Name
-	}
-
-	// Call Starlark function
-	s := a.active.starlark()
-	s.set("action", &action)
-	s.set("app", a)
-	s.set("user", user)
-	s.set("owner", owner)
-
-	var result sl.Value
-	var err error
-	if a.active.Engine.Version == 1 {
-		result, err = s.call(aa.Function, sl_encode_tuple(fields, inputs))
-	} else {
-		result, err = s.call(aa.Function, sl.Tuple{&action})
-	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return true
-	}
-
-	c.JSON(http.StatusOK, sl_decode(result))
 	return true
 }
 
@@ -275,7 +250,7 @@ func web_path(c *gin.Context) {
 	segments := strings.Split(raw, "/")
 	first := segments[0]
 
-	//TODO Remove once web code is updated
+	//TODO Remove /api once web code is updated
 	if first == "api" {
 		segments = segments[1:]
 		first = segments[0]

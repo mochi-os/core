@@ -118,12 +118,23 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	user := t.Local("user").(*User)
 	var results []map[string]string
 
-	for _, i := range icons {
-		if i.app.active.Requires.Role == "administrator" && user.Role != "administrator" {
+	apps_lock.Lock()
+	for _, a := range apps {
+		if a.active.Requires.Role == "administrator" && user.Role != "administrator" {
 			continue
 		}
-		results = append(results, map[string]string{"path": i.Path, "name": i.app.label(user, i.Label), "icon": i.Icon})
+		for _, i := range a.active.Icons {
+			path := a.fingerprint
+			if len(a.active.Paths) > 0 {
+				path = a.active.Paths[0]
+			}
+			if i.Action != "" {
+				path = path + "/" + i.Action
+			}
+			results = append(results, map[string]string{"path": path, "name": a.label(user, i.Label), "file": i.File})
+		}
 	}
+	apps_lock.Unlock()
 
 	sort.Slice(results, func(i, j int) bool {
 		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
@@ -168,25 +179,19 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "not administrator")
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	a, ok := t.Local("app").(*App)
+	if !ok || a == nil {
 		return sl_error(fn, "no app")
 	}
 
-	av, err := app_install(id, "", api_file(user, app, file), check_only)
+	av, err := app_install(id, "", api_file(user, a, file), check_only)
 	if err != nil {
 		return sl_error(fn, fmt.Sprintf("App install failed: '%v'", err))
 	}
 
 	if !check_only {
-		apps_lock.Lock()
-		if apps[id] == nil {
-			apps[id] = &App{id: id, fingerprint: fingerprint(id)}
-		}
-		a := apps[id]
-		apps_lock.Unlock()
-
-		a.load_version(av)
+		na := app(id)
+		na.load_version(av)
 	}
 
 	return sl_encode(av.Version), nil
@@ -778,13 +783,13 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// Look for matching app function, using default if necessary
-	a, _ := services[service]
+	a := app_for_service(service)
 	if a == nil {
 		return sl_error(fn, "unknown service '%s'", service)
 	}
-	f, found := a.active.Services[service].Functions[function]
+	f, found := a.active.Functions[function]
 	if !found {
-		f, found = a.active.Services[service].Functions[""]
+		f, found = a.active.Functions[""]
 	}
 	if !found {
 		return sl_error(fn, "unknown function '%s' for service '%s'", function, service)

@@ -26,9 +26,10 @@ func init() {
 	a := app("attachments")
 	a.db("attachments/attachments.db", attachments_db_create)
 
-	a.path("attachments/:entity/:id", attachments_get)
-	a.path("attachments/:entity/:id/:name", attachments_get)
-	a.path("attachments/:entity/:id/thumbnail", attachments_get_thumbnail)
+	a.path("attachments")
+	a.action(":entity/:id", attachments_get)
+	a.action(":entity/:id/:name", attachments_get)
+	a.action(":entity/:id/thumbnail", attachments_get_thumbnail)
 
 	a.service("attachments")
 	a.event("get", attachments_get_event)

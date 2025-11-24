@@ -56,24 +56,24 @@ func (e *Event) route() {
 	}
 
 	// Find which app provides this service
-	a := services[e.service]
+	a := app_for_service(e.service)
 	if a == nil {
 		info("Event dropping to unknown service '%s'", e.service)
 		return
 	}
 
-	// Lock everything below here to prevent concurrent database creations in db_app().
-	// Disabled for now because we do the locking in db_app() so that actions also lock.
-	// Consider removing if the lock in db_app() works correctly.
-	/*
-		user := 0
-		if e.user != nil {
-			user = e.user.ID
-		}
-		l := lock(fmt.Sprintf("%d-%s", user, a.id))
-		l.Lock()
-		defer l.Unlock()
-	*/
+	// Find event in app
+	apps_lock.Lock()
+	ae, found := a.active.Events[e.event]
+	if !found {
+		ae, found = a.active.Events[""]
+	}
+	apps_lock.Unlock()
+
+	if !found {
+		info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
+		return
+	}
 
 	// Load a database file for the app
 	if a.active.Database.File != "" {
@@ -81,6 +81,7 @@ func (e *Event) route() {
 			info("Event dropping broadcast for service requiring user")
 			return
 		}
+
 		e.db = db_app(e.user, a.active, false)
 		if e.db == nil {
 			info("Event app '%s' has no database file", a.id)
@@ -90,25 +91,10 @@ func (e *Event) route() {
 	}
 
 	// Check which engine the app uses, and run it
-	switch a.active.Engine.Architecture {
-	case "internal":
-		// Look for matching app event, using default if necessary
-		var f func(*Event)
-		var found bool
-		if e.to == "" {
-			f, found = a.internal.events_broadcast[e.event]
-		} else {
-			f, found = a.internal.events[e.event]
-		}
-		if !found {
-			if e.to == "" {
-				f, found = a.internal.events_broadcast[""]
-			} else {
-				f, found = a.internal.events[""]
-			}
-		}
-		if !found {
-			info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
+	switch a.active.Architecture.Engine {
+	case "": // Internal app
+		if ae.internal == nil {
+			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return
 		}
 
@@ -119,26 +105,11 @@ func (e *Event) route() {
 			}
 		}()
 
-		f(e)
+		ae.internal(e)
 
 	case "starlark":
-		// Look for matching app event, using default if necessary
-		ev, found := a.active.Services[e.service].Events[e.event]
-		if !found {
-			ev, found = a.active.Services[e.service].Events[""]
-		}
-		if !found {
-			info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
-			return
-		}
-
-		if e.to == "" && !ev.Broadcast {
-			info("Event dropping broadcast to non-broadcast")
-			return
-		}
-
-		if e.to != "" && ev.Broadcast {
-			info("Event dropping non-broadcast to broadcast")
+		if ae.Function == "" {
+			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return
 		}
 
@@ -148,22 +119,11 @@ func (e *Event) route() {
 		s.set("user", e.user)
 		s.set("owner", e.user)
 
-		headers := map[string]string{
-			"from":    e.from,
-			"to":      e.to,
-			"service": e.service,
-			"event":   e.event,
-		}
-
-		debug("App event %s:%s(): %v", a.id, ev.Function, e)
-		if a.active.Engine.Version == 1 {
-			s.call(ev.Function, sl_encode_tuple(headers, e.content))
-		} else {
-			s.call(ev.Function, sl.Tuple{e})
-		}
+		debug("App event %s:%s(): %v", a.id, ae.Function, e)
+		s.call(ae.Function, sl.Tuple{e})
 
 	default:
-		info("Event unknown engine '%s' version '%s'", a.active.Engine.Architecture, a.active.Engine.Version)
+		info("Event unknown engine '%s' version '%s'", a.active.Architecture.Engine, a.active.Architecture.Version)
 		return
 	}
 }

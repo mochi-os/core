@@ -21,9 +21,9 @@ type Directory struct {
 func init() {
 	a := app("directory")
 	a.service("directory")
+	a.event("download", directory_download_event)
+	a.event("publish", directory_publish_event)
 	a.event("request", directory_request_event)
-	a.event_broadcast("download", directory_download_event)
-	a.event_broadcast("publish", directory_publish_event)
 }
 
 // Get a directory entry

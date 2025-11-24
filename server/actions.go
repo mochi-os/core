@@ -12,16 +12,15 @@ import (
 )
 
 type Action struct {
-	id    int64
-	user  *User
-	owner *User
-	app   *App
-	web   *gin.Context
-	path  *Path
+	id     int64
+	user   *User
+	owner  *User
+	app    *App
+	web    *gin.Context
+	inputs map[string]string
 }
 
 var (
-	actions            = map[string]func(*Action){}
 	actions_lock       = &sync.Mutex{}
 	action_next  int64 = 1
 )
@@ -44,12 +43,12 @@ func (a *Action) error(code int, message string, values ...any) {
 }
 
 func (a *Action) input(name string) string {
-	value := a.web.Param(name)
-	if value != "" {
-		return value
+	input, found := a.inputs[name]
+	if found {
+		return input
 	}
 
-	value = a.web.Query(name)
+	value := a.web.Query(name)
 	if value != "" {
 		return value
 	}

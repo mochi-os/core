@@ -18,32 +18,42 @@ type App struct {
 	fingerprint string                 `json:"-"`
 	versions    map[string]*AppVersion `json:"-"`
 	active      *AppVersion            `json:"-"`
-	internal    struct {
-		actions          map[string]func(*Action) `json:"-"`
-		events           map[string]func(*Event)  `json:"-"`
-		events_broadcast map[string]func(*Event)  `json:"-"`
-	}
 }
 
 type AppAction struct {
-	Function   string            `json:"function"`
-	File       string            `json:"file"`
-	Files      string            `json:"files"`
-	Public     bool              `json:"public"`
+	Function string `json:"function"`
+	File     string `json:"file"`
+	Files    string `json:"files"`
+	Public   bool   `json:"public"`
+
 	name       string            `json:"-"`
+	internal   func(*Action)     `json:"-"`
 	segments   int               `json:"-"`
 	literals   int               `json:"-"`
 	parameters map[string]string `json:"-"`
 }
 
+type AppEvent struct {
+	Function string `json:"function"`
+
+	internal func(*Event) `json:"-"`
+}
+
+type AppFunction struct {
+	Function string `json:"function"`
+}
+
 type AppVersion struct {
-	Version string `json:"version"`
-	Label   string `json:"label"`
-	Engine  struct {
-		Architecture string `json:"architecture"`
-		Version      int    `json:"version"`
-	} `json:"engine"`
-	Files    []string `json:"files"`
+	Version      string   `json:"version"`
+	Label        string   `json:"label"`
+	Classes      []string `json:"classes"`
+	Paths        []string `json:"paths"`
+	Services     []string `json:"services"`
+	Architecture struct {
+		Engine  string `json:"engine"`
+		Version int    `json:"version"`
+	} `json:"architecture"`
+	Execute  []string `json:"execute"`
 	Requires struct {
 		Role string `json:"role"`
 	} `json:"requires"`
@@ -61,51 +71,25 @@ type AppVersion struct {
 		} `json:"downgrade"`
 		CreateFunction func(*DB) `json:"-"`
 	} `json:"database"`
-	Icons   []Icon   `json:"icons"`
-	Classes []string `json:"classes"`
-	//TODO Redesign paths structure
-	Paths map[string]struct {
-		Actions map[string]AppAction `json:"actions"`
-	} `json:"paths"`
-	//TODO Rename
-	PreferredPaths []string `json:"preferred"`
-	//TODO Redesign services structure
-	Services map[string]struct {
-		Events map[string]struct {
-			Function  string `json:"function"`
-			Broadcast bool   `json:"broadcast"`
-		} `json:"events"`
-		Functions map[string]struct {
-			Function string `json:"function"`
-		} `json:"functions"`
-	} `json:"services"`
+	Icons     []Icon                 `json:"icons"`
+	Actions   map[string]AppAction   `json:"actions"`
+	Events    map[string]AppEvent    `json:"events"`
+	Functions map[string]AppFunction `json:"functions"`
 
 	app              *App                         `json:"-"`
 	base             string                       `json:"-"`
-	entity_field     string                       `json:"-"`
 	labels           map[string]map[string]string `json:"-"`
 	starlark_runtime *Starlark                    `json:"-"`
 }
 
 type Icon struct {
-	Path  string `json:"path"`
-	Label string `json:"label"`
-	Icon  string `json:"icon"`
-	app   *App
-}
-
-type Path struct {
-	path     string
-	app      *App
-	function string
-	file     string
-	files    string
-	public   bool
-	internal func(*Action)
+	Action string `json:"action"`
+	Label  string `json:"label"`
+	File   string `json:"file"`
 }
 
 const (
-	app_version_minimum = 1
+	app_version_minimum = 2
 	app_version_maximum = 2
 )
 
@@ -118,25 +102,25 @@ var (
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
-	//TODO Replace icons array with app lookup?
-	icons []Icon
-	//TODO Remove paths map
-	paths = map[string]*Path{}
-	//TODO Replace services map with app lookup?
-	services = map[string]*App{}
 )
 
-// Create data structure for new internal app
-func app(name string) *App {
-	a := &App{id: name, fingerprint: fingerprint(name)}
-	a.active = &AppVersion{}
-	a.active.Engine.Architecture = "internal"
-	a.internal.actions = make(map[string]func(*Action))
-	a.internal.events = make(map[string]func(*Event))
-	a.internal.events_broadcast = make(map[string]func(*Event))
+// Get existing app, loading it into memory as new app if necessary
+func app(id string) *App {
 	apps_lock.Lock()
-	apps[name] = a
+	a, found := apps[id]
 	apps_lock.Unlock()
+
+	if !found {
+		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion)}
+		a.active = &AppVersion{}
+		a.active.Actions = make(map[string]AppAction)
+		a.active.Events = make(map[string]AppEvent)
+
+		apps_lock.Lock()
+		apps[id] = a
+		apps_lock.Unlock()
+	}
+
 	return a
 }
 
@@ -169,17 +153,8 @@ func app_by_any(s string) *App {
 		}
 
 		// Check for path
-		//TODO Re-write
-		for _, p := range av.PreferredPaths {
+		for _, p := range av.Paths {
 			if p == s {
-				return a
-			}
-		}
-
-		// Check for old path
-		//TODO Remove
-		for path, _ := range av.Paths {
-			if path == s {
 				return a
 			}
 		}
@@ -257,15 +232,25 @@ func app_check_install(id string) bool {
 		return false
 	}
 
-	apps_lock.Lock()
-	if apps[id] == nil {
-		apps[id] = &App{id: id, fingerprint: fingerprint(id)}
-	}
-	a = apps[id]
-	apps_lock.Unlock()
-
-	a.load_version(new)
+	na := app(id)
+	na.load_version(new)
 	return true
+}
+
+// Find the best app for a service
+func app_for_service(service string) *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	for _, a := range apps {
+		for _, candidate := range a.active.Services {
+			if candidate == service {
+				return a
+			}
+		}
+	}
+
+	return nil
 }
 
 // Install an app from a zip file, but do not load it
@@ -372,17 +357,35 @@ func app_read(id string, base string) (*AppVersion, error) {
 		return nil, fmt.Errorf("App bad label '%s'", av.Label)
 	}
 
-	if av.Engine.Architecture != "starlark" {
-		return nil, fmt.Errorf("App bad engine '%s' version %d", av.Engine.Architecture, av.Engine.Version)
-	}
-	if av.Engine.Version < app_version_minimum {
-		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Engine.Version, app_version_minimum)
-	}
-	if av.Engine.Version > app_version_maximum {
-		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", av.Engine.Version, app_version_maximum)
+	for _, class := range av.Classes {
+		if !valid(class, "constant") {
+			return nil, fmt.Errorf("App bad class %q", class)
+		}
 	}
 
-	for _, file := range av.Files {
+	for _, path := range av.Paths {
+		if !valid(path, "path") {
+			return nil, fmt.Errorf("App bad path '%s'", path)
+		}
+	}
+
+	for _, service := range av.Services {
+		if !valid(service, "constant") {
+			return nil, fmt.Errorf("App bad service '%s'", service)
+		}
+	}
+
+	if av.Architecture.Engine != "starlark" {
+		return nil, fmt.Errorf("App bad engine '%s' version %d", av.Architecture.Engine, av.Architecture.Version)
+	}
+	if av.Architecture.Version < app_version_minimum {
+		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Architecture.Version, app_version_minimum)
+	}
+	if av.Architecture.Version > app_version_maximum {
+		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", av.Architecture.Version, app_version_maximum)
+	}
+
+	for _, file := range av.Execute {
 		if !valid(file, "filepath") {
 			return nil, fmt.Errorf("App bad executable file '%s'", file)
 		}
@@ -405,72 +408,54 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	for _, i := range av.Icons {
-		if i.Path != "" && !valid(i.Path, "constant") {
-			return nil, fmt.Errorf("App bad icon path '%s'", i.Path)
+		if i.Action != "" && !valid(i.Action, "constant") {
+			return nil, fmt.Errorf("App bad icon action %q", i.Action)
 		}
 
 		if !valid(i.Label, "constant") {
-			return nil, fmt.Errorf("App bad icon label '%s'", i.Label)
+			return nil, fmt.Errorf("App bad icon label %q", i.Label)
 		}
 
-		if !valid(i.Icon, "filepath") {
-			return nil, fmt.Errorf("App bad icon '%s'", i.Icon)
-		}
-	}
-
-	for _, class := range av.Classes {
-		if !valid(class, "constant") {
-			return nil, fmt.Errorf("App bad class '%s'", class)
+		if !valid(i.File, "filepath") {
+			return nil, fmt.Errorf("App bad icon file %q", i.File)
 		}
 	}
 
-	for path, p := range av.Paths {
-		if !valid(path, "path") {
-			return nil, fmt.Errorf("App bad path '%s'", path)
+	for action, a := range av.Actions {
+		if action != "" && !valid(action, "action") {
+			return nil, fmt.Errorf("App bad action '%s'", action)
 		}
 
-		for action, a := range p.Actions {
-			if action != "" && !valid(action, "action") {
-				return nil, fmt.Errorf("App bad action '%s'", action)
-			}
+		if a.Function != "" && !valid(a.Function, "function") {
+			return nil, fmt.Errorf("App bad action function '%s'", a.Function)
+		}
 
-			if a.Function != "" && !valid(a.Function, "function") {
-				return nil, fmt.Errorf("App bad action function '%s'", a.Function)
-			}
+		if a.File != "" && !valid(a.File, "filepath") {
+			return nil, fmt.Errorf("App bad file path '%s'", a.File)
+		}
 
-			if a.File != "" && !valid(a.File, "filepath") {
-				return nil, fmt.Errorf("App bad file path '%s'", a.File)
-			}
-
-			if a.Files != "" && !valid(a.Files, "filepath") {
-				return nil, fmt.Errorf("App bad files path '%s'", a.Files)
-			}
+		if a.Files != "" && !valid(a.Files, "filepath") {
+			return nil, fmt.Errorf("App bad files path '%s'", a.Files)
 		}
 	}
 
-	for service, s := range av.Services {
-		if !valid(service, "constant") {
-			return nil, fmt.Errorf("App bad service '%s'", service)
+	for event, e := range av.Events {
+		if !valid(event, "constant") {
+			return nil, fmt.Errorf("App bad event '%s'", event)
 		}
 
-		for event, e := range s.Events {
-			if !valid(event, "constant") {
-				return nil, fmt.Errorf("App bad event '%s'", event)
-			}
+		if !valid(e.Function, "function") {
+			return nil, fmt.Errorf("App bad event function '%s'", e.Function)
+		}
+	}
 
-			if !valid(e.Function, "function") {
-				return nil, fmt.Errorf("App bad event function '%s'", e.Function)
-			}
+	for function, f := range av.Functions {
+		if function != "" && !valid(function, "constant") {
+			return nil, fmt.Errorf("App bad function '%s'", function)
 		}
 
-		for function, f := range s.Functions {
-			if function != "" && !valid(function, "constant") {
-				return nil, fmt.Errorf("App bad function '%s'", function)
-			}
-
-			if !valid(f.Function, "function") {
-				return nil, fmt.Errorf("App bad function function '%s'", f.Function)
-			}
+		if !valid(f.Function, "function") {
+			return nil, fmt.Errorf("App bad function function '%s'", f.Function)
 		}
 	}
 
@@ -484,13 +469,7 @@ func apps_start() {
 		if len(versions) == 0 {
 			continue
 		}
-
-		var a *App
-		if apps[id] == nil {
-			a = &App{id: id, fingerprint: fingerprint(id)}
-		} else {
-			a = apps[id]
-		}
+		a := app(id)
 
 		for _, version := range versions {
 			av, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
@@ -499,18 +478,17 @@ func apps_start() {
 				continue
 			}
 			a.load_version(av)
-			apps[id] = a
 		}
 	}
 }
 
 // Register an action for an internal app
 func (a *App) action(action string, f func(*Action)) {
-	a.internal.actions[action] = f
-	actions[action] = f
+	a.active.Actions[action] = AppAction{name: action, internal: f}
 }
 
 // Register a broadcast for an internal app
+// TODO Replace broadcasts
 func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
 	s, sender_found := broadcasts_by_sender[sender]
 	if sender_found {
@@ -531,25 +509,14 @@ func (a *App) db(file string, create func(*DB)) {
 	a.active.Database.CreateFunction = create
 }
 
-// Register the entity field for an internal app
-func (a *App) entity(field string) {
-	a.active.entity_field = field
-}
-
 // Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
-	a.internal.events[event] = f
-}
-
-// Register a broadcast event handler for an internal app
-// This will probably be removed at some point
-func (a *App) event_broadcast(event string, f func(*Event)) {
-	a.internal.events_broadcast[event] = f
+	a.active.Events[event] = AppEvent{internal: f}
 }
 
 // Register an icon for an internal app
-func (a *App) icon(path string, label string, icon string) {
-	icons = append(icons, Icon{Path: path, Label: label, Icon: icon, app: a})
+func (a *App) icon(action string, label string, file string) {
+	a.active.Icons = append(a.active.Icons, Icon{Action: action, Label: label, File: file})
 }
 
 // Resolve an app label
@@ -585,17 +552,8 @@ func (a *App) load_version(av *AppVersion) {
 		return
 	}
 
-	apps_lock.Lock()
-	defer apps_lock.Unlock()
-
-	av.app = a
-	if a.versions == nil {
-		a.versions = make(map[string]*AppVersion)
-	}
-	a.versions[av.Version] = av
-
-	for i, file := range av.Files {
-		av.Files[i] = av.base + "/" + file
+	for i, file := range av.Execute {
+		av.Execute[i] = av.base + "/" + file
 	}
 
 	av.labels = make(map[string]map[string]string)
@@ -623,93 +581,54 @@ func (a *App) load_version(av *AppVersion) {
 		}
 	}
 
+	apps_lock.Lock()
+	av.app = a
+	a.versions[av.Version] = av
+
 	latest := ""
 	for v := range a.versions {
 		if v > latest {
 			latest = v
 		}
 	}
-
 	if latest == av.Version {
 		a.active = av
+	}
+	apps_lock.Unlock()
 
-		// Remove old active version from globals
-		//TODO Remove?
-		for p := range paths {
-			if paths[p].app != nil && paths[p].app.id == a.id {
-				delete(paths, p)
-			}
-		}
-
-		for service := range services {
-			if services[service] != nil && services[service].id == a.id {
-				delete(services, service)
-			}
-		}
-
-		new_icons := []Icon{}
-		for _, ic := range icons {
-			if ic.app == nil || ic.app.id != a.id {
-				new_icons = append(new_icons, ic)
-			}
-		}
-		icons = new_icons
-
-		// Add new version to globals
-		for path, p := range av.Paths {
-			for action, ac := range p.Actions {
-				full := path
-				if action != "" {
-					full = path + "/" + action
-				}
-				paths[full] = &Path{path: full, app: a, function: ac.Function, file: ac.File, files: ac.Files, public: ac.Public, internal: nil}
-			}
-		}
-
-		for service := range av.Services {
-			services[service] = a
-		}
-
-		for _, i := range av.Icons {
-			i.app = a
-			icons = append(icons, i)
-		}
-
+	if latest == av.Version {
 		debug("App '%s', '%s' version '%s' loaded and activated", av.labels["en"][av.Label], a.id, av.Version)
-
 	} else {
 		debug("App '%s', '%s' version '%s' loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
 	}
 }
 
-// Register a path for actions for an internal app
-func (a *App) path(path string, f func(*Action)) {
-	paths[path] = &Path{path: path, app: a, internal: f}
+// Register a path for an internal app
+func (a *App) path(path string) {
+	a.active.Paths = append(a.active.Paths, path)
 }
 
 // Register a service for an internal app
 func (a *App) service(service string) {
-	services[service] = a
+	a.active.Services = append(a.active.Services, service)
 }
 
 // Find the action best matching the specified name
 func (av *AppVersion) find_action(name string) *AppAction {
 	var candidates []AppAction
 
-	for _, p := range av.Paths {
-		for action, aa := range p.Actions {
-			aa.name = action
-			segments := strings.Split(action, "/")
-			aa.segments = len(segments)
-			aa.literals = 0
-			for _, s := range segments {
-				if !strings.HasPrefix(s, ":") {
-					aa.literals++
-				}
+	for action, aa := range av.Actions {
+		aa.name = action
+		segments := strings.Split(action, "/")
+		aa.segments = len(segments)
+		aa.literals = 0
+		for _, s := range segments {
+			if !strings.HasPrefix(s, ":") {
+				aa.literals++
 			}
-			aa.parameters = map[string]string{}
-			candidates = append(candidates, aa)
 		}
+		aa.parameters = map[string]string{}
+		candidates = append(candidates, aa)
 	}
 
 	// Sort candidates: type files first, then more segments first, then more literals first
@@ -779,7 +698,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 // Get a new Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
 	if av.starlark_runtime == nil {
-		av.starlark_runtime = starlark(av.Files)
+		av.starlark_runtime = starlark(av.Execute)
 	}
 	return av.starlark_runtime
 }

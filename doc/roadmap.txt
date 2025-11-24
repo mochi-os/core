@@ -1,5 +1,8 @@
 Alistair:
 	Attachments
+	Web caching and compression
+	Make unavailable services non-fatal
+	Git server
 
 Numan:
 	Web interface
@@ -23,16 +26,20 @@ Zubair:
 			Re-order attachments
 
 	Map web URLs to entities
-	Web caching and compression
-	Make unavailable services non-fatal
 	Icons
 
 	User preferences app
 		View identity and fingerprint
 	
 	System settings app
+		General settings
 		User management
+		DNS domains and URLs
 
+	Remove unused templates
+	License
+
+Ongoing app development:
 	Chat app
 		Manage users
 			List users
@@ -47,6 +54,7 @@ Zubair:
 		Edit and delete posts and comments
 		Subscribe to feeds not in directory
 		Permissions
+		On this day
 		Check-ins
 			Location
 			Travelling to
@@ -62,27 +70,25 @@ Zubair:
 	Wiki app
 
 	Repositories app
-		Git server
 
-	Tickets app
+	Tickets and tasks app
 		Kanban interface
+		Pull requests
 
 	Market app
-		Market server app
-
-	Remove unused templates
-	License
+	Market server app
 
 0.3:
 	Verified identities
 	User avatars
 
-	Apps
-		Dependencies between apps
-		Multiple versions running at once
-		App privileges
-		Users can choose which apps get which service
-		Users can choose which apps get which web path
+	Dependencies between apps
+	Multiple app versions running at once
+	App privileges
+		System settings
+		User preferences
+		Home
+	Users can choose which app gets which class, service, and web path
 
 	Users can create hooks to control events using their own code
 		Starlark
@@ -96,18 +102,13 @@ Zubair:
 
 	.rpm packages and repository
 
-	Feeds app
-		On this day
-
 0.4:
 	Read external RSS feeds
-	Provide RSS feeds for feeds
-	Inbound email into feeds
-	Outbound email from feeds
+	Provide RSS feeds
+	Inbound email
+	Outbound email
 	Oauth server
-
-	Chat app
-		Audio and video calls
+	Audio and video
 
 Ideas for apps:
 	Achievements tracker

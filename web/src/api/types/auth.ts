@@ -12,8 +12,9 @@ export interface RequestCodeRequest {
 }
 
 export interface RequestCodeResponse {
-  data: {
-    email: string
+  status: string
+  message?: string
+  data?: {
     code?: string
   }
 }

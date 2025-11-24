@@ -68,12 +68,15 @@ export function UserAuthForm({
 
     try {
       const result = await sendVerificationCode(data.email)
+      const devCode = result.data?.code
+      const requestSucceeded =
+        result?.status?.toLowerCase() === 'ok' || Boolean(devCode)
 
-      if (result.data && result.data.email) {
+      if (requestSucceeded) {
         toast.success('Verification code sent!', {
-          description: result.data.code ? (
+          description: devCode ? (
             <div className='flex items-center gap-2'>
-              <span>Your code is: {result.data.code}</span>
+              <span>Your code is: {devCode}</span>
               <Button
                 variant='ghost'
                 size='sm'
@@ -81,7 +84,7 @@ export function UserAuthForm({
                 onClick={async (e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  const code = result.data.code!
+                  const code = devCode!
 
                   try {
                     // Try modern clipboard API first
@@ -128,7 +131,7 @@ export function UserAuthForm({
         setStep('verification')
       } else {
         toast.error('Failed to send verification code', {
-          description: 'Please try again or contact support.',
+          description: result.message || 'Please try again or contact support.',
         })
       }
     } catch (_error) {

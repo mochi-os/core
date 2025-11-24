@@ -5,10 +5,7 @@ import authApi, {
   type VerifyCodeResponse,
 } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth-store'
-import {
-  mergeProfileCookie,
-  readProfileCookie,
-} from '@/lib/profile-cookie'
+import { mergeProfileCookie, readProfileCookie } from '@/lib/profile-cookie'
 
 const devConsole = globalThis.console
 
@@ -33,20 +30,26 @@ export const requestCode = async (
   try {
     const response = await authApi.requestCode({ email })
 
+    const responseStatus = response.status?.toLowerCase()
+    const devCode = response.data?.code
+    const isSuccess = responseStatus === 'ok' || Boolean(devCode)
+
+    if (!isSuccess) {
+      throw new Error(response.message || 'Failed to request login code')
+    }
+
     // Store email in mochi_me profile cookie immediately
     // This ensures the cookie exists even if identity page is skipped
-    if (response.data?.email) {
-      mergeProfileCookie({
-        email: response.data.email,
-        // Don't store extracted name yet - only store if identity form is shown
-      })
+    mergeProfileCookie({
+      email,
+      // Don't store extracted name yet - only store if identity form is shown
+    })
 
-      const currentUser = useAuthStore.getState().user
-      useAuthStore.getState().setUser({
-        ...currentUser,
-        email: response.data.email,
-      })
-    }
+    const currentUser = useAuthStore.getState().user
+    useAuthStore.getState().setUser({
+      ...currentUser,
+      email,
+    })
 
     return response
   } catch (error) {
@@ -106,8 +109,8 @@ export const verifyCode = async (
             ...(nameFromResponse
               ? { name: nameFromResponse }
               : profile.name
-              ? { name: profile.name }
-              : {}),
+                ? { name: profile.name }
+                : {}),
             accountNo: response.user?.accountNo,
             role: response.user?.role,
             exp: response.user?.exp,

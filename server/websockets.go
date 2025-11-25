@@ -53,7 +53,7 @@ func websocket_connection(c *gin.Context) {
 		websockets[u.ID][key] = map[string]*websocket.Conn{}
 	}
 	websockets[u.ID][key][id] = ws
-	//debug("Websocket connection user %d, key '%s', id '%s'", u.ID, key, id)
+	//debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
 
 	for {
 		t, j, err := ws.Read(websocket_context)
@@ -65,12 +65,12 @@ func websocket_connection(c *gin.Context) {
 			continue
 		}
 
-		info("Websocket received message; ignoring: %s", j)
+		info("Websocket received message %q; ignoring", j)
 	}
 }
 
 func websockets_send(u *User, key string, content any) {
-	//debug("Websocket sending to user %d, key '%s': %+v", u.ID, key, content)
+	//debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
 	j := ""
 
 	for id, ws := range websockets[u.ID][key] {

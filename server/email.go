@@ -13,12 +13,12 @@ func email_send(to string, subject string, body string) {
 
 	err := m.From(email_from)
 	if err != nil {
-		warn("Email failed to set from address '%s': %v", email_from, err)
+		warn("Email failed to set from address %q: %v", email_from, err)
 		return
 	}
 	err = m.To(to)
 	if err != nil {
-		warn("Email failed to set to address '%s': %v", to, err)
+		warn("Email failed to set to address %q: %v", to, err)
 		return
 	}
 	m.Subject(subject)

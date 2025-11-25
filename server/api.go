@@ -98,7 +98,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 
 	id, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid ID '%s'", id)
+		return sl_error(fn, "invalid ID %q", id)
 	}
 
 	apps_lock.Lock()
@@ -151,7 +151,7 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	id, ok := sl.AsString(args[0])
 	if !ok || (id != "" && !valid(id, "entity")) {
-		return sl_error(fn, "invalid ID '%s'", id)
+		return sl_error(fn, "invalid ID %q", id)
 	}
 	if id == "" {
 		id, _, _ = entity_id()
@@ -162,7 +162,7 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	file, ok := sl.AsString(args[1])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	check_only := false
@@ -214,10 +214,10 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	for i, id := range ids {
 		a := apps[id]
 		if a == nil {
-			return sl_error(fn, "App '%s' is nil", id)
+			return sl_error(fn, "App %q is nil", id)
 		}
 		if a.active == nil {
-			return sl_error(fn, "App '%s' has no active version", id)
+			return sl_error(fn, "App %q has no active version", id)
 		}
 		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}
 	}
@@ -238,7 +238,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	object, ok := sl.AsString(args[0])
 	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object '%s'", object)
+		return sl_error(fn, "invalid object %q", object)
 	}
 
 	user := t.Local("user").(*User)
@@ -258,17 +258,17 @@ func api_attachment_put(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	field, ok := sl.AsString(args[0])
 	if !ok || !valid(field, "constant") {
-		return sl_error(fn, "field '%s'", field)
+		return sl_error(fn, "field %q", field)
 	}
 
 	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object '%s'", object)
+		return sl_error(fn, "invalid object %q", object)
 	}
 
 	entity, ok := sl.AsString(args[2])
 	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity '%s'", entity)
+		return sl_error(fn, "invalid entity %q", entity)
 	}
 
 	local := bool(args[3].Truth())
@@ -292,12 +292,12 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	object, ok := sl.AsString(args[1])
 	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object '%s'", object)
+		return sl_error(fn, "invalid object %q", object)
 	}
 
 	entity, ok := sl.AsString(args[2])
 	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity '%s'", entity)
+		return sl_error(fn, "invalid entity %q", entity)
 	}
 
 	user := t.Local("user").(*User)
@@ -317,11 +317,11 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	query, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid SQL statement '%s'", query)
+		return sl_error(fn, "invalid SQL statement %q", query)
 	}
 
 	as := sl_decode(args[1:]).([]any)
-	//debug("%s '%s' '%+v'", fn.Name(), query, as)
+	//debug("%s %q '%+v'", fn.Name(), query, as)
 
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -349,7 +349,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_encode(db.rows(query, as...)), nil
 	}
 
-	return sl_error(fn, "invalid database query '%s'", fn.Name())
+	return sl_error(fn, "invalid database query %q", fn.Name())
 }
 
 // Get a directory entry
@@ -360,7 +360,7 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	id, ok := sl.AsString(args[0])
 	if !ok || !valid(id, "entity") {
-		return sl_error(fn, "invalid ID '%s'", id)
+		return sl_error(fn, "invalid ID %q", id)
 	}
 
 	db := db_open("db/directory.db")
@@ -378,12 +378,12 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	class, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid class '%s'", class)
+		return sl_error(fn, "invalid class %q", class)
 	}
 
 	search, ok := sl.AsString(args[1])
 	if !ok {
-		return sl_error(fn, "invalid search '%s'", search)
+		return sl_error(fn, "invalid search %q", search)
 	}
 
 	include_self := bool(args[2].Truth())
@@ -426,24 +426,24 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	class, ok := sl.AsString(args[0])
 	if !ok || !valid(class, "constant") {
-		return sl_error(fn, "invalid class '%s'", class)
+		return sl_error(fn, "invalid class %q", class)
 	}
 
 	name, ok := sl.AsString(args[1])
 	if !ok || !valid(name, "name") {
-		return sl_error(fn, "invalid name '%s'", name)
+		return sl_error(fn, "invalid name %q", name)
 	}
 
 	privacy, ok := sl.AsString(args[2])
 	if !ok || !valid(privacy, "^(private|public)$") {
-		return sl_error(fn, "invalid privacy '%s'", privacy)
+		return sl_error(fn, "invalid privacy %q", privacy)
 	}
 
 	data := ""
 	if len(args) > 3 {
 		data, ok = sl.AsString(args[3])
 		if !ok || !valid(data, "text") {
-			return sl_error(fn, "invalid data '%s'", data)
+			return sl_error(fn, "invalid data %q", data)
 		}
 	}
 
@@ -468,7 +468,7 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 	id, ok := sl.AsString(args[0])
 	if !ok || !valid(id, "entity") {
-		return sl_error(fn, "invalid id '%s'", id)
+		return sl_error(fn, "invalid id %q", id)
 	}
 
 	if len(args) > 1 && bool(args[1].Truth()) {
@@ -486,7 +486,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	id, ok := sl.AsString(args[0])
 	if !ok || !valid(id, "entity") {
-		return sl_error(fn, "invalid id '%s'", id)
+		return sl_error(fn, "invalid id %q", id)
 	}
 
 	user := t.Local("user").(*User)
@@ -513,7 +513,7 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	user := t.Local("user").(*User)
@@ -538,7 +538,7 @@ func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	user := t.Local("user").(*User)
@@ -566,7 +566,7 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	dir, ok := sl.AsString(args[0])
 	if !ok || !valid(dir, "filepath") {
-		return sl_error(fn, "invalid directory '%s'", dir)
+		return sl_error(fn, "invalid directory %q", dir)
 	}
 
 	user := t.Local("user").(*User)
@@ -598,7 +598,7 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	user := t.Local("user").(*User)
@@ -622,7 +622,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	data, ok := sl.AsString(args[1])
@@ -785,14 +785,14 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// Look for matching app function, using default if necessary
 	a := app_for_service(service)
 	if a == nil {
-		return sl_error(fn, "unknown service '%s'", service)
+		return sl_error(fn, "unknown service %q", service)
 	}
 	f, found := a.active.Functions[function]
 	if !found {
 		f, found = a.active.Functions[""]
 	}
 	if !found {
-		return sl_error(fn, "unknown function '%s' for service '%s'", function, service)
+		return sl_error(fn, "unknown function %q for service %q", function, service)
 	}
 
 	// Call function
@@ -802,7 +802,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	//debug("mochi.service.call() calling app '%s' service '%s' function '%s' args: %+v", a.id, service, function, args[2:])
+	//debug("mochi.service.call() calling app %q service %q function %q args: %+v", a.id, service, function, args[2:])
 	var result sl.Value
 	var err error
 	if len(args) > 2 {
@@ -950,12 +950,12 @@ func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (
 
 	s, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid string to check '%s'", s)
+		return sl_error(fn, "invalid string to check %q", s)
 	}
 
 	match, ok := sl.AsString(args[1])
 	if !ok {
-		return sl_error(fn, "invalid match pattern '%s'", match)
+		return sl_error(fn, "invalid match pattern %q", match)
 	}
 
 	return sl_encode(valid(s, match)), nil
@@ -969,7 +969,7 @@ func api_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	key, ok := sl.AsString(args[0])
 	if !ok || !valid(key, "constant") {
-		return sl_error(fn, "invalid key '%s'", key)
+		return sl_error(fn, "invalid key %q", key)
 	}
 
 	user := t.Local("user").(*User)

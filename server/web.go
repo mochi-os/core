@@ -22,11 +22,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if a == nil || a.active == nil {
 		return false
 	}
-	debug("Web app '%s' action '%s'", a.id, name)
+	debug("Web app %q action %q", a.id, name)
 
 	aa := a.active.find_action(name)
 	if aa == nil {
-		debug("No action found for app '%s' action '%s'", a.id, name)
+		debug("No action found for app %q action %q", a.id, name)
 		return false
 	}
 
@@ -91,7 +91,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Serve static file
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
-		debug("Serving single file for app '%s': %s", a.id, file)
+		debug("Serving single file for app %q: %s", a.id, file)
 		c.File(file)
 		return true
 	}
@@ -104,7 +104,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
-			debug("Serving file from directory for app '%s': %s", a.id, file)
+			debug("Serving file from directory for app %q: %s", a.id, file)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -189,7 +189,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		c.JSON(http.StatusOK, sl_decode(result))
 
 	default:
-		info("Action unknown engine '%s' version '%s'", a.active.Architecture.Engine, a.active.Architecture.Version)
+		info("Action unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
 	}
 
 	return true

@@ -5,7 +5,6 @@ package main
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -18,35 +17,6 @@ import (
 
 //go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
 var templates embed.FS
-
-// Convert interface{} to string, handling complex types
-func interface_to_string(value interface{}) string {
-	switch v := value.(type) {
-	case string:
-		return v
-	case nil:
-		return ""
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	case float64:
-		// JSON numbers are always float64
-		if v == float64(int64(v)) {
-			return fmt.Sprintf("%d", int64(v))
-		}
-		return fmt.Sprintf("%g", v)
-	case int, int64, uint, uint64:
-		return fmt.Sprintf("%d", v)
-	default:
-		// For arrays/objects, serialize back to JSON string
-		if bytes, err := json.Marshal(v); err == nil {
-			return string(bytes)
-		}
-		return fmt.Sprintf("%v", v)
-	}
-}
 
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
@@ -179,11 +149,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Parse JSON body and convert to strings for a.input()
 	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
-		var data map[string]interface{}
+		var data map[string]any
 		err := c.ShouldBindJSON(&data)
 		if err == nil {
 			for key, value := range data {
-				action.inputs[key] = interface_to_string(value)
+				action.inputs[key] = any_to_string(value)
 			}
 		}
 	}

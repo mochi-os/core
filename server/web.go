@@ -256,13 +256,9 @@ func web_path(c *gin.Context) {
 		first = segments[0]
 	}
 
-	debug("Looking for app or entity for '%s'", first)
-
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
-		debug("Found app '%s' for '%s'", a.id, first)
-
 		second := ""
 		if len(segments) > 1 {
 			second = segments[1]
@@ -282,8 +278,6 @@ func web_path(c *gin.Context) {
 	// Check for entity matching first segment
 	e := entity_by_any(first)
 	if e != nil {
-		debug("Found entity '%s' for '%s'", e.ID, first)
-
 		a := e.class_app()
 		if a == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity class"})

@@ -113,7 +113,7 @@ func db_app(u *User, av *AppVersion) *DB {
 	db.user = u
 
 	if reused {
-		debug("Database app reusing %q", path)
+		debug("Database app reusing already open %q", path)
 		return db
 	}
 
@@ -244,7 +244,7 @@ func db_open_work(file string) (*DB, bool, bool) {
 	db, found := databases[path]
 	databases_lock.Unlock()
 	if found {
-		//debug("Database reusing %q", path)
+		//debug("Database reusing already open %q", path)
 		db.closed = 0
 		return db, false, true
 	}

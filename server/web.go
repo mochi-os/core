@@ -4,18 +4,32 @@
 package main
 
 import (
+	"compress/gzip"
 	"embed"
 	"fmt"
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	"html/template"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
+type compress_writer struct {
+	io.Writer
+	gin.ResponseWriter
+	size int
+}
+
 //go:embed templates/en/*.tmpl
 var templates embed.FS
+
+var (
+	match_react = regexp.MustCompile(`(assets|images)/.*-[\w-]{8}.(css|js|png|svg)$`)
+)
 
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
@@ -92,6 +106,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
 		debug("Serving single file for app %q: %s", a.id, file)
+		web_cache_static(c, file)
 		c.File(file)
 		return true
 	}
@@ -105,6 +120,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
 			debug("Serving file from directory for app %q: %s", a.id, file)
+			web_cache_static(c, file)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -198,6 +214,55 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 // Get user for login cookie
 func web_auth(c *gin.Context) *User {
 	return user_by_login(web_cookie_get(c, "login", ""))
+}
+
+// Ask browser to cache static files
+func web_cache_static(c *gin.Context, path string) {
+	if match_react.MatchString(path) {
+		debug("Web asking browser to long term cache %q", path)
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		debug("Web asking browser to short term cache %q", path)
+		c.Header("Cache-Control", "public, max-age=300")
+	}
+}
+
+// Compression middleware
+func web_compression_middleware(c *gin.Context) {
+	accept := c.GetHeader("Accept-Encoding")
+
+	var encoding string
+	if strings.Contains(accept, "br") {
+		encoding = "br"
+	} else if strings.Contains(accept, "gzip") {
+		encoding = "gzip"
+	} else {
+		c.Next()
+		return
+	}
+
+	if c.Writer.Header().Get("Content-Encoding") != "" {
+		c.Next()
+		return
+	}
+
+	var writer io.WriteCloser
+
+	switch encoding {
+	case "br":
+		writer = brotli.NewWriter(c.Writer)
+	case "gzip":
+		writer = gzip.NewWriter(c.Writer)
+	}
+
+	defer writer.Close()
+
+	c.Writer.Header().Set("Content-Encoding", encoding)
+	c.Writer.Header().Add("Vary", "Accept-Encoding")
+
+	cw := &compress_writer{Writer: writer, ResponseWriter: c.Writer}
+	c.Writer = cw
+	c.Next()
 }
 
 // Get the value of a cookie
@@ -298,7 +363,7 @@ func web_path(c *gin.Context) {
 	web_root(c)
 }
 
-//TODO Remove web_error()?
+// TODO Remove web_error()?
 func web_error(c *gin.Context, code int, message string, values ...any) {
 	web_template(c, code, "error", fmt.Sprintf(message, values...))
 }
@@ -396,6 +461,7 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
+	r.Use(web_compression_middleware)
 	r.Use(web_cors_middleware)
 	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
 
@@ -448,4 +514,20 @@ func web_template(c *gin.Context, code int, file string, values ...any) {
 	if err != nil {
 		panic("Web template error: " + err.Error())
 	}
+}
+
+// Writer for compressed data
+func (g *compress_writer) Write(data []byte) (int, error) {
+	g.size += len(data)
+
+	if g.size < 1024 {
+		return g.ResponseWriter.Write(data)
+	}
+
+	ct := strings.ToLower(g.ResponseWriter.Header().Get("Content-Type"))
+	if strings.HasPrefix(ct, "text/") || strings.Contains(ct, "json") || strings.Contains(ct, "xml") || strings.Contains(ct, "javascript") || strings.Contains(ct, "svg") {
+		return g.Writer.Write(data)
+	}
+
+	return g.ResponseWriter.Write(data)
 }

@@ -1,6 +1,5 @@
 Alistair:
 	Attachments
-	Web caching and compression
 	Make unavailable services non-fatal
 	Git server
 

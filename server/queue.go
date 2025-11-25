@@ -39,10 +39,10 @@ func queue_check_entity(entity string) {
 	db := db_open("db/queue.db")
 	db.scans(&qs, "select * from entities where entity=?", entity)
 	for _, q := range qs {
-		debug("Trying to send queued event '%s' to entity '%s'", q.ID, q.Entity)
+		debug("Trying to send queued event %q to entity %q", q.ID, q.Entity)
 		peer := entity_peer(q.Entity)
 		if peer != "" {
-			debug("Entity '%s' is at peer '%s'", q.ID, peer)
+			debug("Entity %q is at peer %q", q.ID, peer)
 			if queue_event_send(db, peer, &q.Data, q.File) {
 				debug("Removing sent event from queue")
 				db.exec("delete from entities where id=?", q.ID)
@@ -58,7 +58,7 @@ func queue_check_peer(peer string) {
 	db := db_open("db/queue.db")
 	db.scans(&qs, "select * from peers where peer=?", peer)
 	for _, q := range qs {
-		debug("Trying to send queued event '%s' to peer '%s'", q.ID, q.Peer)
+		debug("Trying to send queued event %q to peer %q", q.ID, q.Peer)
 		if queue_event_send(db, peer, &q.Data, q.File) {
 			debug("Removing sent event from queue")
 			db.exec("delete from peers where id=?", q.ID)
@@ -96,20 +96,20 @@ func queue_manager() {
 		if peers_sufficient() {
 			var qe QueueEntity
 			if db.scan(&qe, "select * from entities limit 1 offset abs(random()) % max((select count(*) from entities), 1)") {
-				debug("Queue manager nudging messages to entity '%s'", qe.Entity)
+				debug("Queue manager nudging messages to entity %q", qe.Entity)
 				queue_check_entity(qe.Entity)
 			}
 
 			var qp QueuePeer
 			if db.scan(&qp, "select * from peers limit 1 offset abs(random()) % max((select count(*) from peers), 1)") {
-				debug("Queue manager nudging messages to peer '%s'", qp.Peer)
+				debug("Queue manager nudging messages to peer %q", qp.Peer)
 				queue_check_peer(qp.Peer)
 			}
 
 			var qbs []QueueBroadcast
 			db.scans(&qbs, "select * from broadcasts")
 			for _, qb := range qbs {
-				debug("Queue manager sending broadcast event '%s'", qb.ID)
+				debug("Queue manager sending broadcast event %q", qb.ID)
 				p2p_pubsub_messages_1.Publish(p2p_context, qb.Data)
 				db.exec("delete from broadcasts where id=?", qb.ID)
 			}

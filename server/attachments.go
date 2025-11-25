@@ -121,7 +121,7 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		f, err := os.Open(path)
 		defer f.Close()
 		if err != nil {
-			a.error(500, "Attachment '%s' unable to read local file: %s", err)
+			a.error(500, "Attachment %q unable to read local file: %s", err)
 			return
 		}
 
@@ -184,14 +184,14 @@ func attachments_get_work(a *Action, thumbnail bool) {
 		return
 	}
 
-	debug("Creating cache entry '%s' at '%s'", path, full)
+	debug("Creating cache entry %q at %q", path, full)
 	db_cache.exec("replace into attachments ( user, identity, entity, id, thumbnail, path, created ) values ( ?, ?, ?, ?, ?, ?, ? )", user, identity, entity, id, thumbnail, path, now())
 
 	// Write data to browser from cache
 	f, err := os.Open(full)
 	defer f.Close()
 	if err != nil {
-		warn("Unable to read newly cached file '%s': %v", full, err)
+		warn("Unable to read newly cached file %q: %v", full, err)
 		a.error(500, "Unable to read newly cached file")
 		return
 	}
@@ -204,7 +204,7 @@ func attachments_get_event(e *Event) {
 	s := e.stream
 
 	if !valid(id, "id") {
-		info("Request for attachment with invalid ID '%s'", id)
+		info("Request for attachment with invalid ID %q", id)
 		s.write_content("status", "400")
 		return
 	}
@@ -221,11 +221,11 @@ func attachments_get_event(e *Event) {
 			return
 
 		} else {
-			warn("Attachment file '%s' not found", data_dir+"/"+file)
+			warn("Attachment file %q not found", data_dir+"/"+file)
 		}
 
 	} else {
-		info("Request for unknown attachment '%s'", id)
+		info("Request for unknown attachment %q", id)
 	}
 
 	s.write_content("status", "404")
@@ -237,7 +237,7 @@ func attachments_get_thumbnail_event(e *Event) {
 	s := e.stream
 
 	if !valid(id, "id") {
-		info("Request for thumbnail with invalid ID '%s'", id)
+		info("Request for thumbnail with invalid ID %q", id)
 		return
 	}
 
@@ -254,7 +254,7 @@ func attachments_get_thumbnail_event(e *Event) {
 		}
 	}
 
-	info("Request for unknown attachment thumbnail '%s'", id)
+	info("Request for unknown attachment thumbnail %q", id)
 	s.write_content("status", "404")
 }
 
@@ -270,17 +270,17 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 
 	for _, at := range *as {
 		if !valid(at.ID, "id") {
-			info("Skipping attachment with invalid ID '%s'", at.ID)
+			info("Skipping attachment with invalid ID %q", at.ID)
 			continue
 		}
 
 		if !valid(at.Object, "path") {
-			info("Skipping attachment with invalid object '%s'", at.Object)
+			info("Skipping attachment with invalid object %q", at.Object)
 			continue
 		}
 
 		if !valid(at.Name, "filename") {
-			info("Skipping attachment with invalid name '%s'", at.Name)
+			info("Skipping attachment with invalid name %q", at.Name)
 			continue
 		}
 
@@ -290,7 +290,7 @@ func attachments_save(as *[]Attachment, u *User, entity string, format string, v
 			file_write(fmt.Sprintf("%s/users/%d/%s", data_dir, u.ID, path), at.Data)
 		}
 
-		debug("Attachments creating '%s'", path)
+		debug("Attachments creating %q", path)
 		db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, at.ID, at.Object, at.Rank, at.Name, path, at.Size, at.Created)
 	}
 }
@@ -307,32 +307,32 @@ func attachments_save_maps(as *[]map[string]string, u *User, entity string, form
 
 	for _, a := range *as {
 		if !valid(a["id"], "id") {
-			info("Skipping attachment with invalid ID '%s'", a["id"])
+			info("Skipping attachment with invalid ID %q", a["id"])
 			continue
 		}
 
 		if !valid(a["object"], "path") {
-			info("Skipping attachment with invalid object '%s'", a["object"])
+			info("Skipping attachment with invalid object %q", a["object"])
 			continue
 		}
 
 		if !valid(a["rank"], "integer") {
-			info("Skipping attachment with invalid rank '%s'", a["rank"])
+			info("Skipping attachment with invalid rank %q", a["rank"])
 			continue
 		}
 
 		if !valid(a["name"], "filename") {
-			info("Skipping attachment with invalid name '%s'", a["name"])
+			info("Skipping attachment with invalid name %q", a["name"])
 			continue
 		}
 
 		if !valid(a["size"], "integer") {
-			info("Skipping attachment with invalid size '%s'", a["size"])
+			info("Skipping attachment with invalid size %q", a["size"])
 			continue
 		}
 
 		if !valid(a["created"], "integer") {
-			info("Skipping attachment with invalid created time '%s'", a["created"])
+			info("Skipping attachment with invalid created time %q", a["created"])
 			continue
 		}
 
@@ -342,7 +342,7 @@ func attachments_save_maps(as *[]map[string]string, u *User, entity string, form
 			file_write(fmt.Sprintf("%s/users/%d/%s", data_dir, u.ID, path), []byte(a["data"]))
 		}
 
-		debug("Attachments creating '%s'", path)
+		debug("Attachments creating %q", path)
 		db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, a["id"], a["object"], a["rank"], a["name"], path, a["size"], a["created"])
 	}
 }
@@ -358,7 +358,7 @@ func (a *Action) upload_attachments(field string, entity string, object string, 
 
 	for i, f := range form.File[field] {
 		if !valid(f.Filename, "filename") {
-			info("Skipping uploaded file with invalid name '%s'", f.Filename)
+			info("Skipping uploaded file with invalid name %q", f.Filename)
 			continue
 		}
 		id := uid()
@@ -371,7 +371,7 @@ func (a *Action) upload_attachments(field string, entity string, object string, 
 			a.web.SaveUploadedFile(f, full)
 			size := file_size(full)
 
-			debug("Attachment creating local '%s' at '%s'", path, full)
+			debug("Attachment creating local %q at %q", path, full)
 			db.exec("replace into attachments ( entity, id, object, rank, name, path, size, created ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, path, size, created)
 			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Path: path, Size: size, Created: created, Image: is_image(f.Filename)})
 
@@ -383,7 +383,7 @@ func (a *Action) upload_attachments(field string, entity string, object string, 
 			a.web.SaveUploadedFile(f, tmp)
 			size := file_size(tmp)
 
-			debug("Attachment creating remote '%s' '%s'", object, id)
+			debug("Attachment creating remote %q %q", object, id)
 			db.exec("replace into attachments ( entity, id, object, rank, name, size, created ) values ( ?, ?, ?, ?, ?, ?, ? )", entity, id, object, i+1, f.Filename, size, created)
 			results = append(results, Attachment{Entity: entity, ID: id, Object: object, Rank: i + 1, Name: f.Filename, Size: size, Created: created, Data: file_read(tmp), Image: is_image(f.Filename)})
 

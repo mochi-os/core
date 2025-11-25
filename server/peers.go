@@ -55,7 +55,7 @@ func peers_add_from_db(limit int) {
 		for _, a := range as {
 			addresses = append(addresses, a.Address)
 		}
-		debug("Adding database peer '%s' at %v", p.ID, addresses)
+		debug("Adding database peer %q at %v", p.ID, addresses)
 		peer_add_known(p.ID, addresses)
 		go peer_connect(p.ID)
 	}
@@ -91,11 +91,11 @@ func peer_by_id(id string) *Peer {
 	db := db_open("db/peers.db")
 	db.scans(&ps, "select * from peers where id=?", id)
 	if len(ps) == 0 {
-		debug("Peer '%s' not found in database", id)
+		debug("Peer %q not found in database", id)
 		return nil
 	}
 	for _, a := range ps {
-		debug("Peer '%s' adding address '%s' from database", id, a.Address)
+		debug("Peer %q adding address %q from database", id, a.Address)
 		p.addresses = append(p.addresses, a.Address)
 	}
 
@@ -103,7 +103,7 @@ func peer_by_id(id string) *Peer {
 	peers[id] = p
 	peers_lock.Unlock()
 
-	debug("Adding database peer '%s' at %v", id, p.addresses)
+	debug("Adding database peer %q at %v", id, p.addresses)
 	return &p
 }
 
@@ -139,7 +139,7 @@ func peer_disconnected(id string) {
 	if id == "" {
 		return
 	}
-	debug("Peer '%s' disconnected", id)
+	debug("Peer %q disconnected", id)
 
 	peers_lock.Lock()
 	p, found := peers[id]
@@ -267,7 +267,7 @@ func peer_stream(id string) *Stream {
 	p := peer_by_id(id)
 	if p == nil {
 		// In a future version, rate limit this
-		debug("Peer '%s' unknown, sending pubsub request for it", id)
+		debug("Peer %q unknown, sending pubsub request for it", id)
 		message("", "", "peers", "request").set("id", id).publish(false)
 		return nil
 	}

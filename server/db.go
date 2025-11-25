@@ -97,100 +97,33 @@ func db_create() {
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary
-// If called from within a Starlark fucntion to create, upgrade, or downgrade the database
-// schema, in_schema_change will be set to true to avoid locking within an existing lock
-func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
+func db_app(u *User, av *AppVersion) *DB {
 	if av.app == nil {
 		warn("Attempt to create database for unloaded app version")
 		return nil
 	}
 
 	if av.Database.File == "" {
-		warn("App '%s' version '%s' asked for database, but no database file specified", av.app.id, av.Version)
+		warn("App %q version %q asked for database, but no database file specified", av.app.id, av.Version)
 		return nil
 	}
 
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
+	db, created, reused := db_open_work(path)
+	db.user = u
 
-	if !in_schema_change {
-		// Lock everything below here to prevent race conditions in schema changes
-		l := lock(fmt.Sprintf("%d-%s", u.ID, av.app.id))
-		l.Lock()
-		defer l.Unlock()
+	if reused {
+		debug("Database app reusing already open %q", path)
+		return db
 	}
 
-	if file_exists(data_dir + "/" + path) {
-		db := db_open(path)
-		db.user = u
+	//Lock everything below here to prevent race conditions when modifying the schema
+	l := lock(path)
+	l.Lock()
+	defer l.Unlock()
 
-		if !in_schema_change {
-			// Check if _settings table exists, if not create it with schema 0
-			if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
-				debug("Database '%s' missing _settings table; initializing with schema 0", path)
-				db.schema(0)
-			}
-
-			schema := db.integer("select cast(value as integer) from _settings where name='schema'")
-
-			// Check if app tables exist - if not, call database_create()
-			if av.Database.Create.Function != "" {
-				// Check if any user tables exist (excluding _settings)
-				has_tables := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
-				if !has_tables {
-					debug("Database '%s' exists but has no app tables; calling database_create()", path)
-					s := av.starlark()
-					s.set("app", av.app)
-					s.set("user", u)
-					s.set("owner", u)
-					s.set("db_schema", true)
-					_, err := s.call(av.Database.Create.Function, nil)
-					if err != nil {
-						warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
-						return db
-					}
-					db.schema(av.Database.Schema)
-					schema = av.Database.Schema
-				}
-			}
-
-			if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
-				for version := schema + 1; version <= av.Database.Schema; version++ {
-					debug("Database '%s' upgrading to schema version %d", path, version)
-					s := av.starlark()
-					s.set("app", av.app)
-					s.set("user", u)
-					s.set("owner", u)
-					s.set("db_schema", true)
-					_, err := s.call(av.Database.Upgrade.Function, sl_encode_tuple(version))
-					if err != nil {
-						warn("App '%s' version '%s' database upgrade error: %v", av.app.id, av.Version, err)
-						return db
-					}
-					db.schema(version)
-				}
-
-			} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
-				for version := schema; version > av.Database.Schema; version-- {
-					debug("Database '%s' downgrading from schema version %d", path, version)
-					s := av.starlark()
-					s.set("app", av.app)
-					s.set("user", u)
-					s.set("owner", u)
-					s.set("db_schema", true)
-					_, err := s.call(av.Database.Downgrade.Function, sl_encode_tuple(version))
-					if err != nil {
-						warn("App '%s' version '%s' database downgrade error: %v", av.app.id, av.Version, err)
-						return db
-					}
-					db.schema(version - 1)
-				}
-			}
-		}
-
-		return db
-
-	} else if !in_schema_change {
-		debug("Database file '%s' does not exist; creating", path)
+	if created {
+		debug("Database app creating %q", path)
 
 		if av.Database.Create.Function != "" {
 			db := db_open(path)
@@ -199,26 +132,88 @@ func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
 			s.set("app", av.app)
 			s.set("user", u)
 			s.set("owner", u)
-			s.set("db_schema", true)
 			_, err := s.call(av.Database.Create.Function, nil)
 			if err != nil {
-				warn("App '%s' version '%s' database create error: %v", av.app.id, av.Version, err)
+				warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
 				return nil
 			}
 			db.schema(av.Database.Schema)
 			return db
-		}
 
-		if av.Database.CreateFunction != nil {
-			db := db_user(u, av.Database.File, av.Database.CreateFunction)
-			db.user = u
+		} else if av.Database.create_function != nil {
+			av.Database.create_function(db)
 			db.schema(av.Database.Schema)
 			return db
-		}
-	}
 
-	warn("App '%s' version '%s' has no way to create database file '%s'", av.app.id, av.Version, av.Database.File)
-	return nil
+		} else {
+			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
+			return nil
+		}
+
+	} else {
+		debug("Database app opening %q", path)
+
+		// Check if _settings table exists, if not create it with schema 0
+		if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
+			debug("Database %q missing _settings table; initializing with schema 0", path)
+			db.schema(0)
+		}
+
+		schema := db.integer("select cast(value as integer) from _settings where name='schema'")
+
+		// Check if app tables exist - if not, call database_create()
+		if av.Database.Create.Function != "" {
+			// Check if any user tables exist (excluding _settings)
+			has_tables := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
+			if !has_tables {
+				debug("Database %q exists but has no app tables; calling database_create()", path)
+				s := av.starlark()
+				s.set("app", av.app)
+				s.set("user", u)
+				s.set("owner", u)
+				_, err := s.call(av.Database.Create.Function, nil)
+				if err != nil {
+					warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
+					return db
+				}
+				db.schema(av.Database.Schema)
+				schema = av.Database.Schema
+			}
+		}
+
+		if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
+			for version := schema + 1; version <= av.Database.Schema; version++ {
+				debug("Database %q upgrading to schema version %d", path, version)
+				s := av.starlark()
+				s.set("app", av.app)
+				s.set("user", u)
+				s.set("owner", u)
+				_, err := s.call(av.Database.Upgrade.Function, sl_encode_tuple(version))
+				if err != nil {
+					warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
+					return db
+				}
+				db.schema(version)
+			}
+
+		} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
+			for version := schema; version > av.Database.Schema; version-- {
+				debug("Database %q downgrading from schema version %d", path, version)
+				s := av.starlark()
+				s.set("app", av.app)
+				s.set("user", u)
+				s.set("owner", u)
+				_, err := s.call(av.Database.Downgrade.Function, sl_encode_tuple(version))
+				if err != nil {
+					warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
+					return db
+				}
+				db.schema(version - 1)
+			}
+		}
+
+		return db
+	}
 }
 
 func db_manager() {
@@ -243,22 +238,30 @@ func db_manager() {
 }
 
 func db_open(file string) *DB {
+	db, _, _ := db_open_work(file)
+	return db
+}
+
+func db_open_work(file string) (*DB, bool, bool) {
 	path := data_dir + "/" + file
-	//debug("db_open() using '%s'", path)
 
 	databases_lock.Lock()
 	db, found := databases[path]
 	databases_lock.Unlock()
 	if found {
+		//debug("Database reusing already open %q", path)
 		db.closed = 0
-		return db
+		return db, false, true
 	}
 
-	//debug("db_open() opening '%s'", path)
+	created := false
 	if !file_exists(path) {
+		//debug("Database creating %q", path)
 		file_create(path)
+		created = true
 	}
 
+	//debug("Database opening %q", path)
 	h := must(sqlx.Open("sqlite3", path))
 	db = &DB{path: path, handle: h, closed: 0}
 
@@ -267,7 +270,7 @@ func db_open(file string) *DB {
 	databases_lock.Unlock()
 
 	db.exec("PRAGMA journal_mode=WAL")
-	return db
+	return db, created, false
 }
 
 func db_start() bool {
@@ -353,7 +356,7 @@ func db_upgrade() {
 	}
 }
 
-// Open a database file for a user, creating it if necessary
+// Open a database file for an internal app, creating it if necessary
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(data_dir + "/" + path) {

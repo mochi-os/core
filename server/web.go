@@ -121,7 +121,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Set up database connections if needed
 	if a.active.Database.File != "" {
 		if user != nil {
-			user.db = db_app(user, a.active, false)
+			user.db = db_app(user, a.active)
 			if user.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -130,7 +130,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if owner != nil && (user == nil || owner.ID != user.ID) {
-			owner.db = db_app(owner, a.active, false)
+			owner.db = db_app(owner, a.active)
 			if owner.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -160,12 +160,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Check which engine the app uses, and run it
 	switch a.active.Architecture.Engine {
 	case "": // Internal app
-		if aa.internal == nil {
+		if aa.internal_function == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
 			return true
 		}
 
-		aa.internal(&action)
+		aa.internal_function(&action)
 		c.JSON(http.StatusOK, nil)
 
 	case "starlark":

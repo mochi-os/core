@@ -26,17 +26,16 @@ type AppAction struct {
 	Files    string `json:"files"`
 	Public   bool   `json:"public"`
 
-	name       string            `json:"-"`
-	internal   func(*Action)     `json:"-"`
-	segments   int               `json:"-"`
-	literals   int               `json:"-"`
-	parameters map[string]string `json:"-"`
+	name              string            `json:"-"`
+	internal_function func(*Action)     `json:"-"`
+	segments          int               `json:"-"`
+	literals          int               `json:"-"`
+	parameters        map[string]string `json:"-"`
 }
 
 type AppEvent struct {
-	Function string `json:"function"`
-
-	internal func(*Event) `json:"-"`
+	Function          string       `json:"function"`
+	internal_function func(*Event) `json:"-"`
 }
 
 type AppFunction struct {
@@ -69,7 +68,7 @@ type AppVersion struct {
 		Downgrade struct {
 			Function string `json:"function"`
 		} `json:"downgrade"`
-		CreateFunction func(*DB) `json:"-"`
+		create_function func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons     []Icon                 `json:"icons"`
 	Actions   map[string]AppAction   `json:"actions"`
@@ -485,7 +484,7 @@ func apps_start() {
 
 // Register an action for an internal app
 func (a *App) action(action string, f func(*Action)) {
-	a.active.Actions[action] = AppAction{name: action, internal: f}
+	a.active.Actions[action] = AppAction{name: action, internal_function: f}
 }
 
 // Register a broadcast for an internal app
@@ -496,12 +495,12 @@ func (a *App) broadcast(sender string, action string, f func(*User, string, stri
 // Register the user database file for an internal app
 func (a *App) db(file string, create func(*DB)) {
 	a.active.Database.File = file
-	a.active.Database.CreateFunction = create
+	a.active.Database.create_function = create
 }
 
 // Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
-	a.active.Events[event] = AppEvent{internal: f}
+	a.active.Events[event] = AppEvent{internal_function: f}
 }
 
 // Register an icon for an internal app

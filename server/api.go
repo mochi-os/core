@@ -333,7 +333,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "unknown app")
 	}
 
-	db := db_app(user, app.active, t.Local("db_schema") != nil)
+	db := db_app(user, app.active)
 
 	switch fn.Name() {
 	case "mochi.db.exists":

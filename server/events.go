@@ -82,7 +82,7 @@ func (e *Event) route() {
 			return
 		}
 
-		e.db = db_app(e.user, a.active, false)
+		e.db = db_app(e.user, a.active)
 		if e.db == nil {
 			info("Event app '%s' has no database file", a.id)
 			return
@@ -93,7 +93,7 @@ func (e *Event) route() {
 	// Check which engine the app uses, and run it
 	switch a.active.Architecture.Engine {
 	case "": // Internal app
-		if ae.internal == nil {
+		if ae.internal_function == nil {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return
 		}
@@ -105,7 +105,7 @@ func (e *Event) route() {
 			}
 		}()
 
-		ae.internal(e)
+		ae.internal_function(e)
 
 	case "starlark":
 		if ae.Function == "" {

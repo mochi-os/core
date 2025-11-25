@@ -11,10 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/btcsuite/btcutil/base58"
-	cbor "github.com/fxamacker/cbor/v2"
-	md "github.com/gomarkdown/markdown"
-	"github.com/google/uuid"
 	"io"
 	"math/big"
 	"net/http"
@@ -26,6 +22,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/btcsuite/btcutil/base58"
+	cbor "github.com/fxamacker/cbor/v2"
+	md "github.com/gomarkdown/markdown"
+	"github.com/google/uuid"
 )
 
 const (
@@ -46,6 +47,35 @@ func atoi(s string, def int64) int64 {
 		return def
 	}
 	return int64(i)
+}
+
+// Convert any value to string, handling complex types
+func any_to_string(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case nil:
+		return ""
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case float64:
+		// JSON numbers are always float64
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d", int64(v))
+		}
+		return fmt.Sprintf("%g", v)
+	case int, int64, uint, uint64:
+		return fmt.Sprintf("%d", v)
+	default:
+		// For arrays/objects, serialize back to JSON string
+		if bytes, err := json.Marshal(v); err == nil {
+			return string(bytes)
+		}
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func base58_decode(in string, def string) []byte {

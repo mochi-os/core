@@ -28,7 +28,7 @@ type compress_writer struct {
 var templates embed.FS
 
 var (
-	match_react = regexp.MustCompile(`(assets|images)/.*-[\w-]{8}.(css|js|png|svg)$`)
+	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}.js$`)
 )
 
 // Call a web action

@@ -317,12 +317,6 @@ func web_path(c *gin.Context) {
 	segments := strings.Split(raw, "/")
 	first := segments[0]
 
-	//TODO Remove /api once web code is updated
-	if first == "api" {
-		segments = segments[1:]
-		first = segments[0]
-	}
-
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
@@ -365,69 +359,54 @@ func web_path(c *gin.Context) {
 	web_root(c)
 }
 
-// TODO Remove web_error()?
-func web_error(c *gin.Context, code int, message string, values ...any) {
-	web_template(c, code, "error", fmt.Sprintf(message, values...))
-}
-
 // Create an identity for a new user
 func web_identity_create(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
-		// Not logged in; redirect to login
-		c.Redirect(302, "/login")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
-	_, err := entity_create(u, "person", c.PostForm("name"), c.PostForm("privacy"), "")
+	var input struct {
+		Name    string `json:"name"`
+		Privacy string `json:"privacy"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
 	if err != nil {
-		web_error(c, http.StatusBadRequest, "Unable to create identity: %s", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to create identity: %s", err)})
 		return
 	}
 
-	// Simple notification hook (same spirit as original)
+	// Simple notification hook
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))
+		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+input.Name)
 	}
 
-	c.Redirect(302, "/")
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Basic login page + code handling
+// Handle login: request code via email (POST with JSON)
 func web_login(c *gin.Context) {
-	// If we already have a valid session, just go home
-	if u := web_auth(c); u != nil && u.Identity != nil {
-		c.Redirect(302, "/")
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	// Login by code
-	code := c.PostForm("code")
-	if code != "" {
-		u := user_from_code(code)
-		if u == nil {
-			web_error(c, http.StatusBadRequest, "Invalid code")
-			return
-		}
-		web_cookie_set(c, "login", login_create(u.ID))
-		c.Redirect(302, "/")
+	if !code_send(input.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
 		return
 	}
 
-	// Login by email (send code)
-	email := c.PostForm("email")
-	if email != "" {
-		if !code_send(email) {
-			web_error(c, http.StatusBadRequest, "Unable to send login email")
-			return
-		}
-		web_template(c, http.StatusOK, "login/email_sent")
-		return
-	}
-
-	// Default: show login form
-	web_template(c, http.StatusOK, "login/email")
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // Log the user out
@@ -437,7 +416,7 @@ func web_logout(c *gin.Context) {
 		login_delete(login)
 	}
 	web_cookie_unset(c, "login")
-	web_template(c, http.StatusOK, "login/logout")
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func web_ping(c *gin.Context) {
@@ -472,12 +451,8 @@ func web_start() {
 	r.GET("/", web_root)
 	r.Static("/assets", share+"/assets")
 	r.Static("/images", share+"/images")
-	//TODO Remove the /api/* paths once the web has been updated
-	r.POST("/api/login", api_login)
-	r.POST("/api/login/auth", api_login_auth)
-	r.GET("/api/logout", api_logout)
-	r.GET("/login", web_login)
 	r.POST("/login", web_login)
+	r.POST("/login/auth", api_login_auth)
 	r.POST("/login/identity", web_identity_create)
 	r.GET("/logout", web_logout)
 	r.GET("/ping", web_ping)
@@ -505,7 +480,7 @@ func web_template(c *gin.Context, code int, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
-		panic("Web template error: " + err.Error()) // Avoid recursion by not calling web_error here again
+		panic("Web template error: " + err.Error())
 	}
 	c.Status(code)
 	if len(values) > 0 {

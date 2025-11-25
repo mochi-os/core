@@ -32,7 +32,7 @@ func (m *Message) add(v any) *Message {
 
 // Publish an message to a pubsub
 func (m *Message) publish(allow_queue bool) {
-	debug("Message publishing: id '%s', from '%s', to '%s', service '%s', event '%s', content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
+	debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
 	m.Signature = entity_sign(m.From, m.From+m.To+m.Service+m.Event)
 	data := cbor_encode(&m)
 	data = append(data, cbor_encode(m.content)...)
@@ -63,7 +63,7 @@ func (m *Message) send_work(peer string) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message sending to peer '%s': id '%s', from '%s', to '%s', service '%s', event '%s', content '%#v', data %d bytes, file '%s'", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
+	debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q, content '%#v', data %d bytes, file %q", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
 
 	ok := true
 	s := peer_stream(peer)
@@ -98,7 +98,7 @@ func (m *Message) send_work(peer string) {
 	if !ok {
 		peer_disconnected(peer)
 
-		debug("Message unable to send to '%s', adding to queue", m.To)
+		debug("Message unable to send to %q, adding to queue", m.To)
 		data := slices.Concat(headers, content, m.data)
 		db := db_open("db/queue.db")
 		if peer == "" {

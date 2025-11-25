@@ -4,30 +4,45 @@
 package main
 
 import (
+	"compress/gzip"
 	"embed"
 	"fmt"
+
 	"html/template"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
+	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
 
-//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
+type compress_writer struct {
+	io.Writer
+	gin.ResponseWriter
+	size int
+}
+
+//go:embed templates/en/*.tmpl
 var templates embed.FS
+
+var (
+	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}.js$`)
+)
 
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if a == nil || a.active == nil {
 		return false
 	}
-	debug("Web app '%s' action '%s'", a.id, name)
+	debug("Web app %q action %q", a.id, name)
 
 	aa := a.active.find_action(name)
 	if aa == nil {
-		debug("No action found for app '%s' action '%s'", a.id, name)
+		debug("No action found for app %q action %q", a.id, name)
 		return false
 	}
 
@@ -92,7 +107,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Serve static file
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
-		debug("Serving single file for app '%s': %s", a.id, file)
+		debug("Serving single file for app %q: %s", a.id, file)
+		web_cache_static(c, file)
 		c.File(file)
 		return true
 	}
@@ -105,7 +121,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
-			debug("Serving file from directory for app '%s': %s", a.id, file)
+			debug("Serving file from directory for app %q: %s", a.id, file)
+			web_cache_static(c, file)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -122,7 +139,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Set up database connections if needed
 	if a.active.Database.File != "" {
 		if user != nil {
-			user.db = db_app(user, a.active, true)
+			user.db = db_app(user, a.active)
 			if user.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -131,7 +148,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if owner != nil && (user == nil || owner.ID != user.ID) {
-			owner.db = db_app(owner, a.active, true)
+			owner.db = db_app(owner, a.active)
 			if owner.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -161,12 +178,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Check which engine the app uses, and run it
 	switch a.active.Architecture.Engine {
 	case "": // Internal app
-		if aa.internal == nil {
+		if aa.internal_function == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
 			return true
 		}
 
-		aa.internal(&action)
+		aa.internal_function(&action)
 		c.JSON(http.StatusOK, nil)
 
 	case "starlark":
@@ -190,7 +207,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		c.JSON(http.StatusOK, sl_decode(result))
 
 	default:
-		info("Action unknown engine '%s' version '%s'", a.active.Architecture.Engine, a.active.Architecture.Version)
+		info("Action unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
 	}
 
 	return true
@@ -199,6 +216,55 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 // Get user for login cookie
 func web_auth(c *gin.Context) *User {
 	return user_by_login(web_cookie_get(c, "login", ""))
+}
+
+// Ask browser to cache static files
+func web_cache_static(c *gin.Context, path string) {
+	if match_react.MatchString(path) {
+		debug("Web asking browser to long term cache %q", path)
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		debug("Web asking browser to short term cache %q", path)
+		c.Header("Cache-Control", "public, max-age=300")
+	}
+}
+
+// Compression middleware
+func web_compression_middleware(c *gin.Context) {
+	accept := c.GetHeader("Accept-Encoding")
+
+	var encoding string
+	if strings.Contains(accept, "br") {
+		encoding = "br"
+	} else if strings.Contains(accept, "gzip") {
+		encoding = "gzip"
+	} else {
+		c.Next()
+		return
+	}
+
+	if c.Writer.Header().Get("Content-Encoding") != "" {
+		c.Next()
+		return
+	}
+
+	var writer io.WriteCloser
+
+	switch encoding {
+	case "br":
+		writer = brotli.NewWriter(c.Writer)
+	case "gzip":
+		writer = gzip.NewWriter(c.Writer)
+	}
+
+	defer writer.Close()
+
+	c.Writer.Header().Set("Content-Encoding", encoding)
+	c.Writer.Header().Add("Vary", "Accept-Encoding")
+
+	cw := &compress_writer{Writer: writer, ResponseWriter: c.Writer}
+	c.Writer = cw
+	c.Next()
 }
 
 // Get the value of a cookie
@@ -257,13 +323,9 @@ func web_path(c *gin.Context) {
 		first = segments[0]
 	}
 
-	debug("Looking for app or entity for '%s'", first)
-
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
-		debug("Found app '%s' for '%s'", a.id, first)
-
 		second := ""
 		if len(segments) > 1 {
 			second = segments[1]
@@ -283,8 +345,6 @@ func web_path(c *gin.Context) {
 	// Check for entity matching first segment
 	e := entity_by_any(first)
 	if e != nil {
-		debug("Found entity '%s' for '%s'", e.ID, first)
-
 		a := e.class_app()
 		if a == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity class"})
@@ -305,6 +365,7 @@ func web_path(c *gin.Context) {
 	web_root(c)
 }
 
+// TODO Remove web_error()?
 func web_error(c *gin.Context, code int, message string, values ...any) {
 	web_template(c, code, "error", fmt.Sprintf(message, values...))
 }
@@ -314,7 +375,7 @@ func web_identity_create(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
 		// Not logged in; redirect to login
-		web_redirect(c, "/login")
+		c.Redirect(302, "/login")
 		return
 	}
 
@@ -330,14 +391,14 @@ func web_identity_create(c *gin.Context) {
 		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))
 	}
 
-	web_redirect(c, "/")
+	c.Redirect(302, "/")
 }
 
 // Basic login page + code handling
 func web_login(c *gin.Context) {
 	// If we already have a valid session, just go home
 	if u := web_auth(c); u != nil && u.Identity != nil {
-		web_redirect(c, "/")
+		c.Redirect(302, "/")
 		return
 	}
 
@@ -350,7 +411,7 @@ func web_login(c *gin.Context) {
 			return
 		}
 		web_cookie_set(c, "login", login_create(u.ID))
-		web_redirect(c, "/")
+		c.Redirect(302, "/")
 		return
 	}
 
@@ -383,10 +444,6 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-func web_redirect(c *gin.Context, url string) {
-	web_template(c, http.StatusOK, "redirect", url)
-}
-
 // Handle / and any paths not handled by web_path()
 func web_root(c *gin.Context) {
 	c.File(ini_string("directories", "share", "/usr/share/mochi") + "/index.html")
@@ -406,6 +463,7 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
+	r.Use(web_compression_middleware)
 	r.Use(web_cors_middleware)
 	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
 
@@ -458,4 +516,20 @@ func web_template(c *gin.Context, code int, file string, values ...any) {
 	if err != nil {
 		panic("Web template error: " + err.Error())
 	}
+}
+
+// Writer for compressed data
+func (g *compress_writer) Write(data []byte) (int, error) {
+	g.size += len(data)
+
+	if g.size < 1024 {
+		return g.ResponseWriter.Write(data)
+	}
+
+	ct := strings.ToLower(g.ResponseWriter.Header().Get("Content-Type"))
+	if strings.HasPrefix(ct, "text/") || strings.Contains(ct, "json") || strings.Contains(ct, "xml") || strings.Contains(ct, "javascript") || strings.Contains(ct, "svg") {
+		return g.Writer.Write(data)
+	}
+
+	return g.ResponseWriter.Write(data)
 }

@@ -51,7 +51,7 @@ func starlark(files []string) *Starlark {
 	s.globals = api_globals
 
 	for _, file := range files {
-		debug("Starlark reading file '%s'", file)
+		debug("Starlark reading file %q", file)
 		var err error
 		s.globals, err = sl.ExecFile(s.thread, file, nil, s.globals)
 		if err != nil {
@@ -305,10 +305,10 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
-		return nil, fmt.Errorf("Starlark app function '%s' not found", function)
+		return nil, fmt.Errorf("Starlark app function %q not found", function)
 	}
 
-	debug("Starlark running '%s': %+v", function, args)
+	debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)
 
 	// Acquire semaphore to limit concurrency
@@ -352,7 +352,7 @@ func (s *Starlark) int(v sl.Value) int {
 	var i int
 	err := sl.AsInt(v, &i)
 	if err != nil {
-		info("Starlark failed to convert '%s' to int", v)
+		info("Starlark failed to convert %q to int", v)
 		return 0
 	}
 	return i

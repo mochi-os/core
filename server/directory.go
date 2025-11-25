@@ -38,7 +38,7 @@ func directory_by_id(id string) *Directory {
 
 // Create a new directory entry for a local entity
 func directory_create(e *Entity) {
-	debug("Directory creating entry '%s' (%s)", e.ID, e.Name)
+	debug("Directory creating entry %q %q", e.ID, e.Name)
 	now := now()
 
 	db := db_open("db/directory.db")
@@ -54,14 +54,14 @@ func directory_delete(id string) {
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
 	for _, p := range peers_bootstrap {
-		debug("Directory downloading from peer '%s'", p.ID)
+		debug("Directory downloading from peer %q", p.ID)
 
 		s := peer_stream(p.ID)
 		if s == nil {
-			debug("Stream unable to open to peer '%s'", p.ID)
+			debug("Stream unable to open to peer %q", p.ID)
 			continue
 		}
-		debug("Stream %d open to peer '%s': from '', to '', service 'directory', event 'download'", s.id, p.ID)
+		debug("Stream %d open to peer %q: from '', to '', service 'directory', event 'download'", s.id, p.ID)
 
 		err := s.write(Headers{Service: "directory", Event: "download"})
 		if err != nil {
@@ -139,31 +139,31 @@ func directory_publish_event(e *Event) {
 
 	id := e.get("id", "")
 	if !valid(id, "entity") {
-		debug("Directory dropping event with invalid entity id '%s'", id)
+		debug("Directory dropping event with invalid entity id %q", id)
 		return
 	}
 
 	name := e.get("name", "")
 	if !valid(name, "line") {
-		debug("Directory dropping event with invalid name '%s'", name)
+		debug("Directory dropping event with invalid name %q", name)
 		return
 	}
 
 	class := e.get("class", "")
 	if !valid(class, "constant") {
-		debug("Directory dropping event with invalid class '%s'", class)
+		debug("Directory dropping event with invalid class %q", class)
 		return
 	}
 
 	location := e.get("location", "")
 	if !valid(location, "line") {
-		debug("Directory dropping event with invalid location '%s'", location)
+		debug("Directory dropping event with invalid location %q", location)
 		return
 	}
 
 	data := e.get("data", "")
 	if !valid(data, "text") {
-		debug("Directory dropping event with invalid data '%s'", data)
+		debug("Directory dropping event with invalid data %q", data)
 		return
 	}
 
@@ -185,7 +185,7 @@ func directory_publish_event(e *Event) {
 		created = atoi(e.get("created", ""), created)
 
 	} else if e.from != id {
-		info("Directory dropping event from incorrect sender: '%s'!='%s'", id, e.from)
+		info("Directory dropping event from incorrect sender: %q!=%q", id, e.from)
 		return
 	}
 

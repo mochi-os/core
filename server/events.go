@@ -50,7 +50,7 @@ func (e *Event) route() {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {
-			info("Event dropping to unknown user '%s'", e.to)
+			info("Event dropping to unknown user %q", e.to)
 			return
 		}
 	}
@@ -58,7 +58,7 @@ func (e *Event) route() {
 	// Find which app provides this service
 	a := app_for_service(e.service)
 	if a == nil {
-		info("Event dropping to unknown service '%s'", e.service)
+		info("Event dropping to unknown service %q", e.service)
 		return
 	}
 
@@ -71,7 +71,7 @@ func (e *Event) route() {
 	apps_lock.Unlock()
 
 	if !found {
-		info("Event dropping to unknown event '%s' in app '%s' for service '%s'", e.event, a.id, e.service)
+		info("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
 		return
 	}
 
@@ -82,9 +82,9 @@ func (e *Event) route() {
 			return
 		}
 
-		e.db = db_app(e.user, a.active, false)
+		e.db = db_app(e.user, a.active)
 		if e.db == nil {
-			info("Event app '%s' has no database file", a.id)
+			info("Event app %q has no database file", a.id)
 			return
 		}
 		defer e.db.close()
@@ -93,7 +93,7 @@ func (e *Event) route() {
 	// Check which engine the app uses, and run it
 	switch a.active.Architecture.Engine {
 	case "": // Internal app
-		if ae.internal == nil {
+		if ae.internal_function == nil {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return
 		}
@@ -105,7 +105,7 @@ func (e *Event) route() {
 			}
 		}()
 
-		ae.internal(e)
+		ae.internal_function(e)
 
 	case "starlark":
 		if ae.Function == "" {
@@ -123,7 +123,7 @@ func (e *Event) route() {
 		s.call(ae.Function, sl.Tuple{e})
 
 	default:
-		info("Event unknown engine '%s' version '%s'", a.active.Architecture.Engine, a.active.Architecture.Version)
+		info("Event unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
 		return
 	}
 }
@@ -194,7 +194,7 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	field, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid field '%s'", field)
+		return sl_error(fn, "invalid field %q", field)
 	}
 
 	value, found := e.content[field]
@@ -222,7 +222,7 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	header, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "invalid header '%s'", header)
+		return sl_error(fn, "invalid header %q", header)
 	}
 
 	switch header {
@@ -235,6 +235,6 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	case "event":
 		return sl_encode(e.event), nil
 	default:
-		return sl_error(fn, "invalid header '%s'", header)
+		return sl_error(fn, "invalid header %q", header)
 	}
 }

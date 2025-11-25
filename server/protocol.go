@@ -18,22 +18,22 @@ type Headers struct {
 // Check if headers are valid
 func (h *Headers) valid() bool {
 	if h.From != "" && !valid(h.From, "entity") {
-		info("Invalid from header '%s'", h.From)
+		info("Invalid from header %q", h.From)
 		return false
 	}
 
 	if h.To != "" && !valid(h.To, "entity") {
-		info("Invalid to header '%s'", h.To)
+		info("Invalid to header %q", h.To)
 		return false
 	}
 
 	if h.Service != "" && !valid(h.Service, "constant") {
-		info("Invalid service header '%s'", h.Service)
+		info("Invalid service header %q", h.Service)
 		return false
 	}
 
 	if !valid(h.Event, "constant") {
-		info("Invalid event header '%s'", h.Event)
+		info("Invalid event header %q", h.Event)
 		return false
 	}
 

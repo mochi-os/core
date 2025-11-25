@@ -35,7 +35,7 @@ func action_id() int64 {
 
 func (a *Action) dump(values ...any) {
 	debug("Web dump: %+v", values...)
-	web_template(a.web, 200, "dev/dump", values...)
+	web_template(a.web, 200, "dump", values...)
 }
 
 func (a *Action) error(code int, message string, values ...any) {
@@ -70,8 +70,8 @@ func (a *Action) json(in any) {
 	a.web.JSON(200, in)
 }
 
-func (a *Action) redirect(url string) {
-	a.web.Redirect(301, url)
+func (a *Action) redirect(code int, location string) {
+	a.web.Redirect(code, location)
 }
 
 func (a *Action) template(template string, format string, values ...any) {
@@ -214,7 +214,7 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "%v", err)
 	}
 	if !valid(path, "path") {
-		return sl_error(fn, "invalid path '%s'", path)
+		return sl_error(fn, "invalid path %q", path)
 	}
 
 	a.web.Redirect(301, path)
@@ -229,13 +229,13 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	path, ok := sl.AsString(args[0])
 	if !ok || (path != "" && !valid(path, "path")) {
-		return sl_error(fn, "invalid template file '%s'", path)
+		return sl_error(fn, "invalid template file %q", path)
 	}
 
 	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
 	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.active.base, path)
 	if !file_exists(file) {
-		return sl_error(fn, "template '%s' not found", path)
+		return sl_error(fn, "template %q not found", path)
 	}
 	data := file_read(file)
 	include := must(templates.ReadFile("templates/en/include.tmpl"))
@@ -266,12 +266,12 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	field, ok := sl.AsString(args[0])
 	if !ok || !valid(field, "constant") {
-		return sl_error(fn, "invalid field '%s'", field)
+		return sl_error(fn, "invalid field %q", field)
 	}
 
 	file, ok := sl.AsString(args[1])
 	if !ok || !valid(field, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	app, ok := t.Local("app").(*App)
@@ -281,12 +281,12 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	ff, err := a.web.FormFile(field)
 	if err != nil {
-		return sl_error(fn, "unable to get file field '%s': %v", field, err)
+		return sl_error(fn, "unable to get file field %q: %v", field, err)
 	}
 
 	err = a.web.SaveUploadedFile(ff, api_file(a.user, app, file))
 	if err != nil {
-		return sl_error(fn, "unable to write file for field '%s': %v", field, err)
+		return sl_error(fn, "unable to write file for field %q: %v", field, err)
 	}
 
 	return sl.None, nil

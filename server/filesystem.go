@@ -135,13 +135,13 @@ func file_write_from_reader(path string, r io.Reader) bool {
 	f, err := os.Create(path)
 	defer f.Close()
 	if err != nil {
-		warn("Unable to open file '%s' for writing: %v", path, err)
+		warn("Unable to open file %q for writing: %v", path, err)
 		return false
 	}
 
 	_, err = io.Copy(f, r)
 	if err != nil {
-		warn("Unable to write to file '%s': %v", path, err)
+		warn("Unable to write to file %q: %v", path, err)
 		return false
 	}
 

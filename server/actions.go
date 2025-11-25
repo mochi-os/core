@@ -5,10 +5,11 @@ package main
 
 import (
 	"fmt"
-	"github.com/gin-gonic/gin"
-	sl "go.starlark.net/starlark"
 	"html/template"
 	"sync"
+
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 type Action struct {
@@ -39,7 +40,7 @@ func (a *Action) dump(values ...any) {
 }
 
 func (a *Action) error(code int, message string, values ...any) {
-	web_error(a.web, code, message, values...)
+	web_template(a.web, code, "error", fmt.Sprintf(message, values...))
 }
 
 func (a *Action) input(name string) string {

@@ -34,14 +34,14 @@ var (
 func stream(from string, to string, service string, event string) (*Stream, error) {
 	peer := entity_peer(to)
 	if peer == "" {
-		return nil, fmt.Errorf("Stream unable to determine location of entity '%s'", to)
+		return nil, fmt.Errorf("Stream unable to determine location of entity %q", to)
 	}
 
 	s := peer_stream(peer)
 	if s == nil {
-		return nil, fmt.Errorf("Stream unable to open to peer '%s' for entity '%s'", peer, to)
+		return nil, fmt.Errorf("Stream unable to open to peer %q for entity %q", peer, to)
 	}
-	debug("Stream %d open to peer '%s': from '%s', to '%s', service '%s', event '%s'", s.id, peer, from, to, service, event)
+	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Signature: entity_sign(from, from+to+service+event)})
 	if err != nil {
@@ -85,7 +85,7 @@ func stream_receive(s *Stream, version int, peer string) {
 		return
 	}
 
-	debug("Stream %d open from peer '%s': from '%s', to '%s', service '%s', event '%s', content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
+	debug("Stream %d open from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
 	// Create event, and route to app
 	e := Event{id: event_id(), from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
@@ -179,14 +179,12 @@ func (s *Stream) write_content(in ...string) error {
 func (s *Stream) write_file(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		debug("Stream %d unable to read file '%s'", s.id, path)
-		return fmt.Errorf("Stream unable to read file '%s'", path)
+		return fmt.Errorf("Stream unable to read file %q", path)
 	}
 	defer f.Close()
 
 	_, err = io.Copy(s.writer, f)
 	if err != nil {
-		debug("Stream %d error sending file segment: %v", s.id, err)
 		return fmt.Errorf("Stream error sending file segment: %v", err)
 	}
 
@@ -289,11 +287,11 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	if !file_write_from_reader(api_file(user, app, file), s.reader) {
-		return sl_error(fn, "unable to save file '%s'", file)
+		return sl_error(fn, "unable to save file %q", file)
 	}
 
 	debug("Stream %d read to file", s.id)
@@ -331,7 +329,7 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file '%s'", file)
+		return sl_error(fn, "invalid file %q", file)
 	}
 
 	if s.write_file(api_file(user, app, file)) != nil {

@@ -165,7 +165,7 @@ func app_by_any(s string) *App {
 
 // Check whether app is the correct version, and if not download and install new version
 func app_check_install(id string) bool {
-	debug("App '%s' checking install status", id)
+	debug("App %q checking install status", id)
 
 	s, err := stream("", id, "app", "version")
 	if err != nil {
@@ -194,7 +194,7 @@ func app_check_install(id string) bool {
 	a := apps[id]
 	apps_lock.Unlock()
 	if a != nil && a.active != nil && a.active.Version == version {
-		debug("App '%s' keeping at version '%s'", id, a.active.Version)
+		debug("App %q keeping at version %q", id, a.active.Version)
 		return true
 	}
 
@@ -202,7 +202,7 @@ func app_check_install(id string) bool {
 	if a != nil && a.active != nil {
 		oldVersion = a.active.Version
 	}
-	debug("App '%s' upgrading from '%s' to '%s'", id, oldVersion, version)
+	debug("App %q upgrading from %q to %q", id, oldVersion, version)
 
 	s, err = stream("", id, "app", "get")
 	if err != nil {
@@ -256,13 +256,13 @@ func app_for_service(service string) *App {
 // Install an app from a zip file, but do not load it
 func app_install(id string, version string, file string, check_only bool) (*AppVersion, error) {
 	if version == "" {
-		debug("App '%s' installing from '%s'", id, file)
+		debug("App %q installing from %q", id, file)
 	} else {
-		debug("App '%s' installing version '%s' from '%s'", id, version, file)
+		debug("App %q installing version %q from %q", id, version, file)
 	}
 	file_mkdir(data_dir + "/tmp")
 	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", data_dir, id, random_alphanumeric(8))
-	debug("App unzipping into tmp directory '%s'", tmp)
+	debug("App unzipping into tmp directory %q", tmp)
 
 	err := unzip(file, tmp)
 	if err != nil {
@@ -284,20 +284,20 @@ func app_install(id string, version string, file string, check_only bool) (*AppV
 	}
 
 	if check_only {
-		debug("App '%s' not installing", id)
+		debug("App %q not installing", id)
 		file_delete_all(tmp)
 		return av, nil
 	}
 
 	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
 	if file_exists(av.base) {
-		debug("App '%s' removing old copy of version '%s' in '%s'", id, av.Version, av.base)
+		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
 		file_delete_all(av.base)
 	}
-	debug("Moving unzipped app from '%s' to '%s'", tmp, av.base)
+	debug("Moving unzipped app from %q to %q", tmp, av.base)
 	file_move(tmp, av.base)
 
-	debug("App '%s' version '%s' installed", id, av.Version)
+	debug("App %q version %q installed", id, av.Version)
 	return av, nil
 }
 
@@ -334,11 +334,11 @@ func apps_manager() {
 
 // Read in an external app version from a directory
 func app_read(id string, base string) (*AppVersion, error) {
-	debug("App loading from '%s'", base)
+	debug("App loading from %q", base)
 
 	// Load app manifest from app.json
 	if !file_exists(base + "/app.json") {
-		return nil, fmt.Errorf("App '%s' in '%s' has no app.json file; ignoring", id, base)
+		return nil, fmt.Errorf("App %q in %q has no app.json file; ignoring", id, base)
 	}
 
 	var av AppVersion
@@ -350,11 +350,11 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 	// Validate manifest
 	if !valid(av.Version, "version") {
-		return nil, fmt.Errorf("App bad version '%s'", av.Version)
+		return nil, fmt.Errorf("App bad version %q", av.Version)
 	}
 
 	if !valid(av.Label, "constant") {
-		return nil, fmt.Errorf("App bad label '%s'", av.Label)
+		return nil, fmt.Errorf("App bad label %q", av.Label)
 	}
 
 	for _, class := range av.Classes {
@@ -365,18 +365,18 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 	for _, path := range av.Paths {
 		if !valid(path, "path") {
-			return nil, fmt.Errorf("App bad path '%s'", path)
+			return nil, fmt.Errorf("App bad path %q", path)
 		}
 	}
 
 	for _, service := range av.Services {
 		if !valid(service, "constant") {
-			return nil, fmt.Errorf("App bad service '%s'", service)
+			return nil, fmt.Errorf("App bad service %q", service)
 		}
 	}
 
 	if av.Architecture.Engine != "starlark" {
-		return nil, fmt.Errorf("App bad engine '%s' version %d", av.Architecture.Engine, av.Architecture.Version)
+		return nil, fmt.Errorf("App bad engine %q version %d", av.Architecture.Engine, av.Architecture.Version)
 	}
 	if av.Architecture.Version < app_version_minimum {
 		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Architecture.Version, app_version_minimum)
@@ -387,24 +387,24 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 	for _, file := range av.Execute {
 		if !valid(file, "filepath") {
-			return nil, fmt.Errorf("App bad executable file '%s'", file)
+			return nil, fmt.Errorf("App bad executable file %q", file)
 		}
 	}
 
 	if av.Database.File != "" && !valid(av.Database.File, "filename") {
-		return nil, fmt.Errorf("App bad database file '%s'", av.Database.File)
+		return nil, fmt.Errorf("App bad database file %q", av.Database.File)
 	}
 
 	if av.Database.Create.Function != "" && !valid(av.Database.Create.Function, "function") {
-		return nil, fmt.Errorf("App bad database create function '%s'", av.Database.Create.Function)
+		return nil, fmt.Errorf("App bad database create function %q", av.Database.Create.Function)
 	}
 
 	if av.Database.Upgrade.Function != "" && !valid(av.Database.Upgrade.Function, "function") {
-		return nil, fmt.Errorf("App bad database upgrade function '%s'", av.Database.Upgrade.Function)
+		return nil, fmt.Errorf("App bad database upgrade function %q", av.Database.Upgrade.Function)
 	}
 
 	if av.Database.Downgrade.Function != "" && !valid(av.Database.Downgrade.Function, "function") {
-		return nil, fmt.Errorf("App bad database downgrade function '%s'", av.Database.Downgrade.Function)
+		return nil, fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
 	}
 
 	for _, i := range av.Icons {
@@ -423,39 +423,39 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 	for action, a := range av.Actions {
 		if action != "" && !valid(action, "action") {
-			return nil, fmt.Errorf("App bad action '%s'", action)
+			return nil, fmt.Errorf("App bad action %q", action)
 		}
 
 		if a.Function != "" && !valid(a.Function, "function") {
-			return nil, fmt.Errorf("App bad action function '%s'", a.Function)
+			return nil, fmt.Errorf("App bad action function %q", a.Function)
 		}
 
 		if a.File != "" && !valid(a.File, "filepath") {
-			return nil, fmt.Errorf("App bad file path '%s'", a.File)
+			return nil, fmt.Errorf("App bad file path %q", a.File)
 		}
 
 		if a.Files != "" && !valid(a.Files, "filepath") {
-			return nil, fmt.Errorf("App bad files path '%s'", a.Files)
+			return nil, fmt.Errorf("App bad files path %q", a.Files)
 		}
 	}
 
 	for event, e := range av.Events {
 		if !valid(event, "constant") {
-			return nil, fmt.Errorf("App bad event '%s'", event)
+			return nil, fmt.Errorf("App bad event %q", event)
 		}
 
 		if !valid(e.Function, "function") {
-			return nil, fmt.Errorf("App bad event function '%s'", e.Function)
+			return nil, fmt.Errorf("App bad event function %q", e.Function)
 		}
 	}
 
 	for function, f := range av.Functions {
 		if function != "" && !valid(function, "constant") {
-			return nil, fmt.Errorf("App bad function '%s'", function)
+			return nil, fmt.Errorf("App bad function %q", function)
 		}
 
 		if !valid(f.Function, "function") {
-			return nil, fmt.Errorf("App bad function function '%s'", f.Function)
+			return nil, fmt.Errorf("App bad function function %q", f.Function)
 		}
 	}
 
@@ -528,7 +528,7 @@ func (a *App) label(u *User, key string, values ...any) string {
 		format = labels["en"][key]
 	}
 	if format == "" {
-		info("App label '%s' in language '%s' not set", key, language)
+		info("App label %q in language %q not set", key, language)
 		return key
 	}
 
@@ -556,7 +556,7 @@ func (a *App) load_version(av *AppVersion) {
 		path := fmt.Sprintf("%s/labels/%s", av.base, file)
 		f, err := os.Open(path)
 		if err != nil {
-			info("App unable to read labels file '%s': %v", path, err)
+			info("App unable to read labels file %q: %v", path, err)
 			continue
 		}
 		defer f.Close()
@@ -586,9 +586,9 @@ func (a *App) load_version(av *AppVersion) {
 	apps_lock.Unlock()
 
 	if latest == av.Version {
-		debug("App '%s', '%s' version '%s' loaded and activated", av.labels["en"][av.Label], a.id, av.Version)
+		debug("App %q, %q version %q loaded and activated", av.labels["en"][av.Label], a.id, av.Version)
 	} else {
-		debug("App '%s', '%s' version '%s' loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
+		debug("App %q, %q version %q loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
 	}
 }
 
@@ -680,7 +680,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 	}
 
-	info("App '%s' version '%s' has no action matching '%s'", av.app.id, av.Version, name)
+	info("App %q version %q has no action matching %q", av.app.id, av.Version, name)
 	return nil
 }
 

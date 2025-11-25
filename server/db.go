@@ -356,7 +356,7 @@ func db_upgrade() {
 	}
 }
 
-// Open a database file for a user, creating it if necessary
+// Open a database file for an internal app, creating it if necessary
 func db_user(u *User, file string, create func(*DB)) *DB {
 	path := fmt.Sprintf("users/%d/%s", u.ID, file)
 	if file_exists(data_dir + "/" + path) {

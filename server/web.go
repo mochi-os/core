@@ -298,6 +298,7 @@ func web_path(c *gin.Context) {
 	web_root(c)
 }
 
+//TODO Remove web_error()?
 func web_error(c *gin.Context, code int, message string, values ...any) {
 	web_template(c, code, "error", fmt.Sprintf(message, values...))
 }

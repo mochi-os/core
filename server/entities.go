@@ -118,7 +118,7 @@ func entity_id() (string, string, string) {
 		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
 			return id, base58_encode(private), fingerprint
 		}
-		debug("Identity '%s', fingerprint '%s' already in use. Trying another...", id, fingerprint)
+		debug("Identity %q, fingerprint %q already in use. Trying another...", id, fingerprint)
 	}
 
 	return "", "", ""
@@ -170,13 +170,13 @@ func entity_sign(entity string, s string) string {
 	db := db_open("db/users.db")
 	var e Entity
 	if !db.scan(&e, "select private from entities where id=?", entity) {
-		warn("Signature entity '%s' not found", entity)
+		warn("Signature entity %q not found", entity)
 		return ""
 	}
 
 	private := base58_decode(e.Private, "")
 	if string(private) == "" {
-		warn("Signature entity '%s' empty private key", entity)
+		warn("Signature entity %q empty private key", entity)
 		return ""
 	}
 

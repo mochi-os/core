@@ -47,7 +47,7 @@ func thumbnail_create(path string) (string, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
-		warn("Unable to open image file '%s' to create thumbnail: %v", path, err)
+		warn("Unable to open image file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 	defer f.Close()
@@ -55,7 +55,7 @@ func thumbnail_create(path string) (string, error) {
 	// Read the file into memory so we can inspect EXIF and decode the image
 	b, err := io.ReadAll(f)
 	if err != nil {
-		info("Unable to decode image file '%s' to create thumbnail: %v", path, err)
+		info("Unable to decode image file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 
@@ -71,7 +71,7 @@ func thumbnail_create(path string) (string, error) {
 
 	i, format, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
-		warn("Unable to decode image file '%s' to create thumbnail: %v", path, err)
+		warn("Unable to decode image file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 
@@ -90,7 +90,7 @@ func thumbnail_create(path string) (string, error) {
 	tmp := thumb + ".tmp"
 	o, err = os.Create(tmp)
 	if err != nil {
-		warn("Unable to create temp thumbnail file '%s' to create thumbnail: %v", path, err)
+		warn("Unable to create temp thumbnail file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 	// ensure tmp is closed and removed on error
@@ -115,19 +115,19 @@ func thumbnail_create(path string) (string, error) {
 
 	if err != nil {
 		close_and_remove_tmp(true)
-		info("Unable to encode image file '%s' to create thumbnail: %v", path, err)
+		info("Unable to encode image file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 
 	if err := o.Close(); err != nil {
 		_ = os.Remove(tmp)
-		info("unable to close thumbnail file '%s': %w", tmp, err)
+		info("unable to close thumbnail file %q: %w", tmp, err)
 		return "", err
 	}
 
 	if err := os.Rename(tmp, thumb); err != nil {
 		_ = os.Remove(tmp)
-		info("unable to move thumbnail into place '%s': %w", thumb, err)
+		info("unable to move thumbnail into place %q: %w", thumb, err)
 		return "", err
 	}
 

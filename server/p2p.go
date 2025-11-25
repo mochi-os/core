@@ -35,7 +35,7 @@ var (
 // Peer discovered using multicast DNS
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
-		debug("P2P received mDNS event from '%s' at '%s'", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
+		debug("P2P received mDNS event from %q at %q", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_discovered_address(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_connect(p.ID.String())
 	}
@@ -43,20 +43,20 @@ func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 
 // Connect to a peer
 func p2p_connect(peer string, addresses []string) bool {
-	debug("P2P connecting to peer '%s' at %v", peer, addresses)
+	debug("P2P connecting to peer %q at %v", peer, addresses)
 	var err error
 
 	var ai p2p_peer.AddrInfo
 	ai.ID, err = p2p_peer.Decode(peer)
 	if err != nil {
-		warn("P2P ignoring invalid peer ID '%s': %v", peer, err)
+		warn("P2P ignoring invalid peer ID %q: %v", peer, err)
 		return false
 	}
 
 	for _, address := range addresses {
 		ma, err := multiaddr.NewMultiaddr(address)
 		if err != nil {
-			warn("P2P ignoring invalid peer address '%s': %v", address, err)
+			warn("P2P ignoring invalid peer address %q: %v", address, err)
 			continue
 		}
 
@@ -70,17 +70,17 @@ func p2p_connect(peer string, addresses []string) bool {
 	}
 
 	if len(ai.Addrs) == 0 {
-		warn("P2P peer '%s' has no valid addresses", peer)
+		warn("P2P peer %q has no valid addresses", peer)
 		return false
 	}
 
 	err = p2p_me.Connect(p2p_context, ai)
 	if err != nil {
-		info("P2P error connecting to '%s': %v", peer, err)
+		info("P2P error connecting to %q: %v", peer, err)
 		return false
 	}
 
-	debug("P2P connected to peer '%s'", peer)
+	debug("P2P connected to peer %q", peer)
 	return true
 }
 
@@ -92,7 +92,7 @@ func p2p_pubsubs() {
 		m := must(s.Next(p2p_context))
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
-			debug("P2P received pubsub event from peer '%s'", peer)
+			debug("P2P received pubsub event from peer %q", peer)
 			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
 			peer_discovered(peer)
 			peer_connect(peer)
@@ -104,7 +104,7 @@ func p2p_pubsubs() {
 func p2p_receive_event_1(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
-	debug("P2P event from '%s' at '%s'", peer, address)
+	debug("P2P event from %q at %q", peer, address)
 
 	stream_receive(stream_rw(s, s), 1, peer)
 	peer_discovered_address(peer, address)
@@ -130,7 +130,7 @@ func p2p_start() {
 	port := ini_int("p2p", "port", 1443)
 	p2p_me = must(p2p.New(p2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), p2p.Identity(private)))
 	p2p_id = p2p_me.ID().String()
-	info("P2P listening on port %d with id '%s'", port, p2p_id)
+	info("P2P listening on port %d with id %q", port, p2p_id)
 
 	// Listen for connecting peers
 	p2p_me.SetStreamHandler("/mochi/messages/1", p2p_receive_event_1)
@@ -141,7 +141,7 @@ func p2p_start() {
 	// Add bootstrap peers
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
-			debug("Adding bootstrap peer '%s' at %v", p.ID, p.addresses)
+			debug("Adding bootstrap peer %q at %v", p.ID, p.addresses)
 			peer_add_known(p.ID, p.addresses)
 			go peer_connect(p.ID)
 		}
@@ -163,13 +163,13 @@ func p2p_start() {
 func p2p_stream(peer string) *Stream {
 	p, err := p2p_peer.Decode(peer)
 	if err != nil {
-		warn("P2P invalid peer '%s': %v", peer, err)
+		warn("P2P invalid peer %q: %v", peer, err)
 		return nil
 	}
 
 	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/messages/1")
 	if err != nil {
-		warn("P2P unable to create stream to '%s': %v'", peer, err)
+		warn("P2P unable to create stream to %q: %v'", peer, err)
 		return nil
 	}
 

@@ -51,7 +51,7 @@ func atoi(s string, def int64) int64 {
 func base58_decode(in string, def string) []byte {
 	out, _, err := base58.CheckDecode(in)
 	if err != nil {
-		info("Base58 decoding error for '%s'; returning default '%s': %s", in, def, err)
+		info("Base58 decoding error for %q; returning default %q: %s", in, def, err)
 		return []byte(def)
 	}
 	return out
@@ -208,7 +208,7 @@ func time_local(u *User, t int64) string {
 	if err == nil {
 		return time.Unix(t, 0).In(l).Format(time.DateTime)
 	} else {
-		warn("Invalid time zone '%s':", err)
+		warn("Invalid time zone %q:", err)
 		return time.Unix(t, 0).Format(time.DateTime)
 	}
 }
@@ -229,7 +229,7 @@ func unzip(file string, destination string) error {
 		path := filepath.Join(destination, f.Name)
 
 		if !strings.HasPrefix(path, filepath.Clean(destination)+string(os.PathSeparator)) {
-			return fmt.Errorf("Invalid file path '%s'", path)
+			return fmt.Errorf("Invalid file path %q", path)
 		}
 
 		if f.FileInfo().IsDir() {
@@ -309,7 +309,7 @@ func url_request(method string, url string, options map[string]string, headers m
 }
 
 func valid(s string, match string) bool {
-	//debug("Validating '%s' (%+v) as %s", s, s, match)
+	//debug("Validating %q (%+v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
 		return false
 	}

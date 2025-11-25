@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-//go:embed templates/en/*.tmpl templates/en/*/*.tmpl templates/en/*/*/*.tmpl
+//go:embed templates/en/*.tmpl
 var templates embed.FS
 
 // Call a web action

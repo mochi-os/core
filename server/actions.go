@@ -35,7 +35,7 @@ func action_id() int64 {
 
 func (a *Action) dump(values ...any) {
 	debug("Web dump: %+v", values...)
-	web_template(a.web, 200, "dev/dump", values...)
+	web_template(a.web, 200, "dump", values...)
 }
 
 func (a *Action) error(code int, message string, values ...any) {
@@ -68,6 +68,10 @@ func (a *Action) input(name string) string {
 
 func (a *Action) json(in any) {
 	a.web.JSON(200, in)
+}
+
+func (a *Action) redirect(code int, location string) {
+	a.web.Redirect(code, location)
 }
 
 func (a *Action) template(template string, format string, values ...any) {

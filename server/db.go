@@ -97,9 +97,7 @@ func db_create() {
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary
-// If called from within a Starlark fucntion to create, upgrade, or downgrade the database
-// schema, in_schema_change will be set to true to avoid locking within an existing lock
-func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
+func db_app(u *User, av *AppVersion, already_open bool) *DB {
 	if av.app == nil {
 		warn("Attempt to create database for unloaded app version")
 		return nil
@@ -111,8 +109,13 @@ func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
 	}
 
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
+	if already_open {
+		debug("Database app re-opening %q", path)
+	} else {
+		debug("Database app opening %q", path)
+	}
 
-	if !in_schema_change {
+	if !already_open {
 		// Lock everything below here to prevent race conditions in schema changes
 		l := lock(fmt.Sprintf("%d-%s", u.ID, av.app.id))
 		l.Lock()
@@ -123,7 +126,7 @@ func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
 		db := db_open(path)
 		db.user = u
 
-		if !in_schema_change {
+		if !already_open {
 			// Check if _settings table exists, if not create it with schema 0
 			if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
 				debug("Database '%s' missing _settings table; initializing with schema 0", path)
@@ -189,8 +192,8 @@ func db_app(u *User, av *AppVersion, in_schema_change bool) *DB {
 
 		return db
 
-	} else if !in_schema_change {
-		debug("Database file '%s' does not exist; creating", path)
+	} else if !already_open {
+		debug("Database file %q does not exist; creating", path)
 
 		if av.Database.Create.Function != "" {
 			db := db_open(path)

@@ -7,15 +7,17 @@ import (
 	"compress/gzip"
 	"embed"
 	"fmt"
-	"github.com/andybalholm/brotli"
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
-	sl "go.starlark.net/starlark"
+
 	"html/template"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/andybalholm/brotli"
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 type compress_writer struct {
@@ -162,13 +164,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		action.inputs[k] = v
 	}
 
+	// Parse JSON body and convert to strings for a.input()
 	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
-		//TODO Change to map[string]any?
-		var data map[string]string
+		var data map[string]any
 		err := c.ShouldBindJSON(&data)
 		if err == nil {
 			for key, value := range data {
-				action.inputs[key] = value
+				action.inputs[key] = any_to_string(value)
 			}
 		}
 	}

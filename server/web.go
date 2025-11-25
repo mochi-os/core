@@ -121,7 +121,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Set up database connections if needed
 	if a.active.Database.File != "" {
 		if user != nil {
-			user.db = db_app(user, a.active, true)
+			user.db = db_app(user, a.active, false)
 			if user.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -130,7 +130,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if owner != nil && (user == nil || owner.ID != user.ID) {
-			owner.db = db_app(owner, a.active, true)
+			owner.db = db_app(owner, a.active, false)
 			if owner.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true

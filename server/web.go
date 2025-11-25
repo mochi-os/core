@@ -307,7 +307,7 @@ func web_identity_create(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
 		// Not logged in; redirect to login
-		web_redirect(c, "/login")
+		c.Redirect(302, "/login")
 		return
 	}
 
@@ -323,14 +323,14 @@ func web_identity_create(c *gin.Context) {
 		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+c.PostForm("name"))
 	}
 
-	web_redirect(c, "/")
+	c.Redirect(302, "/")
 }
 
 // Basic login page + code handling
 func web_login(c *gin.Context) {
 	// If we already have a valid session, just go home
 	if u := web_auth(c); u != nil && u.Identity != nil {
-		web_redirect(c, "/")
+		c.Redirect(302, "/")
 		return
 	}
 
@@ -343,7 +343,7 @@ func web_login(c *gin.Context) {
 			return
 		}
 		web_cookie_set(c, "login", login_create(u.ID))
-		web_redirect(c, "/")
+		c.Redirect(302, "/")
 		return
 	}
 
@@ -374,10 +374,6 @@ func web_logout(c *gin.Context) {
 
 func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
-}
-
-func web_redirect(c *gin.Context, url string) {
-	web_template(c, http.StatusOK, "redirect", url)
 }
 
 // Handle / and any paths not handled by web_path()

@@ -117,6 +117,11 @@ func db_app(u *User, av *AppVersion) *DB {
 		return db
 	}
 
+	//Lock everything below here to prevent race conditions when modifying the schema
+	l := lock(path)
+	l.Lock()
+	defer l.Unlock()
+
 	if created {
 		debug("Database app creating %q", path)
 

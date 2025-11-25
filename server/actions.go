@@ -70,10 +70,6 @@ func (a *Action) json(in any) {
 	a.web.JSON(200, in)
 }
 
-func (a *Action) redirect(url string) {
-	a.web.Redirect(301, url)
-}
-
 func (a *Action) template(template string, format string, values ...any) {
 	switch format {
 	case "json":

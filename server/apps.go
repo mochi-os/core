@@ -334,7 +334,7 @@ func apps_manager() {
 
 // Read in an external app version from a directory
 func app_read(id string, base string) (*AppVersion, error) {
-	debug("App loading from %q", base)
+	debug("App loading %q", base)
 
 	// Load app manifest from app.json
 	if !file_exists(base + "/app.json") {
@@ -586,7 +586,7 @@ func (a *App) load_version(av *AppVersion) {
 	apps_lock.Unlock()
 
 	if latest == av.Version {
-		debug("App %q, %q version %q loaded and activated", av.labels["en"][av.Label], a.id, av.Version)
+		debug("App %q, %q version %q activated", av.labels["en"][av.Label], a.id, av.Version)
 	} else {
 		debug("App %q, %q version %q loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
 	}

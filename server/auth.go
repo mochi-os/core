@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
-	"net/http"
-	"time"
 )
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
@@ -18,26 +18,7 @@ type mochi_claims struct {
 	jwt.RegisteredClaims
 }
 
-// API login: request a code by email
-// TODO Remove api_login()?
-func api_login(c *gin.Context) {
-	var input struct {
-		Email string `json:"email"`
-	}
-	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	if !code_send(input.Email) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-// API handler: exchange a login code for a JWT token
+// Exchange a login code for a JWT token and login cookie
 func api_login_auth(c *gin.Context) {
 	var body struct {
 		Code string `json:"code"`
@@ -99,16 +80,6 @@ func api_login_auth(c *gin.Context) {
 	}
 
 	c.JSON(200, response)
-}
-
-// TODO Remove api_logout()?
-func api_logout(c *gin.Context) {
-	login := web_cookie_get(c, "login", "")
-	if login != "" {
-		login_delete(login)
-	}
-	web_cookie_unset(c, "login")
-	c.JSON(200, gin.H{"data": ""})
 }
 
 // Create a JWT using a specific HMAC secret

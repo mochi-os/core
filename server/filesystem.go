@@ -11,13 +11,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"syscall"
+	"unicode"
 )
 
 var (
-	match_leading_dots = regexp.MustCompile("^\\.+")
-	match_spaces       = regexp.MustCompile("\\s+")
-	match_unsafe       = regexp.MustCompile("[^0-9a-zA-Z-._]+")
+	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)
+	match_unsafe_chars        = regexp.MustCompile(`[\x00-\x1f\x7f/\\:*?"<>|]+`)
+	reserved_names            = map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true}
 )
 
 func file_create(path string) {
@@ -85,12 +87,41 @@ func file_move(old string, new string) {
 }
 
 func file_name_safe(s string) string {
-	s = match_spaces.ReplaceAllString(s, "_")
-	s = match_unsafe.ReplaceAllString(s, "")
-	s = match_leading_dots.ReplaceAllString(s, "")
-	if len(s) > 254 {
-		return s[:254]
+	s = match_unsafe_chars.ReplaceAllString(s, "")
+
+	s = strings.TrimFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '.'
+	})
+
+	s = match_repeated_separators.ReplaceAllString(s, "_")
+
+	s = strings.TrimLeft(s, ".")
+
+	if s == "" {
+		return "unnamed"
 	}
+
+	base := s
+	if idx := strings.LastIndex(s, "."); idx > 0 {
+		base = s[:idx]
+	}
+	if reserved_names[strings.ToUpper(base)] {
+		s = "_" + s
+	}
+
+	if len(s) > 240 {
+		ext := ""
+		i := strings.LastIndex(s, ".")
+		if i > 0 && len(s)-i <= 10 {
+			ext = s[i:]
+			s = s[:i]
+		}
+		if len(s) > 240-len(ext) {
+			s = s[:240-len(ext)]
+		}
+		s = strings.TrimRight(s, " ._-") + ext
+	}
+
 	return s
 }
 

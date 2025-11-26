@@ -392,7 +392,7 @@ func web_identity_create(c *gin.Context) {
 }
 
 // Handle login: request code via email (POST with JSON)
-func web_login(c *gin.Context) {
+func web_login_email(c *gin.Context) {
 	var input struct {
 		Email string `json:"email"`
 	}
@@ -451,8 +451,9 @@ func web_start() {
 	r.GET("/", web_root)
 	r.Static("/assets", share+"/assets")
 	r.Static("/images", share+"/images")
-	r.GET("/login", web_login)
-	r.POST("/login", web_login)
+	//TODO Rename login functions
+	r.GET("/login/email", web_login_email)
+	r.POST("/login/email", web_login_email)
 	r.POST("/login/auth", api_login_auth)
 	r.GET("/login/identity", web_identity_create)
 	r.POST("/login/identity", web_identity_create)

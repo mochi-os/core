@@ -102,8 +102,9 @@ func file_name_safe(s string) string {
 	}
 
 	base := s
-	if idx := strings.LastIndex(s, "."); idx > 0 {
-		base = s[:idx]
+	i := strings.LastIndex(s, ".")
+	if i > 0 {
+		base = s[:i]
 	}
 	if reserved_names[strings.ToUpper(base)] {
 		s = "_" + s

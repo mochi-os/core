@@ -19,6 +19,7 @@ type mochi_claims struct {
 }
 
 // Exchange a login code for a JWT token and login cookie
+// TODO Move to web_login_auth?
 func api_login_auth(c *gin.Context) {
 	var body struct {
 		Code string `json:"code"`

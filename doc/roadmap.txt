@@ -1,8 +1,8 @@
 Alistair:
 	Attachments
 	Make unavailable services non-fatal
-	Git server
 	Split api_globals
+	Git server
 
 Numan:
 	Web interface

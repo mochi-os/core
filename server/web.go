@@ -7,17 +7,15 @@ import (
 	"compress/gzip"
 	"embed"
 	"fmt"
-
+	"github.com/andybalholm/brotli"
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 	"html/template"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
-
-	"github.com/andybalholm/brotli"
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
-	sl "go.starlark.net/starlark"
 )
 
 type compress_writer struct {
@@ -300,6 +298,66 @@ func web_cors_middleware(c *gin.Context) {
 	c.Next()
 }
 
+// Handle login: request code via email (POST with JSON)
+func web_login_email(c *gin.Context) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if !code_send(input.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// Create an identity for a new user
+func web_login_identity(c *gin.Context) {
+	u := web_auth(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	var input struct {
+		Name    string `json:"name"`
+		Privacy string `json:"privacy"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to create identity: %s", err)})
+		return
+	}
+
+	// Simple notification hook
+	admin := ini_string("email", "admin", "")
+	if admin != "" {
+		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+input.Name)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// Log the user out
+func web_logout(c *gin.Context) {
+	login := web_cookie_get(c, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(c, "login")
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 // Render markdown as a template.HTML object so that Go's templates don't escape it
 func web_markdown(in string) template.HTML {
 	return template.HTML(markdown([]byte(in)))
@@ -357,66 +415,6 @@ func web_path(c *gin.Context) {
 	// No path found, pass to web_root()
 	debug("Web path not found, calling root")
 	web_root(c)
-}
-
-// Create an identity for a new user
-func web_login_identity(c *gin.Context) {
-	u := web_auth(c)
-	if u == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	var input struct {
-		Name    string `json:"name"`
-		Privacy string `json:"privacy"`
-	}
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to create identity: %s", err)})
-		return
-	}
-
-	// Simple notification hook
-	admin := ini_string("email", "admin", "")
-	if admin != "" {
-		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+input.Name)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-// Handle login: request code via email (POST with JSON)
-func web_login_email(c *gin.Context) {
-	var input struct {
-		Email string `json:"email"`
-	}
-	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	if !code_send(input.Email) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-// Log the user out
-func web_logout(c *gin.Context) {
-	login := web_cookie_get(c, "login", "")
-	if login != "" {
-		login_delete(login)
-	}
-	web_cookie_unset(c, "login")
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func web_ping(c *gin.Context) {

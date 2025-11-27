@@ -108,7 +108,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
 		debug("Serving single file for app %q: %s", a.id, file)
-		web_cache_static(c, file)
+		//web_cache_static(c, file)
 		c.File(file)
 		return true
 	}
@@ -122,7 +122,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
 			debug("Serving file from directory for app %q: %s", a.id, file)
-			web_cache_static(c, file)
+			//web_cache_static(c, file)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -443,7 +443,7 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	r.Use(web_compression_middleware)
+	//r.Use(web_compression_middleware)
 	r.Use(web_cors_middleware)
 	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
 

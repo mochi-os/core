@@ -1,17 +1,26 @@
 Alistair:
 	Attachments
-	Make unavailable services non-fatal
 	Split api_globals
 	Git server
 
 Numan:
-	Web interface
+	Friends app
+	Chat app
+	Notifications app
+	Template app
+	App icons
 
 Zubair:
 	Feeds app
 	Forums app
 
 0.2:
+	Port apps to Next.js
+		App publisher app
+		Apps app
+		Home app
+			Use / path
+
 	Update wasabi to 0.2; then,
 		Add apps to App Market
 		Migrate attachments
@@ -26,7 +35,6 @@ Zubair:
 			Re-order attachments
 
 	Map web URLs to entities
-	Icons
 
 	User preferences app
 		View identity and fingerprint
@@ -79,6 +87,7 @@ Ongoing app development:
 	Market server app
 
 0.3:
+	Prettify web interface
 	Verified identities
 	User avatars
 

@@ -34,11 +34,13 @@ func action_id() int64 {
 	return id
 }
 
+// TODO Redesign web dump
 func (a *Action) dump(values ...any) {
 	debug("Web dump: %+v", values...)
 	web_template(a.web, 200, "dump", values...)
 }
 
+// TODO Remove web error once attachments are redesigned
 func (a *Action) error(code int, message string, values ...any) {
 	web_template(a.web, code, "error", fmt.Sprintf(message, values...))
 }
@@ -75,6 +77,7 @@ func (a *Action) redirect(code int, location string) {
 	a.web.Redirect(code, location)
 }
 
+// TODO Remove action template?
 func (a *Action) template(template string, format string, values ...any) {
 	switch format {
 	case "json":

@@ -413,7 +413,6 @@ func web_path(c *gin.Context) {
 	}
 
 	// No path found, pass to web_root()
-	debug("Web path not found, calling root")
 	web_root(c)
 }
 
@@ -453,7 +452,6 @@ func web_start() {
 	r.GET("/login", web_root)
 	r.POST("/login", web_root)
 	r.POST("/login/auth", web_login_auth)
-	r.GET("/login/email", web_login_email)
 	r.POST("/login/email", web_login_email)
 	r.GET("/login/identity", web_login_identity)
 	r.POST("/login/identity", web_login_identity)
@@ -480,6 +478,7 @@ func web_start() {
 }
 
 // Render a web template using embedded FS
+// TODO Remove web_template?
 func web_template(c *gin.Context, code int, file string, values ...any) {
 	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
 	if err != nil {

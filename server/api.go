@@ -802,15 +802,19 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	//debug("mochi.service.call() calling app %q service %q function %q args: %+v", a.id, service, function, args[2:])
+	debug("mochi.service.call() calling app %q service %q function %q args: %+v", a.id, service, function, args[2:])
 	var result sl.Value
 	var err error
+
 	if len(args) > 2 {
 		result, err = s.call(f.Function, args[2:])
 	} else {
 		result, err = s.call(f.Function, nil)
 	}
-	//debug("mochi.service.call() result '%+v', type %T", result, result)
+	debug("mochi.service.call() result '%+v', type %T", result, result)
+	if err != nil {
+		info("mochi.service.call() error: %v", err)
+	}
 
 	return result, err
 }

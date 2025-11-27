@@ -360,7 +360,7 @@ func web_path(c *gin.Context) {
 }
 
 // Create an identity for a new user
-func web_identity_create(c *gin.Context) {
+func web_login_identity(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
@@ -425,6 +425,7 @@ func web_ping(c *gin.Context) {
 
 // Handle / and any paths not handled by web_path()
 func web_root(c *gin.Context) {
+	debug("Web root serving index.html")
 	c.File(ini_string("directories", "share", "/usr/share/mochi") + "/index.html")
 }
 
@@ -451,13 +452,15 @@ func web_start() {
 	r.GET("/", web_root)
 	r.Static("/assets", share+"/assets")
 	r.Static("/images", share+"/images")
-	//TODO Rename login functions
+	r.GET("/login", web_root)
+	r.POST("/login", web_root)
+	r.POST("/login/auth", web_login_auth)
 	r.GET("/login/email", web_login_email)
 	r.POST("/login/email", web_login_email)
-	r.POST("/login/auth", api_login_auth)
-	r.GET("/login/identity", web_identity_create)
-	r.POST("/login/identity", web_identity_create)
+	r.GET("/login/identity", web_login_identity)
+	r.POST("/login/identity", web_login_identity)
 	r.GET("/logout", web_logout)
+	r.POST("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)
 

@@ -1,11 +1,13 @@
+// Mochi authentication and login
+// Copyright Alistair Cunningham 2025
+
 package main
 
 import (
 	"errors"
-	"time"
-
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
+	"time"
 )
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
@@ -19,8 +21,8 @@ type mochi_claims struct {
 }
 
 // Exchange a login code for a JWT token and login cookie
-// TODO Move to web_login_auth?
-func api_login_auth(c *gin.Context) {
+// TODO Do we still need login cookies?
+func web_login_auth(c *gin.Context) {
 	var body struct {
 		Code string `json:"code"`
 	}

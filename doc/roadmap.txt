@@ -1,16 +1,17 @@
 Alistair:
+	Access
 	Attachments
 	Split api_globals
 	Git server
 
 Numan:
-	Friends app
-	Chat app
-	Notifications app
 	Template app
 	App icons
 
 Zubair:
+	Friends app
+	Chat app
+	Notifications app
 	Feeds app
 	Forums app
 
@@ -45,6 +46,7 @@ Zubair:
 		DNS domains and URLs
 
 	Remove unused templates
+	Reset versions to 1
 	License
 
 Ongoing app development:

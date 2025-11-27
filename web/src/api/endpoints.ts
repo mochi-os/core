@@ -1,6 +1,6 @@
 const endpoints = {
   auth: {
-    login: '/login',
+    login: '/login/email',
     signup: '/signup',
     verify: '/login/auth',
     logout: '/logout',

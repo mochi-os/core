@@ -89,11 +89,13 @@ func (a *Action) template(template string, format string, values ...any) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"dump", "error", "input", "json", "logout", "redirect", "template", "upload", "user"}
+	return []string{"access_require", "dump", "error", "input", "json", "logout", "redirect", "template", "upload", "user"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
+	case "access_require":
+		return sl.NewBuiltin("access_require", a.sl_access_require), nil
 	case "dump":
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
@@ -133,6 +135,49 @@ func (a *Action) Truth() sl.Bool {
 
 func (a *Action) Type() string {
 	return "Action"
+}
+
+// mochi.access.require(resource, operation)
+func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <resource: string>, <operation: string>")
+	}
+
+	resource, ok := sl.AsString(args[0])
+	if !ok || resource == "" {
+		return sl_error(fn, "invalid resource")
+	}
+
+	operation, ok := sl.AsString(args[1])
+	if !ok || operation == "" {
+		return sl_error(fn, "invalid operation")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	user := ""
+	role := ""
+	if a.user != nil {
+		if a.user.Identity != nil {
+			user = a.user.Identity.ID
+		}
+		role = a.user.Role
+	}
+
+	db := db_app(owner, app.active)
+	if !db.access_check(user, role, resource, operation) {
+		return sl_error(fn, "access denied")
+	}
+
+	return sl.None, nil
 }
 
 // Dump the variables passed for debugging

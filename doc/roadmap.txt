@@ -1,5 +1,4 @@
 Alistair:
-	Access
 	Attachments
 	Split api_globals
 	Git server
@@ -46,7 +45,7 @@ Zubair:
 		DNS domains and URLs
 
 	Remove unused templates
-	Reset versions to 1
+	Reset versions: app protocol, database schema
 	License
 
 Ongoing app development:

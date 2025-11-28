@@ -94,14 +94,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Role checks
-	if a.active.Requires.Role == "administrator" {
-		if user == nil || user.Role != "administrator" {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
-			return true
-		}
-	}
-
 	// Serve static file
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
@@ -153,6 +145,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			defer owner.db.close()
 		}
+	}
+
+	// Check access
+	if aa.Access.Resource != "" && owner != nil && owner.db != nil && !owner.db.access_check_operation(user, aa) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return true
 	}
 
 	// Create action

@@ -20,6 +20,7 @@ var (
 func init() {
 	api_globals = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
+			"access": api_access,
 			"app": sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 				"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
 				"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
@@ -52,6 +53,7 @@ func init() {
 				"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
 				"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
 			}),
+			"group": api_group,
 			"log": sls.FromStringDict(sl.String("mochi.log"), sl.StringDict{
 				"debug": sl.NewBuiltin("mochi.log.debug", api_log),
 				"info":  sl.NewBuiltin("mochi.log.info", api_log),
@@ -120,9 +122,6 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	apps_lock.Lock()
 	for _, a := range apps {
-		if a.active.Requires.Role == "administrator" && user.Role != "administrator" {
-			continue
-		}
 		for _, i := range a.active.Icons {
 			path := a.fingerprint
 			if len(a.active.Paths) > 0 {

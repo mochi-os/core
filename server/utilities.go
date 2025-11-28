@@ -11,6 +11,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/btcsuite/btcutil/base58"
+	cbor "github.com/fxamacker/cbor/v2"
+	md "github.com/gomarkdown/markdown"
+	"github.com/google/uuid"
 	"io"
 	"math/big"
 	"net/http"
@@ -22,11 +26,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/btcsuite/btcutil/base58"
-	cbor "github.com/fxamacker/cbor/v2"
-	md "github.com/gomarkdown/markdown"
-	"github.com/google/uuid"
 )
 
 const (
@@ -371,6 +370,8 @@ func valid(s string, match string) bool {
 		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
 	case "natural":
 		match = "^\\d{1,9}$"
+	case "parampath":
+		match = "^[0-9a-zA-Z/:_-]{1,200}$"
 	case "path":
 		match = "^[0-9a-zA-Z-/]{0,1000}$"
 	case "postive":

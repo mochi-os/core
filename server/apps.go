@@ -25,6 +25,10 @@ type AppAction struct {
 	File     string `json:"file"`
 	Files    string `json:"files"`
 	Public   bool   `json:"public"`
+	Access   struct {
+		Resource  string `json:"resource"`
+		Operation string `json:"operation"`
+	} `json:"access"`
 
 	name              string            `json:"-"`
 	internal_function func(*Action)     `json:"-"`
@@ -53,9 +57,6 @@ type AppVersion struct {
 		Version int    `json:"version"`
 	} `json:"architecture"`
 	Execute  []string `json:"execute"`
-	Requires struct {
-		Role string `json:"role"`
-	} `json:"requires"`
 	Database struct {
 		Schema int    `json:"schema"`
 		File   string `json:"file"`
@@ -68,6 +69,7 @@ type AppVersion struct {
 		Downgrade struct {
 			Function string `json:"function"`
 		} `json:"downgrade"`
+		Helpers         []string  `json:"helpers"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons     []Icon                 `json:"icons"`
@@ -100,8 +102,9 @@ var (
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
 	}
-	apps      = map[string]*App{}
-	apps_lock = &sync.Mutex{}
+	apps        = map[string]*App{}
+	apps_lock   = &sync.Mutex{}
+	app_helpers = make(map[string]func(*DB))
 )
 
 // Get existing app, loading it into memory as new app if necessary
@@ -251,6 +254,11 @@ func app_for_service(service string) *App {
 	}
 
 	return nil
+}
+
+// Register a helper for all apps
+func app_helper(name string, setup func(*DB)) {
+	app_helpers[name] = setup
 }
 
 // Install an app from a zip file, but do not load it
@@ -407,6 +415,17 @@ func app_read(id string, base string) (*AppVersion, error) {
 		return nil, fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
 	}
 
+	access_helper_exists := false
+	for _, helper := range av.Database.Helpers {
+		_, ok := app_helpers[helper]
+		if !ok {
+			return nil, fmt.Errorf("unknown helper %q", helper)
+		}
+		if helper == "access" {
+			access_helper_exists = true
+		}
+	}
+
 	for _, i := range av.Icons {
 		if i.Action != "" && !valid(i.Action, "constant") {
 			return nil, fmt.Errorf("App bad icon action %q", i.Action)
@@ -436,6 +455,24 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 		if a.Files != "" && !valid(a.Files, "filepath") {
 			return nil, fmt.Errorf("App bad files path %q", a.Files)
+		}
+
+		if a.Access.Resource != "" {
+			if !valid(a.Access.Resource, "parampath") {
+				return nil, fmt.Errorf("action %q has invalid access resource", action)
+			}
+			if !access_helper_exists {
+				return nil, fmt.Errorf("action %q uses access but access helper not enabled", action)
+			}
+			if a.Access.Operation == "" {
+				return nil, fmt.Errorf("action %q has access resource but no access operation", action)
+			}
+			if !valid(a.Access.Operation, "constant") {
+				return nil, fmt.Errorf("action %q has invalid access operation", action)
+			}
+		}
+		if a.Access.Operation != "" && a.Access.Resource == "" {
+			return nil, fmt.Errorf("action %q has access operation but no access resource", action)
 		}
 	}
 

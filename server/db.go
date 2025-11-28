@@ -118,6 +118,7 @@ func db_app(u *User, av *AppVersion) *DB {
 	}
 
 	//Lock everything below here to prevent race conditions when modifying the schema
+	//TODO Replace with SQL transaction?
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
@@ -126,8 +127,6 @@ func db_app(u *User, av *AppVersion) *DB {
 		debug("Database app creating %q", path)
 
 		if av.Database.Create.Function != "" {
-			db := db_open(path)
-			db.user = u
 			s := av.starlark()
 			s.set("app", av.app)
 			s.set("user", u)
@@ -138,12 +137,10 @@ func db_app(u *User, av *AppVersion) *DB {
 				return nil
 			}
 			db.schema(av.Database.Schema)
-			return db
 
 		} else if av.Database.create_function != nil {
 			av.Database.create_function(db)
 			db.schema(av.Database.Schema)
-			return db
 
 		} else {
 			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
@@ -191,7 +188,6 @@ func db_app(u *User, av *AppVersion) *DB {
 				_, err := s.call(av.Database.Upgrade.Function, sl_encode_tuple(version))
 				if err != nil {
 					warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
-					return db
 				}
 				db.schema(version)
 			}
@@ -206,14 +202,21 @@ func db_app(u *User, av *AppVersion) *DB {
 				_, err := s.call(av.Database.Downgrade.Function, sl_encode_tuple(version))
 				if err != nil {
 					warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
-					return db
 				}
 				db.schema(version - 1)
 			}
 		}
-
-		return db
 	}
+
+	// Set up any helpers
+	for _, helper := range av.Database.Helpers {
+		setup, ok := app_helpers[helper]
+		if ok {
+			setup(db)
+		}
+	}
+
+	return db
 }
 
 func db_manager() {
@@ -294,6 +297,7 @@ func db_upgrade() {
 		if schema == 2 {
 			// Migration: ensure logins table has a 'secret' column for per-login JWT secrets.
 			// This runs for existing deployments which were created before the column was added.
+			//TODO Remove once wasabi is running 0.2
 			{
 				db := db_open("db/users.db")
 				// Check pragma for logins table columns

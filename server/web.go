@@ -381,7 +381,8 @@ func web_login_identity(c *gin.Context) {
 
 	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to create identity: %s", err)})
+		info("Identity creation error for user %d: %v", u.ID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to create identity"})
 		return
 	}
 

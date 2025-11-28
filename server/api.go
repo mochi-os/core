@@ -383,7 +383,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	u := t.Local("user").(*User)
 
 	db := db_open("db/directory.db")
-	ds := db.rows("select * from directory where class=? and name like ? order by name, created", class, "%"+search+"%")
+	ds := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
 
 	for _, d := range ds {
 		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))

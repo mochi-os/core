@@ -14,6 +14,7 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 	md "github.com/gomarkdown/markdown"
 	"github.com/google/uuid"
+	"github.com/microcosm-cc/bluemonday"
 	"io"
 	"math/big"
 	"net/http"
@@ -138,8 +139,10 @@ func lock(key string) *sync.Mutex {
 	return locks[key]
 }
 
+var markdown_policy = bluemonday.UGCPolicy()
+
 func markdown(in []byte) []byte {
-	return md.ToHTML(in, nil, nil)
+	return markdown_policy.SanitizeBytes(md.ToHTML(in, nil, nil))
 }
 
 func must[T any](v T, errors ...error) T {

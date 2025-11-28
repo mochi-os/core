@@ -27,11 +27,7 @@ func init() {
 				"install": sl.NewBuiltin("mochi.app.install", api_app_install),
 				"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
 			}),
-			"attachment": sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-				"get":  sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-				"put":  sl.NewBuiltin("mochi.attachment.put", api_attachment_put),
-				"save": sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-			}),
+			"attachment": api_attachment,
 			"db": sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
 				"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
 				"query":  sl.NewBuiltin("mochi.db.query", api_db_query),
@@ -221,85 +217,6 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	})
 
 	return sl_encode(results), nil
-}
-
-// Get attachments for an object
-func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <object: string>")
-	}
-
-	object, ok := sl.AsString(args[0])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object %q", object)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	attachments := attachments(user, object)
-	return sl_encode(structs_to_maps(*attachments)), nil
-}
-
-// Upload attachments for an object
-func api_attachment_put(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 4 {
-		return sl_error(fn, "syntax: <field: string>, <object: string>, <entity: string>, <save locally: boolean>")
-	}
-
-	field, ok := sl.AsString(args[0])
-	if !ok || !valid(field, "constant") {
-		return sl_error(fn, "field %q", field)
-	}
-
-	object, ok := sl.AsString(args[1])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object %q", object)
-	}
-
-	entity, ok := sl.AsString(args[2])
-	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity %q", entity)
-	}
-
-	local := bool(args[3].Truth())
-
-	a := t.Local("action").(*Action)
-	if a == nil {
-		return sl_error(fn, "called from non-action")
-	}
-
-	attachments := a.upload_attachments(field, entity, object, local)
-	return sl_encode(structs_to_maps(*attachments)), nil
-}
-
-// Save attachments
-func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 3 {
-		return sl_error(fn, "syntax: <attachments: array of dictionaries>, <object: string>, <entity: string>")
-	}
-
-	attachments := sl_decode_multi_strings(args[0])
-
-	object, ok := sl.AsString(args[1])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object %q", object)
-	}
-
-	entity, ok := sl.AsString(args[2])
-	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity %q", entity)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	attachments_save_maps(attachments, user, entity, object)
-	return sl.None, nil
 }
 
 // General database query

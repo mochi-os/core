@@ -31,7 +31,6 @@ type GroupMember struct {
 	Created int64  `db:"created"`
 }
 
-// TODO Update API documentation
 var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 	"create":      sl.NewBuiltin("mochi.group.create", api_group_create),
 	"get":         sl.NewBuiltin("mochi.group.get", api_group_get),

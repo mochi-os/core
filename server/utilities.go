@@ -122,14 +122,6 @@ func i64toa(in int64) string {
 	return strconv.FormatInt(in, 10)
 }
 
-func json_decode(out any, j string) bool {
-	err := json.Unmarshal([]byte(j), out)
-	if err != nil {
-		return false
-	}
-	return true
-}
-
 func json_encode(in any) string {
 	return string(must(json.Marshal(in)))
 }

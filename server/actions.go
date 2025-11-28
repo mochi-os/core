@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"sync"
@@ -34,15 +35,35 @@ func action_id() int64 {
 	return id
 }
 
-// TODO Redesign web dump
+// Dump values as formatted JSON in a simple HTML page
 func (a *Action) dump(values ...any) {
 	debug("Web dump: %+v", values...)
-	web_template(a.web, 200, "dump", values...)
+
+	a.web.Writer.WriteString("<html><head><title>Dump</title></head><body><pre>")
+
+	for i, v := range values {
+		if i > 0 {
+			a.web.Writer.WriteString("\n\n")
+		}
+		data, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			a.web.Writer.WriteString(fmt.Sprintf("Error encoding value %d: %v", i, err))
+		} else {
+			a.web.Writer.Write(data)
+		}
+	}
+
+	a.web.Writer.WriteString("</pre></body></html>")
 }
 
-// TODO Remove web error once attachments are redesigned
+// Display an error as a simple HTML page
 func (a *Action) error(code int, message string, values ...any) {
-	web_template(a.web, code, "error", fmt.Sprintf(message, values...))
+	a.web.Status(code)
+	a.web.Writer.WriteString("<html><head><title>Error</title></head><body>")
+	a.web.Writer.WriteString(fmt.Sprintf("<h1>Error %d</h1>", code))
+	a.web.Writer.WriteString("<pre>")
+	a.web.Writer.WriteString(fmt.Sprintf(message, values...))
+	a.web.Writer.WriteString("</pre></body></html>")
 }
 
 func (a *Action) input(name string) string {
@@ -75,16 +96,6 @@ func (a *Action) json(in any) {
 
 func (a *Action) redirect(code int, location string) {
 	a.web.Redirect(code, location)
-}
-
-// TODO Remove action template?
-func (a *Action) template(template string, format string, values ...any) {
-	switch format {
-	case "json":
-		a.json(values[0])
-	default:
-		web_template(a.web, 200, template, values...)
-	}
 }
 
 // Starlark methods
@@ -199,26 +210,32 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.None, nil
 }
 
-// Print an error
+// Print an error page
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 2 {
-		a.dump(args)
+	if len(args) < 1 {
+		a.error(500, "No error message provided")
 		return sl.None, nil
 	}
 
-	var code int
-	var format string
-	err := sl.UnpackArgs(fn.Name(), args, kwargs, "code", &code, "format", &format)
-	if err != nil {
-		return sl_error(fn, "%v", err)
+	code := 500
+	if len(args) >= 2 {
+		if c, err := sl.AsInt32(args[0]); err == nil {
+			code = int(c)
+			args = args[1:]
+		}
 	}
 
-	var vars []any
-	for _, v := range args[1:] {
-		vars = append(vars, sl_decode(v))
+	var parts []string
+	for _, arg := range args {
+		parts = append(parts, fmt.Sprintf("%v", sl_decode(arg)))
 	}
-	debug("%s() %d %s %+v", fn.Name(), code, format, vars)
-	a.error(code, format, vars...)
+	message := fmt.Sprintf("%s", parts)
+	if len(parts) == 1 {
+		message = parts[0]
+	}
+
+	debug("sl_error() %d %s", code, message)
+	a.error(code, "%s", message)
 
 	return sl.None, nil
 }
@@ -284,6 +301,7 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 }
 
 // Print template
+// TODO Remove include.html once all apps are migrated to React
 func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <template path: string>, [data: dictionary]")

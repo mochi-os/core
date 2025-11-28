@@ -7,15 +7,16 @@ import (
 	"compress/gzip"
 	"embed"
 	"fmt"
-	"github.com/andybalholm/brotli"
-	"github.com/gin-gonic/autotls"
-	"github.com/gin-gonic/gin"
-	sl "go.starlark.net/starlark"
 	"html/template"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/andybalholm/brotli"
+	"github.com/gin-gonic/autotls"
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 type compress_writer struct {
@@ -319,6 +320,40 @@ func web_login_email(c *gin.Context) {
 // Create an identity for a new user
 func web_login_identity(c *gin.Context) {
 	u := web_auth(c)
+
+	// If no cookie auth, try header / query-based authentication
+	if u == nil {
+		token := ""
+
+		// Authorization: Bearer <token>
+		auth_header := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth_header, "Bearer ") {
+			token = strings.TrimPrefix(auth_header, "Bearer ")
+		}
+		if token == "" {
+			token = c.GetHeader("X-Login")
+		}
+		if token == "" {
+			token = c.Query("login")
+		}
+
+		if token != "" {
+			// Prefer JWT
+			if uid, err := jwt_verify(token); err == nil && uid > 0 {
+				if user := user_by_id(uid); user != nil {
+					u = user
+					debug("Identity creation: JWT token accepted for user %d", u.ID)
+				}
+			} else {
+				// Fallback: legacy login token // TODO remove later
+				if user := user_by_login(token); user != nil {
+					u = user
+					debug("Identity creation: login token accepted for user %d", u.ID)
+				}
+			}
+		}
+	}
+
 	if u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return

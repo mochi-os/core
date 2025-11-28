@@ -41,7 +41,6 @@ func main() {
 	db_start()
 	apps_start()
 	p2p_start()
-	go cache_manager()
 	go entities_manager()
 	go directory_manager()
 	go peers_manager()

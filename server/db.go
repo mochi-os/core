@@ -88,12 +88,6 @@ func db_create() {
 
 	queue.exec("create table broadcasts ( id text not null primary key, data blob not null, created integer not null )")
 	queue.exec("create index broadcasts_created on broadcasts( created )")
-
-	// Cache
-	cache := db_open("db/cache.db")
-	cache.exec("create table attachments ( user integer not null, identity text not null, entity text not null, id text not null, thumbnail integer not null default 0, path text not null, created integer not null, primary key ( user, identity, entity, id, thumbnail ) )")
-	cache.exec("create index attachments_path on attachments( path )")
-	cache.exec("create index attachments_created on attachments( created )")
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary

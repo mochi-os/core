@@ -25,13 +25,12 @@ type Group struct {
 }
 
 type GroupMember struct {
-	Group   string
-	Member  string
-	Type    string
-	Created int64
+	Parent  string `db:"parent"`
+	Member  string `db:"member"`
+	Type    string `db:"type"`
+	Created int64  `db:"created"`
 }
 
-// TODO Update API documentation
 var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 	"create":      sl.NewBuiltin("mochi.group.create", api_group_create),
 	"get":         sl.NewBuiltin("mochi.group.get", api_group_get),
@@ -47,7 +46,7 @@ var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 // Create group tables
 func (db *DB) groups_setup() {
 	db.exec("create table if not exists _groups ( id text not null primary key, name text not null, description text not null default '', created integer not null)")
-	db.exec("create table if not exists _group_members ( group text not null, member text not null, type text not null, created integer not null, primary key( group, member ) )")
+	db.exec("create table if not exists _group_members ( parent text not null, member text not null, type text not null, created integer not null, primary key( parent, member ) )")
 	db.exec("create index if not exists _group_members_member on _group_members( member )")
 }
 
@@ -75,17 +74,17 @@ func (db *DB) group_memberships(user string) []string {
 		}
 		args[len(current)] = current_type
 
-		query := fmt.Sprintf("select group from _group_members where member in (%s) and type=?", placeholders)
+		query := fmt.Sprintf("select parent, member, type, created from _group_members where member in (%s) and type=?", placeholders)
 		var gms []GroupMember
 		db.scans(&gms, query, args...)
 
 		// Collect new groups for next iteration
 		var next []string
 		for _, gm := range gms {
-			if !seen[gm.Group] {
-				seen[gm.Group] = true
-				groups = append(groups, gm.Group)
-				next = append(next, gm.Group)
+			if !seen[gm.Parent] {
+				seen[gm.Parent] = true
+				groups = append(groups, gm.Parent)
+				next = append(next, gm.Parent)
 			}
 		}
 
@@ -100,7 +99,7 @@ func (db *DB) group_memberships(user string) []string {
 // Get members of a group
 func (db *DB) group_members(group string, recursive bool) []map[string]any {
 	if !recursive {
-		return db.rows("select member, type from _group_members where group=?", group)
+		return db.rows("select member, type from _group_members where parent=?", group)
 	}
 
 	// Recursive: expand nested groups
@@ -114,7 +113,7 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 		}
 
 		var gms []GroupMember
-		db.scans(&gms, "select member, type from _group_members where group=?", group)
+		db.scans(&gms, "select member, type from _group_members where parent=?", group)
 		for _, gm := range gms {
 			switch gm.Type {
 			case "user":
@@ -156,12 +155,12 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 			seen[g] = true
 
 			var gms []GroupMember
-			db.scans(&gms, "select group from _group_members where member=? and type='group'", g)
+			db.scans(&gms, "select parent, member, type, created from _group_members where member=? and type='group'", g)
 			for _, gm := range gms {
-				if gm.Group == group {
+				if gm.Parent == group {
 					return true
 				}
-				next = append(next, gm.Group)
+				next = append(next, gm.Parent)
 			}
 		}
 		current = next
@@ -314,7 +313,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	db := db_app(owner, app.active)
 
 	db.exec("delete from _groups where id=?", id)
-	db.exec("delete from _group_members where group=?", id)
+	db.exec("delete from _group_members where parent=?", id)
 	db.exec("delete from _group_members where member=? and type='group'", id)
 	db.exec("delete from _access where subject=?", "@"+id)
 
@@ -361,7 +360,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 
-	db.exec("replace into _group_members (group, member, type, created) values (?, ?, ?, ?)", group, member, member_type, now())
+	db.exec("replace into _group_members (parent, member, type, created) values (?, ?, ?, ?)", group, member, member_type, now())
 
 	return sl.None, nil
 }
@@ -393,7 +392,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
-	db.exec("delete from _group_members where group=? and member=?", group, member)
+	db.exec("delete from _group_members where parent=? and member=?", group, member)
 
 	return sl.None, nil
 }

@@ -191,6 +191,13 @@ func sl_encode(v any) sl.Value {
 	case string:
 		return sl.String(x)
 
+	case []string:
+		t := make([]sl.Value, len(x))
+		for i, r := range x {
+			t[i] = sl.String(r)
+		}
+		return sl.Tuple(t)
+
 	case int:
 		return sl.MakeInt(x)
 

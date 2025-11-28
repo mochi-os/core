@@ -122,14 +122,6 @@ func i64toa(in int64) string {
 	return strconv.FormatInt(in, 10)
 }
 
-func json_decode(out any, j string) bool {
-	err := json.Unmarshal([]byte(j), out)
-	if err != nil {
-		return false
-	}
-	return true
-}
-
 func json_encode(in any) string {
 	return string(must(json.Marshal(in)))
 }
@@ -326,7 +318,7 @@ func valid(s string, match string) bool {
 
 	switch match {
 	case "action":
-		match = "^[0-9a-zA-Z/-:]{1,100}$"
+		match = "^[0-9a-zA-Z/-:_]{1,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "entity":

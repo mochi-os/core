@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -350,8 +351,9 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	var av AppVersion
-	if !json_decode(&av, string(file_read(base+"/app.json"))) {
-		return nil, fmt.Errorf("App bad app.json '%s/app.json'; ignoring app", base)
+	err := json.Unmarshal(file_read(base+"/app.json"), &av)
+	if err != nil {
+		return nil, fmt.Errorf("App bad app.json '%s/app.json': %v", base, err)
 	}
 
 	av.base = base

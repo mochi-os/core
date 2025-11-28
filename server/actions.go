@@ -89,7 +89,7 @@ func (a *Action) template(template string, format string, values ...any) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "dump", "error", "input", "json", "logout", "redirect", "template", "upload", "user"}
+	return []string{"access_require", "dump", "error", "input", "json", "logout", "print", "redirect", "template", "upload", "user"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -106,6 +106,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("json", a.sl_json), nil
 	case "logout":
 		return sl.NewBuiltin("logout", a.sl_logout), nil
+	case "print":
+		return sl.NewBuiltin("print", a.sl_print), nil
 	case "redirect":
 		return sl.NewBuiltin("redirect", a.sl_redirect), nil
 	case "template":
@@ -252,6 +254,17 @@ func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	web_cookie_unset(a.web, "login")
 
+	return sl.None, nil
+}
+
+// Print raw content to browser
+func (a *Action) sl_print(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	for _, arg := range args {
+		s, ok := sl.AsString(arg)
+		if ok {
+			a.web.Writer.WriteString(s)
+		}
+	}
 	return sl.None, nil
 }
 

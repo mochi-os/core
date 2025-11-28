@@ -200,7 +200,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return true
 		}
-		c.JSON(http.StatusOK, sl_decode(result))
+		if result != sl.None {
+			c.JSON(http.StatusOK, sl_decode(result))
+		}
 
 	default:
 		info("Action unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)

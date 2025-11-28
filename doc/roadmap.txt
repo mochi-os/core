@@ -1,6 +1,10 @@
 Alistair:
 	Starlark function comments
 	Attachments
+		Edit existing objects
+			Add attachments
+			Delete attachments
+			Re-order attachments
 	Split api_globals
 	Git server
 
@@ -28,12 +32,6 @@ Zubair:
 		Choose which apps to install by default
 		Enable and test apps manager
 		Test directory download recent updates
-
-	Attachments
-		Edit existing objects
-			Add attachments
-			Delete attachments
-			Re-order attachments
 
 	Map web URLs to entities
 

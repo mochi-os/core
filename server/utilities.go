@@ -326,7 +326,7 @@ func valid(s string, match string) bool {
 
 	switch match {
 	case "action":
-		match = "^[0-9a-zA-Z/-:]{1,100}$"
+		match = "^[0-9a-zA-Z/-:_]{1,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "entity":

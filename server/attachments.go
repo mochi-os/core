@@ -46,6 +46,8 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"get":    sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
 	"data":   sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
 	"path":   sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"sync":   sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
+	"fetch":  sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
 func init() {
@@ -1057,23 +1059,39 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 }
 
 // Decode a Starlark value to a string list
+// Accepts strings, or dicts (extracts first string value from each dict)
 func sl_decode_string_list(v sl.Value) []string {
 	var result []string
 	switch x := v.(type) {
 	case *sl.List:
 		for i := 0; i < x.Len(); i++ {
-			if s, ok := sl.AsString(x.Index(i)); ok {
+			if s := sl_extract_string(x.Index(i)); s != "" {
 				result = append(result, s)
 			}
 		}
 	case sl.Tuple:
 		for _, item := range x {
-			if s, ok := sl.AsString(item); ok {
+			if s := sl_extract_string(item); s != "" {
 				result = append(result, s)
 			}
 		}
 	}
 	return result
+}
+
+// Extract a string from a Starlark value (string or first value of a dict)
+func sl_extract_string(v sl.Value) string {
+	if s, ok := sl.AsString(v); ok {
+		return s
+	}
+	if d, ok := v.(*sl.Dict); ok {
+		for _, kv := range d.Items() {
+			if s, ok := sl.AsString(kv[1]); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // Check if content type matches allowed patterns
@@ -1100,7 +1118,7 @@ func attachment_type_allowed(content_type string, allowed []string) bool {
 }
 
 // Event handler: attachment/create
-func attachment_event_create(e *Event) {
+func (e *Event) attachment_event_create() {
 	object := e.content["object"]
 	if object == "" {
 		return
@@ -1127,7 +1145,7 @@ func attachment_event_create(e *Event) {
 }
 
 // Event handler: attachment/insert
-func attachment_event_insert(e *Event) {
+func (e *Event) attachment_event_insert() {
 	object := e.content["object"]
 	if object == "" {
 		return
@@ -1164,7 +1182,7 @@ func attachment_event_insert(e *Event) {
 }
 
 // Event handler: attachment/update
-func attachment_event_update(e *Event) {
+func (e *Event) attachment_event_update() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
 		return
@@ -1190,7 +1208,7 @@ func attachment_event_update(e *Event) {
 }
 
 // Event handler: attachment/move
-func attachment_event_move(e *Event) {
+func (e *Event) attachment_event_move() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
 		return
@@ -1232,7 +1250,7 @@ func attachment_event_move(e *Event) {
 }
 
 // Event handler: attachment/delete
-func attachment_event_delete(e *Event) {
+func (e *Event) attachment_event_delete() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
 		return
@@ -1261,7 +1279,7 @@ func attachment_event_delete(e *Event) {
 }
 
 // Event handler: attachment/clear
-func attachment_event_clear(e *Event) {
+func (e *Event) attachment_event_clear() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
 		return
@@ -1289,7 +1307,7 @@ func attachment_event_clear(e *Event) {
 }
 
 // Event handler: attachment/data (responds with file bytes)
-func attachment_event_data(e *Event) {
+func (e *Event) attachment_event_data() {
 	if e.db == nil {
 		e.stream.write(map[string]string{"status": "500"})
 		return
@@ -1321,4 +1339,143 @@ func attachment_event_data(e *Event) {
 
 	e.stream.write(map[string]string{"status": "200"})
 	e.stream.write_file(path)
+}
+
+// mochi.attachment.sync(object, recipients) - sync existing attachments to recipients
+func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <object: string>, <recipients: array>")
+	}
+
+	object, ok := sl.AsString(args[0])
+	if !ok || !valid(object, "path") {
+		return sl_error(fn, "invalid object")
+	}
+
+	recipients := sl_decode_string_list(args[1])
+	if len(recipients) == 0 {
+		return sl.None, nil
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+
+	// Get existing attachments for object
+	var attachments []Attachment
+	db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+
+	if len(attachments) == 0 {
+		return sl_encode(0), nil
+	}
+
+	// Convert to maps for notification
+	var results []map[string]any
+	for _, att := range attachments {
+		results = append(results, att.to_map())
+	}
+
+	// Send to recipients using existing notify infrastructure
+	attachment_notify_create(app, owner, object, results, recipients)
+
+	return sl_encode(len(attachments)), nil
+}
+
+// mochi.attachment.fetch(object, entity) - request attachments from a remote entity
+func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <object: string>, <entity: string>")
+	}
+
+	object, ok := sl.AsString(args[0])
+	if !ok || !valid(object, "path") {
+		return sl_error(fn, "invalid object")
+	}
+
+	entity, ok := sl.AsString(args[1])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	from := ""
+	if owner.Identity != nil {
+		from = owner.Identity.ID
+	}
+	if from == "" {
+		return sl_error(fn, "no identity")
+	}
+
+	// Send fetch request to remote entity
+	m := message(from, entity, "app/"+app.id, "_attachment/fetch")
+	m.content = map[string]string{
+		"object": object,
+	}
+	m.send()
+
+	return sl.None, nil
+}
+
+// Event handler: attachment/fetch (responds with attachments for object)
+func (e *Event) attachment_event_fetch() {
+	object := e.content["object"]
+	if object == "" {
+		return
+	}
+
+	if e.db == nil {
+		return
+	}
+
+	// We need our identity to respond
+	if e.to == "" || !valid(e.to, "entity") {
+		return
+	}
+
+	// The requester
+	if e.from == "" || !valid(e.from, "entity") {
+		return
+	}
+
+	// Get attachments for this object that we own (entity is empty)
+	var attachments []Attachment
+	e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
+
+	if len(attachments) == 0 {
+		return
+	}
+
+	// Convert to maps
+	var results []map[string]any
+	for _, att := range attachments {
+		results = append(results, att.to_map())
+	}
+
+	// Send back to requester via _attachment/create event
+	m := message(e.to, e.from, e.service, "_attachment/create")
+	m.content = map[string]string{
+		"object": object,
+	}
+	m.add(results)
+	m.send()
 }

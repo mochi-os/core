@@ -104,25 +104,28 @@ func (e *Event) route() {
 		if has_attachments {
 			switch e.event {
 			case "_attachment/create":
-				attachment_event_create(e)
+				e.attachment_event_create()
 				return
 			case "_attachment/insert":
-				attachment_event_insert(e)
+				e.attachment_event_insert()
 				return
 			case "_attachment/update":
-				attachment_event_update(e)
+				e.attachment_event_update()
 				return
 			case "_attachment/move":
-				attachment_event_move(e)
+				e.attachment_event_move()
 				return
 			case "_attachment/delete":
-				attachment_event_delete(e)
+				e.attachment_event_delete()
 				return
 			case "_attachment/clear":
-				attachment_event_clear(e)
+				e.attachment_event_clear()
 				return
 			case "_attachment/data":
-				attachment_event_data(e)
+				e.attachment_event_data()
+				return
+			case "_attachment/fetch":
+				e.attachment_event_fetch()
 				return
 			}
 		}

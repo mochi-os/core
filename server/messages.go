@@ -33,7 +33,7 @@ func (m *Message) add(v any) *Message {
 // Publish an message to a pubsub
 func (m *Message) publish(allow_queue bool) {
 	debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
-	m.Signature = entity_sign(m.From, m.From+m.To+m.Service+m.Event)
+	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event)))
 	data := cbor_encode(&m)
 	data = append(data, cbor_encode(m.content)...)
 
@@ -72,7 +72,7 @@ func (m *Message) send_work(peer string) {
 		ok = false
 	}
 
-	m.Signature = entity_sign(m.From, m.From+m.To+m.Service+m.Event)
+	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event)))
 	headers := cbor_encode(m)
 	if ok {
 		ok = s.write_raw(headers) == nil

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	sl "go.starlark.net/starlark"
 	rd "runtime/debug"
+	"strings"
 	"sync"
 )
 
@@ -88,6 +89,46 @@ func (e *Event) route() {
 			return
 		}
 		defer e.db.close()
+	}
+
+	// Handle built-in attachment events for apps with attachments helper
+	if strings.HasPrefix(e.event, "_attachment/") && e.db != nil {
+		has_attachments := false
+		for _, h := range a.active.Database.Helpers {
+			if h == "attachments" {
+				has_attachments = true
+				break
+			}
+		}
+
+		if has_attachments {
+			switch e.event {
+			case "_attachment/create":
+				e.attachment_event_create()
+				return
+			case "_attachment/insert":
+				e.attachment_event_insert()
+				return
+			case "_attachment/update":
+				e.attachment_event_update()
+				return
+			case "_attachment/move":
+				e.attachment_event_move()
+				return
+			case "_attachment/delete":
+				e.attachment_event_delete()
+				return
+			case "_attachment/clear":
+				e.attachment_event_clear()
+				return
+			case "_attachment/data":
+				e.attachment_event_data()
+				return
+			case "_attachment/fetch":
+				e.attachment_event_fetch()
+				return
+			}
+		}
 	}
 
 	// Check which engine the app uses, and run it

@@ -45,12 +45,6 @@ func directory_create(e *Entity) {
 	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
 }
 
-// Delete a directory entry
-func directory_delete(id string) {
-	db := db_open("db/directory.db")
-	db.exec("delete from directory where id=?", id)
-}
-
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
 	for _, p := range peers_bootstrap {

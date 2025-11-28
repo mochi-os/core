@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"unicode"
 )
 
@@ -47,10 +46,6 @@ func file_exists(path string) bool {
 	return false
 }
 
-func file_glob(match string) []string {
-	return must(filepath.Glob(match))
-}
-
 func file_is_directory(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -75,10 +70,6 @@ func file_mkdir(path string) {
 
 func file_mkdir_for_file(path string) {
 	file_mkdir(filepath.Dir(path))
-}
-
-func file_mkfifo(path string) {
-	must(syscall.Mkfifo(path, 0600))
 }
 
 func file_move(old string, new string) {

@@ -5,13 +5,17 @@ package main
 
 import (
 	"context"
-	"strings"
-
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 	"nhooyr.io/websocket"
+	"strings"
 )
 
 var (
+	api_websocket = sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
+		"write": sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
+	})
 	websockets        = map[int]map[string]map[string]*websocket.Conn{}
 	websocket_context = context.Background()
 )
@@ -95,4 +99,24 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	if len(websockets[u.ID]) == 0 {
 		delete(websockets, u.ID)
 	}
+}
+
+// mochi.websocket.write(key, content)
+func sl_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <key: string>, <content: any>")
+	}
+
+	key, ok := sl.AsString(args[0])
+	if !ok || !valid(key, "constant") {
+		return sl_error(fn, "invalid key %q", key)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	websockets_send(user, key, sl_decode(args[1]))
+	return sl.None, nil
 }

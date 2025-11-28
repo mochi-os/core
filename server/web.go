@@ -30,6 +30,7 @@ var templates embed.FS
 
 var (
 	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}.js$`)
+	web_https   = false
 )
 
 // Call a web action
@@ -277,12 +278,22 @@ func web_cookie_get(c *gin.Context, name string, def string) string {
 
 // Set a cookie
 func web_cookie_set(c *gin.Context, name string, value string) {
-	c.SetCookie(name, value, 365*86400, "/", "", false, true)
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(name, value, 365*86400, "/", "", secure, true)
+}
+
+// Check if request is from localhost
+func web_is_localhost(c *gin.Context) bool {
+	ip := c.ClientIP()
+	return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
 }
 
 // Unset a cookie
 func web_cookie_unset(c *gin.Context, name string) {
-	c.SetCookie(name, "", -1, "/", "", false, true)
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(name, "", -1, "/", "", secure, true)
 }
 
 // Simple CORS middleware to allow browser clients
@@ -504,6 +515,7 @@ func web_start() {
 	r.NoRoute(web_path)
 
 	if len(domains) > 0 {
+		web_https = true
 		info("Web listening on HTTPS domains %v", domains)
 		must(autotls.Run(r, domains...))
 	} else {

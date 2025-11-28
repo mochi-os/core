@@ -139,6 +139,14 @@ func lock(key string) *sync.Mutex {
 	return locks[key]
 }
 
+// Escape special characters for SQL LIKE patterns
+func like_escape(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
+
 var markdown_policy = bluemonday.UGCPolicy()
 
 func markdown(in []byte) []byte {

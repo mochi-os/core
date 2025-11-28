@@ -118,7 +118,6 @@ func db_app(u *User, av *AppVersion) *DB {
 	}
 
 	//Lock everything below here to prevent race conditions when modifying the schema
-	//TODO Replace with SQL transaction?
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()

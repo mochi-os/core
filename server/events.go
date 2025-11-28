@@ -108,6 +108,12 @@ func (e *Event) route() {
 		ae.internal_function(e)
 
 	case "starlark":
+		// Reject events without a verified sender for Starlark apps
+		if e.from == "" {
+			info("Event dropping unsigned message to Starlark app %q", a.id)
+			return
+		}
+
 		if ae.Function == "" {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return

@@ -10,6 +10,7 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"nhooyr.io/websocket"
 	"strings"
+	"sync"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 		"write": sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
 	})
 	websockets        = map[int]map[string]map[string]*websocket.Conn{}
+	websockets_lock   sync.RWMutex
 	websocket_context = context.Background()
 )
 
@@ -48,6 +50,7 @@ func websocket_connection(c *gin.Context) {
 	id := uid()
 	defer websocket_terminate(ws, u, key, id)
 
+	websockets_lock.Lock()
 	_, found := websockets[u.ID]
 	if !found {
 		websockets[u.ID] = map[string]map[string]*websocket.Conn{}
@@ -57,6 +60,7 @@ func websocket_connection(c *gin.Context) {
 		websockets[u.ID][key] = map[string]*websocket.Conn{}
 	}
 	websockets[u.ID][key][id] = ws
+	websockets_lock.Unlock()
 	//debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
 
 	for {
@@ -76,20 +80,31 @@ func websocket_connection(c *gin.Context) {
 func websockets_send(u *User, key string, content any) {
 	//debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
 	j := ""
+	var failed []string
 
+	websockets_lock.RLock()
 	for id, ws := range websockets[u.ID][key] {
 		if j == "" {
 			j = json_encode(content)
 		}
 		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
-			websocket_terminate(ws, u, key, id)
+			failed = append(failed, id)
 		}
+	}
+	websockets_lock.RUnlock()
+
+	for _, id := range failed {
+		websockets_lock.RLock()
+		ws := websockets[u.ID][key][id]
+		websockets_lock.RUnlock()
+		websocket_terminate(ws, u, key, id)
 	}
 }
 
 func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	ws.CloseNow()
+	websockets_lock.Lock()
 	delete(websockets[u.ID][key], id)
 
 	if len(websockets[u.ID][key]) == 0 {
@@ -99,6 +114,7 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	if len(websockets[u.ID]) == 0 {
 		delete(websockets, u.ID)
 	}
+	websockets_lock.Unlock()
 }
 
 // mochi.websocket.write(key, content)

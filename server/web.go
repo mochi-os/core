@@ -200,7 +200,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return true
 		}
-		c.JSON(http.StatusOK, sl_decode(result))
+		if result != sl.None {
+			c.JSON(http.StatusOK, sl_decode(result))
+		}
 
 	default:
 		info("Action unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
@@ -472,25 +474,6 @@ func web_start() {
 	} else {
 		info("Web listening on '%s:%d'", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
-	}
-}
-
-// Render a web template using embedded FS
-// TODO Remove web_template?
-func web_template(c *gin.Context, code int, file string, values ...any) {
-	t, err := template.ParseFS(templates, "templates/en/"+file+".tmpl", "templates/en/include.tmpl")
-	if err != nil {
-		c.Status(http.StatusInternalServerError)
-		panic("Web template error: " + err.Error())
-	}
-	c.Status(code)
-	if len(values) > 0 {
-		err = t.Execute(c.Writer, values[0])
-	} else {
-		err = t.Execute(c.Writer, nil)
-	}
-	if err != nil {
-		panic("Web template error: " + err.Error())
 	}
 }
 

@@ -27,7 +27,6 @@ type Access struct {
 	Created   int64
 }
 
-// TODO Update API documentation
 var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	"allow": sl.NewBuiltin("mochi.access.allow", api_access_allow),
 	"clear": sls.FromStringDict(sl.String("mochi.access.clear"), sl.StringDict{

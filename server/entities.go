@@ -38,36 +38,6 @@ func entity_by_any(s string) *Entity {
 	return nil
 }
 
-// Get an entity by fingerprint
-func entity_by_fingerprint(in string) *Entity {
-	db := db_open("db/users.db")
-	var e Entity
-	if db.scan(&e, "select * from entities where fingerprint=?", in) {
-		return &e
-	}
-	return nil
-}
-
-// Get an entity by id
-func entity_by_id(id string) *Entity {
-	db := db_open("db/users.db")
-	var e Entity
-	if db.scan(&e, "select * from entities where id=?", id) {
-		return &e
-	}
-	return nil
-}
-
-// Get an entity for a user
-func entity_by_user_id(u *User, id string) *Entity {
-	db := db_open("db/users.db")
-	var e Entity
-	if db.scan(&e, "select * from entities where id=? and user=?", id, u.ID) {
-		return &e
-	}
-	return nil
-}
-
 // Create a new entity in the database
 func entity_create(u *User, class string, name string, privacy string, data string) (*Entity, error) {
 	db := db_open("db/users.db")

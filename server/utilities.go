@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	sha "crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/btcsuite/btcutil/base58"
@@ -88,14 +87,6 @@ func base58_decode(in string, def string) []byte {
 
 func base58_encode(in []byte) string {
 	return base58.CheckEncode(in, 0)
-}
-
-func cbor_decode(out any, in []byte) bool {
-	err := cbor.Unmarshal(in, out)
-	if err != nil {
-		return false
-	}
-	return true
 }
 
 func cbor_encode(in any) []byte {
@@ -182,10 +173,6 @@ func now() int64 {
 	return time.Now().Unix()
 }
 
-func now_string() string {
-	return strconv.FormatInt(time.Now().Unix(), 10)
-}
-
 func random_alphanumeric(length int) string {
 	out := make([]rune, length)
 	l := big.NewInt(int64(len(alphanumeric)))
@@ -194,12 +181,6 @@ func random_alphanumeric(length int) string {
 		out[i] = rune(alphanumeric[index.Int64()])
 	}
 	return string(out)
-}
-
-func sha1(in []byte) string {
-	s := sha.New()
-	s.Write(in)
-	return hex.EncodeToString(s.Sum(nil))
 }
 
 func structs_to_maps[T any](v []T) *[]map[string]any {

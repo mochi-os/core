@@ -54,11 +54,7 @@ func init() {
 				"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
 			}),
 			"group": api_group,
-			"log": sls.FromStringDict(sl.String("mochi.log"), sl.StringDict{
-				"debug": sl.NewBuiltin("mochi.log.debug", api_log),
-				"info":  sl.NewBuiltin("mochi.log.info", api_log),
-				"warn":  sl.NewBuiltin("mochi.log.warn", api_log),
-			}),
+			"log":   api_log,
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
@@ -84,10 +80,8 @@ func init() {
 				"post":   sl.NewBuiltin("mochi.url.post", api_url_request),
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
-			"valid": sl.NewBuiltin("mochi.valid", api_valid),
-			"websocket": sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
-				"write": sl.NewBuiltin("mochi.websocket.write", api_websocket_write),
-			}),
+			"valid":     sl.NewBuiltin("mochi.valid", api_valid),
+			"websocket": api_websocket,
 		}),
 	}
 }
@@ -644,43 +638,6 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.None, nil
 }
 
-// Log message from app
-func api_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 {
-		return sl_error(fn, "syntax: <format: string>, [values: variadic strings]")
-	}
-
-	format, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid format")
-	}
-
-	a, ok := t.Local("app").(*App)
-	if !ok || a == nil {
-		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
-	} else {
-		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), format)
-	}
-
-	values := make([]any, len(args)-1)
-	for i, a := range args[1:] {
-		values[i] = sl_decode(a)
-	}
-
-	switch fn.Name() {
-	case "mochi.log.debug":
-		debug(format, values...)
-
-	case "mochi.log.info":
-		info(format, values...)
-
-	case "mochi.log.warn":
-		warn(format, values...)
-	}
-
-	return sl.None, nil
-}
-
 // Render markdown
 func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -962,24 +919,4 @@ func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (
 	}
 
 	return sl_encode(valid(s, match)), nil
-}
-
-// Write data to all user's websockets listening on a given key
-func api_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <key: string>, <content: any>")
-	}
-
-	key, ok := sl.AsString(args[0])
-	if !ok || !valid(key, "constant") {
-		return sl_error(fn, "invalid key %q", key)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	websockets_send(user, key, sl_decode(args[1]))
-	return sl.None, nil
 }

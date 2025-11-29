@@ -60,6 +60,9 @@ func init() {
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
+			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
+				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
+			}),
 			"service": sls.FromStringDict(sl.String("mochi.service"), sl.StringDict{
 				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
 			}),
@@ -718,6 +721,11 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	return result, err
+}
+
+// mochi.server.version() -> string: Get the server version
+func api_server_version(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.String(build_version), nil
 }
 
 // mochi.stream(headers, content) -> Stream: Create a P2P stream to another entity

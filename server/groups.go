@@ -170,7 +170,7 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 	return false
 }
 
-// mochi.group.create(id, name, description?)
+// mochi.group.create(id, name, description?) -> dict: Create a new group
 func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return sl_error(fn, "syntax: <id: string>, <name: string>, [description: string]")
@@ -207,7 +207,7 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
 }
 
-// mochi.group.get(id)
+// mochi.group.get(id) -> dict or None: Get a group by ID
 func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -239,7 +239,7 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(row), nil
 }
 
-// mochi.group.list()
+// mochi.group.list() -> list: List all groups
 func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	app := t.Local("app").(*App)
 	if app == nil {
@@ -259,7 +259,7 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(rows), nil
 }
 
-// mochi.group.update(id, name?, description?)
+// mochi.group.update(id, name=..., description=...) -> None: Update a group
 func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>, name=..., description=...")
@@ -297,7 +297,7 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.group.delete(id)
+// mochi.group.delete(id) -> None: Delete a group and its memberships
 func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -328,7 +328,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.group.add(group, member, type)
+// mochi.group.add(group, member, type) -> None: Add a member to a group
 func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <group: string>, <member: string>, <type: 'user' or 'group'>")
@@ -373,7 +373,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl.None, nil
 }
 
-// mochi.group.remove(group, member)
+// mochi.group.remove(group, member) -> None: Remove a member from a group
 func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <group: string>, <member: string>")
@@ -405,7 +405,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.group.members(group, recursive?)
+// mochi.group.members(group, recursive?) -> list: Get members of a group
 func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <group: string>, [recursive: bool]")
@@ -435,7 +435,7 @@ func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(db.group_members(group, recursive)), nil
 }
 
-// mochi.group.memberships(user)
+// mochi.group.memberships(user) -> list: Get groups a user belongs to
 func api_group_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <user: string>")

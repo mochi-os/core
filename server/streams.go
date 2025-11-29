@@ -259,7 +259,7 @@ func (s *Stream) Type() string {
 	return "Stream"
 }
 
-// Read a segment
+// s.read() -> any: Read and decode the next segment from the stream
 func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var v any
 	err := s.read(&v)
@@ -269,7 +269,7 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(v), nil
 }
 
-// Read the rest of the stream as raw bytes, and write to a file
+// s.read_to_file(path) -> None: Read raw bytes from stream and write to file
 func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	debug("Stream %d reading rest of stream to file", s.id)
 	defer s.reader.Close()
@@ -301,7 +301,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	return sl.None, nil
 }
 
-// Write one or more segments
+// s.write(values...) -> None: Write one or more encoded segments to the stream
 func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	for _, a := range args {
 		err := s.write(sl_decode(a))
@@ -312,7 +312,7 @@ func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// Send a file as raw bytes
+// s.write_from_file(path) -> None: Send file contents as raw bytes
 func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	debug("Stream %d writing from file", s.id)
 	defer s.writer.Close()

@@ -166,7 +166,7 @@ func (db *DB) access_check_operation(u *User, aa *AppAction) bool {
 	return db.access_check(user, role, resource, operation)
 }
 
-// mochi.access.check(user, resource, operation)
+// mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource
 func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <user: string or None>, <resource: string>, <operation: string>")
@@ -215,17 +215,17 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.False, nil
 }
 
-// mochi.access.allow(subject, resource, operation, granter)
+// mochi.access.allow(subject, resource, operation, granter) -> None: Grant access
 func api_access_allow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_access_set(t, fn, args, true)
 }
 
-// mochi.access.deny(subject, resource, operation, granter)
+// mochi.access.deny(subject, resource, operation, granter) -> None: Deny access
 func api_access_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_access_set(t, fn, args, false)
 }
 
-// mochi.access.set(subject, resource, operation, granter)
+// mochi.access.allow/deny helper: Set access rule
 func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl.Value, error) {
 	if len(args) != 4 {
 		return sl_error(fn, "syntax: <subject: string>, <resource: string>, <operation: string>, <granter: string>")
@@ -266,7 +266,7 @@ func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl
 	return sl.None, nil
 }
 
-// mochi.access.revoke(subject, resource, operation)
+// mochi.access.revoke(subject, resource, operation) -> None: Remove an access rule
 func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <subject: string>, <resource: string>, <operation: string>")
@@ -302,7 +302,7 @@ func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.None, nil
 }
 
-// mochi.access.clear.resource(resource)
+// mochi.access.clear.resource(resource) -> None: Clear all access rules for a resource
 func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <resource: string>")
@@ -328,7 +328,7 @@ func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return sl.None, nil
 }
 
-// mochi.access.clear.subject(subject)
+// mochi.access.clear.subject(subject) -> None: Clear all access rules for a subject
 func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <subject: string>")
@@ -354,7 +354,7 @@ func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl.None, nil
 }
 
-// mochi.access.list_resource(resource)
+// mochi.access.list.resource(resource) -> list: List access rules for a resource
 func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <resource: string>")
@@ -383,7 +383,7 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl_encode(rows), nil
 }
 
-// mochi.access.list_subject(subject)
+// mochi.access.list.subject(subject) -> list: List access rules for a subject
 func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <subject: string>")

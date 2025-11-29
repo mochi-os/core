@@ -101,10 +101,10 @@ func p2p_pubsubs() {
 }
 
 // Receive event with protocol version 1 from p2p stream
-func p2p_receive_event_1(s p2p_network.Stream) {
+func p2p_receive_1(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
-	debug("P2P event from %q at %q", peer, address)
+	debug("P2P stream from %q at %q", peer, address)
 
 	stream_receive(stream_rw(s, s), 1, peer)
 	peer_discovered_address(peer, address)
@@ -133,7 +133,7 @@ func p2p_start() {
 	info("P2P listening on port %d with id %q", port, p2p_id)
 
 	// Listen for connecting peers
-	p2p_me.SetStreamHandler("/mochi/messages/1", p2p_receive_event_1)
+	p2p_me.SetStreamHandler("/mochi/1", p2p_receive_1)
 
 	// Watch event bus for disconnecting peers
 	go p2p_watch_disconnect()

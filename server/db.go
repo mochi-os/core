@@ -6,10 +6,13 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
 	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 type DB struct {
@@ -26,6 +29,12 @@ const (
 var (
 	databases      = map[string]*DB{}
 	databases_lock sync.Mutex
+
+	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
+		"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
+		"query":  sl.NewBuiltin("mochi.db.query", api_db_query),
+		"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
+	})
 )
 
 func db_create() {
@@ -223,8 +232,7 @@ func db_app(u *User, av *AppVersion) *DB {
 }
 
 func db_manager() {
-	for {
-		time.Sleep(time.Minute)
+	for range time.Tick(time.Minute) {
 		now := now()
 		var closers []*sqlx.DB
 
@@ -470,4 +478,58 @@ func (db *DB) scans(out any, query string, values ...any) error {
 func (db *DB) schema(version int) {
 	db.exec("create table if not exists _settings ( name text not null primary key, value text not null )")
 	db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", version)
+}
+
+// mochi.db.exists/row/query(sql, params...) -> bool/dict/list: Execute database query
+func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "syntax: <SQL statement: string>, [parameters: variadic strings]")
+	}
+
+	query, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid SQL statement %q", query)
+	}
+
+	as := sl_decode(args[1:]).([]any)
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "unknown app")
+	}
+
+	db := db_app(user, app.active)
+
+	switch fn.Name() {
+	case "mochi.db.exists":
+		exists, err := db.exists(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		if exists {
+			return sl.True, nil
+		}
+		return sl.False, nil
+
+	case "mochi.db.row":
+		row, err := db.row(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(row), nil
+
+	case "mochi.db.query":
+		rows, err := db.rows(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(rows), nil
+	}
+
+	return sl_error(fn, "invalid database query %q", fn.Name())
 }

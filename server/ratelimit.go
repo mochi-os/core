@@ -138,12 +138,10 @@ func rate_limit_login_middleware(c *gin.Context) {
 	c.Next()
 }
 
-// Start background cleanup goroutine
-func init() {
-	go func() {
-		for range time.Tick(time.Minute) {
-			rate_limit_api.cleanup()
-			rate_limit_login.cleanup()
-		}
-	}()
+// Background cleanup goroutine for expired rate limit entries
+func ratelimit_manager() {
+	for range time.Tick(time.Minute) {
+		rate_limit_api.cleanup()
+		rate_limit_login.cleanup()
+	}
 }

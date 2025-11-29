@@ -293,7 +293,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	if !file_write_from_reader(api_file(user, app, file), s.reader) {
+	if !file_write_from_reader(api_file_path(user, app, file), s.reader) {
 		return sl_error(fn, "unable to save file %q", file)
 	}
 
@@ -335,7 +335,7 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	if s.write_file(api_file(user, app, file)) != nil {
+	if s.write_file(api_file_path(user, app, file)) != nil {
 		return sl_error(fn, "unable to send file")
 	}
 

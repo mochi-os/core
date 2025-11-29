@@ -216,8 +216,7 @@ func peer_discovered_work(id string, address string) {
 
 // Clean up stale peers
 func peers_manager() {
-	for {
-		time.Sleep(24 * time.Hour)
+	for range time.Tick(24 * time.Hour) {
 		db := db_open("db/peers.db")
 		db.exec("delete from peers where updated<?", now()-30*86400)
 	}

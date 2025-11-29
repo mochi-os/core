@@ -148,8 +148,7 @@ func queue_peer_send(q *QueuePeer) bool {
 func queue_manager() {
 	db := db_open("db/queue.db")
 
-	for {
-		time.Sleep(time.Minute)
+	for range time.Tick(time.Minute) {
 		if peers_sufficient() {
 			var qe QueueEntity
 			if db.scan(&qe, "select * from entities limit 1 offset abs(random()) % max((select count(*) from entities), 1)") {

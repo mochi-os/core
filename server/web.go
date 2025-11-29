@@ -489,6 +489,7 @@ func web_start() {
 	r.SetTrustedProxies(nil)
 	//r.Use(web_compression_middleware)
 	r.Use(web_cors_middleware)
+	r.Use(rate_limit_api_middleware)
 	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
 
 	// Serve built-in paths
@@ -498,8 +499,8 @@ func web_start() {
 	r.Static("/images", share+"/images")
 	r.GET("/login", web_root)
 	r.POST("/login", web_root)
-	r.POST("/login/auth", web_login_auth)
-	r.POST("/login/email", web_login_email)
+	r.POST("/login/auth", rate_limit_login_middleware, web_login_auth)
+	r.POST("/login/email", rate_limit_login_middleware, web_login_email)
 	r.GET("/login/identity", web_login_identity)
 	r.POST("/login/identity", web_login_identity)
 	r.GET("/logout", web_logout)

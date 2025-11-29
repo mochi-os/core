@@ -26,11 +26,13 @@ func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
 		// Check Authorization header (Bearer token)
-		authHeader := c.GetHeader("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if userId, err := jwt_verify(token); err == nil && userId > 0 {
-				if user := user_by_id(userId); u != nil {
+		auth_header := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth_header, "Bearer ") {
+			token := strings.TrimPrefix(auth_header, "Bearer ")
+			user_id, err := jwt_verify(token)
+			if err == nil && user_id > 0 {
+				user := user_by_id(user_id)
+				if user != nil {
 					u = user
 					debug("API JWT token accepted for user %d", u.ID)
 				}

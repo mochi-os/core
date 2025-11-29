@@ -111,10 +111,9 @@ func user_by_login(login string) *User {
 func user_from_code(code string) *User {
 	var c Code
 	db := db_open("db/users.db")
-	if !db.scan(&c, "select * from codes where code=? and expires>=?", code, now()) {
+	if !db.scan(&c, "delete from codes where code=? and expires>=? returning *", code, now()) {
 		return nil
 	}
-	db.exec("delete from codes where code=?", code)
 
 	var u User
 	if db.scan(&u, "select * from users where username=?", c.Username) {

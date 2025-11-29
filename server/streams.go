@@ -239,7 +239,7 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 }
 
 func (s *Stream) Hash() (uint32, error) {
-	return sl.String(s.id).Hash()
+	return sl.String(fmt.Sprintf("%d", s.id)).Hash()
 }
 
 func (s *Stream) Freeze() {}

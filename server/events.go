@@ -218,7 +218,7 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 func (e *Event) Freeze() {}
 
 func (e *Event) Hash() (uint32, error) {
-	return sl.String(e.id).Hash()
+	return sl.String(fmt.Sprintf("%d", e.id)).Hash()
 }
 
 func (e *Event) String() string {

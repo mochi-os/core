@@ -28,11 +28,11 @@ func file_create(path string) {
 }
 
 func file_delete(path string) {
-	must(os.Remove(path))
+	os.Remove(path)
 }
 
 func file_delete_all(path string) {
-	must(os.RemoveAll(path))
+	os.RemoveAll(path)
 }
 
 func file_exists(path string) bool {

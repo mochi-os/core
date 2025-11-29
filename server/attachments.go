@@ -195,7 +195,6 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	var results []map[string]any
 	for i, fh := range files {
 		// Check size
-		// TODO: Get max size from app config
 		if fh.Size > attachment_max_size_default {
 			return sl_error(fn, "file too large: %d bytes", fh.Size)
 		}

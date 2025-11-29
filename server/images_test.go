@@ -100,14 +100,14 @@ func TestFixOrientation(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		orientation int
-		checkBounds func(image.Image) bool
+		name         string
+		orientation  int
+		check_bounds func(image.Image) bool
 	}{
 		{
 			name:        "orientation 0 (no change)",
 			orientation: 0,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				return b.Dx() == 10 && b.Dy() == 5
 			},
@@ -115,7 +115,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 1 (no change)",
 			orientation: 1,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				return b.Dx() == 10 && b.Dy() == 5
 			},
@@ -123,7 +123,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 2 (flip horizontal)",
 			orientation: 2,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				return b.Dx() == 10 && b.Dy() == 5
 			},
@@ -131,7 +131,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 3 (rotate 180)",
 			orientation: 3,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				return b.Dx() == 10 && b.Dy() == 5
 			},
@@ -139,7 +139,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 4 (flip vertical)",
 			orientation: 4,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				return b.Dx() == 10 && b.Dy() == 5
 			},
@@ -147,7 +147,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 5 (transpose)",
 			orientation: 5,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				// Transpose swaps dimensions
 				return b.Dx() == 5 && b.Dy() == 10
@@ -156,7 +156,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 6 (rotate 90 CW)",
 			orientation: 6,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				// Rotation swaps dimensions
 				return b.Dx() == 5 && b.Dy() == 10
@@ -165,7 +165,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 7 (transverse)",
 			orientation: 7,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				// Transverse swaps dimensions
 				return b.Dx() == 5 && b.Dy() == 10
@@ -174,7 +174,7 @@ func TestFixOrientation(t *testing.T) {
 		{
 			name:        "orientation 8 (rotate 270 CW)",
 			orientation: 8,
-			checkBounds: func(i image.Image) bool {
+			check_bounds: func(i image.Image) bool {
 				b := i.Bounds()
 				// Rotation swaps dimensions
 				return b.Dx() == 5 && b.Dy() == 10
@@ -189,7 +189,7 @@ func TestFixOrientation(t *testing.T) {
 				t.Error("fix_orientation returned nil")
 				return
 			}
-			if !tt.checkBounds(result) {
+			if !tt.check_bounds(result) {
 				b := result.Bounds()
 				t.Errorf("fix_orientation bounds check failed: got %dx%d", b.Dx(), b.Dy())
 			}

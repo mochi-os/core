@@ -40,6 +40,10 @@ func web_login_auth(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "invalid code"})
 		return
 	}
+
+	// Reset rate limit on successful login
+	rate_limit_login.reset(rate_limit_client_ip(c))
+
 	// create a legacy login entry (per-device) which stores a per-login secret
 	login := login_create(user.ID)
 

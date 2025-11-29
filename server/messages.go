@@ -41,7 +41,7 @@ func (m *Message) publish(allow_queue bool) {
 
 	if peers_sufficient() {
 		debug("Message sending via P2P pubsub")
-		p2p_pubsub_messages_1.Publish(p2p_context, data)
+		p2p_pubsub_1.Publish(p2p_context, data)
 
 	} else if allow_queue {
 		debug("Message not enough peers to publish, adding to queue")

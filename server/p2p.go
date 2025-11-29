@@ -29,7 +29,7 @@ var (
 	p2p_context           = context.Background()
 	p2p_id                string
 	p2p_me                p2p_host.Host
-	p2p_pubsub_messages_1 *p2p_pubsub.Topic
+	p2p_pubsub_1 *p2p_pubsub.Topic
 )
 
 // Peer discovered using multicast DNS
@@ -86,7 +86,7 @@ func p2p_connect(peer string, addresses []string) bool {
 
 // Join pubsubs
 func p2p_pubsubs() {
-	s := must(p2p_pubsub_messages_1.Subscribe())
+	s := must(p2p_pubsub_1.Subscribe())
 
 	for {
 		m := must(s.Next(p2p_context))
@@ -155,7 +155,7 @@ func p2p_start() {
 
 	// Start pubsubs
 	gs := must(p2p_pubsub.NewGossipSub(p2p_context, p2p_me))
-	p2p_pubsub_messages_1 = must(gs.Join("mochi/messages/1"))
+	p2p_pubsub_1 = must(gs.Join("mochi/1"))
 	go p2p_pubsubs()
 }
 
@@ -167,7 +167,7 @@ func p2p_stream(peer string) *Stream {
 		return nil
 	}
 
-	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/messages/1")
+	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/1")
 	if err != nil {
 		warn("P2P unable to create stream to %q: %v'", peer, err)
 		return nil

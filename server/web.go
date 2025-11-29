@@ -99,7 +99,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Serve static file
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
-		debug("Serving single file for app %q: %s", a.id, file)
+		debug("Serving single file for app %q: %q", a.id, file)
 		//web_cache_static(c, file)
 		c.File(file)
 		return true
@@ -113,7 +113,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
-			debug("Serving file from directory for app %q: %s", a.id, file)
+			debug("Serving file from directory for app %q: %q", a.id, file)
 			//web_cache_static(c, file)
 			c.File(file)
 		} else {
@@ -530,7 +530,7 @@ func web_start() {
 		info("Web listening on HTTPS domains %v", domains)
 		must(autotls.Run(r, domains...))
 	} else {
-		info("Web listening on '%s:%d'", listen, port)
+		info("Web listening on %q:%d", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
 	}
 }

@@ -13,9 +13,9 @@ import (
 // Test jwt_create_with_secret function
 func TestJwtCreateWithSecret(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
-	userId := 42
+	user_id := 42
 
-	token, err := jwt_create_with_secret(userId, secret)
+	token, err := jwt_create_with_secret(user_id, secret)
 	if err != nil {
 		t.Fatalf("jwt_create_with_secret failed: %v", err)
 	}
@@ -39,8 +39,8 @@ func TestJwtCreateWithSecret(t *testing.T) {
 		t.Error("Token is not valid")
 	}
 
-	if claims.User != userId {
-		t.Errorf("Token user = %d, want %d", claims.User, userId)
+	if claims.User != user_id {
+		t.Errorf("Token user = %d, want %d", claims.User, user_id)
 	}
 }
 
@@ -48,11 +48,11 @@ func TestJwtCreateWithSecret(t *testing.T) {
 func TestJwtCreateWithSecretUserIds(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
 
-	userIds := []int{0, 1, 100, 999999, -1}
-	for _, userId := range userIds {
-		token, err := jwt_create_with_secret(userId, secret)
+	user_ids := []int{0, 1, 100, 999999, -1}
+	for _, user_id := range user_ids {
+		token, err := jwt_create_with_secret(user_id, secret)
 		if err != nil {
-			t.Errorf("jwt_create_with_secret(%d) failed: %v", userId, err)
+			t.Errorf("jwt_create_with_secret(%d) failed: %v", user_id, err)
 			continue
 		}
 
@@ -61,12 +61,12 @@ func TestJwtCreateWithSecretUserIds(t *testing.T) {
 			return secret, nil
 		})
 		if err != nil {
-			t.Errorf("Failed to parse token for user %d: %v", userId, err)
+			t.Errorf("Failed to parse token for user %d: %v", user_id, err)
 			continue
 		}
 
-		if claims.User != userId {
-			t.Errorf("Token user = %d, want %d", claims.User, userId)
+		if claims.User != user_id {
+			t.Errorf("Token user = %d, want %d", claims.User, user_id)
 		}
 	}
 }
@@ -75,14 +75,14 @@ func TestJwtCreateWithSecretUserIds(t *testing.T) {
 func TestJwtCreateWithSecretDifferentSecrets(t *testing.T) {
 	secret1 := []byte("secret-one-12345678901234567890123")
 	secret2 := []byte("secret-two-12345678901234567890123")
-	userId := 42
+	user_id := 42
 
-	token1, err := jwt_create_with_secret(userId, secret1)
+	token1, err := jwt_create_with_secret(user_id, secret1)
 	if err != nil {
 		t.Fatalf("jwt_create_with_secret with secret1 failed: %v", err)
 	}
 
-	token2, err := jwt_create_with_secret(userId, secret2)
+	token2, err := jwt_create_with_secret(user_id, secret2)
 	if err != nil {
 		t.Fatalf("jwt_create_with_secret with secret2 failed: %v", err)
 	}
@@ -105,9 +105,9 @@ func TestJwtCreateWithSecretDifferentSecrets(t *testing.T) {
 // Test token expiration claims
 func TestJwtCreateWithSecretExpiry(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
-	userId := 42
+	user_id := 42
 
-	token, err := jwt_create_with_secret(userId, secret)
+	token, err := jwt_create_with_secret(user_id, secret)
 	if err != nil {
 		t.Fatalf("jwt_create_with_secret failed: %v", err)
 	}
@@ -139,10 +139,10 @@ func TestJwtCreateWithSecretExpiry(t *testing.T) {
 // Benchmark jwt_create_with_secret
 func BenchmarkJwtCreateWithSecret(b *testing.B) {
 	secret := []byte("benchmark-secret-key-1234567890123")
-	userId := 42
+	user_id := 42
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		jwt_create_with_secret(userId, secret)
+		jwt_create_with_secret(user_id, secret)
 	}
 }

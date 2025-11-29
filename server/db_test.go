@@ -10,25 +10,25 @@ import (
 )
 
 // Helper to create a test database
-func createTestDB(t *testing.T) (*DB, func()) {
+func create_test_db(t *testing.T) (*DB, func()) {
 	// Create a temp directory for the test database
-	tmpDir, err := os.MkdirTemp("", "mochi_db_test")
+	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
 	// Save original data_dir and set to temp
-	origDataDir := data_dir
-	data_dir = tmpDir
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
 
 	// Create test database
-	dbPath := "test.db"
-	db := db_open(dbPath)
+	db_path := "test.db"
+	db := db_open(db_path)
 
 	cleanup := func() {
 		db.close()
-		data_dir = origDataDir
-		os.RemoveAll(tmpDir)
+		data_dir = orig_data_dir
+		os.RemoveAll(tmp_dir)
 	}
 
 	return db, cleanup
@@ -36,7 +36,7 @@ func createTestDB(t *testing.T) (*DB, func()) {
 
 // Test db.exec creates tables
 func TestDBExec(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	// Create a test table
@@ -54,7 +54,7 @@ func TestDBExec(t *testing.T) {
 
 // Test db.exec with insert
 func TestDBExecInsert(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)")
@@ -75,7 +75,7 @@ func TestDBExecInsert(t *testing.T) {
 
 // Test db.exists function
 func TestDBExists(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
@@ -108,7 +108,7 @@ func TestDBExists(t *testing.T) {
 
 // Test db.integer function
 func TestDBInteger(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE counts (name TEXT PRIMARY KEY, count INTEGER)")
@@ -128,7 +128,7 @@ func TestDBInteger(t *testing.T) {
 
 // Test db.row function
 func TestDBRow(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
@@ -158,7 +158,7 @@ func TestDBRow(t *testing.T) {
 
 // Test db.row returns nil for no results
 func TestDBRowNotFound(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE empty_table (id INTEGER PRIMARY KEY)")
@@ -175,7 +175,7 @@ func TestDBRowNotFound(t *testing.T) {
 
 // Test db.rows function
 func TestDBRows(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)")
@@ -205,7 +205,7 @@ func TestDBRows(t *testing.T) {
 
 // Test db.rows with empty result
 func TestDBRowsEmpty(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE empty (id INTEGER PRIMARY KEY)")
@@ -222,7 +222,7 @@ func TestDBRowsEmpty(t *testing.T) {
 
 // Test db.rows with filtering
 func TestDBRowsFiltered(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE items (id INTEGER, category TEXT)")
@@ -243,7 +243,7 @@ func TestDBRowsFiltered(t *testing.T) {
 
 // Test db.scan with struct
 func TestDBScan(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE config (name TEXT PRIMARY KEY, value TEXT, enabled INTEGER)")
@@ -275,7 +275,7 @@ func TestDBScan(t *testing.T) {
 
 // Test db.scan returns false for no results
 func TestDBScanNotFound(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY)")
@@ -294,7 +294,7 @@ func TestDBScanNotFound(t *testing.T) {
 
 // Test db.scans with struct slice
 func TestDBScans(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
@@ -330,7 +330,7 @@ func TestDBScans(t *testing.T) {
 
 // Test db.schema creates _settings table
 func TestDBSchema(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.schema(5)
@@ -350,7 +350,7 @@ func TestDBSchema(t *testing.T) {
 
 // Test db.schema updates existing version
 func TestDBSchemaUpdate(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.schema(1)
@@ -365,15 +365,15 @@ func TestDBSchemaUpdate(t *testing.T) {
 
 // Test database path creation
 func TestDBOpenCreatesFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "mochi_db_test")
+	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer os.RemoveAll(tmp_dir)
 
-	origDataDir := data_dir
-	data_dir = tmpDir
-	defer func() { data_dir = origDataDir }()
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
 
 	// Create database in nested path
 	db := db_open("nested/path/test.db")
@@ -381,7 +381,7 @@ func TestDBOpenCreatesFile(t *testing.T) {
 	db.close()
 
 	// Verify file was created
-	path := filepath.Join(tmpDir, "nested", "path", "test.db")
+	path := filepath.Join(tmp_dir, "nested", "path", "test.db")
 	if !file_exists(path) {
 		t.Errorf("Database file should exist at %s", path)
 	}
@@ -389,7 +389,7 @@ func TestDBOpenCreatesFile(t *testing.T) {
 
 // Test concurrent database access
 func TestDBConcurrentAccess(t *testing.T) {
-	db, cleanup := createTestDB(t)
+	db, cleanup := create_test_db(t)
 	defer cleanup()
 
 	db.exec("CREATE TABLE counter (id INTEGER PRIMARY KEY, count INTEGER)")
@@ -414,12 +414,12 @@ func TestDBConcurrentAccess(t *testing.T) {
 
 // Benchmark db.exists
 func BenchmarkDBExists(b *testing.B) {
-	tmpDir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmpDir)
+	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
+	defer os.RemoveAll(tmp_dir)
 
-	origDataDir := data_dir
-	data_dir = tmpDir
-	defer func() { data_dir = origDataDir }()
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
 
 	db := db_open("bench.db")
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY)")
@@ -433,12 +433,12 @@ func BenchmarkDBExists(b *testing.B) {
 
 // Benchmark db.row
 func BenchmarkDBRow(b *testing.B) {
-	tmpDir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmpDir)
+	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
+	defer os.RemoveAll(tmp_dir)
 
-	origDataDir := data_dir
-	data_dir = tmpDir
-	defer func() { data_dir = origDataDir }()
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
 
 	db := db_open("bench.db")
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
@@ -452,12 +452,12 @@ func BenchmarkDBRow(b *testing.B) {
 
 // Benchmark db.rows
 func BenchmarkDBRows(b *testing.B) {
-	tmpDir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmpDir)
+	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
+	defer os.RemoveAll(tmp_dir)
 
-	origDataDir := data_dir
-	data_dir = tmpDir
-	defer func() { data_dir = origDataDir }()
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
 
 	db := db_open("bench.db")
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")

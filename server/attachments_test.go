@@ -183,28 +183,28 @@ func TestNormalizeObject(t *testing.T) {
 // Test copy_file function
 func TestCopyFile(t *testing.T) {
 	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "mochi_test")
+	tmp_dir, err := os.MkdirTemp("", "mochi_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer os.RemoveAll(tmp_dir)
 
-	srcPath := filepath.Join(tmpDir, "source.txt")
-	dstPath := filepath.Join(tmpDir, "dest.txt")
+	src_path := filepath.Join(tmp_dir, "source.txt")
+	dst_path := filepath.Join(tmp_dir, "dest.txt")
 	content := []byte("test content for copy")
 
 	// Create source file
-	if err := os.WriteFile(srcPath, content, 0644); err != nil {
+	if err := os.WriteFile(src_path, content, 0644); err != nil {
 		t.Fatalf("Failed to create source file: %v", err)
 	}
 
 	// Test copy
-	if err := copy_file(srcPath, dstPath); err != nil {
+	if err := copy_file(src_path, dst_path); err != nil {
 		t.Fatalf("copy_file failed: %v", err)
 	}
 
 	// Verify destination
-	result, err := os.ReadFile(dstPath)
+	result, err := os.ReadFile(dst_path)
 	if err != nil {
 		t.Fatalf("Failed to read destination: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestCopyFile(t *testing.T) {
 	}
 
 	// Test copy of non-existent file
-	err = copy_file(filepath.Join(tmpDir, "nonexistent"), dstPath)
+	err = copy_file(filepath.Join(tmp_dir, "nonexistent"), dst_path)
 	if err == nil {
 		t.Error("Expected error copying non-existent file, got nil")
 	}

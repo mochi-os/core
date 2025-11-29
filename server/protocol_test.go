@@ -47,14 +47,14 @@ func TestNonceCleanup(t *testing.T) {
 
 	// Check expired was removed
 	nonces_lock.Lock()
-	_, expiredExists := nonces["expired"]
-	_, validExists := nonces["valid"]
+	_, expired_exists := nonces["expired"]
+	_, valid_exists := nonces["valid"]
 	nonces_lock.Unlock()
 
-	if expiredExists {
+	if expired_exists {
 		t.Error("Expired nonce should have been cleaned up")
 	}
-	if !validExists {
+	if !valid_exists {
 		t.Error("Valid nonce should not have been cleaned up")
 	}
 }
@@ -67,9 +67,9 @@ func TestTimestampValidation(t *testing.T) {
 	nonces_lock.Unlock()
 
 	tests := []struct {
-		name      string
-		age       int64 // seconds from now (negative = future)
-		wantValid bool
+		name       string
+		age        int64 // seconds from now (negative = future)
+		want_valid bool
 	}{
 		{"current", 0, true},
 		{"1 minute ago", 60, true},
@@ -94,10 +94,10 @@ func TestTimestampValidation(t *testing.T) {
 			if age < 0 {
 				age = -age
 			}
-			isValid := age <= 300
+			is_valid := age <= 300
 
-			if isValid != tt.wantValid {
-				t.Errorf("Timestamp %d seconds from now: got valid=%v, want valid=%v", tt.age, isValid, tt.wantValid)
+			if is_valid != tt.want_valid {
+				t.Errorf("Timestamp %d seconds from now: got valid=%v, want valid=%v", tt.age, is_valid, tt.want_valid)
 			}
 		})
 	}

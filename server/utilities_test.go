@@ -85,9 +85,9 @@ func TestFingerprint(t *testing.T) {
 	}
 
 	// Empty string should still produce a fingerprint
-	fpEmpty := fingerprint("")
-	if len(fpEmpty) != 9 {
-		t.Errorf("empty string fingerprint length = %d, want 9", len(fpEmpty))
+	fp_empty := fingerprint("")
+	if len(fp_empty) != 9 {
+		t.Errorf("empty string fingerprint length = %d, want 9", len(fp_empty))
 	}
 }
 

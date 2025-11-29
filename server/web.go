@@ -4,26 +4,17 @@
 package main
 
 import (
-	"compress/gzip"
 	"embed"
 	"fmt"
 	"html/template"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
-
-type compress_writer struct {
-	io.Writer
-	gin.ResponseWriter
-	size int
-}
 
 //go:embed templates/en/*.tmpl
 var templates embed.FS
@@ -100,7 +91,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
 		debug("Serving single file for app %q: %q", a.id, file)
-		//web_cache_static(c, file)
+		web_cache_static(c, file)
 		c.File(file)
 		return true
 	}
@@ -114,7 +105,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
 			debug("Serving file from directory for app %q: %q", a.id, file)
-			//web_cache_static(c, file)
+			web_cache_static(c, file)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -227,44 +218,6 @@ func web_cache_static(c *gin.Context, path string) {
 		debug("Web asking browser to short term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=300")
 	}
-}
-
-// Compression middleware
-func web_compression_middleware(c *gin.Context) {
-	accept := c.GetHeader("Accept-Encoding")
-
-	var encoding string
-	if strings.Contains(accept, "br") {
-		encoding = "br"
-	} else if strings.Contains(accept, "gzip") {
-		encoding = "gzip"
-	} else {
-		c.Next()
-		return
-	}
-
-	if c.Writer.Header().Get("Content-Encoding") != "" {
-		c.Next()
-		return
-	}
-
-	var writer io.WriteCloser
-
-	switch encoding {
-	case "br":
-		writer = brotli.NewWriter(c.Writer)
-	case "gzip":
-		writer = gzip.NewWriter(c.Writer)
-	}
-
-	defer writer.Close()
-
-	c.Writer.Header().Set("Content-Encoding", encoding)
-	c.Writer.Header().Add("Vary", "Accept-Encoding")
-
-	cw := &compress_writer{Writer: writer, ResponseWriter: c.Writer}
-	c.Writer = cw
-	c.Next()
 }
 
 // Get the value of a cookie
@@ -495,7 +448,6 @@ func web_start() {
 	}
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
-	//r.Use(web_compression_middleware)
 	r.Use(web_security_headers)
 	r.Use(web_cors_middleware)
 	r.Use(rate_limit_api_middleware)
@@ -533,20 +485,4 @@ func web_start() {
 		info("Web listening on %q:%d", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
 	}
-}
-
-// Writer for compressed data
-func (g *compress_writer) Write(data []byte) (int, error) {
-	g.size += len(data)
-
-	if g.size < 1024 {
-		return g.ResponseWriter.Write(data)
-	}
-
-	ct := strings.ToLower(g.ResponseWriter.Header().Get("Content-Type"))
-	if strings.HasPrefix(ct, "text/") || strings.Contains(ct, "json") || strings.Contains(ct, "xml") || strings.Contains(ct, "javascript") || strings.Contains(ct, "svg") {
-		return g.Writer.Write(data)
-	}
-
-	return g.ResponseWriter.Write(data)
 }

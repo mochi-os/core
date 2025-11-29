@@ -82,7 +82,7 @@ func init() {
 	}
 }
 
-// Get details of an app
+// mochi.app.get(id) -> dict or None: Get details of an app
 func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -105,7 +105,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	return sl.None, nil
 }
 
-// Get available icons for home
+// mochi.app.icons() -> list: Get available icons for home screen
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	var results []map[string]string
@@ -132,7 +132,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(results), nil
 }
 
-// Install an app from a .zip file
+// mochi.app.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
 func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return sl_error(fn, "syntax: <app id: string>, <file: string>, [ check only: boolean]")
@@ -186,7 +186,7 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(av.Version), nil
 }
 
-// Get list of installed apps
+// mochi.app.list() -> list: Get list of installed apps
 func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var ids []string
 	apps_lock.Lock()
@@ -219,7 +219,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_encode(results), nil
 }
 
-// General database query
+// mochi.db.exists/row/query(sql, params...) -> bool/dict/list: Execute database query
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		return sl_error(fn, "syntax: <SQL statement: string>, [parameters: variadic strings]")
@@ -274,7 +274,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_error(fn, "invalid database query %q", fn.Name())
 }
 
-// Get a directory entry
+// mochi.directory.get(id) -> dict or None: Get a directory entry
 func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -298,7 +298,7 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(d), nil
 }
 
-// Directory search
+// mochi.directory.search(class, search, include_self) -> list: Search the directory
 func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <class: string>, <search: string>, <include self: boolean>")
@@ -349,7 +349,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl_encode(&o), nil
 }
 
-// Create a new entity
+// mochi.entity.create(class, name, privacy, data?) -> string: Create a new entity, returns ID
 func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
 		return sl_error(fn, "syntax: <class: string>, <name: string>, <privacy: string>, [data: string]")
@@ -391,7 +391,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(e.ID), nil
 }
 
-// Get the fingerprint of an entity
+// mochi.entity.fingerprint(id, hyphens?) -> string: Get the fingerprint of an entity
 func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <id: string>, [include hyphens: boolean]")
@@ -409,7 +409,7 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 }
 
-// Get an entity
+// mochi.entity.get(id) -> list: Get an entity owned by the current user
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -439,7 +439,7 @@ func api_file(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
 }
 
-// Delete a file
+// mochi.file.delete(file) -> None: Delete a file
 func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -464,7 +464,7 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.None, nil
 }
 
-// Return whether a file exists
+// mochi.file.exists(file) -> bool: Check whether a file exists
 func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -492,7 +492,7 @@ func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 }
 
-// List files in a subdirectory
+// mochi.file.list(subdirectory) -> list: List files in a subdirectory
 func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <subdirectory: string>")
@@ -524,7 +524,7 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(file_list(path)), nil
 }
 
-// Read a file into memory
+// mochi.file.read(file) -> bytes: Read a file into memory
 func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -548,7 +548,7 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(file_read(api_file(user, app, file))), nil
 }
 
-// Write a file from memory
+// mochi.file.write(file, data) -> None: Write a file from memory
 func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <file: string>, <data: array of bytes>")
@@ -579,7 +579,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.None, nil
 }
 
-// Render markdown
+// mochi.markdown.render(markdown) -> string: Render markdown to HTML
 func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <markdown: string>")
@@ -593,7 +593,7 @@ func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(string(markdown([]byte(in)))), nil
 }
 
-// Send a message
+// mochi.message.send(headers, content?, data?) -> None: Send a P2P message
 func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
@@ -643,7 +643,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// Return a random alphanumeric string
+// mochi.random.alphanumeric(length) -> string: Generate a random alphanumeric string
 func api_random_alphanumeric(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <length: integer>")
@@ -657,7 +657,7 @@ func api_random_alphanumeric(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(random_alphanumeric(length)), nil
 }
 
-// Call a function in another app
+// mochi.service.call(service, function, params...) -> any: Call a function in another app
 func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
 		return sl_error(fn, "syntax: <service: string>, <function: string>, [parameters: variadic any]")
@@ -720,7 +720,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return result, err
 }
 
-// Create a stream
+// mochi.stream(headers, content) -> Stream: Create a P2P stream to another entity
 func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <headers: dictionary>, <content: dictionary>")
@@ -765,7 +765,7 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	return s, nil
 }
 
-// Return the local time in the user's time zone
+// mochi.time.local(timestamp) -> dict: Convert Unix timestamp to local time in user's timezone
 func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <timestamp: int64>")
@@ -804,17 +804,17 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(time_local(user, time)), nil
 }
 
-// Return the current Unix time
+// mochi.time.now() -> int: Get the current Unix timestamp
 func api_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(now()), nil
 }
 
-// Get a UID
+// mochi.uid() -> string: Generate a unique ID
 func api_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(uid()), nil
 }
 
-// Request a URL
+// mochi.url.get/post/put/patch/delete(url, options?, headers?, body?) -> dict: Make HTTP request
 func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 4 {
 		return sl_error(fn, "syntax: <url: string>, [options: dictionary], [headers: dictionary], [body: string|dictionary]")
@@ -851,7 +851,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(map[string]any{"status": r.StatusCode, "headers": r.Header, "body": string(data)}), nil
 }
 
-// Check if a string is valid
+// mochi.valid(string, pattern) -> bool: Check if a string matches a validation pattern
 func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <string to check: string>, <pattern to match: string>")

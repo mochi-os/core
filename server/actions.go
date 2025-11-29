@@ -150,7 +150,7 @@ func (a *Action) Type() string {
 	return "Action"
 }
 
-// mochi.access.require(resource, operation)
+// a.access_require(resource, operation) -> None: Require access or raise error
 func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <resource: string>, <operation: string>")
@@ -193,7 +193,7 @@ func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	return sl.None, nil
 }
 
-// Dump the variables passed for debugging
+// a.dump(values...) -> None: Dump variables as formatted JSON for debugging
 func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) > 0 {
 		var vars []any
@@ -210,7 +210,7 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.None, nil
 }
 
-// Print an error page
+// a.error(code?, messages...) -> None: Display an error page
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		a.error(500, "No error message provided")
@@ -240,7 +240,7 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// Get input parameter
+// a.input(field) -> string: Get form/query input parameter
 func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
@@ -251,7 +251,7 @@ func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.String(a.input(field)), nil
 }
 
-// Print JSON
+// a.json(data) -> None: Send JSON response
 func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var v any
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "data", &v)
@@ -263,7 +263,7 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.None, nil
 }
 
-// Log the current user out
+// a.logout() -> None: Log the current user out
 func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	login := web_cookie_get(a.web, "login", "")
 	if login != "" {
@@ -274,7 +274,7 @@ func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.None, nil
 }
 
-// Print raw content to browser
+// a.print(strings...) -> None: Print raw content to browser
 func (a *Action) sl_print(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	for _, arg := range args {
 		s, ok := sl.AsString(arg)
@@ -285,7 +285,7 @@ func (a *Action) sl_print(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// Redirect the action
+// a.redirect(path) -> None: Redirect to another path
 func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
 	err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path)
@@ -300,7 +300,7 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl.None, nil
 }
 
-// Print template
+// a.template(path, data?) -> None: Render and output a template
 // TODO Remove include.html once all apps are migrated to React
 func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
@@ -338,7 +338,7 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl.None, nil
 }
 
-// Write the contents of an uploaded file
+// a.upload(field, file) -> None: Save an uploaded file
 func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <field: string>, <file: string>")

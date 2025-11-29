@@ -50,7 +50,7 @@ func warn(message string, values ...any) {
 	}
 }
 
-// mochi.log.debug(format, values...), mochi.log.info(format, values...), mochi.log.warn(format, values...)
+// mochi.log.debug/info/warn(format, values...) -> None: Write to application log
 func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		return sl_error(fn, "syntax: <format: string>, [values: variadic strings]")

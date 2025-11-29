@@ -119,7 +119,7 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	websockets_lock.Unlock()
 }
 
-// mochi.websocket.write(key, content)
+// mochi.websocket.write(key, content) -> None: Send content to connected WebSocket clients
 func sl_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <key: string>, <content: any>")

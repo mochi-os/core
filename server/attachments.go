@@ -124,7 +124,7 @@ func attachment_content_type(name string) string {
 	return ct
 }
 
-// mochi.attachment.save(object, field, captions?, descriptions?, notify?)
+// mochi.attachment.save(object, field, captions?, descriptions?, notify?) -> list: Save uploaded files as attachments
 func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 5 {
 		return sl_error(fn, "syntax: <object: string>, <field: string>, [captions: array], [descriptions: array], [notify: array]")
@@ -262,7 +262,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(results), nil
 }
 
-// mochi.attachment/create(object, name, data, content_type?, caption?, description?, notify?)
+// mochi.attachment.create(object, name, data, content_type?, caption?, description?, notify?) -> dict: Create an attachment from data
 func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 7 {
 		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, [content_type: string], [caption: string], [description: string], [notify: array]")
@@ -374,7 +374,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(result), nil
 }
 
-// mochi.attachment/insert(object, name, data, position, content_type?, caption?, description?, notify?)
+// mochi.attachment.insert(object, name, data, position, content_type?, caption?, description?, notify?) -> dict: Insert an attachment at position
 func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 4 || len(args) > 8 {
 		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, <position: int>, [content_type: string], [caption: string], [description: string], [notify: array]")
@@ -493,7 +493,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(result), nil
 }
 
-// mochi.attachment/update(id, caption, description, notify?)
+// mochi.attachment.update(id, caption, description, notify?) -> dict or None: Update attachment metadata
 func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
 		return sl_error(fn, "syntax: <id: string>, <caption: string>, <description: string>, [notify: array]")
@@ -553,7 +553,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(result), nil
 }
 
-// mochi.attachment/move(id, position, notify?)
+// mochi.attachment.move(id, position, notify?) -> dict: Move an attachment to a new position
 func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return sl_error(fn, "syntax: <id: string>, <position: int>, [notify: array]")
@@ -621,7 +621,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(result), nil
 }
 
-// mochi.attachment/delete(id, notify?)
+// mochi.attachment.delete(id, notify?) -> None: Delete an attachment
 func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <id: string>, [notify: array]")
@@ -674,7 +674,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.None, nil
 }
 
-// mochi.attachment/clear(object, notify?)
+// mochi.attachment.clear(object, notify?) -> None: Delete all attachments for an object
 func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <object: string>, [notify: array]")
@@ -726,7 +726,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// mochi.attachment.list(object)
+// mochi.attachment.list(object) -> list: List attachments for an object
 func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <object: string>")
@@ -763,7 +763,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(results), nil
 }
 
-// mochi.attachment.get(id)
+// mochi.attachment.get(id) -> dict or None: Get an attachment by ID
 func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -797,7 +797,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(att.to_map()), nil
 }
 
-// mochi.attachment/data(id)
+// mochi.attachment.data(id) -> bytes or None: Get attachment file data
 func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -843,7 +843,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(data), nil
 }
 
-// mochi.attachment.path(id) - returns file path for direct serving
+// mochi.attachment.path(id) -> string or None: Get file path for direct serving
 func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -1341,7 +1341,7 @@ func (e *Event) attachment_event_data() {
 	e.stream.write_file(path)
 }
 
-// mochi.attachment.sync(object, recipients) - sync existing attachments to recipients
+// mochi.attachment.sync(object, recipients) -> int: Sync attachments to recipients, returns count
 func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <object: string>, <recipients: array>")
@@ -1392,7 +1392,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(len(attachments)), nil
 }
 
-// mochi.attachment.fetch(object, entity) - request attachments from a remote entity
+// mochi.attachment.fetch(object, entity) -> list: Fetch attachments from a remote entity
 func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <object: string>, <entity: string>")

@@ -233,7 +233,7 @@ func (e *Event) Type() string {
 	return "Event"
 }
 
-// Get a content field
+// e.content(field, default?) -> string: Get a content field from the event
 func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <field: string>, [default: string]")
@@ -256,12 +256,12 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(""), nil
 }
 
-// Dump the event contents
+// e.dump() -> dict: Return event details as a dictionary
 func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "content": e.content}), nil
 }
 
-// Get a header
+// e.header(name) -> string: Get an event header (from, to, service, event)
 func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <header: string>")

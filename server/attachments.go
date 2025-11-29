@@ -72,7 +72,7 @@ func (db *DB) attachment_path(id string, name string) string {
 // Get the next rank for an object
 func (db *DB) attachment_next_rank(object string) int {
 	var max_rank int
-	row := db.row("select max(rank) as max_rank from _attachments where object=?", object)
+	row, _ := db.row("select max(rank) as max_rank from _attachments where object=?", object)
 	if row != nil && row["max_rank"] != nil {
 		switch v := row["max_rank"].(type) {
 		case int64:

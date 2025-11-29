@@ -138,7 +138,8 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 		new_object := normalize_object(app_name, att.Object)
 
 		// Check if already migrated
-		if new_db.exists("select 1 from _attachments where id = ?", att.ID) {
+		already_migrated, _ := new_db.exists("select 1 from _attachments where id = ?", att.ID)
+		if already_migrated {
 			skipped++
 			continue
 		}

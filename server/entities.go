@@ -44,7 +44,8 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	if !valid(name, "name") {
 		return nil, fmt.Errorf("Invalid name")
 	}
-	if !db.exists("select id from users where id=?", u.ID) {
+	user_exists, _ := db.exists("select id from users where id=?", u.ID)
+	if !user_exists {
 		return nil, fmt.Errorf("User not found")
 	}
 	if !valid(class, "constant") {
@@ -85,7 +86,8 @@ func entity_id() (string, string, string) {
 		check(err)
 		id := base58_encode(public)
 		fingerprint := fingerprint(id)
-		if !db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint) {
+		entity_exists, _ := db.exists("select id from entities where id=? or fingerprint=?", id, fingerprint)
+		if !entity_exists {
 			return id, base58_encode(private), fingerprint
 		}
 		debug("Identity %q, fingerprint %q already in use. Trying another...", id, fingerprint)

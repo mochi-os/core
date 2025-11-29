@@ -99,7 +99,8 @@ func (db *DB) group_memberships(user string) []string {
 // Get members of a group
 func (db *DB) group_members(group string, recursive bool) []map[string]any {
 	if !recursive {
-		return db.rows("select member, type from _group_members where parent=?", group)
+		rows, _ := db.rows("select member, type from _group_members where parent=?", group)
+		return rows
 	}
 
 	// Recursive: expand nested groups
@@ -228,7 +229,7 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(owner, app.active)
-	row := db.row("select * from _groups where id=?", id)
+	row, _ := db.row("select * from _groups where id=?", id)
 	if row == nil {
 		return sl.None, nil
 	}
@@ -248,7 +249,8 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_app(owner, app.active)
-	return sl_encode(db.rows("select * from _groups order by name")), nil
+	rows, _ := db.rows("select * from _groups order by name")
+	return sl_encode(rows), nil
 }
 
 // mochi.group.update(id, name?, description?)

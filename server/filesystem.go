@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -13,12 +14,23 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 var (
 	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)
 	match_unsafe_chars        = regexp.MustCompile(`[\x00-\x1f\x7f/\\:*?"<>|]+`)
 	reserved_names            = map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true}
+
+	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
+		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
+		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
+		"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
+		"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
+		"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
+	})
 )
 
 func file_create(path string) {
@@ -169,4 +181,149 @@ func file_write_from_reader(path string, r io.Reader) bool {
 	}
 
 	return true
+}
+
+// Helper function to get the path of a file
+func api_file_path(u *User, a *App, file string) string {
+	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
+}
+
+// mochi.file.delete(file) -> None: Delete a file
+func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	file_delete(api_file_path(user, app, file))
+	return sl.None, nil
+}
+
+// mochi.file.exists(file) -> bool: Check whether a file exists
+func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	if file_exists(api_file_path(user, app, file)) {
+		return sl.True, nil
+	} else {
+		return sl.False, nil
+	}
+}
+
+// mochi.file.list(subdirectory) -> list: List files in a subdirectory
+func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <subdirectory: string>")
+	}
+
+	dir, ok := sl.AsString(args[0])
+	if !ok || !valid(dir, "filepath") {
+		return sl_error(fn, "invalid directory %q", dir)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	path := api_file_path(user, app, dir)
+	if !file_exists(path) {
+		return sl_error(fn, "does not exist")
+	}
+	if !file_is_directory(path) {
+		return sl_error(fn, "not a directory")
+	}
+
+	return sl_encode(file_list(path)), nil
+}
+
+// mochi.file.read(file) -> bytes: Read a file into memory
+func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	return sl_encode(file_read(api_file_path(user, app, file))), nil
+}
+
+// mochi.file.write(file, data) -> None: Write a file from memory
+func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <file: string>, <data: array of bytes>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	data, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid file data")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	file_write(api_file_path(user, app, file), []byte(data))
+
+	return sl.None, nil
 }

@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 type App struct {
@@ -106,6 +109,13 @@ var (
 	apps        = map[string]*App{}
 	apps_lock   = &sync.Mutex{}
 	app_helpers = make(map[string]func(*DB))
+
+	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
+		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"install": sl.NewBuiltin("mochi.app.install", api_app_install),
+		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
+	})
 )
 
 // Get existing app, loading it into memory as new app if necessary
@@ -729,4 +739,141 @@ func (av *AppVersion) starlark() *Starlark {
 		av.starlark_runtime = starlark(av.Execute)
 	}
 	return av.starlark_runtime
+}
+
+// mochi.app.get(id) -> dict or None: Get details of an app
+func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid ID %q", id)
+	}
+
+	apps_lock.Lock()
+	a, found := apps[id]
+	apps_lock.Unlock()
+
+	if found {
+		user := t.Local("user").(*User)
+		return sl_encode(map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}), nil
+	}
+
+	return sl.None, nil
+}
+
+// mochi.app.icons() -> list: Get available icons for home screen
+func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	var results []map[string]string
+
+	apps_lock.Lock()
+	for _, a := range apps {
+		for _, i := range a.active.Icons {
+			path := a.fingerprint
+			if len(a.active.Paths) > 0 {
+				path = a.active.Paths[0]
+			}
+			if i.Action != "" {
+				path = path + "/" + i.Action
+			}
+			results = append(results, map[string]string{"path": path, "name": a.label(user, i.Label), "file": i.File})
+		}
+	}
+	apps_lock.Unlock()
+
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
+	return sl_encode(results), nil
+}
+
+// mochi.app.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
+func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return sl_error(fn, "syntax: <app id: string>, <file: string>, [ check only: boolean]")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || (id != "" && !valid(id, "entity")) {
+		return sl_error(fn, "invalid ID %q", id)
+	}
+	if id == "" {
+		id, _, _ = entity_id()
+		if id == "" {
+			return sl_error(fn, "unable to allocate id")
+		}
+	}
+
+	file, ok := sl.AsString(args[1])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	check_only := false
+	if len(args) > 2 {
+		check_only = bool(args[2].Truth())
+	}
+	debug("api_app_install() check only '%v'", check_only)
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	a, ok := t.Local("app").(*App)
+	if !ok || a == nil {
+		return sl_error(fn, "no app")
+	}
+
+	av, err := app_install(id, "", api_file_path(user, a, file), check_only)
+	if err != nil {
+		return sl_error(fn, fmt.Sprintf("App install failed: '%v'", err))
+	}
+
+	if !check_only {
+		na := app(id)
+		na.load_version(av)
+	}
+
+	return sl_encode(av.Version), nil
+}
+
+// mochi.app.list() -> list: Get list of installed apps
+func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var ids []string
+	apps_lock.Lock()
+	for id := range apps {
+		if valid(id, "entity") {
+			ids = append(ids, id)
+		}
+	}
+	apps_lock.Unlock()
+
+	user := t.Local("user").(*User)
+	results := make([]map[string]string, len(ids))
+	apps_lock.Lock()
+	for i, id := range ids {
+		a := apps[id]
+		if a == nil {
+			return sl_error(fn, "App %q is nil", id)
+		}
+		if a.active == nil {
+			return sl_error(fn, "App %q has no active version", id)
+		}
+		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}
+	}
+	apps_lock.Unlock()
+
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	})
+
+	return sl_encode(results), nil
 }

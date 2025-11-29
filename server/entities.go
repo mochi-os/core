@@ -7,9 +7,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
-	sl "go.starlark.net/starlark"
 	"strings"
 	"time"
+
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 type Entity struct {
@@ -24,6 +26,12 @@ type Entity struct {
 	Data        string `cbor:"data,omitempty" json:"data"`
 	Published   int64  `cbor:"-" json:"-"`
 }
+
+var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
+	"create":      sl.NewBuiltin("mochi.entity.create", api_entity_create),
+	"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
+	"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
+})
 
 // Get an entity by id or fingerprint
 func entity_by_any(s string) *Entity {
@@ -100,8 +108,7 @@ func entity_id() (string, string, string) {
 func entities_manager() {
 	db := db_open("db/users.db")
 
-	for {
-		time.Sleep(time.Hour)
+	for range time.Tick(time.Hour) {
 		if peers_sufficient() {
 			var es []Entity
 			_ = db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
@@ -208,4 +215,89 @@ func (e *Entity) Truth() sl.Bool {
 
 func (e *Entity) Type() string {
 	return "Entity"
+}
+
+// mochi.entity.create(class, name, privacy, data?) -> string: Create a new entity, returns ID
+func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 3 || len(args) > 4 {
+		return sl_error(fn, "syntax: <class: string>, <name: string>, <privacy: string>, [data: string]")
+	}
+
+	class, ok := sl.AsString(args[0])
+	if !ok || !valid(class, "constant") {
+		return sl_error(fn, "invalid class %q", class)
+	}
+
+	name, ok := sl.AsString(args[1])
+	if !ok || !valid(name, "name") {
+		return sl_error(fn, "invalid name %q", name)
+	}
+
+	privacy, ok := sl.AsString(args[2])
+	if !ok || !valid(privacy, "^(private|public)$") {
+		return sl_error(fn, "invalid privacy %q", privacy)
+	}
+
+	data := ""
+	if len(args) > 3 {
+		data, ok = sl.AsString(args[3])
+		if !ok || !valid(data, "text") {
+			return sl_error(fn, "invalid data %q", data)
+		}
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	e, err := entity_create(user, class, name, privacy, data)
+	if err != nil {
+		return sl_error(fn, "unable to create entity: ", err)
+	}
+
+	return sl_encode(e.ID), nil
+}
+
+// mochi.entity.fingerprint(id, hyphens?) -> string: Get the fingerprint of an entity
+func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <id: string>, [include hyphens: boolean]")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	if len(args) > 1 && bool(args[1].Truth()) {
+		return sl_encode(fingerprint_hyphens(fingerprint(id))), nil
+	} else {
+		return sl_encode(fingerprint(id)), nil
+	}
+}
+
+// mochi.entity.get(id) -> list: Get an entity owned by the current user
+func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(e), nil
 }

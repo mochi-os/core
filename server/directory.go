@@ -5,6 +5,9 @@ package main
 
 import (
 	"time"
+
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 type Directory struct {
@@ -17,6 +20,11 @@ type Directory struct {
 	Created     int64
 	Updated     int64
 }
+
+var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDict{
+	"get":    sl.NewBuiltin("mochi.directory.get", api_directory_get),
+	"search": sl.NewBuiltin("mochi.directory.search", api_directory_search),
+})
 
 func init() {
 	a := app("directory")
@@ -230,4 +238,79 @@ func directory_search(u *User, class string, search string, include_self bool) *
 		}
 	}
 	return &o
+}
+
+// mochi.directory.get(id) -> dict or None: Get a directory entry
+func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid ID %q", id)
+	}
+
+	db := db_open("db/directory.db")
+	d, err := db.row("select * from directory where id=?", id)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	if d == nil {
+		return sl.None, nil
+	}
+	d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+
+	return sl_encode(d), nil
+}
+
+// mochi.directory.search(class, search, include_self) -> list: Search the directory
+func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 3 {
+		return sl_error(fn, "syntax: <class: string>, <search: string>, <include self: boolean>")
+	}
+
+	class, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid class %q", class)
+	}
+
+	search, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid search %q", search)
+	}
+
+	include_self := bool(args[2].Truth())
+	u := t.Local("user").(*User)
+
+	db := db_open("db/directory.db")
+	ds, err := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	for _, d := range ds {
+		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+	}
+
+	if u == nil || include_self || class != "person" {
+		return sl_encode(ds), nil
+	}
+
+	dbu := db_open("db/users.db")
+	var es []Entity
+	_ = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	me := map[string]bool{}
+	for _, e := range es {
+		me[e.ID] = true
+	}
+
+	var o []map[string]any
+	for _, d := range ds {
+		_, found := me[d["id"].(string)]
+		if !found {
+			o = append(o, d)
+		}
+	}
+	return sl_encode(&o), nil
 }

@@ -364,7 +364,7 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "unable to get file field %q: %v", field, err)
 	}
 
-	err = a.web.SaveUploadedFile(ff, api_file(a.user, app, file))
+	err = a.web.SaveUploadedFile(ff, api_file_path(a.user, app, file))
 	if err != nil {
 		return sl_error(fn, "unable to write file for field %q: %v", field, err)
 	}

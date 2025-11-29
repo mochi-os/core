@@ -1418,6 +1418,11 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+
 	from := ""
 	if owner.Identity != nil {
 		from = owner.Identity.ID
@@ -1426,34 +1431,51 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no identity")
 	}
 
-	// Send fetch request to remote entity
-	m := message(from, entity, "app/"+app.id, "_attachment/fetch")
-	m.content = map[string]string{
-		"object": object,
+	// Open stream to remote entity
+	s, err := stream(from, entity, "app/"+app.id, "_attachment/fetch")
+	if err != nil {
+		return sl_encode([]map[string]any{}), nil
 	}
-	m.send()
 
-	return sl.None, nil
+	s.write_content("object", object)
+
+	// Read response
+	var attachments []map[string]any
+	if err := s.read(&attachments); err != nil {
+		return sl_encode([]map[string]any{}), nil
+	}
+
+	// Store attachments locally
+	for _, att := range attachments {
+		id, _ := att["id"].(string)
+		obj, _ := att["object"].(string)
+		name, _ := att["name"].(string)
+		size, _ := att["size"].(float64)
+		content_type, _ := att["content_type"].(string)
+		creator, _ := att["creator"].(string)
+		caption, _ := att["caption"].(string)
+		description, _ := att["description"].(string)
+		rank, _ := att["rank"].(float64)
+		created, _ := att["created"].(float64)
+
+		db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, obj, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
+	}
+
+	return sl_encode(attachments), nil
 }
 
-// Event handler: attachment/fetch (responds with attachments for object)
+// Event handler: attachment/fetch (responds with attachments for object via stream)
 func (e *Event) attachment_event_fetch() {
 	object := e.content["object"]
 	if object == "" {
+		e.stream.write([]map[string]any{})
 		return
 	}
 
 	if e.db == nil {
-		return
-	}
-
-	// We need our identity to respond
-	if e.to == "" || !valid(e.to, "entity") {
-		return
-	}
-
-	// The requester
-	if e.from == "" || !valid(e.from, "entity") {
+		e.stream.write([]map[string]any{})
 		return
 	}
 
@@ -1462,20 +1484,15 @@ func (e *Event) attachment_event_fetch() {
 	e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
 
 	if len(attachments) == 0 {
+		e.stream.write([]map[string]any{})
 		return
 	}
 
-	// Convert to maps
+	// Convert to maps and send back via stream
 	var results []map[string]any
 	for _, att := range attachments {
 		results = append(results, att.to_map())
 	}
 
-	// Send back to requester via _attachment/create event
-	m := message(e.to, e.from, e.service, "_attachment/create")
-	m.content = map[string]string{
-		"object": object,
-	}
-	m.add(results)
-	m.send()
+	e.stream.write(results)
 }

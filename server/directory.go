@@ -96,7 +96,7 @@ func directory_download_event(e *Event) {
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	db.scans(&results, "select * from directory where updated>=? order by created, id", start)
+	_ = db.scans(&results, "select * from directory where updated>=? order by created, id", start)
 	for _, d := range results {
 		debug("Directory sending update %#v", d)
 		e.stream.write(d)
@@ -204,7 +204,7 @@ func directory_request_event(e *Event) {
 func directory_search(u *User, class string, search string, include_self bool) *[]Directory {
 	dbd := db_open("db/directory.db")
 	var ds []Directory
-	dbd.scans(&ds, "select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	_ = dbd.scans(&ds, "select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
 
 	for i, _ := range ds {
 		ds[i].Fingerprint = fingerprint_hyphens(ds[i].Fingerprint)
@@ -216,7 +216,7 @@ func directory_search(u *User, class string, search string, include_self bool) *
 
 	dbu := db_open("db/users.db")
 	var es []Entity
-	dbu.scans(&es, "select id from entities where user=?", u.ID)
+	_ = dbu.scans(&es, "select id from entities where user=?", u.ID)
 	im := map[string]bool{}
 	for _, e := range es {
 		im[e.ID] = true

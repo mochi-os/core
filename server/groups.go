@@ -76,7 +76,7 @@ func (db *DB) group_memberships(user string) []string {
 
 		query := fmt.Sprintf("select parent, member, type, created from _group_members where member in (%s) and type=?", placeholders)
 		var gms []GroupMember
-		db.scans(&gms, query, args...)
+		_ = db.scans(&gms, query, args...)
 
 		// Collect new groups for next iteration
 		var next []string
@@ -114,7 +114,7 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 		}
 
 		var gms []GroupMember
-		db.scans(&gms, "select member, type from _group_members where parent=?", group)
+		_ = db.scans(&gms, "select member, type from _group_members where parent=?", group)
 		for _, gm := range gms {
 			switch gm.Type {
 			case "user":
@@ -156,7 +156,7 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 			seen[g] = true
 
 			var gms []GroupMember
-			db.scans(&gms, "select parent, member, type, created from _group_members where member=? and type='group'", g)
+			_ = db.scans(&gms, "select parent, member, type, created from _group_members where member=? and type='group'", g)
 			for _, gm := range gms {
 				if gm.Parent == group {
 					return true
@@ -229,7 +229,10 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(owner, app.active)
-	row, _ := db.row("select * from _groups where id=?", id)
+	row, err := db.row("select * from _groups where id=?", id)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 	if row == nil {
 		return sl.None, nil
 	}
@@ -249,7 +252,10 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_app(owner, app.active)
-	rows, _ := db.rows("select * from _groups order by name")
+	rows, err := db.rows("select * from _groups order by name")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 	return sl_encode(rows), nil
 }
 

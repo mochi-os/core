@@ -59,7 +59,7 @@ func migrate_attachments() {
 			continue
 		}
 
-		info("Migration: processing user %s", user_id)
+		info("Migration: processing user %q", user_id)
 		migrated, skipped, errors := migrate_user_attachments(user_id, old_db_path)
 		total_migrated += migrated
 		total_skipped += skipped
@@ -73,7 +73,7 @@ func migrate_user_attachments(user_id string, old_db_path string) (migrated, ski
 	// Open old database
 	old_db := db_open(old_db_path)
 	if old_db == nil {
-		info("Migration: cannot open old database for user %s", user_id)
+		info("Migration: cannot open old database for user %q", user_id)
 		return 0, 0, 1
 	}
 	defer old_db.close()
@@ -83,11 +83,11 @@ func migrate_user_attachments(user_id string, old_db_path string) (migrated, ski
 	old_db.scans(&attachments, "select * from attachments order by object, rank")
 
 	if len(attachments) == 0 {
-		info("Migration: no attachments for user %s", user_id)
+		info("Migration: no attachments for user %q", user_id)
 		return 0, 0, 0
 	}
 
-	info("Migration: found %d attachments for user %s", len(attachments), user_id)
+	info("Migration: found %d attachments for user %q", len(attachments), user_id)
 
 	// Group by target app
 	app_attachments := make(map[string][]OldAttachment)
@@ -117,14 +117,14 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 	new_db_path := fmt.Sprintf("%s/users/%s/%s.db", data_dir, user_id, app_name)
 
 	if !file_exists(new_db_path) {
-		info("Migration: app database %s does not exist for user %s, skipping %d attachments", app_name, user_id, len(attachments))
+		info("Migration: app database %q does not exist for user %q, skipping %d attachments", app_name, user_id, len(attachments))
 		return 0, len(attachments), 0
 	}
 
 	// Open new database
 	new_db := db_open(new_db_path)
 	if new_db == nil {
-		info("Migration: cannot open new database %s for user %s", app_name, user_id)
+		info("Migration: cannot open new database %q for user %q", app_name, user_id)
 		return 0, 0, len(attachments)
 	}
 	defer new_db.close()
@@ -165,12 +165,12 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 
 			// Copy file
 			if err := copy_file(old_file_path, new_file_path); err != nil {
-				info("Migration: failed to copy file %s -> %s: %v", old_file_path, new_file_path, err)
+				info("Migration: failed to copy file %q -> %q: %v", old_file_path, new_file_path, err)
 				errors++
 				continue
 			}
 		} else {
-			info("Migration: old file not found: %s", old_file_path)
+			info("Migration: old file not found: %q", old_file_path)
 		}
 
 		migrated++

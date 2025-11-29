@@ -296,6 +296,14 @@ func web_cookie_unset(c *gin.Context, name string) {
 	c.SetCookie(name, "", -1, "/", "", secure, true)
 }
 
+// Security headers middleware
+func web_security_headers(c *gin.Context) {
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+	c.Next()
+}
+
 // Simple CORS middleware to allow browser clients
 func web_cors_middleware(c *gin.Context) {
 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -488,6 +496,7 @@ func web_start() {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 	//r.Use(web_compression_middleware)
+	r.Use(web_security_headers)
 	r.Use(web_cors_middleware)
 	r.Use(rate_limit_api_middleware)
 	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS

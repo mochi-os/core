@@ -47,11 +47,11 @@ func init() {
 func peers_add_from_db(limit int) {
 	var ps []Peer
 	db := db_open("db/peers.db")
-	db.scans(&ps, "select id from peers group by id order by updated desc limit ?", limit)
+	_ = db.scans(&ps, "select id from peers group by id order by updated desc limit ?", limit)
 	for _, p := range ps {
 		var addresses []string
 		var as []Peer
-		db.scans(&as, "select address from peers where id=?", p.ID)
+		_ = db.scans(&as, "select address from peers where id=?", p.ID)
 		for _, a := range as {
 			addresses = append(addresses, a.Address)
 		}
@@ -89,7 +89,7 @@ func peer_by_id(id string) *Peer {
 
 	var ps []Peer
 	db := db_open("db/peers.db")
-	db.scans(&ps, "select * from peers where id=?", id)
+	_ = db.scans(&ps, "select * from peers where id=?", id)
 	if len(ps) == 0 {
 		debug("Peer %q not found in database", id)
 		return nil

@@ -286,7 +286,10 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_open("db/directory.db")
-	d, _ := db.row("select * from directory where id=?", id)
+	d, err := db.row("select * from directory where id=?", id)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 	if d == nil {
 		return sl.None, nil
 	}
@@ -315,7 +318,10 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	u := t.Local("user").(*User)
 
 	db := db_open("db/directory.db")
-	ds, _ := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	ds, err := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 
 	for _, d := range ds {
 		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
@@ -327,7 +333,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	dbu := db_open("db/users.db")
 	var es []Entity
-	dbu.scans(&es, "select id from entities where user=?", u.ID)
+	_ = dbu.scans(&es, "select id from entities where user=?", u.ID)
 	me := map[string]bool{}
 	for _, e := range es {
 		me[e.ID] = true
@@ -420,7 +426,10 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_open("db/users.db")
-	e, _ := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 
 	return sl_encode(e), nil
 }
@@ -601,7 +610,10 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_open("db/users.db")
-	from_valid, _ := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 	if !from_valid {
 		return sl_error(fn, "invalid from header")
 	}
@@ -725,7 +737,10 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	}
 
 	db := db_open("db/users.db")
-	from_valid, _ := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
 	if !from_valid {
 		return sl_error(fn, "invalid from header")
 	}

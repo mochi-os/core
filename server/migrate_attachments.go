@@ -80,7 +80,7 @@ func migrate_user_attachments(user_id string, old_db_path string) (migrated, ski
 
 	// Get all attachments
 	var attachments []OldAttachment
-	old_db.scans(&attachments, "select * from attachments order by object, rank")
+	_ = old_db.scans(&attachments, "select * from attachments order by object, rank")
 
 	if len(attachments) == 0 {
 		info("Migration: no attachments for user %q", user_id)

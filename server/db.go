@@ -463,8 +463,8 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 	return true
 }
 
-func (db *DB) scans(out any, query string, values ...any) {
-	must(db.handle.Select(out, query, values...))
+func (db *DB) scans(out any, query string, values ...any) error {
+	return db.handle.Select(out, query, values...)
 }
 
 func (db *DB) schema(version int) {

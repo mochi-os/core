@@ -707,7 +707,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Get all attachments for object
 	var attachments []Attachment
-	db.scans(&attachments, "select * from _attachments where object = ?", object)
+	_ = db.scans(&attachments, "select * from _attachments where object = ?", object)
 
 	// Delete files
 	for _, att := range attachments {
@@ -753,7 +753,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	var attachments []Attachment
-	db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	_ = db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
 
 	var results []map[string]any
 	for _, att := range attachments {
@@ -1296,7 +1296,7 @@ func (e *Event) attachment_event_clear() {
 
 	// Get all attachments to delete cached files
 	var attachments []Attachment
-	e.db.scans(&attachments, "select * from _attachments where object = ? and entity = ?", object, source)
+	_ = e.db.scans(&attachments, "select * from _attachments where object = ? and entity = ?", object, source)
 
 	for _, att := range attachments {
 		cache_path := fmt.Sprintf("%s/attachments/%s/%s", cache_dir, source, att.ID)
@@ -1374,7 +1374,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get existing attachments for object
 	var attachments []Attachment
-	db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	_ = db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
 
 	if len(attachments) == 0 {
 		return sl_encode(0), nil
@@ -1481,7 +1481,7 @@ func (e *Event) attachment_event_fetch() {
 
 	// Get attachments for this object that we own (entity is empty)
 	var attachments []Attachment
-	e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
+	_ = e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
 
 	if len(attachments) == 0 {
 		e.stream.write([]map[string]any{})

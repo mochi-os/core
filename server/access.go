@@ -122,15 +122,13 @@ func (db *DB) access_clear_subject(subject string) {
 }
 
 // List access rules for a resource
-func (db *DB) access_list_resource(resource string) []map[string]any {
-	rows, _ := db.rows("select * from _access where resource=? order by subject", resource)
-	return rows
+func (db *DB) access_list_resource(resource string) ([]map[string]any, error) {
+	return db.rows("select * from _access where resource=? order by subject", resource)
 }
 
 // List access rules for a subject
-func (db *DB) access_list_subject(subject string) []map[string]any {
-	rows, _ := db.rows("select * from _access where subject=? order by resource, operation", subject)
-	return rows
+func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
+	return db.rows("select * from _access where subject=? order by resource, operation", subject)
 }
 
 // Revoke access
@@ -378,7 +376,11 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	db := db_app(owner, app.active)
-	return sl_encode(db.access_list_resource(resource)), nil
+	rows, err := db.access_list_resource(resource)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	return sl_encode(rows), nil
 }
 
 // mochi.access.list_subject(subject)
@@ -403,5 +405,9 @@ func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db := db_app(owner, app.active)
-	return sl_encode(db.access_list_subject(subject)), nil
+	rows, err := db.access_list_subject(subject)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	return sl_encode(rows), nil
 }

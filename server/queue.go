@@ -46,7 +46,7 @@ const (
 func queue_check_entity(entity string) {
 	var qs []QueueEntity
 	db := db_open("db/queue.db")
-	db.scans(&qs, "select * from entities where entity=?", entity)
+	_ = db.scans(&qs, "select * from entities where entity=?", entity)
 	for _, q := range qs {
 		debug("Trying to send queued event %q to entity %q", q.ID, q.Entity)
 		peer := entity_peer(q.Entity)
@@ -65,7 +65,7 @@ func queue_check_entity(entity string) {
 func queue_check_peer(peer string) {
 	var qs []QueuePeer
 	db := db_open("db/queue.db")
-	db.scans(&qs, "select * from peers where peer=?", peer)
+	_ = db.scans(&qs, "select * from peers where peer=?", peer)
 	for _, q := range qs {
 		debug("Trying to send queued event %q to peer %q", q.ID, q.Peer)
 		if queue_peer_send(&q) {
@@ -164,7 +164,7 @@ func queue_manager() {
 			}
 
 			var qbs []QueueBroadcast
-			db.scans(&qbs, "select * from broadcasts")
+			_ = db.scans(&qbs, "select * from broadcasts")
 			for _, qb := range qbs {
 				debug("Queue manager sending broadcast event %q", qb.ID)
 				p2p_pubsub_1.Publish(p2p_context, qb.Data)

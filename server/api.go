@@ -247,16 +247,28 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	switch fn.Name() {
 	case "mochi.db.exists":
-		if db.exists(query, as...) {
+		exists, err := db.exists(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		if exists {
 			return sl.True, nil
 		}
 		return sl.False, nil
 
 	case "mochi.db.row":
-		return sl_encode(db.row(query, as...)), nil
+		row, err := db.row(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(row), nil
 
 	case "mochi.db.query":
-		return sl_encode(db.rows(query, as...)), nil
+		rows, err := db.rows(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(rows), nil
 	}
 
 	return sl_error(fn, "invalid database query %q", fn.Name())
@@ -274,7 +286,10 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_open("db/directory.db")
-	d := db.row("select * from directory where id=?", id)
+	d, _ := db.row("select * from directory where id=?", id)
+	if d == nil {
+		return sl.None, nil
+	}
 	d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
 
 	return sl_encode(d), nil
@@ -300,7 +315,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	u := t.Local("user").(*User)
 
 	db := db_open("db/directory.db")
-	ds := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	ds, _ := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
 
 	for _, d := range ds {
 		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
@@ -405,7 +420,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_open("db/users.db")
-	e := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
+	e, _ := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
 
 	return sl_encode(e), nil
 }
@@ -586,7 +601,8 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_open("db/users.db")
-	if !db.exists("select id from entities where id=? and user=?", headers["from"], user.ID) {
+	from_valid, _ := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if !from_valid {
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -709,7 +725,8 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	}
 
 	db := db_open("db/users.db")
-	if !db.exists("select id from entities where id=? and user=?", headers["from"], user.ID) {
+	from_valid, _ := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if !from_valid {
 		return sl_error(fn, "invalid from header")
 	}
 

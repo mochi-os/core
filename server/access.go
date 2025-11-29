@@ -123,12 +123,14 @@ func (db *DB) access_clear_subject(subject string) {
 
 // List access rules for a resource
 func (db *DB) access_list_resource(resource string) []map[string]any {
-	return db.rows("select * from _access where resource=? order by subject", resource)
+	rows, _ := db.rows("select * from _access where resource=? order by subject", resource)
+	return rows
 }
 
 // List access rules for a subject
 func (db *DB) access_list_subject(subject string) []map[string]any {
-	return db.rows("select * from _access where subject=? order by resource, operation", subject)
+	rows, _ := db.rows("select * from _access where subject=? order by resource, operation", subject)
+	return rows
 }
 
 // Revoke access

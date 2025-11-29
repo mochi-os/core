@@ -122,7 +122,8 @@ func user_from_code(code string) *User {
 	}
 
 	role := "user"
-	if !db.exists("select id from users limit 1") {
+	has_users, _ := db.exists("select id from users limit 1")
+	if !has_users {
 		role = "administrator"
 	}
 

@@ -80,8 +80,9 @@ func db_create() {
 	queue := db_open("db/queue.db")
 
 	// Migrate old queue schema (one-time)
-	if queue.exists("select 1 from pragma_table_info('entities') where name='data'") &&
-		!queue.exists("select 1 from pragma_table_info('entities') where name='from_entity'") {
+	has_data, _ := queue.exists("select 1 from pragma_table_info('entities') where name='data'")
+	has_from_entity, _ := queue.exists("select 1 from pragma_table_info('entities') where name='from_entity'")
+	if has_data && !has_from_entity {
 		queue.exec("drop table entities")
 		queue.exec("drop table peers")
 	}
@@ -152,7 +153,8 @@ func db_app(u *User, av *AppVersion) *DB {
 		debug("Database app opening %q", path)
 
 		// Check if _settings table exists, if not create it with schema 0
-		if !db.exists("select name from sqlite_master where type='table' and name='_settings'") {
+		has_settings, _ := db.exists("select name from sqlite_master where type='table' and name='_settings'")
+		if !has_settings {
 			debug("Database %q missing _settings table; initializing with schema 0", path)
 			db.schema(0)
 		}
@@ -162,7 +164,7 @@ func db_app(u *User, av *AppVersion) *DB {
 		// Check if app tables exist - if not, call database_create()
 		if av.Database.Create.Function != "" {
 			// Check if any user tables exist (excluding _settings)
-			has_tables := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
+			has_tables, _ := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
 			if !has_tables {
 				debug("Database %q exists but has no app tables; calling database_create()", path)
 				s := av.starlark()
@@ -324,7 +326,8 @@ func db_upgrade() {
 
 					if !has_secret {
 						// Ensure the logins table actually exists before attempting ALTER
-						if !db.exists("select name from sqlite_master where type='table' and name='logins'") {
+						has_logins, _ := db.exists("select name from sqlite_master where type='table' and name='logins'")
+					if !has_logins {
 							info("DB migration: 'logins' table not present, skipping secret migration")
 						} else {
 							info("DB migration: adding 'secret' column to logins table")
@@ -385,13 +388,13 @@ func (db *DB) exec(query string, values ...any) {
 	must(db.handle.Exec(query, values...))
 }
 
-func (db *DB) exists(query string, values ...any) bool {
-	r := must(db.handle.Query(query, values...))
-
-	for r.Next() {
-		return true
+func (db *DB) exists(query string, values ...any) (bool, error) {
+	r, err := db.handle.Query(query, values...)
+	if err != nil {
+		return false, err
 	}
-	return false
+	defer r.Close()
+	return r.Next(), nil
 }
 
 func (db *DB) integer(query string, values ...any) int {
@@ -400,70 +403,52 @@ func (db *DB) integer(query string, values ...any) int {
 	return result
 }
 
-func (db *DB) row(query string, values ...any) map[string]any {
+func (db *DB) row(query string, values ...any) (map[string]any, error) {
 	r, err := db.handle.Queryx(query, values...)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		info("DB map error: %v", err)
-		return nil
+		return nil, err
 	}
 	defer r.Close()
 
-	for r.Next() {
-		row := make(map[string]any)
-		err = r.MapScan(row)
-		if err != nil {
-			info("DB maps error: %v", err)
-			return nil
-		}
-
-		for i, v := range row {
-			bytes, ok := v.([]byte)
-			if ok {
-				row[i] = string(bytes)
-			}
-		}
-
-		return row
+	if !r.Next() {
+		return nil, nil
 	}
 
-	return nil
+	row := make(map[string]any)
+	if err = r.MapScan(row); err != nil {
+		return nil, err
+	}
+
+	for i, v := range row {
+		if bytes, ok := v.([]byte); ok {
+			row[i] = string(bytes)
+		}
+	}
+	return row, nil
 }
 
-func (db *DB) rows(query string, values ...any) []map[string]any {
+func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 	var results []map[string]any
 
 	r, err := db.handle.Queryx(query, values...)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return results
-		}
-		info("DB maps error: %v", err)
-		return nil
+		return nil, err
 	}
 	defer r.Close()
 
 	for r.Next() {
 		row := make(map[string]any)
-		err = r.MapScan(row)
-		if err != nil {
-			info("DB maps error: %v", err)
-			return nil
+		if err = r.MapScan(row); err != nil {
+			return nil, err
 		}
-
 		for i, v := range row {
-			bytes, ok := v.([]byte)
-			if ok {
+			if bytes, ok := v.([]byte); ok {
 				row[i] = string(bytes)
 			}
 		}
-
 		results = append(results, row)
 	}
-
-	return results
+	return results, nil
 }
 
 func (db *DB) scan(out any, query string, values ...any) bool {

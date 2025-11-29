@@ -3,16 +3,14 @@
 
 package main
 
-import (
-	"slices"
-)
-
 type Message struct {
-	ID        string `cbor:-"`
+	ID        string `cbor:"-"`
 	From      string `cbor:"from,omitempty"`
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
+	Timestamp int64  `cbor:"timestamp,omitempty"`
+	Nonce     string `cbor:"nonce,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
 	content   map[string]string
 	data      []byte
@@ -30,11 +28,15 @@ func (m *Message) add(v any) *Message {
 	return m
 }
 
-// Publish an message to a pubsub
+// Publish a message to a pubsub
 func (m *Message) publish(allow_queue bool) {
 	debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
-	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event)))
-	data := cbor_encode(&m)
+	timestamp := now()
+	nonce := uid()
+	m.Timestamp = timestamp
+	m.Nonce = nonce
+	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event, timestamp, nonce)))
+	data := cbor_encode(m)
 	data = append(data, cbor_encode(m.content)...)
 
 	if peers_sufficient() {
@@ -72,7 +74,11 @@ func (m *Message) send_work(peer string) {
 		ok = false
 	}
 
-	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event)))
+	timestamp := now()
+	nonce := uid()
+	m.Timestamp = timestamp
+	m.Nonce = nonce
+	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event, timestamp, nonce)))
 	headers := cbor_encode(m)
 	if ok {
 		ok = s.write_raw(headers) == nil
@@ -98,13 +104,15 @@ func (m *Message) send_work(peer string) {
 	if !ok {
 		peer_disconnected(peer)
 
-		debug("Message unable to send to %q, adding to queue", m.To)
-		data := slices.Concat(headers, content, m.data)
+		debug("Message unable to send to %q, queuing for retry", m.To)
 		db := db_open("db/queue.db")
+		content_bytes := cbor_encode(m.content)
 		if peer == "" {
-			db.exec("replace into entities ( id, entity, data, file, created ) values ( ?, ?, ?, ?, ? )", m.ID, m.To, data, m.file, now())
+			db.exec("replace into entities ( id, entity, from_entity, service, event, content, data, file, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )",
+				m.ID, m.To, m.From, m.Service, m.Event, content_bytes, m.data, m.file, now())
 		} else {
-			db.exec("replace into peers ( id, peer, data, file, created ) values ( ?, ?, ?, ?, ? )", m.ID, peer, data, m.file, now())
+			db.exec("replace into peers ( id, peer, from_entity, to_entity, service, event, content, data, file, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )",
+				m.ID, peer, m.From, m.To, m.Service, m.Event, content_bytes, m.data, m.file, now())
 		}
 	}
 }

@@ -78,13 +78,21 @@ func db_create() {
 
 	// Queued outbound messages
 	queue := db_open("db/queue.db")
-	queue.exec("create table entities ( id text not null primary key, entity text not null, data blob not null, file text not null default '', created integer not null )")
-	queue.exec("create index entities_entity on entities( entity )")
-	queue.exec("create index entities_created on entities( created )")
 
-	queue.exec("create table peers ( id text not null primary key, peer text not null, data blob not null, file text not null default '', created integer not null )")
-	queue.exec("create index peers_peer on peers( peer )")
-	queue.exec("create index peers_created on peers( created )")
+	// Migrate old queue schema (one-time)
+	if queue.exists("select 1 from pragma_table_info('entities') where name='data'") &&
+		!queue.exists("select 1 from pragma_table_info('entities') where name='from_entity'") {
+		queue.exec("drop table entities")
+		queue.exec("drop table peers")
+	}
+
+	queue.exec("create table if not exists entities ( id text not null primary key, entity text not null, from_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', created integer not null )")
+	queue.exec("create index if not exists entities_entity on entities( entity )")
+	queue.exec("create index if not exists entities_created on entities( created )")
+
+	queue.exec("create table if not exists peers ( id text not null primary key, peer text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', created integer not null )")
+	queue.exec("create index if not exists peers_peer on peers( peer )")
+	queue.exec("create index if not exists peers_created on peers( created )")
 
 	queue.exec("create table broadcasts ( id text not null primary key, data blob not null, created integer not null )")
 	queue.exec("create index broadcasts_created on broadcasts( created )")

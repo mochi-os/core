@@ -14,19 +14,28 @@ type QueueBroadcast struct {
 }
 
 type QueueEntity struct {
-	ID      string
-	Entity  string
-	Data    []byte
-	File    string
-	Created int64
+	ID         string `db:"id"`
+	Entity     string `db:"entity"`
+	FromEntity string `db:"from_entity"`
+	Service    string `db:"service"`
+	Event      string `db:"event"`
+	Content    []byte `db:"content"`
+	Data       []byte `db:"data"`
+	File       string `db:"file"`
+	Created    int64  `db:"created"`
 }
 
 type QueuePeer struct {
-	ID      string
-	Peer    string
-	Data    []byte
-	File    string
-	Created int64
+	ID         string `db:"id"`
+	Peer       string `db:"peer"`
+	FromEntity string `db:"from_entity"`
+	ToEntity   string `db:"to_entity"`
+	Service    string `db:"service"`
+	Event      string `db:"event"`
+	Content    []byte `db:"content"`
+	Data       []byte `db:"data"`
+	File       string `db:"file"`
+	Created    int64  `db:"created"`
 }
 
 const (
@@ -43,7 +52,7 @@ func queue_check_entity(entity string) {
 		peer := entity_peer(q.Entity)
 		if peer != "" {
 			debug("Entity %q is at peer %q", q.ID, peer)
-			if queue_event_send(db, peer, &q.Data, q.File) {
+			if queue_entity_send(peer, &q) {
 				debug("Removing sent event from queue")
 				db.exec("delete from entities where id=?", q.ID)
 			}
@@ -59,7 +68,7 @@ func queue_check_peer(peer string) {
 	db.scans(&qs, "select * from peers where peer=?", peer)
 	for _, q := range qs {
 		debug("Trying to send queued event %q to peer %q", q.ID, q.Peer)
-		if queue_event_send(db, peer, &q.Data, q.File) {
+		if queue_peer_send(&q) {
 			debug("Removing sent event from queue")
 			db.exec("delete from peers where id=?", q.ID)
 		}
@@ -67,23 +76,71 @@ func queue_check_peer(peer string) {
 	}
 }
 
-// Send a queue event
-func queue_event_send(db *DB, peer string, data *[]byte, file string) bool {
+// Send a queued entity message (sign at send time)
+func queue_entity_send(peer string, q *QueueEntity) bool {
 	s := peer_stream(peer)
 	if s == nil {
 		debug("Unable to create stream to peer, keeping in queue")
 		return false
 	}
 
-	if len(*data) > 0 && s.write(*data) != nil {
+	// Sign with fresh timestamp and nonce
+	timestamp := now()
+	nonce := uid()
+	signature := entity_sign(q.FromEntity, string(signable_headers(q.FromEntity, q.Entity, q.Service, q.Event, timestamp, nonce)))
+
+	headers := cbor_encode(Headers{
+		From: q.FromEntity, To: q.Entity, Service: q.Service, Event: q.Event,
+		Timestamp: timestamp, Nonce: nonce, Signature: signature,
+	})
+
+	if s.write_raw(headers) != nil {
+		return false
+	}
+	if len(q.Content) > 0 && s.write_raw(q.Content) != nil {
+		return false
+	}
+	if len(q.Data) > 0 && s.write_raw(q.Data) != nil {
+		return false
+	}
+	if q.File != "" && s.write_file(q.File) != nil {
 		return false
 	}
 
-	if file != "" && s.write_file(file) != nil {
+	return true
+}
+
+// Send a queued peer message (sign at send time)
+func queue_peer_send(q *QueuePeer) bool {
+	s := peer_stream(q.Peer)
+	if s == nil {
+		debug("Unable to create stream to peer, keeping in queue")
 		return false
 	}
 
-	debug("Queued event sent")
+	// Sign with fresh timestamp and nonce
+	timestamp := now()
+	nonce := uid()
+	signature := entity_sign(q.FromEntity, string(signable_headers(q.FromEntity, q.ToEntity, q.Service, q.Event, timestamp, nonce)))
+
+	headers := cbor_encode(Headers{
+		From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
+		Timestamp: timestamp, Nonce: nonce, Signature: signature,
+	})
+
+	if s.write_raw(headers) != nil {
+		return false
+	}
+	if len(q.Content) > 0 && s.write_raw(q.Content) != nil {
+		return false
+	}
+	if len(q.Data) > 0 && s.write_raw(q.Data) != nil {
+		return false
+	}
+	if q.File != "" && s.write_file(q.File) != nil {
+		return false
+	}
+
 	return true
 }
 

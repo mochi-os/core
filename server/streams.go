@@ -43,7 +43,10 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 	}
 	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
-	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Signature: entity_sign(from, from+to+service+event)})
+	timestamp := now()
+	nonce := uid()
+	signature := entity_sign(from, string(signable_headers(from, to, service, event, timestamp, nonce)))
+	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Timestamp: timestamp, Nonce: nonce, Signature: signature})
 	if err != nil {
 		return nil, err
 	}

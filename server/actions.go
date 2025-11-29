@@ -135,7 +135,7 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 func (a *Action) Freeze() {}
 
 func (a *Action) Hash() (uint32, error) {
-	return sl.String(a.id).Hash()
+	return sl.String(fmt.Sprintf("%d", a.id)).Hash()
 }
 
 func (a *Action) String() string {

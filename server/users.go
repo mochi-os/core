@@ -204,7 +204,7 @@ func (u *User) Attr(name string) (sl.Value, error) {
 func (u *User) Freeze() {}
 
 func (u *User) Hash() (uint32, error) {
-	return sl.String(u.ID).Hash()
+	return sl.String(fmt.Sprintf("%d", u.ID)).Hash()
 }
 
 func (u *User) String() string {

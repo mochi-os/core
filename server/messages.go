@@ -3,6 +3,16 @@
 
 package main
 
+import (
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
+)
+
+var api_message = sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
+	"send":    sl.NewBuiltin("mochi.message.send", api_message_send),
+	"publish": sl.NewBuiltin("mochi.message.publish", api_message_publish),
+})
+
 type Message struct {
 	ID        string `cbor:"-"`
 	From      string `cbor:"from,omitempty"`
@@ -173,4 +183,99 @@ func (m *Message) set(in ...string) *Message {
 		m.content[in[0]] = in[1]
 		in = in[2:]
 	}
+}
+
+// mochi.message.send(headers, content?, data?) -> None: Send a P2P message
+func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 3 {
+		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
+	}
+
+	headers := sl_decode_strings(args[0])
+	if headers == nil {
+		return sl_error(fn, "headers not specified or invalid")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	if !from_valid {
+		return sl_error(fn, "invalid from header")
+	}
+
+	if !valid(headers["to"], "entity") {
+		return sl_error(fn, "invalid to header")
+	}
+
+	if !valid(headers["service"], "constant") {
+		return sl_error(fn, "invalid service header")
+	}
+
+	if !valid(headers["event"], "constant") {
+		return sl_error(fn, "invalid event header")
+	}
+
+	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
+	if len(args) > 1 {
+		m.content = sl_decode_strings(args[1])
+	}
+
+	if len(args) > 2 {
+		m.add(sl_decode(args[2]))
+	}
+
+	m.send()
+	return sl.None, nil
+}
+
+// mochi.message.publish(headers, content?) -> None: Publish a broadcast message
+func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary]")
+	}
+
+	headers := sl_decode_strings(args[0])
+	if headers == nil {
+		return sl_error(fn, "headers not specified or invalid")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Validate from entity belongs to user
+	if headers["from"] != "" {
+		db := db_open("db/users.db")
+		from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		if !from_valid {
+			return sl_error(fn, "invalid from header")
+		}
+	}
+
+	if !valid(headers["service"], "constant") {
+		return sl_error(fn, "invalid service header")
+	}
+
+	if !valid(headers["event"], "constant") {
+		return sl_error(fn, "invalid event header")
+	}
+
+	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
+	if len(args) > 1 {
+		m.content = sl_decode_strings(args[1])
+	}
+
+	m.publish(true)
+	return sl.None, nil
 }

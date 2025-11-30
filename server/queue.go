@@ -20,6 +20,7 @@ type QueueEntry struct {
 	Content    []byte  `db:"content"`
 	Data       []byte  `db:"data"`
 	File       *string `db:"file"`
+	Expires    int64   `db:"expires"`
 	Status     string  `db:"status"`
 	Attempts   int     `db:"attempts"`
 	NextRetry  int64   `db:"next_retry"`
@@ -47,21 +48,21 @@ func queue_next_retry(attempts int) int64 {
 }
 
 // Add a direct message to the queue
-func queue_add_direct(id, target, from_entity, to_entity, service, event string, content, data []byte, file string) {
+func queue_add_direct(id, target, from_entity, to_entity, service, event string, content, data []byte, file string, expires int64) {
 	db := db_open("db/queue.db")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
-		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-		id, target, from_entity, to_entity, service, event, content, data, file, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, content, data, file, expires, status, attempts, next_retry, created)
+		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+		id, target, from_entity, to_entity, service, event, content, data, file, expires, now(), now())
 }
 
 // Add a broadcast message to the queue
-func queue_add_broadcast(id, from_entity, to_entity, service, event string, content, data []byte) {
+func queue_add_broadcast(id, from_entity, to_entity, service, event string, content, data []byte, expires int64) {
 	db := db_open("db/queue.db")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
-		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, '', 'pending', 0, ?, ?)`,
-		id, from_entity, to_entity, service, event, content, data, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, content, data, file, expires, status, attempts, next_retry, created)
+		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?)`,
+		id, from_entity, to_entity, service, event, content, data, expires, now(), now())
 }
 
 // Mark a message as acknowledged (remove from queue)
@@ -182,6 +183,13 @@ func queue_process() {
 	}
 
 	for _, q := range entries {
+		// Skip expired messages
+		if q.Expires > 0 && q.Expires < now() {
+			debug("Queue message %q expired", q.ID)
+			db.exec("delete from queue where id = ?", q.ID)
+			continue
+		}
+
 		var ok bool
 		if q.Type == "broadcast" {
 			ok = queue_send_broadcast(&q)

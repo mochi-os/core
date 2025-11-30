@@ -24,6 +24,7 @@ type Message struct {
 	data      []byte
 	file      string
 	target    string // specific peer to send to (optional)
+	expires   int64  // expiry timestamp (0 = no expiry)
 }
 
 // Create a new message
@@ -47,7 +48,7 @@ func (m *Message) publish(allow_queue bool) {
 	content := cbor_encode(m.content)
 
 	if allow_queue {
-		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, content, m.data)
+		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, content, m.data, m.expires)
 	}
 
 	if peers_sufficient() {
@@ -94,7 +95,7 @@ func (m *Message) send_work() {
 	debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q", peer, m.ID, m.From, m.To, m.Service, m.Event)
 
 	content := cbor_encode(m.content)
-	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, content, m.data, m.file)
+	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, content, m.data, m.file, m.expires)
 
 	if peer == "" {
 		debug("Message unable to determine peer, will retry from queue")
@@ -157,7 +158,7 @@ func (m *Message) set(in ...string) *Message {
 	}
 }
 
-// mochi.message.send(headers, content?, data?) -> None: Send a P2P message
+// mochi.message.send(headers, content?, data?, expires=seconds) -> None: Send a P2P message
 func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
@@ -205,11 +206,20 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		m.add(sl_decode(args[2]))
 	}
 
+	// Parse expires kwarg (seconds from now)
+	for _, kw := range kwargs {
+		if string(kw[0].(sl.String)) == "expires" {
+			if v, ok := kw[1].(sl.Int); ok {
+				m.expires = now() + v.BigInt().Int64()
+			}
+		}
+	}
+
 	m.send()
 	return sl.None, nil
 }
 
-// mochi.message.publish(headers, content?) -> None: Publish a broadcast message
+// mochi.message.publish(headers, content?, expires=seconds) -> None: Publish a broadcast message
 func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary]")
@@ -254,6 +264,15 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if len(args) > 1 {
 		if content, ok := sl_decode(args[1]).(map[string]any); ok {
 			m.content = content
+		}
+	}
+
+	// Parse expires kwarg (seconds from now)
+	for _, kw := range kwargs {
+		if string(kw[0].(sl.String)) == "expires" {
+			if v, ok := kw[1].(sl.Int); ok {
+				m.expires = now() + v.BigInt().Int64()
+			}
 		}
 	}
 

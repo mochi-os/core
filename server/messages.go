@@ -121,13 +121,14 @@ func (m *Message) send_work() {
 		ID: m.ID, Signature: signature,
 	})
 
-	ok := s.write_raw(headers) == nil
-	if ok {
-		ok = s.write_raw(content) == nil
+	// Batch headers + content + data into single write
+	data := headers
+	data = append(data, content...)
+	if len(m.data) > 0 {
+		data = append(data, m.data...)
 	}
-	if len(m.data) > 0 && ok {
-		ok = s.write_raw(m.data) == nil
-	}
+
+	ok := s.write_raw(data) == nil
 	if m.file != "" && ok {
 		ok = s.write_file(m.file) == nil
 	}

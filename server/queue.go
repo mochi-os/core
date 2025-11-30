@@ -71,7 +71,7 @@ func queue_ack(id string) {
 	debug("Queue ACK received for %q", id)
 }
 
-// Mark a message as failed and schedule retry or move to dead letters
+// Mark a message as failed and schedule retry or drop
 func queue_fail(id string, err string) {
 	db := db_open("db/queue.db")
 
@@ -83,13 +83,10 @@ func queue_fail(id string, err string) {
 	attempts := q.Attempts + 1
 
 	if attempts >= queue_max_attempts {
-		// Move to dead letters
-		db.exec(`insert into dead_letters
-			(id, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
-			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.ID, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, attempts, err, q.Created, now())
+		// Log and drop after max attempts
+		warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q",
+			attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec("delete from queue where id = ?", id)
-		warn("Queue message %q moved to dead letters after %d attempts: %s", id, attempts, err)
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)
@@ -254,19 +251,14 @@ func queue_cleanup() {
 	db := db_open("db/queue.db")
 	cutoff := now() - queue_max_age
 
-	// Move very old pending messages to dead letters
+	// Log and delete expired messages
 	var old []QueueEntry
 	_ = db.scans(&old, "select * from queue where created < ?", cutoff)
 	for _, q := range old {
-		db.exec(`insert into dead_letters
-			(id, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
-			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.ID, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, q.Attempts, "expired", q.Created, now())
+		warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d",
+			q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)
 	}
 	db.exec("delete from queue where created < ?", cutoff)
-
-	// Clean old dead letters (keep for 30 days)
-	db.exec("delete from dead_letters where died < ?", now()-30*86400)
 }
 
 // Queue manager goroutine

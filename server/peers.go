@@ -294,3 +294,24 @@ func peers_sufficient() bool {
 	}
 	return false
 }
+
+// Notify peers of shutdown (best effort)
+func peers_shutdown() {
+	peers_lock.Lock()
+	connected := []string{}
+	for id, p := range peers {
+		if p.connected {
+			connected = append(connected, id)
+		}
+	}
+	peers_lock.Unlock()
+
+	info("Notifying %d connected peers of shutdown", len(connected))
+	for _, id := range connected {
+		s := p2p_stream(id)
+		if s != nil && s.writer != nil {
+			s.write(Headers{Type: "bye"})
+			s.writer.Close()
+		}
+	}
+}

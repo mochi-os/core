@@ -18,21 +18,19 @@ var (
 func init() {
 	api_globals = sl.StringDict{
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
-			"access": api_access,
+			"access":     api_access,
 			"app":        api_app,
 			"attachment": api_attachment,
-			"db":        api_db,
-			"directory": api_directory,
-			"entity":    api_entity,
-			"file":      api_file,
-			"group": api_group,
-			"log":   api_log,
+			"db":         api_db,
+			"directory":  api_directory,
+			"entity":     api_entity,
+			"file":       api_file,
+			"group":      api_group,
+			"log":        api_log,
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
-			"message": sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
-				"send": sl.NewBuiltin("mochi.message.send", api_message_send),
-			}),
+			"message": api_message,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
@@ -73,56 +71,6 @@ func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	return sl_encode(string(markdown([]byte(in)))), nil
-}
-
-// mochi.message.send(headers, content?, data?) -> None: Send a P2P message
-func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 3 {
-		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
-	}
-
-	headers := sl_decode_strings(args[0])
-	if headers == nil {
-		return sl_error(fn, "headers not specified or invalid")
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-	if !from_valid {
-		return sl_error(fn, "invalid from header")
-	}
-
-	if !valid(headers["to"], "entity") {
-		return sl_error(fn, "invalid to header")
-	}
-
-	if !valid(headers["service"], "constant") {
-		return sl_error(fn, "invalid service header")
-	}
-
-	if !valid(headers["event"], "constant") {
-		return sl_error(fn, "invalid event header")
-	}
-
-	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
-	if len(args) > 1 {
-		m.content = sl_decode_strings(args[1])
-	}
-
-	if len(args) > 2 {
-		m.add(sl_decode(args[2]))
-	}
-
-	m.send()
-	return sl.None, nil
 }
 
 // mochi.random.alphanumeric(length) -> string: Generate a random alphanumeric string

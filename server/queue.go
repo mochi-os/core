@@ -10,21 +10,21 @@ import (
 
 // Queue entry for outgoing messages
 type QueueEntry struct {
-	Nonce      string `db:"nonce"`
-	Type       string `db:"type"`
-	Target     string `db:"target"`
-	FromEntity string `db:"from_entity"`
-	ToEntity   string `db:"to_entity"`
-	Service    string `db:"service"`
-	Event      string `db:"event"`
-	Content    []byte `db:"content"`
-	Data       []byte `db:"data"`
-	File       string `db:"file"`
-	Status     string `db:"status"`
-	Attempts   int    `db:"attempts"`
-	NextRetry  int64  `db:"next_retry"`
-	LastError  string `db:"last_error"`
-	Created    int64  `db:"created"`
+	ID         string  `db:"id"`
+	Type       string  `db:"type"`
+	Target     string  `db:"target"`
+	FromEntity string  `db:"from_entity"`
+	ToEntity   string  `db:"to_entity"`
+	Service    string  `db:"service"`
+	Event      string  `db:"event"`
+	Content    []byte  `db:"content"`
+	Data       []byte  `db:"data"`
+	File       *string `db:"file"`
+	Status     string  `db:"status"`
+	Attempts   int     `db:"attempts"`
+	NextRetry  int64   `db:"next_retry"`
+	LastError  *string `db:"last_error"`
+	Created    int64   `db:"created"`
 }
 
 const (
@@ -47,36 +47,36 @@ func queue_next_retry(attempts int) int64 {
 }
 
 // Add a direct message to the queue
-func queue_add_direct(nonce, target, from_entity, to_entity, service, event string, content, data []byte, file string) {
+func queue_add_direct(id, target, from_entity, to_entity, service, event string, content, data []byte, file string) {
 	db := db_open("db/queue.db")
 	db.exec(`insert or replace into queue
-		(nonce, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
+		(id, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
 		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-		nonce, target, from_entity, to_entity, service, event, content, data, file, now(), now())
+		id, target, from_entity, to_entity, service, event, content, data, file, now(), now())
 }
 
 // Add a broadcast message to the queue
-func queue_add_broadcast(nonce, from_entity, to_entity, service, event string, content, data []byte) {
+func queue_add_broadcast(id, from_entity, to_entity, service, event string, content, data []byte) {
 	db := db_open("db/queue.db")
 	db.exec(`insert or replace into queue
-		(nonce, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
+		(id, type, target, from_entity, to_entity, service, event, content, data, file, status, attempts, next_retry, created)
 		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, '', 'pending', 0, ?, ?)`,
-		nonce, from_entity, to_entity, service, event, content, data, now(), now())
+		id, from_entity, to_entity, service, event, content, data, now(), now())
 }
 
 // Mark a message as acknowledged (remove from queue)
-func queue_ack(nonce string) {
+func queue_ack(id string) {
 	db := db_open("db/queue.db")
-	db.exec("delete from queue where nonce = ?", nonce)
-	debug("Queue ACK received for %q", nonce)
+	db.exec("delete from queue where id = ?", id)
+	debug("Queue ACK received for %q", id)
 }
 
 // Mark a message as failed and schedule retry or move to dead letters
-func queue_fail(nonce string, err string) {
+func queue_fail(id string, err string) {
 	db := db_open("db/queue.db")
 
 	var q QueueEntry
-	if !db.scan(&q, "select * from queue where nonce = ?", nonce) {
+	if !db.scan(&q, "select * from queue where id = ?", id) {
 		return
 	}
 
@@ -85,17 +85,17 @@ func queue_fail(nonce string, err string) {
 	if attempts >= queue_max_attempts {
 		// Move to dead letters
 		db.exec(`insert into dead_letters
-			(nonce, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
+			(id, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.Nonce, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, attempts, err, q.Created, now())
-		db.exec("delete from queue where nonce = ?", nonce)
-		warn("Queue message %q moved to dead letters after %d attempts: %s", nonce, attempts, err)
+			q.ID, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, attempts, err, q.Created, now())
+		db.exec("delete from queue where id = ?", id)
+		warn("Queue message %q moved to dead letters after %d attempts: %s", id, attempts, err)
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)
-		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where nonce = ?",
-			attempts, next, err, nonce)
-		debug("Queue message %q scheduled for retry %d at %d: %s", nonce, attempts, next, err)
+		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?",
+			attempts, next, err, id)
+		debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
 	}
 }
 
@@ -120,11 +120,11 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.Nonce, "", challenge)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.ID, "", challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		ID: q.Nonce, Signature: signature,
+		ID: q.ID, Signature: signature,
 	})
 
 	if s.write_raw(headers) != nil {
@@ -136,7 +136,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	if len(q.Data) > 0 && s.write_raw(q.Data) != nil {
 		return false
 	}
-	if q.File != "" && s.write_file(q.File) != nil {
+	if q.File != nil && *q.File != "" && s.write_file(*q.File) != nil {
 		return false
 	}
 
@@ -153,10 +153,10 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		return false
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.Nonce, "", nil)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.ID, "", nil)))
 
 	msg := Message{
-		ID: q.Nonce, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
+		ID: q.ID, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
 		Signature: signature,
 	}
 	data := cbor_encode(msg)
@@ -173,7 +173,13 @@ func queue_process() {
 	db := db_open("db/queue.db")
 
 	var entries []QueueEntry
-	_ = db.scans(&entries, "select * from queue where status = 'pending' and next_retry <= ? limit 50", now())
+	err := db.scans(&entries, "select * from queue where status = 'pending' and next_retry <= ? limit 50", now())
+	if err != nil {
+		info("Queue process scan error: %v", err)
+	}
+	if len(entries) > 0 {
+		info("Queue processing %d entries", len(entries))
+	}
 
 	for _, q := range entries {
 		var ok bool
@@ -187,14 +193,14 @@ func queue_process() {
 			// Mark as sent, waiting for ACK (for direct) or remove (for broadcast)
 			if q.Type == "broadcast" {
 				// Broadcasts don't get ACKs, just remove
-				db.exec("delete from queue where nonce = ?", q.Nonce)
-				debug("Queue broadcast %q sent", q.Nonce)
+				db.exec("delete from queue where id = ?", q.ID)
+				debug("Queue broadcast %q sent", q.ID)
 			} else {
-				db.exec("update queue set status = 'sent' where nonce = ?", q.Nonce)
-				debug("Queue direct %q sent, awaiting ACK", q.Nonce)
+				db.exec("update queue set status = 'sent' where id = ?", q.ID)
+				debug("Queue direct %q sent, awaiting ACK", q.ID)
 			}
 		} else {
-			queue_fail(q.Nonce, "send failed")
+			queue_fail(q.ID, "send failed")
 		}
 
 		time.Sleep(time.Millisecond)
@@ -219,8 +225,8 @@ func queue_check_entity(entity string) {
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
-			db.exec("update queue set status = 'sent' where nonce = ?", q.Nonce)
-			debug("Queue direct %q sent to entity %q, awaiting ACK", q.Nonce, entity)
+			db.exec("update queue set status = 'sent' where id = ?", q.ID)
+			debug("Queue direct %q sent to entity %q, awaiting ACK", q.ID, entity)
 		}
 	}
 }
@@ -234,8 +240,8 @@ func queue_check_peer(peer string) {
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
-			db.exec("update queue set status = 'sent' where nonce = ?", q.Nonce)
-			debug("Queue direct %q sent to peer %q, awaiting ACK", q.Nonce, peer)
+			db.exec("update queue set status = 'sent' where id = ?", q.ID)
+			debug("Queue direct %q sent to peer %q, awaiting ACK", q.ID, peer)
 		}
 	}
 }
@@ -250,9 +256,9 @@ func queue_cleanup() {
 	_ = db.scans(&old, "select * from queue where created < ?", cutoff)
 	for _, q := range old {
 		db.exec(`insert into dead_letters
-			(nonce, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
+			(id, type, target, from_entity, to_entity, service, event, content, data, attempts, last_error, created, died)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.Nonce, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, q.Attempts, "expired", q.Created, now())
+			q.ID, q.Type, q.Target, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Content, q.Data, q.Attempts, "expired", q.Created, now())
 	}
 	db.exec("delete from queue where created < ?", cutoff)
 

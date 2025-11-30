@@ -95,12 +95,12 @@ func db_create() {
 	queue.exec("drop table if exists seen_nonces")
 
 	// Outgoing message queue
-	queue.exec("create table if not exists queue ( nonce text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 
 	// Dead letters for failed messages
-	queue.exec("create table if not exists dead_letters ( nonce text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
+	queue.exec("create table if not exists dead_letters ( id text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary
@@ -330,7 +330,7 @@ func db_upgrade() {
 					if !has_secret {
 						// Ensure the logins table actually exists before attempting ALTER
 						has_logins, _ := db.exists("select name from sqlite_master where type='table' and name='logins'")
-					if !has_logins {
+						if !has_logins {
 							info("DB migration: 'logins' table not present, skipping secret migration")
 						} else {
 							info("DB migration: adding 'secret' column to logins table")
@@ -372,12 +372,12 @@ func db_upgrade() {
 			queue.exec("drop table if exists seen_nonces")
 
 			// Outgoing message queue
-			queue.exec("create table if not exists queue ( nonce text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
+			queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 			queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 			queue.exec("create index if not exists queue_target on queue (target)")
 
 			// Dead letters for failed messages
-			queue.exec("create table if not exists dead_letters ( nonce text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
+			queue.exec("create table if not exists dead_letters ( id text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
 		}
 		setting_set("schema", itoa(int(schema)))
 	}

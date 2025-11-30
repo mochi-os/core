@@ -26,9 +26,9 @@ type mdns_notifee struct {
 }
 
 var (
-	p2p_context           = context.Background()
-	p2p_id                string
-	p2p_me                p2p_host.Host
+	p2p_context  = context.Background()
+	p2p_id       string
+	p2p_me       p2p_host.Host
 	p2p_pubsub_1 *p2p_pubsub.Topic
 )
 

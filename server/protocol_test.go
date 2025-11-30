@@ -9,6 +9,11 @@ import (
 
 // Test Headers.valid() basic validation
 func TestHeadersValid(t *testing.T) {
+	longID := make([]byte, 65)
+	for i := range longID {
+		longID[i] = 'x'
+	}
+
 	tests := []struct {
 		name     string
 		headers  Headers
@@ -21,6 +26,10 @@ func TestHeadersValid(t *testing.T) {
 		{"nack type without AckID", Headers{Type: "nack"}, false},
 		{"nack type with AckID", Headers{Type: "nack", AckID: "test123"}, true},
 		{"invalid type", Headers{Type: "invalid"}, false},
+		{"ID at max length", Headers{ID: string(longID[:64])}, true},
+		{"ID too long", Headers{ID: string(longID)}, false},
+		{"AckID at max length", Headers{Type: "ack", AckID: string(longID[:64])}, true},
+		{"AckID too long", Headers{Type: "ack", AckID: string(longID)}, false},
 	}
 
 	for _, tt := range tests {

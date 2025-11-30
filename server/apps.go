@@ -188,9 +188,13 @@ func app_check_install(id string) bool {
 	}
 	s.write_content("track", "production")
 
-	status, err := s.read_content()
-	if err != nil || status["status"] != "200" {
+	statusResp, err := s.read_content()
+	if err != nil {
 		debug("%v", err)
+		return false
+	}
+	statusCode, _ := statusResp["status"].(string)
+	if statusCode != "200" {
 		return false
 	}
 
@@ -199,7 +203,7 @@ func app_check_install(id string) bool {
 		debug("%v", err)
 		return false
 	}
-	version := v["version"]
+	version, _ := v["version"].(string)
 	if !valid(version, "version") {
 		return false
 	}
@@ -230,7 +234,11 @@ func app_check_install(id string) bool {
 	}
 
 	response, err := s.read_content()
-	if err != nil || response["status"] != "200" {
+	if err != nil {
+		return false
+	}
+	respStatus, _ := response["status"].(string)
+	if respStatus != "200" {
 		return false
 	}
 

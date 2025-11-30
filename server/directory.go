@@ -99,7 +99,7 @@ func directory_download() {
 func directory_download_event(e *Event) {
 	debug("Directory received download request")
 
-	start := atoi(e.content["start"], 0)
+	start := atoi(e.get("start", ""), 0)
 	debug("Directory sending updates since %d", start)
 
 	var results []Directory

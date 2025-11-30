@@ -37,6 +37,13 @@ var (
 		limit:   20,
 		window:  300,
 	}
+
+	// P2P stream rate limiter: 20 per second per peer
+	rate_limit_p2p = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   20,
+		window:  1,
+	}
 )
 
 // Check if request is allowed; returns true if allowed, false if rate limited
@@ -143,5 +150,6 @@ func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
 		rate_limit_login.cleanup()
+		rate_limit_p2p.cleanup()
 	}
 }

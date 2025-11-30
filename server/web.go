@@ -257,20 +257,6 @@ func web_security_headers(c *gin.Context) {
 	c.Next()
 }
 
-// Simple CORS middleware to allow browser clients
-func web_cors_middleware(c *gin.Context) {
-	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Login")
-	c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-
-	if c.Request.Method == http.MethodOptions {
-		c.AbortWithStatus(http.StatusNoContent)
-		return
-	}
-	c.Next()
-}
-
 // Handle login: request code via email (POST with JSON)
 func web_login_email(c *gin.Context) {
 	var input struct {
@@ -449,9 +435,8 @@ func web_start() {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 	r.Use(web_security_headers)
-	r.Use(web_cors_middleware)
 	r.Use(rate_limit_api_middleware)
-	r.RedirectTrailingSlash = false // Avoid 301 redirects on API preflights, which break CORS
+	r.RedirectTrailingSlash = false
 
 	// Serve built-in paths
 	share := ini_string("directories", "share", "/usr/share/mochi")

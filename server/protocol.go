@@ -14,7 +14,13 @@ var (
 	nonces_lock sync.Mutex
 )
 
+const (
+	nonce_retention = 24 * 3600 // keep seen nonces for 24 hours
+)
+
+// Signable portion of headers (excludes signature and ack fields)
 type SignableHeaders struct {
+	Type      string `cbor:"type,omitempty"`
 	From      string `cbor:"from,omitempty"`
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
@@ -23,25 +29,50 @@ type SignableHeaders struct {
 	Nonce     string `cbor:"nonce,omitempty"`
 }
 
-func signable_headers(from, to, service, event string, timestamp int64, nonce string) []byte {
+// Create signable headers for signing
+func signable_headers(msg_type, from, to, service, event string, timestamp int64, nonce string) []byte {
 	return cbor_encode(SignableHeaders{
-		From: from, To: to, Service: service, Event: event,
+		Type: msg_type, From: from, To: to, Service: service, Event: event,
 		Timestamp: timestamp, Nonce: nonce,
 	})
 }
 
+// Message headers
 type Headers struct {
+	Type      string `cbor:"type,omitempty"`
 	From      string `cbor:"from,omitempty"`
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
 	Timestamp int64  `cbor:"timestamp,omitempty"`
 	Nonce     string `cbor:"nonce,omitempty"`
+	AckNonce  string `cbor:"ack,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
 }
 
-// Check if headers are valid
+// Get message type, defaulting to "msg"
+func (h *Headers) msg_type() string {
+	if h.Type == "" {
+		return "msg"
+	}
+	return h.Type
+}
+
+// Check if headers are valid and signature verifies
 func (h *Headers) valid() bool {
+	// Validate type
+	t := h.msg_type()
+	if t != "msg" && t != "ack" && t != "nack" {
+		info("Invalid message type %q", t)
+		return false
+	}
+
+	// ACK/NACK must have ack nonce
+	if (t == "ack" || t == "nack") && h.AckNonce == "" {
+		info("ACK/NACK missing ack nonce")
+		return false
+	}
+
 	if h.From != "" && !valid(h.From, "entity") {
 		info("Invalid from header %q", h.From)
 		return false
@@ -57,7 +88,8 @@ func (h *Headers) valid() bool {
 		return false
 	}
 
-	if !valid(h.Event, "constant") {
+	// Event is optional for ACK messages
+	if t == "msg" && !valid(h.Event, "constant") {
 		info("Invalid event header %q", h.Event)
 		return false
 	}
@@ -87,7 +119,7 @@ func (h *Headers) valid() bool {
 			info("Replayed nonce")
 			return false
 		}
-		if !ed25519.Verify(public, signable_headers(h.From, h.To, h.Service, h.Event, h.Timestamp, h.Nonce), base58_decode(h.Signature, "")) {
+		if !ed25519.Verify(public, signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.Timestamp, h.Nonce), base58_decode(h.Signature, "")) {
 			info("Incorrect signature header")
 			return false
 		}
@@ -96,7 +128,7 @@ func (h *Headers) valid() bool {
 	return true
 }
 
-// Check if nonce was already seen; if not, record it
+// Check if nonce was already seen (in-memory, for replay attack prevention)
 func nonce_seen(nonce string) bool {
 	nonces_lock.Lock()
 	defer nonces_lock.Unlock()
@@ -108,7 +140,20 @@ func nonce_seen(nonce string) bool {
 	return false
 }
 
-// Clean up expired nonces periodically
+// Check if nonce was already processed (persistent, for deduplication)
+func nonce_processed(nonce string) bool {
+	db := db_open("db/queue.db")
+	exists, _ := db.exists("select 1 from seen_nonces where nonce = ?", nonce)
+	return exists
+}
+
+// Record a nonce as processed (persistent)
+func nonce_record(nonce string) {
+	db := db_open("db/queue.db")
+	db.exec("insert or ignore into seen_nonces (nonce, created) values (?, ?)", nonce, now())
+}
+
+// Clean up expired nonces (in-memory)
 func nonce_cleanup() {
 	nonces_lock.Lock()
 	defer nonces_lock.Unlock()
@@ -119,6 +164,12 @@ func nonce_cleanup() {
 			delete(nonces, k)
 		}
 	}
+}
+
+// Clean up old seen nonces (persistent) - called from queue_manager
+func nonce_cleanup_persistent() {
+	db := db_open("db/queue.db")
+	db.exec("delete from seen_nonces where created < ?", now()-nonce_retention)
 }
 
 func init() {

@@ -240,26 +240,29 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// a.input(field) -> string: Get form/query input parameter
+// a.input(field, default?) -> string: Get form/query input parameter
 func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field string
-	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
+	var def string
+	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "default?", &def)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	return sl.String(a.input(field)), nil
+	value := a.input(field)
+	if value == "" {
+		value = def
+	}
+	return sl.String(value), nil
 }
 
 // a.json(data) -> None: Send JSON response
 func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var v any
-	err := sl.UnpackArgs(fn.Name(), args, kwargs, "data", &v)
-	if err != nil {
-		return sl_error(fn, "%v", err)
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <data>")
 	}
 
-	a.web.JSON(200, v)
+	a.web.JSON(200, sl_decode(args[0]))
 	return sl.None, nil
 }
 

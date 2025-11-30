@@ -145,35 +145,6 @@ func (m *Message) send_work() {
 	}
 }
 
-// Send an ACK or NACK response (reads challenge before sending)
-func send_ack(ack_type string, ack_id string, from string, to string, peer string) {
-	s := peer_stream(peer)
-	if s == nil {
-		debug("Unable to send %s: no stream to peer %q", ack_type, peer)
-		return
-	}
-
-	challenge, err := s.read_challenge()
-	if err != nil {
-		debug("Unable to read challenge for %s: %v", ack_type, err)
-		return
-	}
-
-	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", ack_id, challenge)))
-
-	headers := cbor_encode(Headers{
-		Type: ack_type, From: from, To: to, AckID: ack_id, Signature: signature,
-	})
-
-	if s.write_raw(headers) == nil {
-		debug("Sent %s for ID %q", ack_type, ack_id)
-	}
-
-	if s.writer != nil {
-		s.writer.Close()
-	}
-}
-
 // Set the content segment of an outgoing message
 func (m *Message) set(in ...string) *Message {
 	for {

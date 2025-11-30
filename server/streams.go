@@ -165,7 +165,7 @@ func stream_receive(s *Stream, version int, peer string) {
 	if err != nil {
 		info("Stream %d error reading content: %v", s.id, err)
 		if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
-			go send_ack("nack", h.ID, h.To, h.From, peer)
+			s.send_ack("nack", h.ID, h.To, h.From)
 		}
 		return
 	}
@@ -177,12 +177,30 @@ func stream_receive(s *Stream, version int, peer string) {
 	route_err := e.route()
 
 	// Send ACK on success, NACK on failure (only for direct signed messages)
+	// ACK is sent on same stream without challenge (TLS provides transport security)
 	if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
 		if route_err == nil {
-			go send_ack("ack", h.ID, h.To, h.From, peer)
+			s.send_ack("ack", h.ID, h.To, h.From)
 		} else {
-			go send_ack("nack", h.ID, h.To, h.From, peer)
+			s.send_ack("nack", h.ID, h.To, h.From)
 		}
+	}
+}
+
+// Send ACK/NACK on existing stream (no challenge - TLS provides security)
+func (s *Stream) send_ack(ack_type, ack_id, from, to string) {
+	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", ack_id, nil)))
+
+	headers := cbor_encode(Headers{
+		Type: ack_type, From: from, To: to, AckID: ack_id, Signature: signature,
+	})
+
+	if s.write_raw(headers) == nil {
+		debug("Stream %d sent %s for ID %q", s.id, ack_type, ack_id)
+	}
+
+	if s.writer != nil {
+		s.writer.Close()
 	}
 }
 

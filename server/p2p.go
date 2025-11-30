@@ -103,6 +103,14 @@ func p2p_pubsubs() {
 // Receive event with protocol version 1 from p2p stream
 func p2p_receive_1(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
+
+	// Rate limit incoming streams per peer
+	if !rate_limit_p2p.allow(peer) {
+		debug("P2P rate limited peer %q", peer)
+		s.Close()
+		return
+	}
+
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
 	debug("P2P stream from %q at %q", peer, address)
 

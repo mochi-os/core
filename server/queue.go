@@ -269,6 +269,27 @@ func queue_cleanup() {
 	db.exec("delete from queue where created < ?", cutoff)
 }
 
+// Drain queue before shutdown (wait for pending sends to complete)
+func queue_drain(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	db := db_open("db/queue.db")
+
+	for time.Now().Before(deadline) {
+		count := db.integer("select count(*) from queue where status = 'sent'")
+		if count == 0 {
+			info("Queue drained")
+			return
+		}
+		info("Waiting for %d pending messages...", count)
+		time.Sleep(time.Second)
+	}
+
+	remaining := db.integer("select count(*) from queue")
+	if remaining > 0 {
+		info("Queue drain timeout, %d messages still pending", remaining)
+	}
+}
+
 // Queue manager goroutine
 func queue_manager() {
 	// Process queue every 10 seconds

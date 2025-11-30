@@ -6,6 +6,9 @@ package main
 import (
 	"flag"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 type Map map[string]any
@@ -57,5 +60,29 @@ func main() {
 	go web_start()
 	//go apps_manager()
 
-	select {}
+	// Wait for shutdown signal
+	shutdown_wait()
+}
+
+// Wait for shutdown signal and gracefully stop
+func shutdown_wait() {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+
+	info("Shutdown signal received, stopping gracefully...")
+
+	// Wait for queue to drain (with timeout)
+	queue_drain(10 * time.Second)
+
+	// Notify connected peers
+	peers_shutdown()
+
+	// Close P2P host
+	if p2p_me != nil {
+		p2p_me.Close()
+	}
+
+	info("Shutdown complete")
+	os.Exit(0)
 }

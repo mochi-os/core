@@ -127,13 +127,16 @@ func queue_send_direct(q *QueueEntry) bool {
 		ID: q.ID, Signature: signature,
 	})
 
-	if s.write_raw(headers) != nil {
-		return false
+	// Batch headers + content + data into single write
+	data := headers
+	if len(q.Content) > 0 {
+		data = append(data, q.Content...)
 	}
-	if len(q.Content) > 0 && s.write_raw(q.Content) != nil {
-		return false
+	if len(q.Data) > 0 {
+		data = append(data, q.Data...)
 	}
-	if len(q.Data) > 0 && s.write_raw(q.Data) != nil {
+
+	if s.write_raw(data) != nil {
 		return false
 	}
 	if q.File != nil && *q.File != "" && s.write_file(*q.File) != nil {

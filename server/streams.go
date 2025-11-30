@@ -259,8 +259,8 @@ func (s *Stream) read(v any) error {
 }
 
 // Read a content segment from a stream
-func (s *Stream) read_content() (map[string]string, error) {
-	content := map[string]string{}
+func (s *Stream) read_content() (map[string]any, error) {
+	content := map[string]any{}
 	err := s.read(&content)
 	if err != nil {
 		return nil, err
@@ -271,8 +271,10 @@ func (s *Stream) read_content() (map[string]string, error) {
 		if len(k) > content_max_key {
 			return nil, fmt.Errorf("content key too long: %d > %d", len(k), content_max_key)
 		}
-		if len(v) > content_max_value {
-			return nil, fmt.Errorf("content value too long: %d > %d", len(v), content_max_value)
+		if str, ok := v.(string); ok {
+			if len(str) > content_max_value {
+				return nil, fmt.Errorf("content value too long: %d > %d", len(str), content_max_value)
+			}
 		}
 	}
 

@@ -20,7 +20,7 @@ type Message struct {
 	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
-	content   map[string]string
+	content   map[string]any
 	data      []byte
 	file      string
 	target    string // specific peer to send to (optional)
@@ -28,7 +28,7 @@ type Message struct {
 
 // Create a new message
 func message(from string, to string, service string, event string) *Message {
-	return &Message{ID: uid(), From: from, To: to, Service: service, Event: event, content: map[string]string{}}
+	return &Message{ID: uid(), From: from, To: to, Service: service, Event: event, content: map[string]any{}}
 }
 
 // Add a CBOR segment to an outgoing message
@@ -196,7 +196,9 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 	if len(args) > 1 {
-		m.content = sl_decode_strings(args[1])
+		if content, ok := sl_decode(args[1]).(map[string]any); ok {
+			m.content = content
+		}
 	}
 
 	if len(args) > 2 {
@@ -245,7 +247,9 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 	if len(args) > 1 {
-		m.content = sl_decode_strings(args[1])
+		if content, ok := sl_decode(args[1]).(map[string]any); ok {
+			m.content = content
+		}
 	}
 
 	m.publish(true)

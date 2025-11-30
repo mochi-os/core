@@ -905,7 +905,7 @@ func attachment_notify_create(app *App, owner *User, object string, attachments 
 		}
 
 		m := message(from, entity, "app/"+app.id, "_attachment/create")
-		m.content = map[string]string{
+		m.content = map[string]any{
 			"object": object,
 		}
 		m.add(attachments)
@@ -928,7 +928,7 @@ func attachment_notify_insert(app *App, owner *User, object string, attachment m
 		}
 
 		m := message(from, entity, "app/"+app.id, "_attachment/insert")
-		m.content = map[string]string{
+		m.content = map[string]any{
 			"object": object,
 		}
 		m.add(attachment)
@@ -971,7 +971,7 @@ func attachment_notify_move(app *App, owner *User, attachment map[string]any, ol
 		}
 
 		m := message(from, entity, "app/"+app.id, "_attachment/move")
-		m.content = map[string]string{
+		m.content = map[string]any{
 			"old_rank": fmt.Sprintf("%d", old_rank),
 		}
 		m.add(attachment)
@@ -994,7 +994,7 @@ func attachment_notify_delete(app *App, owner *User, object string, id string, n
 		}
 
 		m := message(from, entity, "app/"+app.id, "_attachment/delete")
-		m.content = map[string]string{
+		m.content = map[string]any{
 			"object": object,
 			"id":     id,
 		}
@@ -1017,7 +1017,7 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 		}
 
 		m := message(from, entity, "app/"+app.id, "_attachment/clear")
-		m.content = map[string]string{
+		m.content = map[string]any{
 			"object": object,
 		}
 		m.send()
@@ -1118,7 +1118,7 @@ func attachment_type_allowed(content_type string, allowed []string) bool {
 
 // Event handler: attachment/create
 func (e *Event) attachment_event_create() {
-	object := e.content["object"]
+	object := e.get("object", "")
 	if object == "" {
 		return
 	}
@@ -1145,7 +1145,7 @@ func (e *Event) attachment_event_create() {
 
 // Event handler: attachment/insert
 func (e *Event) attachment_event_insert() {
-	object := e.content["object"]
+	object := e.get("object", "")
 	if object == "" {
 		return
 	}
@@ -1236,7 +1236,7 @@ func (e *Event) attachment_event_move() {
 		new_rank = r
 	}
 
-	old_rank := int(atoi(e.content["old_rank"], 0))
+	old_rank := int(atoi(e.get("old_rank", ""), 0))
 
 	if old_rank > 0 && new_rank > 0 && old_rank != new_rank {
 		if new_rank < old_rank {
@@ -1259,8 +1259,8 @@ func (e *Event) attachment_event_delete() {
 		return
 	}
 
-	id := e.content["id"]
-	object := e.content["object"]
+	id := e.get("id", "")
+	object := e.get("object", "")
 	if id == "" {
 		return
 	}
@@ -1288,7 +1288,7 @@ func (e *Event) attachment_event_clear() {
 		return
 	}
 
-	object := e.content["object"]
+	object := e.get("object", "")
 	if object == "" {
 		return
 	}
@@ -1312,7 +1312,7 @@ func (e *Event) attachment_event_data() {
 		return
 	}
 
-	id := e.content["id"]
+	id := e.get("id", "")
 	if id == "" {
 		e.stream.write(map[string]string{"status": "400"})
 		return
@@ -1467,7 +1467,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // Event handler: attachment/fetch (responds with attachments for object via stream)
 func (e *Event) attachment_event_fetch() {
-	object := e.content["object"]
+	object := e.get("object", "")
 	if object == "" {
 		e.stream.write([]map[string]any{})
 		return

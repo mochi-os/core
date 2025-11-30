@@ -19,7 +19,7 @@ type Event struct {
 	service string
 	event   string
 	peer    string
-	content map[string]string
+	content map[string]any
 	user    *User
 	db      *DB
 	stream  *Stream
@@ -38,11 +38,13 @@ func event_id() int64 {
 	return id
 }
 
-// Get a field from the content segment of a received event
+// Get a string field from the content segment of a received event
 func (e *Event) get(field string, def string) string {
 	result, found := e.content[field]
 	if found {
-		return result
+		if s, ok := result.(string); ok {
+			return s
+		}
 	}
 	return def
 }
@@ -238,10 +240,10 @@ func (e *Event) Type() string {
 	return "Event"
 }
 
-// e.content(field, default?) -> string: Get a content field from the event
+// e.content(field, default?) -> any: Get a content field from the event
 func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <field: string>, [default: string]")
+		return sl_error(fn, "syntax: <field: string>, [default: any]")
 	}
 
 	field, ok := sl.AsString(args[0])
@@ -258,7 +260,7 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return args[1], nil
 	}
 
-	return sl_encode(""), nil
+	return sl.None, nil
 }
 
 // e.dump() -> dict: Return event details as a dictionary

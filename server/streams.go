@@ -15,11 +15,13 @@ import (
 )
 
 const (
-	challenge_size    = 16
-	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size
-	cbor_max_depth    = 32               // Max nesting depth
-	cbor_max_pairs    = 1000             // Max map pairs
-	cbor_max_elements = 10000            // Max array elements
+	challenge_size      = 16
+	cbor_max_size       = 100 * 1024 * 1024 // 100MB max message size
+	cbor_max_depth      = 32                // Max nesting depth
+	cbor_max_pairs      = 1000              // Max map pairs
+	cbor_max_elements   = 10000             // Max array elements
+	content_max_key     = 256               // Max content key length
+	content_max_value   = 10 * 1024 * 1024  // 10MB max content value length
 )
 
 var cbor_decode_mode cbor.DecMode
@@ -245,6 +247,17 @@ func (s *Stream) read_content() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Validate key/value sizes
+	for k, v := range content {
+		if len(k) > content_max_key {
+			return nil, fmt.Errorf("content key too long: %d > %d", len(k), content_max_key)
+		}
+		if len(v) > content_max_value {
+			return nil, fmt.Errorf("content value too long: %d > %d", len(v), content_max_value)
+		}
+	}
+
 	return content, nil
 }
 

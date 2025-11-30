@@ -215,6 +215,11 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary]")
 	}
 
+	// Rate limit outbound pubsub messages
+	if !rate_limit_pubsub_out.allow("global") {
+		return sl.None, nil
+	}
+
 	headers := sl_decode_strings(args[0])
 	if headers == nil {
 		return sl_error(fn, "headers not specified or invalid")

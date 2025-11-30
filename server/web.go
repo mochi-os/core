@@ -449,7 +449,6 @@ func web_start() {
 	r.POST("/login/email", rate_limit_login_middleware, web_login_email)
 	r.GET("/login/identity", web_login_identity)
 	r.POST("/login/identity", web_login_identity)
-	r.GET("/logout", web_logout)
 	r.POST("/logout", web_logout)
 	r.GET("/ping", web_ping)
 	r.GET("/websocket", websocket_connection)

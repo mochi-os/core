@@ -17,8 +17,10 @@ import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
+	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	multiaddr "github.com/multiformats/go-multiaddr"
 	"io"
+	"time"
 )
 
 type mdns_notifee struct {
@@ -30,6 +32,7 @@ var (
 	p2p_id       string
 	p2p_me       p2p_host.Host
 	p2p_pubsub_1 *p2p_pubsub.Topic
+	p2p_pinger   *p2p_ping.PingService
 )
 
 // Peer discovered using multicast DNS
@@ -143,8 +146,14 @@ func p2p_start() {
 	// Listen for connecting peers
 	p2p_me.SetStreamHandler("/mochi/1", p2p_receive_1)
 
+	// Initialize ping service for keepalive
+	p2p_pinger = p2p_ping.NewPingService(p2p_me)
+
 	// Watch event bus for disconnecting peers
 	go p2p_watch_disconnect()
+
+	// Start keepalive ping manager
+	go p2p_ping_manager()
 
 	// Add bootstrap peers
 	for _, p := range peers_bootstrap {
@@ -198,5 +207,42 @@ func p2p_watch_disconnect() {
 		if c.Connectedness == p2p_network.NotConnected {
 			peer_disconnected(c.Peer.String())
 		}
+	}
+}
+
+// Ping connected peers periodically to detect dead connections
+func p2p_ping_manager() {
+	for range time.Tick(30 * time.Second) {
+		peers_lock.Lock()
+		connected := []string{}
+		for id, p := range peers {
+			if p.connected {
+				connected = append(connected, id)
+			}
+		}
+		peers_lock.Unlock()
+
+		for _, id := range connected {
+			go p2p_ping_peer(id)
+		}
+	}
+}
+
+// Ping a single peer and mark disconnected if failed
+func p2p_ping_peer(id string) {
+	p, err := p2p_peer.Decode(id)
+	if err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(p2p_context, 10*time.Second)
+	defer cancel()
+
+	result := <-p2p_pinger.Ping(ctx, p)
+	if result.Error != nil {
+		debug("P2P ping failed for peer %q: %v", id, result.Error)
+		peer_disconnected(id)
+	} else {
+		debug("P2P ping ok for peer %q: %v", id, result.RTT)
 	}
 }

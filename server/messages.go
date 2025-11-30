@@ -15,6 +15,7 @@ type Message struct {
 	content   map[string]string
 	data      []byte
 	file      string
+	target    string // specific peer to send to (optional)
 }
 
 // Create a new message
@@ -28,92 +29,145 @@ func (m *Message) add(v any) *Message {
 	return m
 }
 
-// Publish a message to a pubsub
+// Publish a message to a pubsub (queue-first for reliability)
 func (m *Message) publish(allow_queue bool) {
+	if m.ID == "" {
+		m.ID = uid()
+	}
 	debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
-	timestamp := now()
-	nonce := uid()
-	m.Timestamp = timestamp
-	m.Nonce = nonce
-	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event, timestamp, nonce)))
-	data := cbor_encode(m)
-	data = append(data, cbor_encode(m.content)...)
 
+	// Encode content for queue storage
+	content := cbor_encode(m.content)
+
+	if allow_queue {
+		// Queue first for reliability
+		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, content, m.data)
+	}
+
+	// Attempt immediate send if we have enough peers
 	if peers_sufficient() {
+		timestamp := now()
+		nonce := uid()
+		m.Timestamp = timestamp
+		m.Nonce = nonce
+		m.Signature = entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, timestamp, nonce)))
+		data := cbor_encode(m)
+		data = append(data, content...)
+		if len(m.data) > 0 {
+			data = append(data, m.data...)
+		}
+
 		debug("Message sending via P2P pubsub")
 		p2p_pubsub_1.Publish(p2p_context, data)
 
-	} else if allow_queue {
-		debug("Message not enough peers to publish, adding to queue")
-		db := db_open("db/queue.db")
-		db.exec("replace into broadcasts ( id, data, created ) values ( ?, ?, ? )", m.ID, data, now())
+		if allow_queue {
+			// Remove from queue on successful immediate send (broadcasts don't need ACK)
+			queue_ack(m.ID)
+		}
 	}
 }
 
 // Send a completed outgoing message
 func (m *Message) send() {
-	go m.send_work(entity_peer(m.To))
+	m.target = ""
+	go m.send_work()
 }
 
 // Send a completed outgoing message to a specified peer
 func (m *Message) send_peer(peer string) {
-	go m.send_work(peer)
+	m.target = peer
+	go m.send_work()
 }
 
-// Do the work of sending
-func (m *Message) send_work(peer string) {
+// Do the work of sending (queue-first for reliability)
+func (m *Message) send_work() {
 	if m.ID == "" {
 		m.ID = uid()
 	}
+
+	// Determine peer
+	peer := m.target
+	if peer == "" {
+		peer = entity_peer(m.To)
+	}
+
 	debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q, content '%#v', data %d bytes, file %q", peer, m.ID, m.From, m.To, m.Service, m.Event, m.content, len(m.data), m.file)
 
-	ok := true
+	// Queue first for reliability
+	content := cbor_encode(m.content)
+	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, content, m.data, m.file)
+
+	// Attempt immediate send
+	if peer == "" {
+		debug("Message unable to determine peer, will retry from queue")
+		return
+	}
+
 	s := peer_stream(peer)
 	if s == nil {
-		debug("Unable to open stream to peer")
-		ok = false
+		debug("Unable to open stream to peer, will retry from queue")
+		return
 	}
 
 	timestamp := now()
 	nonce := uid()
 	m.Timestamp = timestamp
 	m.Nonce = nonce
-	m.Signature = entity_sign(m.From, string(signable_headers(m.From, m.To, m.Service, m.Event, timestamp, nonce)))
-	headers := cbor_encode(m)
-	if ok {
-		ok = s.write_raw(headers) == nil
-	}
+	m.Signature = entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, timestamp, nonce)))
 
-	content := cbor_encode(m.content)
+	headers := cbor_encode(Headers{
+		Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
+		Timestamp: timestamp, Nonce: m.ID, Signature: m.Signature,
+	})
+
+	ok := s.write_raw(headers) == nil
 	if ok {
 		ok = s.write_raw(content) == nil
 	}
-
 	if len(m.data) > 0 && ok {
 		ok = s.write_raw(m.data) == nil
 	}
-
 	if m.file != "" && ok {
 		ok = s.write_file(m.file) == nil
 	}
 
-	if s != nil && s.writer != nil {
+	if s.writer != nil {
 		s.writer.Close()
 	}
 
 	if !ok {
 		peer_disconnected(peer)
+		debug("Message send failed, will retry from queue")
+		queue_fail(m.ID, "send failed")
+	} else {
+		debug("Message sent, awaiting ACK")
+		// Message stays in queue with 'sent' status until ACK received
+	}
+}
 
-		debug("Message unable to send to %q, queuing for retry", m.To)
-		db := db_open("db/queue.db")
-		content_bytes := cbor_encode(m.content)
-		if peer == "" {
-			db.exec("replace into entities ( id, entity, from_entity, service, event, content, data, file, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )",
-				m.ID, m.To, m.From, m.Service, m.Event, content_bytes, m.data, m.file, now())
-		} else {
-			db.exec("replace into peers ( id, peer, from_entity, to_entity, service, event, content, data, file, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )",
-				m.ID, peer, m.From, m.To, m.Service, m.Event, content_bytes, m.data, m.file, now())
-		}
+// Send an ACK or NACK response for a received message
+func send_ack(ack_type string, ack_nonce string, from string, to string, peer string) {
+	s := peer_stream(peer)
+	if s == nil {
+		debug("Unable to send %s: no stream to peer %q", ack_type, peer)
+		return
+	}
+
+	timestamp := now()
+	nonce := uid()
+	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", timestamp, nonce)))
+
+	headers := cbor_encode(Headers{
+		Type: ack_type, From: from, To: to, AckNonce: ack_nonce,
+		Timestamp: timestamp, Nonce: nonce, Signature: signature,
+	})
+
+	if s.write_raw(headers) == nil {
+		debug("Sent %s for nonce %q", ack_type, ack_nonce)
+	}
+
+	if s.writer != nil {
+		s.writer.Close()
 	}
 }
 

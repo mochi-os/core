@@ -13,6 +13,7 @@ import (
 
 type Event struct {
 	id      int64
+	nonce   string
 	from    string
 	to      string
 	service string
@@ -46,13 +47,13 @@ func (e *Event) get(field string, def string) string {
 	return def
 }
 
-// Route a received event to the correct app
-func (e *Event) route() {
+// Route a received event to the correct app. Returns error on failure.
+func (e *Event) route() error {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {
 			info("Event dropping to unknown user %q", e.to)
-			return
+			return fmt.Errorf("unknown user %q", e.to)
 		}
 	}
 
@@ -60,7 +61,7 @@ func (e *Event) route() {
 	a := app_for_service(e.service)
 	if a == nil {
 		info("Event dropping to unknown service %q", e.service)
-		return
+		return fmt.Errorf("unknown service %q", e.service)
 	}
 
 	// Find event in app
@@ -73,20 +74,20 @@ func (e *Event) route() {
 
 	if !found {
 		info("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
-		return
+		return fmt.Errorf("unknown event %q", e.event)
 	}
 
 	// Load a database file for the app
 	if a.active.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping broadcast for service requiring user")
-			return
+			return fmt.Errorf("broadcast for service requiring user")
 		}
 
 		e.db = db_app(e.user, a.active)
 		if e.db == nil {
 			info("Event app %q has no database file", a.id)
-			return
+			return fmt.Errorf("no database file")
 		}
 		defer e.db.close()
 	}
@@ -105,28 +106,28 @@ func (e *Event) route() {
 			switch e.event {
 			case "_attachment/create":
 				e.attachment_event_create()
-				return
+				return nil
 			case "_attachment/insert":
 				e.attachment_event_insert()
-				return
+				return nil
 			case "_attachment/update":
 				e.attachment_event_update()
-				return
+				return nil
 			case "_attachment/move":
 				e.attachment_event_move()
-				return
+				return nil
 			case "_attachment/delete":
 				e.attachment_event_delete()
-				return
+				return nil
 			case "_attachment/clear":
 				e.attachment_event_clear()
-				return
+				return nil
 			case "_attachment/data":
 				e.attachment_event_data()
-				return
+				return nil
 			case "_attachment/fetch":
 				e.attachment_event_fetch()
-				return
+				return nil
 			}
 		}
 	}
@@ -136,28 +137,31 @@ func (e *Event) route() {
 	case "": // Internal app
 		if ae.internal_function == nil {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
-			return
+			return fmt.Errorf("no handler for event %q", e.event)
 		}
 
+		var handler_err error
 		defer func() {
 			r := recover()
 			if r != nil {
 				warn("Event handler error: %v\n\n%s", r, string(rd.Stack()))
+				handler_err = fmt.Errorf("handler panic: %v", r)
 			}
 		}()
 
 		ae.internal_function(e)
+		return handler_err
 
 	case "starlark":
 		// Reject events without a verified sender for Starlark apps
 		if e.from == "" {
 			info("Event dropping unsigned message to Starlark app %q", a.id)
-			return
+			return fmt.Errorf("unsigned message")
 		}
 
 		if ae.Function == "" {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
-			return
+			return fmt.Errorf("no handler for event %q", e.event)
 		}
 
 		s := a.active.starlark()
@@ -168,10 +172,11 @@ func (e *Event) route() {
 
 		debug("App event %s:%s(): %v", a.id, ae.Function, e)
 		s.call(ae.Function, sl.Tuple{e})
+		return nil
 
 	default:
 		info("Event unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
-		return
+		return fmt.Errorf("unknown engine %q", a.active.Architecture.Engine)
 	}
 }
 

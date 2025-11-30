@@ -45,8 +45,8 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 
 	timestamp := now()
 	nonce := uid()
-	signature := entity_sign(from, string(signable_headers(from, to, service, event, timestamp, nonce)))
-	err := s.write(Headers{From: from, To: to, Service: service, Event: event, Timestamp: timestamp, Nonce: nonce, Signature: signature})
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, timestamp, nonce)))
+	err := s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, Timestamp: timestamp, Nonce: nonce, Signature: signature})
 	if err != nil {
 		return nil, err
 	}
@@ -75,9 +75,33 @@ func stream_receive(s *Stream, version int, peer string) {
 	err := s.read(&h)
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
+		return
 	}
 	if !h.valid() {
 		info("Stream %d received invalid headers", s.id)
+		return
+	}
+
+	// Handle ACK/NACK messages
+	msg_type := h.msg_type()
+	if msg_type == "ack" {
+		debug("Stream %d received ACK for nonce %q", s.id, h.AckNonce)
+		queue_ack(h.AckNonce)
+		return
+	}
+	if msg_type == "nack" {
+		debug("Stream %d received NACK for nonce %q", s.id, h.AckNonce)
+		queue_fail(h.AckNonce, "NACK received")
+		return
+	}
+
+	// Check for duplicate (already processed) messages
+	if h.Nonce != "" && nonce_processed(h.Nonce) {
+		debug("Stream %d received duplicate message with nonce %q, sending ACK", s.id, h.Nonce)
+		// Send ACK for duplicate (sender may have retried)
+		if h.From != "" && h.To != "" {
+			go send_ack("ack", h.Nonce, h.To, h.From, peer)
+		}
 		return
 	}
 
@@ -85,14 +109,29 @@ func stream_receive(s *Stream, version int, peer string) {
 	content, err := s.read_content()
 	if err != nil {
 		info("Stream %d error reading content: %v", s.id, err)
+		// Send NACK on error
+		if h.From != "" && h.To != "" && h.Nonce != "" {
+			go send_ack("nack", h.Nonce, h.To, h.From, peer)
+		}
 		return
 	}
 
 	debug("Stream %d open from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
 	// Create event, and route to app
-	e := Event{id: event_id(), from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
-	e.route()
+	e := Event{id: event_id(), nonce: h.Nonce, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
+	route_err := e.route()
+
+	// Send ACK on success, NACK on failure
+	if h.From != "" && h.To != "" && h.Nonce != "" {
+		if route_err == nil {
+			// Record nonce as processed to prevent reprocessing
+			nonce_record(h.Nonce)
+			go send_ack("ack", h.Nonce, h.To, h.From, peer)
+		} else {
+			go send_ack("nack", h.Nonce, h.To, h.From, peer)
+		}
+	}
 }
 
 // Read a CBOR encoded segment from a stream

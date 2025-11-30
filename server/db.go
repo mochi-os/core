@@ -85,27 +85,55 @@ func db_create() {
 	peers := db_open("db/peers.db")
 	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
 
-	// Queued outbound messages
+	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
 
-	// Migrate old queue schema (one-time)
-	has_data, _ := queue.exists("select 1 from pragma_table_info('entities') where name='data'")
-	has_from_entity, _ := queue.exists("select 1 from pragma_table_info('entities') where name='from_entity'")
-	if has_data && !has_from_entity {
-		queue.exec("drop table entities")
-		queue.exec("drop table peers")
-	}
+	// Drop old schema (one-time migration to new reliability system)
+	queue.exec("drop table if exists entities")
+	queue.exec("drop table if exists peers")
+	queue.exec("drop table if exists broadcasts")
 
-	queue.exec("create table if not exists entities ( id text not null primary key, entity text not null, from_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', created integer not null )")
-	queue.exec("create index if not exists entities_entity on entities( entity )")
-	queue.exec("create index if not exists entities_created on entities( created )")
+	// Outgoing message queue
+	queue.exec(`create table if not exists queue (
+		nonce text primary key,
+		type text not null default 'direct',
+		target text not null,
+		from_entity text not null,
+		to_entity text not null,
+		service text not null,
+		event text not null,
+		content blob,
+		data blob,
+		file text,
+		status text not null default 'pending',
+		attempts integer not null default 0,
+		next_retry integer not null,
+		last_error text,
+		created integer not null
+	)`)
+	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
+	queue.exec("create index if not exists queue_target on queue (target)")
 
-	queue.exec("create table if not exists peers ( id text not null primary key, peer text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', created integer not null )")
-	queue.exec("create index if not exists peers_peer on peers( peer )")
-	queue.exec("create index if not exists peers_created on peers( created )")
+	// Dead letters for failed messages
+	queue.exec(`create table if not exists dead_letters (
+		nonce text primary key,
+		type text not null,
+		target text not null,
+		from_entity text not null,
+		to_entity text not null,
+		service text not null,
+		event text not null,
+		content blob,
+		data blob,
+		attempts integer not null,
+		last_error text,
+		created integer not null,
+		died integer not null
+	)`)
 
-	queue.exec("create table broadcasts ( id text not null primary key, data blob not null, created integer not null )")
-	queue.exec("create index broadcasts_created on broadcasts( created )")
+	// Persistent nonce tracking for deduplication
+	queue.exec("create table if not exists seen_nonces (nonce text primary key, created integer not null)")
+	queue.exec("create index if not exists seen_nonces_created on seen_nonces (created)")
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary

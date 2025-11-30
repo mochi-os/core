@@ -95,6 +95,11 @@ func p2p_pubsubs() {
 		m := must(s.Next(p2p_context))
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
+			// Rate limit inbound pubsub messages per peer
+			if !rate_limit_pubsub_in.allow(peer) {
+				debug("P2P pubsub rate limited peer %q", peer)
+				continue
+			}
 			debug("P2P received pubsub event from peer %q", peer)
 			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
 			peer_discovered(peer)

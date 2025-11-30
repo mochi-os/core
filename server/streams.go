@@ -160,6 +160,15 @@ func stream_receive(s *Stream, version int, peer string) {
 		return
 	}
 
+	// Deduplication check: skip if we've already processed this message ID
+	if h.ID != "" && message_seen(h.ID) {
+		debug("Stream %d duplicate message %q, sending ACK only", s.id, h.ID)
+		if h.From != "" && h.To != "" && s.writer != nil {
+			s.send_ack("ack", h.ID, h.To, h.From)
+		}
+		return
+	}
+
 	// Decode the content segment
 	content, err := s.read_content()
 	if err != nil {
@@ -175,6 +184,11 @@ func stream_receive(s *Stream, version int, peer string) {
 	// Create event and route to app
 	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
 	route_err := e.route()
+
+	// Mark message as processed for deduplication
+	if h.ID != "" {
+		message_mark_seen(h.ID)
+	}
 
 	// Send ACK on success, NACK on failure (only for direct signed messages)
 	// ACK is sent on same stream without challenge (TLS provides transport security)

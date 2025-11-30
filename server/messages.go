@@ -6,7 +6,42 @@ package main
 import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"sync"
 )
+
+// Deduplication cache for processed messages
+var (
+	seen_messages      = make(map[string]int64) // id -> timestamp
+	seen_messages_lock sync.Mutex
+	seen_messages_ttl  = int64(3600) // 1 hour
+)
+
+// Check if message was already processed
+func message_seen(id string) bool {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	_, exists := seen_messages[id]
+	return exists
+}
+
+// Mark message as processed
+func message_mark_seen(id string) {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	seen_messages[id] = now()
+}
+
+// Clean up old entries
+func message_seen_cleanup() {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	cutoff := now() - seen_messages_ttl
+	for id, ts := range seen_messages {
+		if ts < cutoff {
+			delete(seen_messages, id)
+		}
+	}
+}
 
 var api_message = sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
 	"send":    sl.NewBuiltin("mochi.message.send", api_message_send),

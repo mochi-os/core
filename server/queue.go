@@ -282,5 +282,6 @@ func queue_manager() {
 	// Cleanup runs less frequently
 	for range time.Tick(time.Hour) {
 		queue_cleanup()
+		message_seen_cleanup()
 	}
 }

@@ -99,7 +99,7 @@ func queue_fail(nonce string, err string) {
 	}
 }
 
-// Send a queued direct message
+// Send a queued direct message (reads challenge before sending)
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
@@ -114,12 +114,17 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
-	timestamp := now()
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, timestamp, q.Nonce)))
+	// Read challenge from receiver
+	challenge, err := s.read_challenge()
+	if err != nil {
+		return false
+	}
+
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.Nonce, "", challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		Timestamp: timestamp, Nonce: q.Nonce, Signature: signature,
+		ID: q.Nonce, Signature: signature,
 	})
 
 	if s.write_raw(headers) != nil {
@@ -142,18 +147,17 @@ func queue_send_direct(q *QueueEntry) bool {
 	return true
 }
 
-// Send a queued broadcast message
+// Send a queued broadcast message (no challenge for broadcasts)
 func queue_send_broadcast(q *QueueEntry) bool {
 	if !peers_sufficient() {
 		return false
 	}
 
-	timestamp := now()
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, timestamp, q.Nonce)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.Nonce, "", nil)))
 
 	msg := Message{
 		ID: q.Nonce, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		Timestamp: timestamp, Nonce: q.Nonce, Signature: signature,
+		Signature: signature,
 	}
 	data := cbor_encode(msg)
 	if len(q.Content) > 0 {
@@ -254,9 +258,6 @@ func queue_cleanup() {
 
 	// Clean old dead letters (keep for 30 days)
 	db.exec("delete from dead_letters where died < ?", now()-30*86400)
-
-	// Clean old seen nonces
-	nonce_cleanup_persistent()
 }
 
 // Queue manager goroutine

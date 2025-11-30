@@ -13,7 +13,7 @@ import (
 
 type Event struct {
 	id      int64
-	nonce   string
+	msg_id  string
 	from    string
 	to      string
 	service string

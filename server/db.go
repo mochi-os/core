@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 2
+	schema_version = 3
 )
 
 var (
@@ -92,48 +92,15 @@ func db_create() {
 	queue.exec("drop table if exists entities")
 	queue.exec("drop table if exists peers")
 	queue.exec("drop table if exists broadcasts")
+	queue.exec("drop table if exists seen_nonces")
 
 	// Outgoing message queue
-	queue.exec(`create table if not exists queue (
-		nonce text primary key,
-		type text not null default 'direct',
-		target text not null,
-		from_entity text not null,
-		to_entity text not null,
-		service text not null,
-		event text not null,
-		content blob,
-		data blob,
-		file text,
-		status text not null default 'pending',
-		attempts integer not null default 0,
-		next_retry integer not null,
-		last_error text,
-		created integer not null
-	)`)
+	queue.exec("create table if not exists queue ( nonce text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 
 	// Dead letters for failed messages
-	queue.exec(`create table if not exists dead_letters (
-		nonce text primary key,
-		type text not null,
-		target text not null,
-		from_entity text not null,
-		to_entity text not null,
-		service text not null,
-		event text not null,
-		content blob,
-		data blob,
-		attempts integer not null,
-		last_error text,
-		created integer not null,
-		died integer not null
-	)`)
-
-	// Persistent nonce tracking for deduplication
-	queue.exec("create table if not exists seen_nonces (nonce text primary key, created integer not null)")
-	queue.exec("create index if not exists seen_nonces_created on seen_nonces (created)")
+	queue.exec("create table if not exists dead_letters ( nonce text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
 }
 
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary
@@ -395,6 +362,22 @@ func db_upgrade() {
 				}
 			}
 		} else if schema == 3 {
+			// Migration: new message queue with reliability tracking
+			queue := db_open("db/queue.db")
+
+			// Drop old schema (one-time migration to new reliability system)
+			queue.exec("drop table if exists entities")
+			queue.exec("drop table if exists peers")
+			queue.exec("drop table if exists broadcasts")
+			queue.exec("drop table if exists seen_nonces")
+
+			// Outgoing message queue
+			queue.exec("create table if not exists queue ( nonce text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
+			queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
+			queue.exec("create index if not exists queue_target on queue (target)")
+
+			// Dead letters for failed messages
+			queue.exec("create table if not exists dead_letters ( nonce text primary key, type text not null, target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, attempts integer not null, last_error text, created integer not null, died integer not null )")
 		}
 		setting_set("schema", itoa(int(schema)))
 	}

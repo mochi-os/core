@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
@@ -13,13 +14,16 @@ import (
 	"time"
 )
 
+const challenge_size = 16
+
 type Stream struct {
-	id      int64
-	reader  io.ReadCloser
-	writer  io.WriteCloser
-	decoder *cbor.Decoder
-	encoder *cbor.Encoder
-	timeout struct {
+	id        int64
+	reader    io.ReadCloser
+	writer    io.WriteCloser
+	decoder   *cbor.Decoder
+	encoder   *cbor.Encoder
+	challenge []byte // For incoming streams: challenge we sent
+	timeout   struct {
 		read  int
 		write int
 	}
@@ -30,23 +34,36 @@ var (
 	stream_next  int64 = 1
 )
 
-// Create a new stream with specified headers
+// Generate a random challenge
+func stream_challenge() []byte {
+	b := make([]byte, challenge_size)
+	rand.Read(b)
+	return b
+}
+
+// Create a new stream with specified headers (reads challenge, then sends)
 func stream(from string, to string, service string, event string) (*Stream, error) {
 	peer := entity_peer(to)
 	if peer == "" {
-		return nil, fmt.Errorf("Stream unable to determine location of entity %q", to)
+		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
 	}
 
 	s := peer_stream(peer)
 	if s == nil {
-		return nil, fmt.Errorf("Stream unable to open to peer %q for entity %q", peer, to)
+		return nil, fmt.Errorf("stream unable to open to peer %q for entity %q", peer, to)
 	}
+
+	// Read challenge from receiver
+	challenge, err := s.read_challenge()
+	if err != nil {
+		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
+	}
+
 	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
-	timestamp := now()
-	nonce := uid()
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, timestamp, nonce)))
-	err := s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, Timestamp: timestamp, Nonce: nonce, Signature: signature})
+	id := uid()
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
+	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, ID: id, Signature: signature})
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +85,17 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 	return &Stream{id: stream_id(), reader: r, writer: w}
 }
 
-// Receive stream
+// Receive stream (send challenge first for direct streams)
 func stream_receive(s *Stream, version int, peer string) {
+	// Send challenge if this is a bidirectional stream (not pubsub)
+	if s.writer != nil {
+		s.challenge = stream_challenge()
+		if err := s.write_raw(s.challenge); err != nil {
+			info("Stream %d error sending challenge: %v", s.id, err)
+			return
+		}
+	}
+
 	// Get and verify message headers
 	var h Headers
 	err := s.read(&h)
@@ -85,23 +111,27 @@ func stream_receive(s *Stream, version int, peer string) {
 	// Handle ACK/NACK messages
 	msg_type := h.msg_type()
 	if msg_type == "ack" {
-		debug("Stream %d received ACK for nonce %q", s.id, h.AckNonce)
-		queue_ack(h.AckNonce)
+		if !h.verify(s.challenge) {
+			info("Stream %d ACK failed signature verification", s.id)
+			return
+		}
+		debug("Stream %d received ACK for ID %q", s.id, h.AckID)
+		queue_ack(h.AckID)
 		return
 	}
 	if msg_type == "nack" {
-		debug("Stream %d received NACK for nonce %q", s.id, h.AckNonce)
-		queue_fail(h.AckNonce, "NACK received")
+		if !h.verify(s.challenge) {
+			info("Stream %d NACK failed signature verification", s.id)
+			return
+		}
+		debug("Stream %d received NACK for ID %q", s.id, h.AckID)
+		queue_fail(h.AckID, "NACK received")
 		return
 	}
 
-	// Check for duplicate (already processed) messages
-	if h.Nonce != "" && nonce_processed(h.Nonce) {
-		debug("Stream %d received duplicate message with nonce %q, sending ACK", s.id, h.Nonce)
-		// Send ACK for duplicate (sender may have retried)
-		if h.From != "" && h.To != "" {
-			go send_ack("ack", h.Nonce, h.To, h.From, peer)
-		}
+	// Verify signature (challenge is nil for pubsub, which allows unsigned broadcasts)
+	if s.challenge != nil && !h.verify(s.challenge) {
+		info("Stream %d failed signature verification", s.id)
 		return
 	}
 
@@ -109,35 +139,57 @@ func stream_receive(s *Stream, version int, peer string) {
 	content, err := s.read_content()
 	if err != nil {
 		info("Stream %d error reading content: %v", s.id, err)
-		// Send NACK on error
-		if h.From != "" && h.To != "" && h.Nonce != "" {
-			go send_ack("nack", h.Nonce, h.To, h.From, peer)
+		if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
+			go send_ack("nack", h.ID, h.To, h.From, peer)
 		}
 		return
 	}
 
-	debug("Stream %d open from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
+	debug("Stream %d from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
-	// Create event, and route to app
-	e := Event{id: event_id(), nonce: h.Nonce, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
+	// Create event and route to app
+	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
 	route_err := e.route()
 
-	// Send ACK on success, NACK on failure
-	if h.From != "" && h.To != "" && h.Nonce != "" {
+	// Send ACK on success, NACK on failure (only for direct signed messages)
+	if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
 		if route_err == nil {
-			// Record nonce as processed to prevent reprocessing
-			nonce_record(h.Nonce)
-			go send_ack("ack", h.Nonce, h.To, h.From, peer)
+			go send_ack("ack", h.ID, h.To, h.From, peer)
 		} else {
-			go send_ack("nack", h.Nonce, h.To, h.From, peer)
+			go send_ack("nack", h.ID, h.To, h.From, peer)
 		}
 	}
+}
+
+// Read challenge from stream
+func (s *Stream) read_challenge() ([]byte, error) {
+	if s == nil || s.reader == nil {
+		return nil, fmt.Errorf("stream not open for reading")
+	}
+
+	timeout := s.timeout.read
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = r.SetReadDeadline(deadline)
+		defer r.SetReadDeadline(time.Time{})
+	}
+
+	challenge := make([]byte, challenge_size)
+	_, err := io.ReadFull(s.reader, challenge)
+	if err != nil {
+		return nil, err
+	}
+	return challenge, nil
 }
 
 // Read a CBOR encoded segment from a stream
 func (s *Stream) read(v any) error {
 	if s == nil || s.reader == nil {
-		return fmt.Errorf("Stream not open for reading")
+		return fmt.Errorf("stream not open for reading")
 	}
 
 	timeout := s.timeout.read
@@ -156,7 +208,7 @@ func (s *Stream) read(v any) error {
 	}
 	err := s.decoder.Decode(v)
 	if err != nil {
-		return fmt.Errorf("Stream %d unable to read segment: %v", s.id, err)
+		return fmt.Errorf("stream %d unable to read segment: %v", s.id, err)
 	}
 
 	debug("Stream %d read segment: %+v", s.id, v)
@@ -176,7 +228,7 @@ func (s *Stream) read_content() (map[string]string, error) {
 // Write a CBOR encoded segment to a stream
 func (s *Stream) write(v any) error {
 	if s == nil || s.writer == nil {
-		return fmt.Errorf("Stream not open for writing")
+		return fmt.Errorf("stream not open for writing")
 	}
 	debug("Stream %d writing segment: %+v", s.id, v)
 
@@ -196,7 +248,7 @@ func (s *Stream) write(v any) error {
 	}
 	err := s.encoder.Encode(v)
 	if err != nil {
-		return fmt.Errorf("Stream error writing segment: %v", err)
+		return fmt.Errorf("stream error writing segment: %v", err)
 	}
 
 	return nil
@@ -221,13 +273,13 @@ func (s *Stream) write_content(in ...string) error {
 func (s *Stream) write_file(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("Stream unable to read file %q", path)
+		return fmt.Errorf("stream unable to read file %q", path)
 	}
 	defer f.Close()
 
 	_, err = io.Copy(s.writer, f)
 	if err != nil {
-		return fmt.Errorf("Stream error sending file segment: %v", err)
+		return fmt.Errorf("stream error sending file segment: %v", err)
 	}
 
 	return nil
@@ -236,9 +288,9 @@ func (s *Stream) write_file(path string) error {
 // Write a raw, unencoded or pre-encoded, segment
 func (s *Stream) write_raw(data []byte) error {
 	if s == nil || s.writer == nil {
-		return fmt.Errorf("Stream not open for writing")
+		return fmt.Errorf("stream not open for writing")
 	}
-	debug("Stream %d writing raw segment: %v", s.id, data)
+	debug("Stream %d writing raw segment: %d bytes", s.id, len(data))
 
 	timeout := s.timeout.write
 	if timeout <= 0 {
@@ -253,7 +305,7 @@ func (s *Stream) write_raw(data []byte) error {
 
 	_, err := s.writer.Write(data)
 	if err != nil {
-		return fmt.Errorf("Stream error writing raw segment: %v", err)
+		return fmt.Errorf("stream error writing raw segment: %v", err)
 	}
 
 	debug("Stream %d wrote raw segment", s.id)

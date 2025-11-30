@@ -14,7 +14,23 @@ import (
 	"time"
 )
 
-const challenge_size = 16
+const (
+	challenge_size    = 16
+	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size
+	cbor_max_depth    = 32               // Max nesting depth
+	cbor_max_pairs    = 1000             // Max map pairs
+	cbor_max_elements = 10000            // Max array elements
+)
+
+var cbor_decode_mode cbor.DecMode
+
+func init() {
+	cbor_decode_mode, _ = cbor.DecOptions{
+		MaxMapPairs:      cbor_max_pairs,
+		MaxArrayElements: cbor_max_elements,
+		MaxNestedLevels:  cbor_max_depth,
+	}.DecMode()
+}
 
 type Stream struct {
 	id        int64
@@ -35,10 +51,12 @@ var (
 )
 
 // Generate a random challenge
-func stream_challenge() []byte {
+func stream_challenge() ([]byte, error) {
 	b := make([]byte, challenge_size)
-	rand.Read(b)
-	return b
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // Create a new stream with specified headers (reads challenge, then sends)
@@ -89,7 +107,12 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 func stream_receive(s *Stream, version int, peer string) {
 	// Send challenge if this is a bidirectional stream (not pubsub)
 	if s.writer != nil {
-		s.challenge = stream_challenge()
+		var err error
+		s.challenge, err = stream_challenge()
+		if err != nil {
+			info("Stream %d error generating challenge: %v", s.id, err)
+			return
+		}
 		if err := s.write_raw(s.challenge); err != nil {
 			info("Stream %d error sending challenge: %v", s.id, err)
 			return
@@ -204,7 +227,7 @@ func (s *Stream) read(v any) error {
 	}
 
 	if s.decoder == nil {
-		s.decoder = cbor.NewDecoder(s.reader)
+		s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
 	}
 	err := s.decoder.Decode(v)
 	if err != nil {

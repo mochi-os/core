@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 )
 
+const max_id_length = 64
+
 // Signable portion of headers
 type SignableHeaders struct {
 	Type      string `cbor:"type,omitempty"`
@@ -57,6 +59,16 @@ func (h *Headers) valid() bool {
 
 	if (t == "ack" || t == "nack") && h.AckID == "" {
 		info("ACK/NACK missing ack ID")
+		return false
+	}
+
+	if h.ID != "" && len(h.ID) > max_id_length {
+		info("Message ID too long: %d > %d", len(h.ID), max_id_length)
+		return false
+	}
+
+	if h.AckID != "" && len(h.AckID) > max_id_length {
+		info("Ack ID too long: %d > %d", len(h.AckID), max_id_length)
 		return false
 	}
 

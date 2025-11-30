@@ -20,8 +20,9 @@ const (
 	cbor_max_depth      = 32                // Max nesting depth
 	cbor_max_pairs      = 1000              // Max map pairs
 	cbor_max_elements   = 10000             // Max array elements
-	content_max_key     = 256               // Max content key length
-	content_max_value   = 10 * 1024 * 1024  // 10MB max content value length
+	headers_max_size    = 4 * 1024          // 4KB max headers size
+	content_max_key     = 256                // Max content key length
+	content_max_value   = 100 * 1024 * 1024  // 100MB max content value length
 )
 
 var cbor_decode_mode cbor.DecMode
@@ -121,9 +122,9 @@ func stream_receive(s *Stream, version int, peer string) {
 		}
 	}
 
-	// Get and verify message headers
+	// Get and verify message headers (limited to 4KB)
 	var h Headers
-	err := s.read(&h)
+	err := s.read_headers(&h)
 	if err != nil {
 		info("Stream %d error reading headers: %v", s.id, err)
 		return
@@ -269,6 +270,41 @@ func (s *Stream) read(v any) error {
 	}
 
 	debug("Stream %d read segment: %+v", s.id, v)
+	return nil
+}
+
+// Read headers from a stream (limited to 4KB)
+func (s *Stream) read_headers(h *Headers) error {
+	if s == nil || s.reader == nil {
+		return fmt.Errorf("stream not open for reading")
+	}
+
+	timeout := s.timeout.read
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = r.SetReadDeadline(deadline)
+		defer r.SetReadDeadline(time.Time{})
+	}
+
+	// Use a size-limited decoder for headers (must be called before read())
+	if s.decoder != nil {
+		return fmt.Errorf("stream %d: read_headers must be called before read", s.id)
+	}
+	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, headers_max_size))
+
+	err := s.decoder.Decode(h)
+	if err != nil {
+		return fmt.Errorf("stream %d unable to read headers: %v", s.id, err)
+	}
+
+	// Replace decoder with larger limit for subsequent reads
+	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
+
+	debug("Stream %d read headers: %+v", s.id, h)
 	return nil
 }
 

@@ -5,12 +5,13 @@ package main
 
 import (
 	"context"
+	"strings"
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"nhooyr.io/websocket"
-	"strings"
-	"sync"
 )
 
 var (
@@ -23,25 +24,25 @@ var (
 )
 
 func websocket_connection(c *gin.Context) {
-	u := web_auth(c)
-	if u == nil {
-		// Check Authorization header (Bearer token)
-		auth_header := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth_header, "Bearer ") {
-			token := strings.TrimPrefix(auth_header, "Bearer ")
-			user_id, err := jwt_verify(token)
-			if err == nil && user_id > 0 {
-				user := user_by_id(user_id)
-				if user != nil {
-					u = user
-					debug("API JWT token accepted for user %d", u.ID)
-				}
+	// Authenticate user via JWT token
+	var u *User
+
+	// Check Authorization header (Bearer token)
+	auth_header := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth_header, "Bearer ") {
+		token := strings.TrimPrefix(auth_header, "Bearer ")
+		user_id, err := jwt_verify(token)
+		if err == nil && user_id > 0 {
+			user := user_by_id(user_id)
+			if user != nil {
+				u = user
+				debug("JWT token accepted for user %d", u.ID)
 			}
 		}
+	}
 
-		if u == nil {
-			return
-		}
+	if u == nil {
+		return
 	}
 
 	ws, err := websocket.Accept(c.Writer, c.Request, nil)

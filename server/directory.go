@@ -216,7 +216,11 @@ func directory_request_event(e *Event) {
 func directory_search(u *User, class string, search string, include_self bool) *[]Directory {
 	dbd := db_open("db/directory.db")
 	var ds []Directory
-	_ = dbd.scans(&ds, "select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	err := dbd.scans(&ds, "select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	if err != nil {
+		warn("Database error searching directory: %v", err)
+		return &ds
+	}
 
 	for i, _ := range ds {
 		ds[i].Fingerprint = fingerprint_hyphens(ds[i].Fingerprint)
@@ -228,7 +232,11 @@ func directory_search(u *User, class string, search string, include_self bool) *
 
 	dbu := db_open("db/users.db")
 	var es []Entity
-	_ = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	err = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	if err != nil {
+		warn("Database error loading user entities: %v", err)
+		return &ds
+	}
 	im := map[string]bool{}
 	for _, e := range es {
 		im[e.ID] = true
@@ -303,7 +311,11 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	dbu := db_open("db/users.db")
 	var es []Entity
-	_ = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	err = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	if err != nil {
+		warn("Database error loading user entities: %v", err)
+		return sl_encode(ds), nil
+	}
 	me := map[string]bool{}
 	for _, e := range es {
 		me[e.ID] = true

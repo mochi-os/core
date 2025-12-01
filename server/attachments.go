@@ -1301,7 +1301,10 @@ func (e *Event) attachment_event_clear() {
 
 	// Get all attachments to delete cached files
 	var attachments []Attachment
-	_ = e.db.scans(&attachments, "select * from _attachments where object = ? and entity = ?", object, source)
+	err := e.db.scans(&attachments, "select * from _attachments where object = ? and entity = ?", object, source)
+	if err != nil {
+		warn("Database error loading attachments for cache deletion: %v", err)
+	}
 
 	for _, att := range attachments {
 		cache_path := fmt.Sprintf("%s/attachments/%s/%s", cache_dir, source, att.ID)
@@ -1489,7 +1492,12 @@ func (e *Event) attachment_event_fetch() {
 
 	// Get attachments for this object that we own (entity is empty)
 	var attachments []Attachment
-	_ = e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
+	err := e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
+	if err != nil {
+		warn("Database error loading attachments: %v", err)
+		e.stream.write([]map[string]any{})
+		return
+	}
 
 	if len(attachments) == 0 {
 		e.stream.write([]map[string]any{})

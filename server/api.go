@@ -4,12 +4,15 @@
 package main
 
 import (
-	sl "go.starlark.net/starlark"
-	sls "go.starlark.net/starlarkstruct"
 	"io"
 	"strconv"
 	"strings"
+
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
+
+const url_max_response_size = 100 * 1024 * 1024 // 100 MB
 
 var (
 	api_globals sl.StringDict
@@ -282,7 +285,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	defer r.Body.Close()
 
-	data, _ := io.ReadAll(r.Body)
+	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
 	return sl_encode(map[string]any{"status": r.StatusCode, "headers": r.Header, "body": string(data)}), nil
 }
 

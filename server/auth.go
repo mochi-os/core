@@ -5,9 +5,10 @@ package main
 
 import (
 	"errors"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
-	"time"
 )
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
@@ -20,9 +21,7 @@ type mochi_claims struct {
 	jwt.RegisteredClaims
 }
 
-// Exchange a login code for a JWT token and login cookie
-// TODO Do we still need login cookies?
-// TODO Move to web.go?
+// Exchange a login code for a JWT token
 func web_login_auth(c *gin.Context) {
 	var body struct {
 		Code string `json:"code"`
@@ -44,10 +43,10 @@ func web_login_auth(c *gin.Context) {
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
-	// create a legacy login entry (per-device) which stores a per-login secret
+	// Create a login entry (per-device) which stores a per-login secret
 	login := login_create(user.ID)
 
-	// create a JWT signed with the per-login secret and include the login code in the kid header
+	// Create a JWT signed with the per-login secret and include the login code in the kid header
 	var l Login
 	db := db_open("db/users.db")
 	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, now()) {
@@ -90,7 +89,7 @@ func web_login_auth(c *gin.Context) {
 	c.JSON(200, response)
 }
 
-// Create a JWT using a specific HMAC secret
+// Create a JWT for a user using their derived secret
 func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
 	claims := mochi_claims{
 		User: user_id,
@@ -109,8 +108,7 @@ func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
 }
 
 // Verify a JWT and return the user id, or -1 if invalid.
-// If the token header contains a "kid" referencing a login code, attempt to verify
-// using that login's secret. Otherwise fall back to the global secret.
+// The token header must contain a "kid" referencing a login code to look up the per-login secret.
 func jwt_verify(token_string string) (int, error) {
 	// First parse the token without verification to read header/kid
 	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})

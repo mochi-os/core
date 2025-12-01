@@ -340,7 +340,7 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	file, ok := sl.AsString(args[1])
-	if !ok || !valid(field, "filepath") {
+	if !ok || !valid(file, "filepath") {
 		return sl_error(fn, "invalid file %q", file)
 	}
 

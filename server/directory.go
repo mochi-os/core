@@ -104,7 +104,11 @@ func directory_download_event(e *Event) {
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	_ = db.scans(&results, "select * from directory where updated>=? order by created, id", start)
+	err := db.scans(&results, "select * from directory where updated>=? order by created, id", start)
+	if err != nil {
+		warn("Database error loading directory updates: %v", err)
+		return
+	}
 	for _, d := range results {
 		debug("Directory sending update %#v", d)
 		e.stream.write(d)

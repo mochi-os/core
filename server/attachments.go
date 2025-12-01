@@ -706,7 +706,10 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Get all attachments for object
 	var attachments []Attachment
-	_ = db.scans(&attachments, "select * from _attachments where object = ?", object)
+	err := db.scans(&attachments, "select * from _attachments where object = ?", object)
+	if err != nil {
+		warn("Database error loading attachments for deletion: %v", err)
+	}
 
 	// Delete files
 	for _, att := range attachments {
@@ -752,7 +755,10 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	var attachments []Attachment
-	_ = db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	err := db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	if err != nil {
+		return sl.None, fmt.Errorf("database error: %v", err)
+	}
 
 	var results []map[string]any
 	for _, att := range attachments {
@@ -1373,7 +1379,10 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get existing attachments for object
 	var attachments []Attachment
-	_ = db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	err := db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	if err != nil {
+		return sl.None, fmt.Errorf("database error: %v", err)
+	}
 
 	if len(attachments) == 0 {
 		return sl_encode(0), nil

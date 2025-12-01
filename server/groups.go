@@ -76,7 +76,11 @@ func (db *DB) group_memberships(user string) []string {
 
 		query := fmt.Sprintf("select parent, member, type, created from _group_members where member in (%s) and type=?", placeholders)
 		var gms []GroupMember
-		_ = db.scans(&gms, query, args...)
+		err := db.scans(&gms, query, args...)
+		if err != nil {
+			warn("Database error loading group memberships: %v", err)
+			return groups
+		}
 
 		// Collect new groups for next iteration
 		var next []string
@@ -114,7 +118,11 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 		}
 
 		var gms []GroupMember
-		_ = db.scans(&gms, "select member, type from _group_members where parent=?", group)
+		err := db.scans(&gms, "select member, type from _group_members where parent=?", group)
+		if err != nil {
+			warn("Database error expanding group %q: %v", group, err)
+			return
+		}
 		for _, gm := range gms {
 			switch gm.Type {
 			case "user":
@@ -156,7 +164,11 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 			seen[g] = true
 
 			var gms []GroupMember
-			_ = db.scans(&gms, "select parent, member, type, created from _group_members where member=? and type='group'", g)
+			err := db.scans(&gms, "select parent, member, type, created from _group_members where member=? and type='group'", g)
+			if err != nil {
+				warn("Database error checking group containment: %v", err)
+				return false
+			}
 			for _, gm := range gms {
 				if gm.Parent == group {
 					return true

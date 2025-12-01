@@ -140,14 +140,11 @@ func peer_disconnected(id string) {
 	debug("Peer %q disconnected", id)
 
 	peers_lock.Lock()
-	p, found := peers[id]
-	peers_lock.Unlock()
+	defer peers_lock.Unlock()
 
-	if found {
+	if p, found := peers[id]; found {
 		p.connected = false
-		peers_lock.Lock()
 		peers[id] = p
-		peers_lock.Unlock()
 	}
 }
 
@@ -178,7 +175,6 @@ func peer_discovered_work(id string, address string) {
 
 	peers_lock.Lock()
 	p, found := peers[id]
-	peers_lock.Unlock()
 
 	if found {
 		exists := false
@@ -194,22 +190,20 @@ func peer_discovered_work(id string, address string) {
 
 		if p.Updated < now-int64(3600) {
 			save = true
+			p.Updated = now
 		}
-
 	} else {
-		p = Peer{ID: id, addresses: []string{address}}
+		p = Peer{ID: id, addresses: []string{address}, Updated: now}
 		save = true
 	}
+
+	peers[id] = p
+	peers_lock.Unlock()
 
 	if save {
 		db := db_open("db/peers.db")
 		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
-		p.Updated = now
 	}
-
-	peers_lock.Lock()
-	peers[id] = p
-	peers_lock.Unlock()
 }
 
 // Clean up stale peers

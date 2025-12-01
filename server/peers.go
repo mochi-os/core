@@ -20,7 +20,8 @@ type Peer struct {
 }
 
 const (
-	peers_minimum = 1
+	peers_minimum      = 1
+	peer_maximum_addresses = 20
 )
 
 var (
@@ -190,7 +191,7 @@ func peer_discovered_work(id string, address string) {
 				break
 			}
 		}
-		if !exists {
+		if !exists && len(p.addresses) < peer_maximum_addresses {
 			p.addresses = append(p.addresses, address)
 		}
 

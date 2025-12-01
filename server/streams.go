@@ -28,11 +28,11 @@ const (
 var cbor_decode_mode cbor.DecMode
 
 func init() {
-	cbor_decode_mode, _ = cbor.DecOptions{
+	cbor_decode_mode = must(cbor.DecOptions{
 		MaxMapPairs:      cbor_max_pairs,
 		MaxArrayElements: cbor_max_elements,
 		MaxNestedLevels:  cbor_max_depth,
-	}.DecMode()
+	}.DecMode())
 }
 
 type Stream struct {

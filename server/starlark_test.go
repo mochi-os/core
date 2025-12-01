@@ -427,3 +427,54 @@ def infinite_loop():
 
 	t.Logf("Timeout worked: elapsed=%v, error=%v", elapsed, err)
 }
+
+// Test that Starlark step limit stops runaway scripts
+func TestStarlarkStepLimit(t *testing.T) {
+	// Use a long timeout so we know step limit triggered, not timeout
+	originalTimeout := starlark_default_timeout
+	starlark_default_timeout = 10 * time.Second
+	defer func() { starlark_default_timeout = originalTimeout }()
+
+	// Initialize semaphore if not already done
+	if starlark_sem == nil {
+		starlark_sem = make(chan struct{}, 4)
+	}
+
+	// Create a Starlark interpreter
+	s := &Starlark{
+		thread:  &sl.Thread{Name: "test"},
+		globals: sl.StringDict{},
+	}
+
+	// Define a CPU-bound loop using for with a huge range
+	// This will hit step limit before completing
+	code := `
+def cpu_hog():
+    x = 0
+    for i in range(1000000000):
+        x = x + i
+    return x
+`
+	globals, err := sl.ExecFile(s.thread, "test.star", code, s.globals)
+	if err != nil {
+		t.Fatalf("Failed to execute Starlark code: %v", err)
+	}
+	s.globals = globals
+
+	// Call the CPU hog - should hit step limit quickly
+	start := time.Now()
+	_, err = s.call("cpu_hog", nil)
+	elapsed := time.Since(start)
+
+	// Verify we got an error
+	if err == nil {
+		t.Fatal("Expected error from step limit, got nil")
+	}
+
+	// Verify it was fast (step limit, not timeout)
+	if elapsed > 5*time.Second {
+		t.Errorf("Execution took %v, expected step limit to trigger quickly", elapsed)
+	}
+
+	t.Logf("Step limit worked: elapsed=%v, error=%v", elapsed, err)
+}

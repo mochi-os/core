@@ -346,7 +346,8 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		}
 		return result, callErr
 	case <-time.After(starlark_default_timeout):
-		debug("Starlark %s() timed out after %s; returning timeout error (goroutine may still be running)", function, starlark_default_timeout)
+		s.thread.Cancel("timeout")
+		debug("Starlark %s() timed out after %s", function, starlark_default_timeout)
 		if callErr == nil {
 			callErr = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
 		}

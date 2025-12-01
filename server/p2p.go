@@ -144,7 +144,11 @@ func p2p_start() {
 
 	// Create p2p instance
 	port := ini_int("p2p", "port", 1443)
-	p2p_me = must(p2p.New(p2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port), fmt.Sprintf("/ip6/::/tcp/%d", port)), p2p.Identity(private)))
+	p2p_me = must(p2p.New(p2p.ListenAddrStrings(
+		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+		fmt.Sprintf("/ip6/::/tcp/%d", port),
+		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)), p2p.Identity(private)))
 	p2p_id = p2p_me.ID().String()
 	info("P2P listening on port %d with id %q", port, p2p_id)
 

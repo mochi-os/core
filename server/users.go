@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+
 	sl "go.starlark.net/starlark"
 )
 
@@ -85,26 +86,6 @@ func user_by_identity(id string) *User {
 	}
 
 	u.Identity = &i
-	return &u
-}
-
-func user_by_login(login string) *User {
-	if login == "" {
-		return nil
-	}
-
-	var l Login
-	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, now()) {
-		return nil
-	}
-
-	var u User
-	if !db.scan(&u, "select * from users where id=?", l.User) {
-		return nil
-	}
-
-	u.Identity = u.identity()
 	return &u
 }
 

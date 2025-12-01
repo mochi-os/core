@@ -229,7 +229,11 @@ func queue_check_entity(entity string) {
 	db := db_open("db/queue.db")
 
 	var entries []QueueEntry
-	_ = db.scans(&entries, "select * from queue where type = 'direct' and to_entity = ? and status = 'pending' limit 10", entity)
+	err := db.scans(&entries, "select * from queue where type = 'direct' and to_entity = ? and status = 'pending' limit 10", entity)
+	if err != nil {
+		warn("Database error checking queue for entity %q: %v", entity, err)
+		return
+	}
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
@@ -244,7 +248,11 @@ func queue_check_peer(peer string) {
 	db := db_open("db/queue.db")
 
 	var entries []QueueEntry
-	_ = db.scans(&entries, "select * from queue where type = 'direct' and target = ? and status = 'pending' limit 10", peer)
+	err := db.scans(&entries, "select * from queue where type = 'direct' and target = ? and status = 'pending' limit 10", peer)
+	if err != nil {
+		warn("Database error checking queue for peer %q: %v", peer, err)
+		return
+	}
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
@@ -261,7 +269,11 @@ func queue_cleanup() {
 
 	// Log and delete expired messages
 	var old []QueueEntry
-	_ = db.scans(&old, "select * from queue where created < ?", cutoff)
+	err := db.scans(&old, "select * from queue where created < ?", cutoff)
+	if err != nil {
+		warn("Database error loading expired queue entries: %v", err)
+		return
+	}
 	for _, q := range old {
 		warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d",
 			q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)

@@ -111,7 +111,11 @@ func entities_manager() {
 	for range time.Tick(time.Hour) {
 		if peers_sufficient() {
 			var es []Entity
-			_ = db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
+			err := db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
+			if err != nil {
+				warn("Database error loading entities for republish: %v", err)
+				continue
+			}
 			for _, e := range es {
 				db.exec("update entities set published=? where id=?", now(), e.ID)
 				directory_publish(&e, false)

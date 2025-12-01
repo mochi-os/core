@@ -93,7 +93,11 @@ func p2p_pubsubs() {
 	s := must(p2p_pubsub_1.Subscribe())
 
 	for {
-		m := must(s.Next(p2p_context))
+		m, err := s.Next(p2p_context)
+		if err != nil {
+			warn("P2P pubsub error: %v", err)
+			continue
+		}
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
 			// Rate limit inbound pubsub messages per peer

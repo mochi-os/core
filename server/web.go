@@ -102,6 +102,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		if len(parts) == 2 {
 			if !valid(parts[1], "filepath") {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
+				return true
 			}
 			file := a.active.base + "/" + aa.Files + "/" + parts[1]
 			debug("Serving file from directory for app %q: %q", a.id, file)

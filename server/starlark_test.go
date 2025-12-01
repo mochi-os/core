@@ -6,7 +6,9 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 
+	"go.starlark.net/resolve"
 	sl "go.starlark.net/starlark"
 )
 
@@ -374,4 +376,54 @@ func BenchmarkSlDecode(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		sl_decode(inputs[i%len(inputs)])
 	}
+}
+
+// Test that Starlark timeout properly cancels execution
+func TestStarlarkTimeoutCancellation(t *testing.T) {
+	// Save original timeout and set a short one for testing
+	originalTimeout := starlark_default_timeout
+	starlark_default_timeout = 100 * time.Millisecond
+	defer func() { starlark_default_timeout = originalTimeout }()
+
+	// Initialize semaphore if not already done
+	if starlark_sem == nil {
+		starlark_sem = make(chan struct{}, 4)
+	}
+
+	// Enable recursion for this test
+	resolve.AllowRecursion = true
+
+	// Create a Starlark interpreter with an infinite loop function
+	s := &Starlark{
+		thread:  &sl.Thread{Name: "test"},
+		globals: sl.StringDict{},
+	}
+
+	// Define an infinite loop function using recursion (while loops not enabled)
+	code := `
+def infinite_loop():
+    return infinite_loop()
+`
+	globals, err := sl.ExecFile(s.thread, "test.star", code, s.globals)
+	if err != nil {
+		t.Fatalf("Failed to execute Starlark code: %v", err)
+	}
+	s.globals = globals
+
+	// Call the infinite loop - should timeout and cancel
+	start := time.Now()
+	_, err = s.call("infinite_loop", nil)
+	elapsed := time.Since(start)
+
+	// Verify we got an error (either timeout or cancellation)
+	if err == nil {
+		t.Fatal("Expected error from cancelled execution, got nil")
+	}
+
+	// Verify it didn't take much longer than the timeout
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("Execution took %v, expected ~100ms timeout", elapsed)
+	}
+
+	t.Logf("Timeout worked: elapsed=%v, error=%v", elapsed, err)
 }

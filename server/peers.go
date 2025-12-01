@@ -65,15 +65,12 @@ func peers_add_from_db(limit int) {
 // Add already known peer to memory if not already present
 func peer_add_known(id string, addresses []string) {
 	peers_lock.Lock()
-	_, found := peers[id]
-	peers_lock.Unlock()
-	if found {
+	defer peers_lock.Unlock()
+
+	if _, found := peers[id]; found {
 		return
 	}
-
-	peers_lock.Lock()
 	peers[id] = Peer{ID: id, addresses: addresses, connected: false}
-	peers_lock.Unlock()
 }
 
 // Get details of a peer, either from memory, or from database

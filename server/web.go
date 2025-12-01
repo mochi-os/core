@@ -37,38 +37,27 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return false
 	}
 
-	// Get user authentication via cookie
-	user := web_auth(c)
+	// Get user authentication from JWT token
+	var user *User
+	token := ""
 
-	// If no cookie auth, try header / query-based authentication
-	if user == nil {
-		token := ""
+	// Authorization: Bearer <token>
+	auth_header := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth_header, "Bearer ") {
+		token = strings.TrimPrefix(auth_header, "Bearer ")
+	}
+	if token == "" {
+		token = c.GetHeader("X-Login")
+	}
+	if token == "" {
+		token = c.Query("login")
+	}
 
-		// Authorization: Bearer <token>
-		auth_header := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth_header, "Bearer ") {
-			token = strings.TrimPrefix(auth_header, "Bearer ")
-		}
-		if token == "" {
-			token = c.GetHeader("X-Login")
-		}
-		if token == "" {
-			token = c.Query("login")
-		}
-
-		if token != "" {
-			// Prefer JWT
-			if uid, err := jwt_verify(token); err == nil && uid > 0 {
-				if u := user_by_id(uid); u != nil {
-					user = u
-					debug("API JWT token accepted for user %d", u.ID)
-				}
-			} else {
-				// Fallback: legacy login token
-				if u := user_by_login(token); u != nil {
-					user = u
-					debug("API login token accepted for user %d", u.ID)
-				}
+	if token != "" {
+		if uid, err := jwt_verify(token); err == nil && uid > 0 {
+			if u := user_by_id(uid); u != nil {
+				user = u
+				debug("JWT token accepted for user %d", u.ID)
 			}
 		}
 	}
@@ -204,11 +193,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	return true
 }
 
-// Get user for login cookie
-func web_auth(c *gin.Context) *User {
-	return user_by_login(web_cookie_get(c, "login", ""))
-}
-
 // Ask browser to cache static files
 func web_cache_static(c *gin.Context, path string) {
 	if match_react.MatchString(path) {
@@ -218,35 +202,6 @@ func web_cache_static(c *gin.Context, path string) {
 		debug("Web asking browser to short term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=300")
 	}
-}
-
-// Get the value of a cookie
-func web_cookie_get(c *gin.Context, name string, def string) string {
-	value, err := c.Cookie(name)
-	if err != nil {
-		return def
-	}
-	return value
-}
-
-// Set a cookie
-func web_cookie_set(c *gin.Context, name string, value string) {
-	secure := web_https && !web_is_localhost(c)
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(name, value, 365*86400, "/", "", secure, true)
-}
-
-// Check if request is from localhost
-func web_is_localhost(c *gin.Context) bool {
-	ip := c.ClientIP()
-	return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
-}
-
-// Unset a cookie
-func web_cookie_unset(c *gin.Context, name string) {
-	secure := web_https && !web_is_localhost(c)
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(name, "", -1, "/", "", secure, true)
 }
 
 // Security headers middleware
@@ -277,37 +232,27 @@ func web_login_email(c *gin.Context) {
 
 // Create an identity for a new user
 func web_login_identity(c *gin.Context) {
-	u := web_auth(c)
+	// Get user authentication from JWT token
+	var u *User
+	token := ""
 
-	// If no cookie auth, try header / query-based authentication
-	if u == nil {
-		token := ""
+	// Authorization: Bearer <token>
+	auth_header := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth_header, "Bearer ") {
+		token = strings.TrimPrefix(auth_header, "Bearer ")
+	}
+	if token == "" {
+		token = c.GetHeader("X-Login")
+	}
+	if token == "" {
+		token = c.Query("login")
+	}
 
-		// Authorization: Bearer <token>
-		auth_header := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth_header, "Bearer ") {
-			token = strings.TrimPrefix(auth_header, "Bearer ")
-		}
-		if token == "" {
-			token = c.GetHeader("X-Login")
-		}
-		if token == "" {
-			token = c.Query("login")
-		}
-
-		if token != "" {
-			// Prefer JWT
-			if uid, err := jwt_verify(token); err == nil && uid > 0 {
-				if user := user_by_id(uid); user != nil {
-					u = user
-					debug("Identity creation: JWT token accepted for user %d", u.ID)
-				}
-			} else {
-				// Fallback: legacy login token // TODO remove later
-				if user := user_by_login(token); user != nil {
-					u = user
-					debug("Identity creation: login token accepted for user %d", u.ID)
-				}
+	if token != "" {
+		if uid, err := jwt_verify(token); err == nil && uid > 0 {
+			if user := user_by_id(uid); user != nil {
+				u = user
+				debug("Identity creation: JWT token accepted for user %d", u.ID)
 			}
 		}
 	}
@@ -342,13 +287,10 @@ func web_login_identity(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Log the user out
+// Log the user out (client-side JWT token removal)
 func web_logout(c *gin.Context) {
-	login := web_cookie_get(c, "login", "")
-	if login != "" {
-		login_delete(login)
-	}
-	web_cookie_unset(c, "login")
+	// JWT tokens are stateless and managed client-side
+	// Client should discard the token
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

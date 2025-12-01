@@ -115,6 +115,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("input", a.sl_input), nil
 	case "json":
 		return sl.NewBuiltin("json", a.sl_json), nil
+	case "logout":
+		return sl.NewBuiltin("logout", a.sl_logout), nil
 	case "print":
 		return sl.NewBuiltin("print", a.sl_print), nil
 	case "redirect":
@@ -261,6 +263,17 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	a.web.JSON(200, sl_decode(args[0]))
+	return sl.None, nil
+}
+
+// a.logout() -> None: Log the current user out
+func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	login := web_cookie_get(a.web, "login", "")
+	if login != "" {
+		login_delete(login)
+	}
+	web_cookie_unset(a.web, "login")
+
 	return sl.None, nil
 }
 

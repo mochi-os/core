@@ -1144,8 +1144,12 @@ func (e *Event) attachment_event_create() {
 	}
 
 	for _, att := range attachments {
+		id, _ := att["id"].(string)
+		if !valid(id, "id") {
+			continue
+		}
 		e.db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			att["id"], att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+			id, att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 	}
 }
 
@@ -1170,6 +1174,11 @@ func (e *Event) attachment_event_insert() {
 		return
 	}
 
+	id, _ := att["id"].(string)
+	if !valid(id, "id") {
+		return
+	}
+
 	// Shift existing attachments
 	rank := 1
 	if r, ok := att["rank"].(float64); ok {
@@ -1183,7 +1192,7 @@ func (e *Event) attachment_event_insert() {
 	e.db.attachment_shift_up(object, rank)
 
 	e.db.exec(`insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		att["id"], att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+		id, att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 }
 
 // Event handler: attachment/update
@@ -1459,6 +1468,9 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// Store attachments locally
 	for _, att := range attachments {
 		id, _ := att["id"].(string)
+		if !valid(id, "id") {
+			continue
+		}
 		obj, _ := att["object"].(string)
 		name, _ := att["name"].(string)
 		size, _ := att["size"].(float64)

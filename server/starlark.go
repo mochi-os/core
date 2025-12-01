@@ -11,9 +11,12 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// Runtime controls (configurable via ini)
-var starlark_sem chan struct{}
-var starlark_default_timeout time.Duration
+const starlark_max_steps = 10000000 // 10 million steps
+
+var (
+	starlark_sem             chan struct{}
+	starlark_default_timeout time.Duration
+)
 
 // starlark_configure reads runtime settings from the loaded INI and applies them.
 // Call this after ini_load(...) so configuration from the file takes effect.
@@ -321,6 +324,9 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	// Acquire semaphore to limit concurrency
 	starlark_sem <- struct{}{}
 	defer func() { <-starlark_sem }()
+
+	// Set execution step limit
+	s.thread.SetMaxExecutionSteps(starlark_max_steps)
 
 	// Run the call in a goroutine so we can interrupt on timeout
 	done := make(chan struct{})

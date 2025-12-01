@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -36,6 +36,22 @@ var (
 		"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
 	})
 )
+
+func init() {
+	// Register a SQLite driver that blocks ATTACH/DETACH to prevent sandbox escape
+	sql.Register("sqlite3_noattach", &sqlite3.SQLiteDriver{
+		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+			conn.RegisterAuthorizer(func(action int, arg1, arg2, arg3 string) int {
+				// SQLITE_ATTACH=24, SQLITE_DETACH=25
+				if action == 24 || action == 25 {
+					return sqlite3.SQLITE_DENY
+				}
+				return sqlite3.SQLITE_OK
+			})
+			return nil
+		},
+	})
+}
 
 func db_create() {
 	info("Creating new database")
@@ -268,7 +284,7 @@ func db_open_work(file string) (*DB, bool, bool) {
 	}
 
 	//debug("Database opening %q", path)
-	h := must(sqlx.Open("sqlite3", path))
+	h := must(sqlx.Open("sqlite3_noattach", path))
 	db = &DB{path: path, handle: h, closed: 0}
 
 	databases_lock.Lock()

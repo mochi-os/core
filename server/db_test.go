@@ -470,3 +470,34 @@ func BenchmarkDBRows(b *testing.B) {
 		db.rows("SELECT * FROM items")
 	}
 }
+
+// Test that ATTACH is blocked by authorizer (security test)
+func TestAttachBlocked(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	// Create a table to verify normal operations work
+	db.exec("CREATE TABLE test (id TEXT)")
+
+	// Attempt ATTACH - should be blocked by authorizer
+	// Note: We use db.handle.Exec directly to get the error
+	_, err := db.handle.Exec("ATTACH DATABASE ':memory:' AS mem")
+	if err == nil {
+		t.Fatal("ATTACH should have been blocked but was allowed - SECURITY VULNERABILITY")
+	}
+	t.Logf("ATTACH correctly blocked with error: %v", err)
+
+	// Verify DETACH is also blocked
+	_, err = db.handle.Exec("DETACH DATABASE main")
+	if err == nil {
+		t.Fatal("DETACH should have been blocked but was allowed - SECURITY VULNERABILITY")
+	}
+	t.Logf("DETACH correctly blocked with error: %v", err)
+
+	// Verify normal operations still work
+	db.exec("INSERT INTO test VALUES ('hello')")
+	exists, _ := db.exists("SELECT 1 FROM test WHERE id = 'hello'")
+	if !exists {
+		t.Error("Normal INSERT/SELECT should work")
+	}
+}

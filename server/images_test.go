@@ -6,6 +6,9 @@ package main
 import (
 	"image"
 	"image/color"
+	"image/png"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -209,6 +212,91 @@ func BenchmarkIsImage(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		is_image(inputs[i%len(inputs)])
+	}
+}
+
+// Test thumbnail_create function
+func TestThumbnailCreate(t *testing.T) {
+	// Create temp directory
+	tmp_dir, err := os.MkdirTemp("", "thumbnail_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	// Create a test image (500x300 PNG)
+	img := image.NewRGBA(image.Rect(0, 0, 500, 300))
+	for y := 0; y < 300; y++ {
+		for x := 0; x < 500; x++ {
+			img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
+		}
+	}
+
+	img_path := filepath.Join(tmp_dir, "test_image.png")
+	f, err := os.Create(img_path)
+	if err != nil {
+		t.Fatalf("Failed to create test image file: %v", err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatalf("Failed to encode test image: %v", err)
+	}
+	f.Close()
+
+	// Test thumbnail creation
+	thumb_path, err := thumbnail_create(img_path)
+	if err != nil {
+		t.Fatalf("thumbnail_create failed: %v", err)
+	}
+
+	// Verify thumbnail was created
+	if thumb_path == "" {
+		t.Fatal("thumbnail_create returned empty path")
+	}
+
+	expected_thumb := filepath.Join(tmp_dir, "thumbnails", "test_image_thumbnail.png")
+	if thumb_path != expected_thumb {
+		t.Errorf("Expected thumbnail path %q, got %q", expected_thumb, thumb_path)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(thumb_path); os.IsNotExist(err) {
+		t.Fatal("Thumbnail file was not created")
+	}
+
+	// Verify thumbnail dimensions (should be max 250x250)
+	thumb_f, err := os.Open(thumb_path)
+	if err != nil {
+		t.Fatalf("Failed to open thumbnail: %v", err)
+	}
+	defer thumb_f.Close()
+
+	thumb_img, _, err := image.Decode(thumb_f)
+	if err != nil {
+		t.Fatalf("Failed to decode thumbnail: %v", err)
+	}
+
+	bounds := thumb_img.Bounds()
+	if bounds.Dx() > 250 || bounds.Dy() > 250 {
+		t.Errorf("Thumbnail too large: %dx%d", bounds.Dx(), bounds.Dy())
+	}
+	if bounds.Dx() == 0 || bounds.Dy() == 0 {
+		t.Error("Thumbnail has zero dimension")
+	}
+
+	// Test that calling again returns cached thumbnail
+	thumb_path2, err := thumbnail_create(img_path)
+	if err != nil {
+		t.Fatalf("Second thumbnail_create failed: %v", err)
+	}
+	if thumb_path2 != thumb_path {
+		t.Errorf("Expected cached path %q, got %q", thumb_path, thumb_path2)
+	}
+
+	// Verify no temp file left behind
+	tmp_file := thumb_path + ".tmp"
+	if _, err := os.Stat(tmp_file); !os.IsNotExist(err) {
+		t.Errorf("Temp file %q should not exist", tmp_file)
 	}
 }
 

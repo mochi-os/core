@@ -252,3 +252,13 @@ func BenchmarkRateLimiterAllowManyKeys(b *testing.B) {
 		limiter.allow(keys[i%len(keys)])
 	}
 }
+
+// Test rate_limit_url configuration
+func TestRateLimitURLConfig(t *testing.T) {
+	if rate_limit_url.limit != 100 {
+		t.Errorf("rate_limit_url.limit = %d, want 100", rate_limit_url.limit)
+	}
+	if rate_limit_url.window != 60 {
+		t.Errorf("rate_limit_url.window = %d, want 60", rate_limit_url.window)
+	}
+}

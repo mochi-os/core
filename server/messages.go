@@ -199,6 +199,12 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
 	}
 
+	// Rate limit by app ID
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_p2p_send.allow(app.id) {
+		return sl_error(fn, "rate limit exceeded (20 messages per second)")
+	}
+
 	headers := sl_decode_strings(args[0])
 	if headers == nil {
 		return sl_error(fn, "headers not specified or invalid")

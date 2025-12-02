@@ -262,3 +262,13 @@ func TestRateLimitURLConfig(t *testing.T) {
 		t.Errorf("rate_limit_url.window = %d, want 60", rate_limit_url.window)
 	}
 }
+
+// Test rate_limit_p2p_send configuration
+func TestRateLimitP2PSendConfig(t *testing.T) {
+	if rate_limit_p2p_send.limit != 20 {
+		t.Errorf("rate_limit_p2p_send.limit = %d, want 20", rate_limit_p2p_send.limit)
+	}
+	if rate_limit_p2p_send.window != 1 {
+		t.Errorf("rate_limit_p2p_send.window = %d, want 1", rate_limit_p2p_send.window)
+	}
+}

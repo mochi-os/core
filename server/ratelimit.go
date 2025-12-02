@@ -58,6 +58,13 @@ var (
 		limit:   20,
 		window:  1,
 	}
+
+	// URL request rate limiter: 100 requests per minute per app
+	rate_limit_url = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   100,
+		window:  60,
+	}
 )
 
 // Check if request is allowed; returns true if allowed, false if rate limited
@@ -167,5 +174,6 @@ func ratelimit_manager() {
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_out.cleanup()
 		rate_limit_pubsub_in.cleanup()
+		rate_limit_url.cleanup()
 	}
 }

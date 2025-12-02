@@ -258,6 +258,12 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "syntax: <url: string>, [options: dictionary], [headers: dictionary], [body: string|dictionary]")
 	}
 
+	// Rate limit by app ID
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_url.allow(app.id) {
+		return sl_error(fn, "rate limit exceeded (100 requests per minute)")
+	}
+
 	url, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid URL")

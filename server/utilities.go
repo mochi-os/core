@@ -276,7 +276,18 @@ func unzip(file string, destination string) error {
 	return nil
 }
 
+// Check if URL targets cloud metadata service (SSRF protection)
+func url_is_cloud_metadata(url string) bool {
+	return strings.Contains(url, "169.254.169.254") ||
+		strings.Contains(url, "metadata.google.internal")
+}
+
+// Make an HTTP request to a URL
 func url_request(method string, url string, options map[string]string, headers map[string]string, body any) (*http.Response, error) {
+	if url_is_cloud_metadata(url) {
+		return nil, fmt.Errorf("access to cloud metadata service is blocked")
+	}
+
 	if method == "" {
 		method = "GET"
 	}

@@ -19,8 +19,8 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Maximum file storage per app per user (1GB)
-var file_max_storage int64 = 1024 * 1024 * 1024
+// Maximum file storage per user (10GB)
+var file_max_storage int64 = 10 * 1024 * 1024 * 1024
 
 var (
 	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)
@@ -191,9 +191,9 @@ func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
 }
 
-// Helper function to get the base files directory for an app
-func api_file_dir(u *User, a *App) string {
-	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, u.ID, a.id)
+// Helper function to get the base directory for a user's storage
+func user_storage_dir(u *User) string {
+	return fmt.Sprintf("%s/users/%d", data_dir, u.ID)
 }
 
 // Calculate total size of files in a directory
@@ -343,8 +343,8 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	// Check storage limit
-	current := dir_size(api_file_dir(user, app))
+	// Check storage limit (10GB per user across all apps)
+	current := dir_size(user_storage_dir(user))
 	if current+int64(len(data)) > file_max_storage {
 		return sl_error(fn, "storage limit exceeded")
 	}

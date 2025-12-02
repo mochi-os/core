@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Test file_name_safe function
@@ -421,5 +422,36 @@ func TestFileStorageLimitConstant(t *testing.T) {
 	expectedLimit := int64(10 * 1024 * 1024 * 1024)
 	if file_max_storage != expectedLimit {
 		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_max_storage, expectedLimit)
+	}
+}
+
+// Test cache cleanup removes old files
+func TestCacheCleanup(t *testing.T) {
+	// Save and restore cache_dir
+	origCacheDir := cache_dir
+	cache_dir = t.TempDir()
+	defer func() { cache_dir = origCacheDir }()
+
+	// Create test files
+	oldFile := filepath.Join(cache_dir, "old.txt")
+	newFile := filepath.Join(cache_dir, "new.txt")
+	file_write(oldFile, []byte("old"))
+	file_write(newFile, []byte("new"))
+
+	// Set old file to 8 days ago (older than cache_max_age of 7 days)
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(oldFile, oldTime, oldTime)
+
+	// Run cleanup
+	cache_cleanup()
+
+	// Old file should be removed
+	if file_exists(oldFile) {
+		t.Error("cache_cleanup should have removed old file")
+	}
+
+	// New file should still exist
+	if !file_exists(newFile) {
+		t.Error("cache_cleanup should not have removed new file")
 	}
 }

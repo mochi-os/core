@@ -8,6 +8,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"time"
+
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"io"
@@ -17,7 +20,8 @@ import (
 )
 
 const (
-	attachment_max_size_default = 104857600 // 100MB
+	attachment_max_size_default = 104857600           // 100MB
+	cache_max_age               = 7 * 24 * time.Hour // 7 days
 )
 
 type Attachment struct {
@@ -1034,8 +1038,12 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 func attachment_fetch_remote(app *App, entity string, id string) []byte {
 	// Check cache first
 	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
-	if file_exists(cache_path) {
-		return file_read(cache_path)
+	if info, err := os.Stat(cache_path); err == nil {
+		if time.Since(info.ModTime()) > cache_max_age {
+			os.Remove(cache_path) // expired, will refetch below
+		} else {
+			return file_read(cache_path)
+		}
 	}
 
 	// Fetch from remote

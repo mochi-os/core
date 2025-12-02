@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	sl "go.starlark.net/starlark"
@@ -352,4 +353,25 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	file_write(api_file_path(user, app, file), []byte(data))
 
 	return sl.None, nil
+}
+
+// Periodically clean expired cache files
+func cache_manager() {
+	for range time.Tick(1 * time.Hour) {
+		cache_cleanup()
+	}
+}
+
+// Remove cache files older than cache_max_age
+func cache_cleanup() {
+	cutoff := time.Now().Add(-cache_max_age)
+	filepath.Walk(cache_dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
+			os.Remove(path)
+		}
+		return nil
+	})
 }

@@ -592,7 +592,7 @@ func (a *App) icon(action string, label string, file string) {
 func (a *App) label(u *User, key string, values ...any) string {
 	language := "en"
 	if u != nil {
-		language = u.Language
+		language = user_preference_get(u, "language", "en")
 	}
 
 	labels := a.active.labels

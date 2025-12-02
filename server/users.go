@@ -23,13 +23,12 @@ type Login struct {
 }
 
 type User struct {
-	ID       int
-	Username string
-	Role     string
-	Language string
-	Timezone string
-	Identity *Entity
-	db       *DB // Used by actions
+	ID          int
+	Username    string
+	Role        string
+	Preferences map[string]string
+	Identity    *Entity
+	db          *DB // Used by actions
 }
 
 func code_send(email string) bool {
@@ -60,10 +59,11 @@ func login_delete(code string) {
 func user_by_id(id int) *User {
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select * from users where id=?", id) {
+	if !db.scan(&u, "select id, username, role from users where id=?", id) {
 		return nil
 	}
 
+	u.Preferences = user_preferences_load(&u)
 	u.Identity = u.identity()
 	if u.Identity == nil {
 		return nil
@@ -80,10 +80,11 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select * from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role from users where id=?", i.User) {
 		return nil
 	}
 
+	u.Preferences = user_preferences_load(&u)
 	u.Identity = &i
 	return &u
 }
@@ -100,10 +101,11 @@ func user_by_login(login string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select * from users where id=?", l.User) {
+	if !db.scan(&u, "select id, username, role from users where id=?", l.User) {
 		return nil
 	}
 
+	u.Preferences = user_preferences_load(&u)
 	u.Identity = u.identity()
 	return &u
 }
@@ -116,7 +118,8 @@ func user_from_code(code string) *User {
 	}
 
 	var u User
-	if db.scan(&u, "select * from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
+		u.Preferences = user_preferences_load(&u)
 		u.Identity = u.identity()
 		return &u
 	}
@@ -127,7 +130,7 @@ func user_from_code(code string) *User {
 		role = "administrator"
 	}
 
-	db.exec("replace into users ( username, role, language, timezone ) values ( ?, ?, 'en', '' )", c.Username, role)
+	db.exec("replace into users (username, role) values (?, ?)", c.Username, role)
 
 	// Remove once we have hooks
 	admin := ini_string("email", "admin", "")
@@ -135,7 +138,8 @@ func user_from_code(code string) *User {
 		email_send(admin, "Mochi new user", "New user: "+c.Username)
 	}
 
-	if db.scan(&u, "select * from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
+		u.Preferences = user_preferences_load(&u)
 		return &u
 	}
 
@@ -155,10 +159,11 @@ func user_owning_entity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select * from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role from users where id=?", i.User) {
 		return nil
 	}
 
+	u.Preferences = user_preferences_load(&u)
 	u.Identity = u.identity()
 	if u.Identity == nil {
 		return nil
@@ -185,13 +190,15 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"identity", "role", "username"}
+	return []string{"identity", "preference", "role", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "identity":
 		return u.Identity, nil
+	case "preference":
+		return &UserPreference{user: u}, nil
 	case "role":
 		return sl.String(u.Role), nil
 	case "username":
@@ -217,4 +224,85 @@ func (u *User) Truth() sl.Bool {
 
 func (u *User) Type() string {
 	return "User"
+}
+
+// UserPreference provides Starlark access to user preferences via a.user.preference.*
+type UserPreference struct {
+	user *User
+}
+
+// Starlark interface methods for UserPreference
+func (p *UserPreference) AttrNames() []string {
+	return []string{"all", "delete", "get", "set"}
+}
+
+func (p *UserPreference) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "all":
+		return sl.NewBuiltin("a.user.preference.all", p.all), nil
+	case "delete":
+		return sl.NewBuiltin("a.user.preference.delete", p.delete), nil
+	case "get":
+		return sl.NewBuiltin("a.user.preference.get", p.get), nil
+	case "set":
+		return sl.NewBuiltin("a.user.preference.set", p.set), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserPreference) Freeze()               {}
+func (p *UserPreference) Hash() (uint32, error) { return 0, nil }
+func (p *UserPreference) String() string        { return "UserPreference" }
+func (p *UserPreference) Truth() sl.Bool        { return sl.True }
+func (p *UserPreference) Type() string          { return "UserPreference" }
+
+// a.user.preference.get(name) -> string | None: Get a user preference
+func (p *UserPreference) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <name: string>")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid name")
+	}
+	if v, ok := p.user.Preferences[name]; ok {
+		return sl.String(v), nil
+	}
+	return sl.None, nil
+}
+
+// a.user.preference.set(name, value) -> string: Set a user preference
+func (p *UserPreference) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <name: string>, <value: string>")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid name")
+	}
+	value, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid value")
+	}
+	user_preference_set(p.user, name, value)
+	return sl.String(value), nil
+}
+
+// a.user.preference.delete(name) -> bool: Delete a user preference
+func (p *UserPreference) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <name: string>")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid name")
+	}
+	deleted := user_preference_delete(p.user, name)
+	return sl.Bool(deleted), nil
+}
+
+// a.user.preference.all() -> dict: Get all user preferences
+func (p *UserPreference) all(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl_encode(p.user.Preferences), nil
 }

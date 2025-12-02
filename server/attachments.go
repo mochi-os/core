@@ -203,6 +203,12 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			return sl_error(fn, "file too large: %d bytes", fh.Size)
 		}
 
+		// Check storage limit (10GB per user across all apps)
+		current := dir_size(user_storage_dir(owner))
+		if current+fh.Size > file_max_storage {
+			return sl_error(fn, "storage limit exceeded")
+		}
+
 		// Open uploaded file
 		src, err := fh.Open()
 		if err != nil {
@@ -341,6 +347,12 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "file too large: %d bytes", len(bytes))
 	}
 
+	// Check storage limit (10GB per user across all apps)
+	current := dir_size(user_storage_dir(owner))
+	if current+int64(len(bytes)) > file_max_storage {
+		return sl_error(fn, "storage limit exceeded")
+	}
+
 	// Create attachment record
 	id := uid()
 	rank := db.attachment_next_rank(object)
@@ -456,6 +468,12 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Check size
 	if int64(len(bytes)) > attachment_max_size_default {
 		return sl_error(fn, "file too large: %d bytes", len(bytes))
+	}
+
+	// Check storage limit (10GB per user across all apps)
+	current := dir_size(user_storage_dir(owner))
+	if current+int64(len(bytes)) > file_max_storage {
+		return sl_error(fn, "storage limit exceeded")
 	}
 
 	// Shift existing attachments

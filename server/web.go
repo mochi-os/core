@@ -87,6 +87,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
+	// Serve attachment
+	if aa.Attachments {
+		return web_serve_attachment(c, a, user, name)
+	}
+
 	// Serve static file
 	if aa.File != "" {
 		file := a.active.base + "/" + aa.File
@@ -469,4 +474,59 @@ func web_start() {
 		info("Web listening on %q:%d", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
 	}
+}
+
+// Serve an attachment or thumbnail
+func web_serve_attachment(c *gin.Context, app *App, user *User, name string) bool {
+	// Parse path: files/:id or files/:id/thumbnail
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+		return true
+	}
+
+	id := parts[1]
+	thumbnail := len(parts) >= 3 && parts[2] == "thumbnail"
+
+	if !valid(id, "id") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attachment ID"})
+		return true
+	}
+
+	db := db_app(user, app.active)
+	if db == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return true
+	}
+
+	var att Attachment
+	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return true
+	}
+
+	// Get file path
+	var path string
+	if att.Entity != "" {
+		path = fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, att.Entity, app.id, id)
+	} else {
+		path = data_dir + "/" + db.attachment_path(att.ID, att.Name)
+	}
+
+	if !file_exists(path) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return true
+	}
+
+	if thumbnail {
+		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.File(thumb)
+			return true
+		}
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", att.Name))
+	c.File(path)
+	return true
 }

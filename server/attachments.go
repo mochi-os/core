@@ -99,8 +99,8 @@ func (db *DB) attachment_shift_down(object string, from_rank int) {
 }
 
 // Convert Attachment struct to map for Starlark
-// If app_path is provided, includes url and thumbnail_url fields
-func (a *Attachment) to_map(app_path ...string) map[string]any {
+// If paths are provided: first is app_path, second is action_path (defaults to "attachments")
+func (a *Attachment) to_map(paths ...string) map[string]any {
 	m := map[string]any{
 		"id":           a.ID,
 		"object":       a.Object,
@@ -116,18 +116,23 @@ func (a *Attachment) to_map(app_path ...string) map[string]any {
 		"created":      a.Created,
 		"image":        is_image(a.Name),
 	}
-	if len(app_path) > 0 && app_path[0] != "" {
-		m["url"] = a.attachment_url(app_path[0])
+	if len(paths) > 0 && paths[0] != "" {
+		app_path := paths[0]
+		action_path := "attachments"
+		if len(paths) > 1 && paths[1] != "" {
+			action_path = paths[1]
+		}
+		m["url"] = a.attachment_url(app_path, action_path)
 		if is_image(a.Name) {
-			m["thumbnail_url"] = a.attachment_url(app_path[0]) + "/thumbnail"
+			m["thumbnail_url"] = a.attachment_url(app_path, action_path) + "/thumbnail"
 		}
 	}
 	return m
 }
 
 // Generate URL for attachment
-func (a *Attachment) attachment_url(app_path string) string {
-	return fmt.Sprintf("/%s/files/%s", app_path, a.ID)
+func (a *Attachment) attachment_url(app_path, action_path string) string {
+	return fmt.Sprintf("/%s/%s/%s", app_path, action_path, a.ID)
 }
 
 // Detect content type from filename

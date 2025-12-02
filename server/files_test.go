@@ -416,10 +416,10 @@ func TestDirSize(t *testing.T) {
 	}
 }
 
-// Test file storage limit is 1GB
+// Test file storage limit is 10GB per user
 func TestFileStorageLimitConstant(t *testing.T) {
-	expectedLimit := int64(1024 * 1024 * 1024)
+	expectedLimit := int64(10 * 1024 * 1024 * 1024)
 	if file_max_storage != expectedLimit {
-		t.Errorf("file_max_storage = %d, expected %d (1GB)", file_max_storage, expectedLimit)
+		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_max_storage, expectedLimit)
 	}
 }

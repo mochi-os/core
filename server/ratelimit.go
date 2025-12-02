@@ -65,6 +65,13 @@ var (
 		limit:   100,
 		window:  60,
 	}
+
+	// Direct P2P message rate limiter: 20 per second per app
+	rate_limit_p2p_send = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   20,
+		window:  1,
+	}
 )
 
 // Check if request is allowed; returns true if allowed, false if rate limited
@@ -175,5 +182,6 @@ func ratelimit_manager() {
 		rate_limit_pubsub_out.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_url.cleanup()
+		rate_limit_p2p_send.cleanup()
 	}
 }

@@ -40,6 +40,10 @@ func is_image(file string) bool {
 func thumbnail_create(path string) (string, error) {
 	dir, file := filepath.Split(path)
 	thumb := dir + "thumbnails/" + thumbnail_name(file)
+	tmp := thumb + ".tmp"
+
+	// Clean up any leftover temp file from a previous failed attempt
+	_ = os.Remove(tmp)
 
 	if file_exists(thumb) {
 		return thumb, nil
@@ -83,14 +87,10 @@ func thumbnail_create(path string) (string, error) {
 	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
 
 	file_mkdir_for_file(thumb)
-	o := must(os.Create(thumb))
-	defer o.Close()
 
-	// Write to temp file then rename to avoid partial files
-	tmp := thumb + ".tmp"
-	o, err = os.Create(tmp)
+	o, err := os.Create(tmp)
 	if err != nil {
-		warn("Unable to create temp thumbnail file %q to create thumbnail: %v", path, err)
+		warn("Unable to create temp thumbnail file %q: %v", tmp, err)
 		return "", err
 	}
 	// ensure tmp is closed and removed on error
@@ -108,6 +108,8 @@ func thumbnail_create(path string) (string, error) {
 		err = jpeg.Encode(o, t, &jpeg.Options{Quality: 80})
 	case "png":
 		err = png.Encode(o, t)
+	case "webp":
+		err = imaging.Encode(o, t, imaging.JPEG, imaging.JPEGQuality(80))
 	default:
 		close_and_remove_tmp(true)
 		return "", nil
@@ -121,13 +123,13 @@ func thumbnail_create(path string) (string, error) {
 
 	if err := o.Close(); err != nil {
 		_ = os.Remove(tmp)
-		info("unable to close thumbnail file %q: %w", tmp, err)
+		info("Unable to close thumbnail file %q: %v", tmp, err)
 		return "", err
 	}
 
 	if err := os.Rename(tmp, thumb); err != nil {
 		_ = os.Remove(tmp)
-		info("unable to move thumbnail into place %q: %w", thumb, err)
+		info("Unable to move thumbnail into place %q: %v", thumb, err)
 		return "", err
 	}
 

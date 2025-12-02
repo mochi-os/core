@@ -116,6 +116,9 @@ func db_create() {
 	queue.exec("create index if not exists queue_target on queue (target)")
 }
 
+// Maximum database size per app per user (1GB / 4KB page size = 262144 pages)
+const db_max_page_count = 262144
+
 // Open a database file for an app version, creating, upgrading, or downgrading it as necessary
 func db_app(u *User, av *AppVersion) *DB {
 	if av.app == nil {
@@ -131,6 +134,9 @@ func db_app(u *User, av *AppVersion) *DB {
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
 	db, created, reused := db_open_work(path)
 	db.user = u
+
+	// Limit database size to prevent misbehaving apps from filling storage
+	db.exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
 
 	if reused {
 		debug("Database app reusing already open %q", path)

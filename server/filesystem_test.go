@@ -398,3 +398,28 @@ func BenchmarkFileNameType(b *testing.B) {
 		file_name_type(inputs[i%len(inputs)])
 	}
 }
+
+// Test dir_size calculation
+func TestDirSize(t *testing.T) {
+	testDir := t.TempDir()
+
+	file_write(testDir+"/file1.txt", []byte("hello"))
+	file_write(testDir+"/file2.txt", []byte("world!"))
+	file_mkdir(testDir + "/subdir")
+	file_write(testDir+"/subdir/file3.txt", []byte("test"))
+
+	size := dir_size(testDir)
+	expected := int64(5 + 6 + 4)
+
+	if size != expected {
+		t.Errorf("dir_size() = %d, expected %d", size, expected)
+	}
+}
+
+// Test file storage limit is 1GB
+func TestFileStorageLimitConstant(t *testing.T) {
+	expectedLimit := int64(1024 * 1024 * 1024)
+	if file_max_storage != expectedLimit {
+		t.Errorf("file_max_storage = %d, expected %d (1GB)", file_max_storage, expectedLimit)
+	}
+}

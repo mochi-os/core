@@ -108,7 +108,7 @@ func TestAttachmentToMap(t *testing.T) {
 
 // Test Attachment.to_map with app_path for URL generation
 func TestAttachmentToMapWithURL(t *testing.T) {
-	// Test non-image attachment
+	// Test non-image attachment with default action_path
 	att := &Attachment{
 		ID:   "abc123",
 		Name: "document.pdf",
@@ -116,8 +116,8 @@ func TestAttachmentToMapWithURL(t *testing.T) {
 
 	m := att.to_map("chat")
 
-	if m["url"] != "/chat/files/abc123" {
-		t.Errorf("url = %v, want /chat/files/abc123", m["url"])
+	if m["url"] != "/chat/attachments/abc123" {
+		t.Errorf("url = %v, want /chat/attachments/abc123", m["url"])
 	}
 	if m["image"] != false {
 		t.Errorf("image = %v, want false", m["image"])
@@ -126,7 +126,7 @@ func TestAttachmentToMapWithURL(t *testing.T) {
 		t.Errorf("thumbnail_url should not be set for non-image")
 	}
 
-	// Test image attachment
+	// Test image attachment with default action_path
 	img_att := &Attachment{
 		ID:   "img456",
 		Name: "photo.jpg",
@@ -134,14 +134,41 @@ func TestAttachmentToMapWithURL(t *testing.T) {
 
 	img_m := img_att.to_map("feeds")
 
-	if img_m["url"] != "/feeds/files/img456" {
-		t.Errorf("url = %v, want /feeds/files/img456", img_m["url"])
+	if img_m["url"] != "/feeds/attachments/img456" {
+		t.Errorf("url = %v, want /feeds/attachments/img456", img_m["url"])
 	}
 	if img_m["image"] != true {
 		t.Errorf("image = %v, want true", img_m["image"])
 	}
-	if img_m["thumbnail_url"] != "/feeds/files/img456/thumbnail" {
-		t.Errorf("thumbnail_url = %v, want /feeds/files/img456/thumbnail", img_m["thumbnail_url"])
+	if img_m["thumbnail_url"] != "/feeds/attachments/img456/thumbnail" {
+		t.Errorf("thumbnail_url = %v, want /feeds/attachments/img456/thumbnail", img_m["thumbnail_url"])
+	}
+
+	// Test with custom action_path
+	custom_att := &Attachment{
+		ID:   "custom789",
+		Name: "file.txt",
+	}
+
+	custom_m := custom_att.to_map("myapp", "files")
+
+	if custom_m["url"] != "/myapp/files/custom789" {
+		t.Errorf("url = %v, want /myapp/files/custom789", custom_m["url"])
+	}
+
+	// Test image with custom action_path
+	custom_img := &Attachment{
+		ID:   "img999",
+		Name: "photo.png",
+	}
+
+	custom_img_m := custom_img.to_map("gallery", "media")
+
+	if custom_img_m["url"] != "/gallery/media/img999" {
+		t.Errorf("url = %v, want /gallery/media/img999", custom_img_m["url"])
+	}
+	if custom_img_m["thumbnail_url"] != "/gallery/media/img999/thumbnail" {
+		t.Errorf("thumbnail_url = %v, want /gallery/media/img999/thumbnail", custom_img_m["thumbnail_url"])
 	}
 }
 
@@ -150,20 +177,23 @@ func TestAttachmentURL(t *testing.T) {
 	att := &Attachment{ID: "test123"}
 
 	tests := []struct {
-		name     string
-		app_path string
-		expected string
+		name        string
+		app_path    string
+		action_path string
+		expected    string
 	}{
-		{"chat app", "chat", "/chat/files/test123"},
-		{"feeds app", "feeds", "/feeds/files/test123"},
-		{"forums app", "forums", "/forums/files/test123"},
+		{"chat default", "chat", "attachments", "/chat/attachments/test123"},
+		{"feeds default", "feeds", "attachments", "/feeds/attachments/test123"},
+		{"forums default", "forums", "attachments", "/forums/attachments/test123"},
+		{"custom files", "myapp", "files", "/myapp/files/test123"},
+		{"custom media", "gallery", "media", "/gallery/media/test123"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := att.attachment_url(tt.app_path)
+			result := att.attachment_url(tt.app_path, tt.action_path)
 			if result != tt.expected {
-				t.Errorf("attachment_url(%q) = %q, want %q", tt.app_path, result, tt.expected)
+				t.Errorf("attachment_url(%q, %q) = %q, want %q", tt.app_path, tt.action_path, result, tt.expected)
 			}
 		})
 	}

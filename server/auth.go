@@ -5,9 +5,10 @@ package main
 
 import (
 	"errors"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
-	"time"
 )
 
 // Minimal JWT implementation (HS256) using stdlib to avoid external deps.
@@ -77,6 +78,9 @@ func web_login_auth(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "unable to create token"})
 		return
 	}
+
+	// Set login cookie for web browser authentication
+	web_cookie_set(c, "login", login)
 
 	response := gin.H{
 		"token": signed,

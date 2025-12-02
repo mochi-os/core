@@ -59,7 +59,6 @@ func file_exists(path string) bool {
 		return false
 	}
 	panic(err)
-	return false
 }
 
 func file_is_directory(path string) bool {

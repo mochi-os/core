@@ -6,7 +6,6 @@ package main
 import (
 	"embed"
 	"fmt"
-	"html/template"
 	"net/http"
 	"regexp"
 	"strings"
@@ -356,11 +355,6 @@ func web_logout(c *gin.Context) {
 	}
 	web_cookie_unset(c, "login")
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-// Render markdown as a template.HTML object so that Go's templates don't escape it
-func web_markdown(in string) template.HTML {
-	return template.HTML(markdown([]byte(in)))
 }
 
 // Handle app paths

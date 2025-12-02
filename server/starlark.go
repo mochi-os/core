@@ -166,23 +166,6 @@ func sl_decode_strings(value any) map[string]string {
 	}
 }
 
-// Decode a Starlark array to an array of map of strings to strings
-func sl_decode_multi_strings(value any) *[]map[string]string {
-	//debug("Decoding to multi strings '%+v'", value)
-	switch v := value.(type) {
-	case sl.Tuple:
-		out := make([]map[string]string, len(v))
-		for i, e := range v {
-			out[i] = sl_decode_strings(e)
-		}
-		return &out
-
-	default:
-		warn("Starlark decode multi strings unknown type '%T'", v)
-		return nil
-	}
-}
-
 // Convert a single Go variable to a Starlark value
 func sl_encode(v any) sl.Value {
 	//debug("Encoding '%+v', type %T", v, v)
@@ -359,17 +342,6 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		}
 		return nil, callErr
 	}
-}
-
-// Convert a Starlark value to an int
-func (s *Starlark) int(v sl.Value) int {
-	var i int
-	err := sl.AsInt(v, &i)
-	if err != nil {
-		info("Starlark failed to convert %q to int", v)
-		return 0
-	}
-	return i
 }
 
 // Set a Starlark thread variable

@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,7 +34,6 @@ const (
 var (
 	locks              = map[string]*sync.Mutex{}
 	locks_lock         sync.Mutex
-	match_filename     = regexp.MustCompile("^[0-9a-zA-Z][0-9a-zA-Z-._ ()]{0,254}$")
 	match_hyphens      = regexp.MustCompile(`-`)
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 )
@@ -184,31 +182,6 @@ func random_alphanumeric(length int) string {
 		out[i] = rune(alphanumeric[index.Int64()])
 	}
 	return string(out)
-}
-
-func structs_to_maps[T any](v []T) *[]map[string]any {
-	result := make([]map[string]any, 0, len(v))
-
-	for _, s := range v {
-		sv := reflect.ValueOf(s)
-		st := reflect.TypeOf(s)
-
-		if sv.Kind() == reflect.Struct {
-			m := make(map[string]any)
-			for i := 0; i < sv.NumField(); i++ {
-				f := st.Field(i)
-				name := strings.ToLower(f.Name)
-				tag := f.Tag.Get("map")
-				if tag != "" && tag != "-" {
-					name = tag
-				}
-				m[name] = sv.Field(i).Interface()
-			}
-			result = append(result, m)
-		}
-	}
-
-	return &result
 }
 
 func time_local(u *User, t int64) string {

@@ -18,10 +18,10 @@ import (
 )
 
 type App struct {
-	id          string                 `json:"id"`
-	fingerprint string                 `json:"-"`
-	versions    map[string]*AppVersion `json:"-"`
-	active      *AppVersion            `json:"-"`
+	id          string
+	fingerprint string
+	versions    map[string]*AppVersion
+	active      *AppVersion
 }
 
 type AppAction struct {

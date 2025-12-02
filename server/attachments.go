@@ -16,7 +16,6 @@ import (
 	"io"
 	"mime"
 	"path/filepath"
-	"strings"
 )
 
 const (
@@ -1143,29 +1142,6 @@ func sl_extract_string(v sl.Value) string {
 		}
 	}
 	return ""
-}
-
-// Check if content type matches allowed patterns
-func attachment_type_allowed(content_type string, allowed []string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
-
-	for _, pattern := range allowed {
-		if pattern == "*" || pattern == "*/*" {
-			return true
-		}
-		if strings.HasSuffix(pattern, "/*") {
-			prefix := strings.TrimSuffix(pattern, "/*")
-			if strings.HasPrefix(content_type, prefix+"/") {
-				return true
-			}
-		} else if pattern == content_type {
-			return true
-		}
-	}
-
-	return false
 }
 
 // Event handler: attachment/create

@@ -1,4 +1,4 @@
-// Mochi server: Filesystem utilities
+// Mochi server: File utilities
 // Copyright Alistair Cunningham 2024-2025
 
 package main

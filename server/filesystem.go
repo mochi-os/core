@@ -19,6 +19,9 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
+// Maximum file storage per app per user (1GB)
+var file_max_storage int64 = 1024 * 1024 * 1024
+
 var (
 	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)
 	match_unsafe_chars        = regexp.MustCompile(`[\x00-\x1f\x7f/\\:*?"<>|]+`)
@@ -188,6 +191,23 @@ func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
 }
 
+// Helper function to get the base files directory for an app
+func api_file_dir(u *User, a *App) string {
+	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, u.ID, a.id)
+}
+
+// Calculate total size of files in a directory
+func dir_size(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
+
 // mochi.file.delete(file) -> None: Delete a file
 func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -321,6 +341,12 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
 		return sl_error(fn, "no app")
+	}
+
+	// Check storage limit
+	current := dir_size(api_file_dir(user, app))
+	if current+int64(len(data)) > file_max_storage {
+		return sl_error(fn, "storage limit exceeded")
 	}
 
 	file_write(api_file_path(user, app, file), []byte(data))

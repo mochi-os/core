@@ -501,3 +501,12 @@ func TestAttachBlocked(t *testing.T) {
 		t.Error("Normal INSERT/SELECT should work")
 	}
 }
+
+// Test database page count limit is 1GB
+func TestDbMaxPageCountConstant(t *testing.T) {
+	// 1GB / 4KB = 262144 pages
+	expectedLimit := 262144
+	if db_max_page_count != expectedLimit {
+		t.Errorf("db_max_page_count = %d, expected %d", db_max_page_count, expectedLimit)
+	}
+}

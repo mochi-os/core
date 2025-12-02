@@ -367,6 +367,12 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "unable to get file field %q: %v", field, err)
 	}
 
+	// Check storage limit
+	current := dir_size(api_file_dir(a.user, app))
+	if current+ff.Size > file_max_storage {
+		return sl_error(fn, "storage limit exceeded")
+	}
+
 	err = a.web.SaveUploadedFile(ff, api_file_path(a.user, app, file))
 	if err != nil {
 		return sl_error(fn, "unable to write file for field %q: %v", field, err)

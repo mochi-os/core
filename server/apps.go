@@ -25,11 +25,12 @@ type App struct {
 }
 
 type AppAction struct {
-	Function string `json:"function"`
-	File     string `json:"file"`
-	Files    string `json:"files"`
-	Public   bool   `json:"public"`
-	Access   struct {
+	Function    string `json:"function"`
+	File        string `json:"file"`
+	Files       string `json:"files"`
+	Attachments bool   `json:"attachments"`
+	Public      bool   `json:"public"`
+	Access      struct {
 		Resource  string `json:"resource"`
 		Operation string `json:"operation"`
 	} `json:"access"`
@@ -92,6 +93,14 @@ type Icon struct {
 	Action string `json:"action"`
 	Label  string `json:"label"`
 	File   string `json:"file"`
+}
+
+// Get the primary path for URL generation
+func (a *App) url_path() string {
+	if a.active != nil && len(a.active.Paths) > 0 {
+		return a.active.Paths[0]
+	}
+	return a.id
 }
 
 const (
@@ -514,6 +523,20 @@ func app_read(id string, base string) (*AppVersion, error) {
 		if !valid(f.Function, "function") {
 			return nil, fmt.Errorf("App bad function function %q", f.Function)
 		}
+	}
+
+	// Expand attachment actions into sub-routes
+	var attachment_actions []string
+	for name, action := range av.Actions {
+		if action.Attachments {
+			attachment_actions = append(attachment_actions, name)
+		}
+	}
+	for _, name := range attachment_actions {
+		action := av.Actions[name]
+		av.Actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
+		av.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Public: action.Public}
+		delete(av.Actions, name)
 	}
 
 	return &av, nil

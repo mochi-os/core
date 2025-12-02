@@ -99,20 +99,35 @@ func (db *DB) attachment_shift_down(object string, from_rank int) {
 }
 
 // Convert Attachment struct to map for Starlark
-func (a *Attachment) to_map() map[string]any {
-	return map[string]any{
+// If app_path is provided, includes url and thumbnail_url fields
+func (a *Attachment) to_map(app_path ...string) map[string]any {
+	m := map[string]any{
 		"id":           a.ID,
 		"object":       a.Object,
 		"entity":       a.Entity,
 		"name":         a.Name,
 		"size":         a.Size,
 		"content_type": a.ContentType,
+		"type":         a.ContentType,
 		"creator":      a.Creator,
 		"caption":      a.Caption,
 		"description":  a.Description,
 		"rank":         a.Rank,
 		"created":      a.Created,
+		"image":        is_image(a.Name),
 	}
+	if len(app_path) > 0 && app_path[0] != "" {
+		m["url"] = a.attachment_url(app_path[0])
+		if is_image(a.Name) {
+			m["thumbnail_url"] = a.attachment_url(app_path[0]) + "/thumbnail"
+		}
+	}
+	return m
+}
+
+// Generate URL for attachment
+func (a *Attachment) attachment_url(app_path string) string {
+	return fmt.Sprintf("/%s/files/%s", app_path, a.ID)
 }
 
 // Detect content type from filename
@@ -260,7 +275,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-		results = append(results, att.to_map())
+		results = append(results, att.to_map(app.url_path()))
 	}
 
 	// Handle federation notify
@@ -379,7 +394,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-	result := att.to_map()
+	result := att.to_map(app.url_path())
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -504,7 +519,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-	result := att.to_map()
+	result := att.to_map(app.url_path())
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -564,7 +579,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.None, nil
 	}
 
-	result := att.to_map()
+	result := att.to_map(app.url_path())
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -632,7 +647,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get updated record
 	db.scan(&att, "select * from _attachments where id = ?", id)
-	result := att.to_map()
+	result := att.to_map(app.url_path())
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -784,7 +799,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	var results []map[string]any
 	for _, att := range attachments {
-		results = append(results, att.to_map())
+		results = append(results, att.to_map(app.url_path()))
 	}
 
 	return sl_encode(results), nil
@@ -821,7 +836,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.None, nil
 	}
 
-	return sl_encode(att.to_map()), nil
+	return sl_encode(att.to_map(app.url_path())), nil
 }
 
 // mochi.attachment.data(id) -> bytes or None: Get attachment file data
@@ -1429,7 +1444,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	// Convert to maps for notification
 	var results []map[string]any
 	for _, att := range attachments {
-		results = append(results, att.to_map())
+		results = append(results, att.to_map(app.url_path()))
 	}
 
 	// Send to recipients using existing notify infrastructure
@@ -1542,7 +1557,7 @@ func (e *Event) attachment_event_fetch() {
 		return
 	}
 
-	// Convert to maps and send back via stream
+	// Convert to maps and send back via stream (no URL since this is P2P)
 	var results []map[string]any
 	for _, att := range attachments {
 		results = append(results, att.to_map())

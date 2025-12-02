@@ -51,15 +51,23 @@ func starlark(files []string) *Starlark {
 	resolve.AllowRecursion = true
 
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
-	s.globals = api_globals
+	s.globals = make(sl.StringDict)
+
+	// Copy api_globals to s.globals (predeclared globals like mochi)
+	for k, v := range api_globals {
+		s.globals[k] = v
+	}
 
 	for _, file := range files {
 		debug("Starlark reading file %q", file)
-		var err error
-		s.globals, err = sl.ExecFile(s.thread, file, nil, s.globals)
+		defined, err := sl.ExecFile(s.thread, file, nil, s.globals)
 		if err != nil {
 			info("Starlark error reading file %v", err)
 			continue
+		}
+		// Merge defined names into globals for subsequent files
+		for k, v := range defined {
+			s.globals[k] = v
 		}
 	}
 

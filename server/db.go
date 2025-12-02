@@ -63,8 +63,8 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users ( id integer primary key, username text not null, role text not null default 'user', language text not null default 'en', timezone text not null default 'UTC' )")
-	users.exec("create unique index users_username on users( username )")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user')")
+	users.exec("create unique index users_username on users (username)")
 
 	// Login codes
 	users.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
@@ -114,6 +114,19 @@ func db_create() {
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
+}
+
+// db_user opens a database in the user's directory
+func db_user(u *User, name string) *DB {
+	path := fmt.Sprintf("users/%d/%s.db", u.ID, name)
+	db := db_open(path)
+
+	// Create preferences table for settings.db
+	if name == "settings" {
+		db.exec("create table if not exists preferences (name text primary key, value text not null)")
+	}
+
+	return db
 }
 
 // Maximum database size per app per user (1GB / 4KB page size = 262144 pages)

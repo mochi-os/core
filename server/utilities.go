@@ -187,7 +187,7 @@ func random_alphanumeric(length int) string {
 func time_local(u *User, t int64) string {
 	timezone := "UTC"
 	if u != nil {
-		timezone = u.Timezone
+		timezone = user_preference_get(u, "timezone", "UTC")
 	}
 
 	l, err := time.LoadLocation(timezone)

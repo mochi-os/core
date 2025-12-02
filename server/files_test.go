@@ -1,4 +1,4 @@
-// Mochi server: Filesystem unit tests
+// Mochi server: File unit tests
 // Copyright Alistair Cunningham 2025
 
 package main

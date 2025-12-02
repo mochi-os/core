@@ -469,31 +469,46 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // s.read_to_file(path) -> None: Read raw bytes from stream and write to file
 func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	debug("Stream %d reading rest of stream to file", s.id)
-	defer s.reader.Close()
 
 	if len(args) != 1 {
+		s.reader.Close()
 		return sl_error(fn, "syntax: <file: string>")
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
+		s.reader.Close()
 		return sl_error(fn, "no user")
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
+		s.reader.Close()
 		return sl_error(fn, "no app")
 	}
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
+		s.reader.Close()
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	if !file_write_from_reader(api_file_path(user, app, file), s.reader) {
+	// Check storage limit and calculate remaining space
+	current := dir_size(user_storage_dir(user))
+	remaining := file_max_storage - current
+	if remaining <= 0 {
+		s.reader.Close()
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	// Limit reader to remaining storage space
+	limited := io.LimitReader(s.reader, remaining)
+	if !file_write_from_reader(api_file_path(user, app, file), limited) {
+		s.reader.Close()
 		return sl_error(fn, "unable to save file %q", file)
 	}
 
+	s.reader.Close()
 	debug("Stream %d read to file", s.id)
 	return sl.None, nil
 }

@@ -391,3 +391,35 @@ func BenchmarkLikeEscape(b *testing.B) {
 		like_escape(inputs[i%len(inputs)])
 	}
 }
+
+// Test url_is_cloud_metadata function
+func TestUrlIsCloudMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected bool
+	}{
+		// Should block
+		{"AWS metadata", "http://169.254.169.254/latest/meta-data/", true},
+		{"AWS metadata https", "https://169.254.169.254/latest/meta-data/", true},
+		{"AWS metadata with path", "http://169.254.169.254/latest/api/token", true},
+		{"GCP metadata", "http://metadata.google.internal/computeMetadata/v1/", true},
+		{"GCP metadata https", "https://metadata.google.internal/computeMetadata/v1/", true},
+
+		// Should allow
+		{"normal URL", "https://example.com/api", false},
+		{"localhost", "http://localhost:8080/api", false},
+		{"private IP", "http://192.168.1.1/admin", false},
+		{"similar but different", "http://169.254.169.253/", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := url_is_cloud_metadata(tt.url)
+			if result != tt.expected {
+				t.Errorf("url_is_cloud_metadata(%q) = %v, want %v", tt.url, result, tt.expected)
+			}
+		})
+	}
+}

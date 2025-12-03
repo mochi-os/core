@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 7
+	schema_version = 8
 )
 
 var (
@@ -115,7 +115,7 @@ func db_create() {
 	queue.exec("drop table if exists seen_nonces")
 
 	// Outgoing message queue
-	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 
@@ -419,7 +419,7 @@ func db_upgrade() {
 			queue.exec("drop table if exists seen_nonces")
 
 			// Outgoing message queue
-			queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
+			queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 			queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 			queue.exec("create index if not exists queue_target on queue (target)")
 
@@ -462,6 +462,20 @@ func db_upgrade() {
 			db.exec("drop table routes")
 			db.exec("alter table routes_new rename to routes")
 			db.exec("create index if not exists routes_domain on routes(domain)")
+
+		} else if schema == 8 {
+			// Migration: make nullable columns in queue table not null
+			queue := db_open("db/queue.db")
+			queue.exec("update queue set content = '' where content is null")
+			queue.exec("update queue set data = '' where data is null")
+			queue.exec("update queue set file = '' where file is null")
+			queue.exec("update queue set last_error = '' where last_error is null")
+			queue.exec("create table queue_new ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
+			queue.exec("insert into queue_new select * from queue")
+			queue.exec("drop table queue")
+			queue.exec("alter table queue_new rename to queue")
+			queue.exec("create index queue_status_retry on queue (status, next_retry)")
+			queue.exec("create index queue_target on queue (target)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

@@ -17,14 +17,14 @@ type QueueEntry struct {
 	ToEntity   string  `db:"to_entity"`
 	Service    string  `db:"service"`
 	Event      string  `db:"event"`
-	Content    []byte  `db:"content"`
-	Data       []byte  `db:"data"`
-	File       *string `db:"file"`
-	Expires    int64   `db:"expires"`
-	Status     string  `db:"status"`
-	Attempts   int     `db:"attempts"`
-	NextRetry  int64   `db:"next_retry"`
-	LastError  *string `db:"last_error"`
+	Content    []byte `db:"content"`
+	Data       []byte `db:"data"`
+	File       string `db:"file"`
+	Expires    int64  `db:"expires"`
+	Status     string `db:"status"`
+	Attempts   int    `db:"attempts"`
+	NextRetry  int64  `db:"next_retry"`
+	LastError  string `db:"last_error"`
 	Created    int64   `db:"created"`
 }
 
@@ -137,7 +137,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	if s.write_raw(data) != nil {
 		return false
 	}
-	if q.File != nil && *q.File != "" && s.write_file(*q.File) != nil {
+	if q.File != "" && s.write_file(q.File) != nil {
 		return false
 	}
 

@@ -5,8 +5,17 @@ package main
 
 import (
 	"fmt"
+
 	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
+
+// Invite stores an invitation code
+type Invite struct {
+	Code    string
+	Uses    int
+	Expires int
+}
 
 type Code struct {
 	Code     string
@@ -30,6 +39,24 @@ type User struct {
 	Identity    *Entity
 	db          *DB // Used by actions
 }
+
+var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
+	"count":  sl.NewBuiltin("mochi.user.count", api_user_count),
+	"create": sl.NewBuiltin("mochi.user.create", api_user_create),
+	"delete": sl.NewBuiltin("mochi.user.delete", api_user_delete),
+	"get": sls.FromStringDict(sl.String("mochi.user.get"), sl.StringDict{
+		"id":       sl.NewBuiltin("mochi.user.get.id", api_user_get_id),
+		"username": sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
+	}),
+	"invite": sls.FromStringDict(sl.String("mochi.user.invite"), sl.StringDict{
+		"create":   sl.NewBuiltin("mochi.user.invite.create", api_user_invite_create),
+		"delete":   sl.NewBuiltin("mochi.user.invite.delete", api_user_invite_delete),
+		"list":     sl.NewBuiltin("mochi.user.invite.list", api_user_invite_list),
+		"validate": sl.NewBuiltin("mochi.user.invite.validate", api_user_invite_validate),
+	}),
+	"list":   sl.NewBuiltin("mochi.user.list", api_user_list),
+	"update": sl.NewBuiltin("mochi.user.update", api_user_update),
+})
 
 func code_send(email string) bool {
 	if !email_valid(email) {
@@ -177,6 +204,338 @@ func (u *User) administrator() bool {
 		return true
 	}
 	return false
+}
+
+// mochi.user.get.id(id) -> dict | None: Get a user by ID (admin only)
+func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	db := db_open("db/users.db")
+	var u User
+	if !db.scan(&u, "select id, username, role from users where id=?", id) {
+		return sl.None, nil
+	}
+
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+}
+
+// mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
+func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <username: string>")
+	}
+
+	username, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid username")
+	}
+
+	db := db_open("db/users.db")
+	var u User
+	if !db.scan(&u, "select id, username, role from users where username=?", username) {
+		return sl.None, nil
+	}
+
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+}
+
+// mochi.user.list(limit, offset) -> list: List all users (admin only)
+func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	limit := 100
+	offset := 0
+	if len(args) > 0 {
+		l, err := sl.AsInt32(args[0])
+		if err != nil || l < 1 || l > 1000 {
+			return sl_error(fn, "invalid limit")
+		}
+		limit = int(l)
+	}
+	if len(args) > 1 {
+		o, err := sl.AsInt32(args[1])
+		if err != nil || o < 0 {
+			return sl_error(fn, "invalid offset")
+		}
+		offset = int(o)
+	}
+
+	db := db_open("db/users.db")
+	rows, err := db.rows("select id, username, role from users order by id limit ? offset ?", limit, offset)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(rows), nil
+}
+
+// mochi.user.count() -> int: Count all users (admin only)
+func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	db := db_open("db/users.db")
+	row, err := db.row("select count(*) as count from users")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(row["count"]), nil
+}
+
+// mochi.user.create(username, role) -> dict: Create a new user (admin only)
+func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <username: string>, [role: string]")
+	}
+
+	username, ok := sl.AsString(args[0])
+	if !ok || !email_valid(username) {
+		return sl_error(fn, "invalid username")
+	}
+
+	role := "user"
+	if len(args) > 1 {
+		role, ok = sl.AsString(args[1])
+		if !ok || (role != "user" && role != "administrator") {
+			return sl_error(fn, "invalid role")
+		}
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where username=?", username)
+	if exists {
+		return sl_error(fn, "user already exists")
+	}
+
+	db.exec("insert into users (username, role) values (?, ?)", username, role)
+
+	var u User
+	if !db.scan(&u, "select id, username, role from users where username=?", username) {
+		return sl_error(fn, "failed to create user")
+	}
+
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+}
+
+// mochi.user.update(id, username, role) -> bool: Update a user (admin only)
+func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) < 1 || len(args) > 3 {
+		return sl_error(fn, "syntax: <id: int>, [username: string], [role: string]")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where id=?", id)
+	if !exists {
+		return sl_error(fn, "user not found")
+	}
+
+	if len(args) > 1 && args[1] != sl.None {
+		username, ok := sl.AsString(args[1])
+		if !ok || !email_valid(username) {
+			return sl_error(fn, "invalid username")
+		}
+		db.exec("update users set username=? where id=?", username, id)
+	}
+
+	if len(args) > 2 && args[2] != sl.None {
+		role, ok := sl.AsString(args[2])
+		if !ok || (role != "user" && role != "administrator") {
+			return sl_error(fn, "invalid role")
+		}
+		db.exec("update users set role=? where id=?", role, id)
+	}
+
+	return sl.True, nil
+}
+
+// mochi.user.delete(id) -> bool: Delete a user (admin only)
+func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	if int(id) == user.ID {
+		return sl_error(fn, "cannot delete self")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where id=?", id)
+	if !exists {
+		return sl_error(fn, "user not found")
+	}
+
+	db.exec("delete from users where id=?", id)
+	return sl.True, nil
+}
+
+// mochi.user.invite.create(uses, expires) -> dict: Create an invitation code (admin only)
+func api_user_invite_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	uses := 1
+	expires_days := 7
+
+	if len(args) > 0 {
+		u, err := sl.AsInt32(args[0])
+		if err != nil || u < 1 {
+			return sl_error(fn, "invalid uses")
+		}
+		uses = int(u)
+	}
+	if len(args) > 1 {
+		e, err := sl.AsInt32(args[1])
+		if err != nil || e < 1 {
+			return sl_error(fn, "invalid expires")
+		}
+		expires_days = int(e)
+	}
+
+	code := random_alphanumeric(16)
+	expires := now() + int64(expires_days*86400)
+
+	db := db_open("db/users.db")
+	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", code, uses, expires)
+
+	return sl_encode(map[string]any{"code": code, "uses": uses, "expires": expires}), nil
+}
+
+// mochi.user.invite.list() -> list: List all invitation codes (admin only)
+func api_user_invite_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	db := db_open("db/users.db")
+	rows, err := db.rows("select code, uses, expires from invites where expires > ? order by expires", now())
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(rows), nil
+}
+
+// mochi.user.invite.delete(code) -> bool: Delete an invitation code (admin only)
+func api_user_invite_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <code: string>")
+	}
+
+	code, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid code")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from invites where code=?", code)
+	if !exists {
+		return sl_error(fn, "invite not found")
+	}
+
+	db.exec("delete from invites where code=?", code)
+	return sl.True, nil
+}
+
+// mochi.user.invite.validate(code) -> bool: Check if an invitation code is valid
+func api_user_invite_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <code: string>")
+	}
+
+	code, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid code")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", code, now())
+	return sl.Bool(exists), nil
 }
 
 func (u *User) identity() *Entity {

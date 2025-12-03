@@ -45,6 +45,7 @@ func init() {
 			}),
 			"setting": api_setting,
 			"stream":  sl.NewBuiltin("mochi.stream", api_stream),
+			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),

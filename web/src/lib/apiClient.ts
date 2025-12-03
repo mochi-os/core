@@ -1,67 +1,40 @@
-// feat(auth): implement login-header based auth flow
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { getCookie } from '@/lib/cookies'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+import { getCookie, removeCookie } from '@/lib/cookies'
 
 const devConsole = globalThis.console
 
-/**
- * Log errors in development mode only
- */
 const logDevError = (message: string, error: unknown) => {
   if (import.meta.env.DEV) {
     devConsole?.error?.(message, error)
   }
 }
 
-/**
- * Create Axios instance with base configuration
- */
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 30000, // 30 seconds
+  baseURL: '/',
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
 })
 
-/**
- * Request Interceptor
- *
- * Authentication Strategy:
- * 1. Use `login` cookie value with "Bearer" scheme (Authorization: Bearer <login>)
- * 2. Store values are checked first (most up-to-date), then cookies
- */
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // Get auth values from store (most up-to-date)
-    const storeLogin = useAuthStore.getState().login
+    const storeToken = useAuthStore.getState().token
+    const cookieToken = getCookie('token')
+    const token = storeToken || cookieToken
 
-    // Get auth values from cookies (fallback/persistence)
-    const cookieLogin = getCookie('login')
-
-    // Determine which credentials to use (store takes precedence)
-    const login = storeLogin || cookieLogin
-
-    // Set Authorization header with Bearer scheme
     config.headers = config.headers ?? {}
-    if (login) {
-      // Add Bearer prefix if not already present
+    if (token) {
       ;(config.headers as Record<string, string>).Authorization =
-        login.startsWith('Bearer ') ? login : `Bearer ${login}`
+        token.startsWith('Bearer ') ? token : `Bearer ${token}`
 
-      // Log auth method in development for debugging
       if (import.meta.env.DEV) {
-        devConsole?.log?.(
-          `[API Auth] Using Bearer scheme with login credential`
-        )
+        devConsole?.log?.(`[API Auth] Using Bearer scheme with token`)
       }
     }
 
-    // Log request in development
     if (import.meta.env.DEV) {
       devConsole?.log?.(`[API] ${config.method?.toUpperCase()} ${config.url}`)
     }
@@ -74,23 +47,31 @@ apiClient.interceptors.request.use(
   }
 )
 
-/**
- * Response Interceptor
- *
- * Handles common response scenarios:
- * - 401: Unauthorized → Clear auth and optionally redirect
- * - 403: Forbidden → Show error message
- * - 404: Not Found → Let components handle
- * - 500+: Server errors → Show error message
- * - Network errors → Show error message
- */
 apiClient.interceptors.response.use(
   (response) => {
-    // Log successful response in development
-    if (import.meta.env.DEV) {
-      devConsole?.log?.(
-        `[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status}`
-      )
+    const responseData = response.data as unknown
+    if (
+      responseData &&
+      typeof responseData === 'object' &&
+      'error' in responseData &&
+      'status' in responseData
+    ) {
+      const errorData = responseData as { error?: string; status?: number }
+      if (errorData.error && errorData.status && errorData.status >= 400) {
+        toast.error(errorData.error || 'An error occurred')
+
+        if (import.meta.env.DEV) {
+          devConsole?.error?.(
+            `[API] Application error: ${errorData.error} (status: ${errorData.status})`
+          )
+        }
+      }
+    } else {
+      if (import.meta.env.DEV) {
+        devConsole?.log?.(
+          `[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status}`
+        )
+      }
     }
 
     return response
@@ -98,36 +79,34 @@ apiClient.interceptors.response.use(
   async (error: AxiosError) => {
     const status = error.response?.status
 
-    // Handle different error scenarios
     switch (status) {
       case 401: {
-        // Unauthorized - session expired or invalid credentials
         logDevError('[API] 401 Unauthorized', error)
 
-        const isAuthEndpoint =
-          error.config?.url?.includes('/login') ||
-          error.config?.url?.includes('/auth') ||
-          error.config?.url?.includes('/verify')
+        if (import.meta.env.PROD) {
+          const isAuthEndpoint =
+            error.config?.url?.includes('/login') ||
+            error.config?.url?.includes('/auth') ||
+            error.config?.url?.includes('/verify')
 
-        if (!isAuthEndpoint) {
-          // Clear auth state and redirect to login
-          useAuthStore.getState().clearAuth()
+          if (!isAuthEndpoint) {
+            removeCookie('token')
+            removeCookie('mochi_me')
 
-          // Redirect to login (mochi-core's own route)
-          if (import.meta.env.PROD) {
+            useAuthStore.getState().clearAuth()
+
             toast.error('Session expired', {
               description: 'Please log in again to continue.',
             })
-          }
 
-          // Redirect to login page
-          window.location.href = import.meta.env.VITE_AUTH_SIGN_IN_URL
+            const currentUrl = window.location.href
+            window.location.href = `${import.meta.env.VITE_AUTH_LOGIN_URL}?redirect=${encodeURIComponent(currentUrl)}`
+          }
         }
         break
       }
 
       case 403: {
-        // Forbidden - user doesn't have permission
         logDevError('[API] 403 Forbidden', error)
         toast.error('Access denied', {
           description: "You don't have permission to perform this action.",
@@ -136,16 +115,13 @@ apiClient.interceptors.response.use(
       }
 
       case 404: {
-        // Not found - resource doesn't exist
         logDevError('[API] 404 Not Found', error)
-        // Don't show toast for 404s - let components handle it
         break
       }
 
       case 500:
       case 502:
       case 503: {
-        // Server errors
         logDevError('[API] Server error', error)
         toast.error('Server error', {
           description:
@@ -155,7 +131,6 @@ apiClient.interceptors.response.use(
       }
 
       default: {
-        // Network errors or other issues
         if (!error.response) {
           logDevError('[API] Network error', error)
           toast.error('Network error', {
@@ -171,9 +146,6 @@ apiClient.interceptors.response.use(
   }
 )
 
-/**
- * Helper to check if error is an authentication error
- */
 export function isAuthError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -182,9 +154,6 @@ export function isAuthError(error: unknown): boolean {
   )
 }
 
-/**
- * Helper to check if error is a forbidden error
- */
 export function isForbiddenError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -193,9 +162,6 @@ export function isForbiddenError(error: unknown): boolean {
   )
 }
 
-/**
- * Helper to check if error is a network error
- */
 export function isNetworkError(error: unknown): boolean {
   return (
     error instanceof Error &&

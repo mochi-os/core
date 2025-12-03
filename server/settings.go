@@ -3,6 +3,11 @@
 
 package main
 
+import (
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
+)
+
 // Preference stores a user preference key-value pair
 type Preference struct {
 	Name  string
@@ -13,6 +18,188 @@ type Preference struct {
 type Setting struct {
 	Name  string
 	Value string
+}
+
+// SystemSetting defines a system setting with validation and access control
+type SystemSetting struct {
+	Name         string // Setting name
+	Pattern      string // Validation pattern for valid()
+	Default      string // Default value
+	Description  string // Human-readable description
+	UserReadable bool   // Whether non-admin users can read this setting
+	ReadOnly     bool   // Whether this setting can be modified by anyone
+}
+
+// system_settings defines all available system settings
+var system_settings = map[string]SystemSetting{
+	"server_started": {
+		Name:         "server_started",
+		Pattern:      "natural",
+		Default:      "",
+		Description:  "Server start timestamp",
+		UserReadable: true,
+		ReadOnly:     true,
+	},
+	"server_version": {
+		Name:         "server_version",
+		Pattern:      "line",
+		Default:      build_version,
+		Description:  "Server version",
+		UserReadable: true,
+		ReadOnly:     true,
+	},
+	"signup_enabled": {
+		Name:         "signup_enabled",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether new user registration is enabled",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"signup_invite_required": {
+		Name:         "signup_invite_required",
+		Pattern:      "^(true|false)$",
+		Default:      "false",
+		Description:  "Whether an invite code is required to register",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"site_maintenance_message": {
+		Name:         "site_maintenance_message",
+		Pattern:      "text",
+		Default:      "",
+		Description:  "Maintenance message; empty for not in maintenance",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+}
+
+var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{
+	"get":  sl.NewBuiltin("mochi.setting.get", api_setting_get),
+	"set":  sl.NewBuiltin("mochi.setting.set", api_setting_set),
+	"list": sl.NewBuiltin("mochi.setting.list", api_setting_list),
+})
+
+// mochi.setting.get(name) -> string: Get a system setting value
+func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <name: string>")
+	}
+
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid setting name")
+	}
+
+	def, exists := system_settings[name]
+	if !exists {
+		return sl_error(fn, "unknown setting %q", name)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Non-admins can only read user-readable settings
+	if !user.administrator() && !def.UserReadable {
+		return sl_error(fn, "access denied")
+	}
+
+	value := setting_get(name, def.Default)
+	return sl.String(value), nil
+}
+
+// mochi.setting.set(name, value) -> bool: Set a system setting value (admin only)
+func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <name: string>, <value: string>")
+	}
+
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid setting name")
+	}
+
+	value, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid setting value")
+	}
+
+	def, exists := system_settings[name]
+	if !exists {
+		return sl_error(fn, "unknown setting %q", name)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Only administrators can modify settings
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	// Read-only settings cannot be modified
+	if def.ReadOnly {
+		return sl_error(fn, "setting %q is read-only", name)
+	}
+
+	// Validate the value
+	if !valid(value, def.Pattern) {
+		return sl_error(fn, "invalid value for setting %q", name)
+	}
+
+	setting_set(name, value)
+	return sl.True, nil
+}
+
+// mochi.setting.list() -> list: List all system settings (admin only)
+func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Only administrators can list all settings
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	var settings []map[string]any
+	for _, def := range system_settings {
+		value := setting_get(def.Name, def.Default)
+		settings = append(settings, map[string]any{
+			"name":          def.Name,
+			"value":         value,
+			"default":       def.Default,
+			"description":   def.Description,
+			"pattern":       def.Pattern,
+			"user_readable": def.UserReadable,
+			"read_only":     def.ReadOnly,
+		})
+	}
+
+	return sl_encode(settings), nil
+}
+
+// setting_signup_enabled returns whether new user signup is enabled
+// TODO: Integrate with login/signup handlers to block registration when false
+func setting_signup_enabled() bool {
+	return setting_get("signup_enabled", "true") == "true"
+}
+
+// setting_signup_invite_required returns whether an invite code is required
+// TODO: Integrate with login/signup handlers to require invite codes
+func setting_signup_invite_required() bool {
+	return setting_get("signup_invite_required", "false") == "true"
+}
+
+// setting_site_maintenance_message returns the maintenance message (empty = not in maintenance)
+// TODO: Integrate with web.go to return 503 when set
+func setting_site_maintenance_message() string {
+	return setting_get("site_maintenance_message", "")
 }
 
 // user_preferences_load loads all preferences for a user

@@ -350,3 +350,166 @@ func TestSettingSet(t *testing.T) {
 		t.Errorf("setting_get after update = %q, want 'updated'", result)
 	}
 }
+
+// Test system_settings map has required fields
+func TestSystemSettingsDefinitions(t *testing.T) {
+	required_settings := []string{
+		"server_started",
+		"server_version",
+		"signup_enabled",
+		"signup_invite_required",
+		"site_maintenance_message",
+	}
+
+	for _, name := range required_settings {
+		def, exists := system_settings[name]
+		if !exists {
+			t.Errorf("system_settings missing %q", name)
+			continue
+		}
+		if def.Name != name {
+			t.Errorf("system_settings[%q].Name = %q, want %q", name, def.Name, name)
+		}
+		if def.Pattern == "" {
+			t.Errorf("system_settings[%q].Pattern is empty", name)
+		}
+		if def.Description == "" {
+			t.Errorf("system_settings[%q].Description is empty", name)
+		}
+	}
+}
+
+// Test read-only settings are marked correctly
+func TestSystemSettingsReadOnly(t *testing.T) {
+	read_only := []string{"server_version", "server_started"}
+	editable := []string{"signup_enabled"}
+
+	for _, name := range read_only {
+		def := system_settings[name]
+		if !def.ReadOnly {
+			t.Errorf("system_settings[%q].ReadOnly should be true", name)
+		}
+	}
+
+	for _, name := range editable {
+		def := system_settings[name]
+		if def.ReadOnly {
+			t.Errorf("system_settings[%q].ReadOnly should be false", name)
+		}
+	}
+}
+
+// Test user-readable settings are marked correctly
+func TestSystemSettingsUserReadable(t *testing.T) {
+	user_readable := []string{"server_version", "server_started", "site_maintenance_message"}
+	admin_only := []string{"signup_enabled", "signup_invite_required"}
+
+	for _, name := range user_readable {
+		def := system_settings[name]
+		if !def.UserReadable {
+			t.Errorf("system_settings[%q].UserReadable should be true", name)
+		}
+	}
+
+	for _, name := range admin_only {
+		def := system_settings[name]
+		if def.UserReadable {
+			t.Errorf("system_settings[%q].UserReadable should be false", name)
+		}
+	}
+}
+
+// Test setting_signup_enabled helper
+func TestSettingSignupEnabled(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/settings.db")
+	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+	// Default should be true
+	if !setting_signup_enabled() {
+		t.Error("setting_signup_enabled() default should be true")
+	}
+
+	// Set to false
+	setting_set("signup_enabled", "false")
+	if setting_signup_enabled() {
+		t.Error("setting_signup_enabled() should be false after setting to 'false'")
+	}
+
+	// Set to true
+	setting_set("signup_enabled", "true")
+	if !setting_signup_enabled() {
+		t.Error("setting_signup_enabled() should be true after setting to 'true'")
+	}
+}
+
+// Test setting_site_maintenance_message helper
+func TestSettingSiteMaintenanceMessage(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/settings.db")
+	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+	// Default should be empty (not in maintenance)
+	if setting_site_maintenance_message() != "" {
+		t.Errorf("setting_site_maintenance_message() default = %q, want empty", setting_site_maintenance_message())
+	}
+
+	// Set maintenance message
+	setting_set("site_maintenance_message", "Site is down for maintenance")
+	if setting_site_maintenance_message() != "Site is down for maintenance" {
+		t.Errorf("setting_site_maintenance_message() = %q, want 'Site is down for maintenance'", setting_site_maintenance_message())
+	}
+
+	// Clear maintenance (set to empty)
+	setting_set("site_maintenance_message", "")
+	if setting_site_maintenance_message() != "" {
+		t.Errorf("setting_site_maintenance_message() after clear = %q, want empty", setting_site_maintenance_message())
+	}
+}
+
+// Test validation patterns are valid for each setting
+func TestSystemSettingsValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		valid     []string
+		invalid   []string
+	}{
+		{
+			name:    "signup_enabled",
+			valid:   []string{"true", "false"},
+			invalid: []string{"yes", "no", "1", "0", "TRUE"},
+		},
+	}
+
+	for _, tc := range tests {
+		def := system_settings[tc.name]
+		for _, v := range tc.valid {
+			if !valid(v, def.Pattern) {
+				t.Errorf("system_settings[%q] pattern should accept %q", tc.name, v)
+			}
+		}
+		for _, v := range tc.invalid {
+			if valid(v, def.Pattern) {
+				t.Errorf("system_settings[%q] pattern should reject %q", tc.name, v)
+			}
+		}
+	}
+}

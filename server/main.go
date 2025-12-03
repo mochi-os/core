@@ -49,6 +49,7 @@ func main() {
 
 	starlark_configure()
 	db_start()
+	setting_set("server_started", itoa(int(now())))
 	apps_start()
 	p2p_start()
 	go cache_manager()

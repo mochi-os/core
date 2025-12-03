@@ -24,9 +24,12 @@ func create_domains_test_env(t *testing.T) func() {
 
 	// Create domains database
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, type text not null, owner text not null default '', delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("create table if not exists domains (domain text primary key, type text not null, owner integer not null default 0, delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create index if not exists delegations_domain on delegations(domain)")
+	domains.exec("create index if not exists delegations_owner on delegations(owner)")
 
 	cleanup := func() {
 		data_dir = orig_data_dir
@@ -76,7 +79,7 @@ func TestDomainRegister(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	d, err := domain_register("example.com", "system", "")
+	d, err := domain_register("example.com", "system", 0)
 	if err != nil {
 		t.Fatalf("domain_register failed: %v", err)
 	}
@@ -106,12 +109,12 @@ func TestDomainRegisterDuplicate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	_, err := domain_register("example.com", "system", "")
+	_, err := domain_register("example.com", "system", 0)
 	if err != nil {
 		t.Fatalf("first domain_register failed: %v", err)
 	}
 
-	_, err = domain_register("example.com", "system", "")
+	_, err = domain_register("example.com", "system", 0)
 	if err == nil {
 		t.Error("duplicate domain_register should fail")
 	}
@@ -122,7 +125,7 @@ func TestDomainGet(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	d := domain_get("example.com")
 	if d == nil {
@@ -144,20 +147,20 @@ func TestDomainList(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
-	domain_register("test.com", "system", "owner1")
-	domain_register("other.com", "user", "owner1")
+	domain_register("example.com", "system", 0)
+	domain_register("test.com", "system", 123)
+	domain_register("other.com", "user", 123)
 
 	// List all
-	domains := domain_list("")
+	domains := domain_list(0)
 	if len(domains) != 3 {
-		t.Errorf("domain_list() returned %d domains, want 3", len(domains))
+		t.Errorf("domain_list(0) returned %d domains, want 3", len(domains))
 	}
 
 	// List by owner
-	domains = domain_list("owner1")
+	domains = domain_list(123)
 	if len(domains) != 2 {
-		t.Errorf("domain_list('owner1') returned %d domains, want 2", len(domains))
+		t.Errorf("domain_list(123) returned %d domains, want 2", len(domains))
 	}
 }
 
@@ -166,7 +169,7 @@ func TestDomainUpdate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	err := domain_update("example.com", map[string]any{
 		"verified": 1,
@@ -190,7 +193,7 @@ func TestDomainDelete(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	err := domain_delete("example.com")
 	if err != nil {
@@ -208,7 +211,7 @@ func TestDomainLookupExact(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	d := domain_lookup("example.com")
 	if d == nil {
@@ -224,7 +227,7 @@ func TestDomainLookupWildcard(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
+	domain_register("*.example.com", "system", 0)
 
 	// Subdomain should match wildcard
 	d := domain_lookup("blog.example.com")
@@ -247,8 +250,8 @@ func TestDomainLookupExactOverWildcard(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
-	domain_register("blog.example.com", "system", "")
+	domain_register("*.example.com", "system", 0)
+	domain_register("blog.example.com", "system", 0)
 
 	d := domain_lookup("blog.example.com")
 	if d == nil {
@@ -264,7 +267,7 @@ func TestDomainLookupStripsPort(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	d := domain_lookup("example.com:8080")
 	if d == nil {
@@ -280,9 +283,9 @@ func TestDomainDelegate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
+	domain_register("*.example.com", "system", 0)
 
-	d, err := domain_delegate("*.example.com", "blog.example.com", "user123", "subdomain", "blog")
+	d, err := domain_delegate("*.example.com", "blog.example.com", 123, "subdomain", "blog")
 	if err != nil {
 		t.Fatalf("domain_delegate failed: %v", err)
 	}
@@ -293,8 +296,8 @@ func TestDomainDelegate(t *testing.T) {
 	if d.Type != "user" {
 		t.Errorf("Type = %q, want 'user'", d.Type)
 	}
-	if d.Owner != "user123" {
-		t.Errorf("Owner = %q, want 'user123'", d.Owner)
+	if d.Owner != 123 {
+		t.Errorf("Owner = %d, want 123", d.Owner)
 	}
 	if d.Delegator != "*.example.com" {
 		t.Errorf("Delegator = %q, want '*.example.com'", d.Delegator)
@@ -312,8 +315,8 @@ func TestDomainRevoke(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
-	domain_delegate("*.example.com", "blog.example.com", "user123", "subdomain", "blog")
+	domain_register("*.example.com", "system", 0)
+	domain_delegate("*.example.com", "blog.example.com", 123, "subdomain", "blog")
 
 	err := domain_revoke("blog.example.com")
 	if err != nil {
@@ -331,7 +334,7 @@ func TestDomainRevokeNonDelegated(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	err := domain_revoke("example.com")
 	if err == nil {
@@ -344,19 +347,19 @@ func TestDomainDelegated(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
-	domain_delegate("*.example.com", "blog.example.com", "user123", "subdomain", "blog")
-	domain_delegate("*.example.com", "shop.example.com", "user123", "subdomain", "shop")
-	domain_delegate("*.example.com", "other.example.com", "user456", "subdomain", "other")
+	domain_register("*.example.com", "system", 0)
+	domain_delegate("*.example.com", "blog.example.com", 123, "subdomain", "blog")
+	domain_delegate("*.example.com", "shop.example.com", 123, "subdomain", "shop")
+	domain_delegate("*.example.com", "other.example.com", 456, "subdomain", "other")
 
-	domains := domain_delegated("user123")
+	domains := domain_delegated(123)
 	if len(domains) != 2 {
-		t.Errorf("domain_delegated('user123') returned %d domains, want 2", len(domains))
+		t.Errorf("domain_delegated(123) returned %d domains, want 2", len(domains))
 	}
 
-	domains = domain_delegated("user456")
+	domains = domain_delegated(456)
 	if len(domains) != 1 {
-		t.Errorf("domain_delegated('user456') returned %d domains, want 1", len(domains))
+		t.Errorf("domain_delegated(456) returned %d domains, want 1", len(domains))
 	}
 }
 
@@ -365,7 +368,7 @@ func TestRouteCreate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 
 	r, err := route_create("example.com", "/blog", "entity123", "forums", "/posts", 10)
 	if err != nil {
@@ -411,7 +414,7 @@ func TestRouteCreateDuplicate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity123", "", "", 0)
 
 	_, err := route_create("example.com", "/blog", "entity456", "", "", 0)
@@ -425,7 +428,7 @@ func TestRouteGet(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity123", "forums", "", 0)
 
 	r := route_get("example.com", "/blog")
@@ -448,7 +451,7 @@ func TestRouteList(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity1", "", "", 10)
 	route_create("example.com", "/shop", "entity2", "", "", 5)
 	route_create("example.com", "/", "entity3", "", "", 0)
@@ -469,7 +472,7 @@ func TestRouteUpdate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity123", "", "", 0)
 
 	err := route_update("example.com", "/blog", map[string]any{
@@ -498,7 +501,7 @@ func TestRouteDelete(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity123", "", "", 0)
 
 	err := route_delete("example.com", "/blog")
@@ -517,7 +520,7 @@ func TestDomainMatch(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	domain_update("example.com", map[string]any{"verified": 1})
 	route_create("example.com", "/blog", "entity123", "forums", "/posts", 0)
 
@@ -538,7 +541,7 @@ func TestDomainMatchVerificationRequired(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/", "entity123", "", "", 0)
 
 	// Enable verification requirement
@@ -563,7 +566,7 @@ func TestDomainMatchLongestPrefix(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/", "root", "", "", 0)
 	route_create("example.com", "/blog", "blog", "", "", 0)
 	route_create("example.com", "/blog/posts", "posts", "", "", 0)
@@ -586,7 +589,7 @@ func TestDomainMatchPriority(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "low", "", "", 1)
 	route_create("example.com", "/blog", "high", "", "", 10) // This will fail due to duplicate
 
@@ -607,7 +610,7 @@ func TestDomainMatchSkipsDisabled(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity123", "", "", 0)
 	route_update("example.com", "/blog", map[string]any{"enabled": 0})
 
@@ -622,7 +625,7 @@ func TestDomainMatchWildcard(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", "")
+	domain_register("*.example.com", "system", 0)
 	route_create("*.example.com", "/", "wildcard_entity", "", "", 0)
 
 	match := domain_match("blog.example.com", "/test")
@@ -639,7 +642,7 @@ func TestDomainMatchNoRoute(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	// No routes created
 
 	match := domain_match("example.com", "/blog")
@@ -664,7 +667,7 @@ func TestDomainDeleteCascade(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "entity1", "", "", 0)
 	route_create("example.com", "/shop", "entity2", "", "", 0)
 
@@ -689,7 +692,7 @@ func TestDomainMatchPathBoundary(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "/blog", "blog_entity", "", "", 0)
 
 	// Should match /blog/anything
@@ -716,7 +719,7 @@ func TestDomainMatchEmptyPath(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", "")
+	domain_register("example.com", "system", 0)
 	route_create("example.com", "", "root_entity", "", "", 0)
 
 	match := domain_match("example.com", "/anything/here")

@@ -26,6 +26,7 @@ func init() {
 			"attachment": api_attachment,
 			"db":         api_db,
 			"directory":  api_directory,
+			"domain":     api_domain,
 			"entity":     api_entity,
 			"file":       api_file,
 			"group":      api_group,

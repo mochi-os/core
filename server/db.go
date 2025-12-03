@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 5
+	schema_version = 6
 )
 
 var (
@@ -118,6 +118,12 @@ func db_create() {
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
+
+	// Domains
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists domains (domain text primary key, type text not null, owner text not null default '', delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create index if not exists routes_domain on routes(domain)")
 }
 
 // db_user opens a database in the user's directory
@@ -336,6 +342,7 @@ func db_upgrade() {
 	for schema < schema_version {
 		schema++
 		info("Upgrading database schema to version %d", schema)
+
 		if schema == 2 {
 			// Migration: ensure logins table has a 'secret' column for per-login JWT secrets.
 			// This runs for existing deployments which were created before the column was added.
@@ -397,6 +404,7 @@ func db_upgrade() {
 					}
 				}
 			}
+
 		} else if schema == 3 {
 			// Migration: new message queue with reliability tracking
 			queue := db_open("db/queue.db")
@@ -411,20 +419,30 @@ func db_upgrade() {
 			queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 			queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 			queue.exec("create index if not exists queue_target on queue (target)")
+
 		} else if schema == 4 {
 			// Migration: add invites table for invitation codes
 			users := db_open("db/users.db")
 			users.exec("create table if not exists invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
 			users.exec("create index if not exists invites_expires on invites(expires)")
+
 		} else if schema == 5 {
 			// Migration: add expires column to queue table for message expiration
 			queue := db_open("db/queue.db")
 			queue.exec("alter table queue add column expires integer not null default 0")
+
+		} else if schema == 6 {
+			// Migration: create domains.db and migrate config from mochi.conf
+			domains := db_open("db/domains.db")
+			domains.exec("create table if not exists domains (domain text primary key, type text not null, owner text not null default '', delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+			domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+			domains.exec("create index if not exists routes_domain on routes(domain)")
+			domains_migrate_config()
 		}
+
 		setting_set("schema", itoa(int(schema)))
 	}
 }
-
 
 func (db *DB) close() {
 	db.closed = now()

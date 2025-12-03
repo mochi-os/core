@@ -49,6 +49,10 @@ func main() {
 
 	starlark_configure()
 	db_start()
+	if err := domains_load_certs(); err != nil {
+		warn("Failed to load domain certificates: %v", err)
+	}
+	domains_init_acme()
 	setting_set("server_started", itoa(int(now())))
 	apps_start()
 	p2p_start()

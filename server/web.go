@@ -436,6 +436,7 @@ func web_start() {
 	r.SetTrustedProxies(nil)
 	r.Use(web_security_headers)
 	r.Use(rate_limit_api_middleware)
+	r.Use(domains_middleware())
 	r.RedirectTrailingSlash = false
 
 	// Serve built-in paths

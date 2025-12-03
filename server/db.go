@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 4
+	schema_version = 5
 )
 
 var (
@@ -416,6 +416,10 @@ func db_upgrade() {
 			users := db_open("db/users.db")
 			users.exec("create table if not exists invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
 			users.exec("create index if not exists invites_expires on invites(expires)")
+		} else if schema == 5 {
+			// Migration: add expires column to queue table for message expiration
+			queue := db_open("db/queue.db")
+			queue.exec("alter table queue add column expires integer not null default 0")
 		}
 		setting_set("schema", itoa(int(schema)))
 	}

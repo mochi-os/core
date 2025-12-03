@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 3
+	schema_version = 4
 )
 
 var (
@@ -76,6 +76,10 @@ func db_create() {
 	users.exec("create table logins ( user references users( id ), code text not null, secret text not null default '', name text not null default '', expires integer not null, primary key ( user, code ) )")
 	users.exec("create unique index logins_code on logins( code )")
 	users.exec("create index logins_expires on logins( expires )")
+
+	// Invites
+	users.exec("create table invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
+	users.exec("create index invites_expires on invites(expires)")
 
 	// Entities
 	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
@@ -407,6 +411,11 @@ func db_upgrade() {
 			queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob, data blob, file text, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text, created integer not null )")
 			queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 			queue.exec("create index if not exists queue_target on queue (target)")
+		} else if schema == 4 {
+			// Migration: add invites table for invitation codes
+			users := db_open("db/users.db")
+			users.exec("create table if not exists invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
+			users.exec("create index if not exists invites_expires on invites(expires)")
 		}
 		setting_set("schema", itoa(int(schema)))
 	}

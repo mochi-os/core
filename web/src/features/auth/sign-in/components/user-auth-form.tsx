@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useNavigate } from '@tanstack/react-router'
-import { sendVerificationCode, verifyCode } from '@/services/auth-service'
+import { requestCode } from '@/services/auth-service'
+import { verifyCode } from '@/services/auth-service'
 import { Loader2, Mail, ArrowLeft, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
@@ -67,7 +68,7 @@ export function UserAuthForm({
     setUserEmail(data.email)
 
     try {
-      const result = await sendVerificationCode(data.email)
+      const result = await requestCode(data.email)
       const devCode = result.data?.code
       const requestSucceeded =
         result?.status?.toLowerCase() === 'ok' || Boolean(devCode)

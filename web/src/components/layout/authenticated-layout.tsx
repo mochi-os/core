@@ -8,17 +8,13 @@ type AuthenticatedLayoutProps = {
 }
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
-  const { login, user } = useAuthStore()
+  const { token, user } = useAuthStore()
 
-  // Optional: Load user profile if authenticated but user data not loaded
   useEffect(() => {
-    if (login && !user) {
-      // Load user profile from /me endpoint (when implemented)
+    if (token && !user) {
       loadUserProfile()
     }
-  }, [login, user])
+  }, [token, user])
 
-  // Minimal layout - just render the outlet
-  // The authenticated index route will redirect to the default app
   return <>{children ?? <Outlet />}</>
 }

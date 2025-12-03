@@ -202,6 +202,17 @@ func user_owning_entity(id string) *User {
 	return &u
 }
 
+// user_owns_entity checks if a user owns the specified entity
+func user_owns_entity(u *User, entity_id string) bool {
+	if u == nil || entity_id == "" {
+		return false
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from entities where id=? and user=?", entity_id, u.ID)
+	return exists
+}
+
 func (u *User) administrator() bool {
 	if u.Role == "administrator" {
 		return true
@@ -631,11 +642,13 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"identity", "preference", "role", "username"}
+	return []string{"id", "identity", "preference", "role", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
 	switch name {
+	case "id":
+		return sl.MakeInt(u.ID), nil
 	case "identity":
 		return u.Identity, nil
 	case "preference":

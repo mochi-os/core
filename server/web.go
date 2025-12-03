@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"net/http"
@@ -360,6 +361,35 @@ func web_logout(c *gin.Context) {
 // Handle app paths
 func web_path(c *gin.Context) {
 	debug("Web path %q", c.Request.URL.Path)
+
+	// Check for domain-based routing first
+	if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
+		e := entity_by_any(domain_entity.(string))
+		if e == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+			return
+		}
+
+		// Determine which app to use
+		var a *App
+		if app_name, _ := c.Get("domain_app"); app_name != nil && app_name.(string) != "" {
+			a = app_by_any(app_name.(string))
+		}
+		if a == nil {
+			a = e.class_app()
+		}
+		if a == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
+			return
+		}
+
+		// Action is the remaining path (no entity prefix)
+		action := strings.TrimPrefix(c.GetString("domain_remaining"), "/")
+
+		web_action(c, a, action, e)
+		return
+	}
+
 	raw := strings.Trim(c.Request.URL.Path, "/")
 	if raw == "" {
 		web_root(c)
@@ -461,10 +491,13 @@ func web_start() {
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)
 
-	if len(domains) > 0 {
+	if len(domains) > 0 || ini_bool("web", "https", false) {
 		web_https = true
-		info("Web listening on HTTPS domains %v", domains)
-		must(autotls.Run(r, domains...))
+		tlsConfig := &tls.Config{
+			GetCertificate: domains_get_certificate,
+		}
+		info("Web listening on HTTPS (domains from database)")
+		must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
 	} else {
 		info("Web listening on %q:%d", listen, port)
 		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))

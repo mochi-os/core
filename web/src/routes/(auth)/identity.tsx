@@ -34,7 +34,12 @@ export const Route = createFileRoute('/(auth)/identity')({
 function IdentityRouteComponent() {
   const searchParams = Route.useSearch()
   const redirectTo =
-    'redirect' in searchParams ? searchParams.redirect : undefined
+    'redirect' in searchParams &&
+      typeof searchParams.redirect === 'string' &&
+      searchParams.redirect.length > 0 &&
+      searchParams.redirect !== 'undefined'
+      ? searchParams.redirect
+      : undefined
   const hasIdentity = useAuthStore((state) => state.hasIdentity)
 
   useEffect(() => {

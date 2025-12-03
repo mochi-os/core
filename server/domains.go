@@ -28,17 +28,12 @@ var (
 
 // domain represents a row in the domains table
 type domain struct {
-	Domain    string `db:"domain"`
-	Type      string `db:"type"`
-	Owner     int    `db:"owner"`
-	Delegator string `db:"delegator"`
-	Scope     string `db:"scope"`
-	Prefix    string `db:"prefix"`
-	Verified  int    `db:"verified"`
-	Token     string `db:"token"`
-	TLS       int    `db:"tls"`
-	Created   int64  `db:"created"`
-	Updated   int64  `db:"updated"`
+	Domain   string `db:"domain"`
+	Verified int    `db:"verified"`
+	Token    string `db:"token"`
+	TLS      int    `db:"tls"`
+	Created  int64  `db:"created"`
+	Updated  int64  `db:"updated"`
 }
 
 // route represents a row in the routes table
@@ -46,8 +41,6 @@ type route struct {
 	Domain   string `db:"domain"`
 	Path     string `db:"path"`
 	Entity   string `db:"entity"`
-	App      string `db:"app"`
-	Target   string `db:"target"`
 	Priority int    `db:"priority"`
 	Enabled  int    `db:"enabled"`
 	Created  int64  `db:"created"`
@@ -101,7 +94,7 @@ func domains_migrate_config() {
 				continue
 			}
 			token := random_alphanumeric(32)
-			db.exec("insert into domains (domain, type, owner, verified, token, tls, created, updated) values (?, 'system', 0, 1, ?, 1, ?, ?)", d, token, n, n)
+			db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 1, ?, 1, ?, ?)", d, token, n, n)
 			info("migrated domain %s from mochi.conf", d)
 		}
 	}
@@ -251,20 +244,16 @@ func domain_get(name string) *domain {
 	return &d
 }
 
-// domain_list returns all domains, optionally filtered by owner
-func domain_list(owner int) []domain {
+// domain_list returns all domains
+func domain_list() []domain {
 	db := db_open("db/domains.db")
 	var domains []domain
-	if owner == 0 {
-		db.scans(&domains, "select * from domains order by domain")
-	} else {
-		db.scans(&domains, "select * from domains where owner=? order by domain", owner)
-	}
+	db.scans(&domains, "select * from domains order by domain")
 	return domains
 }
 
 // domain_register creates a new domain entry
-func domain_register(name, dtype string, owner int) (*domain, error) {
+func domain_register(name string) (*domain, error) {
 	if domain_get(name) != nil {
 		return nil, fmt.Errorf("domain already exists")
 	}
@@ -273,7 +262,7 @@ func domain_register(name, dtype string, owner int) (*domain, error) {
 	n := now()
 	token := random_alphanumeric(32)
 
-	db.exec("insert into domains (domain, type, owner, verified, token, tls, created, updated) values (?, ?, ?, 0, ?, 1, ?, ?)", name, dtype, owner, token, n, n)
+	db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 0, ?, 1, ?, ?)", name, token, n, n)
 
 	return domain_get(name), nil
 }
@@ -334,41 +323,6 @@ func domain_verify(name string) (bool, error) {
 	return false, nil
 }
 
-// domain_delegate creates a delegated domain entry
-func domain_delegate(parent, name string, owner int, scope, prefix string) (*domain, error) {
-	if domain_get(name) != nil {
-		return nil, fmt.Errorf("domain already exists")
-	}
-
-	db := db_open("db/domains.db")
-	n := now()
-	token := random_alphanumeric(32)
-
-	db.exec("insert into domains (domain, type, owner, delegator, scope, prefix, verified, token, tls, created, updated) values (?, 'user', ?, ?, ?, ?, 0, ?, 1, ?, ?)", name, owner, parent, scope, prefix, token, n, n)
-
-	return domain_get(name), nil
-}
-
-// domain_revoke removes a delegated domain
-func domain_revoke(name string) error {
-	d := domain_get(name)
-	if d == nil {
-		return fmt.Errorf("domain not found")
-	}
-	if d.Delegator == "" {
-		return fmt.Errorf("domain is not delegated")
-	}
-	return domain_delete(name)
-}
-
-// domain_delegated returns domains delegated to an owner
-func domain_delegated(owner int) []domain {
-	db := db_open("db/domains.db")
-	var domains []domain
-	db.scans(&domains, "select * from domains where owner=? and delegator!='' order by domain", owner)
-	return domains
-}
-
 // domain_match finds the best matching route for a host and path
 func domain_match(host, path string) *route_match {
 	d := domain_lookup(host)
@@ -415,7 +369,7 @@ func route_list(domain_name string) []route {
 }
 
 // route_create creates a new route
-func route_create(domain_name, path, entity, app, target string, priority int) (*route, error) {
+func route_create(domain_name, path, entity string, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -425,7 +379,7 @@ func route_create(domain_name, path, entity, app, target string, priority int) (
 
 	db := db_open("db/domains.db")
 	n := now()
-	db.exec("insert into routes (domain, path, entity, app, target, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, entity, app, target, priority, n, n)
+	db.exec("insert into routes (domain, path, entity, priority, enabled, created, updated) values (?, ?, ?, ?, 1, ?, ?)", domain_name, path, entity, priority, n, n)
 
 	return route_get(domain_name, path), nil
 }
@@ -528,8 +482,6 @@ func domains_middleware() gin.HandlerFunc {
 		if match != nil {
 			c.Set("domain_route", match.route)
 			c.Set("domain_entity", match.route.Entity)
-			c.Set("domain_app", match.route.App)
-			c.Set("domain_target", match.route.Target)
 			c.Set("domain_remaining", match.remaining)
 			c.Set("domain_original_host", c.Request.Host)
 		}
@@ -560,15 +512,12 @@ var api_domain = sls.FromStringDict(sl.String("mochi.domain"), sl.StringDict{
 	"update":     sl.NewBuiltin("mochi.domain.update", api_domain_update),
 	"delete":     sl.NewBuiltin("mochi.domain.delete", api_domain_delete),
 	"verify":     sl.NewBuiltin("mochi.domain.verify", api_domain_verify),
-	"delegate":   sl.NewBuiltin("mochi.domain.delegate", api_domain_delegate),
-	"revoke":     sl.NewBuiltin("mochi.domain.revoke", api_domain_revoke),
-	"delegated":  sl.NewBuiltin("mochi.domain.delegated", api_domain_delegated),
 	"lookup":     sl.NewBuiltin("mochi.domain.lookup", api_domain_lookup),
 	"route":      api_domain_route,
 	"delegation": api_domain_delegation,
 })
 
-// domain_can_manage checks if a user can manage a domain (admin or owner)
+// domain_can_manage checks if a user can manage a domain (admin or has full domain delegation)
 func domain_can_manage(user *User, d *domain) bool {
 	if user == nil || d == nil {
 		return false
@@ -576,14 +525,14 @@ func domain_can_manage(user *User, d *domain) bool {
 	if user.administrator() {
 		return true
 	}
-	if d.Owner != 0 && d.Owner == user.ID {
+	// Check if user has a full domain delegation (path = "")
+	if delegation_check(d.Domain, "", user.ID) {
 		return true
 	}
 	return false
 }
 
-// domain_can_manage_route checks if a user can manage routes on a domain
-// Checks domain ownership, subdomain delegation, and path delegations
+// domain_can_manage_route checks if a user can manage routes on a domain at a given path
 func domain_can_manage_route(user *User, d *domain, path string) bool {
 	if user == nil || d == nil {
 		return false
@@ -592,15 +541,7 @@ func domain_can_manage_route(user *User, d *domain, path string) bool {
 	if user.administrator() {
 		return true
 	}
-	// Domain owner can manage routes (for subdomain delegations)
-	if d.Owner != 0 && d.Owner == user.ID {
-		// For path-scoped subdomain delegations, check prefix
-		if d.Scope == "path" && d.Prefix != "" {
-			return strings.HasPrefix(path, d.Prefix)
-		}
-		return true
-	}
-	// Check path delegations table
+	// Check delegations table (empty path delegation means full domain access)
 	if delegation_check(d.Domain, path, user.ID) {
 		return true
 	}
@@ -627,7 +568,7 @@ func api_domain_register(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "not administrator")
 	}
 
-	_, err := domain_register(name, "system", 0)
+	_, err := domain_register(name)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -656,20 +597,10 @@ func api_domain_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(row), nil
 }
 
-// mochi.domain.list(owner=0) -> list: List domains
+// mochi.domain.list() -> list: List all domains
 func api_domain_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	owner := 0
-	if len(args) > 0 {
-		owner, _ = sl.AsInt32(args[0])
-	}
-
 	db := db_open("db/domains.db")
-	var rows []map[string]any
-	if owner == 0 {
-		rows, _ = db.rows("select * from domains order by domain")
-	} else {
-		rows, _ = db.rows("select * from domains where owner=? order by domain", owner)
-	}
+	rows, _ := db.rows("select * from domains order by domain")
 	return sl_encode(rows), nil
 }
 
@@ -788,117 +719,6 @@ func api_domain_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.False, nil
 }
 
-// mochi.domain.delegate(domain, owner, scope, prefix=None) -> dict: Delegate domain to user
-func api_domain_delegate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 3 {
-		return sl_error(fn, "syntax: <parent: string>, <owner: int>, <scope: string>, [prefix: string]")
-	}
-
-	parent, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid parent domain")
-	}
-
-	owner, err := sl.AsInt32(args[1])
-	if err != nil {
-		return sl_error(fn, "invalid owner: must be user ID")
-	}
-
-	scope, ok := sl.AsString(args[2])
-	if !ok {
-		return sl_error(fn, "invalid scope")
-	}
-
-	prefix := ""
-	if len(args) > 3 {
-		prefix, _ = sl.AsString(args[3])
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	// Verify owner user exists
-	if user_by_id(int(owner)) == nil {
-		return sl_error(fn, "owner user not found")
-	}
-
-	// determine the new domain name based on scope
-	var name string
-	switch scope {
-	case "full":
-		name = parent
-	case "subdomain":
-		if prefix == "" {
-			return sl_error(fn, "prefix required for subdomain delegation")
-		}
-		// parent should be *.example.com, new domain is prefix.example.com
-		name = prefix + strings.TrimPrefix(parent, "*")
-	case "path":
-		name = parent
-	default:
-		return sl_error(fn, "invalid scope: must be 'full', 'subdomain', or 'path'")
-	}
-
-	_, err = domain_delegate(parent, name, int(owner), scope, prefix)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	db := db_open("db/domains.db")
-	row, _ := db.row("select * from domains where domain=?", name)
-	return sl_encode(row), nil
-}
-
-// mochi.domain.revoke(domain) -> bool: Revoke a delegated domain
-func api_domain_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <domain: string>")
-	}
-
-	name, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid domain name")
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	err := domain_revoke(name)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	return sl.True, nil
-}
-
-// mochi.domain.delegated(owner) -> list: List domains delegated to a user
-func api_domain_delegated(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <owner: int>")
-	}
-
-	owner, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid owner")
-	}
-
-	db := db_open("db/domains.db")
-	rows, _ := db.rows("select * from domains where owner=? and delegator!='' order by domain", owner)
-	return sl_encode(rows), nil
-}
-
 // mochi.domain.lookup(host) -> dict or None: Find domain entry for host
 func api_domain_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -960,10 +780,10 @@ func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
-// mochi.domain.route.create(domain, path, entity, app=None, target=None, priority=0) -> dict: Create route
+// mochi.domain.route.create(domain, path, entity, priority=0) -> dict: Create route
 func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, <entity: string>, [app: string], [target: string], [priority: int]")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, <entity: string>, [priority: int]")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -981,19 +801,9 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid entity")
 	}
 
-	app := ""
-	if len(args) > 3 {
-		app, _ = sl.AsString(args[3])
-	}
-
-	target := ""
-	if len(args) > 4 {
-		target, _ = sl.AsString(args[4])
-	}
-
 	priority := 0
-	if len(args) > 5 {
-		if p, err := sl.AsInt32(args[5]); err == nil {
+	if len(args) > 3 {
+		if p, err := sl.AsInt32(args[3]); err == nil {
 			priority = int(p)
 		}
 	}
@@ -1012,7 +822,7 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	_, err := route_create(domain_name, path, entity, app, target, priority)
+	_, err := route_create(domain_name, path, entity, priority)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1022,10 +832,10 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(row), nil
 }
 
-// mochi.domain.route.update(domain, path, entity=None, app=None, target=None, priority=None, enabled=None) -> dict: Update route
+// mochi.domain.route.update(domain, path, entity=None, priority=None, enabled=None) -> dict: Update route
 func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, [entity: string], [app: string], [target: string], [priority: int], [enabled: bool]")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, [entity: string], [priority: int], [enabled: bool]")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -1059,14 +869,6 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		case "entity":
 			if s, ok := sl.AsString(kw[1]); ok {
 				updates["entity"] = s
-			}
-		case "app":
-			if s, ok := sl.AsString(kw[1]); ok {
-				updates["app"] = s
-			}
-		case "target":
-			if s, ok := sl.AsString(kw[1]); ok {
-				updates["target"] = s
 			}
 		case "priority":
 			if p, err := sl.AsInt32(kw[1]); err == nil {

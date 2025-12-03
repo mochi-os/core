@@ -121,7 +121,7 @@ func db_create() {
 
 	// Domains
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, type text not null, owner integer not null default 0, delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
@@ -437,17 +437,31 @@ func db_upgrade() {
 		} else if schema == 6 {
 			// Migration: create domains.db and migrate config from mochi.conf
 			domains := db_open("db/domains.db")
-			domains.exec("create table if not exists domains (domain text primary key, type text not null, owner integer not null default 0, delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-			domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+			domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+			domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 			domains.exec("create index if not exists routes_domain on routes(domain)")
-			domains_migrate_config()
-
-		} else if schema == 7 {
-			// Migration: add delegations table for path-scoped domain delegations
-			domains := db_open("db/domains.db")
 			domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 			domains.exec("create index if not exists delegations_domain on delegations(domain)")
 			domains.exec("create index if not exists delegations_owner on delegations(owner)")
+			domains_migrate_config()
+
+		} else if schema == 7 {
+			// Migration: add delegations table, simplify domains and routes tables
+			db := db_open("db/domains.db")
+			db.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+			db.exec("create index if not exists delegations_domain on delegations(domain)")
+			db.exec("create index if not exists delegations_owner on delegations(owner)")
+			// Simplify domains table (remove delegation columns)
+			db.exec("create table domains_new (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+			db.exec("insert into domains_new select domain, verified, token, tls, created, updated from domains")
+			db.exec("drop table domains")
+			db.exec("alter table domains_new rename to domains")
+			// Simplify routes table (remove app, target columns)
+			db.exec("create table routes_new (domain text not null, path text not null default '', entity text not null, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+			db.exec("insert into routes_new select domain, path, entity, priority, enabled, created, updated from routes")
+			db.exec("drop table routes")
+			db.exec("alter table routes_new rename to routes")
+			db.exec("create index if not exists routes_domain on routes(domain)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

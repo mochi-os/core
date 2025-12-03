@@ -371,13 +371,7 @@ func web_path(c *gin.Context) {
 		}
 
 		// Determine which app to use
-		var a *App
-		if app_name, _ := c.Get("domain_app"); app_name != nil && app_name.(string) != "" {
-			a = app_by_any(app_name.(string))
-		}
-		if a == nil {
-			a = e.class_app()
-		}
+		a := e.class_app()
 		if a == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
 			return

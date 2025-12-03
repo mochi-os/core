@@ -28,8 +28,8 @@ func create_web_test_env(t *testing.T) func() {
 
 	// Create domains database
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, type text not null, owner integer not null default 0, delegator text not null default '', scope text not null default '', prefix text not null default '', verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
@@ -54,20 +54,18 @@ func TestDomainsMiddleware(t *testing.T) {
 	defer cleanup()
 
 	// Set up domain and route
-	domain_register("test.example.com", "system", 0)
-	route_create("test.example.com", "/blog", "entity123", "forums", "/posts", 10)
+	domain_register("test.example.com")
+	route_create("test.example.com", "/blog", "entity123", 10)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.GET("/*path", func(c *gin.Context) {
 		entity, _ := c.Get("domain_entity")
-		app, _ := c.Get("domain_app")
 		remaining := c.GetString("domain_remaining")
 
 		c.JSON(200, gin.H{
 			"entity":    entity,
-			"app":       app,
 			"remaining": remaining,
 		})
 	})
@@ -122,8 +120,8 @@ func TestDomainsMiddlewarePathRoute(t *testing.T) {
 	cleanup := create_web_test_env(t)
 	defer cleanup()
 
-	domain_register("example.com", "system", 0)
-	route_create("example.com", "/api", "api_entity", "api_app", "", 0)
+	domain_register("example.com")
+	route_create("example.com", "/api", "api_entity", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -166,8 +164,8 @@ func TestWebPathDomainRouting(t *testing.T) {
 	db.exec("insert into entities (id, user, class, name, privacy, fingerprint, created, updated) values ('entity123', 1, 'person', 'Test', 'public', 'abc123', ?, ?)", n, n)
 
 	// Set up domain and route
-	domain_register("blog.example.com", "system", 0)
-	route_create("blog.example.com", "", "entity123", "", "", 0)
+	domain_register("blog.example.com")
+	route_create("blog.example.com", "", "entity123", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -229,8 +227,8 @@ func TestWebPathWildcardDomain(t *testing.T) {
 	cleanup := create_web_test_env(t)
 	defer cleanup()
 
-	domain_register("*.example.com", "system", 0)
-	route_create("*.example.com", "", "wildcard_entity", "", "", 0)
+	domain_register("*.example.com")
+	route_create("*.example.com", "", "wildcard_entity", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -262,8 +260,8 @@ func TestWebPathRemainingPath(t *testing.T) {
 	cleanup := create_web_test_env(t)
 	defer cleanup()
 
-	domain_register("api.example.com", "system", 0)
-	route_create("api.example.com", "/v1", "api_entity", "", "", 0)
+	domain_register("api.example.com")
+	route_create("api.example.com", "/v1", "api_entity", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -292,32 +290,5 @@ func TestWebPathRemainingPath(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("Path %s: expected status 200, got %d", tt.path, w.Code)
 		}
-	}
-}
-
-// Test domain routing with app override
-func TestWebPathAppOverride(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
-
-	domain_register("forum.example.com", "system", 0)
-	route_create("forum.example.com", "", "entity123", "forums", "", 0)
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.Use(domains_middleware())
-	r.NoRoute(func(c *gin.Context) {
-		app, _ := c.Get("domain_app")
-		c.JSON(200, gin.H{"app": app})
-	})
-
-	req := httptest.NewRequest("GET", "/thread/123", nil)
-	req.Host = "forum.example.com"
-	w := httptest.NewRecorder()
-
-	r.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("Expected status 200, got %d", w.Code)
 	}
 }

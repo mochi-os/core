@@ -66,6 +66,7 @@ func code_send(email string) bool {
 		return false
 	}
 	code := random_alphanumeric(12)
+	debug("code", code)
 	db := db_open("db/users.db")
 	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)

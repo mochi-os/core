@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -329,5 +330,71 @@ func TestInviteList(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Errorf("len(rows) = %d, want 2 (non-expired only)", len(rows))
+	}
+}
+
+// Test lookup by identity
+func TestLookupByIdentity(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	db := db_open("db/users.db")
+	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
+
+	// Create entities table
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('identity123', 'priv', 'abc123def456', 1, 'person', 'Test User')")
+
+	// Lookup by identity
+	row, err := db.row("select user from entities where id=? and class='person'", "identity123")
+	if err != nil || row == nil {
+		t.Fatal("should find entity by identity")
+	}
+	if row["user"].(int64) != 1 {
+		t.Errorf("user = %d, want 1", row["user"])
+	}
+
+	// Lookup non-existent identity
+	row, _ = db.row("select user from entities where id=? and class='person'", "nonexistent")
+	if row != nil {
+		t.Error("should not find non-existent identity")
+	}
+}
+
+// Test lookup by fingerprint
+func TestLookupByFingerprint(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	db := db_open("db/users.db")
+	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
+
+	// Create entities table
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('identity123', 'priv', 'abc123def456', 1, 'person', 'Test User')")
+
+	// Lookup by fingerprint (without hyphens)
+	row, err := db.row("select user from entities where fingerprint=? and class='person'", "abc123def456")
+	if err != nil || row == nil {
+		t.Fatal("should find entity by fingerprint")
+	}
+	if row["user"].(int64) != 1 {
+		t.Errorf("user = %d, want 1", row["user"])
+	}
+
+	// Lookup non-existent fingerprint
+	row, _ = db.row("select user from entities where fingerprint=? and class='person'", "nonexistent")
+	if row != nil {
+		t.Error("should not find non-existent fingerprint")
+	}
+}
+
+// Test fingerprint hyphen removal
+func TestFingerprintHyphenRemoval(t *testing.T) {
+	// Test that hyphens are properly removed
+	fingerprint := "abc-123-def-456"
+	cleaned := strings.ReplaceAll(fingerprint, "-", "")
+	if cleaned != "abc123def456" {
+		t.Errorf("cleaned = %q, want 'abc123def456'", cleaned)
 	}
 }

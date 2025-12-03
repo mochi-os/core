@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -45,8 +46,10 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"create": sl.NewBuiltin("mochi.user.create", api_user_create),
 	"delete": sl.NewBuiltin("mochi.user.delete", api_user_delete),
 	"get": sls.FromStringDict(sl.String("mochi.user.get"), sl.StringDict{
-		"id":       sl.NewBuiltin("mochi.user.get.id", api_user_get_id),
-		"username": sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
+		"fingerprint": sl.NewBuiltin("mochi.user.get.fingerprint", api_user_get_fingerprint),
+		"id":          sl.NewBuiltin("mochi.user.get.id", api_user_get_id),
+		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
+		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
 	"invite": sls.FromStringDict(sl.String("mochi.user.invite"), sl.StringDict{
 		"create":   sl.NewBuiltin("mochi.user.invite.create", api_user_invite_create),
@@ -262,6 +265,85 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
 }
 
+// mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
+func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <identity: string>")
+	}
+
+	identity, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid identity")
+	}
+
+	db := db_open("db/users.db")
+	row, err := db.row("select user from entities where id=? and class='person'", identity)
+	if err != nil || row == nil {
+		return sl.None, nil
+	}
+
+	user_id := row["user"]
+	if user_id == nil {
+		return sl.None, nil
+	}
+
+	var u User
+	if !db.scan(&u, "select id, username, role from users where id=?", user_id) {
+		return sl.None, nil
+	}
+
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+}
+
+// mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
+func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <fingerprint: string>")
+	}
+
+	fingerprint, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid fingerprint")
+	}
+
+	// Remove hyphens if present
+	fingerprint = strings.ReplaceAll(fingerprint, "-", "")
+
+	db := db_open("db/users.db")
+	row, err := db.row("select user from entities where fingerprint=? and class='person'", fingerprint)
+	if err != nil || row == nil {
+		return sl.None, nil
+	}
+
+	user_id := row["user"]
+	if user_id == nil {
+		return sl.None, nil
+	}
+
+	var u User
+	if !db.scan(&u, "select id, username, role from users where id=?", user_id) {
+		return sl.None, nil
+	}
+
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+}
+
 // mochi.user.list(limit, offset) -> list: List all users (admin only)
 func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -272,11 +354,11 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "not administrator")
 	}
 
-	limit := 100
+	limit := 1000000
 	offset := 0
 	if len(args) > 0 {
 		l, err := sl.AsInt32(args[0])
-		if err != nil || l < 1 || l > 1000 {
+		if err != nil || l < 1 || l > 1000000 {
 			return sl_error(fn, "invalid limit")
 		}
 		limit = int(l)

@@ -17,7 +17,6 @@ var (
 	build_version string
 	cache_dir     string
 	data_dir      string
-	email_from    string
 	email_host    string
 	email_port    int
 )
@@ -38,7 +37,6 @@ func main() {
 
 	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
 	data_dir = ini_string("directories", "data", "/var/lib/mochi")
-	email_from = ini_string("email", "from", "mochi-server@localhost")
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
 

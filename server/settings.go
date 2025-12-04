@@ -72,6 +72,30 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: true,
 		ReadOnly:     false,
 	},
+	"email_from": {
+		Name:         "email_from",
+		Pattern:      "email",
+		Default:      "mochi-server@localhost",
+		Description:  "Email address used as the sender for system emails",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"domains_registration": {
+		Name:         "domains_registration",
+		Pattern:      "entity",
+		Default:      "",
+		Description:  "Entity ID of the domain registration service",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"domains_verification": {
+		Name:         "domains_verification",
+		Pattern:      "^(true|false)$",
+		Default:      "false",
+		Description:  "Whether domains require verification before use",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{

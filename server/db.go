@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 8
+	schema_version = 9
 )
 
 var (
@@ -122,7 +122,7 @@ func db_create() {
 	// Domains
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, app text not null default '', target text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
@@ -476,6 +476,11 @@ func db_upgrade() {
 			queue.exec("alter table queue_new rename to queue")
 			queue.exec("create index queue_status_retry on queue (status, next_retry)")
 			queue.exec("create index queue_target on queue (target)")
+
+		} else if schema == 9 {
+			// Add context field to routes
+			domains := db_open("db/domains.db")
+			domains.exec("alter table routes add column context text not null default ''")
 		}
 
 		setting_set("schema", itoa(int(schema)))

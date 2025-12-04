@@ -14,12 +14,13 @@ import (
 )
 
 type Action struct {
-	id     int64
-	user   *User
-	owner  *User
-	app    *App
-	web    *gin.Context
-	inputs map[string]string
+	id      int64
+	user    *User
+	owner   *User
+	context string
+	app     *App
+	web     *gin.Context
+	inputs  map[string]string
 }
 
 var (
@@ -100,13 +101,15 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "dump", "error", "input", "json", "logout", "print", "redirect", "template", "upload", "user"}
+	return []string{"access_require", "context", "dump", "error", "input", "json", "logout", "print", "redirect", "template", "upload", "user"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "access_require":
 		return sl.NewBuiltin("access_require", a.sl_access_require), nil
+	case "context":
+		return sl.String(a.context), nil
 	case "dump":
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":

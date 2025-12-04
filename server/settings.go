@@ -82,7 +82,7 @@ var system_settings = map[string]SystemSetting{
 	},
 	"domains_registration": {
 		Name:         "domains_registration",
-		Pattern:      "entity",
+		Pattern:      "^(|[\\w]{49,52})$",
 		Default:      "",
 		Description:  "Entity ID of the domain registration service",
 		UserReadable: false,

@@ -453,6 +453,25 @@ func web_ping(c *gin.Context) {
 
 // Handle / and any paths not handled by web_path()
 func web_root(c *gin.Context) {
+	// Check for domain-based routing first
+	if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
+		e := entity_by_any(domain_entity.(string))
+		if e == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+			return
+		}
+
+		a := e.class_app()
+		if a == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
+			return
+		}
+
+		action := strings.TrimPrefix(c.GetString("domain_remaining"), "/")
+		web_action(c, a, action, e)
+		return
+	}
+
 	debug("Web root serving index.html")
 	c.File(ini_string("directories", "share", "/usr/share/mochi") + "/index.html")
 }

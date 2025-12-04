@@ -760,6 +760,14 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 	}
 
+	// Fall back to empty action name as catch-all
+	for _, aa := range candidates {
+		if aa.name == "" {
+			debug("App found fallback action %q with function %q via catch-all", name, aa.Function)
+			return &aa
+		}
+	}
+
 	info("App %q version %q has no action matching %q", av.app.id, av.Version, name)
 	return nil
 }

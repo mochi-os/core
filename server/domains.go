@@ -41,6 +41,7 @@ type route struct {
 	Domain   string `db:"domain"`
 	Path     string `db:"path"`
 	Entity   string `db:"entity"`
+	Context  string `db:"context"`
 	Priority int    `db:"priority"`
 	Enabled  int    `db:"enabled"`
 	Created  int64  `db:"created"`
@@ -369,7 +370,7 @@ func route_list(domain_name string) []route {
 }
 
 // route_create creates a new route
-func route_create(domain_name, path, entity string, priority int) (*route, error) {
+func route_create(domain_name, path, entity, context string, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -379,7 +380,7 @@ func route_create(domain_name, path, entity string, priority int) (*route, error
 
 	db := db_open("db/domains.db")
 	n := now()
-	db.exec("insert into routes (domain, path, entity, priority, enabled, created, updated) values (?, ?, ?, ?, 1, ?, ?)", domain_name, path, entity, priority, n, n)
+	db.exec("insert into routes (domain, path, entity, context, priority, enabled, created, updated) values (?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, entity, context, priority, n, n)
 
 	return route_get(domain_name, path), nil
 }
@@ -482,6 +483,7 @@ func domains_middleware() gin.HandlerFunc {
 		if match != nil {
 			c.Set("domain_route", match.route)
 			c.Set("domain_entity", match.route.Entity)
+			c.Set("domain_context", match.route.Context)
 			c.Set("domain_remaining", match.remaining)
 			c.Set("domain_original_host", c.Request.Host)
 		}
@@ -780,10 +782,10 @@ func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
-// mochi.domain.route.create(domain, path, entity, priority=0) -> dict: Create route
+// mochi.domain.route.create(domain, path, entity, priority=0, context="") -> dict: Create route
 func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, <entity: string>, [priority: int]")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, <entity: string>, [priority: int], [context: string]")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -808,6 +810,14 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		}
 	}
 
+	context := ""
+	for _, kw := range kwargs {
+		key, _ := sl.AsString(kw[0])
+		if key == "context" {
+			context, _ = sl.AsString(kw[1])
+		}
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -822,7 +832,7 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	_, err := route_create(domain_name, path, entity, priority)
+	_, err := route_create(domain_name, path, entity, context, priority)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -832,10 +842,10 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(row), nil
 }
 
-// mochi.domain.route.update(domain, path, entity=None, priority=None, enabled=None) -> dict: Update route
+// mochi.domain.route.update(domain, path, entity=None, context=None, priority=None, enabled=None) -> dict: Update route
 func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, [entity: string], [priority: int], [enabled: bool]")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, [entity: string], [context: string], [priority: int], [enabled: bool]")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -869,6 +879,10 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		case "entity":
 			if s, ok := sl.AsString(kw[1]); ok {
 				updates["entity"] = s
+			}
+		case "context":
+			if s, ok := sl.AsString(kw[1]); ok {
+				updates["context"] = s
 			}
 		case "priority":
 			if p, err := sl.AsInt32(kw[1]); err == nil {

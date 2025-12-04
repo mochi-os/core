@@ -14,13 +14,13 @@ import (
 )
 
 type Action struct {
-	id      int64
-	user    *User
-	owner   *User
-	context string
-	app     *App
-	web     *gin.Context
-	inputs  map[string]string
+	id     int64
+	user   *User
+	owner  *User
+	domain *DomainInfo
+	app    *App
+	web    *gin.Context
+	inputs map[string]string
 }
 
 var (
@@ -101,19 +101,21 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "context", "dump", "error", "input", "json", "logout", "print", "redirect", "template", "upload", "user"}
+	return []string{"access_require", "domain", "dump", "error", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "access_require":
 		return sl.NewBuiltin("access_require", a.sl_access_require), nil
-	case "context":
-		return sl.String(a.context), nil
+	case "domain":
+		return a.domain, nil
 	case "dump":
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
 		return sl.NewBuiltin("error", a.sl_error), nil
+	case "header":
+		return sl.NewBuiltin("header", a.sl_header), nil
 	case "input":
 		return sl.NewBuiltin("input", a.sl_input), nil
 	case "json":
@@ -130,6 +132,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("upload", a.sl_upload), nil
 	case "user":
 		return a.user, nil
+	case "write_from_file":
+		return sl.NewBuiltin("write_from_file", a.sl_write_from_file), nil
 	default:
 		return nil, nil
 	}
@@ -381,5 +385,40 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "unable to write file for field %q: %v", field, err)
 	}
 
+	return sl.None, nil
+}
+
+// a.header(name, value) -> None: Set response header
+func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name, value string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "value", &value); err != nil {
+		return nil, err
+	}
+	a.web.Header(name, value)
+	return sl.None, nil
+}
+
+// a.write_from_file(path) -> None: Serve file from app's data directory
+func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var path string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
+		return nil, err
+	}
+
+	if !valid(path, "filepath") {
+		a.error(400, "Invalid path")
+		return sl.None, nil
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		a.error(500, "No owner")
+		return sl.None, nil
+	}
+
+	app := t.Local("app").(*App)
+	file := api_file_path(owner, app, path)
+
+	a.web.File(file)
 	return sl.None, nil
 }

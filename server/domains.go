@@ -48,6 +48,46 @@ type route struct {
 	Updated  int64  `db:"updated"`
 }
 
+// DomainRouteInfo exposes route info to Starlark as a.domain.route
+type DomainRouteInfo struct {
+	context   string
+	remainder string
+}
+
+func (r *DomainRouteInfo) AttrNames() []string { return []string{"context", "remainder"} }
+func (r *DomainRouteInfo) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "context":
+		return sl.String(r.context), nil
+	case "remainder":
+		return sl.String(r.remainder), nil
+	}
+	return nil, nil
+}
+func (r *DomainRouteInfo) Freeze()               {}
+func (r *DomainRouteInfo) Hash() (uint32, error) { return 0, nil }
+func (r *DomainRouteInfo) String() string        { return "DomainRouteInfo" }
+func (r *DomainRouteInfo) Truth() sl.Bool        { return sl.True }
+func (r *DomainRouteInfo) Type() string          { return "DomainRouteInfo" }
+
+// DomainInfo exposes domain routing info to Starlark as a.domain
+type DomainInfo struct {
+	route *DomainRouteInfo
+}
+
+func (d *DomainInfo) AttrNames() []string { return []string{"route"} }
+func (d *DomainInfo) Attr(name string) (sl.Value, error) {
+	if name == "route" {
+		return d.route, nil
+	}
+	return nil, nil
+}
+func (d *DomainInfo) Freeze()               {}
+func (d *DomainInfo) Hash() (uint32, error) { return 0, nil }
+func (d *DomainInfo) String() string        { return "DomainInfo" }
+func (d *DomainInfo) Truth() sl.Bool        { return sl.True }
+func (d *DomainInfo) Type() string          { return "DomainInfo" }
+
 // route_match contains the result of matching a request to a route
 type route_match struct {
 	route     *route

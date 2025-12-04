@@ -153,7 +153,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Create action
-	action := Action{id: action_id(), user: user, owner: owner, context: c.GetString("domain_context"), app: a, web: c, inputs: make(map[string]string)}
+	action := Action{
+		id:    action_id(),
+		user:  user,
+		owner: owner,
+		domain: &DomainInfo{
+			route: &DomainRouteInfo{
+				context:   c.GetString("domain_context"),
+				remainder: name,
+			},
+		},
+		app:    a,
+		web:    c,
+		inputs: make(map[string]string),
+	}
 
 	for k, v := range aa.parameters {
 		action.inputs[k] = v

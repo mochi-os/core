@@ -485,6 +485,14 @@ func db_upgrade() {
 
 		setting_set("schema", itoa(int(schema)))
 	}
+
+	// Migrate email_from from config to system setting
+	if setting_get("email_from", "") == "" {
+		if from := ini_string("email", "from", ""); from != "" {
+			info("Migrating email_from setting from config to system settings")
+			setting_set("email_from", from)
+		}
+	}
 }
 
 func (db *DB) close() {

@@ -11,9 +11,10 @@ import (
 func email_send(to string, subject string, body string) {
 	m := gm.NewMsg()
 
-	err := m.From(email_from)
+	from := setting_get("email_from", "mochi-server@localhost")
+	err := m.From(from)
 	if err != nil {
-		warn("Email failed to set from address %q: %v", email_from, err)
+		warn("Email failed to set from address %q: %v", from, err)
 		return
 	}
 	err = m.To(to)

@@ -23,6 +23,11 @@ type Action struct {
 	inputs map[string]string
 }
 
+// ActionCookie provides cookie manipulation methods for actions
+type ActionCookie struct {
+	action *Action
+}
+
 var (
 	actions_lock       = &sync.Mutex{}
 	action_next  int64 = 1
@@ -101,13 +106,15 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "domain", "dump", "error", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "access_require":
 		return sl.NewBuiltin("access_require", a.sl_access_require), nil
+	case "cookie":
+		return &ActionCookie{action: a}, nil
 	case "domain":
 		return a.domain, nil
 	case "dump":
@@ -423,5 +430,58 @@ func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	file := api_file_path(owner, app, path)
 
 	a.web.File(file)
+	return sl.None, nil
+}
+
+// ActionCookie Starlark interface
+func (c *ActionCookie) AttrNames() []string {
+	return []string{"get", "set", "unset"}
+}
+
+func (c *ActionCookie) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "get":
+		return sl.NewBuiltin("get", c.sl_get), nil
+	case "set":
+		return sl.NewBuiltin("set", c.sl_set), nil
+	case "unset":
+		return sl.NewBuiltin("unset", c.sl_unset), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (c *ActionCookie) Freeze()               {}
+func (c *ActionCookie) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: ActionCookie") }
+func (c *ActionCookie) String() string        { return "ActionCookie" }
+func (c *ActionCookie) Truth() sl.Bool        { return sl.True }
+func (c *ActionCookie) Type() string          { return "ActionCookie" }
+
+// a.cookie.get(name, default?) -> string: Get cookie value
+func (c *ActionCookie) sl_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name, def string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "default?", &def); err != nil {
+		return nil, err
+	}
+	return sl.String(web_cookie_get(c.action.web, name, def)), nil
+}
+
+// a.cookie.set(name, value) -> None: Set a cookie
+func (c *ActionCookie) sl_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name, value string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "value", &value); err != nil {
+		return nil, err
+	}
+	web_cookie_set(c.action.web, name, value)
+	return sl.None, nil
+}
+
+// a.cookie.unset(name) -> None: Remove a cookie
+func (c *ActionCookie) sl_unset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name); err != nil {
+		return nil, err
+	}
+	web_cookie_unset(c.action.web, name)
 	return sl.None, nil
 }

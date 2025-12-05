@@ -64,6 +64,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Require authentication for non-public actions
 	if user == nil && !aa.Public {
+		// For browser requests, redirect to login
+		if strings.Contains(c.GetHeader("Accept"), "text/html") {
+			c.Redirect(http.StatusFound, "/login")
+			return true
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return true
 	}

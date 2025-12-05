@@ -321,7 +321,6 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 }
 
 // a.template(path, data?) -> None: Render and output a template
-// TODO Remove include.html once all apps are migrated to React
 func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <template path: string>, [data: dictionary]")
@@ -332,15 +331,12 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid template file %q", path)
 	}
 
-	// This should be done using ParseFS() followed by ParseFiles(), but I can't get this to work.
 	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.active.base, path)
 	if !file_exists(file) {
 		return sl_error(fn, "template %q not found", path)
 	}
-	data := file_read(file)
-	include := must(templates.ReadFile("templates/en/include.tmpl"))
 
-	tmpl, err := template.New("").Parse(string(data) + "\n" + string(include))
+	tmpl, err := template.New("").ParseFiles(file)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

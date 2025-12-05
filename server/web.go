@@ -5,7 +5,6 @@ package main
 
 import (
 	"crypto/tls"
-	"embed"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -15,9 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
-
-//go:embed templates/en/*.tmpl
-var templates embed.FS
 
 var (
 	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}.js$`)

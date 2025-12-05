@@ -349,7 +349,6 @@ func db_upgrade() {
 		if schema == 2 {
 			// Migration: ensure logins table has a 'secret' column for per-login JWT secrets.
 			// This runs for existing deployments which were created before the column was added.
-			//TODO Remove once wasabi is running 0.2
 			{
 				db := db_open("db/users.db")
 				// Check pragma for logins table columns

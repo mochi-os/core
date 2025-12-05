@@ -186,6 +186,23 @@ func app_by_any(s string) *App {
 	return nil
 }
 
+// Get the app that handles root path
+func app_by_root() *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, p := range a.active.Paths {
+			if p == "" {
+				return a
+			}
+		}
+	}
+	return nil
+}
+
 // Check whether app is the correct version, and if not download and install new version
 func app_check_install(id string) bool {
 	debug("App %q checking install status", id)

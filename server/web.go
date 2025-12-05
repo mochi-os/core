@@ -40,24 +40,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Get user authentication via cookie
 	user := web_auth(c)
 
-	// If no cookie auth, try header / query-based authentication
+	// If no cookie auth, try Bearer token authentication
 	if user == nil {
-		token := ""
-
-		// Authorization: Bearer <token>
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
-			token = strings.TrimPrefix(auth_header, "Bearer ")
-		}
-		if token == "" {
-			token = c.GetHeader("X-Login")
-		}
-		if token == "" {
-			token = c.Query("login")
-		}
-
-		if token != "" {
-			// JWT authentication
+			token := strings.TrimPrefix(auth_header, "Bearer ")
 			if uid, err := jwt_verify(token); err == nil && uid > 0 {
 				if u := user_by_id(uid); u != nil {
 					user = u
@@ -271,7 +258,7 @@ func web_security_headers(c *gin.Context) {
 }
 
 // Handle login: request code via email (POST with JSON)
-func web_login_email(c *gin.Context) {
+func web_login_code(c *gin.Context) {
 	var input struct {
 		Email string `json:"email"`
 	}
@@ -292,24 +279,11 @@ func web_login_email(c *gin.Context) {
 func web_login_identity(c *gin.Context) {
 	u := web_auth(c)
 
-	// If no cookie auth, try header / query-based authentication
+	// If no cookie auth, try Bearer token authentication
 	if u == nil {
-		token := ""
-
-		// Authorization: Bearer <token>
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
-			token = strings.TrimPrefix(auth_header, "Bearer ")
-		}
-		if token == "" {
-			token = c.GetHeader("X-Login")
-		}
-		if token == "" {
-			token = c.Query("login")
-		}
-
-		if token != "" {
-			// JWT authentication
+			token := strings.TrimPrefix(auth_header, "Bearer ")
 			if uid, err := jwt_verify(token); err == nil && uid > 0 {
 				if user := user_by_id(uid); user != nil {
 					u = user
@@ -386,8 +360,14 @@ func web_path(c *gin.Context) {
 	}
 
 	raw := strings.Trim(c.Request.URL.Path, "/")
+
+	// Check for app that handles root path
 	if raw == "" {
-		web_root(c)
+		if a := app_by_root(); a != nil {
+			web_action(c, a, "", nil)
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "No root app configured"})
 		return
 	}
 
@@ -431,37 +411,16 @@ func web_path(c *gin.Context) {
 		return
 	}
 
-	// No path found, pass to web_root()
-	web_root(c)
+	// Unknown path - route to root app if available
+	if a := app_by_root(); a != nil {
+		web_action(c, a, raw, nil)
+		return
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 }
 
 func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
-}
-
-// Handle / and any paths not handled by web_path()
-func web_root(c *gin.Context) {
-	// Check for domain-based routing first
-	if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
-		e := entity_by_any(domain_entity.(string))
-		if e == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
-			return
-		}
-
-		a := e.class_app()
-		if a == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
-			return
-		}
-
-		action := strings.TrimPrefix(c.GetString("domain_remaining"), "/")
-		web_action(c, a, action, e)
-		return
-	}
-
-	debug("Web root serving index.html")
-	c.File(ini_string("directories", "share", "/usr/share/mochi") + "/index.html")
 }
 
 // Start the web server
@@ -483,24 +442,13 @@ func web_start() {
 	r.Use(domains_middleware())
 	r.RedirectTrailingSlash = false
 
-	// Serve built-in paths
-	share := ini_string("directories", "share", "/usr/share/mochi")
-	r.GET("/", web_root)
-	r.Static("/assets", share+"/assets")
-	r.Static("/images", share+"/images")
-	r.GET("/login", web_root)
-	r.POST("/login", web_root)
-	r.POST("/login/auth", rate_limit_login_middleware, web_login_auth)
-	r.POST("/login/email", rate_limit_login_middleware, web_login_email)
-	r.POST("/login/identity", web_login_identity)
-	r.POST("/logout", web_logout)
-	r.GET("/ping", web_ping)
-	r.GET("/websocket", websocket_connection)
-
-	// Remove once we get URL mapping
-	if ini_string("web", "special", "") == "packages" {
-		r.Static("/apt", "/srv/apt")
-	}
+	// System endpoints
+	r.POST("/_/code", rate_limit_login_middleware, web_login_code)
+	r.POST("/_/verify", rate_limit_login_middleware, web_login_verify)
+	r.POST("/_/identity", web_login_identity)
+	r.POST("/_/logout", web_logout)
+	r.GET("/_/ping", web_ping)
+	r.GET("/_/websocket", websocket_connection)
 
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)

@@ -193,6 +193,9 @@ func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	if !db.access_check(user, role, resource, operation) {
 		return sl_error(fn, "access denied")
 	}

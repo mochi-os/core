@@ -22,9 +22,7 @@ type mochi_claims struct {
 }
 
 // Exchange a login code for a JWT token and login cookie
-// TODO Do we still need login cookies?
-// TODO Move to web.go?
-func web_login_auth(c *gin.Context) {
+func web_login_verify(c *gin.Context) {
 	var body struct {
 		Code string `json:"code"`
 	}

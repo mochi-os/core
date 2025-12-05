@@ -5,15 +5,15 @@ version = 0.2.0
 build = /tmp/mochi-server_$(version)_amd64
 deb = $(build).deb
 
-all: mochi-server web/dist/index.html
+all: mochi-server
 
 clean:
-	rm -f mochi-server web/dist/index.html
+	rm -f mochi-server
 
 mochi-server: $(shell find server)
 	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server server/*.go
 
-$(deb): clean mochi-server web/dist/index.html
+$(deb): clean mochi-server
 	mkdir -p -m 0775 $(build) $(build)/usr/bin $(build)/var/cache/mochi $(build)/var/lib/mochi
 	cp -av build/deb/* $(build)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build)/DEBIAN/control
@@ -33,13 +33,10 @@ apt: clean $(deb)
 
 deb: $(deb)
 
-web/dist/index.html: $(shell find web/src -type f -newer web/dist/index.html -print 2>/dev/null || true)
-	cd web && pnpm run build
-
 format:
 	go fmt server/*.go
 
-run: mochi-server web/dist/index.html
+run: mochi-server
 	./mochi-server
 
 -include local/Makefile

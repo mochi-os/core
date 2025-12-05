@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 9
+	schema_version = 10
 )
 
 var (
@@ -481,6 +481,28 @@ func db_upgrade() {
 			// Add context field to routes
 			domains := db_open("db/domains.db")
 			domains.exec("alter table routes add column context text not null default ''")
+
+		} else if schema == 10 {
+			// Migrate language and timezone from users table to user preferences
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id, language, timezone from users where language != 'en' or timezone != 'UTC'")
+			for _, row := range rows {
+				id := int(row["id"].(int64))
+				prefs := db_open(fmt.Sprintf("users/%d/settings.db", id))
+				prefs.exec("create table if not exists preferences (name text primary key, value text not null)")
+				if lang, ok := row["language"].(string); ok && lang != "en" {
+					prefs.exec("replace into preferences (name, value) values ('language', ?)", lang)
+				}
+				if tz, ok := row["timezone"].(string); ok && tz != "UTC" {
+					prefs.exec("replace into preferences (name, value) values ('timezone', ?)", tz)
+				}
+			}
+			// Drop language and timezone columns by rebuilding table
+			users.exec("create table users_new (id integer primary key, username text not null, role text not null default 'user')")
+			users.exec("insert into users_new select id, username, role from users")
+			users.exec("drop table users")
+			users.exec("alter table users_new rename to users")
+			users.exec("create unique index users_username on users (username)")
 		}
 
 		setting_set("schema", itoa(int(schema)))
@@ -611,6 +633,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	db := db_app(user, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 
 	switch fn.Name() {
 	case "mochi.db.exists":

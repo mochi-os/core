@@ -214,6 +214,9 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	db.exec("replace into _groups (id, name, description, created) values (?, ?, ?, ?)", id, name, description, now())
 
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
@@ -241,6 +244,9 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	row, err := db.row("select * from _groups where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -264,6 +270,9 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	rows, err := db.rows("select * from _groups order by name")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -293,6 +302,9 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 
 	for _, kw := range kwargs {
 		key := string(kw[0].(sl.String))
@@ -331,6 +343,9 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 
 	db.exec("delete from _groups where id=?", id)
 	db.exec("delete from _group_members where parent=?", id)
@@ -372,6 +387,9 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 
 	// Check for cycles if adding a group
 	if member_type == "group" {
@@ -412,6 +430,9 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	db.exec("delete from _group_members where parent=? and member=?", group, member)
 
 	return sl.None, nil
@@ -444,6 +465,9 @@ func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	return sl_encode(db.group_members(group, recursive)), nil
 }
 
@@ -469,5 +493,8 @@ func api_group_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
 	return sl_encode(db.group_memberships(user)), nil
 }

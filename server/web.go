@@ -57,17 +57,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if token != "" {
-			// Prefer JWT
+			// JWT authentication
 			if uid, err := jwt_verify(token); err == nil && uid > 0 {
 				if u := user_by_id(uid); u != nil {
 					user = u
 					debug("API JWT token accepted for user %d", u.ID)
-				}
-			} else {
-				// Fallback: legacy login token
-				if u := user_by_login(token); u != nil {
-					user = u
-					debug("API login token accepted for user %d", u.ID)
 				}
 			}
 		}
@@ -315,17 +309,11 @@ func web_login_identity(c *gin.Context) {
 		}
 
 		if token != "" {
-			// Prefer JWT
+			// JWT authentication
 			if uid, err := jwt_verify(token); err == nil && uid > 0 {
 				if user := user_by_id(uid); user != nil {
 					u = user
 					debug("Identity creation: JWT token accepted for user %d", u.ID)
-				}
-			} else {
-				// Fallback: legacy login token // TODO remove later
-				if user := user_by_login(token); user != nil {
-					u = user
-					debug("Identity creation: login token accepted for user %d", u.ID)
 				}
 			}
 		}

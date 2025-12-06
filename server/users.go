@@ -61,7 +61,8 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"list":     sl.NewBuiltin("mochi.user.invite.list", api_user_invite_list),
 		"validate": sl.NewBuiltin("mochi.user.invite.validate", api_user_invite_validate),
 	}),
-	"list": sl.NewBuiltin("mochi.user.list", api_user_list),
+	"list":   sl.NewBuiltin("mochi.user.list", api_user_list),
+	"search": sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
 		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
 		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
@@ -436,6 +437,43 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	return sl_encode(row["count"]), nil
+}
+
+// mochi.user.search(query, limit) -> list: Search users by username prefix (admin only)
+func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <query: string>, [limit: int]")
+	}
+
+	query, ok := sl.AsString(args[0])
+	if !ok || query == "" {
+		return sl_error(fn, "invalid query")
+	}
+
+	limit := 10
+	if len(args) > 1 {
+		l, err := sl.AsInt32(args[1])
+		if err != nil || l < 1 || l > 100 {
+			return sl_error(fn, "invalid limit (1-100)")
+		}
+		limit = int(l)
+	}
+
+	db := db_open("db/users.db")
+	rows, err := db.rows("select id, username, role from users where username like ? order by username limit ?", "%"+query+"%", limit)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(rows), nil
 }
 
 // mochi.user.create(username, role) -> dict: Create a new user (admin only)

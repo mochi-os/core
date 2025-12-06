@@ -85,12 +85,12 @@ func code_send(email string) string {
 	return ""
 }
 
-func login_create(user int) string {
+func login_create(user int, address string, agent string) string {
 	code := random_alphanumeric(20)
 	// Create a per-login secret for signing JWTs for this login/device
 	secret := random_alphanumeric(32)
 	db := db_open("db/users.db")
-	db.exec("replace into sessions (user, code, secret, expires, created, accessed) values (?, ?, ?, ?, ?, ?)", user, code, secret, now()+365*86400, now(), now())
+	db.exec("replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)", user, code, secret, now()+365*86400, now(), now(), address, agent)
 	return code
 }
 

@@ -357,8 +357,6 @@ func TestSystemSettingsDefinitions(t *testing.T) {
 		"server_started",
 		"server_version",
 		"signup_enabled",
-		"signup_invite_required",
-		"site_maintenance_message",
 	}
 
 	for _, name := range required_settings {
@@ -401,8 +399,8 @@ func TestSystemSettingsReadOnly(t *testing.T) {
 
 // Test user-readable settings are marked correctly
 func TestSystemSettingsUserReadable(t *testing.T) {
-	user_readable := []string{"server_version", "server_started", "site_maintenance_message"}
-	admin_only := []string{"signup_enabled", "signup_invite_required"}
+	user_readable := []string{"server_version", "server_started"}
+	admin_only := []string{"signup_enabled"}
 
 	for _, name := range user_readable {
 		def := system_settings[name]
@@ -449,39 +447,6 @@ func TestSettingSignupEnabled(t *testing.T) {
 	setting_set("signup_enabled", "true")
 	if !setting_signup_enabled() {
 		t.Error("setting_signup_enabled() should be true after setting to 'true'")
-	}
-}
-
-// Test setting_site_maintenance_message helper
-func TestSettingSiteMaintenanceMessage(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	db := db_open("db/settings.db")
-	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
-
-	// Default should be empty (not in maintenance)
-	if setting_site_maintenance_message() != "" {
-		t.Errorf("setting_site_maintenance_message() default = %q, want empty", setting_site_maintenance_message())
-	}
-
-	// Set maintenance message
-	setting_set("site_maintenance_message", "Site is down for maintenance")
-	if setting_site_maintenance_message() != "Site is down for maintenance" {
-		t.Errorf("setting_site_maintenance_message() = %q, want 'Site is down for maintenance'", setting_site_maintenance_message())
-	}
-
-	// Clear maintenance (set to empty)
-	setting_set("site_maintenance_message", "")
-	if setting_site_maintenance_message() != "" {
-		t.Errorf("setting_site_maintenance_message() after clear = %q, want empty", setting_site_maintenance_message())
 	}
 }
 

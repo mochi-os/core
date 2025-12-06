@@ -76,24 +76,8 @@ var system_settings = map[string]SystemSetting{
 		Name:         "signup_enabled",
 		Pattern:      "^(true|false)$",
 		Default:      "true",
-		Description:  "Whether new user registration is enabled",
+		Description:  "Whether new user signup is enabled",
 		UserReadable: false,
-		ReadOnly:     false,
-	},
-	"signup_invite_required": {
-		Name:         "signup_invite_required",
-		Pattern:      "^(true|false)$",
-		Default:      "false",
-		Description:  "Whether an invite code is required to register",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
-	"site_maintenance_message": {
-		Name:         "site_maintenance_message",
-		Pattern:      "text",
-		Default:      "",
-		Description:  "Maintenance message; empty for not in maintenance",
-		UserReadable: true,
 		ReadOnly:     false,
 	},
 }
@@ -211,17 +195,6 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // setting_signup_enabled returns whether new user signup is enabled
 func setting_signup_enabled() bool {
 	return setting_get("signup_enabled", "true") == "true"
-}
-
-// setting_signup_invite_required returns whether an invite code is required
-func setting_signup_invite_required() bool {
-	return setting_get("signup_invite_required", "false") == "true"
-}
-
-// setting_site_maintenance_message returns the maintenance message (empty = not in maintenance)
-// TODO: Integrate with web.go to return 503 when set
-func setting_site_maintenance_message() string {
-	return setting_get("site_maintenance_message", "")
 }
 
 // user_preferences_load loads all preferences for a user

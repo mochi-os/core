@@ -49,7 +49,7 @@ func web_login_verify(c *gin.Context) {
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	// create a legacy login entry (per-device) which stores a per-login secret
-	login := login_create(user.ID)
+	login := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 
 	// create a JWT signed with the per-login secret and include the login code in the kid header
 	var s Session

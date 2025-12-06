@@ -28,10 +28,20 @@ type SystemSetting struct {
 	Description  string // Human-readable description
 	UserReadable bool   // Whether non-admin users can read this setting
 	ReadOnly     bool   // Whether this setting can be modified by anyone
+	Public       bool   // Whether this setting can be read without authentication
 }
 
 // system_settings defines all available system settings
 var system_settings = map[string]SystemSetting{
+	"apps_install_user": {
+		Name:         "apps_install_user",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether non-administrators may install and upgrade apps",
+		UserReadable: true,
+		ReadOnly:     false,
+		Public:       true,
+	},
 	"domains_registration": {
 		Name:         "domains_registration",
 		Pattern:      "^(|[\\w]{49,52})$",
@@ -79,13 +89,14 @@ var system_settings = map[string]SystemSetting{
 		Description:  "Whether new user signup is enabled",
 		UserReadable: false,
 		ReadOnly:     false,
+		Public:       true,
 	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{
 	"get":  sl.NewBuiltin("mochi.setting.get", api_setting_get),
-	"set":  sl.NewBuiltin("mochi.setting.set", api_setting_set),
 	"list": sl.NewBuiltin("mochi.setting.list", api_setting_list),
+	"set":  sl.NewBuiltin("mochi.setting.set", api_setting_set),
 })
 
 // mochi.setting.get(name) -> string: Get a system setting value
@@ -102,6 +113,12 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	def, exists := system_settings[name]
 	if !exists {
 		return sl_error(fn, "unknown setting %q", name)
+	}
+
+	// Public settings can be read without authentication
+	if def.Public {
+		value := setting_get(name, def.Default)
+		return sl.String(value), nil
 	}
 
 	user := t.Local("user").(*User)
@@ -186,6 +203,7 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 			"pattern":       def.Pattern,
 			"user_readable": def.UserReadable,
 			"read_only":     def.ReadOnly,
+			"public":        def.Public,
 		})
 	}
 

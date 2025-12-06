@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 10
+	schema_version = 11
 )
 
 var (
@@ -70,12 +70,11 @@ func db_create() {
 	users.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
 	users.exec("create index codes_expires on codes( expires )")
 
-	// Logins
-	// code: the login token string presented by clients
-	// secret: a per-login secret used to sign JWTs for that specific device/login
-	users.exec("create table logins ( user references users( id ), code text not null, secret text not null default '', name text not null default '', expires integer not null, primary key ( user, code ) )")
-	users.exec("create unique index logins_code on logins( code )")
-	users.exec("create index logins_expires on logins( expires )")
+	// Sessions
+	users.exec("create table sessions (user references users(id), code text not null, secret text not null default '', name text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	users.exec("create unique index sessions_code on sessions(code)")
+	users.exec("create index sessions_expires on sessions(expires)")
+	users.exec("create index sessions_user on sessions(user)")
 
 	// Invites
 	users.exec("create table invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
@@ -349,6 +348,7 @@ func db_upgrade() {
 		if schema == 2 {
 			// Migration: ensure logins table has a 'secret' column for per-login JWT secrets.
 			// This runs for existing deployments which were created before the column was added.
+			// Note: logins table is renamed to sessions in schema 11.
 			{
 				db := db_open("db/users.db")
 				// Check pragma for logins table columns
@@ -502,6 +502,25 @@ func db_upgrade() {
 			users.exec("drop table users")
 			users.exec("alter table users_new rename to users")
 			users.exec("create unique index users_username on users (username)")
+
+		} else if schema == 11 {
+			// Migration: rename logins table to sessions, add session metadata columns
+			users := db_open("db/users.db")
+			has_logins, _ := users.exists("select name from sqlite_master where type='table' and name='logins'")
+			if has_logins {
+				users.exec("alter table logins rename to sessions")
+				users.exec("drop index if exists logins_code")
+				users.exec("drop index if exists logins_expires")
+				users.exec("create unique index sessions_code on sessions(code)")
+				users.exec("create index sessions_expires on sessions(expires)")
+				users.exec("create index sessions_user on sessions(user)")
+				users.exec("alter table sessions add column created integer not null default 0")
+				users.exec("alter table sessions add column accessed integer not null default 0")
+				users.exec("alter table sessions add column address text not null default ''")
+				users.exec("alter table sessions add column agent text not null default ''")
+				// Backfill created timestamp from expires (expires = created + 1 year)
+				users.exec("update sessions set created = expires - 31536000 where created = 0")
+			}
 		}
 
 		setting_set("schema", itoa(int(schema)))

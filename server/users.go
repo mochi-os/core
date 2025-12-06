@@ -24,12 +24,16 @@ type Code struct {
 	Expires  int
 }
 
-type Login struct {
-	User    int
-	Code    string
-	Name    string
-	Secret  string
-	Expires int
+type Session struct {
+	User     int
+	Code     string
+	Name     string
+	Secret   string
+	Expires  int
+	Created  int
+	Accessed int
+	Address  string
+	Agent    string
 }
 
 type User struct {
@@ -86,13 +90,13 @@ func login_create(user int) string {
 	// Create a per-login secret for signing JWTs for this login/device
 	secret := random_alphanumeric(32)
 	db := db_open("db/users.db")
-	db.exec("replace into logins ( user, code, secret, expires ) values ( ?, ?, ?, ? )", user, code, secret, now()+365*86400)
+	db.exec("replace into sessions (user, code, secret, expires, created, accessed) values (?, ?, ?, ?, ?, ?)", user, code, secret, now()+365*86400, now(), now())
 	return code
 }
 
 func login_delete(code string) {
 	db := db_open("db/users.db")
-	db.exec("delete from logins where code=?", code)
+	db.exec("delete from sessions where code=?", code)
 }
 
 func user_by_id(id int) *User {
@@ -133,14 +137,14 @@ func user_by_login(login string) *User {
 		return nil
 	}
 
-	var l Login
+	var s Session
 	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, now()) {
+	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
 		return nil
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", l.User) {
+	if !db.scan(&u, "select id, username, role from users where id=?", s.User) {
 		return nil
 	}
 

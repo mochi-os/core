@@ -61,7 +61,11 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"list":     sl.NewBuiltin("mochi.user.invite.list", api_user_invite_list),
 		"validate": sl.NewBuiltin("mochi.user.invite.validate", api_user_invite_validate),
 	}),
-	"list":   sl.NewBuiltin("mochi.user.list", api_user_list),
+	"list": sl.NewBuiltin("mochi.user.list", api_user_list),
+	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
+		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
+		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
+	}),
 	"update": sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 
@@ -653,6 +657,64 @@ func api_user_invite_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", code, now())
 	return sl.Bool(exists), nil
+}
+
+// mochi.user.session.list(user?) -> list: List active sessions for current user or specified user (admin)
+func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	target := user.ID
+	if len(args) == 1 {
+		id, err := sl.AsInt32(args[0])
+		if err != nil {
+			return sl_error(fn, "invalid user id")
+		}
+		target = int(id)
+		if target != user.ID && !user.administrator() {
+			return sl_error(fn, "access denied")
+		}
+	}
+
+	db := db_open("db/users.db")
+	rows, err := db.rows("select code, name, expires, created, accessed, address, agent from sessions where user=? and expires>=? order by accessed desc", target, now())
+	if err != nil {
+		return sl_error(fn, "database error")
+	}
+
+	return sl_encode(rows), nil
+}
+
+// mochi.user.session.revoke(code) -> bool: Revoke a session
+func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <code: string>")
+	}
+
+	code, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid session code")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	var s Session
+	if !db.scan(&s, "select * from sessions where code=?", code) {
+		return sl_error(fn, "session not found")
+	}
+
+	if s.User != user.ID && !user.administrator() {
+		return sl_error(fn, "access denied")
+	}
+
+	db.exec("delete from sessions where code=?", code)
+	return sl.True, nil
 }
 
 func (u *User) identity() *Entity {

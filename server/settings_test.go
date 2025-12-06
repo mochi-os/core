@@ -354,6 +354,7 @@ func TestSettingSet(t *testing.T) {
 // Test system_settings map has required fields
 func TestSystemSettingsDefinitions(t *testing.T) {
 	required_settings := []string{
+		"apps_install_user",
 		"server_started",
 		"server_version",
 		"signup_enabled",
@@ -399,7 +400,7 @@ func TestSystemSettingsReadOnly(t *testing.T) {
 
 // Test user-readable settings are marked correctly
 func TestSystemSettingsUserReadable(t *testing.T) {
-	user_readable := []string{"server_version", "server_started"}
+	user_readable := []string{"apps_install_user", "server_version", "server_started"}
 	admin_only := []string{"signup_enabled"}
 
 	for _, name := range user_readable {
@@ -450,13 +451,38 @@ func TestSettingSignupEnabled(t *testing.T) {
 	}
 }
 
+// Test public settings are marked correctly
+func TestSystemSettingsPublic(t *testing.T) {
+	public := []string{"apps_install_user", "signup_enabled"}
+	non_public := []string{"server_version", "server_started", "email_from"}
+
+	for _, name := range public {
+		def := system_settings[name]
+		if !def.Public {
+			t.Errorf("system_settings[%q].Public should be true", name)
+		}
+	}
+
+	for _, name := range non_public {
+		def := system_settings[name]
+		if def.Public {
+			t.Errorf("system_settings[%q].Public should be false", name)
+		}
+	}
+}
+
 // Test validation patterns are valid for each setting
 func TestSystemSettingsValidation(t *testing.T) {
 	tests := []struct {
-		name      string
-		valid     []string
-		invalid   []string
+		name    string
+		valid   []string
+		invalid []string
 	}{
+		{
+			name:    "apps_install_user",
+			valid:   []string{"true", "false"},
+			invalid: []string{"yes", "no", "1", "0", "TRUE"},
+		},
 		{
 			name:    "signup_enabled",
 			valid:   []string{"true", "false"},

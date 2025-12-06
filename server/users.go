@@ -61,15 +61,24 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"update": sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 
-func code_send(email string) bool {
+// code_send sends a login code to the given email address. Returns empty string
+// on success, or an error reason: "invalid_email" or "signup_disabled".
+func code_send(email string) string {
 	if !email_valid(email) {
-		return false
+		return "invalid_email"
 	}
-	code := random_alphanumeric(12)
+
+	// Check if user exists; if not, check signup_enabled
 	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where username=?", email)
+	if !exists && !setting_signup_enabled() {
+		return "signup_disabled"
+	}
+
+	code := random_alphanumeric(12)
 	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
-	return true
+	return ""
 }
 
 func login_create(user int) string {
@@ -140,18 +149,26 @@ func user_by_login(login string) *User {
 	return &u
 }
 
-func user_from_code(code string) *User {
+// user_from_code exchanges a login code for a user. Returns the user and an
+// error reason. Error reason is empty on success, "invalid" for bad/expired
+// code, or "signup_disabled" if the code was valid but signups are disabled.
+func user_from_code(code string) (*User, string) {
 	var c Code
 	db := db_open("db/users.db")
 	if !db.scan(&c, "delete from codes where code=? and expires>=? returning *", code, now()) {
-		return nil
+		return nil, "invalid"
 	}
 
 	var u User
 	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
 		u.Identity = u.identity()
-		return &u
+		return &u, ""
+	}
+
+	// New user - check if signups are enabled
+	if !setting_signup_enabled() {
+		return nil, "signup_disabled"
 	}
 
 	role := "user"
@@ -170,11 +187,11 @@ func user_from_code(code string) *User {
 
 	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
-		return &u
+		return &u, ""
 	}
 
 	warn("Unable to create user")
-	return nil
+	return nil, "invalid"
 }
 
 func user_owning_entity(id string) *User {

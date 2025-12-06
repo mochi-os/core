@@ -34,9 +34,14 @@ func web_login_verify(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "missing code"})
 		return
 	}
-	user := user_from_code(body.Code)
+	user, reason := user_from_code(body.Code)
 	if user == nil {
-		c.JSON(401, gin.H{"error": "invalid code"})
+		switch reason {
+		case "signup_disabled":
+			c.JSON(403, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+		default:
+			c.JSON(401, gin.H{"error": "invalid code"})
+		}
 		return
 	}
 

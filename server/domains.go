@@ -106,12 +106,12 @@ type delegation struct {
 
 // domains_migrate_config migrates settings and domains from mochi.conf
 func domains_migrate_config() {
-	if setting_get("domains_registration", "") != "" {
+	if setting_get("domains_signup", "") != "" {
 		return
 	}
 
 	registration := ini_string("domains", "registration", "system")
-	setting_set("domains_registration", registration)
+	setting_set("domains_signup", registration)
 
 	verification := ini_bool("domains", "verification", false)
 	if verification {

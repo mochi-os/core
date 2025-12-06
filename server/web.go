@@ -268,8 +268,14 @@ func web_login_code(c *gin.Context) {
 		return
 	}
 
-	if !code_send(input.Email) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
+	reason := code_send(input.Email)
+	if reason != "" {
+		switch reason {
+		case "signup_disabled":
+			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
+		}
 		return
 	}
 
@@ -420,6 +426,14 @@ func web_path(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 }
 
+// Public server info endpoint
+func web_info(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"signup_enabled": setting_signup_enabled(),
+		"version":        build_version,
+	})
+}
+
 func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
@@ -448,6 +462,7 @@ func web_start() {
 	r.POST("/_/verify", rate_limit_login_middleware, web_login_verify)
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
+	r.GET("/_/info", web_info)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/websocket", websocket_connection)
 

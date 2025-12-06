@@ -32,6 +32,30 @@ type SystemSetting struct {
 
 // system_settings defines all available system settings
 var system_settings = map[string]SystemSetting{
+	"domains_registration": {
+		Name:         "domains_registration",
+		Pattern:      "^(|[\\w]{49,52})$",
+		Default:      "",
+		Description:  "Entity ID of the domain registration service",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"domains_verification": {
+		Name:         "domains_verification",
+		Pattern:      "^(true|false)$",
+		Default:      "false",
+		Description:  "Whether domains require verification before use",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"email_from": {
+		Name:         "email_from",
+		Pattern:      "email",
+		Default:      "mochi-server@localhost",
+		Description:  "Email address used as the sender for system emails",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
 	"server_started": {
 		Name:         "server_started",
 		Pattern:      "natural",
@@ -70,30 +94,6 @@ var system_settings = map[string]SystemSetting{
 		Default:      "",
 		Description:  "Maintenance message; empty for not in maintenance",
 		UserReadable: true,
-		ReadOnly:     false,
-	},
-	"email_from": {
-		Name:         "email_from",
-		Pattern:      "email",
-		Default:      "mochi-server@localhost",
-		Description:  "Email address used as the sender for system emails",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
-	"domains_registration": {
-		Name:         "domains_registration",
-		Pattern:      "^(|[\\w]{49,52})$",
-		Default:      "",
-		Description:  "Entity ID of the domain registration service",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
-	"domains_verification": {
-		Name:         "domains_verification",
-		Pattern:      "^(true|false)$",
-		Default:      "false",
-		Description:  "Whether domains require verification before use",
-		UserReadable: false,
 		ReadOnly:     false,
 	},
 }
@@ -209,13 +209,11 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // setting_signup_enabled returns whether new user signup is enabled
-// TODO: Integrate with login/signup handlers to block registration when false
 func setting_signup_enabled() bool {
 	return setting_get("signup_enabled", "true") == "true"
 }
 
 // setting_signup_invite_required returns whether an invite code is required
-// TODO: Integrate with login/signup handlers to require invite codes
 func setting_signup_invite_required() bool {
 	return setting_get("signup_invite_required", "false") == "true"
 }

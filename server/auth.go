@@ -52,19 +52,19 @@ func web_login_verify(c *gin.Context) {
 	login := login_create(user.ID)
 
 	// create a JWT signed with the per-login secret and include the login code in the kid header
-	var l Login
+	var s Session
 	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", login, now()) {
+	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
 		c.JSON(500, gin.H{"error": "unable to find login after creation"})
 		return
 	}
 
 	// Use the per-login secret; it must be present
-	if l.Secret == "" {
-		c.JSON(500, gin.H{"error": "login has no secret; re-authenticate"})
+	if s.Secret == "" {
+		c.JSON(500, gin.H{"error": "session has no secret; re-authenticate"})
 		return
 	}
-	secret := []byte(l.Secret)
+	secret := []byte(s.Secret)
 
 	// Build token with kid header set to the login code so verification can find the secret
 	claims := mochi_claims{
@@ -130,15 +130,15 @@ func jwt_verify(token_string string) (int, error) {
 	if !ok || kid == "" {
 		return -1, errors.New("token missing kid header referencing login code")
 	}
-	var l Login
+	var s Session
 	db := db_open("db/users.db")
-	if !db.scan(&l, "select * from logins where code=? and expires>=?", kid, now()) {
-		return -1, errors.New("login not found for kid")
+	if !db.scan(&s, "select * from sessions where code=? and expires>=?", kid, now()) {
+		return -1, errors.New("session not found for kid")
 	}
-	if l.Secret == "" {
-		return -1, errors.New("login has no secret")
+	if s.Secret == "" {
+		return -1, errors.New("session has no secret")
 	}
-	secret := []byte(l.Secret)
+	secret := []byte(s.Secret)
 	var claims mochi_claims
 	tkn, err := jwt.ParseWithClaims(token_string, &claims, func(token *jwt.Token) (interface{}, error) {
 		return secret, nil

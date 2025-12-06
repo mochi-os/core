@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 12
+	schema_version = 13
 )
 
 var (
@@ -71,7 +71,7 @@ func db_create() {
 	users.exec("create index codes_expires on codes( expires )")
 
 	// Sessions
-	users.exec("create table sessions (user references users(id), code text not null, secret text not null default '', name text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	users.exec("create table sessions (user references users(id), code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	users.exec("create unique index sessions_code on sessions(code)")
 	users.exec("create index sessions_expires on sessions(expires)")
 	users.exec("create index sessions_user on sessions(user)")
@@ -526,6 +526,11 @@ func db_upgrade() {
 			// Migration: rename domains_registration to domains_signup
 			settings := db_open("db/settings.db")
 			settings.exec("update settings set name='domains_signup' where name='domains_registration'")
+
+		} else if schema == 13 {
+			// Migration: drop unused name column from sessions table
+			users := db_open("db/users.db")
+			users.exec("alter table sessions drop column name")
 		}
 
 		setting_set("schema", itoa(int(schema)))

@@ -717,7 +717,7 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select code, name, expires, created, accessed, address, agent from sessions where user=? and expires>=? order by accessed desc", target, now())
+	rows, err := db.rows("select code, expires, created, accessed, address, agent from sessions where user=? and expires>=? order by accessed desc", target, now())
 	if err != nil {
 		return sl_error(fn, "database error")
 	}

@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 11
+	schema_version = 12
 )
 
 var (
@@ -521,6 +521,11 @@ func db_upgrade() {
 				// Backfill created timestamp from expires (expires = created + 1 year)
 				users.exec("update sessions set created = expires - 31536000 where created = 0")
 			}
+
+		} else if schema == 12 {
+			// Migration: rename domains_registration to domains_signup
+			settings := db_open("db/settings.db")
+			settings.exec("update settings set name='domains_signup' where name='domains_registration'")
 		}
 
 		setting_set("schema", itoa(int(schema)))

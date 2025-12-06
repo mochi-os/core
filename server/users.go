@@ -143,6 +143,9 @@ func user_by_login(login string) *User {
 		return nil
 	}
 
+	// Update last accessed time
+	db.exec("update sessions set accessed=? where code=?", now(), login)
+
 	var u User
 	if !db.scan(&u, "select id, username, role from users where id=?", s.User) {
 		return nil

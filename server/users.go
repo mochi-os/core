@@ -11,13 +11,6 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Invite stores an invitation code
-type Invite struct {
-	Code    string
-	Uses    int
-	Expires int
-}
-
 type Code struct {
 	Code     string
 	Username string
@@ -55,12 +48,6 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
 		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
-	"invite": sls.FromStringDict(sl.String("mochi.user.invite"), sl.StringDict{
-		"create":   sl.NewBuiltin("mochi.user.invite.create", api_user_invite_create),
-		"delete":   sl.NewBuiltin("mochi.user.invite.delete", api_user_invite_delete),
-		"list":     sl.NewBuiltin("mochi.user.invite.list", api_user_invite_list),
-		"validate": sl.NewBuiltin("mochi.user.invite.validate", api_user_invite_validate),
-	}),
 	"list":   sl.NewBuiltin("mochi.user.list", api_user_list),
 	"search": sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
@@ -85,7 +72,8 @@ func code_send(email string) string {
 	}
 
 	code := random_alphanumeric(12)
-	db.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
+	sessions := db_open("db/sessions.db")
+	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
 	return ""
 }
@@ -94,13 +82,13 @@ func login_create(user int, address string, agent string) string {
 	code := random_alphanumeric(20)
 	// Create a per-login secret for signing JWTs for this login/device
 	secret := random_alphanumeric(32)
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	db.exec("replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)", user, code, secret, now()+365*86400, now(), now(), address, agent)
 	return code
 }
 
 func login_delete(code string) {
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	db.exec("delete from sessions where code=?", code)
 }
 
@@ -143,16 +131,17 @@ func user_by_login(login string) *User {
 	}
 
 	var s Session
-	db := db_open("db/users.db")
-	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
+	sessions := db_open("db/sessions.db")
+	if !sessions.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
 		return nil
 	}
 
 	// Update last accessed time
-	db.exec("update sessions set accessed=? where code=?", now(), login)
+	sessions.exec("update sessions set accessed=? where code=?", now(), login)
 
+	users := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", s.User) {
+	if !users.scan(&u, "select id, username, role from users where id=?", s.User) {
 		return nil
 	}
 
@@ -166,11 +155,12 @@ func user_by_login(login string) *User {
 // code, or "signup_disabled" if the code was valid but signups are disabled.
 func user_from_code(code string) (*User, string) {
 	var c Code
-	db := db_open("db/users.db")
-	if !db.scan(&c, "delete from codes where code=? and expires>=? returning *", code, now()) {
+	sessions := db_open("db/sessions.db")
+	if !sessions.scan(&c, "delete from codes where code=? and expires>=? returning *", code, now()) {
 		return nil, "invalid"
 	}
 
+	db := db_open("db/users.db")
 	var u User
 	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
@@ -596,107 +586,6 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
-// mochi.user.invite.create(uses, expires) -> dict: Create an invitation code (admin only)
-func api_user_invite_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	uses := 1
-	expires_days := 7
-
-	if len(args) > 0 {
-		u, err := sl.AsInt32(args[0])
-		if err != nil || u < 1 {
-			return sl_error(fn, "invalid uses")
-		}
-		uses = int(u)
-	}
-	if len(args) > 1 {
-		e, err := sl.AsInt32(args[1])
-		if err != nil || e < 1 {
-			return sl_error(fn, "invalid expires")
-		}
-		expires_days = int(e)
-	}
-
-	code := random_alphanumeric(16)
-	expires := now() + int64(expires_days*86400)
-
-	db := db_open("db/users.db")
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", code, uses, expires)
-
-	return sl_encode(map[string]any{"code": code, "uses": uses, "expires": expires}), nil
-}
-
-// mochi.user.invite.list() -> list: List all invitation codes (admin only)
-func api_user_invite_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	db := db_open("db/users.db")
-	rows, err := db.rows("select code, uses, expires from invites where expires > ? order by expires", now())
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-
-	return sl_encode(rows), nil
-}
-
-// mochi.user.invite.delete(code) -> bool: Delete an invitation code (admin only)
-func api_user_invite_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <code: string>")
-	}
-
-	code, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid code")
-	}
-
-	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from invites where code=?", code)
-	if !exists {
-		return sl_error(fn, "invite not found")
-	}
-
-	db.exec("delete from invites where code=?", code)
-	return sl.True, nil
-}
-
-// mochi.user.invite.validate(code) -> bool: Check if an invitation code is valid
-func api_user_invite_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <code: string>")
-	}
-
-	code, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid code")
-	}
-
-	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", code, now())
-	return sl.Bool(exists), nil
-}
-
 // mochi.user.session.list(user?) -> tuple: List active sessions for current user or specified user (admin)
 func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -716,7 +605,7 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 	}
 
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	rows, err := db.rows("select code, expires, created, accessed, address, agent from sessions where user=? and expires>=? order by accessed desc", target, now())
 	if err != nil {
 		return sl_error(fn, "database error")
@@ -741,7 +630,7 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no user")
 	}
 
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	var s Session
 	if !db.scan(&s, "select * from sessions where code=?", code) {
 		return sl_error(fn, "session not found")

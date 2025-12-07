@@ -24,10 +24,6 @@ func create_test_users_db(t *testing.T) func() {
 	db.exec("create table users (id integer primary key, username text not null, role text not null default 'user')")
 	db.exec("create unique index users_username on users (username)")
 
-	// Create invites table
-	db.exec("create table invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
-	db.exec("create index invites_expires on invites(expires)")
-
 	cleanup := func() {
 		data_dir = orig_data_dir
 		os.RemoveAll(tmp_dir)
@@ -84,77 +80,6 @@ func TestUserAdministrator(t *testing.T) {
 	}
 	if user.administrator() {
 		t.Error("administrator() should return false for user role")
-	}
-}
-
-// Test invite creation in database
-func TestInviteCreate(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
-
-	db := db_open("db/users.db")
-	code := random_alphanumeric(16)
-	expires := now() + 86400*7
-
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", code, 5, expires)
-
-	var inv Invite
-	if !db.scan(&inv, "select * from invites where code=?", code) {
-		t.Fatal("invite should exist after insert")
-	}
-
-	if inv.Code != code {
-		t.Errorf("code = %q, want %q", inv.Code, code)
-	}
-	if inv.Uses != 5 {
-		t.Errorf("uses = %d, want 5", inv.Uses)
-	}
-	if inv.Expires != int(expires) {
-		t.Errorf("expires = %d, want %d", inv.Expires, expires)
-	}
-}
-
-// Test invite validation query
-func TestInviteValidation(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
-
-	db := db_open("db/users.db")
-
-	// Valid invite
-	valid_code := random_alphanumeric(16)
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", valid_code, 1, now()+86400)
-
-	// Expired invite
-	expired_code := random_alphanumeric(16)
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", expired_code, 1, now()-86400)
-
-	// Zero uses invite
-	zero_uses_code := random_alphanumeric(16)
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", zero_uses_code, 0, now()+86400)
-
-	// Check valid invite
-	valid, _ := db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", valid_code, now())
-	if !valid {
-		t.Error("valid invite should pass validation")
-	}
-
-	// Check expired invite
-	valid, _ = db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", expired_code, now())
-	if valid {
-		t.Error("expired invite should fail validation")
-	}
-
-	// Check zero uses invite
-	valid, _ = db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", zero_uses_code, now())
-	if valid {
-		t.Error("zero uses invite should fail validation")
-	}
-
-	// Check non-existent invite
-	valid, _ = db.exists("select 1 from invites where code=? and uses > 0 and expires > ?", "nonexistent", now())
-	if valid {
-		t.Error("non-existent invite should fail validation")
 	}
 }
 
@@ -224,30 +149,6 @@ func TestUserDelete(t *testing.T) {
 	}
 }
 
-// Test invite deletion
-func TestInviteDelete(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
-
-	db := db_open("db/users.db")
-	code := random_alphanumeric(16)
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", code, 1, now()+86400)
-
-	// Verify it exists
-	exists, _ := db.exists("select 1 from invites where code=?", code)
-	if !exists {
-		t.Fatal("invite should exist after insert")
-	}
-
-	// Delete invite
-	db.exec("delete from invites where code=?", code)
-
-	exists, _ = db.exists("select 1 from invites where code=?", code)
-	if exists {
-		t.Error("invite should not exist after delete")
-	}
-}
-
 // Test user count query
 func TestUserCount(t *testing.T) {
 	cleanup := create_test_users_db(t)
@@ -306,30 +207,6 @@ func TestUserList(t *testing.T) {
 	rows, _ = db.rows("select id, username, role from users order by id limit ? offset ?", 5, 20)
 	if len(rows) != 0 {
 		t.Errorf("len(rows) with offset 20 = %d, want 0", len(rows))
-	}
-}
-
-// Test invite list query filters expired
-func TestInviteList(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
-
-	db := db_open("db/users.db")
-
-	// Add valid invites
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", "valid1", 1, now()+86400)
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", "valid2", 5, now()+86400*7)
-
-	// Add expired invite
-	db.exec("insert into invites (code, uses, expires) values (?, ?, ?)", "expired", 1, now()-86400)
-
-	// List should only show non-expired
-	rows, err := db.rows("select code, uses, expires from invites where expires > ? order by expires", now())
-	if err != nil {
-		t.Fatalf("invite list query failed: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Errorf("len(rows) = %d, want 2 (non-expired only)", len(rows))
 	}
 }
 

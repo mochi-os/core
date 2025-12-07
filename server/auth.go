@@ -53,7 +53,7 @@ func web_login_verify(c *gin.Context) {
 
 	// create a JWT signed with the per-login secret and include the login code in the kid header
 	var s Session
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
 		c.JSON(500, gin.H{"error": "unable to find login after creation"})
 		return
@@ -131,7 +131,7 @@ func jwt_verify(token_string string) (int, error) {
 		return -1, errors.New("token missing kid header referencing login code")
 	}
 	var s Session
-	db := db_open("db/users.db")
+	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", kid, now()) {
 		return -1, errors.New("session not found for kid")
 	}

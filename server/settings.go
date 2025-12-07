@@ -42,14 +42,6 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 		Public:       true,
 	},
-	"domains_signup": {
-		Name:         "domains_signup",
-		Pattern:      "^(|[\\w]{49,52})$",
-		Default:      "",
-		Description:  "Entity ID of the domain signup service",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
 	"domains_verification": {
 		Name:         "domains_verification",
 		Pattern:      "^(true|false)$",

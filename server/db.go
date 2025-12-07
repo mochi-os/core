@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 13
+	schema_version = 14
 )
 
 var (
@@ -531,6 +531,11 @@ func db_upgrade() {
 			// Migration: drop unused name column from sessions table
 			users := db_open("db/users.db")
 			users.exec("alter table sessions drop column name")
+
+		} else if schema == 14 {
+			// Migration: remove unused domains_signup setting
+			settings := db_open("db/settings.db")
+			settings.exec("delete from settings where name in ('domains_signup', 'domains_registration')")
 		}
 
 		setting_set("schema", itoa(int(schema)))

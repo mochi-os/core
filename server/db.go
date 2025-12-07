@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 14
+	schema_version = 15
 )
 
 var (
@@ -66,20 +66,6 @@ func db_create() {
 	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user')")
 	users.exec("create unique index users_username on users (username)")
 
-	// Login codes
-	users.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
-	users.exec("create index codes_expires on codes( expires )")
-
-	// Sessions
-	users.exec("create table sessions (user references users(id), code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
-	users.exec("create unique index sessions_code on sessions(code)")
-	users.exec("create index sessions_expires on sessions(expires)")
-	users.exec("create index sessions_user on sessions(user)")
-
-	// Invites
-	users.exec("create table invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
-	users.exec("create index invites_expires on invites(expires)")
-
 	// Entities
 	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
 	users.exec("create index entities_fingerprint on entities( fingerprint )")
@@ -89,6 +75,15 @@ func db_create() {
 	users.exec("create index entities_name on entities( name )")
 	users.exec("create index entities_privacy on entities( privacy )")
 	users.exec("create index entities_published on entities( published )")
+
+	// Sessions (login codes and sessions - transient auth data)
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
+	sessions.exec("create index codes_expires on codes( expires )")
+	sessions.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create unique index sessions_code on sessions(code)")
+	sessions.exec("create index sessions_expires on sessions(expires)")
+	sessions.exec("create index sessions_user on sessions(user)")
 
 	// Directory
 	directory := db_open("db/directory.db")
@@ -423,10 +418,7 @@ func db_upgrade() {
 			queue.exec("create index if not exists queue_target on queue (target)")
 
 		} else if schema == 4 {
-			// Migration: add invites table for invitation codes
-			users := db_open("db/users.db")
-			users.exec("create table if not exists invites (code text not null primary key, uses integer not null default 1, expires integer not null)")
-			users.exec("create index if not exists invites_expires on invites(expires)")
+			// Migration: previously added invites table, now removed in schema 15
 
 		} else if schema == 5 {
 			// Migration: add expires column to queue table for message expiration
@@ -536,6 +528,39 @@ func db_upgrade() {
 			// Migration: remove unused domains_signup setting
 			settings := db_open("db/settings.db")
 			settings.exec("delete from settings where name in ('domains_signup', 'domains_registration')")
+
+		} else if schema == 15 {
+			// Migration: move sessions and codes from users.db to sessions.db
+			// Also removes unused invites table
+			// This isolates hot auth tables from critical user/entity data
+			users := db_open("db/users.db")
+			sessions := db_open("db/sessions.db")
+
+			// Create tables in sessions.db
+			sessions.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
+			sessions.exec("create index codes_expires on codes( expires )")
+			sessions.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+			sessions.exec("create unique index sessions_code on sessions(code)")
+			sessions.exec("create index sessions_expires on sessions(expires)")
+			sessions.exec("create index sessions_user on sessions(user)")
+
+			// Copy codes
+			codes, _ := users.rows("select code, username, expires from codes")
+			for _, c := range codes {
+				sessions.exec("insert into codes (code, username, expires) values (?, ?, ?)", c["code"], c["username"], c["expires"])
+			}
+
+			// Copy sessions
+			sess, _ := users.rows("select user, code, secret, expires, created, accessed, address, agent from sessions")
+			for _, s := range sess {
+				sessions.exec("insert into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
+					s["user"], s["code"], s["secret"], s["expires"], s["created"], s["accessed"], s["address"], s["agent"])
+			}
+
+			// Drop old tables (including unused invites)
+			users.exec("drop table codes")
+			users.exec("drop table sessions")
+			users.exec("drop table if exists invites")
 		}
 
 		setting_set("schema", itoa(int(schema)))

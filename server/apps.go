@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tailscale/hujson"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -395,7 +396,11 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	var av AppVersion
-	err := json.Unmarshal(file_read(base+"/app.json"), &av)
+	data, err := hujson.Standardize(file_read(base + "/app.json"))
+	if err != nil {
+		return nil, fmt.Errorf("App bad app.json '%s/app.json': %v", base, err)
+	}
+	err = json.Unmarshal(data, &av)
 	if err != nil {
 		return nil, fmt.Errorf("App bad app.json '%s/app.json': %v", base, err)
 	}

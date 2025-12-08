@@ -510,7 +510,7 @@ func web_start() {
 	r.POST("/_/auth/code", rate_limit_login_middleware, web_login_code)
 	r.POST("/_/auth/verify", rate_limit_login_middleware, web_login_verify)
 	r.POST("/_/auth/totp", rate_limit_login_middleware, web_auth_totp)
-	r.POST("/_/auth/mfa", rate_limit_login_middleware, web_auth_mfa)
+	r.POST("/_/auth/methods", rate_limit_login_middleware, web_auth_mfa)
 	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
 	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)

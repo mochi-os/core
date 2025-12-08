@@ -367,6 +367,8 @@ func web_auth_mfa(c *gin.Context) {
 	// All methods complete - delete partial session and create full session
 	db.exec("delete from partial where id=?", input.Partial)
 
+	// Load identity for the response
+	user.Identity = user.identity()
 	auth_complete_login(c, user)
 }
 

@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 15
+	schema_version = 16
 )
 
 var (
@@ -63,8 +63,19 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user')")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email')")
 	users.exec("create unique index users_username on users (username)")
+
+	// Passkey credentials
+	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', created integer not null, last_used integer not null default 0)")
+	users.exec("create index credentials_user on credentials(user)")
+
+	// Recovery codes
+	users.exec("create table recovery (id integer primary key, user integer not null references users(id) on delete cascade, hash text not null, created integer not null)")
+	users.exec("create index recovery_user on recovery(user)")
+
+	// TOTP secrets
+	users.exec("create table totp (user integer primary key references users(id) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
 
 	// Entities
 	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
@@ -84,6 +95,14 @@ func db_create() {
 	sessions.exec("create unique index sessions_code on sessions(code)")
 	sessions.exec("create index sessions_expires on sessions(expires)")
 	sessions.exec("create index sessions_user on sessions(user)")
+
+	// WebAuthn ceremony sessions (temporary)
+	sessions.exec("create table ceremonies (id text primary key, type text not null, user integer, challenge blob not null, data text not null default '', expires integer not null)")
+	sessions.exec("create index ceremonies_expires on ceremonies(expires)")
+
+	// Partial authentication sessions (for MFA)
+	sessions.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
+	sessions.exec("create index partial_expires on partial(expires)")
 
 	// Directory
 	directory := db_open("db/directory.db")
@@ -561,6 +580,33 @@ func db_upgrade() {
 			users.exec("drop table codes")
 			users.exec("drop table sessions")
 			users.exec("drop table if exists invites")
+
+		} else if schema == 16 {
+			// Migration: add multi-factor authentication tables
+			users := db_open("db/users.db")
+			sessions := db_open("db/sessions.db")
+
+			// Add methods column to users table
+			users.exec("alter table users add column methods text not null default 'email'")
+
+			// Add passkey credentials table
+			users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', created integer not null, last_used integer not null default 0)")
+			users.exec("create index credentials_user on credentials(user)")
+
+			// Add recovery codes table
+			users.exec("create table recovery (id integer primary key, user integer not null references users(id) on delete cascade, hash text not null, created integer not null)")
+			users.exec("create index recovery_user on recovery(user)")
+
+			// Add TOTP secrets table
+			users.exec("create table totp (user integer primary key references users(id) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+
+			// Add ceremony sessions table for WebAuthn
+			sessions.exec("create table ceremonies (id text primary key, type text not null, user integer, challenge blob not null, data text not null default '', expires integer not null)")
+			sessions.exec("create index ceremonies_expires on ceremonies(expires)")
+
+			// Add partial sessions table for MFA
+			sessions.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
+			sessions.exec("create index partial_expires on partial(expires)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

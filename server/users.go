@@ -49,13 +49,16 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
 		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
-	"list":    sl.NewBuiltin("mochi.user.list", api_user_list),
-	"methods": api_user_methods,
-	"search":  sl.NewBuiltin("mochi.user.search", api_user_search),
+	"list":     sl.NewBuiltin("mochi.user.list", api_user_list),
+	"methods":  api_user_methods,
+	"passkey":  api_user_passkey,
+	"recovery": api_user_recovery,
+	"search":   sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
 		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
 		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
 	}),
+	"totp":   api_user_totp,
 	"update": sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 

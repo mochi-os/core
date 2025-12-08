@@ -33,6 +33,7 @@ type User struct {
 	ID          int
 	Username    string
 	Role        string
+	Methods     string
 	Preferences map[string]string
 	Identity    *Entity
 	db          *DB // Used by actions
@@ -48,8 +49,9 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
 		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
-	"list":   sl.NewBuiltin("mochi.user.list", api_user_list),
-	"search": sl.NewBuiltin("mochi.user.search", api_user_search),
+	"list":    sl.NewBuiltin("mochi.user.list", api_user_list),
+	"methods": api_user_methods,
+	"search":  sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
 		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
 		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
@@ -95,7 +97,7 @@ func login_delete(code string) {
 func user_by_id(id int) *User {
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", id) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", id) {
 		return nil
 	}
 
@@ -116,7 +118,7 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", i.User) {
 		return nil
 	}
 
@@ -141,7 +143,7 @@ func user_by_login(login string) *User {
 
 	users := db_open("db/users.db")
 	var u User
-	if !users.scan(&u, "select id, username, role from users where id=?", s.User) {
+	if !users.scan(&u, "select id, username, role, methods from users where id=?", s.User) {
 		return nil
 	}
 
@@ -162,7 +164,7 @@ func user_from_code(code string) (*User, string) {
 
 	db := db_open("db/users.db")
 	var u User
-	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role, methods from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
 		u.Identity = u.identity()
 		return &u, ""
@@ -187,7 +189,7 @@ func user_from_code(code string) (*User, string) {
 		email_send(admin, "Mochi new user", "New user: "+c.Username)
 	}
 
-	if db.scan(&u, "select id, username, role from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role, methods from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
 		return &u, ""
 	}
@@ -208,7 +210,7 @@ func user_owning_entity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", i.User) {
 		return nil
 	}
 
@@ -260,11 +262,11 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", id) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
 }
 
 // mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
@@ -288,11 +290,11 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role from users where username=?", username) {
+	if !db.scan(&u, "select id, username, role, methods from users where username=?", username) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
 }
 
 // mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
@@ -326,11 +328,11 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", user_id) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
 }
 
 // mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
@@ -367,11 +369,11 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where id=?", user_id) {
+	if !db.scan(&u, "select id, username, role, methods from users where id=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
 }
 
 // mochi.user.list(limit, offset) -> list: List all users (admin only)
@@ -402,7 +404,7 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role from users order by id limit ? offset ?", limit, offset)
+	rows, err := db.rows("select id, username, role, methods from users order by id limit ? offset ?", limit, offset)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -458,7 +460,7 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role from users where username like ? order by username limit ?", "%"+query+"%", limit)
+	rows, err := db.rows("select id, username, role, methods from users where username like ? order by username limit ?", "%"+query+"%", limit)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -502,11 +504,11 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	db.exec("insert into users (username, role) values (?, ?)", username, role)
 
 	var u User
-	if !db.scan(&u, "select id, username, role from users where username=?", username) {
+	if !db.scan(&u, "select id, username, role, methods from users where username=?", username) {
 		return sl_error(fn, "failed to create user")
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
 }
 
 // mochi.user.update(id, username, role) -> bool: Update a user (admin only)
@@ -655,7 +657,7 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"id", "identity", "preference", "role", "username"}
+	return []string{"id", "identity", "methods", "preference", "role", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
@@ -664,6 +666,8 @@ func (u *User) Attr(name string) (sl.Value, error) {
 		return sl.MakeInt(u.ID), nil
 	case "identity":
 		return u.Identity, nil
+	case "methods":
+		return sl.String(u.Methods), nil
 	case "preference":
 		return &UserPreference{user: u}, nil
 	case "role":

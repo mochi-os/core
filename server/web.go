@@ -449,11 +449,22 @@ func web_start() {
 	r.Use(domains_middleware())
 	r.RedirectTrailingSlash = false
 
-	// System endpoints
+	// Auth endpoints (grouped under /_/auth/)
+	r.POST("/_/auth/code", rate_limit_login_middleware, web_login_code)
+	r.POST("/_/auth/verify", rate_limit_login_middleware, web_login_verify)
+	r.POST("/_/auth/mfa", rate_limit_login_middleware, web_auth_mfa)
+	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
+	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
+	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
+	r.GET("/_/auth/methods", web_auth_methods)
+
+	// Legacy endpoints (deprecated, will be removed)
 	r.POST("/_/code", rate_limit_login_middleware, web_login_code)
 	r.POST("/_/verify", rate_limit_login_middleware, web_login_verify)
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
+
+	// Other system endpoints
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/websocket", websocket_connection)
 

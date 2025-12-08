@@ -85,6 +85,7 @@ func code_send(email string) string {
 	// Generate code in XXX-XXX-XXX format (unambiguous mixed case)
 	raw := random_unambiguous(9)
 	formatted := raw[:3] + "-" + raw[3:6] + "-" + raw[6:]
+	debug ("Code", formatted)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", raw, email, now()+3600)
 	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+formatted)

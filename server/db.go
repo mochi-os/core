@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 16
+	schema_version = 18
 )
 
 var (
@@ -63,11 +63,11 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email')")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active', mfa_required integer not null default 0)")
 	users.exec("create unique index users_username on users (username)")
 
 	// Passkey credentials
-	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', created integer not null, last_used integer not null default 0)")
+	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null, last_used integer not null default 0)")
 	users.exec("create index credentials_user on credentials(user)")
 
 	// Recovery codes
@@ -607,6 +607,18 @@ func db_upgrade() {
 			// Add partial sessions table for MFA
 			sessions.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
 			sessions.exec("create index partial_expires on partial(expires)")
+
+		} else if schema == 17 {
+			// Migration: add user status and mfa_required columns for user management
+			users := db_open("db/users.db")
+			users.exec("alter table users add column status text not null default 'active'")
+			users.exec("alter table users add column mfa_required integer not null default 0")
+
+		} else if schema == 18 {
+			// Migration: add backup flags to passkey credentials
+			users := db_open("db/users.db")
+			users.exec("alter table credentials add column backup_eligible integer not null default 0")
+			users.exec("alter table credentials add column backup_state integer not null default 0")
 		}
 
 		setting_set("schema", itoa(int(schema)))

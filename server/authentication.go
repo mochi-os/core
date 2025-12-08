@@ -170,6 +170,55 @@ func web_auth_methods(c *gin.Context) {
 	})
 }
 
+// POST /_/auth/totp - Verify TOTP code for a user (initial login, not MFA)
+// Used when a user has TOTP as their only or first auth method
+func web_auth_totp(c *gin.Context) {
+	var input struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" || input.Code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	user := user_by_username(input.Email)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
+		return
+	}
+
+	// Verify TOTP code
+	if !totp_verify(user.ID, input.Code) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+		return
+	}
+
+	// Reset rate limit on successful verification
+	rate_limit_login.reset(rate_limit_client_ip(c))
+
+	// Check for remaining MFA methods after TOTP
+	remaining := auth_remaining_methods(user, "totp")
+	if len(remaining) > 0 {
+		// Create partial session for remaining MFA
+		partial := random_alphanumeric(32)
+		db := db_open("db/sessions.db")
+		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'totp', ?, ?)",
+			partial, user.ID, strings.Join(remaining, ","), now()+300)
+		c.JSON(http.StatusOK, gin.H{
+			"mfa":       true,
+			"partial":   partial,
+			"remaining": remaining,
+		})
+		return
+	}
+
+	// TOTP was the only required method - complete login
+	// Load identity for the response
+	user.Identity = user.identity()
+	auth_complete_login(c, user)
+}
+
 // Create a JWT using a specific HMAC secret
 func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
 	claims := mochi_claims{
@@ -585,8 +634,8 @@ func web_recovery_login(c *gin.Context) {
 		return
 	}
 
-	// Normalize code (remove dashes, uppercase)
-	code := strings.ToUpper(strings.ReplaceAll(input.Code, "-", ""))
+	// Normalize code (remove dashes, case-sensitive)
+	code := strings.ReplaceAll(input.Code, "-", "")
 
 	db := db_open("db/users.db")
 	row, _ := db.row("select id from users where username=?", input.Username)
@@ -649,14 +698,13 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 	// Generate new codes
 	for i := 0; i < recovery_code_count; i++ {
-		// Format: XXXX-XXXX-XXXX (12 alphanumeric chars)
-		raw := strings.ToUpper(random_alphanumeric(12))
+		// Format: XXXX-XXXX-XXXX (12 unambiguous mixed-case chars)
+		raw := random_unambiguous(12)
 		code := raw[:4] + "-" + raw[4:8] + "-" + raw[8:]
 		codes[i] = code
 
 		// Store bcrypt hash of normalized code (no dashes)
-		normalized := strings.ReplaceAll(code, "-", "")
-		hash, _ := bcrypt.GenerateFromPassword([]byte(normalized), bcrypt.DefaultCost)
+		hash, _ := bcrypt.GenerateFromPassword([]byte(raw), bcrypt.DefaultCost)
 		db.exec("insert into recovery (user, hash, created) values (?, ?, ?)",
 			user.ID, string(hash), now())
 	}

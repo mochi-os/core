@@ -78,7 +78,7 @@ func (u *WebAuthnUser) WebAuthnDisplayName() string {
 // WebAuthnCredentials returns all credentials for this user
 func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select id, public_key, sign_count, transports from credentials where user=?", u.user.ID)
+	rows, _ := db.rows("select id, public_key, sign_count, transports, backup_eligible, backup_state from credentials where user=?", u.user.ID)
 
 	var creds []webauthn.Credential
 	for _, row := range rows {
@@ -88,11 +88,31 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 				transports = append(transports, protocol.AuthenticatorTransport(tr))
 			}
 		}
+
+		// Handle blob fields that may come back as string or []byte
+		var id, publicKey []byte
+		switch v := row["id"].(type) {
+		case []byte:
+			id = v
+		case string:
+			id = []byte(v)
+		}
+		switch v := row["public_key"].(type) {
+		case []byte:
+			publicKey = v
+		case string:
+			publicKey = []byte(v)
+		}
+
 		creds = append(creds, webauthn.Credential{
-			ID:              row["id"].([]byte),
-			PublicKey:       row["public_key"].([]byte),
+			ID:              id,
+			PublicKey:       publicKey,
 			AttestationType: "none",
 			Transport:       transports,
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: row["backup_eligible"].(int64) != 0,
+				BackupState:    row["backup_state"].(int64) != 0,
+			},
 			Authenticator: webauthn.Authenticator{
 				SignCount: uint32(row["sign_count"].(int64)),
 			},
@@ -131,7 +151,7 @@ func web_passkey_login_begin(c *gin.Context) {
 		ceremony, session.Challenge, string(data), now()+300)
 
 	c.JSON(http.StatusOK, gin.H{
-		"options":  options,
+		"options":  options.Response,
 		"ceremony": ceremony,
 	})
 }
@@ -148,10 +168,18 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
+	// Read raw body first since we need to parse it twice
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	// Extract ceremony from request
 	var input struct {
 		Ceremony string `json:"ceremony"`
 	}
-	if err := c.ShouldBindJSON(&input); err != nil {
+	if err := json.Unmarshal(body, &input); err != nil || input.Ceremony == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
@@ -171,6 +199,13 @@ func web_passkey_login_finish(c *gin.Context) {
 	var session webauthn.SessionData
 	json.Unmarshal([]byte(row["data"].(string)), &session)
 
+	// Parse the credential response from the request body
+	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(body)))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_credential"})
+		return
+	}
+
 	// Handler to find user from credential
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		user_id := int(atoi(string(userHandle), 0))
@@ -181,8 +216,9 @@ func web_passkey_login_finish(c *gin.Context) {
 		return &WebAuthnUser{user: user}, nil
 	}
 
-	credential, err := webauthn_instance.FinishDiscoverableLogin(handler, session, c.Request)
+	credential, err := webauthn_instance.ValidateDiscoverableLogin(handler, session, parsed)
 	if err != nil {
+		info("Passkey login failed: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication_failed"})
 		return
 	}
@@ -246,8 +282,16 @@ func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Convert blob IDs to base64 for Starlark
 	credentials := make([]map[string]any, len(rows))
 	for i, row := range rows {
+		// Handle ID as either []byte or string (SQLite driver may return either)
+		var idBase64 string
+		switch id := row["id"].(type) {
+		case []byte:
+			idBase64 = base64.URLEncoding.EncodeToString(id)
+		case string:
+			idBase64 = base64.URLEncoding.EncodeToString([]byte(id))
+		}
 		credentials[i] = map[string]any{
-			"id":         base64.URLEncoding.EncodeToString(row["id"].([]byte)),
+			"id":         idBase64,
 			"name":       row["name"],
 			"transports": row["transports"],
 			"created":    row["created"],
@@ -304,7 +348,7 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		ceremony, user.ID, session.Challenge, string(data), now()+300)
 
 	return sl_encode(map[string]any{
-		"options":  options,
+		"options":  options.Response,
 		"ceremony": ceremony,
 	}), nil
 }
@@ -333,9 +377,18 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "invalid ceremony")
 	}
 
-	// The credential comes as a Starlark dict
-	cred, ok := args[1].(*sl.Dict)
-	if !ok {
+	// The credential can be a JSON string or a Starlark dict
+	var credentialJSON string
+	switch cred := args[1].(type) {
+	case sl.String:
+		credentialJSON = string(cred)
+	case *sl.Dict:
+		body, err := starlark_to_json(cred)
+		if err != nil {
+			return sl_error(fn, "invalid credential format")
+		}
+		credentialJSON = string(body)
+	default:
 		return sl_error(fn, "invalid credential")
 	}
 
@@ -358,14 +411,8 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	var session webauthn.SessionData
 	json.Unmarshal([]byte(row["data"].(string)), &session)
 
-	// Convert Starlark dict to JSON for WebAuthn library
-	body, err := starlark_to_json(cred)
-	if err != nil {
-		return sl_error(fn, "invalid credential format")
-	}
-
 	// Parse the credential response
-	parsed, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(string(body)))
+	parsed, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(credentialJSON))
 	if err != nil {
 		return sl_error(fn, "invalid credential: %v", err)
 	}
@@ -392,10 +439,11 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 
 	// Store credential
 	users := db_open("db/users.db")
-	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, created, last_used)
-             values (?, ?, ?, ?, ?, ?, ?, ?)`,
+	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created, last_used)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		credential.ID, user.ID, credential.PublicKey,
-		credential.Authenticator.SignCount, name, transports, now(), 0)
+		credential.Authenticator.SignCount, name, transports,
+		credential.Flags.BackupEligible, credential.Flags.BackupState, now(), 0)
 
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
 }

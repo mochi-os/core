@@ -10,13 +10,13 @@ import (
 
 // Queue entry for outgoing messages
 type QueueEntry struct {
-	ID         string  `db:"id"`
-	Type       string  `db:"type"`
-	Target     string  `db:"target"`
-	FromEntity string  `db:"from_entity"`
-	ToEntity   string  `db:"to_entity"`
-	Service    string  `db:"service"`
-	Event      string  `db:"event"`
+	ID         string `db:"id"`
+	Type       string `db:"type"`
+	Target     string `db:"target"`
+	FromEntity string `db:"from_entity"`
+	ToEntity   string `db:"to_entity"`
+	Service    string `db:"service"`
+	Event      string `db:"event"`
 	Content    []byte `db:"content"`
 	Data       []byte `db:"data"`
 	File       string `db:"file"`
@@ -25,7 +25,7 @@ type QueueEntry struct {
 	Attempts   int    `db:"attempts"`
 	NextRetry  int64  `db:"next_retry"`
 	LastError  string `db:"last_error"`
-	Created    int64   `db:"created"`
+	Created    int64  `db:"created"`
 }
 
 const (

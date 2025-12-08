@@ -21,7 +21,7 @@ func create_test_users_db(t *testing.T) func() {
 
 	// Create users table
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email')")
+	db.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active', mfa_required integer not null default 0)")
 	db.exec("create unique index users_username on users (username)")
 
 	cleanup := func() {
@@ -92,7 +92,7 @@ func TestUserCreate(t *testing.T) {
 	db.exec("insert into users (username, role) values (?, ?)", "new@example.com", "user")
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where username=?", "new@example.com") {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", "new@example.com") {
 		t.Fatal("user should exist after insert")
 	}
 
@@ -116,13 +116,13 @@ func TestUserUpdate(t *testing.T) {
 	db.exec("insert into users (username, role) values (?, ?)", "update@example.com", "user")
 
 	var u User
-	db.scan(&u, "select id, username, role, methods from users where username=?", "update@example.com")
+	db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", "update@example.com")
 
 	// Update role
 	db.exec("update users set role=? where id=?", "administrator", u.ID)
 
 	var updated User
-	db.scan(&updated, "select id, username, role, methods from users where id=?", u.ID)
+	db.scan(&updated, "select id, username, role, methods, status, mfa_required from users where id=?", u.ID)
 
 	if updated.Role != "administrator" {
 		t.Errorf("role after update = %q, want 'administrator'", updated.Role)
@@ -138,7 +138,7 @@ func TestUserDelete(t *testing.T) {
 	db.exec("insert into users (username, role) values (?, ?)", "delete@example.com", "user")
 
 	var u User
-	db.scan(&u, "select id, username, role, methods from users where username=?", "delete@example.com")
+	db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", "delete@example.com")
 
 	// Delete user
 	db.exec("delete from users where id=?", u.ID)
@@ -189,7 +189,7 @@ func TestUserList(t *testing.T) {
 	}
 
 	// Test limit
-	rows, err := db.rows("select id, username, role, methods from users order by id limit ? offset ?", 5, 0)
+	rows, err := db.rows("select id, username, role, methods, status, mfa_required from users order by id limit ? offset ?", 5, 0)
 	if err != nil {
 		t.Fatalf("list query failed: %v", err)
 	}
@@ -198,13 +198,13 @@ func TestUserList(t *testing.T) {
 	}
 
 	// Test offset
-	rows, _ = db.rows("select id, username, role, methods from users order by id limit ? offset ?", 5, 5)
+	rows, _ = db.rows("select id, username, role, methods, status, mfa_required from users order by id limit ? offset ?", 5, 5)
 	if len(rows) != 5 {
 		t.Errorf("len(rows) with offset 5 = %d, want 5", len(rows))
 	}
 
 	// Test offset beyond count
-	rows, _ = db.rows("select id, username, role, methods from users order by id limit ? offset ?", 5, 20)
+	rows, _ = db.rows("select id, username, role, methods, status, mfa_required from users order by id limit ? offset ?", 5, 20)
 	if len(rows) != 0 {
 		t.Errorf("len(rows) with offset 20 = %d, want 0", len(rows))
 	}

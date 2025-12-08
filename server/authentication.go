@@ -24,16 +24,16 @@ var (
 	jwt_expiry = int64(3600)
 )
 
-var api_recovery = sls.FromStringDict(sl.String("mochi.recovery"), sl.StringDict{
-	"count":    sl.NewBuiltin("mochi.recovery.count", api_recovery_count),
-	"generate": sl.NewBuiltin("mochi.recovery.generate", api_recovery_generate),
+var api_user_recovery = sls.FromStringDict(sl.String("mochi.user.recovery"), sl.StringDict{
+	"count":    sl.NewBuiltin("mochi.user.recovery.count", api_user_recovery_count),
+	"generate": sl.NewBuiltin("mochi.user.recovery.generate", api_user_recovery_generate),
 })
 
-var api_totp = sls.FromStringDict(sl.String("mochi.totp"), sl.StringDict{
-	"disable": sl.NewBuiltin("mochi.totp.disable", api_totp_disable),
-	"enabled": sl.NewBuiltin("mochi.totp.enabled", api_totp_enabled),
-	"setup":   sl.NewBuiltin("mochi.totp.setup", api_totp_setup),
-	"verify":  sl.NewBuiltin("mochi.totp.verify", api_totp_verify),
+var api_user_totp = sls.FromStringDict(sl.String("mochi.user.totp"), sl.StringDict{
+	"disable": sl.NewBuiltin("mochi.user.totp.disable", api_user_totp_disable),
+	"enabled": sl.NewBuiltin("mochi.user.totp.enabled", api_user_totp_enabled),
+	"setup":   sl.NewBuiltin("mochi.user.totp.setup", api_user_totp_setup),
+	"verify":  sl.NewBuiltin("mochi.user.totp.verify", api_user_totp_verify),
 })
 
 type mochi_claims struct {
@@ -467,8 +467,8 @@ func totp_verify(user int, code string) bool {
 	return totp.Validate(code, row["secret"].(string))
 }
 
-// mochi.totp.setup() -> dict: Generate TOTP secret for user
-func api_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.totp.setup() -> dict: Generate TOTP secret for user
+func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -501,8 +501,8 @@ func api_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}), nil
 }
 
-// mochi.totp.verify(code) -> bool: Verify TOTP code and mark as verified
-func api_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.totp.verify(code) -> bool: Verify TOTP code and mark as verified
+func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -533,8 +533,8 @@ func api_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
-// mochi.totp.enabled() -> bool: Check if TOTP is enabled and verified
-func api_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.totp.enabled() -> bool: Check if TOTP is enabled and verified
+func api_user_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -548,8 +548,8 @@ func api_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.Bool(row["verified"].(int64) == 1), nil
 }
 
-// mochi.totp.disable() -> bool: Remove TOTP from user account
-func api_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.totp.disable() -> bool: Remove TOTP from user account
+func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -630,8 +630,8 @@ func web_recovery_login(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
-// mochi.recovery.generate() -> list: Generate new recovery codes (replaces existing)
-func api_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.recovery.generate() -> list: Generate new recovery codes (replaces existing)
+func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if setting_get("auth_recovery_enabled", "true") != "true" {
 		return sl_error(fn, "recovery disabled")
 	}
@@ -664,8 +664,8 @@ func api_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(codes), nil
 }
 
-// mochi.recovery.count() -> int: Get remaining recovery code count
-func api_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.recovery.count() -> int: Get remaining recovery code count
+func api_user_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

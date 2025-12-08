@@ -35,9 +35,7 @@ func init() {
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
 			"message":  api_message,
-			"passkey":  api_passkey,
-			"recovery": api_recovery,
-			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
+				"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
@@ -48,7 +46,6 @@ func init() {
 			}),
 			"setting": api_setting,
 			"stream":  sl.NewBuiltin("mochi.stream", api_stream),
-			"totp":    api_totp,
 			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),

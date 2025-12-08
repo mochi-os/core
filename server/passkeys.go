@@ -20,14 +20,14 @@ import (
 
 var webauthn_instance *webauthn.WebAuthn
 
-var api_passkey = sls.FromStringDict(sl.String("mochi.passkey"), sl.StringDict{
-	"count":  sl.NewBuiltin("mochi.passkey.count", api_passkey_count),
-	"delete": sl.NewBuiltin("mochi.passkey.delete", api_passkey_delete),
-	"list":   sl.NewBuiltin("mochi.passkey.list", api_passkey_list),
-	"rename": sl.NewBuiltin("mochi.passkey.rename", api_passkey_rename),
-	"register": sls.FromStringDict(sl.String("mochi.passkey.register"), sl.StringDict{
-		"begin":  sl.NewBuiltin("mochi.passkey.register.begin", api_passkey_register_begin),
-		"finish": sl.NewBuiltin("mochi.passkey.register.finish", api_passkey_register_finish),
+var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.StringDict{
+	"count":  sl.NewBuiltin("mochi.user.passkey.count", api_user_passkey_count),
+	"delete": sl.NewBuiltin("mochi.user.passkey.delete", api_user_passkey_delete),
+	"list":   sl.NewBuiltin("mochi.user.passkey.list", api_user_passkey_list),
+	"rename": sl.NewBuiltin("mochi.user.passkey.rename", api_user_passkey_rename),
+	"register": sls.FromStringDict(sl.String("mochi.user.passkey.register"), sl.StringDict{
+		"begin":  sl.NewBuiltin("mochi.user.passkey.register.begin", api_user_passkey_register_begin),
+		"finish": sl.NewBuiltin("mochi.user.passkey.register.finish", api_user_passkey_register_finish),
 	}),
 })
 
@@ -230,8 +230,8 @@ func web_passkey_login_finish(c *gin.Context) {
 // Starlark APIs (authenticated passkey management)
 // ============================================================================
 
-// mochi.passkey.list() -> list: List user's passkeys
-func api_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.list() -> list: List user's passkeys
+func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -258,8 +258,8 @@ func api_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl_encode(credentials), nil
 }
 
-// mochi.passkey.count() -> int: Count user's passkeys
-func api_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.count() -> int: Count user's passkeys
+func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -273,8 +273,8 @@ func api_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.MakeInt(int(row["count"].(int64))), nil
 }
 
-// mochi.passkey.register.begin() -> dict: Start passkey registration
-func api_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.register.begin() -> dict: Start passkey registration
+func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if webauthn_instance == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
@@ -309,8 +309,8 @@ func api_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}), nil
 }
 
-// mochi.passkey.register.finish(ceremony, credential, name?) -> dict: Complete registration
-func api_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.register.finish(ceremony, credential, name?) -> dict: Complete registration
+func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if webauthn_instance == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
@@ -400,8 +400,8 @@ func api_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
 }
 
-// mochi.passkey.rename(id, name) -> bool: Rename a passkey
-func api_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.rename(id, name) -> bool: Rename a passkey
+func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -436,8 +436,8 @@ func api_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.True, nil
 }
 
-// mochi.passkey.delete(id) -> bool: Delete a passkey
-func api_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.user.passkey.delete(id) -> bool: Delete a passkey
+func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

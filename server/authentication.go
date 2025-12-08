@@ -284,7 +284,7 @@ var api_user_methods = sls.FromStringDict(sl.String("mochi.user.methods"), sl.St
 	"reset": sl.NewBuiltin("mochi.user.methods.reset", api_user_methods_reset),
 })
 
-// POST /_/auth/mfa - Complete additional MFA factor
+// POST /_/auth/methods - Complete additional MFA factor
 func web_auth_mfa(c *gin.Context) {
 	var input struct {
 		Partial string `json:"partial"`

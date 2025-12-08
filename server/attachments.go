@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	attachment_max_size_default = 104857600           // 100MB
+	attachment_max_size_default = 104857600          // 100MB
 	cache_max_age               = 7 * 24 * time.Hour // 7 days
 )
 

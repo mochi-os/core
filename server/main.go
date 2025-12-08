@@ -66,11 +66,6 @@ func main() {
 	//go apps_manager()
 
 	// Wait for shutdown signal
-	shutdown_wait()
-}
-
-// Wait for shutdown signal and gracefully stop
-func shutdown_wait() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -89,5 +84,4 @@ func shutdown_wait() {
 	}
 
 	info("Shutdown complete")
-	os.Exit(0)
 }

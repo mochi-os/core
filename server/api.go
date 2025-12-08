@@ -34,8 +34,8 @@ func init() {
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
-			"message":  api_message,
-				"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
+			"message": api_message,
+			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{

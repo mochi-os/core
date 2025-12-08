@@ -29,6 +29,8 @@ import (
 
 const (
 	alphanumeric = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	// Unambiguous characters: excludes 0, 1, O, I, o, i, l
+	unambiguous = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
 )
 
 var (
@@ -101,8 +103,14 @@ func check(err error) {
 func fingerprint(in string) string {
 	s := sha.New()
 	s.Write([]byte(in))
-	encoded := base58_encode(s.Sum(nil))
-	return encoded[len(encoded)-9:]
+	hash := s.Sum(nil)
+
+	// Encode using unambiguous characters (55 chars)
+	out := make([]byte, 9)
+	for i := range out {
+		out[i] = unambiguous[int(hash[i])%len(unambiguous)]
+	}
+	return string(out)
 }
 
 func fingerprint_hyphens(in string) string {
@@ -180,6 +188,17 @@ func random_alphanumeric(length int) string {
 	for i := range out {
 		index := must(rand.Int(rand.Reader, l))
 		out[i] = rune(alphanumeric[index.Int64()])
+	}
+	return string(out)
+}
+
+// Generate a random string using unambiguous characters (no 0, 1, O, I, o, i, l)
+func random_unambiguous(length int) string {
+	out := make([]rune, length)
+	l := big.NewInt(int64(len(unambiguous)))
+	for i := range out {
+		index := must(rand.Int(rand.Reader, l))
+		out[i] = rune(unambiguous[index.Int64()])
 	}
 	return string(out)
 }
@@ -313,7 +332,7 @@ func valid(s string, match string) bool {
 
 	switch match {
 	case "action":
-		match = "^[0-9a-zA-Z/-:_]{1,100}$"
+		match = "^[0-9a-zA-Z/\\-:_]{1,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "entity":

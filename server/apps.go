@@ -137,6 +137,7 @@ func app(id string) *App {
 	if !found {
 		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion)}
 		a.active = &AppVersion{}
+		a.active.app = a
 		a.active.Actions = make(map[string]AppAction)
 		a.active.Events = make(map[string]AppEvent)
 

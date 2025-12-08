@@ -4,7 +4,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
+	"sync"
 	"time"
 
 	"go.starlark.net/resolve"
@@ -42,6 +45,7 @@ func starlark_configure() {
 type Starlark struct {
 	thread  *sl.Thread
 	globals sl.StringDict
+	mu      sync.Mutex
 }
 
 // Create a new Starlark interpreter for a set of files
@@ -201,6 +205,9 @@ func sl_encode(v any) sl.Value {
 	case uint64:
 		return sl.MakeUint64(x)
 
+	case float64:
+		return sl.Float(x)
+
 	case []uint8:
 		t := make([]sl.Value, len(x))
 		for i, r := range x {
@@ -264,6 +271,17 @@ func sl_encode(v any) sl.Value {
 		return x
 
 	default:
+		// Handle structs and pointers by converting through JSON
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Struct {
+			data, err := json.Marshal(v)
+			if err == nil {
+				var m map[string]any
+				if json.Unmarshal(data, &m) == nil {
+					return sl_encode(m)
+				}
+			}
+		}
 		warn("Starlark encode unknown type '%T'", v)
 		return nil
 	}
@@ -309,12 +327,16 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		return nil, fmt.Errorf("Starlark app function %q not found", function)
 	}
 
-	debug("Starlark running %q: %+v", function, args)
-	s.thread.SetLocal("function", function)
+	// Acquire mutex to protect thread locals from concurrent access
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Acquire semaphore to limit concurrency
 	starlark_sem <- struct{}{}
 	defer func() { <-starlark_sem }()
+
+	debug("Starlark running %q: %+v", function, args)
+	s.thread.SetLocal("function", function)
 
 	// Set execution step limit
 	s.thread.SetMaxExecutionSteps(starlark_max_steps)
@@ -354,5 +376,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 
 // Set a Starlark thread variable
 func (s *Starlark) set(key string, value any) {
+	s.mu.Lock()
 	s.thread.SetLocal(key, value)
+	s.mu.Unlock()
 }

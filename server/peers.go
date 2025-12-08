@@ -20,7 +20,7 @@ type Peer struct {
 }
 
 const (
-	peers_minimum      = 1
+	peers_minimum          = 1
 	peer_maximum_addresses = 20
 )
 

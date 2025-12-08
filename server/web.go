@@ -213,10 +213,10 @@ func web_auth(c *gin.Context) *User {
 // Ask browser to cache static files
 func web_cache_static(c *gin.Context, path string) {
 	if match_react.MatchString(path) {
-		debug("Web asking browser to long term cache %q", path)
+		// debug("Web asking browser to long term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
-		debug("Web asking browser to short term cache %q", path)
+		// debug("Web asking browser to short term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=300")
 	}
 }
@@ -256,6 +256,62 @@ func web_security_headers(c *gin.Context) {
 	c.Header("X-Frame-Options", "DENY")
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 	c.Next()
+}
+
+// Handle login begin: check user's required auth methods (POST with JSON)
+// Returns the methods required for this user, without sending any codes.
+func web_login_begin(c *gin.Context) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if !email_valid(input.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_email"})
+		return
+	}
+
+	// Check if user exists
+	db := db_open("db/users.db")
+	user := user_by_username(input.Email)
+
+	if user == nil {
+		// User doesn't exist - check if signup is enabled
+		if !setting_signup_enabled() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+			return
+		}
+		// New user - default to email method
+		c.JSON(http.StatusOK, gin.H{
+			"methods": []string{"email"},
+			"new":     true,
+		})
+		return
+	}
+
+	// Get user's required methods
+	methods := []string{"email"}
+	if user.Methods != "" {
+		methods = strings.Split(user.Methods, ",")
+		for i := range methods {
+			methods[i] = strings.TrimSpace(methods[i])
+		}
+	}
+
+	// Check if user has passkey as an alternative login method
+	hasPasskey := false
+	count, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
+	if count != nil && count["count"].(int64) > 0 {
+		hasPasskey = true
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"methods":    methods,
+		"hasPasskey": hasPasskey,
+	})
 }
 
 // Handle login: request code via email (POST with JSON)
@@ -450,8 +506,10 @@ func web_start() {
 	r.RedirectTrailingSlash = false
 
 	// Auth endpoints (grouped under /_/auth/)
+	r.POST("/_/auth/begin", rate_limit_login_middleware, web_login_begin)
 	r.POST("/_/auth/code", rate_limit_login_middleware, web_login_code)
 	r.POST("/_/auth/verify", rate_limit_login_middleware, web_login_verify)
+	r.POST("/_/auth/totp", rate_limit_login_middleware, web_auth_totp)
 	r.POST("/_/auth/mfa", rate_limit_login_middleware, web_auth_mfa)
 	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
 	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)

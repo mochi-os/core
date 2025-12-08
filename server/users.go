@@ -34,32 +34,38 @@ type User struct {
 	Username    string
 	Role        string
 	Methods     string
+	Status      string
+	MFARequired int `db:"mfa_required"`
 	Preferences map[string]string
 	Identity    *Entity
 	db          *DB // Used by actions
 }
 
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
-	"count":  sl.NewBuiltin("mochi.user.count", api_user_count),
-	"create": sl.NewBuiltin("mochi.user.create", api_user_create),
-	"delete": sl.NewBuiltin("mochi.user.delete", api_user_delete),
+	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),
+	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
+	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
+	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
 	"get": sls.FromStringDict(sl.String("mochi.user.get"), sl.StringDict{
 		"fingerprint": sl.NewBuiltin("mochi.user.get.fingerprint", api_user_get_fingerprint),
 		"id":          sl.NewBuiltin("mochi.user.get.id", api_user_get_id),
 		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
 		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
-	"list":     sl.NewBuiltin("mochi.user.list", api_user_list),
-	"methods":  api_user_methods,
-	"passkey":  api_user_passkey,
-	"recovery": api_user_recovery,
-	"search":   sl.NewBuiltin("mochi.user.search", api_user_search),
+	"last_login":   sl.NewBuiltin("mochi.user.last_login", api_user_last_login),
+	"list":         sl.NewBuiltin("mochi.user.list", api_user_list),
+	"methods":      api_user_methods,
+	"mfa_required": sl.NewBuiltin("mochi.user.mfa_required", api_user_mfa_required),
+	"passkey":      api_user_passkey,
+	"recovery":     api_user_recovery,
+	"search":       sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
 		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
 		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
 	}),
-	"totp":   api_user_totp,
-	"update": sl.NewBuiltin("mochi.user.update", api_user_update),
+	"suspend": sl.NewBuiltin("mochi.user.suspend", api_user_suspend),
+	"totp":    api_user_totp,
+	"update":  sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 
 // code_send sends a login code to the given email address. Returns empty string
@@ -76,10 +82,12 @@ func code_send(email string) string {
 		return "signup_disabled"
 	}
 
-	code := random_alphanumeric(12)
+	// Generate code in XXX-XXX-XXX format (unambiguous mixed case)
+	raw := random_unambiguous(9)
+	formatted := raw[:3] + "-" + raw[3:6] + "-" + raw[6:]
 	sessions := db_open("db/sessions.db")
-	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
-	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
+	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", raw, email, now()+3600)
+	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+formatted)
 	return ""
 }
 
@@ -100,7 +108,7 @@ func login_delete(code string) {
 func user_by_id(id int) *User {
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", id) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", id) {
 		return nil
 	}
 
@@ -113,6 +121,17 @@ func user_by_id(id int) *User {
 	return &u
 }
 
+// user_by_username looks up a user by their username (email).
+// Returns nil if the user doesn't exist. Note: does not require identity.
+func user_by_username(username string) *User {
+	db := db_open("db/users.db")
+	var u User
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", username) {
+		return nil
+	}
+	return &u
+}
+
 func user_by_identity(id string) *User {
 	db := db_open("db/users.db")
 	var i Entity
@@ -121,7 +140,7 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", i.User) {
 		return nil
 	}
 
@@ -146,7 +165,12 @@ func user_by_login(login string) *User {
 
 	users := db_open("db/users.db")
 	var u User
-	if !users.scan(&u, "select id, username, role, methods from users where id=?", s.User) {
+	if !users.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", s.User) {
+		return nil
+	}
+
+	// Block suspended users
+	if u.Status == "suspended" {
 		return nil
 	}
 
@@ -159,6 +183,9 @@ func user_by_login(login string) *User {
 // error reason. Error reason is empty on success, "invalid" for bad/expired
 // code, or "signup_disabled" if the code was valid but signups are disabled.
 func user_from_code(code string) (*User, string) {
+	// Normalize code: remove dashes (case-sensitive)
+	code = strings.ReplaceAll(code, "-", "")
+
 	var c Code
 	sessions := db_open("db/sessions.db")
 	if !sessions.scan(&c, "delete from codes where code=? and expires>=? returning *", code, now()) {
@@ -167,7 +194,7 @@ func user_from_code(code string) (*User, string) {
 
 	db := db_open("db/users.db")
 	var u User
-	if db.scan(&u, "select id, username, role, methods from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
 		u.Identity = u.identity()
 		return &u, ""
@@ -192,7 +219,7 @@ func user_from_code(code string) (*User, string) {
 		email_send(admin, "Mochi new user", "New user: "+c.Username)
 	}
 
-	if db.scan(&u, "select id, username, role, methods from users where username=?", c.Username) {
+	if db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", c.Username) {
 		u.Preferences = user_preferences_load(&u)
 		return &u, ""
 	}
@@ -213,7 +240,7 @@ func user_owning_entity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", i.User) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", i.User) {
 		return nil
 	}
 
@@ -265,11 +292,11 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", id) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status, "mfa_required": u.MFARequired != 0}), nil
 }
 
 // mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
@@ -293,11 +320,11 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where username=?", username) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", username) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status, "mfa_required": u.MFARequired != 0}), nil
 }
 
 // mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
@@ -331,11 +358,11 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", user_id) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status, "mfa_required": u.MFARequired != 0}), nil
 }
 
 // mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
@@ -372,11 +399,11 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where id=?", user_id) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where id=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status, "mfa_required": u.MFARequired != 0}), nil
 }
 
 // mochi.user.list(limit, offset) -> list: List all users (admin only)
@@ -407,7 +434,7 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role, methods from users order by id limit ? offset ?", limit, offset)
+	rows, err := db.rows("select id, username, role, methods, status, mfa_required from users order by id limit ? offset ?", limit, offset)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -463,7 +490,7 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role, methods from users where username like ? order by username limit ?", "%"+query+"%", limit)
+	rows, err := db.rows("select id, username, role, methods, status, mfa_required from users where username like ? order by username limit ?", "%"+query+"%", limit)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -507,11 +534,11 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	db.exec("insert into users (username, role) values (?, ?)", username, role)
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods from users where username=?", username) {
+	if !db.scan(&u, "select id, username, role, methods, status, mfa_required from users where username=?", username) {
 		return sl_error(fn, "failed to create user")
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods}), nil
+	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status, "mfa_required": u.MFARequired != 0}), nil
 }
 
 // mochi.user.update(id, username, role) -> bool: Update a user (admin only)
@@ -591,6 +618,138 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
+// mochi.user.suspend(id) -> bool: Suspend a user (admin only)
+func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	if int(id) == user.ID {
+		return sl_error(fn, "cannot suspend self")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where id=?", id)
+	if !exists {
+		return sl_error(fn, "user not found")
+	}
+
+	db.exec("update users set status='suspended' where id=?", id)
+	return sl.True, nil
+}
+
+// mochi.user.activate(id) -> bool: Activate a suspended user (admin only)
+func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where id=?", id)
+	if !exists {
+		return sl_error(fn, "user not found")
+	}
+
+	db.exec("update users set status='active' where id=?", id)
+	return sl.True, nil
+}
+
+// mochi.user.mfa_required(id, required) -> bool: Set MFA requirement for a user (admin only)
+func api_user_mfa_required(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <id: int>, <required: bool>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	required, ok := args[1].(sl.Bool)
+	if !ok {
+		return sl_error(fn, "invalid required value")
+	}
+
+	db := db_open("db/users.db")
+	exists, _ := db.exists("select 1 from users where id=?", id)
+	if !exists {
+		return sl_error(fn, "user not found")
+	}
+
+	value := 0
+	if required {
+		value = 1
+	}
+	db.exec("update users set mfa_required=? where id=?", value, id)
+	return sl.True, nil
+}
+
+// mochi.user.last_login(id) -> int | None: Get last login timestamp for a user (admin only)
+func api_user_last_login(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	db := db_open("db/sessions.db")
+	row, err := db.row("select max(accessed) as last from sessions where user=?", id)
+	if err != nil || row == nil || row["last"] == nil {
+		return sl.None, nil
+	}
+
+	last, ok := row["last"].(int64)
+	if !ok {
+		return sl.None, nil
+	}
+	return sl.MakeInt64(last), nil
+}
+
 // mochi.user.session.list(user?) -> tuple: List active sessions for current user or specified user (admin)
 func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -619,34 +778,55 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
-// mochi.user.session.revoke(code) -> bool: Revoke a session
+// mochi.user.session.revoke(user_id, code?) -> int: Revoke session(s) for a user
+// If code is provided, revokes that specific session. If omitted, revokes ALL sessions.
+// Returns number of sessions revoked.
 func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <code: string>")
-	}
-
-	code, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid session code")
-	}
-
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
 
-	db := db_open("db/sessions.db")
-	var s Session
-	if !db.scan(&s, "select * from sessions where code=?", code) {
-		return sl_error(fn, "session not found")
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <user_id: int>, [code: string]")
 	}
 
-	if s.User != user.ID && !user.administrator() {
+	target, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid user id")
+	}
+
+	// Only admins can revoke other users' sessions
+	if int(target) != user.ID && !user.administrator() {
 		return sl_error(fn, "access denied")
 	}
 
-	db.exec("delete from sessions where code=?", code)
-	return sl.True, nil
+	db := db_open("db/sessions.db")
+	var count int
+
+	if len(args) == 2 {
+		// Revoke specific session
+		code, ok := sl.AsString(args[1])
+		if !ok {
+			return sl_error(fn, "invalid code")
+		}
+		// Verify session belongs to target user
+		exists, _ := db.exists("select 1 from sessions where user=? and code=?", target, code)
+		if !exists {
+			return sl_error(fn, "session not found")
+		}
+		db.exec("delete from sessions where user=? and code=?", target, code)
+		count = 1
+	} else {
+		// Revoke all sessions for user
+		row, _ := db.row("select count(*) as c from sessions where user=?", target)
+		if row != nil && row["c"] != nil {
+			count = int(row["c"].(int64))
+		}
+		db.exec("delete from sessions where user=?", target)
+	}
+
+	return sl.MakeInt(count), nil
 }
 
 func (u *User) identity() *Entity {
@@ -660,7 +840,7 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"id", "identity", "methods", "preference", "role", "username"}
+	return []string{"id", "identity", "methods", "mfa_required", "preference", "role", "status", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
@@ -671,10 +851,14 @@ func (u *User) Attr(name string) (sl.Value, error) {
 		return u.Identity, nil
 	case "methods":
 		return sl.String(u.Methods), nil
+	case "mfa_required":
+		return sl.Bool(u.MFARequired != 0), nil
 	case "preference":
 		return &UserPreference{user: u}, nil
 	case "role":
 		return sl.String(u.Role), nil
+	case "status":
+		return sl.String(u.Status), nil
 	case "username":
 		return sl.String(u.Username), nil
 	default:

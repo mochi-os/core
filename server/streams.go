@@ -15,14 +15,14 @@ import (
 )
 
 const (
-	challenge_size      = 16
-	cbor_max_size       = 100 * 1024 * 1024 // 100MB max message size
-	cbor_max_depth      = 32                // Max nesting depth
-	cbor_max_pairs      = 1000              // Max map pairs
-	cbor_max_elements   = 10000             // Max array elements
-	headers_max_size    = 4 * 1024          // 4KB max headers size
-	content_max_key     = 256                // Max content key length
-	content_max_value   = 100 * 1024 * 1024  // 100MB max content value length
+	challenge_size    = 16
+	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size
+	cbor_max_depth    = 32                // Max nesting depth
+	cbor_max_pairs    = 1000              // Max map pairs
+	cbor_max_elements = 10000             // Max array elements
+	headers_max_size  = 4 * 1024          // 4KB max headers size
+	content_max_key   = 256               // Max content key length
+	content_max_value = 100 * 1024 * 1024 // 100MB max content value length
 )
 
 var cbor_decode_mode cbor.DecMode
@@ -141,7 +141,7 @@ func stream_receive(s *Stream, version int, peer string) {
 			info("Stream %d ACK failed signature verification", s.id)
 			return
 		}
-		debug("Stream %d received ACK for ID %q", s.id, h.AckID)
+		// debug("Stream %d received ACK for ID %q", s.id, h.AckID)
 		queue_ack(h.AckID)
 		return
 	}
@@ -150,7 +150,7 @@ func stream_receive(s *Stream, version int, peer string) {
 			info("Stream %d NACK failed signature verification", s.id)
 			return
 		}
-		debug("Stream %d received NACK for ID %q", s.id, h.AckID)
+		// debug("Stream %d received NACK for ID %q", s.id, h.AckID)
 		queue_fail(h.AckID, "NACK received")
 		return
 	}
@@ -211,7 +211,7 @@ func (s *Stream) send_ack(ack_type, ack_id, from, to string) {
 	})
 
 	if s.write_raw(headers) == nil {
-		debug("Stream %d sent %s for ID %q", s.id, ack_type, ack_id)
+		// debug("Stream %d sent %s for ID %q", s.id, ack_type, ack_id)
 	}
 
 	if s.writer != nil {
@@ -269,7 +269,7 @@ func (s *Stream) read(v any) error {
 		return fmt.Errorf("stream %d unable to read segment: %v", s.id, err)
 	}
 
-	debug("Stream %d read segment: %+v", s.id, v)
+	// debug("Stream %d read segment: %+v", s.id, v)
 	return nil
 }
 
@@ -304,7 +304,7 @@ func (s *Stream) read_headers(h *Headers) error {
 	// Replace decoder with larger limit for subsequent reads
 	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
 
-	debug("Stream %d read headers: %+v", s.id, h)
+	// debug("Stream %d read headers: %+v", s.id, h)
 	return nil
 }
 
@@ -336,7 +336,7 @@ func (s *Stream) write(v any) error {
 	if s == nil || s.writer == nil {
 		return fmt.Errorf("stream not open for writing")
 	}
-	debug("Stream %d writing segment: %+v", s.id, v)
+	// debug("Stream %d writing segment: %+v", s.id, v)
 
 	timeout := s.timeout.write
 	if timeout <= 0 {
@@ -396,7 +396,7 @@ func (s *Stream) write_raw(data []byte) error {
 	if s == nil || s.writer == nil {
 		return fmt.Errorf("stream not open for writing")
 	}
-	debug("Stream %d writing raw segment: %d bytes", s.id, len(data))
+	// debug("Stream %d writing raw segment: %d bytes", s.id, len(data))
 
 	timeout := s.timeout.write
 	if timeout <= 0 {
@@ -414,7 +414,7 @@ func (s *Stream) write_raw(data []byte) error {
 		return fmt.Errorf("stream error writing raw segment: %v", err)
 	}
 
-	debug("Stream %d wrote raw segment", s.id)
+	// debug("Stream %d wrote raw segment", s.id)
 	return nil
 }
 
@@ -468,7 +468,7 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // s.read_to_file(path) -> None: Read raw bytes from stream and write to file
 func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	debug("Stream %d reading rest of stream to file", s.id)
+	// debug("Stream %d reading rest of stream to file", s.id)
 
 	if len(args) != 1 {
 		s.reader.Close()
@@ -509,7 +509,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	s.reader.Close()
-	debug("Stream %d read to file", s.id)
+	// debug("Stream %d read to file", s.id)
 	return sl.None, nil
 }
 
@@ -526,7 +526,7 @@ func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // s.write_from_file(path) -> None: Send file contents as raw bytes
 func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	debug("Stream %d writing from file", s.id)
+	// debug("Stream %d writing from file", s.id)
 	defer s.writer.Close()
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -551,6 +551,6 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "unable to send file")
 	}
 
-	debug("Stream %d wrote from file", s.id)
+	// debug("Stream %d wrote from file", s.id)
 	return sl.None, nil
 }

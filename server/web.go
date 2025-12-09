@@ -62,11 +62,29 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if user == nil && !aa.Public {
 		// For browser requests, redirect to login
 		if strings.Contains(c.GetHeader("Accept"), "text/html") {
-			c.Redirect(http.StatusFound, "/login")
+			// If user has a login cookie but auth failed (suspended, expired, etc),
+			// add reauth param so frontend clears its state and avoids redirect loop
+			if web_cookie_get(c, "login", "") != "" {
+				c.Redirect(http.StatusFound, "/login?reauth=1")
+			} else {
+				c.Redirect(http.StatusFound, "/login")
+			}
 			return true
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return true
+	}
+
+	// Require identity for authenticated users accessing non-login apps
+	if user != nil && a.id != "login" && !aa.Public {
+		if user.identity() == nil {
+			if strings.Contains(c.GetHeader("Accept"), "text/html") {
+				c.Redirect(http.StatusFound, "/login/identity")
+				return true
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "Identity required"})
+			return true
+		}
 	}
 
 	// Serve attachment

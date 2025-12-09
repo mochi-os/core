@@ -620,8 +620,11 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		e.delete()
 	}
 
-	// Delete sessions (in sessions.db)
-	db_open("db/sessions.db").exec("delete from sessions where user=?", id)
+	// Delete from sessions.db
+	sdb := db_open("db/sessions.db")
+	sdb.exec("delete from sessions where user=?", id)
+	sdb.exec("delete from ceremonies where user=?", id)
+	sdb.exec("delete from partial where user=?", id)
 
 	// Delete passkey credentials
 	db.exec("delete from credentials where user=?", id)

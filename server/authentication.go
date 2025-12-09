@@ -59,6 +59,8 @@ func web_login_verify(c *gin.Context) {
 		switch reason {
 		case "signup_disabled":
 			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+		case "suspended":
+			c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
 		default:
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
 		}
@@ -187,6 +189,10 @@ func web_auth_totp(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
+	if user.Status == "suspended" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		return
+	}
 
 	// Verify TOTP code
 	if !totp_verify(user.ID, input.Code) {
@@ -200,6 +206,14 @@ func web_auth_totp(c *gin.Context) {
 	// Check for remaining MFA methods after TOTP
 	remaining := auth_remaining_methods(user, "totp")
 	if len(remaining) > 0 {
+		// If email is required, send the code now
+		for _, method := range remaining {
+			if method == "email" {
+				code_send(user.Username)
+				break
+			}
+		}
+
 		// Create partial session for remaining MFA
 		partial := random_alphanumeric(32)
 		db := db_open("db/sessions.db")
@@ -287,9 +301,12 @@ var api_user_methods = sls.FromStringDict(sl.String("mochi.user.methods"), sl.St
 // POST /_/auth/methods - Complete additional MFA factor
 func web_auth_mfa(c *gin.Context) {
 	var input struct {
-		Partial string `json:"partial"`
-		Method  string `json:"method"`
-		Code    string `json:"code"` // for TOTP
+		Partial   string   `json:"partial"`
+		Method    string   `json:"method"`            // Single method (legacy)
+		Code      string   `json:"code"`              // Single code (legacy)
+		EmailCode string   `json:"email_code"`        // Email code for atomic validation
+		TotpCode  string   `json:"totp_code"`         // TOTP code for atomic validation
+		Methods   []string `json:"methods,omitempty"` // Multiple methods for atomic validation
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
@@ -309,45 +326,116 @@ func web_auth_mfa(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "user_not_found"})
 		return
 	}
+	if user.Status == "suspended" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		return
+	}
 
 	remaining := strings.Split(row["remaining"].(string), ",")
 	completed := row["completed"].(string)
 
-	// Check method is in remaining list
-	found := false
-	for _, m := range remaining {
-		if m == input.Method {
-			found = true
-			break
+	// Determine which methods to validate
+	var methodsToValidate []string
+	if len(input.Methods) > 0 {
+		methodsToValidate = input.Methods
+	} else if input.Method != "" {
+		methodsToValidate = []string{input.Method}
+	} else {
+		// Auto-detect from provided codes
+		if input.EmailCode != "" {
+			methodsToValidate = append(methodsToValidate, "email")
+		}
+		if input.TotpCode != "" {
+			methodsToValidate = append(methodsToValidate, "totp")
 		}
 	}
-	if !found {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_method"})
+
+	if len(methodsToValidate) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no_methods"})
 		return
 	}
 
-	// Verify the method
-	switch input.Method {
-	case "totp":
-		if !totp_verify(user.ID, input.Code) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+	// Check all methods are in remaining list
+	for _, method := range methodsToValidate {
+		found := false
+		for _, m := range remaining {
+			if m == method {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_method"})
 			return
 		}
-	// Add other methods here as implemented
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported_method"})
-		return
 	}
 
-	// Update partial session
-	if completed != "" {
-		completed += ","
+	// Get codes for each method
+	getCode := func(method string) string {
+		switch method {
+		case "email":
+			if input.EmailCode != "" {
+				return input.EmailCode
+			}
+			return input.Code
+		case "totp":
+			if input.TotpCode != "" {
+				return input.TotpCode
+			}
+			return input.Code
+		default:
+			return input.Code
+		}
 	}
-	completed += input.Method
 
+	// Validate all methods WITHOUT consuming codes first
+	// For email, we need to check without deleting; for TOTP, it's stateless
+	for _, method := range methodsToValidate {
+		code := getCode(method)
+		switch method {
+		case "email":
+			if !email_code_check(user.Username, code) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+				return
+			}
+		case "totp":
+			if !totp_verify(user.ID, code) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+				return
+			}
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported_method"})
+			return
+		}
+	}
+
+	// All validations passed - now consume the codes
+	for _, method := range methodsToValidate {
+		code := getCode(method)
+		if method == "email" {
+			email_code_consume(code)
+		}
+	}
+
+	// Update completed methods
+	for _, method := range methodsToValidate {
+		if completed != "" {
+			completed += ","
+		}
+		completed += method
+	}
+
+	// Calculate new remaining
 	var newRemaining []string
 	for _, m := range remaining {
-		if m != input.Method {
+		stillRemaining := true
+		for _, validated := range methodsToValidate {
+			if m == validated {
+				stillRemaining = false
+				break
+			}
+		}
+		if stillRemaining {
 			newRemaining = append(newRemaining, m)
 		}
 	}
@@ -504,6 +592,31 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // ============================================================================
 // TOTP authentication
 // ============================================================================
+
+// email_code_verify checks an email code for a user and consumes it (used by MFA endpoint)
+func email_code_verify(username string, code string) bool {
+	if !email_code_check(username, code) {
+		return false
+	}
+	email_code_consume(code)
+	return true
+}
+
+// email_code_check validates an email code without consuming it
+func email_code_check(username string, code string) bool {
+	sessions := db_open("db/sessions.db")
+	row, _ := sessions.row("select username from codes where code=? and expires>=?", code, now())
+	if row == nil {
+		return false
+	}
+	return row["username"].(string) == username
+}
+
+// email_code_consume deletes an email code after successful validation
+func email_code_consume(code string) {
+	sessions := db_open("db/sessions.db")
+	sessions.exec("delete from codes where code=?", code)
+}
 
 // totp_verify checks a TOTP code for a user (used by MFA endpoint)
 func totp_verify(user int, code string) bool {
@@ -674,6 +787,10 @@ func web_recovery_login(c *gin.Context) {
 	user := user_by_id(user_id)
 	if user == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user_error"})
+		return
+	}
+	if user.Status == "suspended" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
 		return
 	}
 

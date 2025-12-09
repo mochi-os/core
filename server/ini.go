@@ -6,6 +6,7 @@ package main
 import (
 	"gopkg.in/ini.v1"
 	"regexp"
+	"strconv"
 )
 
 var (
@@ -37,4 +38,19 @@ func ini_strings_commas(section string, key string) []string {
 		return nil
 	}
 	return s
+}
+
+// ini_ints_commas returns a comma-separated list of integers
+func ini_ints_commas(section string, key string) []int {
+	strs := ini_strings_commas(section, key)
+	if strs == nil {
+		return nil
+	}
+	result := make([]int, 0, len(strs))
+	for _, s := range strs {
+		if n, err := strconv.Atoi(s); err == nil {
+			result = append(result, n)
+		}
+	}
+	return result
 }

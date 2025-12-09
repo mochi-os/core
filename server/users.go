@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	sl "go.starlark.net/starlark"
@@ -583,7 +584,7 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
-// mochi.user.delete(id) -> bool: Delete a user (admin only)
+// mochi.user.delete(id) -> bool: Delete a user and all associated data (admin only)
 func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -612,7 +613,31 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "user not found")
 	}
 
+	// Delete user's entities (broadcasts deletion, removes from directory and entities table)
+	var entities []Entity
+	db.scans(&entities, "select * from entities where user=?", id)
+	for _, e := range entities {
+		e.delete()
+	}
+
+	// Delete sessions (in sessions.db)
+	db_open("db/sessions.db").exec("delete from sessions where user=?", id)
+
+	// Delete passkey credentials
+	db.exec("delete from credentials where user=?", id)
+
+	// Delete TOTP secrets
+	db.exec("delete from totp where user=?", id)
+
+	// Delete recovery codes
+	db.exec("delete from recovery where user=?", id)
+
+	// Delete user
 	db.exec("delete from users where id=?", id)
+
+	// Delete user's data directory
+	os.RemoveAll(fmt.Sprintf("%s/users/%d", data_dir, id))
+
 	return sl.True, nil
 }
 

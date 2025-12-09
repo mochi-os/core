@@ -88,8 +88,12 @@ func (m *Message) publish(allow_queue bool) {
 
 	if peers_sufficient() {
 		// Broadcasts: sign without challenge (untrusted anyway)
-		m.Signature = entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.ID, "", nil)))
-		data := cbor_encode(m)
+		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.ID, "", nil)))
+		headers := cbor_encode(Headers{
+			Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
+			ID: m.ID, Signature: signature,
+		})
+		data := headers
 		data = append(data, content...)
 		if len(m.data) > 0 {
 			data = append(data, m.data...)

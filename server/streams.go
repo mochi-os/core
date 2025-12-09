@@ -301,8 +301,8 @@ func (s *Stream) read_headers(h *Headers) error {
 		return fmt.Errorf("stream %d unable to read headers: %v", s.id, err)
 	}
 
-	// Replace decoder with larger limit for subsequent reads
-	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
+	// Keep using the same decoder for subsequent reads
+	// (the decoder may have buffered data that would be lost if we created a new one)
 
 	// debug("Stream %d read headers: %+v", s.id, h)
 	return nil

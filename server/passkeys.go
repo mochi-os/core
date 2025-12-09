@@ -239,6 +239,10 @@ func web_passkey_login_finish(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
 		return
 	}
+	if user.Status == "suspended" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		return
+	}
 
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
@@ -246,6 +250,14 @@ func web_passkey_login_finish(c *gin.Context) {
 	// Check for remaining MFA methods
 	remaining := auth_remaining_methods(user, "passkey")
 	if len(remaining) > 0 {
+		// If email is required, send the code now
+		for _, method := range remaining {
+			if method == "email" {
+				code_send(user.Username)
+				break
+			}
+		}
+
 		// Create partial session
 		partial := random_alphanumeric(32)
 		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'passkey', ?, ?)",

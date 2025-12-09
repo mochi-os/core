@@ -23,7 +23,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 18
+	schema_version = 19
 )
 
 var (
@@ -63,7 +63,7 @@ func db_create() {
 
 	// Users
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active', mfa_required integer not null default 0)")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
 
 	// Passkey credentials
@@ -609,16 +609,21 @@ func db_upgrade() {
 			sessions.exec("create index partial_expires on partial(expires)")
 
 		} else if schema == 17 {
-			// Migration: add user status and mfa_required columns for user management
+			// Migration: add user status column for user management
 			users := db_open("db/users.db")
 			users.exec("alter table users add column status text not null default 'active'")
-			users.exec("alter table users add column mfa_required integer not null default 0")
+			// Note: mfa_required was added here but removed in schema 19
 
 		} else if schema == 18 {
 			// Migration: add backup flags to passkey credentials
 			users := db_open("db/users.db")
 			users.exec("alter table credentials add column backup_eligible integer not null default 0")
 			users.exec("alter table credentials add column backup_state integer not null default 0")
+
+		} else if schema == 19 {
+			// Migration: remove unused mfa_required column
+			users := db_open("db/users.db")
+			users.exec("alter table users drop column mfa_required")
 		}
 
 		setting_set("schema", itoa(int(schema)))

@@ -62,11 +62,29 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if user == nil && !aa.Public {
 		// For browser requests, redirect to login
 		if strings.Contains(c.GetHeader("Accept"), "text/html") {
-			c.Redirect(http.StatusFound, "/login")
+			// If user has a session cookie but auth failed (suspended, expired, etc),
+			// add reauth param so frontend clears its state and avoids redirect loop
+			if web_cookie_get(c, "session", "") != "" {
+				c.Redirect(http.StatusFound, "/login?reauth=1")
+			} else {
+				c.Redirect(http.StatusFound, "/login")
+			}
 			return true
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return true
+	}
+
+	// Require identity for authenticated users accessing non-login apps
+	if user != nil && a.id != "login" && !aa.Public {
+		if user.identity() == nil {
+			if strings.Contains(c.GetHeader("Accept"), "text/html") {
+				c.Redirect(http.StatusFound, "/login/identity")
+				return true
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "Identity required"})
+			return true
+		}
 	}
 
 	// Serve attachment
@@ -205,9 +223,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	return true
 }
 
-// Get user for login cookie
+// Get user for session cookie
 func web_auth(c *gin.Context) *User {
-	return user_by_login(web_cookie_get(c, "login", ""))
+	return user_by_login(web_cookie_get(c, "session", ""))
 }
 
 // Ask browser to cache static files
@@ -388,11 +406,11 @@ func web_login_identity(c *gin.Context) {
 
 // Log the user out
 func web_logout(c *gin.Context) {
-	login := web_cookie_get(c, "login", "")
-	if login != "" {
-		login_delete(login)
+	session := web_cookie_get(c, "session", "")
+	if session != "" {
+		login_delete(session)
 	}
-	web_cookie_unset(c, "login")
+	web_cookie_unset(c, "session")
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -440,6 +458,12 @@ func web_path(c *gin.Context) {
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
+		// Redirect /app to /app/ for correct relative path resolution
+		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
+			c.Redirect(http.StatusMovedPermanently, "/"+first+"/")
+			return
+		}
+
 		second := ""
 		if len(segments) > 1 {
 			second = segments[1]
@@ -489,11 +513,15 @@ func web_ping(c *gin.Context) {
 // Start the web server
 func web_start() {
 	listen := ini_string("web", "listen", "")
-	port := ini_int("web", "port", 80)
-	if port == 0 {
-		return
+	ports := ini_ints_commas("web", "ports")
+	if len(ports) == 0 {
+		// Fallback to legacy single port config
+		port := ini_int("web", "port", 80)
+		if port == 0 {
+			return
+		}
+		ports = []int{port}
 	}
-	domains := ini_strings_commas("web", "domains")
 
 	if !ini_bool("web", "debug", false) {
 		gin.SetMode(gin.ReleaseMode)
@@ -516,29 +544,57 @@ func web_start() {
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
 	r.GET("/_/auth/methods", web_auth_methods)
 
-	// Legacy endpoints (deprecated, will be removed)
-	r.POST("/_/code", rate_limit_login_middleware, web_login_code)
-	r.POST("/_/verify", rate_limit_login_middleware, web_login_verify)
+	// Other system endpoints
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
-
-	// Other system endpoints
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/websocket", websocket_connection)
 
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)
 
-	if len(domains) > 0 || ini_bool("web", "https", false) {
-		web_https = true
-		tlsConfig := &tls.Config{
-			GetCertificate: domains_get_certificate,
+	// Check if HTTPS should be enabled (port 443 with domains configured)
+	domains := domain_list()
+	https := false
+	for _, port := range ports {
+		if port == 443 && len(domains) > 0 {
+			https = true
+			break
 		}
-		info("Web listening on HTTPS (domains from database)")
-		must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
-	} else {
-		info("Web listening on %q:%d", listen, port)
-		must(r.Run(fmt.Sprintf("%s:%d", listen, port)))
+	}
+
+	// Start listeners for each port
+	for i, port := range ports {
+		last := i == len(ports)-1
+
+		if port == 443 {
+			if len(domains) == 0 {
+				warn("Port 443 configured but no domains in database, skipping HTTPS")
+				continue
+			}
+			web_https = true
+			tlsConfig := &tls.Config{
+				GetCertificate: domains_get_certificate,
+			}
+			info("Web listening on %s:443 (HTTPS)", listen)
+			if last {
+				must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
+			} else {
+				go must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
+			}
+		} else {
+			addr := fmt.Sprintf("%s:%d", listen, port)
+			if https {
+				info("Web listening on %s (HTTP, ACME challenges)", addr)
+			} else {
+				info("Web listening on %s (HTTP)", addr)
+			}
+			if last {
+				must(r.Run(addr))
+			} else {
+				go must(r.Run(addr))
+			}
+		}
 	}
 }
 

@@ -124,6 +124,20 @@ func entities_manager() {
 	}
 }
 
+// Delete an entity: broadcast deletion to network, remove from directory and entities table
+func (e *Entity) delete() {
+	// Broadcast deletion (signs synchronously, dispatches async)
+	m := message(e.ID, "", "directory", "delete")
+	m.set("entity", e.ID)
+	go m.publish(false)
+
+	// Remove from local directory
+	db_open("db/directory.db").exec("delete from directory where id=?", e.ID)
+
+	// Remove entity
+	db_open("db/users.db").exec("delete from entities where id=?", e.ID)
+}
+
 // Get the peer an entity is at
 func entity_peer(id string) string {
 	// Check if local

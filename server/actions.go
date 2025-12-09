@@ -285,11 +285,11 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // a.logout() -> None: Log the current user out
 func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	login := web_cookie_get(a.web, "login", "")
-	if login != "" {
-		login_delete(login)
+	session := web_cookie_get(a.web, "session", "")
+	if session != "" {
+		login_delete(session)
 	}
-	web_cookie_unset(a.web, "login")
+	web_cookie_unset(a.web, "session")
 
 	return sl.None, nil
 }

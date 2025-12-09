@@ -458,6 +458,12 @@ func web_path(c *gin.Context) {
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
+		// Redirect /app to /app/ for correct relative path resolution
+		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
+			c.Redirect(http.StatusMovedPermanently, "/"+first+"/")
+			return
+		}
+
 		second := ""
 		if len(segments) > 1 {
 			second = segments[1]

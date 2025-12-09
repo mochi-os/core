@@ -29,9 +29,32 @@ var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDi
 func init() {
 	a := app("directory")
 	a.service("directory")
+	a.event("delete", directory_delete_event)
 	a.event("download", directory_download_event)
 	a.event("publish", directory_publish_event)
 	a.event("request", directory_request_event)
+}
+
+// Handle incoming delete events from the network
+func directory_delete_event(e *Event) {
+	debug("Directory received delete event '%+v'", e)
+
+	id := e.get("entity", "")
+	if !valid(id, "entity") {
+		debug("Directory dropping delete event with invalid entity id %q", id)
+		return
+	}
+
+	// Verify the message was signed by the entity being deleted
+	if e.from != id {
+		info("Directory dropping delete event from incorrect sender: %q!=%q", id, e.from)
+		return
+	}
+
+	db := db_open("db/directory.db")
+	db.exec("delete from directory where id=?", id)
+
+	debug("Removed entity %s from directory (deletion announcement)", id)
 }
 
 // Get a directory entry

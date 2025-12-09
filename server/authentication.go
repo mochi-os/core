@@ -107,24 +107,24 @@ func auth_remaining_methods(user *User, completed string) []string {
 	return remaining
 }
 
-// auth_complete_login creates a full session and returns token/login to client
+// auth_complete_login creates a full session and returns token/session to client
 func auth_complete_login(c *gin.Context, user *User) {
-	// Create login entry (per-device) which stores a per-login secret
-	login := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+	// Create session entry (per-device) which stores a per-session secret
+	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 
-	// Create a JWT signed with the per-login secret
-	token := auth_create_token(user.ID, login)
+	// Create a JWT signed with the per-session secret
+	token := auth_create_token(user.ID, session)
 	if token == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to create token"})
 		return
 	}
 
-	// Set login cookie for web browser authentication
-	web_cookie_set(c, "login", login)
+	// Set session cookie for web browser authentication
+	web_cookie_set(c, "session", session)
 
 	response := gin.H{
-		"token": token,
-		"login": login,
+		"token":   token,
+		"session": session,
 	}
 
 	if user.Identity != nil && user.Identity.Name != "" {

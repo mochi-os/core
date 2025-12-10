@@ -6,6 +6,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 19
+	schema_version = 20
 )
 
 var (
@@ -135,7 +136,7 @@ func db_create() {
 	// Domains
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
@@ -624,6 +625,30 @@ func db_upgrade() {
 			// Migration: remove unused mfa_required column
 			users := db_open("db/users.db")
 			users.exec("alter table users drop column mfa_required")
+
+		} else if schema == 20 {
+			// Migration: split routes entity column into method and target
+			db := db_open("db/domains.db")
+			db.exec("create table routes_new (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+			// Migrate existing routes, parsing entity format (app:name, redirect:url, or entity id)
+			rows, _ := db.rows("select domain, path, entity, context, priority, enabled, created, updated from routes")
+			for _, r := range rows {
+				entity := r["entity"].(string)
+				method := "entity"
+				target := entity
+				if strings.HasPrefix(entity, "app:") {
+					method = "app"
+					target = strings.TrimPrefix(entity, "app:")
+				} else if strings.HasPrefix(entity, "redirect:") {
+					method = "redirect"
+					target = strings.TrimPrefix(entity, "redirect:")
+				}
+				db.exec("insert into routes_new (domain, path, method, target, context, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					r["domain"], r["path"], method, target, r["context"], r["priority"], r["enabled"], r["created"], r["updated"])
+			}
+			db.exec("drop table routes")
+			db.exec("alter table routes_new rename to routes")
+			db.exec("create index routes_domain on routes(domain)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

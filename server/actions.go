@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -64,11 +65,20 @@ func (a *Action) dump(values ...any) {
 
 // Display an error as a simple HTML page
 func (a *Action) error(code int, message string, values ...any) {
+	msg := fmt.Sprintf(message, values...)
+
+	// Return JSON for API requests, HTML for browser requests
+	if strings.Contains(a.web.GetHeader("Accept"), "application/json") ||
+		strings.HasPrefix(a.web.GetHeader("Content-Type"), "application/json") {
+		a.web.JSON(code, gin.H{"error": msg})
+		return
+	}
+
 	a.web.Status(code)
 	a.web.Writer.WriteString("<html><head><title>Error</title></head><body>")
 	a.web.Writer.WriteString(fmt.Sprintf("<h1>Error %d</h1>", code))
 	a.web.Writer.WriteString("<pre>")
-	a.web.Writer.WriteString(fmt.Sprintf(message, values...))
+	a.web.Writer.WriteString(msg)
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 

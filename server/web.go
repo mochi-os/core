@@ -172,6 +172,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		action.inputs[k] = v
 	}
 
+	// Add entity to inputs when present (for entity-aware routing)
+	if e != nil && e.Class != "" {
+		action.inputs[e.Class] = e.ID
+	}
+
 	// Parse JSON body and convert to strings for a.input()
 	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
 		var data map[string]any

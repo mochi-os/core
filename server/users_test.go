@@ -275,3 +275,108 @@ func TestFingerprintHyphenRemoval(t *testing.T) {
 		t.Errorf("cleaned = %q, want 'abc123def456'", cleaned)
 	}
 }
+
+// Helper to create test environment with sessions database
+func create_test_sessions_db(t *testing.T) func() {
+	tmp_dir, err := os.MkdirTemp("", "mochi_sessions_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+
+	// Create sessions tables
+	db := db_open("db/sessions.db")
+	db.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db.exec("create table codes (code text not null, username text not null, expires integer not null, primary key (code, username))")
+	db.exec("create table ceremonies (id text primary key, type text not null, user integer, challenge blob not null, data text not null default '', expires integer not null)")
+	db.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
+
+	cleanup := func() {
+		data_dir = orig_data_dir
+		os.RemoveAll(tmp_dir)
+	}
+
+	return cleanup
+}
+
+// Test sessions_cleanup removes expired sessions
+func TestSessionsCleanup(t *testing.T) {
+	cleanup := create_test_sessions_db(t)
+	defer cleanup()
+
+	db := db_open("db/sessions.db")
+	current := now()
+
+	// Insert expired and valid sessions
+	db.exec("insert into sessions (user, code, expires, created, accessed) values (1, 'expired1', ?, ?, ?)", current-3600, current-7200, current-3600)
+	db.exec("insert into sessions (user, code, expires, created, accessed) values (1, 'valid1', ?, ?, ?)", current+3600, current, current)
+	db.exec("insert into sessions (user, code, expires, created, accessed) values (2, 'expired2', ?, ?, ?)", current-1, current-7200, current-3600)
+	db.exec("insert into sessions (user, code, expires, created, accessed) values (2, 'valid2', ?, ?, ?)", current+86400, current, current)
+
+	// Insert expired and valid codes
+	db.exec("insert into codes (code, username, expires) values ('expcode1', 'user@test.com', ?)", current-100)
+	db.exec("insert into codes (code, username, expires) values ('validcode1', 'user@test.com', ?)", current+100)
+
+	// Insert expired and valid ceremonies
+	db.exec("insert into ceremonies (id, type, challenge, expires) values ('expcer1', 'webauthn', x'00', ?)", current-100)
+	db.exec("insert into ceremonies (id, type, challenge, expires) values ('validcer1', 'webauthn', x'00', ?)", current+100)
+
+	// Insert expired and valid partial sessions
+	db.exec("insert into partial (id, user, remaining, expires) values ('exppart1', 1, 'totp', ?)", current-100)
+	db.exec("insert into partial (id, user, remaining, expires) values ('validpart1', 1, 'totp', ?)", current+100)
+
+	// Run cleanup
+	sessions_cleanup()
+
+	// Verify expired sessions are deleted
+	exists, _ := db.exists("select 1 from sessions where code='expired1'")
+	if exists {
+		t.Error("expired session 'expired1' should be deleted")
+	}
+	exists, _ = db.exists("select 1 from sessions where code='expired2'")
+	if exists {
+		t.Error("expired session 'expired2' should be deleted")
+	}
+
+	// Verify valid sessions remain
+	exists, _ = db.exists("select 1 from sessions where code='valid1'")
+	if !exists {
+		t.Error("valid session 'valid1' should not be deleted")
+	}
+	exists, _ = db.exists("select 1 from sessions where code='valid2'")
+	if !exists {
+		t.Error("valid session 'valid2' should not be deleted")
+	}
+
+	// Verify expired codes are deleted
+	exists, _ = db.exists("select 1 from codes where code='expcode1'")
+	if exists {
+		t.Error("expired code should be deleted")
+	}
+	exists, _ = db.exists("select 1 from codes where code='validcode1'")
+	if !exists {
+		t.Error("valid code should not be deleted")
+	}
+
+	// Verify expired ceremonies are deleted
+	exists, _ = db.exists("select 1 from ceremonies where id='expcer1'")
+	if exists {
+		t.Error("expired ceremony should be deleted")
+	}
+	exists, _ = db.exists("select 1 from ceremonies where id='validcer1'")
+	if !exists {
+		t.Error("valid ceremony should not be deleted")
+	}
+
+	// Verify expired partial sessions are deleted
+	exists, _ = db.exists("select 1 from partial where id='exppart1'")
+	if exists {
+		t.Error("expired partial session should be deleted")
+	}
+	exists, _ = db.exists("select 1 from partial where id='validpart1'")
+	if !exists {
+		t.Error("valid partial session should not be deleted")
+	}
+}

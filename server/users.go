@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -102,6 +103,23 @@ func login_create(user int, address string, agent string) string {
 func login_delete(code string) {
 	db := db_open("db/sessions.db")
 	db.exec("delete from sessions where code=?", code)
+}
+
+// sessions_manager periodically cleans up expired sessions and related data
+func sessions_manager() {
+	for range time.Tick(time.Hour) {
+		sessions_cleanup()
+	}
+}
+
+// sessions_cleanup deletes expired sessions, codes, ceremonies, and partial auth sessions
+func sessions_cleanup() {
+	db := db_open("db/sessions.db")
+	t := now()
+	db.exec("delete from sessions where expires < ?", t)
+	db.exec("delete from codes where expires < ?", t)
+	db.exec("delete from ceremonies where expires < ?", t)
+	db.exec("delete from partial where expires < ?", t)
 }
 
 func user_by_id(id int) *User {

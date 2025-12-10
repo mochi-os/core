@@ -62,6 +62,7 @@ func main() {
 	go peers_publish()
 	go queue_manager()
 	go ratelimit_manager()
+	go sessions_manager()
 	go web_start()
 	//go apps_manager()
 

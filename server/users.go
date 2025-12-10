@@ -86,7 +86,7 @@ func code_send(email string) string {
 	debug ("Code", code)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
-	email_send(email, "Mochi login code", "Please copy and paste the code below into your web browser. This code is valid for one hour.\n\n"+code)
+	email_login_code(email, code)
 	return ""
 }
 

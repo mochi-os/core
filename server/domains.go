@@ -40,7 +40,8 @@ type domain struct {
 type route struct {
 	Domain   string `db:"domain"`
 	Path     string `db:"path"`
-	Entity   string `db:"entity"`
+	Method   string `db:"method"`
+	Target   string `db:"target"`
 	Context  string `db:"context"`
 	Priority int    `db:"priority"`
 	Enabled  int    `db:"enabled"`
@@ -257,14 +258,20 @@ func domain_lookup(host string) *domain {
 
 	d := domain_get(host)
 	if d != nil {
+		debug("Domain lookup %q -> exact match", host)
 		return d
 	}
 
 	if idx := strings.Index(host, "."); idx > 0 {
 		wildcard := "*" + host[idx:]
-		return domain_get(wildcard)
+		d = domain_get(wildcard)
+		if d != nil {
+			debug("Domain lookup %q -> wildcard match %q", host, wildcard)
+			return d
+		}
 	}
 
+	debug("Domain lookup %q -> no match", host)
 	return nil
 }
 
@@ -361,10 +368,12 @@ func domain_verify(name string) (bool, error) {
 func domain_match(host, path string) *route_match {
 	d := domain_lookup(host)
 	if d == nil {
+		debug("Route match %q %q -> no domain", host, path)
 		return nil
 	}
 
 	if setting_get("domains_verification", "false") == "true" && d.Verified == 0 {
+		debug("Route match %q %q -> domain unverified", host, path)
 		return nil
 	}
 
@@ -376,11 +385,13 @@ func domain_match(host, path string) *route_match {
 		if strings.HasPrefix(path, r.Path) {
 			remaining := strings.TrimPrefix(path, r.Path)
 			if r.Path == "" || r.Path == "/" || remaining == "" || strings.HasPrefix(remaining, "/") {
+				debug("Route match %q %q -> %q path %q method %q target %q remaining %q", host, path, d.Domain, r.Path, r.Method, r.Target, remaining)
 				return &route_match{route: &r, remaining: remaining}
 			}
 		}
 	}
 
+	debug("Route match %q %q -> domain %q has no matching route", host, path, d.Domain)
 	return nil
 }
 
@@ -403,7 +414,7 @@ func route_list(domain_name string) []route {
 }
 
 // route_create creates a new route
-func route_create(domain_name, path, entity, context string, priority int) (*route, error) {
+func route_create(domain_name, path, method, target, context string, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -413,7 +424,7 @@ func route_create(domain_name, path, entity, context string, priority int) (*rou
 
 	db := db_open("db/domains.db")
 	n := now()
-	db.exec("insert into routes (domain, path, entity, context, priority, enabled, created, updated) values (?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, entity, context, priority, n, n)
+	db.exec("insert into routes (domain, path, method, target, context, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, priority, n, n)
 
 	return route_get(domain_name, path), nil
 }
@@ -473,13 +484,13 @@ func delegation_list(domain_name string, owner int) []delegation {
 	return delegations
 }
 
-// delegation_create creates a new path delegation
+// delegation_create creates a new path delegation, or returns existing if already delegated
 func delegation_create(domain_name, path string, owner int) (*delegation, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
-	if delegation_get(domain_name, path, owner) != nil {
-		return nil, fmt.Errorf("delegation already exists")
+	if existing := delegation_get(domain_name, path, owner); existing != nil {
+		return existing, nil
 	}
 
 	db := db_open("db/domains.db")
@@ -515,7 +526,8 @@ func domains_middleware() gin.HandlerFunc {
 		match := domain_match(c.Request.Host, c.Request.URL.Path)
 		if match != nil {
 			c.Set("domain_route", match.route)
-			c.Set("domain_entity", match.route.Entity)
+			c.Set("domain_method", match.route.Method)
+			c.Set("domain_target", match.route.Target)
 			c.Set("domain_context", match.route.Context)
 			c.Set("domain_remaining", match.remaining)
 			c.Set("domain_original_host", c.Request.Host)
@@ -815,13 +827,13 @@ func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
-// mochi.domain.route.create(domain, path, entity, priority=0, context="") -> dict: Create route
+// mochi.domain.route.create(domain, path, method, target, priority=0, context="") -> dict: Create route
 func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 3 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, <entity: string>, [priority: int], [context: string]")
+	if len(args) < 4 {
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, <method: string>, <target: string>, [priority: int], [context: string]")
 	}
 
-	domain_name, ok := sl.AsString(args[0])
+	domain, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid domain")
 	}
@@ -831,14 +843,19 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid path")
 	}
 
-	entity, ok := sl.AsString(args[2])
+	method, ok := sl.AsString(args[2])
 	if !ok {
-		return sl_error(fn, "invalid entity")
+		return sl_error(fn, "invalid method")
+	}
+
+	target, ok := sl.AsString(args[3])
+	if !ok {
+		return sl_error(fn, "invalid target")
 	}
 
 	priority := 0
-	if len(args) > 3 {
-		if p, err := sl.AsInt32(args[3]); err == nil {
+	if len(args) > 4 {
+		if p, err := sl.AsInt32(args[4]); err == nil {
 			priority = int(p)
 		}
 	}
@@ -856,7 +873,7 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no user")
 	}
 
-	d := domain_get(domain_name)
+	d := domain_get(domain)
 	if d == nil {
 		return sl_error(fn, "domain not found")
 	}
@@ -865,23 +882,23 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	_, err := route_create(domain_name, path, entity, context, priority)
+	_, err := route_create(domain, path, method, target, context, priority)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
 	db := db_open("db/domains.db")
-	row, _ := db.row("select * from routes where domain=? and path=?", domain_name, path)
+	row, _ := db.row("select * from routes where domain=? and path=?", domain, path)
 	return sl_encode(row), nil
 }
 
-// mochi.domain.route.update(domain, path, entity=None, context=None, priority=None, enabled=None) -> dict: Update route
+// mochi.domain.route.update(domain, path, method=None, target=None, context=None, priority=None, enabled=None) -> dict: Update route
 func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, [entity: string], [context: string], [priority: int], [enabled: bool]")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, [method: string], [target: string], [context: string], [priority: int], [enabled: bool]")
 	}
 
-	domain_name, ok := sl.AsString(args[0])
+	domain, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid domain")
 	}
@@ -896,7 +913,7 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no user")
 	}
 
-	d := domain_get(domain_name)
+	d := domain_get(domain)
 	if d == nil {
 		return sl_error(fn, "domain not found")
 	}
@@ -909,9 +926,13 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	for _, kw := range kwargs {
 		key, _ := sl.AsString(kw[0])
 		switch key {
-		case "entity":
+		case "method":
 			if s, ok := sl.AsString(kw[1]); ok {
-				updates["entity"] = s
+				updates["method"] = s
+			}
+		case "target":
+			if s, ok := sl.AsString(kw[1]); ok {
+				updates["target"] = s
 			}
 		case "context":
 			if s, ok := sl.AsString(kw[1]); ok {
@@ -932,13 +953,13 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		}
 	}
 
-	err := route_update(domain_name, path, updates)
+	err := route_update(domain, path, updates)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
 	db := db_open("db/domains.db")
-	row, _ := db.row("select * from routes where domain=? and path=?", domain_name, path)
+	row, _ := db.row("select * from routes where domain=? and path=?", domain, path)
 	if row == nil {
 		return sl.None, nil
 	}

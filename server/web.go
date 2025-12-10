@@ -419,25 +419,43 @@ func web_path(c *gin.Context) {
 	debug("Web path %q", c.Request.URL.Path)
 
 	// Check for domain-based routing first
-	if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
-		e := entity_by_any(domain_entity.(string))
-		if e == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+	if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
+		target := c.GetString("domain_target")
+		remaining := c.GetString("domain_remaining")
+		action := strings.TrimPrefix(remaining, "/")
+
+		switch method.(string) {
+		case "app":
+			a := app_by_any(target)
+			if a == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
+				return
+			}
+			web_action(c, a, action, nil)
+			return
+
+		case "redirect":
+			c.Redirect(http.StatusFound, target+remaining)
+			return
+
+		case "entity":
+			e := entity_by_any(target)
+			if e == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+				return
+			}
+			a := e.class_app()
+			if a == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
+				return
+			}
+			web_action(c, a, action, e)
+			return
+
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unknown route method"})
 			return
 		}
-
-		// Determine which app to use
-		a := e.class_app()
-		if a == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
-			return
-		}
-
-		// Action is the remaining path (no entity prefix)
-		action := strings.TrimPrefix(c.GetString("domain_remaining"), "/")
-
-		web_action(c, a, action, e)
-		return
 	}
 
 	raw := strings.Trim(c.Request.URL.Path, "/")

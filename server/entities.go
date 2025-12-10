@@ -31,6 +31,7 @@ var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"create":      sl.NewBuiltin("mochi.entity.create", api_entity_create),
 	"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
 	"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
+	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
 })
 
 // Get an entity by id or fingerprint
@@ -318,4 +319,20 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	return sl_encode(e), nil
+}
+
+// mochi.entity.owned() -> list: Get all entities owned by the current user
+func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	entities, err := db.rows("select id, fingerprint, class, name from entities where user=? order by name", user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(entities), nil
 }

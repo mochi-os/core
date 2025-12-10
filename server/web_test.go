@@ -29,7 +29,7 @@ func create_web_test_env(t *testing.T) func() {
 	// Create domains database
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', entity text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
@@ -55,17 +55,19 @@ func TestDomainsMiddleware(t *testing.T) {
 
 	// Set up domain and route
 	domain_register("test.example.com")
-	route_create("test.example.com", "/blog", "entity123", "", 10)
+	route_create("test.example.com", "/blog", "app", "myapp", "", 10)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.GET("/*path", func(c *gin.Context) {
-		entity, _ := c.Get("domain_entity")
+		method, _ := c.Get("domain_method")
+		target := c.GetString("domain_target")
 		remaining := c.GetString("domain_remaining")
 
 		c.JSON(200, gin.H{
-			"entity":    entity,
+			"method":    method,
+			"target":    target,
 			"remaining": remaining,
 		})
 	})
@@ -100,7 +102,7 @@ func TestDomainsMiddlewareNoMatch(t *testing.T) {
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.GET("/*path", func(c *gin.Context) {
-		_, exists := c.Get("domain_entity")
+		_, exists := c.Get("domain_method")
 		c.JSON(200, gin.H{"has_domain": exists})
 	})
 
@@ -121,13 +123,14 @@ func TestDomainsMiddlewarePathRoute(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/api", "api_entity", "", 0)
+	route_create("example.com", "/api", "app", "api", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.GET("/*path", func(c *gin.Context) {
-		entity, exists := c.Get("domain_entity")
+		method, exists := c.Get("domain_method")
+		target := c.GetString("domain_target")
 		remaining := c.GetString("domain_remaining")
 
 		if !exists {
@@ -136,7 +139,8 @@ func TestDomainsMiddlewarePathRoute(t *testing.T) {
 		}
 		c.JSON(200, gin.H{
 			"matched":   true,
-			"entity":    entity,
+			"method":    method,
+			"target":    target,
 			"remaining": remaining,
 		})
 	})
@@ -165,18 +169,20 @@ func TestWebPathDomainRouting(t *testing.T) {
 
 	// Set up domain and route
 	domain_register("blog.example.com")
-	route_create("blog.example.com", "", "entity123", "", 0)
+	route_create("blog.example.com", "", "entity", "entity123", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.NoRoute(func(c *gin.Context) {
 		// Simplified web_path for testing - just check domain routing triggers
-		if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
+		if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
+			target := c.GetString("domain_target")
 			action := c.GetString("domain_remaining")
 			c.JSON(200, gin.H{
 				"routed_via": "domain",
-				"entity":     domain_entity,
+				"method":     method,
+				"target":     target,
 				"action":     action,
 			})
 			return
@@ -204,7 +210,7 @@ func TestWebPathFallbackRouting(t *testing.T) {
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.NoRoute(func(c *gin.Context) {
-		if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
+		if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
 			c.JSON(200, gin.H{"routed_via": "domain"})
 			return
 		}
@@ -228,16 +234,18 @@ func TestWebPathWildcardDomain(t *testing.T) {
 	defer cleanup()
 
 	domain_register("*.example.com")
-	route_create("*.example.com", "", "wildcard_entity", "", 0)
+	route_create("*.example.com", "", "app", "wildcard", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(domains_middleware())
 	r.NoRoute(func(c *gin.Context) {
-		if domain_entity, exists := c.Get("domain_entity"); exists && domain_entity.(string) != "" {
+		if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
+			target := c.GetString("domain_target")
 			c.JSON(200, gin.H{
 				"routed_via": "domain",
-				"entity":     domain_entity,
+				"method":     method,
+				"target":     target,
 			})
 			return
 		}
@@ -261,7 +269,7 @@ func TestWebPathRemainingPath(t *testing.T) {
 	defer cleanup()
 
 	domain_register("api.example.com")
-	route_create("api.example.com", "/v1", "api_entity", "", 0)
+	route_create("api.example.com", "/v1", "app", "api", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

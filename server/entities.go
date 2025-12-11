@@ -29,6 +29,7 @@ type Entity struct {
 
 var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"create":      sl.NewBuiltin("mochi.entity.create", api_entity_create),
+	"delete":      sl.NewBuiltin("mochi.entity.delete", api_entity_delete),
 	"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
 	"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
 	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
@@ -276,6 +277,37 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	return sl_encode(e.ID), nil
+}
+
+// mochi.entity.delete(id) -> bool: Delete an entity owned by the current user
+func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Verify entity exists and is owned by the current user
+	db := db_open("db/users.db")
+	var e Entity
+	if !db.scan(&e, "select * from entities where id=?", id) {
+		return sl_error(fn, "entity not found")
+	}
+	if e.User != user.ID {
+		return sl_error(fn, "not authorized to delete this entity")
+	}
+
+	// Delete the entity
+	e.delete()
+	return sl.True, nil
 }
 
 // mochi.entity.fingerprint(id, hyphens?) -> string: Get the fingerprint of an entity

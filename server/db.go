@@ -179,7 +179,6 @@ func db_app(u *User, av *AppVersion) *DB {
 	db.exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
 
 	if reused {
-		debug("Database app reusing already open %q", path)
 		return db
 	}
 
@@ -187,6 +186,14 @@ func db_app(u *User, av *AppVersion) *DB {
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
+
+	// Set up helpers first so they're available during database create
+	for _, helper := range av.Database.Helpers {
+		setup, ok := app_helpers[helper]
+		if ok {
+			setup(db)
+		}
+	}
 
 	if created {
 		debug("Database app creating %q", path)
@@ -271,14 +278,6 @@ func db_app(u *User, av *AppVersion) *DB {
 				}
 				db.schema(version - 1)
 			}
-		}
-	}
-
-	// Set up any helpers
-	for _, helper := range av.Database.Helpers {
-		setup, ok := app_helpers[helper]
-		if ok {
-			setup(db)
 		}
 	}
 

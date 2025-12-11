@@ -41,6 +41,7 @@ type AppAction struct {
 	segments          int               `json:"-"`
 	literals          int               `json:"-"`
 	parameters        map[string]string `json:"-"`
+	filepath          string            `json:"-"` // For files routes: the file path suffix after the matched pattern
 }
 
 type AppEvent struct {
@@ -707,6 +708,14 @@ func (a *App) service(service string) {
 
 // Find the action best matching the specified name
 func (av *AppVersion) find_action(name string) *AppAction {
+	debug("[FIND_ACTION] app=%q looking for action=%q", av.app.id, name)
+	debug("[FIND_ACTION] available actions: %v", func() []string {
+		var routes []string
+		for route := range av.Actions {
+			routes = append(routes, route)
+		}
+		return routes
+	}())
 	var candidates []AppAction
 
 	for action, aa := range av.Actions {
@@ -741,19 +750,51 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			return &aa
 		}
 
-		// If type files, check for matching parent
+		// If type files, check for matching parent (try progressively shorter prefixes)
+		// Supports parameterized patterns like :wiki/-/assets
 		if aa.Files != "" {
+			key_segments := strings.Split(aa.name, "/")
 			match := name
 			for {
-				parts := strings.SplitN(match, "/", 2)
-				match = parts[0]
+				// Calculate the file path suffix (what comes after the matched pattern)
+				suffix := ""
+				if len(match) < len(name) {
+					suffix = name[len(match)+1:] // +1 to skip the /
+				}
+
+				// Try exact match first
 				if aa.name == match {
-					debug("App found files action %q via pattern %q", name, aa.name)
+					aa.filepath = suffix
+					debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
 					return &aa
 				}
-				if len(parts) < 2 {
+				// Try parameterized match
+				value_segments := strings.Split(match, "/")
+				if len(key_segments) == len(value_segments) {
+					ok := true
+					for i := 0; i < len(key_segments); i++ {
+						ks := key_segments[i]
+						vs := value_segments[i]
+						if strings.HasPrefix(ks, ":") {
+							pname := ks[1:]
+							aa.parameters[pname] = vs
+						} else if ks != vs {
+							ok = false
+							break
+						}
+					}
+					if ok {
+						aa.filepath = suffix
+						debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
+						return &aa
+					}
+				}
+				// Try shorter prefix
+				idx := strings.LastIndex(match, "/")
+				if idx < 0 {
 					break
 				}
+				match = match[:idx]
 			}
 		}
 
@@ -912,7 +953,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	var ids []string
 	apps_lock.Lock()
 	for id := range apps {
-		if valid(id, "entity") {
+		if valid(id, "entity") || valid(id, "constant") {
 			ids = append(ids, id)
 		}
 	}

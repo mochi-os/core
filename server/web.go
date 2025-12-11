@@ -23,15 +23,21 @@ var (
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if a == nil || a.active == nil {
+		debug("[ACTION] web_action: app is nil or inactive")
 		return false
 	}
-	debug("Web app %q action %q", a.id, name)
+	entityInfo := "nil"
+	if e != nil {
+		entityInfo = e.Fingerprint
+	}
+	debug("[ACTION] web_action: app=%q action=%q entity=%s", a.id, name, entityInfo)
 
 	aa := a.active.find_action(name)
 	if aa == nil {
-		debug("No action found for app %q action %q", a.id, name)
+		debug("[ACTION] No action found for app %q action %q", a.id, name)
 		return false
 	}
+	debug("[ACTION] Found action: name=%q function=%q public=%v", aa.name, aa.Function, aa.Public)
 
 	// Get user authentication via cookie
 	user := web_auth(c)
@@ -103,13 +109,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Serve static files from a directory
 	if aa.Files != "" {
-		parts := strings.SplitN(name, "/", 2)
-		if len(parts) == 2 {
-			if !valid(parts[1], "filepath") {
+		if aa.filepath != "" {
+			if !valid(aa.filepath, "filepath") {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
 				return true
 			}
-			file := a.active.base + "/" + aa.Files + "/" + parts[1]
+			file := a.active.base + "/" + aa.Files + "/" + aa.filepath
 			debug("Serving file from directory for app %q: %q", a.id, file)
 			web_cache_static(c, file)
 			c.File(file)
@@ -436,6 +441,11 @@ func web_path(c *gin.Context) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
 				return
 			}
+			// Redirect to add trailing slash for correct relative path resolution
+			if remaining == "" && !strings.HasSuffix(c.Request.URL.Path, "/") {
+				c.Redirect(http.StatusMovedPermanently, c.Request.URL.Path+"/")
+				return
+			}
 			web_action(c, a, action, nil)
 			return
 
@@ -454,6 +464,11 @@ func web_path(c *gin.Context) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
 				return
 			}
+			// Redirect to add trailing slash for correct relative path resolution
+			if remaining == "" && !strings.HasSuffix(c.Request.URL.Path, "/") {
+				c.Redirect(http.StatusMovedPermanently, c.Request.URL.Path+"/")
+				return
+			}
 			web_action(c, a, action, e)
 			return
 
@@ -464,25 +479,32 @@ func web_path(c *gin.Context) {
 	}
 
 	raw := strings.Trim(c.Request.URL.Path, "/")
+	debug("[ROUTING] raw path: %q", raw)
 
 	// Check for app that handles root path
 	if raw == "" {
+		debug("[ROUTING] empty path, checking for root app")
 		if a := app_by_root(); a != nil {
+			debug("[ROUTING] found root app %q", a.id)
 			web_action(c, a, "", nil)
 			return
 		}
+		debug("[ROUTING] no root app configured")
 		c.JSON(http.StatusNotFound, gin.H{"error": "No root app configured"})
 		return
 	}
 
 	segments := strings.Split(raw, "/")
 	first := segments[0]
+	debug("[ROUTING] segments=%v, first=%q", segments, first)
 
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
+		debug("[ROUTING] found app %q for first segment %q", a.id, first)
 		// Redirect /app to /app/ for correct relative path resolution
 		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
+			debug("[ROUTING] redirecting %q to /%s/", c.Request.URL.Path, first)
 			c.Redirect(http.StatusMovedPermanently, "/"+first+"/")
 			return
 		}
@@ -491,15 +513,37 @@ func web_path(c *gin.Context) {
 		if len(segments) > 1 {
 			second = segments[1]
 		}
+		debug("[ROUTING] second segment: %q", second)
 
 		// Route on /<app>/<entity>[/<action...>]
 		e := entity_by_any(second)
-		if e != nil && web_action(c, a, strings.Join(segments[2:], "/"), e) {
-			return
+		debug("[ROUTING] entity_by_any(%q) = %v", second, e != nil)
+		if e != nil {
+			debug("[ROUTING] found entity %q (fingerprint=%s) for second segment", e.ID, e.Fingerprint)
+			// Construct action with entity fingerprint prefix, same as direct entity routing
+			action := e.Fingerprint
+			if len(segments) > 2 {
+				action = e.Fingerprint + "/" + strings.Join(segments[2:], "/")
+			}
+			debug("[ROUTING] trying entity action %q on app %q", action, a.id)
+			if web_action(c, a, action, e) {
+				debug("[ROUTING] entity action handled successfully")
+				return
+			}
+			debug("[ROUTING] entity action not found, falling through to class routing")
 		}
 
 		// Route on /<app>/<action...>
-		web_action(c, a, strings.Join(segments[1:], "/"), nil)
+		// Strip leading "-/" - it's used in entity context to separate API from pages,
+		// but in class context it's redundant (e.g., /wiki/-/info -> /wiki/info)
+		actionSegments := segments[1:]
+		if len(actionSegments) > 0 && actionSegments[0] == "-" {
+			actionSegments = actionSegments[1:]
+		}
+		classAction := strings.Join(actionSegments, "/")
+		debug("[ROUTING] routing to class action %q on app %q", classAction, a.id)
+
+		web_action(c, a, classAction, nil)
 		return
 	}
 

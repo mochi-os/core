@@ -569,6 +569,17 @@ func app_read(id string, base string) (*AppVersion, error) {
 // Load all installed apps
 func apps_start() {
 	for _, id := range file_list(data_dir + "/apps") {
+		// Skip hidden files and directories (e.g., .gitignore)
+		if strings.HasPrefix(id, ".") {
+			continue
+		}
+
+		// Skip entries that aren't valid app IDs (entity or constant)
+		if !valid(id, "entity") && !valid(id, "constant") {
+			debug("App skipping invalid app ID %q in apps directory", id)
+			continue
+		}
+
 		versions := file_list(data_dir + "/apps/" + id)
 		if len(versions) == 0 {
 			continue
@@ -576,6 +587,17 @@ func apps_start() {
 		a := app(id)
 
 		for _, version := range versions {
+			// Skip hidden files and directories
+			if strings.HasPrefix(version, ".") {
+				continue
+			}
+
+			// Skip entries that aren't valid versions
+			if !valid(version, "version") {
+				debug("App skipping invalid version %q for app %q", version, id)
+				continue
+			}
+
 			av, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
 			if err != nil {
 				info("App load error: %v", err)

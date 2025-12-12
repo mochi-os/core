@@ -767,7 +767,11 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	as := sl_decode(args[1:]).([]any)
 
+	// Get user or fall back to owner for anonymous entity-context access
 	user := t.Local("user").(*User)
+	if user == nil {
+		user = t.Local("owner").(*User)
+	}
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

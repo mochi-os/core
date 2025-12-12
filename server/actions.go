@@ -148,6 +148,9 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 	case "upload":
 		return sl.NewBuiltin("upload", a.sl_upload), nil
 	case "user":
+		if a.user == nil {
+			return sl.None, nil
+		}
 		return a.user, nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", a.sl_write_from_file), nil

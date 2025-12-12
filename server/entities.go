@@ -32,6 +32,7 @@ var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"delete":      sl.NewBuiltin("mochi.entity.delete", api_entity_delete),
 	"fingerprint": sl.NewBuiltin("mochi.entity.fingerprint", api_entity_fingerprint),
 	"get":         sl.NewBuiltin("mochi.entity.get", api_entity_get),
+	"name":        sl.NewBuiltin("mochi.entity.name", api_entity_name),
 	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
 })
 
@@ -351,6 +352,38 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	return sl_encode(e), nil
+}
+
+// mochi.entity.name(id) -> string or None: Get the name of any entity (local or directory)
+func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	// Check local entities first
+	db := db_open("db/users.db")
+	row, err := db.row("select name from entities where id=?", id)
+	if err == nil && row != nil {
+		if name, ok := row["name"].(string); ok {
+			return sl.String(name), nil
+		}
+	}
+
+	// Check directory
+	db = db_open("db/directory.db")
+	row, err = db.row("select name from directory where id=?", id)
+	if err == nil && row != nil {
+		if name, ok := row["name"].(string); ok {
+			return sl.String(name), nil
+		}
+	}
+
+	return sl.None, nil
 }
 
 // mochi.entity.owned() -> list: Get all entities owned by the current user

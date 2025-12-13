@@ -120,7 +120,7 @@ func (m *Message) send_peer(peer string) {
 	go m.send_work()
 }
 
-// Do the work of sending (queue-first, read challenge before sending)
+// Do the work of sending (queue-first, read challenge before sending, wait for ACK)
 func (m *Message) send_work() {
 	if m.ID == "" {
 		m.ID = uid()
@@ -173,17 +173,38 @@ func (m *Message) send_work() {
 		ok = s.write_file(m.file) == nil
 	}
 
-	if s.writer != nil {
-		s.writer.Close()
-	}
+	// Close write direction to signal we're done sending (keeps read open for ACK)
+	s.close_write()
 
 	if !ok {
 		peer_disconnected(peer)
 		debug("Message send failed, will retry from queue")
 		queue_fail(m.ID, "send failed")
-	} else {
-		debug("Message sent, awaiting ACK")
+		return
 	}
+
+	// Read ACK from stream
+	var h Headers
+	if s.read_headers(&h) != nil {
+		debug("Message %q failed to read ACK, will retry from queue", m.ID)
+		queue_fail(m.ID, "ACK read failed")
+		return
+	}
+
+	if h.msg_type() == "ack" && h.AckID == m.ID {
+		debug("Message %q received ACK", m.ID)
+		queue_ack(m.ID)
+		return
+	}
+
+	if h.msg_type() == "nack" && h.AckID == m.ID {
+		debug("Message %q received NACK", m.ID)
+		queue_fail(m.ID, "NACK received")
+		return
+	}
+
+	debug("Message %q received unexpected response type=%q ack=%q", m.ID, h.msg_type(), h.AckID)
+	queue_fail(m.ID, "unexpected response")
 }
 
 // Set the content segment of an outgoing message

@@ -199,34 +199,29 @@ func TestAttachmentURL(t *testing.T) {
 	}
 }
 
-// Test DB.attachment_path sanitization
-func TestDBAttachmentPath(t *testing.T) {
-	// Create a minimal DB struct for testing
-	db := &DB{
-		user: &User{ID: 42},
-	}
-
+// Test attachment_path sanitization
+func TestAttachmentPath(t *testing.T) {
 	tests := []struct {
 		name     string
 		id       string
 		filename string
 		expected string
 	}{
-		{"normal file", "abc123", "document.pdf", "users/42/files/abc123_document.pdf"},
-		{"with spaces", "abc123", "my document.pdf", "users/42/files/abc123_my document.pdf"},
-		{"path traversal attempt", "abc123", "../../../etc/passwd", "users/42/files/abc123_passwd"},
-		{"absolute path attempt", "abc123", "/etc/passwd", "users/42/files/abc123_passwd"},
-		{"empty name", "abc123", "", "users/42/files/abc123_file"},
-		{"dot only", "abc123", ".", "users/42/files/abc123_file"},
-		{"dot dot", "abc123", "..", "users/42/files/abc123_file"},
-		{"nested path", "abc123", "subdir/file.txt", "users/42/files/abc123_file.txt"},
+		{"normal file", "abc123", "document.pdf", "users/42/wiki/files/abc123_document.pdf"},
+		{"with spaces", "abc123", "my document.pdf", "users/42/wiki/files/abc123_my document.pdf"},
+		{"path traversal attempt", "abc123", "../../../etc/passwd", "users/42/wiki/files/abc123_passwd"},
+		{"absolute path attempt", "abc123", "/etc/passwd", "users/42/wiki/files/abc123_passwd"},
+		{"empty name", "abc123", "", "users/42/wiki/files/abc123_file"},
+		{"dot only", "abc123", ".", "users/42/wiki/files/abc123_file"},
+		{"dot dot", "abc123", "..", "users/42/wiki/files/abc123_file"},
+		{"nested path", "abc123", "subdir/file.txt", "users/42/wiki/files/abc123_file.txt"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := db.attachment_path(tt.id, tt.filename)
+			result := attachment_path(42, "wiki", tt.id, tt.filename)
 			if result != tt.expected {
-				t.Errorf("attachment_path(%q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
+				t.Errorf("attachment_path(42, \"wiki\", %q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
 			}
 		})
 	}
@@ -344,7 +339,7 @@ func TestAppActionAttachmentsExpansion(t *testing.T) {
 	for _, name := range to_expand {
 		action := actions[name]
 		actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
-		actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Public: action.Public}
+		actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
 		delete(actions, name)
 	}
 

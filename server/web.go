@@ -97,9 +97,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Serve attachment
+	// Serve attachment - ID comes from :id parameter
+	// Use owner (entity owner) for database lookup since attachments belong to the entity
 	if aa.Attachments {
-		return web_serve_attachment(c, a, user, name)
+		attachmentID := aa.parameters["id"]
+		return web_serve_attachment(c, a, owner, attachmentID, aa.Thumbnail)
 	}
 
 	// Serve static file
@@ -670,19 +672,14 @@ func web_start() {
 }
 
 // Serve an attachment or thumbnail
-func web_serve_attachment(c *gin.Context, app *App, user *User, name string) bool {
-	// Parse path: files/:id or files/:id/thumbnail
-	parts := strings.Split(name, "/")
-	if len(parts) < 2 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+func web_serve_attachment(c *gin.Context, app *App, user *User, id string, thumbnail bool) bool {
+	if !valid(id, "id") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attachment ID"})
 		return true
 	}
 
-	id := parts[1]
-	thumbnail := len(parts) >= 3 && parts[2] == "thumbnail"
-
-	if !valid(id, "id") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attachment ID"})
+	if user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
 		return true
 	}
 
@@ -698,22 +695,39 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, name string) boo
 		return true
 	}
 
-	// Get file path
-	var path string
-	if att.Entity != "" {
-		path = fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, att.Entity, app.id, id)
-	} else {
-		path = data_dir + "/" + db.attachment_path(att.ID, att.Name)
+	// Get file path - always use local storage, fetching from remote if needed
+	path := data_dir + "/" + attachment_path(user.ID, app.id, att.ID, att.Name)
+	if !file_exists(path) {
+		if att.Entity != "" {
+			// Fetch from remote and store locally
+			data := attachment_fetch_remote(app, att.Entity, id)
+			if data == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+				return true
+			}
+			file_write(path, data)
+			// Clear entity so future requests serve from local storage
+			db.exec(`update _attachments set entity = '' where id = ?`, id)
+			info("Attachment %s fetched and stored locally on demand", id)
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+			return true
+		}
 	}
 
-	if !file_exists(path) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+	// Use ETag for cache validation so deleted files don't persist in browser cache
+	etag := fmt.Sprintf(`"%s"`, att.ID)
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, must-revalidate")
+
+	// Check If-None-Match for conditional requests
+	if match := c.GetHeader("If-None-Match"); match == etag {
+		c.Status(http.StatusNotModified)
 		return true
 	}
 
 	if thumbnail {
 		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
-			c.Header("Cache-Control", "public, max-age=86400")
 			c.File(thumb)
 			return true
 		}
@@ -723,3 +737,4 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, name string) boo
 	c.File(path)
 	return true
 }
+

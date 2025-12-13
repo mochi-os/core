@@ -106,6 +106,19 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 	return &Stream{id: stream_id(), reader: r, writer: w}
 }
 
+// Close only the write direction of a stream (if supported), otherwise close entirely
+func (s *Stream) close_write() {
+	if s.writer == nil {
+		return
+	}
+	// Check if writer supports CloseWrite (libp2p streams do)
+	if cw, ok := s.writer.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+	} else {
+		s.writer.Close()
+	}
+}
+
 // Receive stream (send challenge first for direct streams)
 func stream_receive(s *Stream, version int, peer string) {
 	// Send challenge if this is a bidirectional stream (not pubsub)
@@ -329,6 +342,16 @@ func (s *Stream) read_content() (map[string]any, error) {
 	}
 
 	return content, nil
+}
+
+// Get a reader for raw data after CBOR reads (includes any buffered data from decoder)
+func (s *Stream) raw_reader() io.Reader {
+	if s.decoder == nil {
+		return s.reader
+	}
+	// Decoder's Buffered() returns any data read but not yet decoded
+	buffered := s.decoder.Buffered()
+	return io.MultiReader(buffered, s.reader)
 }
 
 // Write a CBOR encoded segment to a stream

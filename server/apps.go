@@ -30,6 +30,7 @@ type AppAction struct {
 	File        string `json:"file"`
 	Files       string `json:"files"`
 	Attachments bool   `json:"attachments"`
+	Thumbnail   bool   `json:"-"`
 	Public      bool   `json:"public"`
 	Access      struct {
 		Resource  string `json:"resource"`
@@ -301,6 +302,14 @@ func app_for_service(service string) *App {
 		}
 	}
 
+	// Handle "app/<id>" service names used by attachment federation
+	if strings.HasPrefix(service, "app/") {
+		app_id := service[4:]
+		if a, found := apps[app_id]; found {
+			return a
+		}
+	}
+
 	return nil
 }
 
@@ -559,7 +568,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 	for _, name := range attachment_actions {
 		action := av.Actions[name]
 		av.Actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
-		av.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Public: action.Public}
+		av.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
 		delete(av.Actions, name)
 	}
 
@@ -772,9 +781,9 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			return &aa
 		}
 
-		// If type files, check for matching parent (try progressively shorter prefixes)
+		// If type files or attachments, check for matching parent (try progressively shorter prefixes)
 		// Supports parameterized patterns like :wiki/-/assets
-		if aa.Files != "" {
+		if aa.Files != "" || aa.Attachments {
 			key_segments := strings.Split(aa.name, "/")
 			match := name
 			for {

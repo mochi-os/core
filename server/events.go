@@ -21,6 +21,7 @@ type Event struct {
 	peer    string
 	content map[string]any
 	user    *User
+	app     *App
 	db      *DB
 	stream  *Stream
 }
@@ -65,37 +66,11 @@ func (e *Event) route() error {
 		info("Event dropping to unknown service %q", e.service)
 		return fmt.Errorf("unknown service %q", e.service)
 	}
-
-	// Find event in app
-	apps_lock.Lock()
-	ae, found := a.active.Events[e.event]
-	if !found {
-		ae, found = a.active.Events[""]
-	}
-	apps_lock.Unlock()
-
-	if !found {
-		info("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
-		return fmt.Errorf("unknown event %q", e.event)
-	}
-
-	// Load a database file for the app
-	if a.active.Database.File != "" {
-		if e.user == nil {
-			info("Event dropping broadcast for service requiring user")
-			return fmt.Errorf("broadcast for service requiring user")
-		}
-
-		e.db = db_app(e.user, a.active)
-		if e.db == nil {
-			info("Event app %q has no database file", a.id)
-			return fmt.Errorf("no database file")
-		}
-		defer e.db.close()
-	}
+	e.app = a
 
 	// Handle built-in attachment events for apps with attachments helper
-	if strings.HasPrefix(e.event, "_attachment/") && e.db != nil {
+	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
+	if strings.HasPrefix(e.event, "_attachment/") {
 		has_attachments := false
 		for _, h := range a.active.Database.Helpers {
 			if h == "attachments" {
@@ -105,6 +80,25 @@ func (e *Event) route() error {
 		}
 
 		if has_attachments {
+			// Load database for attachment operations
+			if a.active.Database.File != "" {
+				if e.user == nil {
+					info("Event dropping attachment event for nil user")
+					return fmt.Errorf("attachment event requires user")
+				}
+				e.db = db_app(e.user, a.active)
+				if e.db == nil {
+					info("Event app %q has no database file", a.id)
+					return fmt.Errorf("no database file")
+				}
+				defer e.db.close()
+			}
+
+			if e.db == nil {
+				info("Event dropping attachment event %q - no database", e.event)
+				return fmt.Errorf("attachment event requires database")
+			}
+
 			switch e.event {
 			case "_attachment/create":
 				e.attachment_event_create()
@@ -132,6 +126,34 @@ func (e *Event) route() error {
 				return nil
 			}
 		}
+	}
+
+	// Find event in app
+	apps_lock.Lock()
+	ae, found := a.active.Events[e.event]
+	if !found {
+		ae, found = a.active.Events[""]
+	}
+	apps_lock.Unlock()
+
+	if !found {
+		info("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
+		return fmt.Errorf("unknown event %q", e.event)
+	}
+
+	// Load a database file for the app
+	if a.active.Database.File != "" {
+		if e.user == nil {
+			info("Event dropping broadcast for service requiring user")
+			return fmt.Errorf("broadcast for service requiring user")
+		}
+
+		e.db = db_app(e.user, a.active)
+		if e.db == nil {
+			info("Event app %q has no database file", a.id)
+			return fmt.Errorf("no database file")
+		}
+		defer e.db.close()
 	}
 
 	// Check which engine the app uses, and run it

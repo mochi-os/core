@@ -262,6 +262,6 @@ func p2p_ping_peer(id string) {
 		debug("P2P ping failed for peer %q: %v", id, result.Error)
 		peer_disconnected(id)
 	} else {
-		debug("P2P ping ok for peer %q: %v", id, result.RTT)
+		//debug("P2P ping ok for peer %q: %v", id, result.RTT)
 	}
 }

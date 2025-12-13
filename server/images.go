@@ -141,6 +141,12 @@ func thumbnail_name(name string) string {
 	return strings.TrimSuffix(name, ext) + "_thumbnail" + ext
 }
 
+// thumbnail_path returns the thumbnail path for a given original file path
+func thumbnail_path(path string) string {
+	dir, file := filepath.Split(path)
+	return dir + "thumbnails/" + thumbnail_name(file)
+}
+
 func fix_orientation(img image.Image, orientation int) image.Image {
 	switch orientation {
 	case 2:

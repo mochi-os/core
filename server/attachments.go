@@ -64,12 +64,12 @@ func (db *DB) attachments_setup() {
 }
 
 // Get the file path for an attachment
-func (db *DB) attachment_path(id string, name string) string {
+func attachment_path(user_id int, app_id string, id string, name string) string {
 	safe_name := filepath.Base(name)
 	if safe_name == "" || safe_name == "." || safe_name == ".." {
 		safe_name = "file"
 	}
-	return fmt.Sprintf("users/%d/files/%s_%s", db.user.ID, id, safe_name)
+	return fmt.Sprintf("users/%d/%s/files/%s_%s", user_id, app_id, id, safe_name)
 }
 
 // Get the next rank for an object
@@ -268,7 +268,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 
 		// Save file
-		path := db.attachment_path(id, fh.Filename)
+		path := attachment_path(owner.ID, app.id, id, fh.Filename)
 		data, err := io.ReadAll(src)
 		if err != nil {
 			return sl_error(fn, "unable to read uploaded file: %v", err)
@@ -391,7 +391,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Save file
-	path := db.attachment_path(id, name)
+	path := attachment_path(owner.ID, app.id, id, name)
 	file_write(data_dir+"/"+path, bytes)
 
 	// Insert record
@@ -516,7 +516,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Save file
-	path := db.attachment_path(id, name)
+	path := attachment_path(owner.ID, app.id, id, name)
 	file_write(data_dir+"/"+path, bytes)
 
 	// Insert record
@@ -695,12 +695,14 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Get attachment to delete
 	var att Attachment
 	if !db.scan(&att, "select * from _attachments where id = ?", id) {
-		return sl.None, nil
+		debug("attachment_delete: attachment %s not found in user %d database", id, owner.ID)
+		return sl.False, nil
 	}
 
-	// Delete file
-	path := db.attachment_path(att.ID, att.Name)
-	file_delete(data_dir + "/" + path)
+	// Delete file and thumbnail
+	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
+	file_delete(path)
+	file_delete(thumbnail_path(path))
 
 	// Delete record and shift ranks
 	db.exec("delete from _attachments where id = ?", id)
@@ -711,7 +713,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		attachment_notify_delete(app, owner, att.Object, id, notify)
 	}
 
-	return sl.None, nil
+	return sl.True, nil
 }
 
 // mochi.attachment.clear(object, notify?) -> None: Delete all attachments for an object
@@ -754,7 +756,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Delete files
 	for _, att := range attachments {
-		path := db.attachment_path(att.ID, att.Name)
+		path := attachment_path(owner.ID, app.id, att.ID, att.Name)
 		file_delete(data_dir + "/" + path)
 	}
 
@@ -884,7 +886,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Local file
-	path := db.attachment_path(att.ID, att.Name)
+	path := attachment_path(owner.ID, app.id, att.ID, att.Name)
 	data := file_read(data_dir + "/" + path)
 	return sl_encode(data), nil
 }
@@ -933,7 +935,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Local file
-	path := data_dir + "/" + db.attachment_path(att.ID, att.Name)
+	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
 	return sl_encode(path), nil
 }
 
@@ -1073,34 +1075,41 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 
 // Federation: fetch attachment data from remote entity
 func attachment_fetch_remote(app *App, entity string, id string) []byte {
+	debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
+
 	// Check cache first
 	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
-	if info, err := os.Stat(cache_path); err == nil {
-		if time.Since(info.ModTime()) > cache_max_age {
+	if fi, err := os.Stat(cache_path); err == nil {
+		if time.Since(fi.ModTime()) > cache_max_age {
 			os.Remove(cache_path) // expired, will refetch below
 		} else {
+			debug("attachment_fetch_remote: returning cached file %s", cache_path)
 			return file_read(cache_path)
 		}
 	}
 
 	// Fetch from remote
+	debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
 	s, err := stream("", entity, "app/"+app.id, "_attachment/data")
 	if err != nil {
-		debug("attachment_fetch_remote: stream error: %v", err)
+		warn("attachment_fetch_remote: stream error: %v", err)
 		return nil
 	}
 
+	debug("attachment_fetch_remote: sending id=%s", id)
 	s.write_content("id", id)
 
+	debug("attachment_fetch_remote: waiting for status response...")
 	status, err := s.read_content()
+	debug("attachment_fetch_remote: received status=%v err=%v", status, err)
 	if err != nil || status["status"] != "200" {
-		debug("attachment_fetch_remote: bad status: %v", status)
+		warn("attachment_fetch_remote: bad status: %v", status)
 		return nil
 	}
 
-	// Stream directly to cache file
+	// Stream directly to cache file (use raw_reader to include any buffered data from CBOR decoder)
 	file_mkdir(filepath.Dir(cache_path))
-	if !file_write_from_reader(cache_path, s.reader) {
+	if !file_write_from_reader(cache_path, s.raw_reader()) {
 		debug("attachment_fetch_remote: failed to write cache file")
 		return nil
 	}
@@ -1170,8 +1179,21 @@ func (e *Event) attachment_event_create() {
 		if !valid(id, "id") {
 			continue
 		}
+		name, _ := att["name"].(string)
+
 		e.db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+			id, att["object"], object, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+
+		// Fetch the file immediately to create a full local copy
+		if e.user != nil && e.app != nil && name != "" {
+			data := attachment_fetch_remote(e.app, object, id)
+			if data != nil {
+				path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
+				file_write(path, data)
+				e.db.exec(`update _attachments set entity = '' where id = ?`, id)
+				info("Attachment %s fetched and stored locally", id)
+			}
+		}
 	}
 }
 
@@ -1213,8 +1235,22 @@ func (e *Event) attachment_event_insert() {
 	}
 	e.db.attachment_shift_up(object, rank)
 
+	name, _ := att["name"].(string)
+
 	e.db.exec(`insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, att["object"], source, att["name"], att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+		id, att["object"], object, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+
+	// Fetch the file immediately to create a full local copy
+	if e.user != nil && e.app != nil && name != "" {
+		data := attachment_fetch_remote(e.app, object, id)
+		if data != nil {
+			path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
+			file_write(path, data)
+			// File stored locally, clear entity so it's served from local storage
+			e.db.exec(`update _attachments set entity = '' where id = ?`, id)
+			info("Attachment %s fetched and stored locally", id)
+		}
+	}
 }
 
 // Event handler: attachment/update
@@ -1302,14 +1338,21 @@ func (e *Event) attachment_event_delete() {
 		return
 	}
 
-	// Get rank before deleting
+	// Get attachment before deleting (may have empty entity if stored locally)
 	var att Attachment
-	if e.db.scan(&att, "select * from _attachments where id = ? and entity = ?", id, source) {
-		e.db.exec("delete from _attachments where id = ? and entity = ?", id, source)
+	if e.db.scan(&att, "select * from _attachments where id = ?", id) {
+		e.db.exec("delete from _attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
+		// Delete local file and thumbnail if exists
+		if e.user != nil && e.app != nil {
+			local_path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, att.ID, att.Name)
+			file_delete(local_path)
+			file_delete(thumbnail_path(local_path))
+		}
+
 		// Delete cached file if exists
-		cache_path := fmt.Sprintf("%s/attachments/%s/%s", cache_dir, source, id)
+		cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, source, e.app.id, id)
 		file_delete(cache_path)
 	}
 }
@@ -1347,37 +1390,51 @@ func (e *Event) attachment_event_clear() {
 
 // Event handler: attachment/data (responds with file bytes)
 func (e *Event) attachment_event_data() {
+	debug("attachment_event_data: called with content=%v", e.content)
+
 	if e.db == nil {
+		warn("attachment_event_data: no database, returning 500")
 		e.stream.write(map[string]string{"status": "500"})
 		return
 	}
 
 	id := e.get("id", "")
 	if id == "" {
+		warn("attachment_event_data: no id, returning 400")
 		e.stream.write(map[string]string{"status": "400"})
 		return
 	}
 
+	debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
 	if !e.db.scan(&att, "select * from _attachments where id = ?", id) {
+		warn("attachment_event_data: attachment not found in db, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}
 
+	debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
+
 	// Only serve if we own this attachment (entity is empty)
 	if att.Entity != "" {
+		warn("attachment_event_data: not owner (entity=%s), returning 403", att.Entity)
 		e.stream.write(map[string]string{"status": "403"})
 		return
 	}
 
-	path := data_dir + "/" + e.db.attachment_path(att.ID, att.Name)
+	path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, att.ID, att.Name)
+	debug("attachment_event_data: checking file path=%s", path)
 	if !file_exists(path) {
+		warn("attachment_event_data: file not found at %s, returning 404", path)
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}
 
+	debug("attachment_event_data: sending file %s", path)
 	e.stream.write(map[string]string{"status": "200"})
 	e.stream.write_file(path)
+	e.stream.close_write()
+	debug("attachment_event_data: done")
 }
 
 // mochi.attachment.sync(object, recipients) -> int: Sync attachments to recipients, returns count

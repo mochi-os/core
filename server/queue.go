@@ -97,7 +97,7 @@ func queue_fail(id string, err string) {
 	}
 }
 
-// Send a queued direct message (reads challenge before sending)
+// Send a queued direct message (reads challenge before sending, waits for ACK)
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
@@ -141,11 +141,28 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
-	if s.writer != nil {
-		s.writer.Close()
+	// Close write direction to signal we're done sending (keeps read open for ACK)
+	s.close_write()
+
+	// Read ACK from stream
+	var h Headers
+	if s.read_headers(&h) != nil {
+		debug("Queue direct %q failed to read ACK", q.ID)
+		return false
 	}
 
-	return true
+	if h.msg_type() == "ack" && h.AckID == q.ID {
+		debug("Queue direct %q received ACK", q.ID)
+		return true
+	}
+
+	if h.msg_type() == "nack" && h.AckID == q.ID {
+		debug("Queue direct %q received NACK", q.ID)
+		return false
+	}
+
+	debug("Queue direct %q received unexpected response type=%q ack=%q", q.ID, h.msg_type(), h.AckID)
+	return false
 }
 
 // Send a queued broadcast message (no challenge for broadcasts)
@@ -198,15 +215,9 @@ func queue_process() {
 		}
 
 		if ok {
-			// Mark as sent, waiting for ACK (for direct) or remove (for broadcast)
-			if q.Type == "broadcast" {
-				// Broadcasts don't get ACKs, just remove
-				db.exec("delete from queue where id = ?", q.ID)
-				debug("Queue broadcast %q sent", q.ID)
-			} else {
-				db.exec("update queue set status = 'sent' where id = ?", q.ID)
-				debug("Queue direct %q sent, awaiting ACK", q.ID)
-			}
+			// Message sent and ACK received (or broadcast sent), remove from queue
+			db.exec("delete from queue where id = ?", q.ID)
+			debug("Queue %s %q completed", q.Type, q.ID)
 		} else {
 			queue_fail(q.ID, "send failed")
 		}
@@ -237,8 +248,8 @@ func queue_check_entity(entity string) {
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
-			db.exec("update queue set status = 'sent' where id = ?", q.ID)
-			debug("Queue direct %q sent to entity %q, awaiting ACK", q.ID, entity)
+			db.exec("delete from queue where id = ?", q.ID)
+			debug("Queue direct %q sent to entity %q", q.ID, entity)
 		}
 	}
 }
@@ -256,8 +267,8 @@ func queue_check_peer(peer string) {
 
 	for _, q := range entries {
 		if queue_send_direct(&q) {
-			db.exec("update queue set status = 'sent' where id = ?", q.ID)
-			debug("Queue direct %q sent to peer %q, awaiting ACK", q.ID, peer)
+			db.exec("delete from queue where id = ?", q.ID)
+			debug("Queue direct %q sent to peer %q", q.ID, peer)
 		}
 	}
 }

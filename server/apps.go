@@ -577,15 +577,65 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 // Load all installed apps
 func apps_start() {
-	for _, id := range file_list(data_dir + "/apps") {
-		// Skip hidden files and directories (e.g., .gitignore)
+	// Load development apps first (unversioned, constant IDs)
+	if dev_apps_dir != "" {
+		apps_load_dev()
+	}
+
+	// Load production apps (versioned, entity IDs)
+	apps_load_production()
+}
+
+// Check if an app is already loaded
+func app_exists(id string) bool {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	_, exists := apps[id]
+	return exists
+}
+
+// Load development apps from dev_apps_dir (unversioned)
+func apps_load_dev() {
+	for _, id := range file_list(dev_apps_dir) {
 		if strings.HasPrefix(id, ".") {
 			continue
 		}
 
-		// Skip entries that aren't valid app IDs (entity or constant)
-		if !valid(id, "entity") && !valid(id, "constant") {
-			debug("App skipping invalid app ID %q in apps directory", id)
+		// Dev apps must have constant IDs
+		if !valid(id, "constant") {
+			debug("Dev app skipping invalid ID %q (must be constant)", id)
+			continue
+		}
+
+		// Read app.json directly (no version subdirectory)
+		base := dev_apps_dir + "/" + id
+		av, err := app_read(id, base)
+		if err != nil {
+			info("Dev app load error for %q: %v", id, err)
+			continue
+		}
+
+		a := app(id)
+		a.load_version(av)
+		debug("Dev app loaded: %s", id)
+	}
+}
+
+// Load production apps from data_dir/apps (versioned)
+func apps_load_production() {
+	for _, id := range file_list(data_dir + "/apps") {
+		if strings.HasPrefix(id, ".") {
+			continue
+		}
+
+		// Production apps must have entity IDs
+		if !valid(id, "entity") {
+			debug("Production app skipping invalid ID %q (must be entity)", id)
+			continue
+		}
+
+		// Skip if already loaded as dev app
+		if app_exists(id) {
 			continue
 		}
 
@@ -596,12 +646,10 @@ func apps_start() {
 		a := app(id)
 
 		for _, version := range versions {
-			// Skip hidden files and directories
 			if strings.HasPrefix(version, ".") {
 				continue
 			}
 
-			// Skip entries that aren't valid versions
 			if !valid(version, "version") {
 				debug("App skipping invalid version %q for app %q", version, id)
 				continue

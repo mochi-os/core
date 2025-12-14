@@ -137,8 +137,11 @@ func queue_send_direct(q *QueueEntry) bool {
 	if s.write_raw(data) != nil {
 		return false
 	}
-	if q.File != "" && s.write_file(q.File) != nil {
-		return false
+	if q.File != "" {
+		_, err := s.write_file(q.File)
+		if err != nil {
+			return false
+		}
 	}
 
 	// Close write direction to signal we're done sending (keeps read open for ACK)

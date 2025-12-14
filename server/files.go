@@ -186,6 +186,26 @@ func file_write_from_reader(path string, r io.Reader) bool {
 	return true
 }
 
+// Write file contents from reader, returning bytes written
+func file_write_from_reader_count(path string, r io.Reader) (int64, bool) {
+	file_mkdir_for_file(path)
+
+	f, err := os.Create(path)
+	if err != nil {
+		warn("Unable to open file %q for writing: %v", path, err)
+		return 0, false
+	}
+	defer f.Close()
+
+	n, err := io.Copy(f, r)
+	if err != nil {
+		warn("Unable to write to file %q: %v", path, err)
+		return 0, false
+	}
+
+	return n, true
+}
+
 // Helper function to get the path of a file
 func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)

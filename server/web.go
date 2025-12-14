@@ -100,8 +100,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Serve attachment - ID comes from :id parameter
 	// Use owner (entity owner) for database lookup since attachments belong to the entity
 	if aa.Attachments {
-		attachmentID := aa.parameters["id"]
-		return web_serve_attachment(c, a, owner, attachmentID, aa.Thumbnail)
+		attachment := aa.parameters["id"]
+		entity := ""
+		attOwner := owner
+		if e != nil {
+			entity = e.ID
+		} else if aa.parameters["wiki"] != "" {
+			// For bookmarked wikis, entity doesn't exist locally but ID is in route params
+			// Pass nil owner to trigger remote fetch path
+			entity = aa.parameters["wiki"]
+			attOwner = nil
+		}
+		return web_serve_attachment(c, a, attOwner, entity, attachment, aa.Thumbnail)
 	}
 
 	// Serve static file
@@ -672,15 +682,19 @@ func web_start() {
 }
 
 // Serve an attachment or thumbnail
-func web_serve_attachment(c *gin.Context, app *App, user *User, id string, thumbnail bool) bool {
+func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id string, thumbnail bool) bool {
 	if !valid(id, "id") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attachment ID"})
 		return true
 	}
 
+	// If no local owner, try to fetch from remote entity (e.g., bookmarked wikis)
 	if user == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
-		return true
+		if entity == "" || !valid(entity, "entity") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+			return true
+		}
+		return web_serve_attachment_remote(c, app, entity, id, thumbnail)
 	}
 
 	db := db_app(user, app.active)
@@ -734,6 +748,44 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, id string, thumb
 	}
 
 	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", att.Name))
+	c.File(path)
+	return true
+}
+
+// Serve an attachment from a remote entity (for bookmarked wikis, etc.)
+func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, thumbnail bool) bool {
+	// Cache path for remote attachments
+	path := cache_dir + "/attachments/" + app.id + "/" + entity + "/" + id
+
+	// Check if already cached
+	if !file_exists(path) {
+		// Fetch from remote entity
+		data := attachment_fetch_remote(app, entity, id)
+		if data == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+			return true
+		}
+		file_write(path, data)
+		info("Remote attachment %s from %s cached on demand", id, entity)
+	}
+
+	// Use ETag for cache validation
+	etag := fmt.Sprintf(`"%s"`, id)
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, must-revalidate")
+
+	if match := c.GetHeader("If-None-Match"); match == etag {
+		c.Status(http.StatusNotModified)
+		return true
+	}
+
+	if thumbnail {
+		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
+			c.File(thumb)
+			return true
+		}
+	}
+
 	c.File(path)
 	return true
 }

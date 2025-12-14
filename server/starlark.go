@@ -100,6 +100,9 @@ func sl_decode(value sl.Value) any {
 		s, _ := sl.AsString(v)
 		return s
 
+	case sl.Bytes:
+		return []byte(v)
+
 	case *sl.List:
 		out := make([]any, v.Len())
 		for i := 0; i < v.Len(); i++ {
@@ -208,12 +211,8 @@ func sl_encode(v any) sl.Value {
 	case float64:
 		return sl.Float(x)
 
-	case []uint8:
-		t := make([]sl.Value, len(x))
-		for i, r := range x {
-			t[i] = sl.MakeInt(int(r))
-		}
-		return sl.Tuple(t)
+	case []uint8: // []byte
+		return sl.Bytes(x)
 
 	case bool:
 		return sl.Bool(x)

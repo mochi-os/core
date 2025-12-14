@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"strings"
 	"sync"
 
@@ -116,7 +117,7 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -131,6 +132,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
 		return sl.NewBuiltin("error", a.sl_error), nil
+	case "file":
+		return sl.NewBuiltin("file", a.sl_file), nil
 	case "header":
 		return sl.NewBuiltin("header", a.sl_header), nil
 	case "input":
@@ -405,6 +408,51 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	return sl.None, nil
+}
+
+// a.file(field) -> dict or None: Read uploaded file data
+// Returns dict with: name, content_type, size, data (bytes)
+func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <field: string>")
+	}
+
+	field, ok := sl.AsString(args[0])
+	if !ok || !valid(field, "constant") {
+		return sl_error(fn, "invalid field %q", field)
+	}
+
+	form, err := a.web.MultipartForm()
+	if err != nil {
+		return sl.None, nil
+	}
+
+	files := form.File[field]
+	if len(files) == 0 {
+		return sl.None, nil
+	}
+
+	ff := files[0] // Get first file
+
+	// Open and read file contents
+	f, err := ff.Open()
+	if err != nil {
+		return sl_error(fn, "unable to open file: %v", err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return sl_error(fn, "unable to read file: %v", err)
+	}
+
+	// Return a dict (not a struct) so it can be accessed with file["name"] syntax
+	d := sl.NewDict(4)
+	d.SetKey(sl.String("name"), sl.String(ff.Filename))
+	d.SetKey(sl.String("content_type"), sl.String(ff.Header.Get("Content-Type")))
+	d.SetKey(sl.String("size"), sl.MakeInt64(ff.Size))
+	d.SetKey(sl.String("data"), sl.Bytes(data))
+	return d, nil
 }
 
 // a.header(name, value) -> None: Set response header

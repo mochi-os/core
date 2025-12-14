@@ -915,8 +915,11 @@ func (av *AppVersion) find_action(name string) *AppAction {
 	return nil
 }
 
-// Get a new Starlark interpreter for an app version
+// Get a Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
+	if dev_reload_starlark {
+		return starlark(av.Execute)
+	}
 	if av.starlark_runtime == nil {
 		av.starlark_runtime = starlark(av.Execute)
 	}

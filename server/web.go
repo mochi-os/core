@@ -256,6 +256,10 @@ func web_auth(c *gin.Context) *User {
 
 // Ask browser to cache static files
 func web_cache_static(c *gin.Context, path string) {
+	if dev_reload_web {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		return
+	}
 	if match_react.MatchString(path) {
 		// debug("Web asking browser to long term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")

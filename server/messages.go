@@ -170,7 +170,8 @@ func (m *Message) send_work() {
 
 	ok := s.write_raw(data) == nil
 	if m.file != "" && ok {
-		ok = s.write_file(m.file) == nil
+		_, err := s.write_file(m.file)
+		ok = err == nil
 	}
 
 	// Close write direction to signal we're done sending (keeps read open for ACK)

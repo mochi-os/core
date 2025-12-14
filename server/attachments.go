@@ -38,19 +38,21 @@ type Attachment struct {
 }
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-	"save":   sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-	"create": sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
-	"insert": sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
-	"update": sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
-	"move":   sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
-	"delete": sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
-	"clear":  sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
-	"list":   sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
-	"get":    sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-	"data":   sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
-	"path":   sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
-	"sync":   sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
-	"fetch":  sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
+	"save":             sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
+	"create":           sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
+	"create_from_file": sl.NewBuiltin("mochi.attachment.create_from_file", api_attachment_create_from_file),
+	"insert":           sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
+	"update":           sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
+	"move":             sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
+	"delete":           sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
+	"clear":            sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
+	"list":             sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
+	"get":              sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
+	"exists":           sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
+	"data":             sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
+	"path":             sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"sync":             sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
+	"fetch":            sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
 func init() {
@@ -393,6 +395,137 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Save file
 	path := attachment_path(owner.ID, app.id, id, name)
 	file_write(data_dir+"/"+path, bytes)
+
+	// Insert record
+	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
+
+	result := att.to_map(app.url_path())
+
+	// Handle federation notify
+	if len(notify) > 0 {
+		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
+	}
+
+	return sl_encode(result), nil
+}
+
+// mochi.attachment.create_from_file(object, name, path, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment from a file
+func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 3 || len(args) > 8 {
+		return sl_error(fn, "syntax: <object: string>, <name: string>, <path: string>, [content_type: string], [caption: string], [description: string], [notify: array], [id: string]")
+	}
+
+	object, ok := sl.AsString(args[0])
+	if !ok || !valid(object, "path") {
+		return sl_error(fn, "invalid object")
+	}
+
+	name, ok := sl.AsString(args[1])
+	if !ok || name == "" {
+		return sl_error(fn, "invalid name")
+	}
+
+	src_path, ok := sl.AsString(args[2])
+	if !ok || src_path == "" {
+		return sl_error(fn, "invalid path")
+	}
+
+	content_type := ""
+	if len(args) > 3 {
+		content_type, _ = sl.AsString(args[3])
+	}
+	if content_type == "" {
+		content_type = attachment_content_type(name)
+	}
+
+	caption := ""
+	if len(args) > 4 {
+		caption, _ = sl.AsString(args[4])
+	}
+
+	description := ""
+	if len(args) > 5 {
+		description, _ = sl.AsString(args[5])
+	}
+
+	var notify []string
+	if len(args) > 6 {
+		notify = sl_decode_string_list(args[6])
+	}
+
+	// Optional attachment ID (use existing ID for federation sync)
+	provided_id := ""
+	if len(args) > 7 {
+		provided_id, _ = sl.AsString(args[7])
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	user := t.Local("user").(*User)
+	creator := ""
+	if user != nil && user.Identity != nil {
+		creator = user.Identity.ID
+	}
+
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+
+	// Resolve source path (relative to app data dir)
+	full_src_path := api_file_path(owner, app, src_path)
+
+	// Get file size
+	fi, err := os.Stat(full_src_path)
+	if err != nil {
+		return sl_error(fn, "unable to read file: %v", err)
+	}
+	size := fi.Size()
+
+	// Check size
+	if size > attachment_max_size_default {
+		return sl_error(fn, "file too large: %d bytes", size)
+	}
+
+	// Check storage limit (10GB per user across all apps)
+	current := dir_size(user_storage_dir(owner))
+	if current+size > file_max_storage {
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	// Create attachment record - use provided ID or generate new one
+	id := provided_id
+	if id == "" {
+		id = uid()
+	}
+	rank := db.attachment_next_rank(object)
+
+	att := Attachment{
+		ID:          id,
+		Object:      object,
+		Entity:      "",
+		Name:        name,
+		Size:        size,
+		ContentType: content_type,
+		Creator:     creator,
+		Caption:     caption,
+		Description: description,
+		Rank:        rank,
+		Created:     now(),
+	}
+
+	// Move file to attachment location
+	dest_path := data_dir + "/" + attachment_path(owner.ID, app.id, id, name)
+	file_move(full_src_path, dest_path)
 
 	// Insert record
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -845,6 +978,36 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(att.to_map(app.url_path())), nil
 }
 
+// mochi.attachment.exists(id) -> bool: Check if an attachment exists
+func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || id == "" {
+		return sl_error(fn, "invalid id")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+
+	exists, _ := db.exists("select 1 from _attachments where id = ?", id)
+	return sl.Bool(exists), nil
+}
+
 // mochi.attachment.data(id) -> bytes or None: Get attachment file data
 func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -891,7 +1054,8 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(data), nil
 }
 
-// mochi.attachment.path(id) -> string or None: Get file path for direct serving
+// mochi.attachment.path(id) -> string or None: Get relative file path for use with stream file operations
+// Returns the filename relative to the app's files directory, suitable for write_from_file/read_to_file
 func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -922,21 +1086,19 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 
-	// If entity is set, this is a remote attachment - fetch and cache first
+	// If entity is set, this is a remote attachment - not available locally
+	// Use mochi.attachment.fetch() for remote attachments
 	if att.Entity != "" {
-		cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, att.Entity, app.id, id)
-		if !file_exists(cache_path) {
-			data := attachment_fetch_remote(app, att.Entity, id)
-			if data == nil {
-				return sl.None, nil
-			}
-		}
-		return sl_encode(cache_path), nil
+		return sl.None, nil
 	}
 
-	// Local file
-	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
-	return sl_encode(path), nil
+	// Return just the filename (id_name) relative to the app's files directory
+	// This works with write_from_file/read_to_file which prepend the full path
+	safe_name := filepath.Base(att.Name)
+	if safe_name == "" || safe_name == "." || safe_name == ".." {
+		safe_name = "file"
+	}
+	return sl_encode(fmt.Sprintf("%s_%s", att.ID, safe_name)), nil
 }
 
 // Federation: notify entities of new attachments

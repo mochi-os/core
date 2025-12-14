@@ -398,20 +398,20 @@ func (s *Stream) write_content(in ...string) error {
 	return s.write(content)
 }
 
-// Write a file to a stream as raw bytes
-func (s *Stream) write_file(path string) error {
+// Write a file to a stream as raw bytes, returns bytes written
+func (s *Stream) write_file(path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("stream unable to read file %q", path)
+		return 0, fmt.Errorf("stream unable to read file %q", path)
 	}
 	defer f.Close()
 
-	_, err = io.Copy(s.writer, f)
+	n, err := io.Copy(s.writer, f)
 	if err != nil {
-		return fmt.Errorf("stream error sending file segment: %v", err)
+		return 0, fmt.Errorf("stream error sending file segment: %v", err)
 	}
 
-	return nil
+	return n, nil
 }
 
 // Write a raw, unencoded or pre-encoded, segment
@@ -443,7 +443,7 @@ func (s *Stream) write_raw(data []byte) error {
 
 // Starlark methods
 func (s *Stream) AttrNames() []string {
-	return []string{"read", "read_to_file", "write", "write_from_file"}
+	return []string{"read", "read_to_file", "write", "write_raw", "write_from_file", "close"}
 }
 
 func (s *Stream) Attr(name string) (sl.Value, error) {
@@ -454,8 +454,12 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("read_to_file", s.sl_read_to_file), nil
 	case "write":
 		return sl.NewBuiltin("write", s.sl_write), nil
+	case "write_raw":
+		return sl.NewBuiltin("write_raw", s.sl_write_raw), nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", s.sl_write_from_file), nil
+	case "close":
+		return sl.NewBuiltin("close", s.sl_close), nil
 	default:
 		return nil, nil
 	}
@@ -489,7 +493,7 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(v), nil
 }
 
-// s.read_to_file(path) -> None: Read raw bytes from stream and write to file
+// s.read_to_file(path) -> int: Read raw bytes from stream and write to file, returns bytes read
 func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// debug("Stream %d reading rest of stream to file", s.id)
 
@@ -524,16 +528,21 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "storage limit exceeded")
 	}
 
+	// Use raw_reader() to include any bytes buffered by the CBOR decoder
+	// This is critical when read_to_file follows a read() call
+	reader := s.raw_reader()
+
 	// Limit reader to remaining storage space
-	limited := io.LimitReader(s.reader, remaining)
-	if !file_write_from_reader(api_file_path(user, app, file), limited) {
+	limited := io.LimitReader(reader, remaining)
+	n, ok := file_write_from_reader_count(api_file_path(user, app, file), limited)
+	if !ok {
 		s.reader.Close()
 		return sl_error(fn, "unable to save file %q", file)
 	}
 
 	s.reader.Close()
-	// debug("Stream %d read to file", s.id)
-	return sl.None, nil
+	// debug("Stream %d read %d bytes to file", s.id, n)
+	return sl.MakeInt64(n), nil
 }
 
 // s.write(values...) -> None: Write one or more encoded segments to the stream
@@ -547,10 +556,29 @@ func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// s.write_from_file(path) -> None: Send file contents as raw bytes
+// s.write_raw(data) -> None: Send raw bytes without CBOR encoding
+func (s *Stream) sl_write_raw(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <data: bytes>")
+	}
+
+	data, ok := args[0].(sl.Bytes)
+	if !ok {
+		return sl_error(fn, "data must be bytes")
+	}
+
+	err := s.write_raw([]byte(data))
+	if err != nil {
+		return sl_error(fn, err)
+	}
+
+	return sl.None, nil
+}
+
+// s.write_from_file(path) -> int: Send file contents as raw bytes, returns bytes written
 func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// debug("Stream %d writing from file", s.id)
-	defer s.writer.Close()
+	defer s.close_write()
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
 	}
@@ -570,10 +598,17 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	if s.write_file(api_file_path(user, app, file)) != nil {
+	n, err := s.write_file(api_file_path(user, app, file))
+	if err != nil {
 		return sl_error(fn, "unable to send file")
 	}
 
-	// debug("Stream %d wrote from file", s.id)
+	// debug("Stream %d wrote %d bytes from file", s.id, n)
+	return sl.MakeInt64(n), nil
+}
+
+// s.close() -> None: Close the write side of the stream (signals EOF to reader)
+func (s *Stream) sl_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	s.close_write()
 	return sl.None, nil
 }

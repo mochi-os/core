@@ -113,7 +113,11 @@ func fingerprint(in string) string {
 	return string(out)
 }
 
+// fingerprint_hyphens adds hyphens to a fingerprint for display (e.g., "abc-def-ghi").
 func fingerprint_hyphens(in string) string {
+	if len(in) < 9 {
+		return in
+	}
 	return in[:3] + "-" + in[3:6] + "-" + in[6:]
 }
 

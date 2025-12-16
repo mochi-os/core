@@ -1052,7 +1052,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if a.active == nil {
 			return sl_error(fn, "App %q has no active version", id)
 		}
-		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}
+		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine}
 	}
 	apps_lock.Unlock()
 

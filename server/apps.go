@@ -55,11 +55,14 @@ type AppFunction struct {
 }
 
 type AppVersion struct {
-	Version      string   `json:"version"`
-	Label        string   `json:"label"`
-	Classes      []string `json:"classes"`
-	Paths        []string `json:"paths"`
-	Services     []string `json:"services"`
+	Version  string   `json:"version"`
+	Label    string   `json:"label"`
+	Classes  []string `json:"classes"`
+	Paths    []string `json:"paths"`
+	Services []string `json:"services"`
+	Require  struct {
+		Role string `json:"role"`
+	} `json:"require"`
 	Architecture struct {
 		Engine  string `json:"engine"`
 		Version int    `json:"version"`
@@ -104,6 +107,17 @@ func (a *App) url_path() string {
 		return a.active.Paths[0]
 	}
 	return a.id
+}
+
+// Check if user meets the app's requirements
+func (av *AppVersion) user_allowed(user *User) bool {
+	if av.Require.Role == "" {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	return user.Role == av.Require.Role
 }
 
 const (
@@ -956,6 +970,9 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	apps_lock.Lock()
 	for _, a := range apps {
+		if !a.active.user_allowed(user) {
+			continue
+		}
 		for _, i := range a.active.Icons {
 			path := a.fingerprint
 			if len(a.active.Paths) > 0 {
@@ -1032,27 +1049,21 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.app.list() -> list: Get list of installed apps
 func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var ids []string
-	apps_lock.Lock()
-	for id := range apps {
-		if valid(id, "entity") || valid(id, "constant") {
-			ids = append(ids, id)
-		}
-	}
-	apps_lock.Unlock()
-
 	user := t.Local("user").(*User)
-	results := make([]map[string]string, len(ids))
+	var results []map[string]string
+
 	apps_lock.Lock()
-	for i, id := range ids {
-		a := apps[id]
-		if a == nil {
-			return sl_error(fn, "App %q is nil", id)
+	for id, a := range apps {
+		if !valid(id, "entity") && !valid(id, "constant") {
+			continue
 		}
-		if a.active == nil {
-			return sl_error(fn, "App %q has no active version", id)
+		if a == nil || a.active == nil {
+			continue
 		}
-		results[i] = map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine}
+		if !a.active.user_allowed(user) {
+			continue
+		}
+		results = append(results, map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine})
 	}
 	apps_lock.Unlock()
 

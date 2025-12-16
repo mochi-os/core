@@ -97,6 +97,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
+	// Check app-level requirements
+	if !a.active.user_allowed(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return true
+	}
+
 	// Serve attachment - ID comes from :id parameter
 	// Use owner (entity owner) for database lookup since attachments belong to the entity
 	if aa.Attachments {
@@ -793,4 +799,3 @@ func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, th
 	c.File(path)
 	return true
 }
-

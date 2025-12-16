@@ -18,8 +18,8 @@ var (
 	cache_dir           string
 	data_dir            string
 	dev_apps_dir        string
-	dev_reload_starlark bool
-	dev_reload_web      bool
+	dev_reload          bool
+	web_cache           bool
 	email_host          string
 	email_port          int
 )
@@ -41,8 +41,8 @@ func main() {
 	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
 	data_dir = ini_string("directories", "data", "/var/lib/mochi")
 	dev_apps_dir = ini_string("development", "apps", "")
-	dev_reload_starlark = ini_bool("development", "reload_starlark", false)
-	dev_reload_web = ini_bool("development", "reload_web", false)
+	dev_reload = ini_bool("development", "reload", false)
+	web_cache = ini_bool("web", "cache", true)
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
 

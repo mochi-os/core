@@ -67,6 +67,9 @@ func (e *Event) route() error {
 		return fmt.Errorf("unknown service %q", e.service)
 	}
 	e.app = a
+	if dev_reload {
+		a.active.reload()
+	}
 
 	// Handle built-in attachment events for apps with attachments helper
 	// This must happen before the event lookup since _attachment/* events aren't registered in app.json

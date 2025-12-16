@@ -801,14 +801,6 @@ func (a *App) service(service string) {
 
 // Find the action best matching the specified name
 func (av *AppVersion) find_action(name string) *AppAction {
-	debug("[FIND_ACTION] app=%q looking for action=%q", av.app.id, name)
-	debug("[FIND_ACTION] available actions: %v", func() []string {
-		var routes []string
-		for route := range av.Actions {
-			routes = append(routes, route)
-		}
-		return routes
-	}())
 	var candidates []AppAction
 
 	for action, aa := range av.Actions {
@@ -931,13 +923,79 @@ func (av *AppVersion) find_action(name string) *AppAction {
 
 // Get a Starlark interpreter for an app version
 func (av *AppVersion) starlark() *Starlark {
-	if dev_reload_starlark {
+	if dev_reload {
 		return starlark(av.Execute)
 	}
 	if av.starlark_runtime == nil {
 		av.starlark_runtime = starlark(av.Execute)
 	}
 	return av.starlark_runtime
+}
+
+// Reload app.json and labels from disk (for development)
+func (av *AppVersion) reload() {
+	debug("App reloading %q", av.base)
+	path := av.base + "/app.json"
+	data, err := hujson.Standardize(file_read(path))
+	if err != nil {
+		info("App reload failed to read %q: %v", path, err)
+		return
+	}
+
+	var fresh AppVersion
+	if err := json.Unmarshal(data, &fresh); err != nil {
+		info("App reload failed to parse %q: %v", path, err)
+		return
+	}
+
+	// Expand attachment actions into sub-routes
+	var attachment_actions []string
+	for name, action := range fresh.Actions {
+		if action.Attachments {
+			attachment_actions = append(attachment_actions, name)
+		}
+	}
+	for _, name := range attachment_actions {
+		action := fresh.Actions[name]
+		fresh.Actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
+		fresh.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
+		delete(fresh.Actions, name)
+	}
+
+	// Reload labels
+	labels := make(map[string]map[string]string)
+	for _, file := range file_list(av.base + "/labels") {
+		language := strings.TrimSuffix(file, ".conf")
+		if !valid(language, "constant") {
+			continue
+		}
+		labels[language] = make(map[string]string)
+
+		lpath := fmt.Sprintf("%s/labels/%s", av.base, file)
+		f, err := os.Open(lpath)
+		if err != nil {
+			continue
+		}
+
+		s := bufio.NewScanner(f)
+		for s.Scan() {
+			parts := strings.SplitN(s.Text(), "=", 2)
+			if len(parts) == 2 {
+				labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
+		f.Close()
+	}
+
+	// Update fields that are safe to reload
+	apps_lock.Lock()
+	av.Label = fresh.Label
+	av.Icons = fresh.Icons
+	av.Actions = fresh.Actions
+	av.Events = fresh.Events
+	av.Functions = fresh.Functions
+	av.labels = labels
+	apps_lock.Unlock()
 }
 
 // mochi.app.get(id) -> dict or None: Get details of an app

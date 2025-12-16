@@ -981,7 +981,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			if i.Action != "" {
 				path = path + "/" + i.Action
 			}
-			results = append(results, map[string]string{"path": path, "name": a.label(user, i.Label), "file": i.File})
+			results = append(results, map[string]string{"id": a.id, "path": path, "name": a.label(user, i.Label), "file": i.File})
 		}
 	}
 	apps_lock.Unlock()

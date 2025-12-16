@@ -23,21 +23,16 @@ var (
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if a == nil || a.active == nil {
-		debug("[ACTION] web_action: app is nil or inactive")
 		return false
 	}
-	entityInfo := "nil"
-	if e != nil {
-		entityInfo = e.Fingerprint
+	if dev_reload {
+		a.active.reload()
 	}
-	debug("[ACTION] web_action: app=%q action=%q entity=%s", a.id, name, entityInfo)
 
 	aa := a.active.find_action(name)
 	if aa == nil {
-		debug("[ACTION] No action found for app %q action %q", a.id, name)
 		return false
 	}
-	debug("[ACTION] Found action: name=%q function=%q public=%v", aa.name, aa.Function, aa.Public)
 
 	// Get user authentication via cookie
 	user := web_auth(c)
@@ -262,7 +257,7 @@ func web_auth(c *gin.Context) *User {
 
 // Ask browser to cache static files
 func web_cache_static(c *gin.Context, path string) {
-	if dev_reload_web {
+	if !web_cache {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		return
 	}
@@ -505,32 +500,25 @@ func web_path(c *gin.Context) {
 	}
 
 	raw := strings.Trim(c.Request.URL.Path, "/")
-	debug("[ROUTING] raw path: %q", raw)
 
 	// Check for app that handles root path
 	if raw == "" {
-		debug("[ROUTING] empty path, checking for root app")
 		if a := app_by_root(); a != nil {
-			debug("[ROUTING] found root app %q", a.id)
 			web_action(c, a, "", nil)
 			return
 		}
-		debug("[ROUTING] no root app configured")
 		c.JSON(http.StatusNotFound, gin.H{"error": "No root app configured"})
 		return
 	}
 
 	segments := strings.Split(raw, "/")
 	first := segments[0]
-	debug("[ROUTING] segments=%v, first=%q", segments, first)
 
 	// Check for app matching first segment
 	a := app_by_any(first)
 	if a != nil {
-		debug("[ROUTING] found app %q for first segment %q", a.id, first)
 		// Redirect /app to /app/ for correct relative path resolution
 		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
-			debug("[ROUTING] redirecting %q to /%s/", c.Request.URL.Path, first)
 			c.Redirect(http.StatusMovedPermanently, "/"+first+"/")
 			return
 		}
@@ -539,24 +527,18 @@ func web_path(c *gin.Context) {
 		if len(segments) > 1 {
 			second = segments[1]
 		}
-		debug("[ROUTING] second segment: %q", second)
 
 		// Route on /<app>/<entity>[/<action...>]
 		e := entity_by_any(second)
-		debug("[ROUTING] entity_by_any(%q) = %v", second, e != nil)
 		if e != nil {
-			debug("[ROUTING] found entity %q (fingerprint=%s) for second segment", e.ID, e.Fingerprint)
 			// Construct action with entity fingerprint prefix, same as direct entity routing
 			action := e.Fingerprint
 			if len(segments) > 2 {
 				action = e.Fingerprint + "/" + strings.Join(segments[2:], "/")
 			}
-			debug("[ROUTING] trying entity action %q on app %q", action, a.id)
 			if web_action(c, a, action, e) {
-				debug("[ROUTING] entity action handled successfully")
 				return
 			}
-			debug("[ROUTING] entity action not found, falling through to class routing")
 		}
 
 		// Route on /<app>/<action...>
@@ -567,7 +549,6 @@ func web_path(c *gin.Context) {
 			actionSegments = actionSegments[1:]
 		}
 		classAction := strings.Join(actionSegments, "/")
-		debug("[ROUTING] routing to class action %q on app %q", classAction, a.id)
 
 		web_action(c, a, classAction, nil)
 		return

@@ -52,6 +52,8 @@ func (db *DB) access_setup() {
 
 // Check if a user has access to perform an operation on a resource
 func (db *DB) access_check(user string, role string, resource string, operation string) bool {
+	db.access_setup() // Ensure table exists
+
 	// Get resource hierarachy
 	var resources []string
 	parts := strings.Split(resource, "/")

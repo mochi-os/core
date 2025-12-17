@@ -677,9 +677,13 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 	return r.Next(), nil
 }
 
+// integer returns the first column as an integer, or 0 on error
 func (db *DB) integer(query string, values ...any) int {
 	var result int
-	must(db.handle.QueryRow(query, values...).Scan(&result))
+	err := db.handle.QueryRow(query, values...).Scan(&result)
+	if err != nil {
+		return 0
+	}
 	return result
 }
 

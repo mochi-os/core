@@ -35,6 +35,11 @@ func init() {
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
 			"message": api_message,
+			"peer": sls.FromStringDict(sl.String("mochi.peer"), sl.StringDict{
+				"connect": sls.FromStringDict(sl.String("mochi.peer.connect"), sl.StringDict{
+					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
+				}),
+			}),
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),

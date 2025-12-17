@@ -303,11 +303,12 @@ func (s *Stream) read_headers(h *Headers) error {
 		defer r.SetReadDeadline(time.Time{})
 	}
 
-	// Use a size-limited decoder for headers (must be called before read())
+	// Use a size-limited decoder (must be called before read())
+	// Use cbor_max_size since the same decoder is reused for content and segments
 	if s.decoder != nil {
 		return fmt.Errorf("stream %d: read_headers must be called before read", s.id)
 	}
-	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, headers_max_size))
+	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
 
 	err := s.decoder.Decode(h)
 	if err != nil {

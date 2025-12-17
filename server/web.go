@@ -111,6 +111,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			// Pass nil owner to trigger remote fetch path
 			entity = aa.parameters["wiki"]
 			attOwner = nil
+		} else if aa.parameters["feed"] != "" {
+			// For subscribed feeds, entity doesn't exist locally but ID is in route params
+			// Pass nil owner to trigger remote fetch path
+			entity = aa.parameters["feed"]
+			attOwner = nil
 		}
 		return web_serve_attachment(c, a, attOwner, entity, attachment, aa.Thumbnail)
 	}
@@ -744,6 +749,18 @@ func web_path(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
 }
 
+// Return P2P connection info for this server
+func web_p2p_info(c *gin.Context) {
+	addresses := []string{}
+	for _, addr := range p2p_me.Addrs() {
+		addresses = append(addresses, addr.String()+"/p2p/"+p2p_id)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"peer":      p2p_id,
+		"addresses": addresses,
+	})
+}
+
 func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
@@ -786,6 +803,7 @@ func web_start() {
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
 	r.GET("/_/ping", web_ping)
+	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/_/websocket", websocket_connection)
 
 	// All other paths are handled by web_path()
@@ -867,9 +885,14 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 	// Get file path - always use local storage, fetching from remote if needed
 	path := data_dir + "/" + attachment_path(user.ID, app.id, att.ID, att.Name)
 	if !file_exists(path) {
-		if att.Entity != "" {
+		// Prefer route entity (e.g., feed ID from URL) over stored entity (may be post ID)
+		fetch_entity := entity
+		if fetch_entity == "" {
+			fetch_entity = att.Entity
+		}
+		if fetch_entity != "" {
 			// Fetch from remote and store locally
-			data := attachment_fetch_remote(app, att.Entity, id)
+			data := attachment_fetch_remote(app, fetch_entity, id)
 			if data == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 				return true

@@ -42,10 +42,6 @@ var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	"revoke": sl.NewBuiltin("mochi.access.revoke", api_access_revoke),
 })
 
-func init() {
-	app_helper("access", (*DB).access_setup)
-}
-
 // Create access control table
 func (db *DB) access_setup() {
 	db.exec("create table if not exists _access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
@@ -103,6 +99,7 @@ func (db *DB) access_check(user string, role string, resource string, operation 
 
 // Grant or deny access
 func (db *DB) access_set(subject string, resource string, operation string, grant bool, granter string) {
+	db.access_setup() // Ensure table exists
 	g := 0
 	if grant {
 		g = 1
@@ -113,11 +110,13 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 
 // Clear all access rules for a resource
 func (db *DB) access_clear_resource(resource string) {
+	db.access_setup() // Ensure table exists
 	db.exec("delete from _access where resource=? or resource like ?", resource, resource+"/%")
 }
 
 // Clear all access rules for a subject
 func (db *DB) access_clear_subject(subject string) {
+	db.access_setup() // Ensure table exists
 	db.exec("delete from _access where subject=?", subject)
 }
 
@@ -133,6 +132,7 @@ func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
 
 // Revoke access
 func (db *DB) access_revoke(subject string, resource string, operation string) {
+	db.access_setup() // Ensure table exists
 	db.exec("delete from _access where subject=? and resource=? and operation=?", subject, resource, operation)
 }
 

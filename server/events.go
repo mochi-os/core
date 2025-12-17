@@ -71,63 +71,45 @@ func (e *Event) route() error {
 		a.active.reload()
 	}
 
-	// Handle built-in attachment events for apps with attachments helper
+	// Handle built-in attachment events for apps with a database
 	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
-	if strings.HasPrefix(e.event, "_attachment/") {
-		has_attachments := false
-		for _, h := range a.active.Database.Helpers {
-			if h == "attachments" {
-				has_attachments = true
-				break
-			}
+	if strings.HasPrefix(e.event, "_attachment/") && a.active.Database.File != "" {
+		if e.user == nil {
+			info("Event dropping attachment event for nil user")
+			return fmt.Errorf("attachment event requires user")
 		}
+		e.db = db_app(e.user, a.active)
+		if e.db == nil {
+			info("Event app %q has no database file", a.id)
+			return fmt.Errorf("no database file")
+		}
+		defer e.db.close()
 
-		if has_attachments {
-			// Load database for attachment operations
-			if a.active.Database.File != "" {
-				if e.user == nil {
-					info("Event dropping attachment event for nil user")
-					return fmt.Errorf("attachment event requires user")
-				}
-				e.db = db_app(e.user, a.active)
-				if e.db == nil {
-					info("Event app %q has no database file", a.id)
-					return fmt.Errorf("no database file")
-				}
-				defer e.db.close()
-			}
-
-			if e.db == nil {
-				info("Event dropping attachment event %q - no database", e.event)
-				return fmt.Errorf("attachment event requires database")
-			}
-
-			switch e.event {
-			case "_attachment/create":
-				e.attachment_event_create()
-				return nil
-			case "_attachment/insert":
-				e.attachment_event_insert()
-				return nil
-			case "_attachment/update":
-				e.attachment_event_update()
-				return nil
-			case "_attachment/move":
-				e.attachment_event_move()
-				return nil
-			case "_attachment/delete":
-				e.attachment_event_delete()
-				return nil
-			case "_attachment/clear":
-				e.attachment_event_clear()
-				return nil
-			case "_attachment/data":
-				e.attachment_event_data()
-				return nil
-			case "_attachment/fetch":
-				e.attachment_event_fetch()
-				return nil
-			}
+		switch e.event {
+		case "_attachment/create":
+			e.attachment_event_create()
+			return nil
+		case "_attachment/insert":
+			e.attachment_event_insert()
+			return nil
+		case "_attachment/update":
+			e.attachment_event_update()
+			return nil
+		case "_attachment/move":
+			e.attachment_event_move()
+			return nil
+		case "_attachment/delete":
+			e.attachment_event_delete()
+			return nil
+		case "_attachment/clear":
+			e.attachment_event_clear()
+			return nil
+		case "_attachment/data":
+			e.attachment_event_data()
+			return nil
+		case "_attachment/fetch":
+			e.attachment_event_fetch()
+			return nil
 		}
 	}
 

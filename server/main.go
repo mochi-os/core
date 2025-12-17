@@ -14,14 +14,14 @@ import (
 type Map map[string]any
 
 var (
-	build_version       string
-	cache_dir           string
-	data_dir            string
-	dev_apps_dir        string
-	dev_reload          bool
-	web_cache           bool
-	email_host          string
-	email_port          int
+	build_version string
+	cache_dir     string
+	data_dir      string
+	dev_apps_dir  string
+	dev_reload    bool
+	web_cache     bool
+	email_host    string
+	email_port    int
 )
 
 func main() {

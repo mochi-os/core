@@ -181,6 +181,15 @@ func sl_decode_strings(value any) map[string]string {
 	}
 }
 
+// Decode a Starlark value to a map[string]any
+func sl_decode_map(value sl.Value) map[string]any {
+	result := sl_decode(value)
+	if m, ok := result.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
 // Convert a single Go variable to a Starlark value
 func sl_encode(v any) sl.Value {
 	//debug("Encoding '%+v', type %T", v, v)

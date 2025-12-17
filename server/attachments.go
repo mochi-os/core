@@ -1339,6 +1339,7 @@ func (e *Event) attachment_event_create() {
 	if e.db == nil {
 		return
 	}
+	e.db.attachments_setup()
 
 	var attachments []map[string]any
 	if !e.segment(&attachments) {
@@ -1383,6 +1384,7 @@ func (e *Event) attachment_event_insert() {
 	if e.db == nil {
 		return
 	}
+	e.db.attachments_setup()
 
 	var att map[string]any
 	if !e.segment(&att) {

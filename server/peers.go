@@ -4,11 +4,15 @@
 package main
 
 import (
-	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	"encoding/json"
 	"io"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
+
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	sl "go.starlark.net/starlark"
 )
 
 type Peer struct {
@@ -318,4 +322,59 @@ func peers_shutdown() {
 			s.writer.Close()
 		}
 	}
+}
+
+// mochi.peer.connect.url(url) -> string: Connect to a peer by fetching P2P info from a URL
+func api_peer_connect_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <url: string>")
+	}
+
+	url, ok := sl.AsString(args[0])
+	if !ok || url == "" {
+		return sl_error(fn, "invalid url")
+	}
+
+	// Normalize URL: add https:// if no scheme present
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		url = "https://" + url
+	}
+
+	// Fetch P2P info from the server
+	infoUrl := strings.TrimSuffix(url, "/") + "/_/p2p/info"
+	resp, err := url_request("GET", infoUrl, nil, nil, nil)
+	if err != nil {
+		return sl_error(fn, "failed to fetch p2p info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return sl_error(fn, "server returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return sl_error(fn, "failed to read response: %v", err)
+	}
+
+	// Parse JSON response
+	var info struct {
+		Peer      string   `json:"peer"`
+		Addresses []string `json:"addresses"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return sl_error(fn, "failed to parse p2p info: %v", err)
+	}
+
+	if info.Peer == "" || len(info.Addresses) == 0 {
+		return sl_error(fn, "invalid p2p info: missing peer or addresses")
+	}
+
+	// Add peer and connect
+	peer_add_known(info.Peer, info.Addresses)
+	if !peer_connect(info.Peer) {
+		return sl_error(fn, "failed to connect to peer %s", info.Peer)
+	}
+
+	return sl.String(info.Peer), nil
 }

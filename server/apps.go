@@ -921,7 +921,6 @@ func (av *AppVersion) reload() {
 	if av.base == "" {
 		return
 	}
-	debug("App reloading %q", av.base)
 	path := av.base + "/app.json"
 	data, err := hujson.Standardize(file_read(path))
 	if err != nil {

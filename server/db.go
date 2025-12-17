@@ -33,9 +33,11 @@ var (
 	databases_lock sync.Mutex
 
 	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
-		"exists": sl.NewBuiltin("mochi.db.exists", api_db_query),
-		"query":  sl.NewBuiltin("mochi.db.query", api_db_query),
-		"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
+		"execute": sl.NewBuiltin("mochi.db.execute", api_db_query),
+		"exists":  sl.NewBuiltin("mochi.db.exists", api_db_query),
+		"query":   sl.NewBuiltin("mochi.db.query", api_db_query), // deprecated: use rows or execute
+		"row":     sl.NewBuiltin("mochi.db.row", api_db_query),
+		"rows":    sl.NewBuiltin("mochi.db.rows", api_db_query),
 	})
 
 	// Pattern to detect modifications to system tables (starting with _)
@@ -750,7 +752,7 @@ func (db *DB) schema(version int) {
 	db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", version)
 }
 
-// mochi.db.exists/row/query(sql, params...) -> bool/dict/list: Execute database query
+// mochi.db.execute/exists/query/row/rows(sql, params...) -> nil/bool/list/dict/list: Execute database query
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		return sl_error(fn, "syntax: <SQL statement: string>, [parameters: variadic strings]")
@@ -788,6 +790,13 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	switch fn.Name() {
+	case "mochi.db.execute":
+		_, err := db.handle.Exec(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl.None, nil
+
 	case "mochi.db.exists":
 		exists, err := db.exists(query, as...)
 		if err != nil {
@@ -798,6 +807,26 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		}
 		return sl.False, nil
 
+	case "mochi.db.query":
+		// Deprecated: use mochi.db.rows or mochi.db.exec instead
+		// Auto-detects modification queries for backwards compatibility
+		upperQuery := strings.ToUpper(strings.TrimSpace(query))
+		if strings.HasPrefix(upperQuery, "INSERT") ||
+			strings.HasPrefix(upperQuery, "UPDATE") ||
+			strings.HasPrefix(upperQuery, "DELETE") ||
+			strings.HasPrefix(upperQuery, "REPLACE") {
+			_, err := db.handle.Exec(query, as...)
+			if err != nil {
+				return sl_error(fn, "database error: %v", err)
+			}
+			return sl.None, nil
+		}
+		rows, err := db.rows(query, as...)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(rows), nil
+
 	case "mochi.db.row":
 		row, err := db.row(query, as...)
 		if err != nil {
@@ -805,7 +834,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		}
 		return sl_encode(row), nil
 
-	case "mochi.db.query":
+	case "mochi.db.rows":
 		rows, err := db.rows(query, as...)
 		if err != nil {
 			return sl_error(fn, "database error: %v", err)

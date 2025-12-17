@@ -258,7 +258,6 @@ func domain_lookup(host string) *domain {
 
 	d := domain_get(host)
 	if d != nil {
-		debug("Domain lookup %q -> exact match", host)
 		return d
 	}
 
@@ -266,12 +265,10 @@ func domain_lookup(host string) *domain {
 		wildcard := "*" + host[idx:]
 		d = domain_get(wildcard)
 		if d != nil {
-			debug("Domain lookup %q -> wildcard match %q", host, wildcard)
 			return d
 		}
 	}
 
-	debug("Domain lookup %q -> no match", host)
 	return nil
 }
 
@@ -368,12 +365,10 @@ func domain_verify(name string) (bool, error) {
 func domain_match(host, path string) *route_match {
 	d := domain_lookup(host)
 	if d == nil {
-		debug("Route match %q %q -> no domain", host, path)
 		return nil
 	}
 
 	if setting_get("domains_verification", "false") == "true" && d.Verified == 0 {
-		debug("Route match %q %q -> domain unverified", host, path)
 		return nil
 	}
 
@@ -385,13 +380,11 @@ func domain_match(host, path string) *route_match {
 		if strings.HasPrefix(path, r.Path) {
 			remaining := strings.TrimPrefix(path, r.Path)
 			if r.Path == "" || r.Path == "/" || remaining == "" || strings.HasPrefix(remaining, "/") {
-				debug("Route match %q %q -> %q path %q method %q target %q remaining %q", host, path, d.Domain, r.Path, r.Method, r.Target, remaining)
 				return &route_match{route: &r, remaining: remaining}
 			}
 		}
 	}
 
-	debug("Route match %q %q -> domain %q has no matching route", host, path, d.Domain)
 	return nil
 }
 

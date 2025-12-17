@@ -55,10 +55,6 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"fetch":            sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
-func init() {
-	app_helper("attachments", (*DB).attachments_setup)
-}
-
 // Create attachments table
 func (db *DB) attachments_setup() {
 	db.exec("create table if not exists _attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
@@ -205,6 +201,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Get multipart form
 	form, err := action.web.MultipartForm()
@@ -362,6 +359,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Check size
 	if int64(len(bytes)) > attachment_max_size_default {
@@ -480,6 +478,7 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Resolve source path (relative to app data dir)
 	full_src_path := api_file_path(owner, app, src_path)
@@ -616,6 +615,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Check size
 	if int64(len(bytes)) > attachment_max_size_default {
@@ -706,6 +706,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Update record
 	db.exec("update _attachments set caption = ?, description = ? where id = ?", caption, description, id)
@@ -761,6 +762,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Get current attachment
 	var att Attachment
@@ -824,6 +826,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Get attachment to delete
 	var att Attachment
@@ -879,6 +882,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Get all attachments for object
 	var attachments []Attachment
@@ -929,6 +933,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	var attachments []Attachment
 	err := db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
@@ -969,6 +974,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	var att Attachment
 	if !db.scan(&att, "select * from _attachments where id = ?", id) {
@@ -1003,6 +1009,7 @@ func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	exists, _ := db.exists("select 1 from _attachments where id = ?", id)
 	return sl.Bool(exists), nil
@@ -1033,6 +1040,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	var att Attachment
 	if !db.scan(&att, "select * from _attachments where id = ?", id) {
@@ -1080,6 +1088,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	var att Attachment
 	if !db.scan(&att, "select * from _attachments where id = ?", id) {
@@ -1629,6 +1638,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	// Get existing attachments for object
 	var attachments []Attachment
@@ -1683,6 +1693,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
+	db.attachments_setup()
 
 	from := ""
 	if owner.Identity != nil {

@@ -32,6 +32,7 @@ type AppAction struct {
 	Attachments bool   `json:"attachments"`
 	Thumbnail   bool   `json:"-"`
 	Public      bool   `json:"public"`
+	OpenGraph   string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 	Access      struct {
 		Resource  string `json:"resource"`
 		Operation string `json:"operation"`
@@ -80,7 +81,6 @@ type AppVersion struct {
 		Downgrade struct {
 			Function string `json:"function"`
 		} `json:"downgrade"`
-		Helpers         []string  `json:"helpers"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
 	Icons     []Icon                 `json:"icons"`
@@ -132,9 +132,8 @@ var (
 		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // Friends
 		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
 	}
-	apps        = map[string]*App{}
-	apps_lock   = &sync.Mutex{}
-	app_helpers = make(map[string]func(*DB))
+	apps      = map[string]*App{}
+	apps_lock = &sync.Mutex{}
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
@@ -327,11 +326,6 @@ func app_for_service(service string) *App {
 	return nil
 }
 
-// Register a helper for all apps
-func app_helper(name string, setup func(*DB)) {
-	app_helpers[name] = setup
-}
-
 // Install an app from a zip file, but do not load it
 func app_install(id string, version string, file string, check_only bool) (*AppVersion, error) {
 	if version == "" {
@@ -491,17 +485,6 @@ func app_read(id string, base string) (*AppVersion, error) {
 		return nil, fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
 	}
 
-	access_helper_exists := false
-	for _, helper := range av.Database.Helpers {
-		_, ok := app_helpers[helper]
-		if !ok {
-			return nil, fmt.Errorf("unknown helper %q", helper)
-		}
-		if helper == "access" {
-			access_helper_exists = true
-		}
-	}
-
 	for _, i := range av.Icons {
 		if i.Action != "" && !valid(i.Action, "constant") {
 			return nil, fmt.Errorf("App bad icon action %q", i.Action)
@@ -533,12 +516,13 @@ func app_read(id string, base string) (*AppVersion, error) {
 			return nil, fmt.Errorf("App bad files path %q", a.Files)
 		}
 
+		if a.OpenGraph != "" && !valid(a.OpenGraph, "function") {
+			return nil, fmt.Errorf("App bad opengraph function %q", a.OpenGraph)
+		}
+
 		if a.Access.Resource != "" {
 			if !valid(a.Access.Resource, "parampath") {
 				return nil, fmt.Errorf("action %q has invalid access resource", action)
-			}
-			if !access_helper_exists {
-				return nil, fmt.Errorf("action %q uses access but access helper not enabled", action)
 			}
 			if a.Access.Operation == "" {
 				return nil, fmt.Errorf("action %q has access resource but no access operation", action)
@@ -934,6 +918,9 @@ func (av *AppVersion) starlark() *Starlark {
 
 // Reload app.json and labels from disk (for development)
 func (av *AppVersion) reload() {
+	if av.base == "" {
+		return
+	}
 	debug("App reloading %q", av.base)
 	path := av.base + "/app.json"
 	data, err := hujson.Standardize(file_read(path))

@@ -116,12 +116,35 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Serve static file
+	// If action has both file and function, do content negotiation:
+	// - HTML requests (browsers/crawlers) get the file with opengraph tags
+	// - API requests get the function response
 	if aa.File != "" {
-		file := a.active.base + "/" + aa.File
-		debug("Serving single file for app %q: %q", a.id, file)
-		web_cache_static(c, file)
-		c.File(file)
-		return true
+		serveFile := true
+
+		// Content negotiation: if we have both file and function, check Accept header
+		if aa.Function != "" && aa.OpenGraph != "" {
+			accept := c.GetHeader("Accept")
+			// Serve file only for HTML requests (browsers/crawlers)
+			// API requests (application/json, */*) should call the function
+			serveFile = strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+		}
+
+		if serveFile {
+			file := a.active.base + "/" + aa.File
+
+			// If opengraph function specified, inject dynamic meta tags
+			if aa.OpenGraph != "" && strings.HasSuffix(aa.File, ".html") {
+				if web_serve_file_with_opengraph(c, a, aa, e, file) {
+					return true
+				}
+			}
+
+			debug("Serving single file for app %q: %q", a.id, file)
+			web_cache_static(c, file)
+			c.File(file)
+			return true
+		}
 	}
 
 	// Serve static files from a directory
@@ -305,6 +328,147 @@ func web_security_headers(c *gin.Context) {
 	c.Header("X-Frame-Options", "DENY")
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 	c.Next()
+}
+
+// Serve HTML file with dynamic Open Graph meta tags
+func web_serve_file_with_opengraph(c *gin.Context, a *App, aa *AppAction, e *Entity, file string) bool {
+	// Get owner for database access - use entity owner if available
+	var owner *User
+	if e != nil {
+		owner = user_owning_entity(e.ID)
+	}
+
+	// Set up database connection if needed
+	if a.active.Database.File != "" && owner != nil {
+		owner.db = db_app(owner, a.active)
+		if owner.db != nil {
+			defer owner.db.close()
+		}
+	}
+
+	// Call Starlark function to get OG data
+	s := a.active.starlark()
+	s.set("app", a)
+	s.set("user", owner) // Use owner for database access
+	s.set("owner", owner)
+
+	// Build parameters dict for the function
+	params := sl.NewDict(len(aa.parameters))
+	for k, v := range aa.parameters {
+		params.SetKey(sl.String(k), sl.String(v))
+	}
+
+	// Add entity info if present
+	if e != nil {
+		params.SetKey(sl.String("entity"), sl.String(e.ID))
+		params.SetKey(sl.String("fingerprint"), sl.String(e.Fingerprint))
+	}
+
+	// Build request URL for og:url
+	scheme := "https"
+	if !web_https {
+		scheme = "http"
+	}
+	url := scheme + "://" + c.Request.Host + c.Request.URL.Path
+
+	result, err := s.call(aa.OpenGraph, sl.Tuple{params})
+	if err != nil {
+		debug("OpenGraph function %q error: %v", aa.OpenGraph, err)
+		return false
+	}
+
+	// Convert result to map
+	og := sl_decode_map(result)
+	if og == nil {
+		debug("OpenGraph function %q returned invalid data", aa.OpenGraph)
+		return false
+	}
+
+	// Read HTML file
+	html := file_read(file)
+	if html == nil {
+		return false
+	}
+	content := string(html)
+
+	// Replace OG meta tags
+	if title, ok := og["title"].(string); ok && title != "" {
+		content = regexp_replace_meta(content, "og:title", title)
+		content = regexp_replace_meta(content, "twitter:title", title)
+		content = regexp_replace_tag(content, "title", title)
+		content = regexp_replace_meta_name(content, "title", title)
+	}
+	if desc, ok := og["description"].(string); ok && desc != "" {
+		content = regexp_replace_meta(content, "og:description", desc)
+		content = regexp_replace_meta(content, "twitter:description", desc)
+		content = regexp_replace_meta_name(content, "description", desc)
+	}
+	if image, ok := og["image"].(string); ok && image != "" {
+		// Add og:image if not already present
+		if !strings.Contains(content, `property="og:image"`) {
+			content = strings.Replace(content, `<meta property="og:description"`,
+				`<meta property="og:image" content="`+image+`" />`+"\n    "+`<meta property="og:description"`, 1)
+		} else {
+			content = regexp_replace_meta(content, "og:image", image)
+		}
+		// Add twitter:image if not already present
+		if !strings.Contains(content, `property="twitter:image"`) {
+			content = strings.Replace(content, `<meta property="twitter:description"`,
+				`<meta property="twitter:image" content="`+image+`" />`+"\n    "+`<meta property="twitter:description"`, 1)
+		} else {
+			content = regexp_replace_meta(content, "twitter:image", image)
+		}
+	}
+	if ogType, ok := og["type"].(string); ok && ogType != "" {
+		content = regexp_replace_meta(content, "og:type", ogType)
+	}
+
+	// Always set og:url to current URL
+	if !strings.Contains(content, `property="og:url"`) {
+		content = strings.Replace(content, `<meta property="og:type"`,
+			`<meta property="og:url" content="`+url+`" />`+"\n    "+`<meta property="og:type"`, 1)
+	} else {
+		content = regexp_replace_meta(content, "og:url", url)
+	}
+
+	// Serve modified content
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	web_cache_static(c, file)
+	c.String(http.StatusOK, content)
+	return true
+}
+
+// Replace Open Graph meta tag content
+func regexp_replace_meta(html, property, value string) string {
+	// Escape HTML in value
+	value = strings.ReplaceAll(value, `"`, `&quot;`)
+	value = strings.ReplaceAll(value, `<`, `&lt;`)
+	value = strings.ReplaceAll(value, `>`, `&gt;`)
+
+	pattern := regexp.MustCompile(`<meta\s+property="` + regexp.QuoteMeta(property) + `"\s+content="[^"]*"\s*/?>`)
+	replacement := `<meta property="` + property + `" content="` + value + `" />`
+	return pattern.ReplaceAllString(html, replacement)
+}
+
+// Replace meta tag with name attribute
+func regexp_replace_meta_name(html, name, value string) string {
+	value = strings.ReplaceAll(value, `"`, `&quot;`)
+	value = strings.ReplaceAll(value, `<`, `&lt;`)
+	value = strings.ReplaceAll(value, `>`, `&gt;`)
+
+	pattern := regexp.MustCompile(`<meta\s+name="` + regexp.QuoteMeta(name) + `"\s+content="[^"]*"\s*/?>`)
+	replacement := `<meta name="` + name + `" content="` + value + `" />`
+	return pattern.ReplaceAllString(html, replacement)
+}
+
+// Replace HTML tag content
+func regexp_replace_tag(html, tag, value string) string {
+	value = strings.ReplaceAll(value, `<`, `&lt;`)
+	value = strings.ReplaceAll(value, `>`, `&gt;`)
+
+	pattern := regexp.MustCompile(`<` + regexp.QuoteMeta(tag) + `>[^<]*</` + regexp.QuoteMeta(tag) + `>`)
+	replacement := `<` + tag + `>` + value + `</` + tag + `>`
+	return pattern.ReplaceAllString(html, replacement)
 }
 
 // Handle login begin: check user's required auth methods (POST with JSON)

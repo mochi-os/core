@@ -6,6 +6,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ var (
 		"query":  sl.NewBuiltin("mochi.db.query", api_db_query),
 		"row":    sl.NewBuiltin("mochi.db.row", api_db_query),
 	})
+
+	// Pattern to detect modifications to system tables (starting with _)
+	system_table_pattern = regexp.MustCompile(`(?i)(insert\s+(or\s+\w+\s+)?into|replace\s+into|update|delete\s+from|drop\s+(table|index|trigger)|alter\s+table|create\s+(table|index|trigger))\s+_`)
 )
 
 func init() {
@@ -186,14 +190,6 @@ func db_app(u *User, av *AppVersion) *DB {
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
-
-	// Set up helpers first so they're available during database create
-	for _, helper := range av.Database.Helpers {
-		setup, ok := app_helpers[helper]
-		if ok {
-			setup(db)
-		}
-	}
 
 	if created {
 		debug("Database app creating %q", path)
@@ -763,6 +759,11 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	query, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid SQL statement %q", query)
+	}
+
+	// Block modifications to system tables (starting with _)
+	if system_table_pattern.MatchString(query) {
+		return sl_error(fn, "cannot modify system tables")
 	}
 
 	as := sl_decode(args[1:]).([]any)

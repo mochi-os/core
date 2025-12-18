@@ -92,6 +92,31 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 	return s, nil
 }
 
+// Create a stream to a specific peer (without entity lookup)
+func stream_to_peer(peer string, from string, to string, service string, event string) (*Stream, error) {
+	s := peer_stream(peer)
+	if s == nil {
+		return nil, fmt.Errorf("stream unable to open to peer %q", peer)
+	}
+
+	// Read challenge from receiver
+	challenge, err := s.read_challenge()
+	if err != nil {
+		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
+	}
+
+	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
+
+	id := uid()
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
+	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, ID: id, Signature: signature})
+	if err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
 // Get next stream ID
 func stream_id() int64 {
 	streams_lock.Lock()

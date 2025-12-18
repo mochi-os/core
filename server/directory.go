@@ -224,13 +224,13 @@ func directory_publish_event(e *Event) {
 	go queue_check_entity(id)
 }
 
-// Reply to a directory request if we have the requested entity
+// Reply to a directory request if we have the requested public entity
 func directory_request_event(e *Event) {
 	debug("Directory received request event '%+v'", e)
 
 	var r Entity
 	db := db_open("db/users.db")
-	if db.scan(&r, "select * from entities where id=?", e.to) {
+	if db.scan(&r, "select * from entities where id=? and privacy='public'", e.to) {
 		directory_publish(&r, false)
 	}
 }

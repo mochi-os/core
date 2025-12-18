@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -50,9 +51,7 @@ func init() {
 				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
 			}),
 			"setting": api_setting,
-			"stream": sls.FromStringDict(sl.String("mochi.stream"), sl.StringDict{
-				"peer": sl.NewBuiltin("mochi.stream.peer", api_stream_peer),
-			}),
+			"stream": &streamModule{},
 			"user": api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
@@ -166,6 +165,31 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // mochi.server.version() -> string: Get the server version
 func api_server_version(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.String(build_version), nil
+}
+
+// streamModule is a callable module that also has a .peer method
+// Usage: mochi.stream(headers, content) or mochi.stream.peer(peer, headers, content)
+type streamModule struct{}
+
+func (m *streamModule) String() string        { return "mochi.stream" }
+func (m *streamModule) Type() string          { return "module" }
+func (m *streamModule) Freeze()               {}
+func (m *streamModule) Truth() sl.Bool        { return sl.True }
+func (m *streamModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+
+func (m *streamModule) AttrNames() []string { return []string{"peer"} }
+
+func (m *streamModule) Attr(name string) (sl.Value, error) {
+	if name == "peer" {
+		return sl.NewBuiltin("mochi.stream.peer", api_stream_peer), nil
+	}
+	return nil, nil
+}
+
+func (m *streamModule) Name() string { return "mochi.stream" }
+
+func (m *streamModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_stream(thread, nil, args, kwargs)
 }
 
 // mochi.stream(headers, content) -> Stream: Create a P2P stream to another entity

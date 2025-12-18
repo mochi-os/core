@@ -50,8 +50,10 @@ func init() {
 				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
 			}),
 			"setting": api_setting,
-			"stream":  sl.NewBuiltin("mochi.stream", api_stream),
-			"user":    api_user,
+			"stream": sls.FromStringDict(sl.String("mochi.stream"), sl.StringDict{
+				"peer": sl.NewBuiltin("mochi.stream.peer", api_stream_peer),
+			}),
+			"user": api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
@@ -208,6 +210,56 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "%v", err)
 	}
 	s.write(sl_decode(args[1]))
+	return s, nil
+}
+
+// mochi.stream.peer(peer, headers, content) -> Stream: Create a P2P stream to a specific peer
+func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 3 {
+		return sl_error(fn, "syntax: <peer: string>, <headers: dictionary>, <content: dictionary>")
+	}
+
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "peer not specified or invalid")
+	}
+
+	headers := sl_decode_strings(args[1])
+	if headers == nil {
+		return sl_error(fn, "headers not specified or invalid")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	if !from_valid {
+		return sl_error(fn, "invalid from header")
+	}
+
+	if !valid(headers["to"], "entity") {
+		return sl_error(fn, "invalid to header")
+	}
+
+	if !valid(headers["service"], "constant") {
+		return sl_error(fn, "invalid service header")
+	}
+
+	if !valid(headers["event"], "constant") {
+		return sl_error(fn, "invalid event header")
+	}
+
+	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"])
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	s.write(sl_decode(args[2]))
 	return s, nil
 }
 

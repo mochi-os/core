@@ -1393,6 +1393,11 @@ func (e *Event) attachment_event_create() {
 		return
 	}
 
+	// Skip self-notifications (owner subscribed to their own feed)
+	if source == e.to {
+		return
+	}
+
 	if e.db == nil {
 		return
 	}
@@ -1411,7 +1416,7 @@ func (e *Event) attachment_event_create() {
 		name, _ := att["name"].(string)
 
 		e.db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, att["object"], object, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 		// Fetch the file immediately to create a full local copy
 		if e.user != nil && e.app != nil && name != "" {
@@ -1435,6 +1440,11 @@ func (e *Event) attachment_event_insert() {
 
 	source := e.from
 	if source == "" || !valid(source, "entity") {
+		return
+	}
+
+	// Skip self-notifications (owner subscribed to their own feed)
+	if source == e.to {
 		return
 	}
 
@@ -1468,7 +1478,7 @@ func (e *Event) attachment_event_insert() {
 	name, _ := att["name"].(string)
 
 	e.db.exec(`insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, att["object"], object, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
+		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 	// Fetch the file immediately to create a full local copy
 	if e.user != nil && e.app != nil && name != "" {

@@ -117,7 +117,7 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -138,6 +138,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("header", a.sl_header), nil
 	case "input":
 		return sl.NewBuiltin("input", a.sl_input), nil
+	case "inputs":
+		return sl.NewBuiltin("inputs", a.sl_inputs), nil
 	case "json":
 		return sl.NewBuiltin("json", a.sl_json), nil
 	case "logout":
@@ -287,6 +289,32 @@ func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		value = def
 	}
 	return sl.String(value), nil
+}
+
+// a.inputs(field) -> list: Get all values for a form/query input field
+func (a *Action) sl_inputs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var field string
+	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	var values []string
+
+	// Check query string first
+	values = a.web.QueryArray(field)
+
+	// If no query values, check form values
+	if len(values) == 0 {
+		values = a.web.PostFormArray(field)
+	}
+
+	// Convert to Starlark list
+	items := make([]sl.Value, len(values))
+	for i, v := range values {
+		items[i] = sl.String(v)
+	}
+	return sl.NewList(items), nil
 }
 
 // a.json(data) -> None: Send JSON response

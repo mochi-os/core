@@ -51,6 +51,7 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"exists":           sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
 	"data":             sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
 	"path":             sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"thumbnail_path":   sl.NewBuiltin("mochi.attachment.thumbnail_path", api_attachment_thumbnail_path),
 	"sync":             sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch":            sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
@@ -1108,6 +1109,62 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		safe_name = "file"
 	}
 	return sl_encode(fmt.Sprintf("%s_%s", att.ID, safe_name)), nil
+}
+
+// mochi.attachment.thumbnail_path(id) -> string or None: Get thumbnail path, creating thumbnail if needed
+// Returns the thumbnail filename relative to the app's files directory
+func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || id == "" {
+		return sl_error(fn, "invalid id")
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+	db.attachments_setup()
+
+	var att Attachment
+	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+		return sl.None, nil
+	}
+
+	// If entity is set, this is a remote attachment - not available locally
+	if att.Entity != "" {
+		return sl.None, nil
+	}
+
+	// Get full path and create thumbnail
+	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
+	thumb, err := thumbnail_create(path)
+	if err != nil || thumb == "" {
+		return sl.None, nil
+	}
+
+	// Return relative path from app's files directory
+	// The thumbnail is at: data_dir/users/{user}/app/files/thumbnails/id_name_thumbnail.ext
+	// We need to return: thumbnails/id_name_thumbnail.ext
+	base := data_dir + "/" + fmt.Sprintf("users/%d/%s/files/", owner.ID, app.id)
+	rel, err := filepath.Rel(base, thumb)
+	if err != nil {
+		return sl.None, nil
+	}
+	return sl_encode(rel), nil
 }
 
 // Federation: notify entities of new attachments

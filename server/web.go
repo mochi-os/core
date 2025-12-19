@@ -197,7 +197,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Check access
-	if aa.Access.Resource != "" && owner != nil && owner.db != nil && !owner.db.access_check_operation(user, aa) {
+	if aa.Access.Resource != "" && owner != nil && owner.db != nil && !owner.db.access_check_operation(user, owner, aa) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return true
 	}

@@ -203,20 +203,12 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		description, _ = sl.AsString(args[2])
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	db.exec("replace into _groups (id, name, description, created) values (?, ?, ?, ?)", id, name, description, now())
 
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
@@ -233,20 +225,12 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid id")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	row, err := db.row("select * from _groups where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -259,20 +243,12 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // mochi.group.list() -> list: List all groups
 func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	rows, err := db.rows("select * from _groups order by name")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -291,20 +267,12 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid id")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 
 	for _, kw := range kwargs {
 		key := string(kw[0].(sl.String))
@@ -332,25 +300,25 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid id")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 
 	db.exec("delete from _groups where id=?", id)
 	db.exec("delete from _group_members where parent=?", id)
 	db.exec("delete from _group_members where member=? and type='group'", id)
-	db.exec("delete from _access where subject=?", "@"+id)
+
+	// Also clean up access rules referencing this group in all app databases
+	app := t.Local("app").(*App)
+	if app != nil {
+		app_db := db_app(owner, app.active)
+		if app_db != nil {
+			app_db.exec("delete from _access where subject=?", "@"+id)
+		}
+	}
 
 	return sl.None, nil
 }
@@ -376,20 +344,12 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "type must be 'user' or 'group'")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 
 	// Check for cycles if adding a group
 	if member_type == "group" {
@@ -419,20 +379,12 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid member")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	db.exec("delete from _group_members where parent=? and member=?", group, member)
 
 	return sl.None, nil
@@ -454,20 +406,12 @@ func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		recursive = bool(args[1].Truth())
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	return sl_encode(db.group_members(group, recursive)), nil
 }
 
@@ -482,19 +426,11 @@ func api_group_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid user")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
-	}
+	db := db_user(owner, "user")
 	return sl_encode(db.group_memberships(user)), nil
 }

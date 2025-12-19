@@ -255,7 +255,7 @@ func setting_signup_enabled() bool {
 // user_preferences_load loads all preferences for a user
 func user_preferences_load(u *User) map[string]string {
 	prefs := map[string]string{}
-	db := db_user(u, "settings")
+	db := db_user(u, "user")
 	rows, err := db.rows("select * from preferences")
 	if err != nil {
 		return prefs
@@ -280,7 +280,7 @@ func user_preference_get(u *User, name, def string) string {
 
 // user_preference_set sets a user preference
 func user_preference_set(u *User, name, value string) {
-	db := db_user(u, "settings")
+	db := db_user(u, "user")
 	db.exec("replace into preferences (name, value) values (?, ?)", name, value)
 	u.Preferences[name] = value
 }
@@ -290,7 +290,7 @@ func user_preference_delete(u *User, name string) bool {
 	if _, ok := u.Preferences[name]; !ok {
 		return false
 	}
-	db := db_user(u, "settings")
+	db := db_user(u, "user")
 	db.exec("delete from preferences where name = ?", name)
 	delete(u.Preferences, name)
 	return true

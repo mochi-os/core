@@ -39,7 +39,7 @@ func TestDbUser(t *testing.T) {
 	user, cleanup := create_test_user(t)
 	defer cleanup()
 
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	if db == nil {
 		t.Fatal("db_user should return a database")
 	}
@@ -50,7 +50,7 @@ func TestDbUser(t *testing.T) {
 		t.Fatalf("exists query failed: %v", err)
 	}
 	if !exists {
-		t.Error("preferences table should exist in settings.db")
+		t.Error("preferences table should exist in user.db")
 	}
 }
 
@@ -91,7 +91,7 @@ func TestUserPreferencesLoadWithData(t *testing.T) {
 	defer cleanup()
 
 	// Insert some preferences directly
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	db.exec("INSERT INTO preferences (name, value) VALUES ('theme', 'dark')")
 	db.exec("INSERT INTO preferences (name, value) VALUES ('language', 'de')")
 	db.exec("INSERT INTO preferences (name, value) VALUES ('timezone', 'Europe/Berlin')")
@@ -165,7 +165,7 @@ func TestUserPreferenceSetNew(t *testing.T) {
 	}
 
 	// Check database was updated
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	row, _ := db.row("SELECT value FROM preferences WHERE name = ?", "theme")
 	if row == nil || row["value"] != "dark" {
 		t.Error("preference should be persisted to database")
@@ -180,7 +180,7 @@ func TestUserPreferenceSetUpdate(t *testing.T) {
 	user.Preferences = map[string]string{"theme": "light"}
 
 	// Insert initial value
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	db.exec("INSERT INTO preferences (name, value) VALUES ('theme', 'light')")
 
 	// Update it
@@ -220,7 +220,7 @@ func TestUserPreferenceSetMultiple(t *testing.T) {
 	}
 
 	// Verify all persisted
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	rows, _ := db.rows("SELECT * FROM preferences ORDER BY name")
 	if len(rows) != 3 {
 		t.Errorf("should have 3 rows in database, got %d", len(rows))
@@ -279,7 +279,7 @@ func TestUserPreferenceDelete(t *testing.T) {
 	}
 
 	// Check database
-	db := db_user(user, "settings")
+	db := db_user(user, "user")
 	exists, _ := db.exists("SELECT 1 FROM preferences WHERE name = ?", "to_delete")
 	if exists {
 		t.Error("preference should be removed from database")

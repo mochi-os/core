@@ -25,7 +25,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 20
+	schema_version = 21
 )
 
 var (
@@ -35,7 +35,6 @@ var (
 	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
 		"execute": sl.NewBuiltin("mochi.db.execute", api_db_query),
 		"exists":  sl.NewBuiltin("mochi.db.exists", api_db_query),
-		"query":   sl.NewBuiltin("mochi.db.query", api_db_query), // deprecated: use rows or execute
 		"row":     sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":    sl.NewBuiltin("mochi.db.rows", api_db_query),
 	})
@@ -154,9 +153,10 @@ func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%d/%s.db", u.ID, name)
 	db := db_open(path)
 
-	// Create preferences table for settings.db
-	if name == "settings" {
+	// Create tables for user.db
+	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
+		db.groups_setup()
 	}
 
 	return db
@@ -646,6 +646,26 @@ func db_upgrade() {
 			db.exec("drop table routes")
 			db.exec("alter table routes_new rename to routes")
 			db.exec("create index routes_domain on routes(domain)")
+
+		} else if schema == 21 {
+			// Migration: rename per-user settings.db to user.db
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, r := range rows {
+				id := int(r["id"].(int64))
+				old_path := fmt.Sprintf("%s/users/%d/settings.db", data_dir, id)
+				new_path := fmt.Sprintf("%s/users/%d/user.db", data_dir, id)
+				if file_exists(old_path) && !file_exists(new_path) {
+					file_move(old_path, new_path)
+					// Also move WAL and SHM files if they exist
+					if file_exists(old_path + "-wal") {
+						file_move(old_path+"-wal", new_path+"-wal")
+					}
+					if file_exists(old_path + "-shm") {
+						file_move(old_path+"-shm", new_path+"-shm")
+					}
+				}
+			}
 		}
 
 		setting_set("schema", itoa(int(schema)))
@@ -810,26 +830,6 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			return sl.True, nil
 		}
 		return sl.False, nil
-
-	case "mochi.db.query":
-		// Deprecated: use mochi.db.rows or mochi.db.exec instead
-		// Auto-detects modification queries for backwards compatibility
-		upperQuery := strings.ToUpper(strings.TrimSpace(query))
-		if strings.HasPrefix(upperQuery, "INSERT") ||
-			strings.HasPrefix(upperQuery, "UPDATE") ||
-			strings.HasPrefix(upperQuery, "DELETE") ||
-			strings.HasPrefix(upperQuery, "REPLACE") {
-			_, err := db.handle.Exec(query, as...)
-			if err != nil {
-				return sl_error(fn, "database error: %v", err)
-			}
-			return sl.None, nil
-		}
-		rows, err := db.rows(query, as...)
-		if err != nil {
-			return sl_error(fn, "database error: %v", err)
-		}
-		return sl_encode(rows), nil
 
 	case "mochi.db.row":
 		row, err := db.row(query, as...)

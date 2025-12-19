@@ -47,11 +47,11 @@ func (db *DB) access_setup() {
 	db.exec("create table if not exists _access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
 	db.exec("create index if not exists _access_resource on _access( resource, operation )")
 	db.exec("create index if not exists _access_subject on _access( subject )")
-	db.groups_setup()
 }
 
 // Check if a user has access to perform an operation on a resource
-func (db *DB) access_check(user string, role string, resource string, operation string) bool {
+// owner is the user whose user.db contains the groups
+func (db *DB) access_check(owner *User, user string, role string, resource string, operation string) bool {
 	db.access_setup() // Ensure table exists
 
 	// Get resource hierarachy
@@ -68,8 +68,12 @@ func (db *DB) access_check(user string, role string, resource string, operation 
 	if user != "" {
 		subjects = append(subjects, user)
 
-		for _, g := range db.group_memberships(user) {
-			subjects = append(subjects, "@"+g)
+		// Look up group memberships from the owner's user.db
+		if owner != nil {
+			user_db := db_user(owner, "user")
+			for _, g := range user_db.group_memberships(user) {
+				subjects = append(subjects, "@"+g)
+			}
 		}
 
 		if role == "administrator" {
@@ -139,7 +143,7 @@ func (db *DB) access_revoke(subject string, resource string, operation string) {
 }
 
 // Check access for an operation based on the "access" field in app.json
-func (db *DB) access_check_operation(u *User, aa *AppAction) bool {
+func (db *DB) access_check_operation(u *User, owner *User, aa *AppAction) bool {
 	if aa.Access.Resource == "" {
 		return true
 	}
@@ -165,7 +169,7 @@ func (db *DB) access_check_operation(u *User, aa *AppAction) bool {
 		role = u.Role
 	}
 
-	return db.access_check(user, role, resource, operation)
+	return db.access_check(owner, user, role, resource, operation)
 }
 
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource
@@ -211,7 +215,7 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_app(owner, app.active)
-	if db.access_check(user, role, resource, operation) {
+	if db.access_check(owner, user, role, resource, operation) {
 		return sl.True, nil
 	}
 	return sl.False, nil

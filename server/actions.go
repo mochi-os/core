@@ -221,7 +221,7 @@ func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	if db == nil {
 		return sl_error(fn, "app has no database configured")
 	}
-	if !db.access_check(user, role, resource, operation) {
+	if !db.access_check(owner, user, role, resource, operation) {
 		return sl_error(fn, "access denied")
 	}
 

@@ -38,10 +38,10 @@ var (
 		window:  300,
 	}
 
-	// P2P stream rate limiter: 20 per second per peer
+	// P2P stream rate limiter: 100 per second per peer
 	rate_limit_p2p = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   20,
+		limit:   100,
 		window:  1,
 	}
 

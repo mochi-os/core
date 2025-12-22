@@ -117,7 +117,7 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -159,6 +159,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return a.user, nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", a.sl_write_from_file), nil
+	case "write_from_stream":
+		return sl.NewBuiltin("write_from_stream", a.sl_write_from_stream), nil
 	default:
 		return nil, nil
 	}
@@ -516,6 +518,29 @@ func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 
 	a.web.File(file)
 	return sl.None, nil
+}
+
+// a.write_from_stream(stream) -> int: Pipe P2P stream content directly to HTTP response, returns bytes written
+func (a *Action) sl_write_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: write_from_stream(stream)")
+	}
+
+	stream, ok := args[0].(*Stream)
+	if !ok {
+		return sl_error(fn, "argument must be a Stream")
+	}
+
+	// Get the raw reader (includes any buffered bytes from CBOR decoder)
+	reader := stream.raw_reader()
+
+	// Copy stream data directly to HTTP response
+	n, err := io.Copy(a.web.Writer, reader)
+	if err != nil {
+		return sl_error(fn, "stream copy error: %v", err)
+	}
+
+	return sl.MakeInt64(n), nil
 }
 
 // ActionCookie Starlark interface

@@ -38,10 +38,11 @@ type Attachment struct {
 }
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-	"save":             sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-	"create":           sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
-	"create_from_file": sl.NewBuiltin("mochi.attachment.create_from_file", api_attachment_create_from_file),
-	"insert":           sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
+	"save":               sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
+	"create":             sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
+	"create_from_file":   sl.NewBuiltin("mochi.attachment.create_from_file", api_attachment_create_from_file),
+	"create_from_stream": sl.NewBuiltin("mochi.attachment.create_from_stream", api_attachment_create_from_stream),
+	"insert":             sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
 	"update":           sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
 	"move":             sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
 	"delete":           sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
@@ -94,6 +95,37 @@ func (db *DB) attachment_shift_up(object string, from_rank int) {
 // Shift ranks down from a position
 func (db *DB) attachment_shift_down(object string, from_rank int) {
 	db.exec("update _attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
+}
+
+// Create attachment record for file already at final path
+// This is the shared logic used by create_from_file and create_from_stream
+func attachment_create_record(db *DB, app *App, owner *User, object, name, id string, size int64, content_type, creator, caption, description string, notify []string) map[string]any {
+	rank := db.attachment_next_rank(object)
+
+	att := Attachment{
+		ID:          id,
+		Object:      object,
+		Entity:      "",
+		Name:        name,
+		Size:        size,
+		ContentType: content_type,
+		Creator:     creator,
+		Caption:     caption,
+		Description: description,
+		Rank:        rank,
+		Created:     now(),
+	}
+
+	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
+
+	result := att.to_map(app.url_path())
+
+	if len(notify) > 0 {
+		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
+	}
+
+	return result
 }
 
 // Convert Attachment struct to map for Starlark
@@ -502,42 +534,135 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl_error(fn, "storage limit exceeded")
 	}
 
-	// Create attachment record - use provided ID or generate new one
+	// Generate attachment ID
 	id := provided_id
 	if id == "" {
 		id = uid()
-	}
-	rank := db.attachment_next_rank(object)
-
-	att := Attachment{
-		ID:          id,
-		Object:      object,
-		Entity:      "",
-		Name:        name,
-		Size:        size,
-		ContentType: content_type,
-		Creator:     creator,
-		Caption:     caption,
-		Description: description,
-		Rank:        rank,
-		Created:     now(),
 	}
 
 	// Move file to attachment location
 	dest_path := data_dir + "/" + attachment_path(owner.ID, app.id, id, name)
 	file_move(full_src_path, dest_path)
 
-	// Insert record
-	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
+	// Create record using shared helper
+	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description, notify)
+	return sl_encode(result), nil
+}
 
-	result := att.to_map(app.url_path())
-
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
+// mochi.attachment.create_from_stream(object, name, stream, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment by streaming directly to storage
+// This avoids the need for a temp file by streaming directly to the final attachment location.
+func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 3 || len(args) > 8 {
+		return sl_error(fn, "syntax: <object: string>, <name: string>, <stream: Stream>, [content_type: string], [caption: string], [description: string], [notify: array], [id: string]")
 	}
 
+	object, ok := sl.AsString(args[0])
+	if !ok || !valid(object, "path") {
+		return sl_error(fn, "invalid object")
+	}
+
+	name, ok := sl.AsString(args[1])
+	if !ok || name == "" {
+		return sl_error(fn, "invalid name")
+	}
+
+	stream, ok := args[2].(*Stream)
+	if !ok || stream == nil {
+		return sl_error(fn, "invalid stream")
+	}
+
+	content_type := ""
+	if len(args) > 3 {
+		content_type, _ = sl.AsString(args[3])
+	}
+	if content_type == "" {
+		content_type = attachment_content_type(name)
+	}
+
+	caption := ""
+	if len(args) > 4 {
+		caption, _ = sl.AsString(args[4])
+	}
+
+	description := ""
+	if len(args) > 5 {
+		description, _ = sl.AsString(args[5])
+	}
+
+	var notify []string
+	if len(args) > 6 {
+		notify = sl_decode_string_list(args[6])
+	}
+
+	// Optional attachment ID (use existing ID for federation sync)
+	provided_id := ""
+	if len(args) > 7 {
+		provided_id, _ = sl.AsString(args[7])
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	user := t.Local("user").(*User)
+	creator := ""
+	if user != nil && user.Identity != nil {
+		creator = user.Identity.ID
+	}
+
+	db := db_app(owner, app.active)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+	db.attachments_setup()
+
+	// Check storage limit and calculate remaining space
+	current := dir_size(user_storage_dir(owner))
+	remaining := file_max_storage - current
+	if remaining <= 0 {
+		stream.reader.Close()
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	// Generate attachment ID
+	id := provided_id
+	if id == "" {
+		id = uid()
+	}
+
+	// Stream directly to final attachment path
+	dest_path := data_dir + "/" + attachment_path(owner.ID, app.id, id, name)
+
+	// Use raw_reader() to include any bytes buffered by the CBOR decoder
+	reader := stream.raw_reader()
+
+	// Limit reader to remaining storage space and max attachment size
+	max_size := remaining
+	if max_size > attachment_max_size_default {
+		max_size = attachment_max_size_default
+	}
+	limited := io.LimitReader(reader, max_size)
+
+	size, ok := file_write_from_reader_count(dest_path, limited)
+	stream.reader.Close()
+	if !ok {
+		file_delete(dest_path)
+		return sl_error(fn, "failed to write attachment")
+	}
+
+	if size == 0 {
+		file_delete(dest_path)
+		return sl_error(fn, "empty attachment")
+	}
+
+	// Create record using shared helper
+	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description, notify)
 	return sl_encode(result), nil
 }
 

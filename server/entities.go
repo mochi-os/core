@@ -399,7 +399,7 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	row, err := db.row("select id, fingerprint, class, name, privacy from entities where id=?", id)
+	row, err := db.row("select id, fingerprint, parent, class, name, privacy from entities where id=?", id)
 	if err != nil || row == nil {
 		return sl.None, nil
 	}

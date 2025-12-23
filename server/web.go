@@ -103,21 +103,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if aa.Attachments {
 		attachment := aa.parameters["id"]
 		entity := ""
-		attOwner := owner
+		att_owner := owner
 		if e != nil {
 			entity = e.ID
 		} else if aa.parameters["wiki"] != "" {
-			// For bookmarked wikis, entity doesn't exist locally but ID is in route params
-			// Pass nil owner to trigger remote fetch path
 			entity = aa.parameters["wiki"]
-			attOwner = nil
+			att_owner = nil
 		} else if aa.parameters["feed"] != "" {
-			// For subscribed feeds, entity doesn't exist locally but ID is in route params
-			// Pass nil owner to trigger remote fetch path
 			entity = aa.parameters["feed"]
-			attOwner = nil
+			att_owner = nil
+		} else if aa.parameters["forum"] != "" {
+			entity = aa.parameters["forum"]
+			att_owner = nil
 		}
-		return web_serve_attachment(c, a, attOwner, entity, attachment, aa.Thumbnail)
+		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Thumbnail)
 	}
 
 	// Serve static file

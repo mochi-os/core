@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	sl "go.starlark.net/starlark"
+	"go.starlark.net/starlarkjson"
 	sls "go.starlark.net/starlarkstruct"
 )
 
@@ -21,6 +22,7 @@ var (
 
 func init() {
 	api_globals = sl.StringDict{
+		"json": starlarkjson.Module,
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"access":     api_access,
 			"app":        api_app,
@@ -41,6 +43,7 @@ func init() {
 					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
 				}),
 			}),
+			"remote": api_remote,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),
@@ -51,8 +54,8 @@ func init() {
 				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
 			}),
 			"setting": api_setting,
-			"stream": &streamModule{},
-			"user": api_user,
+			"stream":  &streamModule{},
+			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),

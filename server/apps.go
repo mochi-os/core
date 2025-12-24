@@ -30,7 +30,7 @@ type AppAction struct {
 	File        string `json:"file"`
 	Files       string `json:"files"`
 	Attachments bool   `json:"attachments"`
-	Thumbnail   bool   `json:"-"`
+	Thumbnail   bool   `json:"thumbnail"`
 	Public      bool   `json:"public"`
 	OpenGraph   string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 	Access      struct {
@@ -556,20 +556,6 @@ func app_read(id string, base string) (*AppVersion, error) {
 		}
 	}
 
-	// Expand attachment actions into sub-routes
-	var attachment_actions []string
-	for name, action := range av.Actions {
-		if action.Attachments {
-			attachment_actions = append(attachment_actions, name)
-		}
-	}
-	for _, name := range attachment_actions {
-		action := av.Actions[name]
-		av.Actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
-		av.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
-		delete(av.Actions, name)
-	}
-
 	return &av, nil
 }
 
@@ -932,20 +918,6 @@ func (av *AppVersion) reload() {
 	if err := json.Unmarshal(data, &fresh); err != nil {
 		info("App reload failed to parse %q: %v", path, err)
 		return
-	}
-
-	// Expand attachment actions into sub-routes
-	var attachment_actions []string
-	for name, action := range fresh.Actions {
-		if action.Attachments {
-			attachment_actions = append(attachment_actions, name)
-		}
-	}
-	for _, name := range attachment_actions {
-		action := fresh.Actions[name]
-		fresh.Actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
-		fresh.Actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
-		delete(fresh.Actions, name)
 	}
 
 	// Reload labels

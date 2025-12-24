@@ -213,6 +213,11 @@ func time_local(u *User, t int64) string {
 		timezone = user_preference_get(u, "timezone", "UTC")
 	}
 
+	// Handle "auto" timezone by falling back to UTC
+	if timezone == "auto" {
+		timezone = "UTC"
+	}
+
 	l, err := time.LoadLocation(timezone)
 	if err == nil {
 		return time.Unix(t, 0).In(l).Format(time.DateTime)

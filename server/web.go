@@ -100,7 +100,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Serve attachment - ID comes from :id parameter
 	// Use owner (entity owner) for database lookup since attachments belong to the entity
-	if aa.Feature == "attachment" || aa.Feature == "thumbnail" {
+	if aa.Feature == "attachment" || aa.Feature == "attachment/thumbnail" {
 		attachment := aa.parameters["id"]
 		entity := ""
 		att_owner := owner
@@ -116,7 +116,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			entity = aa.parameters["forum"]
 			att_owner = nil
 		}
-		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Feature == "thumbnail")
+		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Feature == "attachment/thumbnail")
 	}
 
 	// Serve static file

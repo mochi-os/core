@@ -79,42 +79,50 @@ func directory_create(e *Entity) {
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
 	for _, p := range peers_bootstrap {
-		debug("Directory downloading from peer %q", p.ID)
-
-		s := peer_stream(p.ID)
-		if s == nil {
-			debug("Stream unable to open to peer %q", p.ID)
-			continue
+		if directory_download_from_peer(p.ID) {
+			return
 		}
-		debug("Stream %d open to peer %q: from '', to '', service 'directory', event 'download'", s.id, p.ID)
+	}
+}
 
-		err := s.write(Headers{Service: "directory", Event: "download"})
+// Download directory updates from a specific peer
+func directory_download_from_peer(peer string) bool {
+	debug("Directory downloading from peer %q", peer)
+
+	s := peer_stream(peer)
+	if s == nil {
+		debug("Stream unable to open to peer %q", peer)
+		return false
+	}
+	defer s.close()
+	debug("Stream %d open to peer %q: from '', to '', service 'directory', event 'download'", s.id, peer)
+
+	err := s.write(Headers{Service: "directory", Event: "download"})
+	if err != nil {
+		return false
+	}
+
+	start := int64(0)
+	var u Directory
+	db := db_open("db/directory.db")
+	if db.scan(&u, "select updated from directory order by updated desc limit 1") {
+		start = u.Updated
+	}
+	debug("Directory asking for directory updates since %d", start)
+	s.write_content("start", i64toa(start))
+
+	for {
+		var d Directory
+		debug("Directory reading update")
+		err := s.read(&d)
 		if err != nil {
-			continue
+			debug("Directory read error: %v", err)
+			return true // We got what we could, consider it a success
 		}
 
-		start := int64(0)
-		var u Directory
-		db := db_open("db/directory.db")
-		if db.scan(&u, "select updated from directory order by updated desc limit 1") {
-			start = u.Updated
-		}
-		debug("Directory asking for directory updates since %d", start)
-		s.write_content("start", i64toa(start))
-
-		for {
-			var d Directory
-			debug("Directory reading update")
-			err := s.read(&d)
-			if err != nil {
-				debug("Directory read error: %v", err)
-				return
-			}
-
-			debug("Directory got update %#v", d)
-			db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
-			go queue_check_entity(d.ID)
-		}
+		debug("Directory got update %#v", d)
+		db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
+		go queue_check_entity(d.ID)
 	}
 }
 

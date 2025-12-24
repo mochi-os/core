@@ -146,6 +146,7 @@ func (m *Message) send_work() {
 		debug("Unable to open stream to peer, will retry from queue")
 		return
 	}
+	defer s.close()
 
 	// Read challenge from receiver
 	challenge, err := s.read_challenge()

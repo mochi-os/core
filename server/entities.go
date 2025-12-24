@@ -388,6 +388,7 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 }
 
 // mochi.entity.info(id) -> dict or None: Get info for any local entity (no user restriction)
+// Returns: id, fingerprint, parent, class, name, privacy, creator (owner's identity ID)
 func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -399,10 +400,21 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	row, err := db.row("select id, fingerprint, parent, class, name, privacy from entities where id=?", id)
+	row, err := db.row("select id, fingerprint, parent, class, name, privacy, user from entities where id=?", id)
 	if err != nil || row == nil {
 		return sl.None, nil
 	}
+
+	// Resolve user ID to their identity (person entity)
+	if userID, ok := row["user"].(int64); ok && userID > 0 {
+		identity, err := db.row("select id from entities where user=? and class='person' limit 1", userID)
+		if err == nil && identity != nil {
+			if identityID, ok := identity["id"].(string); ok {
+				row["creator"] = identityID
+			}
+		}
+	}
+	delete(row, "user") // Don't expose internal user ID
 
 	return sl_encode(row), nil
 }

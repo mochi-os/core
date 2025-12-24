@@ -26,13 +26,13 @@ type App struct {
 }
 
 type AppAction struct {
-	Function    string `json:"function"`
-	File        string `json:"file"`
-	Files       string `json:"files"`
-	Feature     string `json:"feature"`
-	Public      bool   `json:"public"`
-	OpenGraph   string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
-	Access      struct {
+	Function  string `json:"function"`
+	File      string `json:"file"`
+	Files     string `json:"files"`
+	Feature   string `json:"feature"`
+	Public    bool   `json:"public"`
+	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
+	Access    struct {
 		Resource  string `json:"resource"`
 		Operation string `json:"operation"`
 	} `json:"access"`
@@ -223,30 +223,9 @@ func app_by_root() *App {
 func app_check_install(id string) bool {
 	debug("App %q checking install status", id)
 
-	s, err := stream("", id, "app", "version")
-	if err != nil {
-		debug("%v", err)
-		return false
-	}
-	s.write_content("track", "production")
-
-	statusResp, err := s.read_content()
-	if err != nil {
-		debug("%v", err)
-		return false
-	}
-	statusCode, _ := statusResp["status"].(string)
-	if statusCode != "200" {
-		return false
-	}
-
-	v, err := s.read_content()
-	if err != nil {
-		debug("%v", err)
-		return false
-	}
-	version, _ := v["version"].(string)
-	if !valid(version, "version") {
+	// Check version
+	version, ok := app_check_version(id)
+	if !ok {
 		return false
 	}
 
@@ -264,11 +243,13 @@ func app_check_install(id string) bool {
 	}
 	debug("App %q upgrading from %q to %q", id, oldVersion, version)
 
-	s, err = stream("", id, "app", "get")
+	// Download and install new version
+	s, err := stream("", id, "app", "get")
 	if err != nil {
 		debug("%v", err)
 		return false
 	}
+	defer s.close()
 
 	err = s.write_content("version", version)
 	if err != nil {
@@ -299,6 +280,40 @@ func app_check_install(id string) bool {
 	na := app(id)
 	na.load_version(new)
 	return true
+}
+
+// Check the version of an app on the remote server
+func app_check_version(id string) (string, bool) {
+	s, err := stream("", id, "app", "version")
+	if err != nil {
+		debug("%v", err)
+		return "", false
+	}
+	defer s.close()
+
+	s.write_content("track", "production")
+
+	statusResp, err := s.read_content()
+	if err != nil {
+		debug("%v", err)
+		return "", false
+	}
+	statusCode, _ := statusResp["status"].(string)
+	if statusCode != "200" {
+		return "", false
+	}
+
+	v, err := s.read_content()
+	if err != nil {
+		debug("%v", err)
+		return "", false
+	}
+	version, _ := v["version"].(string)
+	if !valid(version, "version") {
+		return "", false
+	}
+
+	return version, true
 }
 
 // Find the best app for a service

@@ -144,6 +144,16 @@ func (s *Stream) close_write() {
 	}
 }
 
+// Close closes both the reader and writer of the stream
+func (s *Stream) close() {
+	if s.reader != nil {
+		s.reader.Close()
+	}
+	if s.writer != nil {
+		s.writer.Close()
+	}
+}
+
 // Receive stream (send challenge first for direct streams)
 func stream_receive(s *Stream, version int, peer string) {
 	// Send challenge if this is a bidirectional stream (not pubsub)

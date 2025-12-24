@@ -111,6 +111,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	if s == nil {
 		return false
 	}
+	defer s.close()
 
 	// Read challenge from receiver
 	challenge, err := s.read_challenge()

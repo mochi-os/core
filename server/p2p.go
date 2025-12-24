@@ -17,6 +17,7 @@ import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
+	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	multiaddr "github.com/multiformats/go-multiaddr"
 	"io"
@@ -115,12 +116,12 @@ func p2p_pubsubs() {
 
 // Receive event with protocol version 1 from p2p stream
 func p2p_receive_1(s p2p_network.Stream) {
+	defer s.Close()
 	peer := s.Conn().RemotePeer().String()
 
 	// Rate limit incoming streams per peer
 	if !rate_limit_p2p.allow(peer) {
 		debug("P2P rate limited peer %q", peer)
-		s.Close()
 		return
 	}
 
@@ -152,13 +153,36 @@ func p2p_start() {
 		}
 	}
 
+	// Configure resource manager with higher limits
+	limits := p2p_rcmgr.DefaultLimits
+	limits.SystemBaseLimit.Streams = 4096
+	limits.SystemBaseLimit.StreamsInbound = 2048
+	limits.SystemBaseLimit.StreamsOutbound = 2048
+	limits.SystemBaseLimit.Conns = 256
+	limits.SystemBaseLimit.ConnsInbound = 128
+	limits.SystemBaseLimit.ConnsOutbound = 128
+	limits.ServiceBaseLimit.Streams = 1024
+	limits.ServiceBaseLimit.StreamsInbound = 512
+	limits.ServiceBaseLimit.StreamsOutbound = 512
+	limits.ProtocolBaseLimit.Streams = 1024
+	limits.ProtocolBaseLimit.StreamsInbound = 512
+	limits.ProtocolBaseLimit.StreamsOutbound = 512
+	limits.PeerBaseLimit.Streams = 256
+	limits.PeerBaseLimit.StreamsInbound = 128
+	limits.PeerBaseLimit.StreamsOutbound = 128
+	limiter := p2p_rcmgr.NewFixedLimiter(limits.AutoScale())
+	rm, err := p2p_rcmgr.NewResourceManager(limiter)
+	if err != nil {
+		panic(fmt.Sprintf("P2P failed to create resource manager: %v", err))
+	}
+
 	// Create p2p instance
 	port := ini_int("p2p", "port", 1443)
 	p2p_me = must(p2p.New(p2p.ListenAddrStrings(
 		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
 		fmt.Sprintf("/ip6/::/tcp/%d", port),
 		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)), p2p.Identity(private)))
+		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)), p2p.Identity(private), p2p.ResourceManager(rm)))
 	p2p_id = p2p_me.ID().String()
 	info("P2P listening on port %d with id %q", port, p2p_id)
 

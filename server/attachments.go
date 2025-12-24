@@ -1448,6 +1448,7 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 		warn("attachment_fetch_remote: stream error: %v", err)
 		return nil
 	}
+	defer s.close()
 
 	debug("attachment_fetch_remote: sending id=%s", id)
 	s.write_content("id", id)
@@ -1904,6 +1905,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err != nil {
 		return sl_encode([]map[string]any{}), nil
 	}
+	defer s.close()
 
 	s.write_content("object", object)
 

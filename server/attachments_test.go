@@ -318,56 +318,6 @@ func TestCopyFile(t *testing.T) {
 	}
 }
 
-// Test AppAction.Attachments route expansion
-func TestAppActionAttachmentsExpansion(t *testing.T) {
-	// Simulate what app_version_load does with attachments actions
-	actions := map[string]AppAction{
-		"files":  {Attachments: true, Public: false},
-		"public": {Attachments: true, Public: true},
-		"normal": {Function: "some_function"},
-	}
-
-	// Collect keys to expand first (safe iteration)
-	var to_expand []string
-	for name, action := range actions {
-		if action.Attachments {
-			to_expand = append(to_expand, name)
-		}
-	}
-
-	// Expand attachment actions
-	for _, name := range to_expand {
-		action := actions[name]
-		actions[name+"/:id"] = AppAction{Attachments: true, Public: action.Public}
-		actions[name+"/:id/thumbnail"] = AppAction{Attachments: true, Thumbnail: true, Public: action.Public}
-		delete(actions, name)
-	}
-
-	// Verify expansion
-	if _, ok := actions["files"]; ok {
-		t.Error("Original 'files' action should be deleted")
-	}
-	if _, ok := actions["files/:id"]; !ok {
-		t.Error("'files/:id' action should exist")
-	}
-	if _, ok := actions["files/:id/thumbnail"]; !ok {
-		t.Error("'files/:id/thumbnail' action should exist")
-	}
-
-	// Verify Public flag is preserved
-	if actions["files/:id"].Public != false {
-		t.Error("files/:id should not be public")
-	}
-	if actions["public/:id"].Public != true {
-		t.Error("public/:id should be public")
-	}
-
-	// Verify normal actions are unchanged
-	if actions["normal"].Function != "some_function" {
-		t.Error("normal action should be unchanged")
-	}
-}
-
 // Benchmark attachment_content_type
 func BenchmarkAttachmentContentType(b *testing.B) {
 	filenames := []string{

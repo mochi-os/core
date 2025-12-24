@@ -29,8 +29,7 @@ type AppAction struct {
 	Function    string `json:"function"`
 	File        string `json:"file"`
 	Files       string `json:"files"`
-	Attachments bool   `json:"attachments"`
-	Thumbnail   bool   `json:"thumbnail"`
+	Feature     string `json:"feature"`
 	Public      bool   `json:"public"`
 	OpenGraph   string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 	Access      struct {
@@ -805,9 +804,9 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			return &aa
 		}
 
-		// If type files or attachments, check for matching parent (try progressively shorter prefixes)
+		// If type files or feature, check for matching parent (try progressively shorter prefixes)
 		// Supports parameterized patterns like :wiki/-/assets
-		if aa.Files != "" || aa.Attachments {
+		if aa.Files != "" || aa.Feature != "" {
 			key_segments := strings.Split(aa.name, "/")
 			match := name
 			for {

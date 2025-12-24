@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	attachment_max_size_default = 1073741824          // 1GB
+	attachment_max_size_default = 1073741824         // 1GB
 	cache_max_age               = 7 * 24 * time.Hour // 7 days
 )
 
@@ -43,18 +43,18 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"create_from_file":   sl.NewBuiltin("mochi.attachment.create_from_file", api_attachment_create_from_file),
 	"create_from_stream": sl.NewBuiltin("mochi.attachment.create_from_stream", api_attachment_create_from_stream),
 	"insert":             sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
-	"update":           sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
-	"move":             sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
-	"delete":           sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
-	"clear":            sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
-	"list":             sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
-	"get":              sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-	"exists":           sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
-	"data":             sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
-	"path":             sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
-	"thumbnail_path":   sl.NewBuiltin("mochi.attachment.thumbnail_path", api_attachment_thumbnail_path),
-	"sync":             sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
-	"fetch":            sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
+	"update":             sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
+	"move":               sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
+	"delete":             sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
+	"clear":              sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
+	"list":               sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
+	"get":                sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
+	"exists":             sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
+	"data":               sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
+	"path":               sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"thumbnail_path":     sl.NewBuiltin("mochi.attachment.thumbnail_path", api_attachment_thumbnail_path),
+	"sync":               sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
+	"fetch":              sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
 // Create attachments table

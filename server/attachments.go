@@ -1544,8 +1544,9 @@ func (e *Event) attachment_event_create() {
 			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 		// Fetch the file immediately to create a full local copy
+		// Fetch from source (sender's identity) since that's where the file is stored
 		if e.user != nil && e.app != nil && name != "" {
-			data := attachment_fetch_remote(e.app, object, id)
+			data := attachment_fetch_remote(e.app, source, id)
 			if data != nil {
 				path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
 				file_write(path, data)
@@ -1606,8 +1607,9 @@ func (e *Event) attachment_event_insert() {
 		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 	// Fetch the file immediately to create a full local copy
+	// Fetch from source (sender's identity) since that's where the file is stored
 	if e.user != nil && e.app != nil && name != "" {
-		data := attachment_fetch_remote(e.app, object, id)
+		data := attachment_fetch_remote(e.app, source, id)
 		if data != nil {
 			path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
 			file_write(path, data)

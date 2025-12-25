@@ -28,9 +28,7 @@ func main() {
 	info("Mochi %s starting", build_version)
 
 	var file string
-	var migrate bool
 	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")
-	flag.BoolVar(&migrate, "migrate-attachments", false, "Migrate attachments from old system to new per-app system")
 	flag.Parse()
 	err := ini_load(file)
 	if err != nil {
@@ -45,11 +43,6 @@ func main() {
 	web_cache = ini_bool("web", "cache", true)
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
-
-	if migrate {
-		migrate_attachments()
-		return
-	}
 
 	starlark_configure()
 	db_start()

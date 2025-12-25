@@ -53,9 +53,10 @@ func migrate_attachments() {
 		}
 
 		user_id := entry.Name()
-		old_db_path := fmt.Sprintf("%s/%s/attachments/attachments.db", users_dir, user_id)
+		old_db_path := fmt.Sprintf("users/%s/attachments/attachments.db", user_id)
+		old_db_full_path := data_dir + "/" + old_db_path
 
-		if !file_exists(old_db_path) {
+		if !file_exists(old_db_full_path) {
 			continue
 		}
 
@@ -117,10 +118,11 @@ func migrate_user_attachments(user_id string, old_db_path string) (migrated, ski
 }
 
 func migrate_app_attachments(user_id string, app_name string, attachments []OldAttachment) (migrated, skipped, errors int) {
-	// Determine new database path
-	new_db_path := fmt.Sprintf("%s/users/%s/%s.db", data_dir, user_id, app_name)
+	// Determine new database path (relative for db_open, full for file_exists)
+	new_db_path := fmt.Sprintf("users/%s/%s/%s.db", user_id, app_name, app_name)
+	new_db_full_path := data_dir + "/" + new_db_path
 
-	if !file_exists(new_db_path) {
+	if !file_exists(new_db_full_path) {
 		info("Migration: app database %q does not exist for user %q, skipping %d attachments", app_name, user_id, len(attachments))
 		return 0, len(attachments), 0
 	}
@@ -138,8 +140,15 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 	new_db.exec("create index if not exists _attachments_object on _attachments( object )")
 
 	for _, att := range attachments {
-		// Determine new object path (strip app prefix if present)
-		new_object := normalize_object(app_name, att.Object)
+		// Old files are stored at users/<user_id>/<object>/<id>_<name>
+		old_file_path := fmt.Sprintf("%s/users/%s/%s/%s_%s", data_dir, user_id, att.Object, att.ID, filepath.Base(att.Name))
+		new_file_path := fmt.Sprintf("%s/users/%s/%s/files/%s_%s", data_dir, user_id, app_name, att.ID, filepath.Base(att.Name))
+
+		// Skip remote attachments (file doesn't exist locally)
+		if !file_exists(old_file_path) {
+			skipped++
+			continue
+		}
 
 		// Check if already migrated
 		already_migrated, _ := new_db.exists("select 1 from _attachments where id = ?", att.ID)
@@ -148,10 +157,21 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 			continue
 		}
 
+		// Determine new object path (strip app prefix if present)
+		new_object := normalize_object(app_name, att.Object)
+
 		// Determine content type
 		content_type := mime.TypeByExtension(filepath.Ext(att.Name))
 		if content_type == "" {
 			content_type = "application/octet-stream"
+		}
+
+		// Copy file to new location
+		file_mkdir(filepath.Dir(new_file_path))
+		if err := copy_file(old_file_path, new_file_path); err != nil {
+			info("Migration: failed to copy file %q -> %q: %v", old_file_path, new_file_path, err)
+			errors++
+			continue
 		}
 
 		// Insert into new table
@@ -159,24 +179,6 @@ func migrate_app_attachments(user_id string, app_name string, attachments []OldA
 		new_db.exec(`insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 			values (?, ?, '', ?, ?, ?, ?, '', '', ?, ?)`,
 			att.ID, new_object, att.Name, att.Size, content_type, att.Entity, att.Rank, att.Created)
-
-		// Copy file to new location
-		old_file_path := fmt.Sprintf("%s/users/%s/%s", data_dir, user_id, att.Path)
-		new_file_path := fmt.Sprintf("%s/users/%s/files/%s_%s", data_dir, user_id, att.ID, filepath.Base(att.Name))
-
-		if file_exists(old_file_path) {
-			// Ensure directory exists
-			file_mkdir(filepath.Dir(new_file_path))
-
-			// Copy file
-			if err := copy_file(old_file_path, new_file_path); err != nil {
-				info("Migration: failed to copy file %q -> %q: %v", old_file_path, new_file_path, err)
-				errors++
-				continue
-			}
-		} else {
-			info("Migration: old file not found: %q", old_file_path)
-		}
 
 		migrated++
 	}
@@ -220,9 +222,9 @@ func normalize_object(app_name string, object string) string {
 			return parts[2]
 		}
 	case "feeds":
-		// Old: feeds/postid or just postid -> New: postid
-		if len(parts) >= 2 && parts[0] == "feeds" {
-			return parts[1]
+		// Old: feeds/feedid/postid -> New: postid
+		if len(parts) >= 3 && parts[0] == "feeds" {
+			return parts[2]
 		}
 	case "chat":
 		// Keep as-is: chat/chatid/messageid

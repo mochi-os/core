@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.2.0
+version = 0.2.5
 build = /tmp/mochi-server_$(version)_amd64
 deb = $(build).deb
 
@@ -33,7 +33,7 @@ release: clean $(deb)
 	cp $(deb) ../apt/pool/main
 	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
 	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/
-	git push origin $(version)
+	git push github $(version)
 
 format:
 	go fmt server/*.go

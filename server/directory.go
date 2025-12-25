@@ -79,6 +79,9 @@ func directory_create(e *Entity) {
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
 	for _, p := range peers_bootstrap {
+		if p.ID == p2p_id {
+			continue // Don't download from self
+		}
 		if directory_download_from_peer(p.ID) {
 			return
 		}

@@ -143,7 +143,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				}
 			}
 
-			debug("Serving single file for app %q: %q", a.id, file)
+			//debug("Serving single file for app %q: %q", a.id, file)
 			web_cache_static(c, file)
 			c.File(file)
 			return true
@@ -158,7 +158,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				return true
 			}
 			file := a.active.base + "/" + aa.Files + "/" + aa.filepath
-			debug("Serving file from directory for app %q: %q", a.id, file)
+			//debug("Serving file from directory for app %q: %q", a.id, file)
 			web_cache_static(c, file)
 			c.File(file)
 		} else {
@@ -614,7 +614,7 @@ func web_logout(c *gin.Context) {
 
 // Handle app paths
 func web_path(c *gin.Context) {
-	debug("Web path %q", c.Request.URL.Path)
+	//debug("Web path %q", c.Request.URL.Path)
 
 	// Check for domain-based routing first
 	if method, exists := c.Get("domain_method"); exists && method.(string) != "" {

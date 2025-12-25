@@ -815,7 +815,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 	for _, aa := range candidates {
 		// Try exact match first
 		if aa.name == name {
-			debug("App found direct action %q with function %q", name, aa.Function)
+			//debug("App found direct action %q with function %q", name, aa.Function)
 			return &aa
 		}
 
@@ -834,7 +834,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 				// Try exact match first
 				if aa.name == match {
 					aa.filepath = suffix
-					debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
+					//debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
 					return &aa
 				}
 				// Try parameterized match
@@ -854,7 +854,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 					}
 					if ok {
 						aa.filepath = suffix
-						debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
+						//debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
 						return &aa
 					}
 				}
@@ -888,7 +888,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 
 		if ok {
-			debug("App found action %q with function %q via pattern %q", name, aa.Function, aa.name)
+			//debug("App found action %q with function %q via pattern %q", name, aa.Function, aa.name)
 			return &aa
 		}
 	}
@@ -896,7 +896,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 	// Fall back to empty action name as catch-all
 	for _, aa := range candidates {
 		if aa.name == "" {
-			debug("App found fallback action %q with function %q via catch-all", name, aa.Function)
+			//debug("App found fallback action %q with function %q via catch-all", name, aa.Function)
 			return &aa
 		}
 	}

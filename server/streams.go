@@ -80,7 +80,7 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
 	}
 
-	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
+	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	id := uid()
 	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
@@ -105,7 +105,7 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
 	}
 
-	debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
+	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	id := uid()
 	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
@@ -228,7 +228,7 @@ func stream_receive(s *Stream, version int, peer string) {
 		return
 	}
 
-	debug("Stream %d from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
+	//debug("Stream %d from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
 	// Create event and route to app
 	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}

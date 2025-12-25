@@ -4,7 +4,7 @@
 package main
 
 func broadcast(u *User, sender string, action string, entity string, content any) {
-	debug("Broadcast user %d, sender %q, action %q, entity %q, content %v", u.ID, sender, action, entity, content)
+	//debug("Broadcast user %d, sender %q, action %q, entity %q, content %v", u.ID, sender, action, entity, content)
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 

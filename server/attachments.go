@@ -1428,7 +1428,7 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 
 // Federation: fetch attachment data from remote entity
 func attachment_fetch_remote(app *App, entity string, id string) []byte {
-	debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
+	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
 
 	// Check cache first
 	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
@@ -1436,13 +1436,13 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 		if time.Since(fi.ModTime()) > cache_max_age {
 			os.Remove(cache_path) // expired, will refetch below
 		} else {
-			debug("attachment_fetch_remote: returning cached file %s", cache_path)
+			//debug("attachment_fetch_remote: returning cached file %s", cache_path)
 			return file_read(cache_path)
 		}
 	}
 
 	// Fetch from remote
-	debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
+	//debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
 	s, err := stream("", entity, "app/"+app.id, "_attachment/data")
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
@@ -1450,12 +1450,12 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 	}
 	defer s.close()
 
-	debug("attachment_fetch_remote: sending id=%s", id)
+	//debug("attachment_fetch_remote: sending id=%s", id)
 	s.write_content("id", id)
 
-	debug("attachment_fetch_remote: waiting for status response...")
+	//debug("attachment_fetch_remote: waiting for status response...")
 	status, err := s.read_content()
-	debug("attachment_fetch_remote: received status=%v err=%v", status, err)
+	//debug("attachment_fetch_remote: received status=%v err=%v", status, err)
 	if err != nil || status["status"] != "200" {
 		warn("attachment_fetch_remote: bad status: %v", status)
 		return nil
@@ -1464,7 +1464,7 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 	// Stream directly to cache file (use raw_reader to include any buffered data from CBOR decoder)
 	file_mkdir(filepath.Dir(cache_path))
 	if !file_write_from_reader(cache_path, s.raw_reader()) {
-		debug("attachment_fetch_remote: failed to write cache file")
+		//debug("attachment_fetch_remote: failed to write cache file")
 		return nil
 	}
 
@@ -1758,7 +1758,7 @@ func (e *Event) attachment_event_clear() {
 
 // Event handler: attachment/data (responds with file bytes)
 func (e *Event) attachment_event_data() {
-	debug("attachment_event_data: called with content=%v", e.content)
+	//debug("attachment_event_data: called with content=%v", e.content)
 
 	if e.db == nil {
 		warn("attachment_event_data: no database, returning 500")
@@ -1773,7 +1773,7 @@ func (e *Event) attachment_event_data() {
 		return
 	}
 
-	debug("attachment_event_data: looking up attachment id=%s", id)
+	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
 	if !e.db.scan(&att, "select * from _attachments where id = ?", id) {
 		warn("attachment_event_data: attachment not found in db, returning 404")
@@ -1781,7 +1781,7 @@ func (e *Event) attachment_event_data() {
 		return
 	}
 
-	debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
+	//debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
 
 	// Only serve if we own this attachment (entity is empty)
 	if att.Entity != "" {
@@ -1791,18 +1791,18 @@ func (e *Event) attachment_event_data() {
 	}
 
 	path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, att.ID, att.Name)
-	debug("attachment_event_data: checking file path=%s", path)
+	//debug("attachment_event_data: checking file path=%s", path)
 	if !file_exists(path) {
 		warn("attachment_event_data: file not found at %s, returning 404", path)
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}
 
-	debug("attachment_event_data: sending file %s", path)
+	//debug("attachment_event_data: sending file %s", path)
 	e.stream.write(map[string]string{"status": "200"})
 	e.stream.write_file(path)
 	e.stream.close_write()
-	debug("attachment_event_data: done")
+	//debug("attachment_event_data: done")
 }
 
 // mochi.attachment.sync(object, recipients) -> int: Sync attachments to recipients, returns count

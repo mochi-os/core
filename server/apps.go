@@ -597,8 +597,8 @@ func apps_start() {
 		apps_load_dev()
 	}
 
-	// Load production apps (versioned, entity IDs)
-	apps_load_production()
+	// Load published apps (versioned, entity IDs)
+	apps_load_published()
 }
 
 // Check if an app is already loaded
@@ -607,6 +607,23 @@ func app_exists(id string) bool {
 	defer apps_lock.Unlock()
 	_, exists := apps[id]
 	return exists
+}
+
+// Check if a path is already used by another app
+func app_path_taken(path string) bool {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, p := range a.active.Paths {
+			if p == path {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Load development apps from dev_apps_dir (unversioned)
@@ -636,16 +653,16 @@ func apps_load_dev() {
 	}
 }
 
-// Load production apps from data_dir/apps (versioned)
-func apps_load_production() {
+// Load published apps from data_dir/apps (versioned)
+func apps_load_published() {
 	for _, id := range file_list(data_dir + "/apps") {
 		if strings.HasPrefix(id, ".") {
 			continue
 		}
 
-		// Production apps must have entity IDs
+		// Published apps must have entity IDs
 		if !valid(id, "entity") {
-			debug("Production app skipping invalid ID %q (must be entity)", id)
+			debug("Published app skipping invalid ID %q (must be entity)", id)
 			continue
 		}
 
@@ -675,6 +692,20 @@ func apps_load_production() {
 				info("App load error: %v", err)
 				continue
 			}
+
+			// Check for path conflicts with already-loaded apps (e.g., dev apps)
+			// If any path conflicts, use the fingerprint as the mount point
+			// TODO: Remove this workaround in v0.3 when multiple versions of the same app
+			// can run simultaneously and users choose which version to use.
+			for _, path := range av.Paths {
+				if app_path_taken(path) {
+					fp := fingerprint(id)
+					debug("Published app %s path %q conflicts, using fingerprint %s", id, path, fp)
+					av.Paths = []string{fp}
+					break
+				}
+			}
+
 			a.load_version(av)
 		}
 	}

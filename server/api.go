@@ -131,7 +131,8 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// Look for matching app function, using default if necessary
 	a := app_for_service(service)
 	if a == nil {
-		return sl_error(fn, "unknown service %q", service)
+		// Return None for missing service (allows graceful degradation during bootstrap)
+		return sl.None, nil
 	}
 	f, found := a.active.Functions[function]
 	if !found {

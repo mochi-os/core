@@ -129,7 +129,7 @@ func attachment_create_record(db *DB, app *App, owner *User, object, name, id st
 }
 
 // Convert Attachment struct to map for Starlark
-// If paths are provided: first is app_path, second is action_path (defaults to "attachments")
+// paths: [app_path, action_path (default "attachments"), entity (optional for public URLs)]
 func (a *Attachment) to_map(paths ...string) map[string]any {
 	m := map[string]any{
 		"id":           a.ID,
@@ -149,19 +149,27 @@ func (a *Attachment) to_map(paths ...string) map[string]any {
 	if len(paths) > 0 && paths[0] != "" {
 		app_path := paths[0]
 		action_path := "attachments"
+		entity := ""
 		if len(paths) > 1 && paths[1] != "" {
 			action_path = paths[1]
 		}
-		m["url"] = a.attachment_url(app_path, action_path)
+		if len(paths) > 2 && paths[2] != "" {
+			entity = paths[2]
+		}
+		m["url"] = a.attachment_url(app_path, action_path, entity)
 		if is_image(a.Name) {
-			m["thumbnail_url"] = a.attachment_url(app_path, action_path) + "/thumbnail"
+			m["thumbnail_url"] = a.attachment_url(app_path, action_path, entity) + "/thumbnail"
 		}
 	}
 	return m
 }
 
 // Generate URL for attachment
-func (a *Attachment) attachment_url(app_path, action_path string) string {
+// If entity is provided, generates public URL format: /app/entity/-/action/id
+func (a *Attachment) attachment_url(app_path, action_path, entity string) string {
+	if entity != "" {
+		return fmt.Sprintf("/%s/%s/-/%s/%s", app_path, entity, action_path, a.ID)
+	}
 	return fmt.Sprintf("/%s/%s/%s", app_path, action_path, a.ID)
 }
 
@@ -1034,15 +1042,24 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// mochi.attachment.list(object) -> list: List attachments for an object
+// mochi.attachment.list(object, entity="") -> list: List attachments for an object
+// If entity is provided, URLs will include the entity for public access
 func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <object: string>")
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <object: string>, [entity: string]")
 	}
 
 	object, ok := sl.AsString(args[0])
 	if !ok || !valid(object, "path") {
 		return sl_error(fn, "invalid object")
+	}
+
+	entity := ""
+	if len(args) > 1 && args[1] != sl.None {
+		entity, ok = sl.AsString(args[1])
+		if !ok || (entity != "" && !valid(entity, "entity")) {
+			return sl_error(fn, "invalid entity")
+		}
 	}
 
 	app := t.Local("app").(*App)
@@ -1069,7 +1086,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	var results []map[string]any
 	for _, att := range attachments {
-		results = append(results, att.to_map(app.url_path()))
+		results = append(results, att.to_map(app.url_path(), "attachments", entity))
 	}
 
 	return sl_encode(results), nil

@@ -218,7 +218,7 @@ func db_app(u *User, av *AppVersion) *DB {
 		}
 
 	} else {
-		debug("Database app opening %q", path)
+		// debug("Database app opening %q", path)
 
 		// Check if _settings table exists, if not create it with schema 0
 		has_settings, _ := db.exists("select name from sqlite_master where type='table' and name='_settings'")

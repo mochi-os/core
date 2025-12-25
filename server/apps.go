@@ -126,10 +126,16 @@ const (
 
 var (
 	apps_install_by_default = []string{
-		"1KKFKiz49rLVfaGuChexEDdphu4dA9tsMroNMfUfC7oYuruHRZ",  // Chat
-		"12qMc1J5PZJDmgbdxtjB1b8xWeA6zhFJUbz5wWUEJSK3gyeFUPb", // Home
-		"123jjo8q9kx8HZHmxbQ6DMfWPsMSByongGbG3wTrywcm2aA5b8x", // Notifications
-		"12Wa5korrLAaomwnwj1bW4httRgo6AXHNK1wgSZ19ewn8eGWa1C", // People
+		"", // App Manager
+		"", // Chat
+		"", // Feeds
+		"", // Forums
+		"", // Home
+		"", // Login
+		"", // Notifications
+		"", // People
+		"", // Settings
+		"", // Wikis
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
@@ -221,6 +227,10 @@ func app_by_root() *App {
 
 // Check whether app is the correct version, and if not download and install new version
 func app_check_install(id string) bool {
+	if !valid(id, "entity") {
+		debug("App %q ignoring install status", id)
+		return true
+	}
 	debug("App %q checking install status", id)
 
 	// Check version
@@ -399,9 +409,7 @@ func apps_manager() {
 		}
 
 		for _, id := range file_list(data_dir + "/apps") {
-			if valid(id, "entity") {
-				todo[id] = true
-			}
+			todo[id] = true
 		}
 
 		failed := false
@@ -414,7 +422,7 @@ func apps_manager() {
 		if failed {
 			time.Sleep(time.Minute)
 		} else {
-			time.Sleep(24 * time.Hour)
+			time.Sleep(time.Hour)
 		}
 	}
 }

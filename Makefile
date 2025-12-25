@@ -25,13 +25,15 @@ $(deb): clean mochi-server
 	rm -rf $(build)
 	ls -l $(deb)
 
-apt: clean $(deb)
+deb: $(deb)
+
+release: clean $(deb)
+	git tag -a $(version) -m "Release $(version)"
 	rm ../apt/pool/main/mochi-server_*.deb
 	cp $(deb) ../apt/pool/main
 	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
 	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/
-
-deb: $(deb)
+	git push origin $(version)
 
 format:
 	go fmt server/*.go

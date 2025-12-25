@@ -54,11 +54,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Compute owner based on entity, if present
+	// Compute owner based on entity, domain route owner, or authenticated user
 	var owner *User = user
 	if e != nil {
 		if o := user_owning_entity(e.ID); o != nil {
 			owner = o
+		}
+	} else if owner == nil {
+		// Fall back to domain route owner for anonymous requests without entity
+		if routeOwner, ok := c.Get("domain_owner"); ok {
+			if uid, ok := routeOwner.(int); ok && uid > 0 {
+				owner = user_by_id(uid)
+			}
 		}
 	}
 

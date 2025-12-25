@@ -107,13 +107,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			entity = e.ID
 		} else if aa.parameters["wiki"] != "" {
 			entity = aa.parameters["wiki"]
-			att_owner = nil
+			att_owner = user_owning_entity(entity)
 		} else if aa.parameters["feed"] != "" {
 			entity = aa.parameters["feed"]
-			att_owner = nil
+			att_owner = user_owning_entity(entity)
 		} else if aa.parameters["forum"] != "" {
 			entity = aa.parameters["forum"]
-			att_owner = nil
+			att_owner = user_owning_entity(entity)
 		}
 		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Feature == "attachment/thumbnail")
 	}

@@ -619,9 +619,11 @@ func db_upgrade() {
 			users.exec("alter table credentials add column backup_state integer not null default 0")
 
 		} else if schema == 19 {
-			// Migration: remove unused mfa_required column
+			// Migration: remove unused mfa_required column (if it exists)
 			users := db_open("db/users.db")
-			users.exec("alter table users drop column mfa_required")
+			if exists, _ := users.exists("select 1 from pragma_table_info('users') where name='mfa_required'"); exists {
+				users.exec("alter table users drop column mfa_required")
+			}
 
 		} else if schema == 20 {
 			// Migration: split routes entity column into method and target

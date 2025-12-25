@@ -116,11 +116,10 @@ func directory_download_from_peer(peer string) bool {
 
 	for {
 		var d Directory
-		//debug("Directory reading update")
 		err := s.read(&d)
 		if err != nil {
-			debug("Directory read error: %v", err)
-			return true // We got what we could, consider it a success
+			// Expected when stream closes with no more updates
+			return true
 		}
 
 		//debug("Directory got update %#v", d)

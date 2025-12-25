@@ -253,14 +253,17 @@ func app_check_install(id string) bool {
 		return true
 	}
 
-	oldVersion := ""
 	if installed {
-		oldVersion = a.active.Version
+		debug("App %q upgrading from %q to %q", id, a.active.Version, version)
+	} else {
+		debug("App %q new install version %q", id, version)
 	}
-	debug("App %q upgrading from %q to %q", id, oldVersion, version)
 
-	// Download and install new version
+	// Download and install new version (use fallback for new installs)
 	s, err := stream("", id, "publisher", "get")
+	if err != nil && !installed {
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get")
+	}
 	if err != nil {
 		debug("%v", err)
 		return false

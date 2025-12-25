@@ -179,7 +179,7 @@ func (e *Event) route() error {
 		s.set("user", e.user)
 		s.set("owner", e.user)
 
-		debug("App event %s:%s(): %v", a.id, ae.Function, e)
+		//debug("App event %s:%s(): %v", a.id, ae.Function, e)
 		s.call(ae.Function, sl.Tuple{e})
 		return nil
 

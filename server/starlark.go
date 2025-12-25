@@ -343,7 +343,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	starlark_sem <- struct{}{}
 	defer func() { <-starlark_sem }()
 
-	debug("Starlark running %q: %+v", function, args)
+	//debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)
 
 	// Set execution step limit

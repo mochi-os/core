@@ -78,7 +78,7 @@ func (m *Message) publish(allow_queue bool) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
+	//debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
 
 	content := cbor_encode(m.content)
 
@@ -99,7 +99,7 @@ func (m *Message) publish(allow_queue bool) {
 			data = append(data, m.data...)
 		}
 
-		debug("Message sending via P2P pubsub")
+		//debug("Message sending via P2P pubsub")
 		p2p_pubsub_1.Publish(p2p_context, data)
 
 		if allow_queue {
@@ -131,7 +131,7 @@ func (m *Message) send_work() {
 		peer = entity_peer(m.To)
 	}
 
-	debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q", peer, m.ID, m.From, m.To, m.Service, m.Event)
+	//debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q", peer, m.ID, m.From, m.To, m.Service, m.Event)
 
 	content := cbor_encode(m.content)
 	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, content, m.data, m.file, m.expires)

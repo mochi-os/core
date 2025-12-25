@@ -126,7 +126,7 @@ func p2p_receive_1(s p2p_network.Stream) {
 	}
 
 	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
-	debug("P2P stream from %q at %q", peer, address)
+	//debug("P2P stream from %q at %q", peer, address)
 
 	stream_receive(stream_rw(s, s), 1, peer)
 	peer_discovered_address(peer, address)

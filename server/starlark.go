@@ -63,7 +63,7 @@ func starlark(files []string) *Starlark {
 	}
 
 	for _, file := range files {
-		debug("Starlark reading file %q", file)
+		//debug("Starlark reading file %q", file)
 		defined, err := sl.ExecFile(s.thread, file, nil, s.globals)
 		if err != nil {
 			info("Starlark error reading file %v", err)
@@ -362,7 +362,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	select {
 	case <-done:
 		if callErr == nil {
-			debug("Starlark finished")
+			//debug("Starlark finished")
 		} else {
 			a, ok := s.thread.Local("app").(*App)
 			if a == nil {

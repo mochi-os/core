@@ -171,36 +171,36 @@ func directory_publish(e *Entity, allow_queue bool) {
 
 // Received a directory publish event from another server
 func directory_publish_event(e *Event) {
-	debug("Directory received publish event '%+v', content '%+v'", e, e.content)
+	//debug("Directory received publish event '%+v', content '%+v'", e, e.content)
 	now := now()
 
 	id := e.get("id", "")
 	if !valid(id, "entity") {
-		debug("Directory dropping event with invalid entity id %q", id)
+		debug("Directory dropping publish event with invalid id %q", id)
 		return
 	}
 
 	name := e.get("name", "")
 	if !valid(name, "line") {
-		debug("Directory dropping event with invalid name %q", name)
+		debug("Directory dropping publish event with invalid name %q", name)
 		return
 	}
 
 	class := e.get("class", "")
 	if !valid(class, "constant") {
-		debug("Directory dropping event with invalid class %q", class)
+		debug("Directory dropping publish event with invalid class %q", class)
 		return
 	}
 
 	location := e.get("location", "")
 	if !valid(location, "line") {
-		debug("Directory dropping event with invalid location %q", location)
+		debug("Directory dropping publish event with invalid location %q", location)
 		return
 	}
 
 	data := e.get("data", "")
 	if !valid(data, "text") {
-		debug("Directory dropping event with invalid data %q", data)
+		debug("Directory dropping publish event with invalid data")
 		return
 	}
 

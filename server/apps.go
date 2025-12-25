@@ -242,26 +242,24 @@ func app_check_install(id string) bool {
 	apps_lock.Unlock()
 	installed := a != nil && a.active != nil
 
-	// Check version (use fallback for new installs when entity location may be unknown)
-	version, ok := app_check_version(id, !installed)
+	// Check version (always try fallback if entity location is unknown)
+	version, ok := app_check_version(id)
 	if !ok {
 		return false
 	}
 
-	if installed && a.active.Version == version {
-		debug("App %q keeping at version %q", id, a.active.Version)
-		return true
-	}
-
 	if installed {
-		debug("App %q upgrading from %q to %q", id, a.active.Version, version)
-	} else {
-		debug("App %q new install version %q", id, version)
+		if a.active.Version == version {
+			debug("App %q keeping at version %q", id, a.active.Version)
+			return true
+		} else {
+			debug("App %q upgrading from %q to %q", id, a.active.Version, version)
+		}
 	}
 
-	// Download and install new version (use fallback for new installs)
+	// Download and install new version (always try fallback if entity location is unknown)
 	s, err := stream("", id, "publisher", "get")
-	if err != nil && !installed {
+	if err != nil {
 		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get")
 	}
 	if err != nil {
@@ -302,13 +300,14 @@ func app_check_install(id string) bool {
 }
 
 // Check the version of an app on the remote server
-func app_check_version(id string, fallback bool) (string, bool) {
+func app_check_version(id string) (string, bool) {
 	s, err := stream("", id, "publisher", "version")
-	if err != nil && fallback {
+	if err != nil {
+		debug("App %q using fallback to default publisher", id)
 		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version")
 	}
 	if err != nil {
-		debug("%v", err)
+		debug("App %q version check failed: %v", id, err)
 		return "", false
 	}
 	defer s.close()
@@ -371,8 +370,6 @@ func app_install(id string, version string, file string, check_only bool) (*AppV
 	}
 	file_mkdir(data_dir + "/tmp")
 	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", data_dir, id, random_alphanumeric(8))
-	debug("App unzipping into tmp directory %q", tmp)
-
 	err := unzip(file, tmp)
 	if err != nil {
 		info("App unzip failed: %v", err)
@@ -403,7 +400,6 @@ func app_install(id string, version string, file string, check_only bool) (*AppV
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
 		file_delete_all(av.base)
 	}
-	debug("Moving unzipped app from %q to %q", tmp, av.base)
 	file_move(tmp, av.base)
 
 	debug("App %q version %q installed", id, av.Version)

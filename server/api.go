@@ -321,11 +321,7 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid time type %T", x)
 	}
 
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
+	user, _ := t.Local("user").(*User)
 	return sl_encode(time_local(user, time)), nil
 }
 

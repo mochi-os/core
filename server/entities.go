@@ -341,9 +341,10 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	user := t.Local("user").(*User)
+	user, _ := t.Local("user").(*User)
 	if user == nil {
-		return sl_error(fn, "no user")
+		// No user means no entities owned by them
+		return sl_encode([]any{}), nil
 	}
 
 	db := db_open("db/users.db")

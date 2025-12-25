@@ -105,38 +105,6 @@ type delegation struct {
 	Updated int64  `db:"updated"`
 }
 
-// domains_migrate_config migrates settings and domains from mochi.conf
-func domains_migrate_config() {
-	verification := ini_bool("domains", "verification", false)
-	if verification {
-		setting_set("domains_verification", "true")
-	} else {
-		setting_set("domains_verification", "false")
-	}
-
-	// migrate domains from [web] domains
-	web_domains := ini_string("web", "domains", "")
-	if web_domains != "" {
-		db := db_open("db/domains.db")
-		domains := strings.Split(web_domains, ",")
-		n := now()
-		for _, d := range domains {
-			d = strings.TrimSpace(d)
-			if d == "" {
-				continue
-			}
-			if domain_get(d) != nil {
-				continue
-			}
-			token := random_alphanumeric(32)
-			db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 1, ?, 1, ?, ?)", d, token, n, n)
-			info("migrated domain %s from mochi.conf", d)
-		}
-	}
-
-	info("domain migration complete - you may remove [domains] section from mochi.conf")
-}
-
 // domains_init_acme initializes the Let's Encrypt autocert manager
 func domains_init_acme() {
 	domains_acme_manager = &autocert.Manager{

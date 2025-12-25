@@ -43,6 +43,7 @@ type route struct {
 	Method   string `db:"method"`
 	Target   string `db:"target"`
 	Context  string `db:"context"`
+	Owner    int    `db:"owner"`
 	Priority int    `db:"priority"`
 	Enabled  int    `db:"enabled"`
 	Created  int64  `db:"created"`
@@ -375,7 +376,7 @@ func route_list(domain_name string) []route {
 }
 
 // route_create creates a new route
-func route_create(domain_name, path, method, target, context string, priority int) (*route, error) {
+func route_create(domain_name, path, method, target, context string, owner, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -385,7 +386,7 @@ func route_create(domain_name, path, method, target, context string, priority in
 
 	db := db_open("db/domains.db")
 	n := now()
-	db.exec("insert into routes (domain, path, method, target, context, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, priority, n, n)
+	db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, owner, priority, n, n)
 
 	return route_get(domain_name, path), nil
 }
@@ -490,6 +491,7 @@ func domains_middleware() gin.HandlerFunc {
 			c.Set("domain_method", match.route.Method)
 			c.Set("domain_target", match.route.Target)
 			c.Set("domain_context", match.route.Context)
+			c.Set("domain_owner", match.route.Owner)
 			c.Set("domain_remaining", match.remaining)
 			c.Set("domain_original_host", c.Request.Host)
 		}
@@ -822,10 +824,15 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	context := ""
+	ownerOverride := 0
 	for _, kw := range kwargs {
 		key, _ := sl.AsString(kw[0])
 		if key == "context" {
 			context, _ = sl.AsString(kw[1])
+		} else if key == "owner" {
+			if o, err := sl.AsInt32(kw[1]); err == nil {
+				ownerOverride = int(o)
+			}
 		}
 	}
 
@@ -843,7 +850,13 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	_, err := route_create(domain, path, method, target, context, priority)
+	// Owner defaults to user's ID; admins can override
+	owner := user.ID
+	if ownerOverride > 0 && user.administrator() {
+		owner = ownerOverride
+	}
+
+	_, err := route_create(domain, path, method, target, context, owner, priority)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

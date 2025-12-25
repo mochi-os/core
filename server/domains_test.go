@@ -25,7 +25,7 @@ func create_domains_test_env(t *testing.T) func() {
 	// Create domains database
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner integer not null default 0, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
@@ -321,7 +321,7 @@ func TestRouteCreate(t *testing.T) {
 
 	domain_register("example.com")
 
-	r, err := route_create("example.com", "/blog", "app", "myapp", "", 10)
+	r, err := route_create("example.com", "/blog", "app", "myapp", "", 0, 10)
 	if err != nil {
 		t.Fatalf("route_create failed: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestRouteCreateNoDomain(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
 
-	_, err := route_create("nonexistent.com", "/", "app", "myapp", "", 0)
+	_, err := route_create("nonexistent.com", "/", "app", "myapp", "", 0, 0)
 	if err == nil {
 		t.Error("route_create should fail for nonexistent domain")
 	}
@@ -363,9 +363,9 @@ func TestRouteCreateDuplicate(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 
-	_, err := route_create("example.com", "/blog", "app", "other", "", 0)
+	_, err := route_create("example.com", "/blog", "app", "other", "", 0, 0)
 	if err == nil {
 		t.Error("duplicate route_create should fail")
 	}
@@ -377,7 +377,7 @@ func TestRouteGet(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 
 	r := route_get("example.com", "/blog")
 	if r == nil {
@@ -400,9 +400,9 @@ func TestRouteList(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "blog", "", 10)
-	route_create("example.com", "/shop", "app", "shop", "", 5)
-	route_create("example.com", "/", "app", "home", "", 0)
+	route_create("example.com", "/blog", "app", "blog", "", 0, 10)
+	route_create("example.com", "/shop", "app", "shop", "", 0, 5)
+	route_create("example.com", "/", "app", "home", "", 0, 0)
 
 	routes := route_list("example.com")
 	if len(routes) != 3 {
@@ -421,7 +421,7 @@ func TestRouteUpdate(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 
 	err := route_update("example.com", "/blog", map[string]any{
 		"target":   "other",
@@ -450,7 +450,7 @@ func TestRouteDelete(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 
 	err := route_delete("example.com", "/blog")
 	if err != nil {
@@ -470,7 +470,7 @@ func TestDomainMatch(t *testing.T) {
 
 	domain_register("example.com")
 	domain_update("example.com", map[string]any{"verified": 1})
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 
 	match := domain_match("example.com", "/blog/123")
 	if match == nil {
@@ -490,7 +490,7 @@ func TestDomainMatchVerificationRequired(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/", "app", "myapp", "", 0)
+	route_create("example.com", "/", "app", "myapp", "", 0, 0)
 
 	// Enable verification requirement
 	setting_set("domains_verification", "true")
@@ -515,9 +515,9 @@ func TestDomainMatchLongestPrefix(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/", "app", "root", "", 0)
-	route_create("example.com", "/blog", "app", "blog", "", 0)
-	route_create("example.com", "/blog/posts", "app", "posts", "", 0)
+	route_create("example.com", "/", "app", "root", "", 0, 0)
+	route_create("example.com", "/blog", "app", "blog", "", 0, 0)
+	route_create("example.com", "/blog/posts", "app", "posts", "", 0, 0)
 
 	// Should match /blog/posts (longest prefix)
 	match := domain_match("example.com", "/blog/posts/123")
@@ -538,11 +538,11 @@ func TestDomainMatchPriority(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "low", "", 1)
-	route_create("example.com", "/blog", "app", "high", "", 10) // This will fail due to duplicate
+	route_create("example.com", "/blog", "app", "low", "", 0, 1)
+	route_create("example.com", "/blog", "app", "high", "", 0, 10) // This will fail due to duplicate
 
 	// Since we can't create duplicate paths, test priority with different paths
-	route_create("example.com", "/", "app", "root", "", 1)
+	route_create("example.com", "/", "app", "root", "", 0, 1)
 
 	// Update the /blog route to have higher priority (simulating what we'd want)
 	// Actually, routes with same path can't exist, so priority matters when paths are different
@@ -559,7 +559,7 @@ func TestDomainMatchSkipsDisabled(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "myapp", "", 0)
+	route_create("example.com", "/blog", "app", "myapp", "", 0, 0)
 	route_update("example.com", "/blog", map[string]any{"enabled": 0})
 
 	match := domain_match("example.com", "/blog")
@@ -574,7 +574,7 @@ func TestDomainMatchWildcard(t *testing.T) {
 	defer cleanup()
 
 	domain_register("*.example.com")
-	route_create("*.example.com", "/", "app", "wildcard", "", 0)
+	route_create("*.example.com", "/", "app", "wildcard", "", 0, 0)
 
 	match := domain_match("blog.example.com", "/test")
 	if match == nil {
@@ -616,8 +616,8 @@ func TestDomainDeleteCascade(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "blog", "", 0)
-	route_create("example.com", "/shop", "app", "shop", "", 0)
+	route_create("example.com", "/blog", "app", "blog", "", 0, 0)
+	route_create("example.com", "/shop", "app", "shop", "", 0, 0)
 
 	// Verify routes exist
 	routes := route_list("example.com")
@@ -641,7 +641,7 @@ func TestDomainMatchPathBoundary(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/blog", "app", "blog", "", 0)
+	route_create("example.com", "/blog", "app", "blog", "", 0, 0)
 
 	// Should match /blog/anything
 	match := domain_match("example.com", "/blog/post")
@@ -668,7 +668,7 @@ func TestDomainMatchEmptyPath(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "", "app", "root", "", 0)
+	route_create("example.com", "", "app", "root", "", 0, 0)
 
 	match := domain_match("example.com", "/anything/here")
 	if match == nil {

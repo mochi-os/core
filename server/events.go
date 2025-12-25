@@ -162,8 +162,8 @@ func (e *Event) route() error {
 		return handler_err
 
 	case "starlark":
-		// Reject events without a verified sender for Starlark apps
-		if e.from == "" {
+		// Reject events without a verified sender for Starlark apps (unless anonymous is allowed)
+		if e.from == "" && !ae.Anonymous {
 			info("Event dropping unsigned message to Starlark app %q", a.id)
 			return fmt.Errorf("unsigned message")
 		}

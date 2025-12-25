@@ -47,6 +47,7 @@ type AppAction struct {
 
 type AppEvent struct {
 	Function          string       `json:"function"`
+	Anonymous         bool         `json:"anonymous"`
 	internal_function func(*Event) `json:"-"`
 }
 
@@ -126,16 +127,16 @@ const (
 
 var (
 	apps_install_by_default = []string{
-		"", // App Manager
-		"", // Chat
-		"", // Feeds
-		"", // Forums
-		"", // Home
-		"", // Login
-		"", // Notifications
-		"", // People
-		"", // Settings
-		"", // Wikis
+		"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", // App Manager
+		"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92",  // Chat
+		"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", // Feeds
+		"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", // Forums
+		"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", // Home
+		"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F",  // Login
+		"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", // Notifications
+		"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV",  // People
+		"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky",  // Settings
+		"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", // Wikis
 	}
 	apps      = map[string]*App{}
 	apps_lock = &sync.Mutex{}
@@ -233,28 +234,31 @@ func app_check_install(id string) bool {
 	}
 	debug("App %q checking install status", id)
 
-	// Check version
-	version, ok := app_check_version(id)
+	// Check if app is already installed
+	apps_lock.Lock()
+	a := apps[id]
+	apps_lock.Unlock()
+	installed := a != nil && a.active != nil
+
+	// Check version (use fallback for new installs when entity location may be unknown)
+	version, ok := app_check_version(id, !installed)
 	if !ok {
 		return false
 	}
 
-	apps_lock.Lock()
-	a := apps[id]
-	apps_lock.Unlock()
-	if a != nil && a.active != nil && a.active.Version == version {
+	if installed && a.active.Version == version {
 		debug("App %q keeping at version %q", id, a.active.Version)
 		return true
 	}
 
 	oldVersion := ""
-	if a != nil && a.active != nil {
+	if installed {
 		oldVersion = a.active.Version
 	}
 	debug("App %q upgrading from %q to %q", id, oldVersion, version)
 
 	// Download and install new version
-	s, err := stream("", id, "app", "get")
+	s, err := stream("", id, "publisher", "get")
 	if err != nil {
 		debug("%v", err)
 		return false
@@ -293,8 +297,11 @@ func app_check_install(id string) bool {
 }
 
 // Check the version of an app on the remote server
-func app_check_version(id string) (string, bool) {
-	s, err := stream("", id, "app", "version")
+func app_check_version(id string, fallback bool) (string, bool) {
+	s, err := stream("", id, "publisher", "version")
+	if err != nil && fallback {
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version")
+	}
 	if err != nil {
 		debug("%v", err)
 		return "", false

@@ -204,9 +204,9 @@ func stream_receive(s *Stream, version int, peer string) {
 	}
 
 	// Verify signature (challenge is nil for pubsub, which allows unsigned broadcasts)
+	// For anonymous events, allow through with cleared From header - event handler checks Anonymous flag
 	if s.challenge != nil && !h.verify(s.challenge) {
-		info("Stream %d failed signature verification", s.id)
-		return
+		h.From = ""
 	}
 
 	// Deduplication check: skip if we've already processed this message ID

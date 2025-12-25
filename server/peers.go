@@ -29,6 +29,7 @@ const (
 )
 
 var (
+	peer_default_publisher = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 	peers_bootstrap = []Peer{
 		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", addresses: []string{"/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"}},
 	}
@@ -264,7 +265,6 @@ func peer_stream(id string) *Stream {
 	}
 
 	if id == p2p_id {
-		debug("Sending event to ourself")
 		r1, w1 := io.Pipe()
 		r2, w2 := io.Pipe()
 		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, p2p_id)

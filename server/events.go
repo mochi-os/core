@@ -141,6 +141,12 @@ func (e *Event) route() error {
 		defer e.db.close()
 	}
 
+	// Reject events without a verified sender (unless anonymous is allowed)
+	if e.from == "" && !ae.Anonymous {
+		info("Event dropping unsigned message to app %q", a.id)
+		return fmt.Errorf("unsigned message")
+	}
+
 	// Check which engine the app uses, and run it
 	switch a.active.Architecture.Engine {
 	case "": // Internal app
@@ -162,12 +168,6 @@ func (e *Event) route() error {
 		return handler_err
 
 	case "starlark":
-		// Reject events without a verified sender for Starlark apps (unless anonymous is allowed)
-		if e.from == "" && !ae.Anonymous {
-			info("Event dropping unsigned message to Starlark app %q", a.id)
-			return fmt.Errorf("unsigned message")
-		}
-
 		if ae.Function == "" {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
 			return fmt.Errorf("no handler for event %q", e.event)

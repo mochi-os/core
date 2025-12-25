@@ -126,20 +126,22 @@ const (
 )
 
 var (
+	// Default apps to install, in priority order (Login and Home first for usability)
 	apps_install_by_default = []string{
+		"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F",  // Login
+		"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", // Home
 		"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", // App Manager
 		"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92",  // Chat
 		"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", // Feeds
 		"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", // Forums
-		"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", // Home
-		"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F",  // Login
 		"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", // Notifications
 		"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV",  // People
 		"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky",  // Settings
 		"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", // Wikis
 	}
-	apps      = map[string]*App{}
-	apps_lock = &sync.Mutex{}
+	apps_bootstrap_ready = false // True once Login and Home are installed
+	apps                 = map[string]*App{}
+	apps_lock            = &sync.Mutex{}
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
@@ -411,26 +413,27 @@ func apps_manager() {
 	for {
 		todo := map[string]bool{}
 
-		for _, id := range apps_install_by_default {
+		// Install default apps in priority order (Login and Home first)
+		for i, id := range apps_install_by_default {
 			todo[id] = true
-		}
+			app_check_install(id)
 
-		for _, id := range file_list(data_dir + "/apps") {
-			todo[id] = true
-		}
-
-		failed := false
-		for id := range todo {
-			if !app_check_install(id) {
-				failed = true
+			// Mark bootstrap ready after Login and Home (first two) are installed
+			if i == 1 && !apps_bootstrap_ready {
+				apps_bootstrap_ready = true
+				debug("Essential apps installed")
 			}
 		}
 
-		if failed {
-			time.Sleep(time.Minute)
-		} else {
-			time.Sleep(time.Hour)
+		// Check any other installed apps
+		for _, id := range file_list(data_dir + "/apps") {
+			if !todo[id] {
+				todo[id] = true
+				app_check_install(id)
+			}
 		}
+
+		time.Sleep(time.Hour)
 	}
 }
 
@@ -697,6 +700,11 @@ func (a *App) db(file string, create func(*DB)) {
 // Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
 	a.active.Events[event] = AppEvent{internal_function: f}
+}
+
+// Register an anonymous event handler for an internal app
+func (a *App) event_anonymous(event string, f func(*Event)) {
+	a.active.Events[event] = AppEvent{internal_function: f, Anonymous: true}
 }
 
 // Register an icon for an internal app

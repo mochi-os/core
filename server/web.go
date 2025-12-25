@@ -623,6 +623,22 @@ func web_logout(c *gin.Context) {
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
+	// During bootstrap, show setup page until Login and Home are installed
+	if !apps_bootstrap_ready {
+		c.Header("Refresh", "2")
+		c.Data(http.StatusOK, "text/html", []byte(`<!DOCTYPE html>
+<html>
+<head><title>Setting up</title></head>
+<body style="font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f5f5f5;">
+<div style="text-align: center;">
+<h1 style="font-weight: normal; color: #333;">Setting up</h1>
+<p style="color: #666;">Installing system apps, please wait...</p>
+</div>
+</body>
+</html>`))
+		return
+	}
+
 	// Check for domain-based routing first
 	if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
 		target := c.GetString("domain_target")

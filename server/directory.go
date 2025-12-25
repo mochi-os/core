@@ -98,9 +98,17 @@ func directory_download_from_peer(peer string) bool {
 		return false
 	}
 	defer s.close()
+
+	// Read challenge from receiver (required before sending headers)
+	_, err := s.read_challenge()
+	if err != nil {
+		debug("Stream unable to read challenge: %v", err)
+		return false
+	}
+
 	debug("Stream %d open to peer %q: from '', to '', service 'directory', event 'download'", s.id, peer)
 
-	err := s.write(Headers{Service: "directory", Event: "download"})
+	err = s.write(Headers{Service: "directory", Event: "download"})
 	if err != nil {
 		return false
 	}
@@ -111,21 +119,24 @@ func directory_download_from_peer(peer string) bool {
 	if db.scan(&u, "select updated from directory order by updated desc limit 1") {
 		start = u.Updated
 	}
-	debug("Directory asking for directory updates since %d", start)
+	debug("Directory asking for directory updates since %s", time_local(nil, start))
 	s.write_content("start", i64toa(start))
 
 	for {
 		var d Directory
 		err := s.read(&d)
 		if err != nil {
-			// Expected when stream closes with no more updates
+			debug("Directory no more updates")
 			return true
 		}
 
-		//debug("Directory got update %#v", d)
+		debug("Directory got update %s %q", d.ID, d.Name)
 		db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
+
+	debug("Directory finished downloading updates")
+	return true
 }
 
 // Reply to a directory download request
@@ -142,9 +153,14 @@ func directory_download_event(e *Event) {
 		warn("Database error loading directory updates: %v", err)
 		return
 	}
+	debug("Directory found %d updates to send", len(results))
 	for _, d := range results {
-		//debug("Directory sending update %#v", d)
-		e.stream.write(d)
+		debug("Directory sending %s %q", d.ID, d.Name)
+		err = e.stream.write(d)
+		if err != nil {
+			warn("Directory write error for %s: %v", d.ID, err)
+			return
+		}
 	}
 
 	debug("Directory finished sending updates")

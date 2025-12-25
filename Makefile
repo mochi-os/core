@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.2.10
+version = 0.2.11
 build = /tmp/mochi-server_$(version)_amd64
 deb = $(build).deb
 
@@ -27,8 +27,8 @@ $(deb): clean mochi-server
 
 deb: $(deb)
 
-release: clean $(deb)
-	git tag -a $(version) -m "Release $(version)"
+release: $(deb)
+	git tag -a $(version) -m "$(version)"
 	rm ../apt/pool/main/mochi-server_*.deb
 	cp $(deb) ../apt/pool/main
 	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`

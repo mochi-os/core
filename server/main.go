@@ -63,7 +63,7 @@ func main() {
 	go ratelimit_manager()
 	go sessions_manager()
 	go web_start()
-	//go apps_manager()
+	go apps_manager()
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)

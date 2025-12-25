@@ -3,3 +3,4 @@
 chown -R mochi:mochi /var/lib/mochi
 chown -R mochi:mochi /var/cache/mochi
 systemctl daemon-reload
+systemctl start mochi-server

@@ -45,7 +45,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			if uid, err := jwt_verify(token); err == nil && uid > 0 {
 				if u := user_by_id(uid); u != nil {
 					user = u
-					debug("API JWT token accepted for user %d", u.ID)
 				} else {
 					debug("API JWT token valid but user %d not found", uid)
 				}

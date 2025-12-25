@@ -113,14 +113,14 @@ func directory_download_from_peer(peer string) bool {
 
 	for {
 		var d Directory
-		debug("Directory reading update")
+		//debug("Directory reading update")
 		err := s.read(&d)
 		if err != nil {
 			debug("Directory read error: %v", err)
 			return true // We got what we could, consider it a success
 		}
 
-		debug("Directory got update %#v", d)
+		//debug("Directory got update %#v", d)
 		db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
@@ -141,7 +141,7 @@ func directory_download_event(e *Event) {
 		return
 	}
 	for _, d := range results {
-		debug("Directory sending update %#v", d)
+		//debug("Directory sending update %#v", d)
 		e.stream.write(d)
 	}
 

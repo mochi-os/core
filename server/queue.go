@@ -69,7 +69,7 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event string, cont
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
 	db.exec("delete from queue where id = ?", id)
-	debug("Queue ACK received for %q", id)
+	//debug("Queue ACK received for %q", id)
 }
 
 // Mark a message as failed and schedule retry or drop

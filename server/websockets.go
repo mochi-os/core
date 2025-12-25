@@ -31,10 +31,8 @@ func websocket_connection(c *gin.Context) {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
 			user_id, err := jwt_verify(token)
 			if err == nil && user_id > 0 {
-				user := user_by_id(user_id)
-				if user != nil {
+				if user := user_by_id(user_id); user != nil {
 					u = user
-					debug("API JWT token accepted for user %d", u.ID)
 				}
 			}
 		}

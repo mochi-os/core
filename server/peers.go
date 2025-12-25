@@ -41,8 +41,8 @@ var (
 func init() {
 	a := app("peers")
 	a.service("peers")
-	a.event("request", peer_request_event)
-	a.event("publish", peer_publish_event)
+	a.event_anonymous("request", peer_request_event) // Unsigned pubsub broadcast
+	a.event_anonymous("publish", peer_publish_event) // Unsigned pubsub broadcast
 
 	rand.Shuffle(len(peers_bootstrap), func(i, j int) {
 		peers_bootstrap[i], peers_bootstrap[j] = peers_bootstrap[j], peers_bootstrap[i]

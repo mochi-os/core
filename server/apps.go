@@ -144,15 +144,15 @@ var (
 	apps_lock            = &sync.Mutex{}
 
 	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
-		"info": sl.NewBuiltin("mochi.app.file.info", api_app_file_info),
+		"get":     sl.NewBuiltin("mochi.app.file.get", api_app_file_get),
+		"install": sl.NewBuiltin("mochi.app.file.install", api_app_file_install),
 	})
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"file":    api_app_file,
-		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"install": sl.NewBuiltin("mochi.app.install", api_app_install),
-		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
+		"file":  api_app_file,
+		"get":   sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons": sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"list":  sl.NewBuiltin("mochi.app.list", api_app_list),
 	})
 )
 
@@ -1091,8 +1091,8 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(results), nil
 }
 
-// mochi.app.file_info(file) -> dict: Read app info from a .zip file without installing
-func api_app_file_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.file.get(file) -> dict: Read app info from a .zip file without installing
+func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
 	}
@@ -1162,8 +1162,8 @@ func api_app_file_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}), nil
 }
 
-// mochi.app.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
-func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.file.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
+func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return sl_error(fn, "syntax: <app id: string>, <file: string>, [ check only: boolean]")
 	}

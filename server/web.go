@@ -29,14 +29,34 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		a.active.reload()
 	}
 
-	// When entity is provided via domain routing (simple action name without "/"),
-	// try entity-prefixed action first (e.g., :wiki/-/info for "info").
+	// When entity is provided via domain routing, try entity-prefixed actions.
 	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
 	// Also skip when action is the entity's fingerprint itself (viewing entity root).
+	// For browser requests (Accept: text/html), try the non-API action first to serve HTML.
 	var aa *AppAction
-	if e != nil && e.Class != "" && name != "" && !strings.Contains(name, "/") && name != e.Fingerprint {
-		entityAction := ":" + e.Class + "/-/" + name
-		aa = a.active.find_action(entityAction)
+	accept := c.GetHeader("Accept")
+	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+	if e != nil && e.Class != "" && name != "" && name != e.Fingerprint {
+		if strings.HasPrefix(name, "-/") {
+			// API path (e.g., -/info) - convert to :wiki/-/info
+			entity_action := ":" + e.Class + "/" + name
+			aa = a.active.find_action(entity_action)
+		} else if !strings.Contains(name, "/") {
+			// Simple name (e.g., concepts) - try with entity prefix
+			if prefer_html {
+				// Try HTML action first (e.g., :wiki/:page), then API action
+				html_action := ":" + e.Class + "/" + name
+				aa = a.active.find_action(html_action)
+				if aa == nil {
+					entity_action := ":" + e.Class + "/-/" + name
+					aa = a.active.find_action(entity_action)
+				}
+			} else {
+				// Try API action first for non-browser requests
+				entity_action := ":" + e.Class + "/-/" + name
+				aa = a.active.find_action(entity_action)
+			}
+		}
 	}
 	if aa == nil {
 		aa = a.active.find_action(name)

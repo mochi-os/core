@@ -29,7 +29,15 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		a.active.reload()
 	}
 
-	aa := a.active.find_action(name)
+	// When entity is provided, try entity-prefixed action first (e.g., :wiki/-/info for info)
+	var aa *AppAction
+	if e != nil && e.Class != "" && name != "" {
+		entityAction := ":" + e.Class + "/-/" + name
+		aa = a.active.find_action(entityAction)
+	}
+	if aa == nil {
+		aa = a.active.find_action(name)
+	}
 	if aa == nil {
 		return false
 	}

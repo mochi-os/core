@@ -614,11 +614,14 @@ func app_exists(id string) bool {
 	return exists
 }
 
-// Check if a path is already used by another app
-func app_path_taken(path string) bool {
+// Check if a path is already used by another app (excluding the given app ID)
+func app_path_taken(path string, exclude string) bool {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 	for _, a := range apps {
+		if a.id == exclude {
+			continue
+		}
 		if a.active == nil {
 			continue
 		}
@@ -703,7 +706,7 @@ func apps_load_published() {
 			// TODO: Remove this workaround in v0.3 when multiple versions of the same app
 			// can run simultaneously and users choose which version to use.
 			for _, path := range av.Paths {
-				if app_path_taken(path) {
+				if app_path_taken(path, id) {
 					fp := fingerprint(id)
 					debug("Published app %s path %q conflicts, using fingerprint %s", id, path, fp)
 					av.Paths = []string{fp}

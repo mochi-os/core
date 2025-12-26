@@ -143,12 +143,16 @@ var (
 	apps                 = map[string]*App{}
 	apps_lock            = &sync.Mutex{}
 
+	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
+		"info": sl.NewBuiltin("mochi.app.file.info", api_app_file_info),
+	})
+
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"get":           sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons":         sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"install":       sl.NewBuiltin("mochi.app.install", api_app_install),
-		"install_local": sl.NewBuiltin("mochi.app.install_local", api_app_install_local),
-		"list":          sl.NewBuiltin("mochi.app.list", api_app_list),
+		"file":    api_app_file,
+		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"install": sl.NewBuiltin("mochi.app.install", api_app_install),
+		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
 	})
 )
 
@@ -1087,6 +1091,77 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(results), nil
 }
 
+// mochi.app.file_info(file) -> dict: Read app info from a .zip file without installing
+func api_app_file_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	a, ok := t.Local("app").(*App)
+	if !ok || a == nil {
+		return sl_error(fn, "no app")
+	}
+
+	// Unzip to temp directory
+	file_mkdir(data_dir + "/tmp")
+	tmp := fmt.Sprintf("%s/tmp/app_info_%s", data_dir, random_alphanumeric(8))
+	err := unzip(api_file_path(user, a, file), tmp)
+	if err != nil {
+		file_delete_all(tmp)
+		return sl_error(fn, "failed to unzip: %v", err)
+	}
+	defer file_delete_all(tmp)
+
+	// Read app.json
+	if !file_exists(tmp + "/app.json") {
+		return sl_error(fn, "no app.json in archive")
+	}
+
+	var av AppVersion
+	data, err := hujson.Standardize(file_read(tmp + "/app.json"))
+	if err != nil {
+		return sl_error(fn, "bad app.json: %v", err)
+	}
+	err = json.Unmarshal(data, &av)
+	if err != nil {
+		return sl_error(fn, "bad app.json: %v", err)
+	}
+
+	// Read label from labels/en.conf
+	name := av.Label
+	labelsPath := tmp + "/labels/en.conf"
+	if file_exists(labelsPath) {
+		f, err := os.Open(labelsPath)
+		if err == nil {
+			s := bufio.NewScanner(f)
+			for s.Scan() {
+				parts := strings.SplitN(s.Text(), "=", 2)
+				if len(parts) == 2 && strings.TrimSpace(parts[0]) == av.Label {
+					name = strings.TrimSpace(parts[1])
+					break
+				}
+			}
+			f.Close()
+		}
+	}
+
+	return sl_encode(map[string]string{
+		"version": av.Version,
+		"label":   av.Label,
+		"name":    name,
+	}), nil
+}
+
 // mochi.app.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
 func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
@@ -1137,78 +1212,6 @@ func api_app_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		na := app(id)
 		na.load_version(av)
 	}
-
-	return sl_encode(av.Version), nil
-}
-
-// mochi.app.install_local(file) -> string: Install a local app from a .zip file, returns version
-func api_app_install_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <file: string>")
-	}
-
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "filepath") {
-		return sl_error(fn, "invalid file %q", file)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	a, ok := t.Local("app").(*App)
-	if !ok || a == nil {
-		return sl_error(fn, "no app")
-	}
-
-	// Unzip to temp directory to read app.json
-	file_mkdir(data_dir + "/tmp")
-	tmp := fmt.Sprintf("%s/tmp/app_install_local_%s", data_dir, random_alphanumeric(8))
-	err := unzip(api_file_path(user, a, file), tmp)
-	if err != nil {
-		file_delete_all(tmp)
-		return sl_error(fn, "unzip failed: %v", err)
-	}
-
-	// Read app.json to get paths[0]
-	av, err := app_read("", tmp)
-	if err != nil {
-		file_delete_all(tmp)
-		return sl_error(fn, "invalid app: %v", err)
-	}
-
-	if len(av.Paths) == 0 {
-		file_delete_all(tmp)
-		return sl_error(fn, "app.json must have at least one path for local install")
-	}
-
-	id := av.Paths[0]
-	if !valid(id, "path") {
-		file_delete_all(tmp)
-		return sl_error(fn, "invalid path %q", id)
-	}
-
-	// Move to final location
-	dest := fmt.Sprintf("%s/apps/%s", data_dir, id)
-	file_delete_all(dest)
-	err = os.Rename(tmp, dest)
-	if err != nil {
-		file_delete_all(tmp)
-		return sl_error(fn, "install failed: %v", err)
-	}
-
-	// Re-read app from final location and load it
-	av, err = app_read(id, dest)
-	if err != nil {
-		return sl_error(fn, "failed to read installed app: %v", err)
-	}
-
-	na := app(id)
-	na.load_version(av)
 
 	return sl_encode(av.Version), nil
 }

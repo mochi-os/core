@@ -32,8 +32,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// When entity is provided via domain routing (simple action name without "/"),
 	// try entity-prefixed action first (e.g., :wiki/-/info for "info").
 	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
+	// Also skip when action is the entity's fingerprint itself (viewing entity root).
 	var aa *AppAction
-	if e != nil && e.Class != "" && name != "" && !strings.Contains(name, "/") {
+	if e != nil && e.Class != "" && name != "" && !strings.Contains(name, "/") && name != e.Fingerprint {
 		entityAction := ":" + e.Class + "/-/" + name
 		aa = a.active.find_action(entityAction)
 	}

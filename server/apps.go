@@ -619,6 +619,13 @@ func app_exists(id string) bool {
 	return exists
 }
 
+// Get an app by ID, returns nil if not found
+func app_by_id(id string) *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	return apps[id]
+}
+
 // Check if a path is already used by another app (excluding the given app ID)
 func app_path_taken(path string, exclude string) bool {
 	apps_lock.Lock()

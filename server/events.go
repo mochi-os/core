@@ -60,8 +60,13 @@ func (e *Event) route() error {
 		}
 	}
 
-	// Find which app provides this service
-	a := app_for_service(e.service)
+	// Find which app handles this event
+	// First check if the target entity is an app (for mochi.remote.stream calls to app entities)
+	a := app_by_id(e.to)
+	if a == nil {
+		// Fall back to looking up by service
+		a = app_for_service(e.service)
+	}
 	if a == nil {
 		info("Event dropping to unknown service %q", e.service)
 		return fmt.Errorf("unknown service %q", e.service)

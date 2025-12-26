@@ -363,6 +363,11 @@ func app_for_service(service string) *App {
 		}
 	}
 
+	// Handle app entity ID as service (for mochi.remote.stream calls)
+	if a, found := apps[service]; found {
+		return a
+	}
+
 	return nil
 }
 

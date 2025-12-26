@@ -36,8 +36,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	var aa *AppAction
 	accept := c.GetHeader("Accept")
 	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
-	if e != nil && e.Class != "" && name != "" && name != e.Fingerprint {
-		if strings.HasPrefix(name, "-/") {
+	if e != nil && e.Class != "" && name != e.Fingerprint {
+		if name == "" {
+			// Entity root (e.g., /) - use :feed action
+			entity_action := ":" + e.Class
+			aa = a.active.find_action(entity_action)
+		} else if strings.HasPrefix(name, "-/") {
 			// API path (e.g., -/info) - convert to :wiki/-/info
 			entity_action := ":" + e.Class + "/" + name
 			aa = a.active.find_action(entity_action)
@@ -325,7 +329,10 @@ func web_cache_static(c *gin.Context, path string) {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		return
 	}
-	if match_react.MatchString(path) {
+	if strings.HasSuffix(path, ".html") {
+		// HTML files should not be cached to ensure fresh content
+		c.Header("Cache-Control", "no-cache, must-revalidate")
+	} else if match_react.MatchString(path) {
 		// debug("Web asking browser to long term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	} else {

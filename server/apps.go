@@ -1158,10 +1158,11 @@ func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
-	return sl_encode(map[string]string{
+	return sl_encode(map[string]any{
 		"version": av.Version,
 		"label":   av.Label,
 		"name":    name,
+		"paths":   av.Paths,
 	}), nil
 }
 

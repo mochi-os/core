@@ -205,7 +205,8 @@ func db_app(u *User, av *AppVersion) *DB {
 	// Check if app tables exist - if not, call database_create()
 	// We always check actual database state rather than relying on file creation status,
 	// because multiple goroutines may race to create the same database file.
-	has_tables, _ := db.exists("select name from sqlite_master where type='table' and name not like '_%'")
+	// Note: Use ESCAPE to treat underscore literally (it's a LIKE wildcard otherwise)
+	has_tables, _ := db.exists("select name from sqlite_master where type='table' and name not like '\\_%' escape '\\'")
 	if !has_tables {
 		debug("Database app creating %q", path)
 

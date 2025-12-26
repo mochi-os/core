@@ -432,7 +432,7 @@ func apps_manager() {
 			}
 		}
 
-		time.Sleep(time.Hour)
+		time.Sleep(24 * time.Hour)
 	}
 }
 
@@ -967,6 +967,16 @@ func (av *AppVersion) starlark() *Starlark {
 		av.starlark_runtime = starlark(av.Execute)
 	}
 	return av.starlark_runtime
+}
+
+// Call a Starlark database function (create, upgrade, downgrade)
+func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error {
+	s := av.starlark()
+	s.set("app", av.app)
+	s.set("user", u)
+	s.set("owner", u)
+	_, err := s.call(function, args)
+	return err
 }
 
 // Reload app.json and labels from disk (for development)

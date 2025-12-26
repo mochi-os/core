@@ -179,7 +179,7 @@ func db_app(u *User, av *AppVersion) *DB {
 	}
 
 	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
-	db, created, reused := db_open_work(path)
+	db, _, reused := db_open_work(path)
 	db.user = u
 
 	// Limit database size to prevent misbehaving apps from filling storage
@@ -189,94 +189,56 @@ func db_app(u *User, av *AppVersion) *DB {
 		return db
 	}
 
-	//Lock everything below here to prevent race conditions when modifying the schema
+	// Lock everything below here to prevent race conditions when modifying the schema
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
 
-	if created {
+	// Check if _settings table exists, if not create it with schema 0
+	has_settings, _ := db.exists("select name from sqlite_master where type='table' and name='_settings'")
+	if !has_settings {
+		db.schema(0)
+	}
+
+	schema := db.integer("select cast(value as integer) from _settings where name='schema'")
+
+	// Check if app tables exist - if not, call database_create()
+	// We always check actual database state rather than relying on file creation status,
+	// because multiple goroutines may race to create the same database file.
+	has_tables, _ := db.exists("select name from sqlite_master where type='table' and name not like '_%'")
+	if !has_tables {
 		debug("Database app creating %q", path)
 
 		if av.Database.Create.Function != "" {
-			s := av.starlark()
-			s.set("app", av.app)
-			s.set("user", u)
-			s.set("owner", u)
-			_, err := s.call(av.Database.Create.Function, nil)
-			if err != nil {
+			if err := av.starlark_db(u, av.Database.Create.Function, nil); err != nil {
 				warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
 				return nil
 			}
-			db.schema(av.Database.Schema)
-
 		} else if av.Database.create_function != nil {
 			av.Database.create_function(db)
-			db.schema(av.Database.Schema)
-
 		} else {
 			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
 			return nil
 		}
+		db.schema(av.Database.Schema)
+		schema = av.Database.Schema
+	}
 
-	} else {
-		// debug("Database app opening %q", path)
-
-		// Check if _settings table exists, if not create it with schema 0
-		has_settings, _ := db.exists("select name from sqlite_master where type='table' and name='_settings'")
-		if !has_settings {
-			debug("Database %q missing _settings table; initializing with schema 0", path)
-			db.schema(0)
+	if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
+		for version := schema + 1; version <= av.Database.Schema; version++ {
+			debug("Database %q upgrading to schema version %d", path, version)
+			if err := av.starlark_db(u, av.Database.Upgrade.Function, sl_encode_tuple(version)); err != nil {
+				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
+			}
+			db.schema(version)
 		}
-
-		schema := db.integer("select cast(value as integer) from _settings where name='schema'")
-
-		// Check if app tables exist - if not, call database_create()
-		if av.Database.Create.Function != "" {
-			// Check if any user tables exist (excluding _settings)
-			has_tables, _ := db.exists("select name from sqlite_master where type='table' and name!='_settings'")
-			if !has_tables {
-				debug("Database %q exists but has no app tables; calling database_create()", path)
-				s := av.starlark()
-				s.set("app", av.app)
-				s.set("user", u)
-				s.set("owner", u)
-				_, err := s.call(av.Database.Create.Function, nil)
-				if err != nil {
-					warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
-					return db
-				}
-				db.schema(av.Database.Schema)
-				schema = av.Database.Schema
+	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
+		for version := schema; version > av.Database.Schema; version-- {
+			debug("Database %q downgrading from schema version %d", path, version)
+			if err := av.starlark_db(u, av.Database.Downgrade.Function, sl_encode_tuple(version)); err != nil {
+				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
 			}
-		}
-
-		if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
-			for version := schema + 1; version <= av.Database.Schema; version++ {
-				debug("Database %q upgrading to schema version %d", path, version)
-				s := av.starlark()
-				s.set("app", av.app)
-				s.set("user", u)
-				s.set("owner", u)
-				_, err := s.call(av.Database.Upgrade.Function, sl_encode_tuple(version))
-				if err != nil {
-					warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
-				}
-				db.schema(version)
-			}
-
-		} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
-			for version := schema; version > av.Database.Schema; version-- {
-				debug("Database %q downgrading from schema version %d", path, version)
-				s := av.starlark()
-				s.set("app", av.app)
-				s.set("user", u)
-				s.set("owner", u)
-				_, err := s.call(av.Database.Downgrade.Function, sl_encode_tuple(version))
-				if err != nil {
-					warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
-				}
-				db.schema(version - 1)
-			}
+			db.schema(version - 1)
 		}
 	}
 

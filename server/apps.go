@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,9 @@ type AppVersion struct {
 	Actions   map[string]AppAction   `json:"actions"`
 	Events    map[string]AppEvent    `json:"events"`
 	Functions map[string]AppFunction `json:"functions"`
+	Publisher struct {
+		Peer string `json:"peer,omitempty"`
+	} `json:"publisher,omitempty"`
 
 	app              *App                                                `json:"-"`
 	base             string                                              `json:"-"`
@@ -124,6 +128,29 @@ const (
 	app_version_minimum = 2
 	app_version_maximum = 2
 )
+
+// version_greater returns true if version a is greater than version b
+// Versions are compared numerically by splitting on "." (e.g., "1.11" > "1.9")
+func version_greater(a, b string) bool {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+	for i := 0; i < len(partsA) || i < len(partsB); i++ {
+		var numA, numB int
+		if i < len(partsA) {
+			numA, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			numB, _ = strconv.Atoi(partsB[i])
+		}
+		if numA > numB {
+			return true
+		}
+		if numA < numB {
+			return false
+		}
+	}
+	return false
+}
 
 var (
 	// Default apps to install, in priority order (Login and Home first for usability)
@@ -374,7 +401,7 @@ func app_for_service(service string) *App {
 }
 
 // Install an app from a zip file, but do not load it
-func app_install(id string, version string, file string, check_only bool) (*AppVersion, error) {
+func app_install(id string, version string, file string, check_only bool, peer ...string) (*AppVersion, error) {
 	if version == "" {
 		debug("App %q installing from %q", id, file)
 	} else {
@@ -407,6 +434,12 @@ func app_install(id string, version string, file string, check_only bool) (*AppV
 		return av, nil
 	}
 
+	// Store publisher peer ID if provided
+	if len(peer) > 0 && peer[0] != "" {
+		av.Publisher.Peer = peer[0]
+		app_write_publisher(tmp, peer[0])
+	}
+
 	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
 	if file_exists(av.base) {
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
@@ -416,6 +449,42 @@ func app_install(id string, version string, file string, check_only bool) (*AppV
 
 	debug("App %q version %q installed", id, av.Version)
 	return av, nil
+}
+
+// Write publisher info to app.json, preserving existing content
+func app_write_publisher(base string, peer string) {
+	path := base + "/app.json"
+	data := file_read(path)
+	if data == nil {
+		return
+	}
+
+	// Parse existing JSON
+	standardized, err := hujson.Standardize(data)
+	if err != nil {
+		info("Failed to standardize app.json: %v", err)
+		return
+	}
+
+	var appJson map[string]any
+	err = json.Unmarshal(standardized, &appJson)
+	if err != nil {
+		info("Failed to parse app.json: %v", err)
+		return
+	}
+
+	// Add or update publisher field
+	appJson["publisher"] = map[string]string{"peer": peer}
+
+	// Write back
+	output, err := json.MarshalIndent(appJson, "", "\t")
+	if err != nil {
+		info("Failed to marshal app.json: %v", err)
+		return
+	}
+
+	file_write(path, output)
+	debug("Wrote publisher peer %q to %s", peer, path)
 }
 
 // Manage which apps and their versions are installed
@@ -837,7 +906,7 @@ func (a *App) load_version(av *AppVersion) {
 
 	latest := ""
 	for v := range a.versions {
-		if v > latest {
+		if version_greater(v, latest) {
 			latest = v
 		}
 	}
@@ -1077,7 +1146,15 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 
 	if found {
 		user := t.Local("user").(*User)
-		return sl_encode(map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version}), nil
+		result := map[string]any{
+			"id":     a.id,
+			"name":   a.label(user, a.active.Label),
+			"latest": a.active.Version,
+		}
+		if a.active.Publisher.Peer != "" {
+			result["publisher"] = map[string]string{"peer": a.active.Publisher.Peer}
+		}
+		return sl_encode(result), nil
 	}
 
 	return sl.None, nil
@@ -1185,10 +1262,10 @@ func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
-// mochi.app.file.install(id, file, check_only?) -> string: Install an app from a .zip file, returns version
+// mochi.app.file.install(id, file, check_only?, peer?) -> string: Install an app from a .zip file, returns version
 func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 2 || len(args) > 3 {
-		return sl_error(fn, "syntax: <app id: string>, <file: string>, [ check only: boolean]")
+	if len(args) < 2 || len(args) > 4 {
+		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string]")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -1211,7 +1288,12 @@ func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if len(args) > 2 {
 		check_only = bool(args[2].Truth())
 	}
-	debug("api_app_install() check only '%v'", check_only)
+
+	peer := ""
+	if len(args) > 3 {
+		peer, _ = sl.AsString(args[3])
+	}
+	debug("api_app_install() check only '%v' peer '%v'", check_only, peer)
 
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -1226,7 +1308,7 @@ func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no app")
 	}
 
-	av, err := app_install(id, "", api_file_path(user, a, file), check_only)
+	av, err := app_install(id, "", api_file_path(user, a, file), check_only, peer)
 	if err != nil {
 		return sl_error(fn, fmt.Sprintf("App install failed: '%v'", err))
 	}

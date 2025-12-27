@@ -105,14 +105,14 @@ func remote_connect(entity_id string, peer string) (string, error) {
 	return peer, nil
 }
 
-// mochi.remote.request(entity_id, event, payload, peer) -> dict: Make a request to a remote entity
+// mochi.remote.request(entity_id, service, event, payload, peer) -> dict: Make a request to a remote entity
 func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Parse arguments
-	var entity_id, event, peer string
+	var entity_id, service, event, peer string
 	var payload sl.Value
 
-	if len(args) < 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <event: string>, <payload: dict>, [peer: string]")
+	if len(args) < 4 {
+		return sl_error(fn, "syntax: <entity_id: string>, <service: string>, <event: string>, <payload: dict>, [peer: string]")
 	}
 
 	var ok bool
@@ -121,15 +121,20 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid entity_id")
 	}
 
-	event, ok = sl.AsString(args[1])
+	service, ok = sl.AsString(args[1])
+	if !ok || !valid(service, "constant") {
+		return sl_error(fn, "invalid service")
+	}
+
+	event, ok = sl.AsString(args[2])
 	if !ok || !valid(event, "constant") {
 		return sl_error(fn, "invalid event")
 	}
 
-	payload = args[2]
+	payload = args[3]
 
-	if len(args) > 3 {
-		peer, _ = sl.AsString(args[3])
+	if len(args) > 4 {
+		peer, _ = sl.AsString(args[4])
 	}
 
 	// Get user and app from context
@@ -142,11 +147,6 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "user has no identity")
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	// Connect to remote
 	peer, err := remote_connect(entity_id, peer)
 	if err != nil {
@@ -155,7 +155,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	// Create stream
 	from := user.Identity.ID
-	s, err := stream_to_peer(peer, from, entity_id, app.id, event)
+	s, err := stream_to_peer(peer, from, entity_id, service, event)
 	if err != nil {
 		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
 	}
@@ -184,14 +184,14 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(response), nil
 }
 
-// mochi.remote.stream(entity_id, event, payload, peer) -> Stream: Open a stream to a remote entity
+// mochi.remote.stream(entity_id, service, event, payload, peer) -> Stream: Open a stream to a remote entity
 func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Parse arguments
-	var entity_id, event, peer string
+	var entity_id, service, event, peer string
 	var payload sl.Value
 
-	if len(args) < 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <event: string>, <payload: dict>, [peer: string]")
+	if len(args) < 4 {
+		return sl_error(fn, "syntax: <entity_id: string>, <service: string>, <event: string>, <payload: dict>, [peer: string]")
 	}
 
 	var ok bool
@@ -200,15 +200,20 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid entity_id")
 	}
 
-	event, ok = sl.AsString(args[1])
+	service, ok = sl.AsString(args[1])
+	if !ok || !valid(service, "constant") {
+		return sl_error(fn, "invalid service")
+	}
+
+	event, ok = sl.AsString(args[2])
 	if !ok || !valid(event, "constant") {
 		return sl_error(fn, "invalid event")
 	}
 
-	payload = args[2]
+	payload = args[3]
 
-	if len(args) > 3 {
-		peer, _ = sl.AsString(args[3])
+	if len(args) > 4 {
+		peer, _ = sl.AsString(args[4])
 	}
 
 	// Get user and app from context
@@ -221,11 +226,6 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "user has no identity")
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
-		return sl_error(fn, "no app")
-	}
-
 	// Connect to remote
 	peer, err := remote_connect(entity_id, peer)
 	if err != nil {
@@ -234,7 +234,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// Create stream
 	from := user.Identity.ID
-	s, err := stream_to_peer(peer, from, entity_id, app.id, event)
+	s, err := stream_to_peer(peer, from, entity_id, service, event)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

@@ -61,8 +61,21 @@ func (e *Event) route() error {
 	}
 
 	// Find which app handles this event
-	// First check if the target entity is an app (for mochi.remote.stream calls to app entities)
+	// First check if the target entity is an app that handles this event
 	a := app_by_id(e.to)
+	if a != nil {
+		// Check if this app actually handles the requested event
+		apps_lock.Lock()
+		_, hasEvent := a.active.Events[e.event]
+		if !hasEvent {
+			_, hasEvent = a.active.Events[""]
+		}
+		apps_lock.Unlock()
+		if !hasEvent {
+			// App doesn't handle this event, fall back to service lookup
+			a = nil
+		}
+	}
 	if a == nil {
 		// Fall back to looking up by service
 		a = app_for_service(e.service)

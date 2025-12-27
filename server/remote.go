@@ -87,9 +87,18 @@ func peer_connect_url(url string) (string, error) {
 
 // Connect to a remote entity, returning the peer ID
 // Uses peer if provided, otherwise looks up in directory
+// If peer is an entity ID, resolve it to a peer ID first
 func remote_connect(entity_id string, peer string) (string, error) {
 	if peer != "" {
-		// Peer ID provided, just ensure we're connected
+		// If peer is an entity ID, resolve it first
+		if valid(peer, "entity") {
+			peer = entity_peer(peer)
+			if peer == "" {
+				return "", fmt.Errorf("entity not found in directory")
+			}
+		}
+
+		// Peer ID provided, ensure we're connected
 		if !peer_connect(peer) {
 			return "", fmt.Errorf("failed to connect to peer %s", peer)
 		}

@@ -120,7 +120,7 @@ func directory_download_from_peer(peer string) bool {
 		start = u.Updated
 	}
 	debug("Directory asking for directory updates since %s", time_local(nil, start))
-	s.write_content("start", i64toa(start))
+	s.write_content("start", i64toa(start), "version", build_version)
 
 	for {
 		var d Directory
@@ -141,7 +141,12 @@ func directory_download_from_peer(peer string) bool {
 
 // Reply to a directory download request
 func directory_download_event(e *Event) {
-	debug("Directory received download request")
+	version := e.get("version", "unknown")
+	remote := ""
+	if e.stream != nil {
+		remote = e.stream.remote
+	}
+	debug("Directory received download request from peer %s, address %s, version %s", e.peer, remote, version)
 
 	start := atoi(e.get("start", ""), 0)
 	debug("Directory sending updates since %d", start)

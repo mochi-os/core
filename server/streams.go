@@ -42,6 +42,7 @@ type Stream struct {
 	decoder   *cbor.Decoder
 	encoder   *cbor.Encoder
 	challenge []byte // For incoming streams: challenge we sent
+	remote    string // Remote address (for incoming streams)
 	timeout   struct {
 		read  int
 		write int

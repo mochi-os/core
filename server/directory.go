@@ -146,7 +146,7 @@ func directory_download_event(e *Event) {
 	if e.stream != nil {
 		remote = e.stream.remote
 	}
-	debug("Directory received download request from peer %s, address %s, version %s", e.peer, remote, version)
+	debug("Directory received download request from peer %q at %q, version %q", e.peer, remote, version)
 
 	start := atoi(e.get("start", ""), 0)
 	debug("Directory sending updates since %d", start)

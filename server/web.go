@@ -261,14 +261,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	for k, v := range aa.parameters {
 		action.inputs[k] = v
 	}
-	debug("Route parameters: %v", aa.parameters)
 
 	// Add entity to inputs when present (for entity-aware routing)
 	if e != nil && e.Class != "" {
 		action.inputs[e.Class] = e.ID
-		debug("Entity input: %s=%s (class=%s)", e.Class, e.ID, e.Class)
-	} else {
-		debug("No entity for inputs: e=%v", e)
 	}
 
 	// Parse JSON body and convert to strings for a.input()
@@ -681,8 +677,8 @@ func web_path(c *gin.Context) {
 		return
 	}
 
-	// Check for domain-based routing first
-	if method, exists := c.Get("domain_method"); exists && method.(string) != "" {
+	// Check for domain-based routing first (skip /_/ paths which are core endpoints)
+	if method, exists := c.Get("domain_method"); exists && method.(string) != "" && !strings.HasPrefix(c.Request.URL.Path, "/_/") {
 		target := c.GetString("domain_target")
 		remaining := c.GetString("domain_remaining")
 		action := strings.TrimPrefix(remaining, "/")
@@ -828,6 +824,24 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
+// Return domain routing context for the current request
+func web_context(c *gin.Context) {
+	result := gin.H{}
+
+	if method, exists := c.Get("domain_method"); exists && method.(string) == "entity" {
+		target := c.GetString("domain_target")
+		if e := entity_by_any(target); e != nil {
+			result["entity"] = gin.H{
+				"id":          e.ID,
+				"fingerprint": e.Fingerprint,
+				"class":       e.Class,
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // Start the web server
 func web_start() {
 	listen := ini_string("web", "listen", "")
@@ -867,6 +881,7 @@ func web_start() {
 	r.POST("/_/logout", web_logout)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/p2p/info", web_p2p_info)
+	r.GET("/_/context", web_context)
 	r.GET("/_/websocket", websocket_connection)
 
 	// All other paths are handled by web_path()

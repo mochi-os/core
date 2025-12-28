@@ -286,21 +286,9 @@ func peer_stream(id string) *Stream {
 	return p2p_stream(id)
 }
 
-// Check whether we have enough peers to send broadcast messages to, or whether to queue them
+// Check whether we have enough peers in the pubsub mesh to send broadcast messages to
 func peers_sufficient() bool {
-	total := 0
-	peers_lock.Lock()
-	for _, p := range peers {
-		if p.connected {
-			total++
-		}
-	}
-	peers_lock.Unlock()
-
-	if total >= peers_minimum {
-		return true
-	}
-	return false
+	return len(p2p_pubsub_1.ListPeers()) >= peers_minimum
 }
 
 // Notify peers of shutdown (best effort)

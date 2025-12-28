@@ -175,13 +175,16 @@ func directory_download_event(e *Event) {
 func directory_manager() {
 	time.Sleep(3 * time.Second)
 	directory_download()
-	time.Sleep(30 * time.Minute)
 
-	for {
-		debug("Directory deleting stale entries")
-		db := db_open("db/directory.db")
-		db.exec("delete from directory where updated<?", now()-30*86400)
-		time.Sleep(24 * time.Hour)
+	cleanup := now()
+	for range time.Tick(5 * time.Minute) {
+		directory_download()
+		if now()-cleanup > 24*60*60 {
+			cleanup = now()
+			debug("Directory deleting stale entries")
+			db := db_open("db/directory.db")
+			db.exec("delete from directory where updated<?", now()-30*86400)
+		}
 	}
 }
 

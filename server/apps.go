@@ -84,6 +84,7 @@ type AppVersion struct {
 		} `json:"downgrade"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
+	Icon      string                 `json:"icon"`
 	Icons     []Icon                 `json:"icons"`
 	Actions   map[string]AppAction   `json:"actions"`
 	Events    map[string]AppEvent    `json:"events"`
@@ -103,6 +104,19 @@ type Icon struct {
 	Action string `json:"action"`
 	Label  string `json:"label"`
 	File   string `json:"file"`
+}
+
+// Get the primary icon path for the app
+func (av *AppVersion) icon() string {
+	if av.Icon != "" {
+		return av.Icon
+	}
+	for _, i := range av.Icons {
+		if i.Action == "" {
+			return i.File
+		}
+	}
+	return ""
 }
 
 // Get the primary path for URL generation
@@ -597,6 +611,10 @@ func app_read(id string, base string) (*AppVersion, error) {
 		return nil, fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
 	}
 
+	if av.Icon != "" && !valid(av.Icon, "filepath") {
+		return nil, fmt.Errorf("App bad icon path %q", av.Icon)
+	}
+
 	for _, i := range av.Icons {
 		if i.Action != "" && !valid(i.Action, "constant") {
 			return nil, fmt.Errorf("App bad icon action %q", i.Action)
@@ -1019,27 +1037,77 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		// Try dynamic match
 		key_segments := strings.Split(aa.name, "/")
 		value_segments := strings.Split(name, "/")
-		if len(key_segments) != len(value_segments) {
+
+		// Find greedy parameter position (starts with *), if any
+		greedy_pos := -1
+		for i, ks := range key_segments {
+			if strings.HasPrefix(ks, "*") {
+				greedy_pos = i
+				break
+			}
+		}
+
+		// Calculate suffix length (segments after greedy param)
+		suffix_len := 0
+		if greedy_pos >= 0 {
+			suffix_len = len(key_segments) - greedy_pos - 1
+		}
+
+		// Check segment count compatibility
+		if greedy_pos >= 0 {
+			// Greedy: value must have at least (prefix + 1 + suffix) segments
+			if len(value_segments) < greedy_pos+1+suffix_len {
+				continue
+			}
+		} else if len(key_segments) != len(value_segments) {
 			continue
 		}
 
 		ok := true
-		for i := 0; i < len(key_segments); i++ {
+
+		// Match prefix segments (before greedy param)
+		prefix_end := len(key_segments)
+		if greedy_pos >= 0 {
+			prefix_end = greedy_pos
+		}
+		for i := 0; i < prefix_end; i++ {
 			ks := key_segments[i]
 			vs := value_segments[i]
 			if strings.HasPrefix(ks, ":") {
-				name := ks[1:]
-				aa.parameters[name] = vs
+				aa.parameters[ks[1:]] = vs
 			} else if ks != vs {
 				ok = false
 				break
 			}
 		}
-
-		if ok {
-			//debug("App found action %q with function %q via pattern %q", name, aa.Function, aa.name)
-			return &aa
+		if !ok {
+			continue
 		}
+
+		// Match suffix segments (after greedy param) from the end
+		for i := 0; i < suffix_len; i++ {
+			ks := key_segments[len(key_segments)-1-i]
+			vs := value_segments[len(value_segments)-1-i]
+			if strings.HasPrefix(ks, ":") {
+				aa.parameters[ks[1:]] = vs
+			} else if ks != vs {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+
+		// Capture greedy parameter (everything between prefix and suffix)
+		if greedy_pos >= 0 {
+			greedy_end := len(value_segments) - suffix_len
+			pname := key_segments[greedy_pos][1:] // Remove '*'
+			aa.parameters[pname] = strings.Join(value_segments[greedy_pos:greedy_end], "/")
+		}
+
+		debug("App matched %q to pattern %q, params=%v", name, aa.name, aa.parameters)
+		return &aa
 	}
 
 	// Fall back to empty action name as catch-all
@@ -1150,6 +1218,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 			"id":     a.id,
 			"name":   a.label(user, a.active.Label),
 			"latest": a.active.Version,
+			"icon":   a.active.icon(),
 		}
 		if a.active.Publisher.Peer != "" {
 			result["publisher"] = map[string]string{"peer": a.active.Publisher.Peer}
@@ -1337,7 +1406,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if !a.active.user_allowed(user) {
 			continue
 		}
-		results = append(results, map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine})
+		results = append(results, map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine, "icon": a.active.icon()})
 	}
 	apps_lock.Unlock()
 

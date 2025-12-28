@@ -1406,6 +1406,10 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if !a.active.user_allowed(user) {
 			continue
 		}
+		// Skip internal service apps without a Label
+		if a.active.Label == "" {
+			continue
+		}
 		results = append(results, map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine, "icon": a.active.icon()})
 	}
 	apps_lock.Unlock()

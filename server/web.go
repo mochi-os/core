@@ -261,10 +261,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	for k, v := range aa.parameters {
 		action.inputs[k] = v
 	}
+	debug("Route parameters: %v", aa.parameters)
 
 	// Add entity to inputs when present (for entity-aware routing)
 	if e != nil && e.Class != "" {
 		action.inputs[e.Class] = e.ID
+		debug("Entity input: %s=%s (class=%s)", e.Class, e.ID, e.Class)
+	} else {
+		debug("No entity for inputs: e=%v", e)
 	}
 
 	// Parse JSON body and convert to strings for a.input()

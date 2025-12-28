@@ -238,14 +238,14 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// Connect to remote
 	peer, err := remote_connect(entity_id, peer)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return sl.None, nil
 	}
 
 	// Create stream
 	from := user.Identity.ID
 	s, err := stream_to_peer(peer, from, entity_id, service, event)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return sl.None, nil
 	}
 
 	// Send payload
@@ -259,6 +259,10 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 		return sl_error(fn, "failed to send: %v", err)
 	}
+
+	// Register stream for cleanup when script returns
+	streams, _ := t.Local("streams").([]*Stream)
+	t.SetLocal("streams", append(streams, s))
 
 	return s, nil
 }

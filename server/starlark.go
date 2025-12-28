@@ -371,12 +371,26 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 				debug("App %s:%s() %v", a.id, function, callErr)
 			}
 		}
+		// Clean up any streams opened during script execution
+		if streams, ok := s.thread.Local("streams").([]*Stream); ok {
+			for _, stream := range streams {
+				stream.close()
+			}
+			s.thread.SetLocal("streams", nil)
+		}
 		return result, callErr
 	case <-time.After(starlark_default_timeout):
 		s.thread.Cancel("timeout")
 		debug("Starlark %s() timed out after %s", function, starlark_default_timeout)
 		if callErr == nil {
 			callErr = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
+		}
+		// Clean up any streams opened during script execution
+		if streams, ok := s.thread.Local("streams").([]*Stream); ok {
+			for _, stream := range streams {
+				stream.close()
+			}
+			s.thread.SetLocal("streams", nil)
 		}
 		return nil, callErr
 	}

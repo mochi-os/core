@@ -62,8 +62,12 @@ type AppVersion struct {
 	Classes  []string `json:"classes"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
-	Require  struct {
-		Role string `json:"role"`
+	Require struct {
+		Role    string `json:"role"`
+		Version struct {
+			Minimum string `json:"minimum"`
+			Maximum string `json:"maximum"`
+		} `json:"version"`
 	} `json:"require"`
 	Architecture struct {
 		Engine  string `json:"engine"`
@@ -555,6 +559,14 @@ func app_read(id string, base string) (*AppVersion, error) {
 	// Validate manifest
 	if !valid(av.Version, "version") {
 		return nil, fmt.Errorf("App bad version %q", av.Version)
+	}
+
+	// Check server version requirements
+	if av.Require.Version.Minimum != "" && version_compare(build_version, av.Require.Version.Minimum) < 0 {
+		return nil, fmt.Errorf("App requires server version >= %s (current: %s)", av.Require.Version.Minimum, build_version)
+	}
+	if av.Require.Version.Maximum != "" && version_compare(build_version, av.Require.Version.Maximum) > 0 {
+		return nil, fmt.Errorf("App requires server version <= %s (current: %s)", av.Require.Version.Maximum, build_version)
 	}
 
 	if !valid(av.Label, "constant") {
@@ -1419,4 +1431,28 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	})
 
 	return sl_encode(results), nil
+}
+
+// Compare two semantic version strings (e.g., "0.2", "0.3.1")
+// Returns -1 if a < b, 0 if a == b, 1 if a > b
+func version_compare(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+
+	for i := 0; i < len(partsA) || i < len(partsB); i++ {
+		var numA, numB int
+		if i < len(partsA) {
+			numA, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			numB, _ = strconv.Atoi(partsB[i])
+		}
+		if numA > numB {
+			return 1
+		}
+		if numA < numB {
+			return -1
+		}
+	}
+	return 0
 }

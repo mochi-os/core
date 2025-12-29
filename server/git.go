@@ -133,11 +133,20 @@ func git_size(owner *User, entity_id string) (int64, error) {
 func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 	if ref == "" || ref == "HEAD" {
 		head, err := repo.Head()
-		if err != nil {
-			return nil, err
+		if err == nil {
+			hash := head.Hash()
+			return &hash, nil
 		}
-		hash := head.Hash()
-		return &hash, nil
+		// HEAD might point to a non-existent branch (e.g., master when main was pushed)
+		// Try common default branch names
+		for _, branch := range []string{"main", "master"} {
+			branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
+			if err == nil {
+				hash := branchRef.Hash()
+				return &hash, nil
+			}
+		}
+		return nil, err
 	}
 
 	// Try as a branch
@@ -1421,9 +1430,10 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		return true
 	}
 
-	// Find repository entity by name for this owner
+	// Find repository entity by fingerprint for this owner
+	// The repo parameter is the entity fingerprint extracted from the URL
 	db := db_open("db/users.db")
-	row, err := db.row("select id from entities where user = ? and name = ?", owner.ID, repo)
+	row, err := db.row("select id from entities where user = ? and fingerprint = ?", owner.ID, repo)
 	if err != nil || row == nil {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
@@ -1526,6 +1536,7 @@ func git_info_refs(c *gin.Context, repoPath string, service string) bool {
 		return true
 	}
 
+	c.Status(http.StatusOK)
 	c.Header("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	c.Header("Cache-Control", "no-cache")
 
@@ -1549,6 +1560,7 @@ func git_info_refs(c *gin.Context, repoPath string, service string) bool {
 
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
 func git_service_rpc(c *gin.Context, repoPath string, service string) bool {
+	c.Status(http.StatusOK)
 	c.Header("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	c.Header("Cache-Control", "no-cache")
 

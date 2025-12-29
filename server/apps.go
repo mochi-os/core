@@ -959,6 +959,11 @@ func apps_manager() {
 			}
 		}
 
+		// Clean up unused app versions
+		if removed := apps_cleanup_unused_versions(); removed > 0 {
+			info("Cleaned up %d unused app version(s)", removed)
+		}
+
 		time.Sleep(24 * time.Hour)
 	}
 }

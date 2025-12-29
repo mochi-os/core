@@ -166,6 +166,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Feature == "attachment/thumbnail")
 	}
 
+	// Handle git Smart HTTP protocol
+	if aa.Feature == "git" {
+		repo := aa.parameters["repo"]
+		if repo == "" {
+			c.String(http.StatusBadRequest, "Missing repository")
+			return true
+		}
+		// Strip .git suffix if present (e.g., "my-project.git" -> "my-project")
+		repo = strings.TrimSuffix(repo, ".git")
+		return git_http_handler(c, a, owner, user, repo, aa.parameters["path"])
+	}
+
 	// Serve static file
 	// If action has both file and function, do content negotiation:
 	// - HTML requests (browsers/crawlers) get the file with opengraph tags

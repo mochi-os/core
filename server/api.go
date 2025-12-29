@@ -32,6 +32,7 @@ func init() {
 			"domain":     api_domain,
 			"entity":     api_entity,
 			"file":       api_file,
+			"git":        api_git,
 			"group":      api_group,
 			"log":        api_log,
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
@@ -55,6 +56,7 @@ func init() {
 			}),
 			"setting": api_setting,
 			"stream":  &streamModule{},
+			"token":   api_token,
 			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),

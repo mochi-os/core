@@ -62,8 +62,12 @@ type AppVersion struct {
 	Classes  []string `json:"classes"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
-	Require  struct {
-		Role string `json:"role"`
+	Require struct {
+		Role    string `json:"role"`
+		Version struct {
+			Minimum string `json:"minimum"`
+			Maximum string `json:"maximum"`
+		} `json:"version"`
 	} `json:"require"`
 	Architecture struct {
 		Engine  string `json:"engine"`
@@ -983,6 +987,14 @@ func app_read(id string, base string) (*AppVersion, error) {
 	// Validate manifest
 	if !valid(av.Version, "version") {
 		return nil, fmt.Errorf("App bad version %q", av.Version)
+	}
+
+	// Check server version requirements
+	if av.Require.Version.Minimum != "" && version_compare(build_version, av.Require.Version.Minimum) < 0 {
+		return nil, fmt.Errorf("App requires server version >= %s (current: %s)", av.Require.Version.Minimum, build_version)
+	}
+	if av.Require.Version.Maximum != "" && version_compare(build_version, av.Require.Version.Maximum) > 0 {
+		return nil, fmt.Errorf("App requires server version <= %s (current: %s)", av.Require.Version.Maximum, build_version)
 	}
 
 	if !valid(av.Label, "constant") {
@@ -2243,8 +2255,8 @@ func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // mochi.app.cleanup() -> int: Remove unused app versions (admin only)
 func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	u, _ := t.Local("user").(*User)
-	if u == nil || u.Role != "admin" {
-		return sl_error(fn, "admin required")
+	if u == nil || !u.administrator() {
+		return sl_error(fn, "not administrator")
 	}
 	removed := apps_cleanup_unused_versions()
 	return sl.MakeInt(removed), nil
@@ -2334,4 +2346,32 @@ func apps_cleanup_unused_versions() int {
 	}
 
 	return removed
+}
+
+// Compare two semantic version strings (e.g., "0.2", "0.3.1")
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+// Comparison uses the precision of the shorter version:
+// "0.2" means "any 0.2.x", so version_compare("0.2.37", "0.2") returns 0.
+// "0.2.0" means exactly 0.2.0, so version_compare("0.2.37", "0.2.0") returns 1.
+func version_compare(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+
+	// Compare only up to the segment count of the shorter version
+	minLen := len(partsA)
+	if len(partsB) < minLen {
+		minLen = len(partsB)
+	}
+
+	for i := 0; i < minLen; i++ {
+		numA, _ := strconv.Atoi(partsA[i])
+		numB, _ := strconv.Atoi(partsB[i])
+		if numA > numB {
+			return 1
+		}
+		if numA < numB {
+			return -1
+		}
+	}
+	return 0
 }

@@ -4,8 +4,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -180,20 +178,22 @@ func TestAttachmentURL(t *testing.T) {
 		name        string
 		app_path    string
 		action_path string
+		entity      string
 		expected    string
 	}{
-		{"chat default", "chat", "attachments", "/chat/attachments/test123"},
-		{"feeds default", "feeds", "attachments", "/feeds/attachments/test123"},
-		{"forums default", "forums", "attachments", "/forums/attachments/test123"},
-		{"custom files", "myapp", "files", "/myapp/files/test123"},
-		{"custom media", "gallery", "media", "/gallery/media/test123"},
+		{"chat default", "chat", "attachments", "", "/chat/attachments/test123"},
+		{"feeds default", "feeds", "attachments", "", "/feeds/attachments/test123"},
+		{"forums default", "forums", "attachments", "", "/forums/attachments/test123"},
+		{"custom files", "myapp", "files", "", "/myapp/files/test123"},
+		{"custom media", "gallery", "media", "", "/gallery/media/test123"},
+		{"with entity", "feeds", "attachments", "alice@example.com", "/feeds/alice@example.com/-/attachments/test123"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := att.attachment_url(tt.app_path, tt.action_path)
+			result := att.attachment_url(tt.app_path, tt.action_path, tt.entity)
 			if result != tt.expected {
-				t.Errorf("attachment_url(%q, %q) = %q, want %q", tt.app_path, tt.action_path, result, tt.expected)
+				t.Errorf("attachment_url(%q, %q, %q) = %q, want %q", tt.app_path, tt.action_path, tt.entity, result, tt.expected)
 			}
 		})
 	}
@@ -224,97 +224,6 @@ func TestAttachmentPath(t *testing.T) {
 				t.Errorf("attachment_path(42, \"wiki\", %q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
 			}
 		})
-	}
-}
-
-// Test migration helper: get_app_from_object
-func TestGetAppFromObject(t *testing.T) {
-	tests := []struct {
-		name     string
-		object   string
-		expected string
-	}{
-		{"chat object", "chat/conv123/msg456", "chat"},
-		{"forums object", "forums/forum123/post456", "forums"},
-		{"feeds object", "feeds/post123", "feeds"},
-		{"unknown app", "unknown/something", "unknown"},
-		{"single segment", "chat", "chat"},
-		{"empty string", "", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := get_app_from_object(tt.object)
-			if result != tt.expected {
-				t.Errorf("get_app_from_object(%q) = %q, want %q", tt.object, result, tt.expected)
-			}
-		})
-	}
-}
-
-// Test migration helper: normalize_object
-func TestNormalizeObject(t *testing.T) {
-	tests := []struct {
-		name     string
-		app      string
-		object   string
-		expected string
-	}{
-		{"forums full path", "forums", "forums/forum123/post456", "post456"},
-		{"forums short path", "forums", "forums/post456", "forums/post456"},
-		{"feeds with prefix", "feeds", "feeds/post123", "post123"},
-		{"feeds no prefix", "feeds", "post123", "post123"},
-		{"chat unchanged", "chat", "chat/conv123/msg456", "chat/conv123/msg456"},
-		{"other app unchanged", "other", "other/something", "other/something"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := normalize_object(tt.app, tt.object)
-			if result != tt.expected {
-				t.Errorf("normalize_object(%q, %q) = %q, want %q", tt.app, tt.object, result, tt.expected)
-			}
-		})
-	}
-}
-
-// Test copy_file function
-func TestCopyFile(t *testing.T) {
-	// Create temp directory
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	src_path := filepath.Join(tmp_dir, "source.txt")
-	dst_path := filepath.Join(tmp_dir, "dest.txt")
-	content := []byte("test content for copy")
-
-	// Create source file
-	if err := os.WriteFile(src_path, content, 0644); err != nil {
-		t.Fatalf("Failed to create source file: %v", err)
-	}
-
-	// Test copy
-	if err := copy_file(src_path, dst_path); err != nil {
-		t.Fatalf("copy_file failed: %v", err)
-	}
-
-	// Verify destination
-	result, err := os.ReadFile(dst_path)
-	if err != nil {
-		t.Fatalf("Failed to read destination: %v", err)
-	}
-
-	if string(result) != string(content) {
-		t.Errorf("Content mismatch: got %q, want %q", result, content)
-	}
-
-	// Test copy of non-existent file
-	err = copy_file(filepath.Join(tmp_dir, "nonexistent"), dst_path)
-	if err == nil {
-		t.Error("Expected error copying non-existent file, got nil")
 	}
 }
 

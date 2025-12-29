@@ -311,6 +311,10 @@ func db_start() bool {
 func db_upgrade() {
 	schema := atoi(setting_get("schema", ""), 1)
 
+	if schema < 20 {
+		panic(fmt.Sprintf("Database schema version %d is too old to upgrade. Minimum supported version is 20.", schema))
+	}
+
 	for schema < schema_version {
 		schema++
 		info("Upgrading database schema to version %d", schema)

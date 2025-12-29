@@ -22,54 +22,11 @@ var (
 
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
-	if a == nil || a.active == nil {
-		return false
-	}
-	if dev_reload {
-		a.active.reload()
-	}
-
-	// When entity is provided via domain routing, try entity-prefixed actions.
-	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
-	// Also skip when action is the entity's fingerprint itself (viewing entity root).
-	// For browser requests (Accept: text/html), try the non-API action first to serve HTML.
-	var aa *AppAction
-	accept := c.GetHeader("Accept")
-	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
-	if e != nil && e.Class != "" && name != e.Fingerprint {
-		if name == "" {
-			// Entity root (e.g., /) - use :feed action
-			entity_action := ":" + e.Class
-			aa = a.active.find_action(entity_action)
-		} else if strings.HasPrefix(name, "-/") {
-			// API path (e.g., -/info) - convert to :wiki/-/info
-			entity_action := ":" + e.Class + "/" + name
-			aa = a.active.find_action(entity_action)
-		} else if !strings.Contains(name, "/") {
-			// Simple name (e.g., concepts) - try with entity prefix
-			if prefer_html {
-				// Try HTML action first (e.g., :wiki/:page), then API action
-				html_action := ":" + e.Class + "/" + name
-				aa = a.active.find_action(html_action)
-				if aa == nil {
-					entity_action := ":" + e.Class + "/-/" + name
-					aa = a.active.find_action(entity_action)
-				}
-			} else {
-				// Try API action first for non-browser requests
-				entity_action := ":" + e.Class + "/-/" + name
-				aa = a.active.find_action(entity_action)
-			}
-		}
-	}
-	if aa == nil {
-		aa = a.active.find_action(name)
-	}
-	if aa == nil {
+	if a == nil {
 		return false
 	}
 
-	// Get user authentication via cookie
+	// Get user authentication via cookie first (needed for version selection)
 	user := web_auth(c)
 
 	// If no cookie auth, try Bearer token authentication
@@ -87,6 +44,55 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				debug("API JWT token verification failed: %v", err)
 			}
 		}
+	}
+
+	// Get the app version for this user (user preference or default)
+	av := a.active_for(user)
+	if av == nil {
+		return false
+	}
+	if dev_reload {
+		av.reload()
+	}
+
+	// When entity is provided via domain routing, try entity-prefixed actions.
+	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
+	// Also skip when action is the entity's fingerprint itself (viewing entity root).
+	// For browser requests (Accept: text/html), try the non-API action first to serve HTML.
+	var aa *AppAction
+	accept := c.GetHeader("Accept")
+	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+	if e != nil && e.Class != "" && name != e.Fingerprint {
+		if name == "" {
+			// Entity root (e.g., /) - use :feed action
+			entity_action := ":" + e.Class
+			aa = av.find_action(entity_action)
+		} else if strings.HasPrefix(name, "-/") {
+			// API path (e.g., -/info) - convert to :wiki/-/info
+			entity_action := ":" + e.Class + "/" + name
+			aa = av.find_action(entity_action)
+		} else if !strings.Contains(name, "/") {
+			// Simple name (e.g., concepts) - try with entity prefix
+			if prefer_html {
+				// Try HTML action first (e.g., :wiki/:page), then API action
+				html_action := ":" + e.Class + "/" + name
+				aa = av.find_action(html_action)
+				if aa == nil {
+					entity_action := ":" + e.Class + "/-/" + name
+					aa = av.find_action(entity_action)
+				}
+			} else {
+				// Try API action first for non-browser requests
+				entity_action := ":" + e.Class + "/-/" + name
+				aa = av.find_action(entity_action)
+			}
+		}
+	}
+	if aa == nil {
+		aa = av.find_action(name)
+	}
+	if aa == nil {
+		return false
 	}
 
 	// Compute owner based on entity, domain route owner, or authenticated user
@@ -134,7 +140,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Check app-level requirements
-	if !a.active.user_allowed(user) {
+	if !av.user_allowed(user) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return true
 	}
@@ -176,11 +182,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if serveFile {
-			file := a.active.base + "/" + aa.File
+			file := av.base + "/" + aa.File
 
 			// If opengraph function specified, inject dynamic meta tags
 			if aa.OpenGraph != "" && strings.HasSuffix(aa.File, ".html") {
-				if web_serve_file_with_opengraph(c, a, aa, e, file) {
+				if web_serve_file_with_opengraph(c, a, av, aa, e, file) {
 					return true
 				}
 			}
@@ -199,7 +205,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
 				return true
 			}
-			file := a.active.base + "/" + aa.Files + "/" + aa.filepath
+			file := av.base + "/" + aa.Files + "/" + aa.filepath
 			//debug("Serving file from directory for app %q: %q", a.id, file)
 			web_cache_static(c, file)
 			c.File(file)
@@ -210,15 +216,15 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Require authentication for database-backed apps
-	if a.active.Database.File != "" && user == nil && owner == nil {
+	if av.Database.File != "" && user == nil && owner == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
 		return true
 	}
 
 	// Set up database connections if needed
-	if a.active.Database.File != "" {
+	if av.Database.File != "" {
 		if user != nil {
-			user.db = db_app(user, a.active)
+			user.db = db_app(user, av)
 			if user.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -227,7 +233,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if owner != nil && (user == nil || owner.ID != user.ID) {
-			owner.db = db_app(owner, a.active)
+			owner.db = db_app(owner, av)
 			if owner.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -279,7 +285,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Check which engine the app uses, and run it
-	switch a.active.Architecture.Engine {
+	switch av.Architecture.Engine {
 	case "": // Internal app
 		if aa.internal_function == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
@@ -296,7 +302,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		// Call Starlark function
-		s := a.active.starlark()
+		s := av.starlark()
 		s.set("action", &action)
 		s.set("app", a)
 		s.set("user", user)
@@ -312,7 +318,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 	default:
-		info("Action unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
+		info("Action unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)
 	}
 
 	return true
@@ -379,7 +385,7 @@ func web_security_headers(c *gin.Context) {
 }
 
 // Serve HTML file with dynamic Open Graph meta tags
-func web_serve_file_with_opengraph(c *gin.Context, a *App, aa *AppAction, e *Entity, file string) bool {
+func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) bool {
 	// Get owner for database access - use entity owner if available
 	var owner *User
 	if e != nil {
@@ -387,15 +393,15 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, aa *AppAction, e *Ent
 	}
 
 	// Set up database connection if needed
-	if a.active.Database.File != "" && owner != nil {
-		owner.db = db_app(owner, a.active)
+	if av.Database.File != "" && owner != nil {
+		owner.db = db_app(owner, av)
 		if owner.db != nil {
 			defer owner.db.close()
 		}
 	}
 
 	// Call Starlark function to get OG data
-	s := a.active.starlark()
+	s := av.starlark()
 	s.set("app", a)
 	s.set("user", owner) // Use owner for database access
 	s.set("owner", owner)
@@ -661,6 +667,9 @@ func web_logout(c *gin.Context) {
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
+	// Get user for path-based routing preferences
+	user := web_auth(c)
+
 	// During bootstrap, show setup page until Login and Home are installed
 	if !apps_bootstrap_ready {
 		c.Header("Refresh", "2")
@@ -708,7 +717,9 @@ func web_path(c *gin.Context) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
 				return
 			}
-			a := e.class_app()
+			// Use entity owner's preferences for class routing
+			owner := user_owning_entity(e.ID)
+			a := class_app_for(owner, e.Class)
 			if a == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
 				return
@@ -742,8 +753,8 @@ func web_path(c *gin.Context) {
 	segments := strings.Split(raw, "/")
 	first := segments[0]
 
-	// Check for app matching first segment
-	a := app_by_any(first)
+	// Check for app matching first segment (user preferences, then system defaults, then fallback)
+	a := app_for_path_for(user, first)
 	if a != nil {
 		// Redirect /app to /app/ for correct relative path resolution
 		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
@@ -785,7 +796,9 @@ func web_path(c *gin.Context) {
 	// Check for entity matching first segment
 	e := entity_by_any(first)
 	if e != nil {
-		a := e.class_app()
+		// Use entity owner's preferences for class routing
+		owner := user_owning_entity(e.ID)
+		a := class_app_for(owner, e.Class)
 		if a == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity class"})
 			return

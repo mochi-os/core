@@ -141,6 +141,27 @@ func db_create() {
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
 	domains.exec("create index if not exists delegations_owner on delegations(owner)")
+
+	// Apps (for multi-version and user-configurable routing)
+	apps := db_open("db/apps.db")
+	apps.exec("create table classes (class text not null primary key, app text not null)")
+	apps.exec("create table services (service text not null primary key, app text not null)")
+	apps.exec("create table paths (path text not null primary key, app text not null)")
+	apps.exec("create table versions (app text not null primary key, version text, track text)")
+	apps.exec("create table tracks (app text not null, track text not null, version text not null, primary key (app, track))")
+	apps.exec("create table apps (app text not null primary key, installed integer not null)")
+}
+
+// db_apps opens the apps.db database, creating tables if needed
+func db_apps() *DB {
+	db := db_open("db/apps.db")
+	db.exec("create table if not exists classes (class text not null primary key, app text not null)")
+	db.exec("create table if not exists services (service text not null primary key, app text not null)")
+	db.exec("create table if not exists paths (path text not null primary key, app text not null)")
+	db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
+	db.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
+	db.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
+	return db
 }
 
 // db_user opens a database in the user's directory
@@ -152,6 +173,12 @@ func db_user(u *User, name string) *DB {
 	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
 		db.groups_setup()
+
+		// App preferences (for multi-version and user-configurable routing)
+		db.exec("create table if not exists classes (class text not null primary key, app text not null)")
+		db.exec("create table if not exists services (service text not null primary key, app text not null)")
+		db.exec("create table if not exists paths (path text not null primary key, app text not null)")
+		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 	}
 
 	return db

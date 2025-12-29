@@ -289,6 +289,86 @@ func (u *User) administrator() bool {
 	return false
 }
 
+// class_app returns the user's preferred app for a class, or empty string if not set
+func (u *User) class_app(class string) string {
+	db := db_user(u, "user")
+	row, _ := db.row("select app from classes where class = ?", class)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// set_class_app sets the user's preferred app for a class
+func (u *User) set_class_app(class, app string) {
+	db := db_user(u, "user")
+	if app == "" {
+		db.exec("delete from classes where class = ?", class)
+	} else {
+		db.exec("replace into classes (class, app) values (?, ?)", class, app)
+	}
+}
+
+// service_app returns the user's preferred app for a service, or empty string if not set
+func (u *User) service_app(service string) string {
+	db := db_user(u, "user")
+	row, _ := db.row("select app from services where service = ?", service)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// set_service_app sets the user's preferred app for a service
+func (u *User) set_service_app(service, app string) {
+	db := db_user(u, "user")
+	if app == "" {
+		db.exec("delete from services where service = ?", service)
+	} else {
+		db.exec("replace into services (service, app) values (?, ?)", service, app)
+	}
+}
+
+// path_app returns the user's preferred app for a path, or empty string if not set
+func (u *User) path_app(path string) string {
+	db := db_user(u, "user")
+	row, _ := db.row("select app from paths where path = ?", path)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// set_path_app sets the user's preferred app for a path
+func (u *User) set_path_app(path, app string) {
+	db := db_user(u, "user")
+	if app == "" {
+		db.exec("delete from paths where path = ?", path)
+	} else {
+		db.exec("replace into paths (path, app) values (?, ?)", path, app)
+	}
+}
+
+// app_version returns the user's preferred version and track for an app
+func (u *User) app_version(app string) (version, track string) {
+	db := db_user(u, "user")
+	row, _ := db.row("select version, track from versions where app = ?", app)
+	if row == nil {
+		return "", ""
+	}
+	return row["version"].(string), row["track"].(string)
+}
+
+// set_app_version sets the user's preferred version or track for an app
+func (u *User) set_app_version(app, version, track string) {
+	db := db_user(u, "user")
+	if version == "" && track == "" {
+		db.exec("delete from versions where app = ?", app)
+	} else {
+		db.exec("replace into versions (app, version, track) values (?, ?, ?)", app, version, track)
+	}
+}
+
 // mochi.user.get.id(id) -> dict | None: Get a user by ID (admin only)
 func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -847,11 +927,13 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"id", "identity", "methods", "preference", "role", "status", "username"}
+	return []string{"app", "id", "identity", "methods", "preference", "role", "status", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
 	switch name {
+	case "app":
+		return &UserApp{user: u}, nil
 	case "id":
 		return sl.MakeInt(u.ID), nil
 	case "identity":
@@ -968,4 +1050,320 @@ func (p *UserPreference) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 // a.user.preference.all() -> dict: Get all user preferences
 func (p *UserPreference) all(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(p.user.Preferences), nil
+}
+
+// UserApp provides access to user app bindings
+type UserApp struct {
+	user *User
+}
+
+func (p *UserApp) AttrNames() []string {
+	return []string{"class", "path", "service", "version"}
+}
+
+func (p *UserApp) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "class":
+		return &UserAppClass{user: p.user}, nil
+	case "path":
+		return &UserAppPath{user: p.user}, nil
+	case "service":
+		return &UserAppService{user: p.user}, nil
+	case "version":
+		return &UserAppVersion{user: p.user}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserApp) Freeze()               {}
+func (p *UserApp) Hash() (uint32, error) { return 0, nil }
+func (p *UserApp) String() string        { return "UserApp" }
+func (p *UserApp) Truth() sl.Bool        { return sl.True }
+func (p *UserApp) Type() string          { return "UserApp" }
+
+// UserAppClass provides user class bindings
+type UserAppClass struct {
+	user *User
+}
+
+func (p *UserAppClass) AttrNames() []string {
+	return []string{"get", "set", "delete", "list"}
+}
+
+func (p *UserAppClass) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "get":
+		return sl.NewBuiltin("a.user.app.class.get", p.get), nil
+	case "set":
+		return sl.NewBuiltin("a.user.app.class.set", p.set), nil
+	case "delete":
+		return sl.NewBuiltin("a.user.app.class.delete", p.delete), nil
+	case "list":
+		return sl.NewBuiltin("a.user.app.class.list", p.list), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserAppClass) Freeze()               {}
+func (p *UserAppClass) Hash() (uint32, error) { return 0, nil }
+func (p *UserAppClass) String() string        { return "UserAppClass" }
+func (p *UserAppClass) Truth() sl.Bool        { return sl.True }
+func (p *UserAppClass) Type() string          { return "UserAppClass" }
+
+// a.user.app.class.get(class) -> string | None: Get user class binding
+func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var class string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	app := p.user.class_app(class)
+	if app == "" {
+		return sl.None, nil
+	}
+	return sl.String(app), nil
+}
+
+// a.user.app.class.set(class, app) -> None: Set user class binding
+func (p *UserAppClass) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var class, app string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_class_app(class, app)
+	return sl.None, nil
+}
+
+// a.user.app.class.delete(class) -> None: Delete user class binding
+func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var class string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_class_app(class, "")
+	return sl.None, nil
+}
+
+// a.user.app.class.list() -> dict: List all user class bindings
+func (p *UserAppClass) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	db := db_user(p.user, "user")
+	rows, _ := db.rows("select class, app from classes")
+	result := sl.NewDict(len(rows))
+	for _, row := range rows {
+		result.SetKey(sl.String(row["class"].(string)), sl.String(row["app"].(string)))
+	}
+	return result, nil
+}
+
+// UserAppService provides user service bindings
+type UserAppService struct {
+	user *User
+}
+
+func (p *UserAppService) AttrNames() []string {
+	return []string{"get", "set", "delete", "list"}
+}
+
+func (p *UserAppService) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "get":
+		return sl.NewBuiltin("a.user.app.service.get", p.get), nil
+	case "set":
+		return sl.NewBuiltin("a.user.app.service.set", p.set), nil
+	case "delete":
+		return sl.NewBuiltin("a.user.app.service.delete", p.delete), nil
+	case "list":
+		return sl.NewBuiltin("a.user.app.service.list", p.list), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserAppService) Freeze()               {}
+func (p *UserAppService) Hash() (uint32, error) { return 0, nil }
+func (p *UserAppService) String() string        { return "UserAppService" }
+func (p *UserAppService) Truth() sl.Bool        { return sl.True }
+func (p *UserAppService) Type() string          { return "UserAppService" }
+
+// a.user.app.service.get(service) -> string | None: Get user service binding
+func (p *UserAppService) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var service string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	app := p.user.service_app(service)
+	if app == "" {
+		return sl.None, nil
+	}
+	return sl.String(app), nil
+}
+
+// a.user.app.service.set(service, app) -> None: Set user service binding
+func (p *UserAppService) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var service, app string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_service_app(service, app)
+	return sl.None, nil
+}
+
+// a.user.app.service.delete(service) -> None: Delete user service binding
+func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var service string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_service_app(service, "")
+	return sl.None, nil
+}
+
+// a.user.app.service.list() -> dict: List all user service bindings
+func (p *UserAppService) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	db := db_user(p.user, "user")
+	rows, _ := db.rows("select service, app from services")
+	result := sl.NewDict(len(rows))
+	for _, row := range rows {
+		result.SetKey(sl.String(row["service"].(string)), sl.String(row["app"].(string)))
+	}
+	return result, nil
+}
+
+// UserAppPath provides user path bindings
+type UserAppPath struct {
+	user *User
+}
+
+func (p *UserAppPath) AttrNames() []string {
+	return []string{"get", "set", "delete", "list"}
+}
+
+func (p *UserAppPath) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "get":
+		return sl.NewBuiltin("a.user.app.path.get", p.get), nil
+	case "set":
+		return sl.NewBuiltin("a.user.app.path.set", p.set), nil
+	case "delete":
+		return sl.NewBuiltin("a.user.app.path.delete", p.delete), nil
+	case "list":
+		return sl.NewBuiltin("a.user.app.path.list", p.list), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserAppPath) Freeze()               {}
+func (p *UserAppPath) Hash() (uint32, error) { return 0, nil }
+func (p *UserAppPath) String() string        { return "UserAppPath" }
+func (p *UserAppPath) Truth() sl.Bool        { return sl.True }
+func (p *UserAppPath) Type() string          { return "UserAppPath" }
+
+// a.user.app.path.get(path) -> string | None: Get user path binding
+func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var path string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	app := p.user.path_app(path)
+	if app == "" {
+		return sl.None, nil
+	}
+	return sl.String(app), nil
+}
+
+// a.user.app.path.set(path, app) -> None: Set user path binding
+func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var path, app string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_path_app(path, app)
+	return sl.None, nil
+}
+
+// a.user.app.path.delete(path) -> None: Delete user path binding
+func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var path string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_path_app(path, "")
+	return sl.None, nil
+}
+
+// a.user.app.path.list() -> dict: List all user path bindings
+func (p *UserAppPath) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	db := db_user(p.user, "user")
+	rows, _ := db.rows("select path, app from paths")
+	result := sl.NewDict(len(rows))
+	for _, row := range rows {
+		result.SetKey(sl.String(row["path"].(string)), sl.String(row["app"].(string)))
+	}
+	return result, nil
+}
+
+// UserAppVersion provides user version bindings
+type UserAppVersion struct {
+	user *User
+}
+
+func (p *UserAppVersion) AttrNames() []string {
+	return []string{"get", "set", "delete"}
+}
+
+func (p *UserAppVersion) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "get":
+		return sl.NewBuiltin("a.user.app.version.get", p.get), nil
+	case "set":
+		return sl.NewBuiltin("a.user.app.version.set", p.set), nil
+	case "delete":
+		return sl.NewBuiltin("a.user.app.version.delete", p.delete), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (p *UserAppVersion) Freeze()               {}
+func (p *UserAppVersion) Hash() (uint32, error) { return 0, nil }
+func (p *UserAppVersion) String() string        { return "UserAppVersion" }
+func (p *UserAppVersion) Truth() sl.Bool        { return sl.True }
+func (p *UserAppVersion) Type() string          { return "UserAppVersion" }
+
+// a.user.app.version.get(app) -> dict | None: Get user version binding
+func (p *UserAppVersion) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var app string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	version, track := p.user.app_version(app)
+	if version == "" && track == "" {
+		return sl.None, nil
+	}
+	result := sl.NewDict(2)
+	result.SetKey(sl.String("version"), sl.String(version))
+	result.SetKey(sl.String("track"), sl.String(track))
+	return result, nil
+}
+
+// a.user.app.version.set(app, version?, track?) -> None: Set user version binding
+func (p *UserAppVersion) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var app, version, track string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app, "version?", &version, "track?", &track); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_app_version(app, version, track)
+	return sl.None, nil
+}
+
+// a.user.app.version.delete(app) -> None: Delete user version binding
+func (p *UserAppVersion) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var app string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	p.user.set_app_version(app, "", "")
+	return sl.None, nil
 }

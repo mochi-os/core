@@ -127,6 +127,109 @@ func (a *App) url_path() string {
 	return a.id
 }
 
+// default_version returns the system default version and track for this app
+func (a *App) default_version() (version, track string) {
+	db := db_apps()
+	row, _ := db.row("select version, track from versions where app = ?", a.id)
+	if row == nil {
+		return "", ""
+	}
+	return row["version"].(string), row["track"].(string)
+}
+
+// set_default_version sets the system default version or track for this app
+func (a *App) set_default_version(version, track string) {
+	db := db_apps()
+	if version == "" && track == "" {
+		db.exec("delete from versions where app = ?", a.id)
+	} else {
+		db.exec("replace into versions (app, version, track) values (?, ?, ?)", a.id, version, track)
+	}
+}
+
+// track returns the version for a named track, or empty string if not set
+func (a *App) track(name string) string {
+	db := db_apps()
+	row, _ := db.row("select version from tracks where app = ? and track = ?", a.id, name)
+	if row == nil {
+		return ""
+	}
+	return row["version"].(string)
+}
+
+// set_track sets the version for a named track
+func (a *App) set_track(name, version string) {
+	db := db_apps()
+	if version == "" {
+		db.exec("delete from tracks where app = ? and track = ?", a.id, name)
+	} else {
+		db.exec("replace into tracks (app, track, version) values (?, ?, ?)", a.id, name, version)
+	}
+}
+
+// tracks returns all tracks for this app as a map of track name to version
+func (a *App) tracks() map[string]string {
+	db := db_apps()
+	rows, _ := db.rows("select track, version from tracks where app = ?", a.id)
+	result := make(map[string]string)
+	for _, row := range rows {
+		result[row["track"].(string)] = row["version"].(string)
+	}
+	return result
+}
+
+// active_for resolves which version a user should see for this app.
+// Resolution order:
+// 1. User's preference (if user is not nil)
+// 2. System default (from apps.db)
+// 3. Highest installed version (fallback)
+// If a track is specified, it is resolved to a version.
+// Note: For anonymous entity access, pass the entity owner as the user.
+func (a *App) active_for(user *User) *AppVersion {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	// 1. Check user's preference
+	if user != nil {
+		version, track := user.app_version(a.id)
+		if av := a.resolve_version(version, track); av != nil {
+			return av
+		}
+	}
+
+	// 2. Check system default
+	version, track := a.default_version()
+	if av := a.resolve_version(version, track); av != nil {
+		return av
+	}
+
+	// 3. Fallback to highest installed version
+	return a.active
+}
+
+// resolve_version resolves a version or track to an AppVersion.
+// Must be called with apps_lock held.
+func (a *App) resolve_version(version, track string) *AppVersion {
+	// If a track is specified, resolve it to a version
+	if track != "" {
+		version = a.track(track)
+		if version == "" {
+			return nil // Track not found, fall through to next resolution step
+		}
+	}
+
+	if version == "" {
+		return nil
+	}
+
+	// Look up the version in the versions map
+	if av, found := a.versions[version]; found {
+		return av
+	}
+
+	return nil
+}
+
 // Check if user meets the app's requirements
 func (av *AppVersion) user_allowed(user *User) bool {
 	if av.Require.Role == "" {
@@ -189,11 +292,51 @@ var (
 		"install": sl.NewBuiltin("mochi.app.file.install", api_app_file_install),
 	})
 
+	api_app_class = sls.FromStringDict(sl.String("mochi.app.class"), sl.StringDict{
+		"get":    sl.NewBuiltin("mochi.app.class.get", api_app_class_get),
+		"set":    sl.NewBuiltin("mochi.app.class.set", api_app_class_set),
+		"delete": sl.NewBuiltin("mochi.app.class.delete", api_app_class_delete),
+		"list":   sl.NewBuiltin("mochi.app.class.list", api_app_class_list),
+	})
+
+	api_app_service = sls.FromStringDict(sl.String("mochi.app.service"), sl.StringDict{
+		"get":    sl.NewBuiltin("mochi.app.service.get", api_app_service_get),
+		"set":    sl.NewBuiltin("mochi.app.service.set", api_app_service_set),
+		"delete": sl.NewBuiltin("mochi.app.service.delete", api_app_service_delete),
+		"list":   sl.NewBuiltin("mochi.app.service.list", api_app_service_list),
+	})
+
+	api_app_path = sls.FromStringDict(sl.String("mochi.app.path"), sl.StringDict{
+		"get":    sl.NewBuiltin("mochi.app.path.get", api_app_path_get),
+		"set":    sl.NewBuiltin("mochi.app.path.set", api_app_path_set),
+		"delete": sl.NewBuiltin("mochi.app.path.delete", api_app_path_delete),
+		"list":   sl.NewBuiltin("mochi.app.path.list", api_app_path_list),
+	})
+
+	api_app_version = sls.FromStringDict(sl.String("mochi.app.version"), sl.StringDict{
+		"get": sl.NewBuiltin("mochi.app.version.get", api_app_version_get),
+		"set": sl.NewBuiltin("mochi.app.version.set", api_app_version_set),
+	})
+
+	api_app_track = sls.FromStringDict(sl.String("mochi.app.track"), sl.StringDict{
+		"get":  sl.NewBuiltin("mochi.app.track.get", api_app_track_get),
+		"set":  sl.NewBuiltin("mochi.app.track.set", api_app_track_set),
+		"list": sl.NewBuiltin("mochi.app.track.list", api_app_track_list),
+	})
+
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"file":  api_app_file,
-		"get":   sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons": sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"list":  sl.NewBuiltin("mochi.app.list", api_app_list),
+		"class":    api_app_class,
+		"cleanup":  sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
+		"file":     api_app_file,
+		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"list":     sl.NewBuiltin("mochi.app.list", api_app_list),
+		"path":     api_app_path,
+		"service":  api_app_service,
+		"track":    api_app_track,
+		"tracks":   sl.NewBuiltin("mochi.app.tracks", api_app_tracks),
+		"version":  api_app_version,
+		"versions": sl.NewBuiltin("mochi.app.versions", api_app_versions),
 	})
 )
 
@@ -412,6 +555,291 @@ func app_for_service(service string) *App {
 	}
 
 	return nil
+}
+
+// app_for_service_for finds the best app for a service with user preferences.
+// Resolution order:
+// 1. User's binding (if user is not nil)
+// 2. System binding (in apps.db)
+// 3. Fallback: First app that declares this service (dev apps first, then by install time)
+func app_for_service_for(user *User, service string) *App {
+	// 1. Check user's binding
+	if user != nil {
+		if app_id := user.service_app(service); app_id != "" {
+			if a := app_by_id(app_id); a != nil {
+				return a
+			}
+		}
+	}
+
+	// 2. Check system binding
+	if app_id := apps_service_get(service); app_id != "" {
+		if a := app_by_id(app_id); a != nil {
+			return a
+		}
+	}
+
+	// 3. Fallback: First app that declares this service
+	return app_for_service_fallback(service)
+}
+
+// app_for_service_fallback finds the first app that declares a service.
+// Dev apps (non-entity IDs) take precedence, then ordered by install time.
+func app_for_service_fallback(service string) *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	var candidates []*App
+	for _, a := range apps {
+		for _, s := range a.active.Services {
+			if s == service {
+				candidates = append(candidates, a)
+				break
+			}
+		}
+	}
+
+	return app_select_best(candidates)
+}
+
+// app_for_path_for finds the best app for a URL path with user preferences.
+// Resolution order:
+// 1. User's binding (if user is not nil)
+// 2. System binding (in apps.db)
+// 3. Fallback: First app that declares this path (dev apps first, then by install time)
+func app_for_path_for(user *User, path string) *App {
+	// 1. Check user's binding
+	if user != nil {
+		if app_id := user.path_app(path); app_id != "" {
+			if a := app_by_id(app_id); a != nil {
+				return a
+			}
+		}
+	}
+
+	// 2. Check system binding
+	if app_id := apps_path_get(path); app_id != "" {
+		if a := app_by_id(app_id); a != nil {
+			return a
+		}
+	}
+
+	// 3. Fallback: First app that declares this path
+	return app_for_path_fallback(path)
+}
+
+// app_for_path_fallback finds the first app that declares a path.
+// Dev apps (non-entity IDs) take precedence, then ordered by install time.
+func app_for_path_fallback(path string) *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	var candidates []*App
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, p := range a.active.Paths {
+			if p == path {
+				candidates = append(candidates, a)
+				break
+			}
+		}
+	}
+
+	return app_select_best(candidates)
+}
+
+// class_app_for finds the best app for a class with user preferences.
+// Resolution order:
+// 1. User's binding (if user is not nil)
+// 2. System binding (in apps.db)
+// 3. Fallback: First app that declares this class (dev apps first, then by install time)
+func class_app_for(user *User, class string) *App {
+	// 1. Check user's binding
+	if user != nil {
+		if app_id := user.class_app(class); app_id != "" {
+			if a := app_by_id(app_id); a != nil {
+				return a
+			}
+		}
+	}
+
+	// 2. Check system binding
+	if app_id := apps_class_get(class); app_id != "" {
+		if a := app_by_id(app_id); a != nil {
+			return a
+		}
+	}
+
+	// 3. Fallback: First app that declares this class
+	return class_app_fallback(class)
+}
+
+// class_app_fallback finds the first app that declares a class.
+// Dev apps (non-entity IDs) take precedence, then ordered by install time.
+func class_app_fallback(class string) *App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	var candidates []*App
+	for _, a := range apps {
+		if a.active == nil {
+			continue
+		}
+		for _, c := range a.active.Classes {
+			if c == class {
+				candidates = append(candidates, a)
+				break
+			}
+		}
+	}
+
+	return app_select_best(candidates)
+}
+
+// app_select_best selects the best app from candidates.
+// Dev apps (non-entity IDs) take precedence, then ordered by install time.
+func app_select_best(candidates []*App) *App {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+
+	// Separate dev apps (non-entity IDs) from published apps (entity IDs)
+	var devApps, publishedApps []*App
+	for _, a := range candidates {
+		if is_entity_id(a.id) {
+			publishedApps = append(publishedApps, a)
+		} else {
+			devApps = append(devApps, a)
+		}
+	}
+
+	// Dev apps take precedence
+	if len(devApps) > 0 {
+		candidates = devApps
+	} else {
+		candidates = publishedApps
+	}
+
+	// If multiple, pick the one with earliest install time
+	var best *App
+	var bestTime int64 = 0
+	for _, a := range candidates {
+		installed := apps_installed(a.id)
+		if best == nil || (installed > 0 && installed < bestTime) || (bestTime == 0 && installed > 0) {
+			best = a
+			bestTime = installed
+		}
+	}
+
+	// If no install time recorded, just return the first
+	if best == nil && len(candidates) > 0 {
+		best = candidates[0]
+	}
+
+	// Log warning if there are conflicts
+	if len(candidates) > 1 {
+		var ids []string
+		for _, a := range candidates {
+			ids = append(ids, a.id)
+		}
+		debug("App conflict: multiple apps claim same resource, using %q (others: %v)", best.id, ids)
+	}
+
+	return best
+}
+
+// is_entity_id returns true if the ID looks like an entity ID (50-51 chars)
+func is_entity_id(id string) bool {
+	return len(id) >= 50 && len(id) <= 51
+}
+
+// Global binding functions for apps.db
+
+// apps_class_get returns the app ID bound to a class, or empty string if not set
+func apps_class_get(class string) string {
+	db := db_apps()
+	row, _ := db.row("select app from classes where class = ?", class)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// apps_class_set binds a class to an app ID
+func apps_class_set(class, app string) {
+	db := db_apps()
+	db.exec("replace into classes (class, app) values (?, ?)", class, app)
+}
+
+// apps_class_delete removes a class binding
+func apps_class_delete(class string) {
+	db := db_apps()
+	db.exec("delete from classes where class = ?", class)
+}
+
+// apps_service_get returns the app ID bound to a service, or empty string if not set
+func apps_service_get(service string) string {
+	db := db_apps()
+	row, _ := db.row("select app from services where service = ?", service)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// apps_service_set binds a service to an app ID
+func apps_service_set(service, app string) {
+	db := db_apps()
+	db.exec("replace into services (service, app) values (?, ?)", service, app)
+}
+
+// apps_service_delete removes a service binding
+func apps_service_delete(service string) {
+	db := db_apps()
+	db.exec("delete from services where service = ?", service)
+}
+
+// apps_path_get returns the app ID bound to a path, or empty string if not set
+func apps_path_get(path string) string {
+	db := db_apps()
+	row, _ := db.row("select app from paths where path = ?", path)
+	if row == nil {
+		return ""
+	}
+	return row["app"].(string)
+}
+
+// apps_path_set binds a path to an app ID
+func apps_path_set(path, app string) {
+	db := db_apps()
+	db.exec("replace into paths (path, app) values (?, ?)", path, app)
+}
+
+// apps_path_delete removes a path binding
+func apps_path_delete(path string) {
+	db := db_apps()
+	db.exec("delete from paths where path = ?", path)
+}
+
+// apps_record records an app installation timestamp (only if not already recorded)
+func apps_record(app string) {
+	db := db_apps()
+	db.exec("insert or ignore into apps (app, installed) values (?, ?)", app, now())
+}
+
+// apps_installed returns the installation timestamp for an app, or 0 if not recorded
+func apps_installed(app string) int64 {
+	db := db_apps()
+	row, _ := db.row("select installed from apps where app = ?", app)
+	if row == nil {
+		return 0
+	}
+	return row["installed"].(int64)
 }
 
 // Install an app from a zip file, but do not load it
@@ -888,6 +1316,9 @@ func (a *App) load_version(av *AppVersion) {
 	if a == nil || av == nil {
 		return
 	}
+
+	// Record app installation timestamp (only recorded once, not updated on upgrades)
+	apps_record(a.id)
 
 	for i, file := range av.Execute {
 		av.Execute[i] = av.base + "/" + file
@@ -1419,4 +1850,488 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	})
 
 	return sl_encode(results), nil
+}
+
+// mochi.app.class.get(class) -> string | None: Get the app bound to a class (admin only)
+func api_app_class_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <class: string>")
+	}
+	class, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid class")
+	}
+	app_id := apps_class_get(class)
+	if app_id == "" {
+		return sl.None, nil
+	}
+	return sl.String(app_id), nil
+}
+
+// mochi.app.class.set(class, app_id) -> bool: Bind a class to an app (admin only)
+func api_app_class_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <class: string>, <app_id: string>")
+	}
+	class, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid class")
+	}
+	app_id, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	apps_class_set(class, app_id)
+	return sl.True, nil
+}
+
+// mochi.app.class.delete(class) -> bool: Remove a class binding (admin only)
+func api_app_class_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <class: string>")
+	}
+	class, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid class")
+	}
+	apps_class_delete(class)
+	return sl.True, nil
+}
+
+// mochi.app.class.list() -> dict: List all class bindings (admin only)
+func api_app_class_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	db := db_apps()
+	rows, _ := db.rows("select class, app from classes")
+	result := make(map[string]string)
+	for _, row := range rows {
+		result[row["class"].(string)] = row["app"].(string)
+	}
+	return sl_encode(result), nil
+}
+
+// mochi.app.service.get(service) -> string | None: Get the app bound to a service (admin only)
+func api_app_service_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <service: string>")
+	}
+	service, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid service")
+	}
+	app_id := apps_service_get(service)
+	if app_id == "" {
+		return sl.None, nil
+	}
+	return sl.String(app_id), nil
+}
+
+// mochi.app.service.set(service, app_id) -> bool: Bind a service to an app (admin only)
+func api_app_service_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <service: string>, <app_id: string>")
+	}
+	service, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid service")
+	}
+	app_id, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	apps_service_set(service, app_id)
+	return sl.True, nil
+}
+
+// mochi.app.service.delete(service) -> bool: Remove a service binding (admin only)
+func api_app_service_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <service: string>")
+	}
+	service, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid service")
+	}
+	apps_service_delete(service)
+	return sl.True, nil
+}
+
+// mochi.app.service.list() -> dict: List all service bindings (admin only)
+func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	db := db_apps()
+	rows, _ := db.rows("select service, app from services")
+	result := make(map[string]string)
+	for _, row := range rows {
+		result[row["service"].(string)] = row["app"].(string)
+	}
+	return sl_encode(result), nil
+}
+
+// mochi.app.path.get(path) -> string | None: Get the app bound to a path (admin only)
+func api_app_path_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+	path, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid path")
+	}
+	app_id := apps_path_get(path)
+	if app_id == "" {
+		return sl.None, nil
+	}
+	return sl.String(app_id), nil
+}
+
+// mochi.app.path.set(path, app_id) -> bool: Bind a path to an app (admin only)
+func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <path: string>, <app_id: string>")
+	}
+	path, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid path")
+	}
+	app_id, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	apps_path_set(path, app_id)
+	return sl.True, nil
+}
+
+// mochi.app.path.delete(path) -> bool: Remove a path binding (admin only)
+func api_app_path_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+	path, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid path")
+	}
+	apps_path_delete(path)
+	return sl.True, nil
+}
+
+// mochi.app.path.list() -> dict: List all path bindings (admin only)
+func api_app_path_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	db := db_apps()
+	rows, _ := db.rows("select path, app from paths")
+	result := make(map[string]string)
+	for _, row := range rows {
+		result[row["path"].(string)] = row["app"].(string)
+	}
+	return sl_encode(result), nil
+}
+
+// mochi.app.version.get(app_id) -> dict | None: Get the default version/track for an app (admin only)
+func api_app_version_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <app_id: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl.None, nil
+	}
+	version, track := a.default_version()
+	if version == "" && track == "" {
+		return sl.None, nil
+	}
+	return sl_encode(map[string]string{"version": version, "track": track}), nil
+}
+
+// mochi.app.version.set(app_id, version, track) -> bool: Set the default version/track for an app (admin only)
+func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) < 1 || len(args) > 3 {
+		return sl_error(fn, "syntax: <app_id: string>, [version: string], [track: string]")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl_error(fn, "app not found")
+	}
+	version := ""
+	track := ""
+	if len(args) > 1 && args[1] != sl.None {
+		version, _ = sl.AsString(args[1])
+	}
+	if len(args) > 2 && args[2] != sl.None {
+		track, _ = sl.AsString(args[2])
+	}
+	a.set_default_version(version, track)
+	return sl.True, nil
+}
+
+// mochi.app.track.get(app_id, track) -> string | None: Get the version for a track (admin only)
+func api_app_track_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <app_id: string>, <track: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	track, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid track")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl.None, nil
+	}
+	version := a.track(track)
+	if version == "" {
+		return sl.None, nil
+	}
+	return sl.String(version), nil
+}
+
+// mochi.app.track.set(app_id, track, version) -> bool: Set the version for a track (admin only)
+func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 3 {
+		return sl_error(fn, "syntax: <app_id: string>, <track: string>, <version: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	track, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid track")
+	}
+	version, ok := sl.AsString(args[2])
+	if !ok {
+		return sl_error(fn, "invalid version")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl_error(fn, "app not found")
+	}
+	a.set_track(track, version)
+	return sl.True, nil
+}
+
+// mochi.app.track.list(app_id) -> dict: List all tracks for an app (admin only)
+func api_app_track_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil || !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <app_id: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl_encode(map[string]string{}), nil
+	}
+	return sl_encode(a.tracks()), nil
+}
+
+// mochi.app.tracks(app_id) -> dict: List all tracks for an app
+func api_app_tracks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <app_id: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl_encode(map[string]string{}), nil
+	}
+	return sl_encode(a.tracks()), nil
+}
+
+// mochi.app.versions(app_id) -> list: List all installed versions of an app
+func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <app_id: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid app_id")
+	}
+	a := app_by_id(app_id)
+	if a == nil {
+		return sl_encode([]string{}), nil
+	}
+	apps_lock.Lock()
+	var versions []string
+	for v := range a.versions {
+		versions = append(versions, v)
+	}
+	apps_lock.Unlock()
+	sort.Strings(versions)
+	return sl_encode(versions), nil
+}
+
+// mochi.app.cleanup() -> int: Remove unused app versions (admin only)
+func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil || u.Role != "admin" {
+		return sl_error(fn, "admin required")
+	}
+	removed := apps_cleanup_unused_versions()
+	return sl.MakeInt(removed), nil
+}
+
+// apps_cleanup_unused_versions removes app versions not referenced by system defaults,
+// user bindings, tracks, or being the highest version (fallback).
+// Returns the number of versions removed.
+func apps_cleanup_unused_versions() int {
+	removed := 0
+
+	apps_lock.Lock()
+	app_ids := make([]string, 0, len(apps))
+	for id := range apps {
+		app_ids = append(app_ids, id)
+	}
+	apps_lock.Unlock()
+
+	for _, app_id := range app_ids {
+		a := app_by_id(app_id)
+		if a == nil {
+			continue
+		}
+
+		// Collect versions in use for this app
+		in_use := make(map[string]bool)
+
+		// Highest version is always kept as fallback
+		apps_lock.Lock()
+		var highest string
+		for v := range a.versions {
+			if highest == "" || v > highest {
+				highest = v
+			}
+		}
+		apps_lock.Unlock()
+		if highest != "" {
+			in_use[highest] = true
+		}
+
+		// Check system defaults
+		version, track := a.default_version()
+		if version != "" {
+			in_use[version] = true
+		}
+		if track != "" {
+			if v := a.track(track); v != "" {
+				in_use[v] = true
+			}
+		}
+
+		// Check all tracks for this app
+		for _, v := range a.tracks() {
+			in_use[v] = true
+		}
+
+		// Check all users' version bindings
+		db := db_open("db/users.db")
+		rows, _ := db.rows("select id from users where status = 'active'")
+		for _, row := range rows {
+			user_id := int(row["id"].(int64))
+			u := user_by_id(user_id)
+			if u == nil {
+				continue
+			}
+			uv, ut := u.app_version(app_id)
+			if uv != "" {
+				in_use[uv] = true
+			}
+			if ut != "" {
+				if v := a.track(ut); v != "" {
+					in_use[v] = true
+				}
+			}
+		}
+
+		// Remove versions not in use
+		apps_lock.Lock()
+		for v := range a.versions {
+			if !in_use[v] {
+				delete(a.versions, v)
+				removed++
+				info("Removed unused app version %s %s", app_id, v)
+			}
+		}
+		apps_lock.Unlock()
+	}
+
+	return removed
 }

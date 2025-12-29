@@ -128,22 +128,27 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "reached maximum service recursion depth")
 	}
 
-	// Look for matching app function, using default if necessary
-	a := app_for_service(service)
+	// Look for matching app function, using user preferences
+	user, _ := t.Local("user").(*User)
+	a := app_for_service_for(user, service)
 	if a == nil {
 		// Return None for missing service (allows graceful degradation during bootstrap)
 		return sl.None, nil
 	}
-	f, found := a.active.Functions[function]
+	av := a.active_for(user)
+	if av == nil {
+		return sl.None, nil
+	}
+	f, found := av.Functions[function]
 	if !found {
-		f, found = a.active.Functions[""]
+		f, found = av.Functions[""]
 	}
 	if !found {
 		return sl_error(fn, "unknown function %q for service %q", function, service)
 	}
 
 	// Call function
-	s := a.active.starlark()
+	s := av.starlark()
 	s.set("app", a)
 	s.set("user", t.Local("user").(*User))
 	s.set("owner", t.Local("owner").(*User))

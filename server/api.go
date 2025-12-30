@@ -298,7 +298,7 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return s, nil
 }
 
-// mochi.time.local(timestamp) -> dict: Convert Unix timestamp to local time in user's timezone
+// mochi.time.local(timestamp) -> string: Convert Unix timestamp to local time in user's timezone
 func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <timestamp: int64>")

@@ -168,7 +168,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Handle git Smart HTTP protocol
 	if aa.Feature == "git" {
-		repo := aa.parameters["repo"]
+		repo := aa.parameters["repository"]
 		if repo == "" {
 			c.String(http.StatusBadRequest, "Missing repository")
 			return true

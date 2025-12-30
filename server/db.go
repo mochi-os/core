@@ -504,12 +504,15 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	as := sl_decode(args[1:]).([]any)
 
-	// Get user or fall back to owner for anonymous entity-context access
+	// For entity context, use owner's database (entity data lives there).
+	// For class context, use authenticated user's database.
+	owner := t.Local("owner").(*User)
 	user := t.Local("user").(*User)
-	if user == nil {
-		user = t.Local("owner").(*User)
+	db_user := owner
+	if db_user == nil {
+		db_user = user
 	}
-	if user == nil {
+	if db_user == nil {
 		return sl_error(fn, "no user")
 	}
 
@@ -518,7 +521,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "unknown app")
 	}
 
-	db := db_app(user, app.active)
+	db := db_app(db_user, app.active)
 	if db == nil {
 		return sl_error(fn, "app has no database configured")
 	}

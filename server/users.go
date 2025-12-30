@@ -837,7 +837,7 @@ func api_user_last_login(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.MakeInt64(last), nil
 }
 
-// mochi.user.session.list(user?) -> tuple: List active sessions for current user or specified user (admin)
+// mochi.user.session.list(user?) -> list: List active sessions for current user or specified user (admin)
 func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {

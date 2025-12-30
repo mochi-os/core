@@ -35,6 +35,11 @@ var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"info":        sl.NewBuiltin("mochi.entity.info", api_entity_info),
 	"name":        sl.NewBuiltin("mochi.entity.name", api_entity_name),
 	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
+	"privacy":     api_entity_privacy,
+})
+
+var api_entity_privacy = sls.FromStringDict(sl.String("mochi.entity.privacy"), sl.StringDict{
+	"set": sl.NewBuiltin("mochi.entity.privacy.set", api_entity_privacy_set),
 })
 
 // Get an entity by id or fingerprint
@@ -434,4 +439,44 @@ func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	return sl_encode(entities), nil
+}
+
+// mochi.entity.privacy.set(id, privacy) -> bool: Update entity privacy setting
+func api_entity_privacy_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <id: string>, <privacy: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || !valid(id, "entity") {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	privacy, ok := sl.AsString(args[1])
+	if !ok || (privacy != "public" && privacy != "private") {
+		return sl_error(fn, "privacy must be 'public' or 'private'")
+	}
+
+	// Get user from context
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	// Verify ownership
+	db := db_open("db/users.db")
+	row, err := db.row("select user from entities where id=?", id)
+	if err != nil || row == nil {
+		return sl.False, nil
+	}
+
+	owner_id, _ := row["user"].(int64)
+	if owner_id != int64(user.ID) {
+		return sl_error(fn, "not owner")
+	}
+
+	// Update privacy
+	db.exec("update entities set privacy=? where id=?", privacy, id)
+
+	return sl.True, nil
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	gotime "time"
 
 	sl "go.starlark.net/starlark"
 	"go.starlark.net/starlarkjson"
@@ -298,29 +299,29 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return s, nil
 }
 
-// mochi.time.local(timestamp) -> string: Convert Unix timestamp to local time in user's timezone
+// mochi.time.local(timestamp, format?) -> string: Convert Unix timestamp to local time in user's timezone
 func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <timestamp: int64>")
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <timestamp: int64>, [format: string]")
 	}
 
-	var time int64
+	var timestamp int64
 	var err error
 	v := sl_decode(args[0])
 
 	switch x := v.(type) {
 	case int:
-		time = int64(x)
+		timestamp = int64(x)
 
 	case int64:
-		time = x
+		timestamp = x
 
 	case string:
 		s, ok := sl.AsString(args[0])
 		if !ok {
 			return sl_error(fn, "invalid timestamp '%v'", args[0])
 		}
-		time, err = strconv.ParseInt(s, 10, 64)
+		timestamp, err = strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return sl_error(fn, "invalid timestamp '%v': %v", args[0], err)
 		}
@@ -329,8 +330,45 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid time type %T", x)
 	}
 
+	// Named formats
+	format := gotime.DateTime
+	if len(args) == 2 {
+		f, ok := sl.AsString(args[1])
+		if !ok {
+			return sl_error(fn, "format must be a string")
+		}
+		switch f {
+		case "datetime":
+			format = gotime.DateTime
+		case "date":
+			format = gotime.DateOnly
+		case "time":
+			format = gotime.TimeOnly
+		case "rfc822":
+			format = gotime.RFC1123Z
+		case "rfc3339":
+			format = gotime.RFC3339
+		default:
+			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339)", f)
+		}
+	}
+
+	// Get user's timezone
 	user, _ := t.Local("user").(*User)
-	return sl_encode(time_local(user, time)), nil
+	timezone := "UTC"
+	if user != nil {
+		timezone = user_preference_get(user, "timezone", "UTC")
+	}
+	if timezone == "auto" {
+		timezone = "UTC"
+	}
+
+	loc, err := gotime.LoadLocation(timezone)
+	if err != nil {
+		loc = gotime.UTC
+	}
+
+	return sl.String(gotime.Unix(timestamp, 0).In(loc).Format(format)), nil
 }
 
 // mochi.time.now() -> int: Get the current Unix timestamp

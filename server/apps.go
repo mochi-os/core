@@ -23,7 +23,8 @@ type App struct {
 	id          string
 	fingerprint string
 	versions    map[string]*AppVersion
-	active      *AppVersion
+	latest      *AppVersion   // Highest installed version (external apps)
+	internal    *AppVersion   // Single version for internal Go apps
 }
 
 type AppAction struct {
@@ -124,9 +125,9 @@ func (av *AppVersion) icon() string {
 }
 
 // Get the primary path for URL generation
-func (a *App) url_path() string {
-	if a.active != nil && len(a.active.Paths) > 0 {
-		return a.active.Paths[0]
+func (a *App) url_path(user *User) string {
+	if av := a.active(user); av != nil && len(av.Paths) > 0 {
+		return av.Paths[0]
 	}
 	return a.id
 }
@@ -182,16 +183,26 @@ func (a *App) tracks() map[string]string {
 	return result
 }
 
-// active_for resolves which version a user should see for this app.
+// active resolves which version a user should see for this app.
 // Resolution order:
 // 1. User's preference (if user is not nil)
 // 2. System default (from apps.db)
 // 3. Highest installed version (fallback)
 // If a track is specified, it is resolved to a version.
 // Note: For anonymous entity access, pass the entity owner as the user.
-func (a *App) active_for(user *User) *AppVersion {
+func (a *App) active(user *User) *AppVersion {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
+	return a.active_locked(user)
+}
+
+// active_locked is the internal version of active.
+// Must be called with apps_lock held.
+func (a *App) active_locked(user *User) *AppVersion {
+	// Internal Go apps have a single version
+	if a.internal != nil {
+		return a.internal
+	}
 
 	// 1. Check user's preference
 	if user != nil {
@@ -208,18 +219,18 @@ func (a *App) active_for(user *User) *AppVersion {
 	}
 
 	// 3. Fallback to highest installed version
-	return a.active
+	return a.latest
 }
 
 // resolve_version resolves a version or track to an AppVersion.
 // Must be called with apps_lock held.
 func (a *App) resolve_version(version, track string) *AppVersion {
-	// If a track is specified, resolve it to a version
+	// If a track is specified, try to resolve it to a version
 	if track != "" {
-		version = a.track(track)
-		if version == "" {
-			return nil // Track not found, fall through to next resolution step
+		if tv := a.track(track); tv != "" {
+			version = tv
 		}
+		// If track lookup fails, fall through to use the version parameter
 	}
 
 	if version == "" {
@@ -318,8 +329,9 @@ var (
 	})
 
 	api_app_version = sls.FromStringDict(sl.String("mochi.app.version"), sl.StringDict{
-		"get": sl.NewBuiltin("mochi.app.version.get", api_app_version_get),
-		"set": sl.NewBuiltin("mochi.app.version.set", api_app_version_set),
+		"download": sl.NewBuiltin("mochi.app.version.download", api_app_version_download),
+		"get":      sl.NewBuiltin("mochi.app.version.get", api_app_version_get),
+		"set":      sl.NewBuiltin("mochi.app.version.set", api_app_version_set),
 	})
 
 	api_app_track = sls.FromStringDict(sl.String("mochi.app.track"), sl.StringDict{
@@ -344,7 +356,7 @@ var (
 	})
 )
 
-// Get existing app, loading it into memory as new app if necessary
+// Get existing app, loading it into memory as new internal app if necessary
 func app(id string) *App {
 	apps_lock.Lock()
 	a, found := apps[id]
@@ -352,10 +364,10 @@ func app(id string) *App {
 
 	if !found {
 		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion)}
-		a.active = &AppVersion{}
-		a.active.app = a
-		a.active.Actions = make(map[string]AppAction)
-		a.active.Events = make(map[string]AppEvent)
+		a.internal = &AppVersion{}
+		a.internal.app = a
+		a.internal.Actions = make(map[string]AppAction)
+		a.internal.Events = make(map[string]AppEvent)
 
 		apps_lock.Lock()
 		apps[id] = a
@@ -366,7 +378,7 @@ func app(id string) *App {
 }
 
 // Get an app by id, fingerprint, or path
-func app_by_any(s string) *App {
+func app_by_any(user *User, s string) *App {
 	if s == "" {
 		return nil
 	}
@@ -383,7 +395,7 @@ func app_by_any(s string) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 	for _, a := range apps {
-		av := a.active
+		av := a.active_locked(user)
 		if av == nil {
 			continue
 		}
@@ -405,14 +417,15 @@ func app_by_any(s string) *App {
 }
 
 // Get the app that handles root path
-func app_by_root() *App {
+func app_by_root(user *User) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 	for _, a := range apps {
-		if a.active == nil {
+		av := a.active_locked(user)
+		if av == nil {
 			continue
 		}
-		for _, p := range a.active.Paths {
+		for _, p := range av.Paths {
 			if p == "" {
 				return a
 			}
@@ -422,6 +435,7 @@ func app_by_root() *App {
 }
 
 // Check whether app is the correct version, and if not download and install new version
+// Downloads all track versions for instant track switching
 func app_check_install(id string) bool {
 	if !valid(id, "entity") {
 		debug("App %q ignoring install status", id)
@@ -429,34 +443,133 @@ func app_check_install(id string) bool {
 	}
 	debug("App %q checking install status", id)
 
-	// Check if app is already installed
-	apps_lock.Lock()
-	a := apps[id]
-	apps_lock.Unlock()
-	installed := a != nil && a.active != nil
-
-	// Check version (always try fallback if entity location is unknown)
-	version, ok := app_check_version(id)
+	// Get all track versions from publisher
+	tracks, _, defaultVersion, ok := app_check_version(id)
 	if !ok {
 		return false
 	}
 
-	if installed {
-		if a.active.Version == version {
-			debug("App %q keeping at version %q", id, a.active.Version)
-			return true
-		} else {
-			debug("App %q upgrading from %q to %q", id, a.active.Version, version)
+	// Download each track's version if not already installed
+	// This enables instant track switching without additional downloads
+	downloaded := false
+	for track, version := range tracks {
+		if app_has_version(id, version) {
+			debug("App %q track %q version %q already installed", id, track, version)
+			continue
+		}
+		debug("App %q downloading track %q version %q", id, track, version)
+		if app_download_version(id, version) {
+			downloaded = true
 		}
 	}
 
-	// Download and install new version (always try fallback if entity location is unknown)
+	// If no new versions were downloaded and we already have the default version, we're done
+	if !downloaded && app_has_version(id, defaultVersion) {
+		debug("App %q all versions up to date", id)
+		return true
+	}
+
+	// Ensure we have at least the default version
+	if !app_has_version(id, defaultVersion) {
+		debug("App %q downloading default version %q as fallback", id, defaultVersion)
+		if !app_download_version(id, defaultVersion) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Check all track versions of an app on the remote server
+// Returns: tracks map (track->version), default track name, default version, success
+func app_check_version(id string) (map[string]string, string, string, bool) {
+	s, err := stream("", id, "publisher", "version")
+	if err != nil {
+		debug("App %q using fallback to default publisher", id)
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version")
+	}
+	if err != nil {
+		debug("App %q version check failed: %v", id, err)
+		return nil, "", "", false
+	}
+	defer s.close()
+
+	// Empty track lets publisher use its default_track
+	s.write_content()
+
+	statusResp, err := s.read_content()
+	if err != nil {
+		debug("%v", err)
+		return nil, "", "", false
+	}
+	statusCode, _ := statusResp["status"].(string)
+	if statusCode != "200" {
+		return nil, "", "", false
+	}
+
+	v, err := s.read_content()
+	if err != nil {
+		debug("%v", err)
+		return nil, "", "", false
+	}
+
+	// Parse default track and version (always present for backward compat)
+	defaultTrack, _ := v["default_track"].(string)
+	defaultVersion, _ := v["version"].(string)
+	if !valid(defaultVersion, "version") {
+		return nil, "", "", false
+	}
+
+	// Build tracks map - try new format first, fall back to old format
+	// TODO(0.3-cleanup): Remove old format fallback when all servers are 0.3
+	tracks := make(map[string]string)
+	if tracksArray, ok := v["tracks"].([]interface{}); ok {
+		// New format (0.3+) - parse all tracks
+		for _, t := range tracksArray {
+			if tm, ok := t.(map[string]interface{}); ok {
+				track, _ := tm["track"].(string)
+				version, _ := tm["version"].(string)
+				if valid(track, "constant") && valid(version, "version") {
+					tracks[track] = version
+				}
+			}
+		}
+	} else {
+		// Old format (0.2) - single track only
+		track, _ := v["track"].(string)
+		if !valid(track, "constant") {
+			track = "Production"
+		}
+		tracks[track] = defaultVersion
+	}
+
+	return tracks, defaultTrack, defaultVersion, true
+}
+
+// Check if a specific version of an app is already installed
+func app_has_version(id, version string) bool {
+	apps_lock.Lock()
+	a := apps[id]
+	apps_lock.Unlock()
+	if a == nil {
+		return false
+	}
+	apps_lock.Lock()
+	_, exists := a.versions[version]
+	apps_lock.Unlock()
+	return exists
+}
+
+// Download and install a specific version of an app (without activating it)
+func app_download_version(id, version string) bool {
+	debug("App %q downloading version %q", id, version)
+
 	s, err := stream("", id, "publisher", "get")
 	if err != nil {
 		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get")
 	}
 	if err != nil {
-		debug("%v", err)
+		debug("App %q download stream failed: %v", id, err)
 		return false
 	}
 	defer s.close()
@@ -472,6 +585,7 @@ func app_check_install(id string) bool {
 	}
 	respStatus, _ := response["status"].(string)
 	if respStatus != "200" {
+		debug("App %q download failed with status %q", id, respStatus)
 		return false
 	}
 
@@ -481,70 +595,29 @@ func app_check_install(id string) bool {
 		return false
 	}
 
-	new, err := app_install(id, version, zip, false)
+	av, err := app_install(id, version, zip, false)
 	if err != nil {
 		file_delete(zip)
 		return false
 	}
 
-	app_resolve_paths(new, id)
+	app_resolve_paths(av, id)
 
-	na := app(id)
-	na.load_version(new)
+	a := app(id)
+	a.load_version(av)
+	debug("App %q version %q installed", id, version)
 	return true
 }
 
-// Check the version of an app on the remote server
-func app_check_version(id string) (string, bool) {
-	s, err := stream("", id, "publisher", "version")
-	if err != nil {
-		debug("App %q using fallback to default publisher", id)
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version")
-	}
-	if err != nil {
-		debug("App %q version check failed: %v", id, err)
-		return "", false
-	}
-	defer s.close()
-
-	// Empty track lets publisher use its default_track
-	s.write_content()
-
-	statusResp, err := s.read_content()
-	if err != nil {
-		debug("%v", err)
-		return "", false
-	}
-	statusCode, _ := statusResp["status"].(string)
-	if statusCode != "200" {
-		return "", false
-	}
-
-	v, err := s.read_content()
-	if err != nil {
-		debug("%v", err)
-		return "", false
-	}
-	version, _ := v["version"].(string)
-	if !valid(version, "version") {
-		return "", false
-	}
-
-	return version, true
-}
-
-// Find the best app for a service
+// Find the best app for a service (prefers dev apps over published apps)
 func app_for_service(service string) *App {
+	// Use the fallback logic which properly prefers dev apps
+	if a := app_for_service_fallback(nil, service); a != nil {
+		return a
+	}
+
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
-
-	for _, a := range apps {
-		for _, candidate := range a.active.Services {
-			if candidate == service {
-				return a
-			}
-		}
-	}
 
 	// Handle "app/<id>" service names used by attachment federation
 	if strings.HasPrefix(service, "app/") {
@@ -585,18 +658,22 @@ func app_for_service_for(user *User, service string) *App {
 	}
 
 	// 3. Fallback: First app that declares this service
-	return app_for_service_fallback(service)
+	return app_for_service_fallback(user, service)
 }
 
 // app_for_service_fallback finds the first app that declares a service.
 // Dev apps (non-entity IDs) take precedence, then ordered by install time.
-func app_for_service_fallback(service string) *App {
+func app_for_service_fallback(user *User, service string) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 
 	var candidates []*App
 	for _, a := range apps {
-		for _, s := range a.active.Services {
+		av := a.active_locked(user)
+		if av == nil {
+			continue
+		}
+		for _, s := range av.Services {
 			if s == service {
 				candidates = append(candidates, a)
 				break
@@ -630,21 +707,22 @@ func app_for_path_for(user *User, path string) *App {
 	}
 
 	// 3. Fallback: First app that declares this path
-	return app_for_path_fallback(path)
+	return app_for_path_fallback(user, path)
 }
 
 // app_for_path_fallback finds the first app that declares a path.
 // Dev apps (non-entity IDs) take precedence, then ordered by install time.
-func app_for_path_fallback(path string) *App {
+func app_for_path_fallback(user *User, path string) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 
 	var candidates []*App
 	for _, a := range apps {
-		if a.active == nil {
+		av := a.active_locked(user)
+		if av == nil {
 			continue
 		}
-		for _, p := range a.active.Paths {
+		for _, p := range av.Paths {
 			if p == path {
 				candidates = append(candidates, a)
 				break
@@ -678,21 +756,22 @@ func class_app_for(user *User, class string) *App {
 	}
 
 	// 3. Fallback: First app that declares this class
-	return class_app_fallback(class)
+	return class_app_fallback(user, class)
 }
 
 // class_app_fallback finds the first app that declares a class.
 // Dev apps (non-entity IDs) take precedence, then ordered by install time.
-func class_app_fallback(class string) *App {
+func class_app_fallback(user *User, class string) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 
 	var candidates []*App
 	for _, a := range apps {
-		if a.active == nil {
+		av := a.active_locked(user)
+		if av == nil {
 			continue
 		}
-		for _, c := range a.active.Classes {
+		for _, c := range av.Classes {
 			if c == class {
 				candidates = append(candidates, a)
 				break
@@ -967,11 +1046,6 @@ func apps_manager() {
 			}
 		}
 
-		// Clean up unused app versions
-		if removed := apps_cleanup_unused_versions(); removed > 0 {
-			info("Cleaned up %d unused app version(s)", removed)
-		}
-
 		time.Sleep(24 * time.Hour)
 	}
 }
@@ -1169,6 +1243,7 @@ func app_by_id(id string) *App {
 }
 
 // Check if a path is already used by another app (excluding the given app ID)
+// Checks internal apps and all versions of external apps
 func app_path_taken(path string, exclude string) bool {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
@@ -1176,12 +1251,20 @@ func app_path_taken(path string, exclude string) bool {
 		if a.id == exclude {
 			continue
 		}
-		if a.active == nil {
-			continue
+		// Check internal app paths
+		if a.internal != nil {
+			for _, p := range a.internal.Paths {
+				if p == path {
+					return true
+				}
+			}
 		}
-		for _, p := range a.active.Paths {
-			if p == path {
-				return true
+		// Check all external app version paths
+		for _, av := range a.versions {
+			for _, p := range av.Paths {
+				if p == path {
+					return true
+				}
 			}
 		}
 	}
@@ -1280,33 +1363,33 @@ func apps_load_published() {
 
 // Register an action for an internal app
 func (a *App) action(action string, f func(*Action)) {
-	a.active.Actions[action] = AppAction{name: action, internal_function: f}
+	a.internal.Actions[action] = AppAction{name: action, internal_function: f}
 }
 
 // Register a broadcast for an internal app
 func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
-	a.active.broadcasts[sender+"/"+action] = f
+	a.internal.broadcasts[sender+"/"+action] = f
 }
 
 // Register the user database file for an internal app
 func (a *App) db(file string, create func(*DB)) {
-	a.active.Database.File = file
-	a.active.Database.create_function = create
+	a.internal.Database.File = file
+	a.internal.Database.create_function = create
 }
 
 // Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
-	a.active.Events[event] = AppEvent{internal_function: f}
+	a.internal.Events[event] = AppEvent{internal_function: f}
 }
 
 // Register an anonymous event handler for an internal app
 func (a *App) event_anonymous(event string, f func(*Event)) {
-	a.active.Events[event] = AppEvent{internal_function: f, Anonymous: true}
+	a.internal.Events[event] = AppEvent{internal_function: f, Anonymous: true}
 }
 
 // Register an icon for an internal app
 func (a *App) icon(action string, label string, file string) {
-	a.active.Icons = append(a.active.Icons, Icon{Action: action, Label: label, File: file})
+	a.internal.Icons = append(a.internal.Icons, Icon{Action: action, Label: label, File: file})
 }
 
 // Resolve an app label
@@ -1316,7 +1399,7 @@ func (a *App) label(u *User, key string, values ...any) string {
 		language = user_preference_get(u, "language", "en")
 	}
 
-	labels := a.active.labels
+	labels := a.active(u).labels
 	if labels == nil {
 		labels = map[string]map[string]string{}
 	}
@@ -1336,7 +1419,7 @@ func (a *App) label(u *User, key string, values ...any) string {
 	return fmt.Sprintf(format, values...)
 }
 
-// Loads details of a new version, and if it's the latest activate it
+// Loads a new version into the versions map, updating a.latest if this is the highest version
 func (a *App) load_version(av *AppVersion) {
 	if a == nil || av == nil {
 		return
@@ -1385,25 +1468,21 @@ func (a *App) load_version(av *AppVersion) {
 		}
 	}
 	if latest == av.Version {
-		a.active = av
+		a.latest = av
 	}
 	apps_lock.Unlock()
 
-	if latest == av.Version {
-		debug("App %q, %q version %q activated", av.labels["en"][av.Label], a.id, av.Version)
-	} else {
-		debug("App %q, %q version %q loaded, but not activated", av.labels["en"][av.Label], a.id, av.Version)
-	}
+	debug("App %q, %q version %q loaded", av.labels["en"][av.Label], a.id, av.Version)
 }
 
 // Register a path for an internal app
 func (a *App) path(path string) {
-	a.active.Paths = append(a.active.Paths, path)
+	a.internal.Paths = append(a.internal.Paths, path)
 }
 
 // Register a service for an internal app
 func (a *App) service(service string) {
-	a.active.Services = append(a.active.Services, service)
+	a.internal.Services = append(a.internal.Services, service)
 }
 
 // Find the action best matching the specified name
@@ -1670,14 +1749,19 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 
 	if found {
 		user := t.Local("user").(*User)
+		av := a.active(user)
+		latest := av.Version
+		if a.latest != nil {
+			latest = a.latest.Version
+		}
 		result := map[string]any{
 			"id":     a.id,
-			"name":   a.label(user, a.active.Label),
-			"latest": a.active.Version,
-			"icon":   a.active.icon(),
+			"name":   a.label(user, av.Label),
+			"latest": latest,
+			"icon":   av.icon(),
 		}
-		if a.active.Publisher.Peer != "" {
-			result["publisher"] = map[string]string{"peer": a.active.Publisher.Peer}
+		if av.Publisher.Peer != "" {
+			result["publisher"] = map[string]string{"peer": av.Publisher.Peer}
 		}
 		return sl_encode(result), nil
 	}
@@ -1692,13 +1776,14 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	apps_lock.Lock()
 	for _, a := range apps {
-		if !a.active.user_allowed(user) {
+		av := a.active_locked(user)
+		if !av.user_allowed(user) {
 			continue
 		}
-		for _, i := range a.active.Icons {
+		for _, i := range av.Icons {
 			path := a.fingerprint
-			if len(a.active.Paths) > 0 {
-				path = a.active.Paths[0]
+			if len(av.Paths) > 0 {
+				path = av.Paths[0]
 			}
 			if i.Action != "" {
 				path = path + "/" + i.Action
@@ -1857,17 +1942,22 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if !valid(id, "entity") && !valid(id, "constant") {
 			continue
 		}
-		if a == nil || a.active == nil {
+		if a == nil || (a.latest == nil && a.internal == nil) {
 			continue
 		}
-		if !a.active.user_allowed(user) {
+		av := a.active_locked(user)
+		if !av.user_allowed(user) {
 			continue
 		}
 		// Skip internal service apps without a Label
-		if a.active.Label == "" {
+		if av.Label == "" {
 			continue
 		}
-		results = append(results, map[string]string{"id": a.id, "name": a.label(user, a.active.Label), "latest": a.active.Version, "engine": a.active.Architecture.Engine, "icon": a.active.icon()})
+		latest := av.Version
+		if a.latest != nil {
+			latest = a.latest.Version
+		}
+		results = append(results, map[string]string{"id": a.id, "name": a.label(user, av.Label), "latest": latest, "engine": av.Architecture.Engine, "icon": av.icon()})
 	}
 	apps_lock.Unlock()
 
@@ -2097,12 +2187,8 @@ func api_app_path_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(result), nil
 }
 
-// mochi.app.version.get(app_id) -> dict | None: Get the default version/track for an app (admin only)
+// mochi.app.version.get(app_id) -> dict | None: Get the default version/track for an app
 func api_app_version_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}
@@ -2147,6 +2233,39 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		track, _ = sl.AsString(args[2])
 	}
 	a.set_default_version(version, track)
+	return sl.True, nil
+}
+
+// mochi.app.version.download(app_id, version) -> bool: Download a specific version from publisher
+func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() && setting_get("apps_install_user", "") != "true" {
+		return sl_error(fn, "not authorized to install apps")
+	}
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <app_id: string>, <version: string>")
+	}
+	app_id, ok := sl.AsString(args[0])
+	if !ok || !valid(app_id, "entity") {
+		return sl_error(fn, "invalid app_id")
+	}
+	version, ok := sl.AsString(args[1])
+	if !ok || !valid(version, "version") {
+		return sl_error(fn, "invalid version")
+	}
+
+	// Check if already installed
+	if app_has_version(app_id, version) {
+		return sl.True, nil
+	}
+
+	// Download from publisher
+	if !app_download_version(app_id, version) {
+		return sl.False, nil
+	}
 	return sl.True, nil
 }
 
@@ -2254,7 +2373,6 @@ func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// For published apps (entity IDs), scan the disk for installed versions
-	// This ensures we see all versions even if they were cleaned up from memory
 	if valid(app_id, "entity") {
 		dir := fmt.Sprintf("%s/apps/%s", data_dir, app_id)
 		var versions []string
@@ -2365,14 +2483,27 @@ func apps_cleanup_unused_versions() int {
 
 		// Remove versions not in use
 		apps_lock.Lock()
+		var to_delete []string
 		for v := range a.versions {
 			if !in_use[v] {
 				delete(a.versions, v)
+				to_delete = append(to_delete, v)
 				removed++
-				info("Removed unused app version %s %s", app_id, v)
 			}
 		}
 		apps_lock.Unlock()
+
+		// Delete version directories from disk (only for published apps)
+		if valid(app_id, "entity") {
+			for _, v := range to_delete {
+				dir := fmt.Sprintf("%s/apps/%s/%s", data_dir, app_id, v)
+				if err := os.RemoveAll(dir); err != nil {
+					warn("Failed to delete app version directory %s: %v", dir, err)
+				} else {
+					info("Deleted unused app version %s %s", app_id, v)
+				}
+			}
+		}
 	}
 
 	return removed

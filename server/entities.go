@@ -189,27 +189,6 @@ func entity_sign(entity string, s string) string {
 	return base58_encode(ed25519.Sign(private, []byte(s)))
 }
 
-func (e *Entity) class_app() *App {
-	if e == nil {
-		return nil
-	}
-
-	apps_lock.Lock()
-	defer apps_lock.Unlock()
-	for _, a := range apps {
-		if a.active == nil {
-			continue
-		}
-		for _, class := range a.active.Classes {
-			if class == e.Class {
-				return a
-			}
-		}
-	}
-
-	return nil
-}
-
 // Starlark methods
 func (e *Entity) AttrNames() []string {
 	return []string{"id", "name"}

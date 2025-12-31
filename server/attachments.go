@@ -119,7 +119,7 @@ func attachment_create_record(db *DB, app *App, owner *User, object, name, id st
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-	result := att.to_map(app.url_path())
+	result := att.to_map(app.url_path(owner))
 
 	if len(notify) > 0 {
 		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
@@ -238,7 +238,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -319,7 +319,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-		results = append(results, att.to_map(app.url_path()))
+		results = append(results, att.to_map(app.url_path(owner)))
 	}
 
 	// Handle federation notify
@@ -396,7 +396,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -439,7 +439,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-	result := att.to_map(app.url_path())
+	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -515,7 +515,7 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -624,7 +624,7 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -745,7 +745,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -790,7 +790,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
-	result := att.to_map(app.url_path())
+	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -836,7 +836,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -851,7 +851,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.None, nil
 	}
 
-	result := att.to_map(app.url_path())
+	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -892,7 +892,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -920,7 +920,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get updated record
 	db.scan(&att, "select * from _attachments where id = ?", id)
-	result := att.to_map(app.url_path())
+	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -956,7 +956,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1012,7 +1012,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1072,7 +1072,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1086,7 +1086,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	var results []map[string]any
 	for _, att := range attachments {
-		results = append(results, att.to_map(app.url_path(), "attachments", entity))
+		results = append(results, att.to_map(app.url_path(owner), "attachments", entity))
 	}
 
 	return sl_encode(results), nil
@@ -1113,7 +1113,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1124,7 +1124,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.None, nil
 	}
 
-	return sl_encode(att.to_map(app.url_path())), nil
+	return sl_encode(att.to_map(app.url_path(owner))), nil
 }
 
 // mochi.attachment.exists(id) -> bool: Check if an attachment exists
@@ -1148,7 +1148,7 @@ func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1179,7 +1179,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1227,7 +1227,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1275,7 +1275,7 @@ func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1848,7 +1848,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1868,7 +1868,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	// Convert to maps for notification
 	var results []map[string]any
 	for _, att := range attachments {
-		results = append(results, att.to_map(app.url_path()))
+		results = append(results, att.to_map(app.url_path(owner)))
 	}
 
 	// Send to recipients using existing notify infrastructure
@@ -1903,7 +1903,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}

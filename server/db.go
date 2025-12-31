@@ -191,19 +191,20 @@ func db_user(u *User, name string) *DB {
 // Maximum database size per app per user (1GB / 4KB page size = 262144 pages)
 const db_max_page_count = 262144
 
-// Open a database file for an app version, creating, upgrading, or downgrading it as necessary
-func db_app(u *User, av *AppVersion) *DB {
-	if av.app == nil {
-		warn("Attempt to create database for unloaded app version")
+// Open a database file for an app, creating, upgrading, or downgrading it as necessary
+func db_app(u *User, app *App) *DB {
+	av := app.active(u)
+	if av == nil {
+		warn("Attempt to create database for app with no version loaded")
 		return nil
 	}
 
 	if av.Database.File == "" {
-		warn("App %q version %q asked for database, but no database file specified", av.app.id, av.Version)
+		warn("App %q asked for database, but no database file specified", app.id)
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%d/%s/%s", u.ID, av.app.id, av.Database.File)
+	path := fmt.Sprintf("users/%d/%s/%s", u.ID, app.id, av.Database.File)
 	db, _, reused := db_open_work(path)
 	db.user = u
 
@@ -521,7 +522,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "unknown app")
 	}
 
-	db := db_app(db_user, app.active)
+	db := db_app(db_user, app)
 	if db == nil {
 		return sl_error(fn, "app has no database configured")
 	}

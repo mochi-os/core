@@ -138,7 +138,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		// Return None for missing service (allows graceful degradation during bootstrap)
 		return sl.None, nil
 	}
-	av := a.active_for(user)
+	av := a.active(user)
 	if av == nil {
 		return sl.None, nil
 	}

@@ -214,7 +214,7 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db.access_check(owner, user, role, resource, operation) {
 		return sl.True, nil
 	}
@@ -267,7 +267,7 @@ func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	db.access_set(subject, resource, operation, grant, granter)
 	return sl.None, nil
 }
@@ -303,7 +303,7 @@ func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	db.access_revoke(subject, resource, operation)
 	return sl.None, nil
 }
@@ -329,7 +329,7 @@ func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	db.access_clear_resource(resource)
 	return sl.None, nil
 }
@@ -355,7 +355,7 @@ func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	db.access_clear_subject(subject)
 	return sl.None, nil
 }
@@ -381,7 +381,7 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	rows, err := db.access_list_resource(resource)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -410,7 +410,7 @@ func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	rows, err := db.access_list_subject(subject)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)

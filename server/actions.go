@@ -219,7 +219,7 @@ func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		role = a.user.Role
 	}
 
-	db := db_app(owner, app.active)
+	db := db_app(owner, app)
 	if db == nil {
 		return sl_error(fn, "app has no database configured")
 	}
@@ -377,7 +377,8 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid template file %q", path)
 	}
 
-	file := fmt.Sprintf("%s/templates/en/%s.tmpl", a.app.active.base, path)
+	av := a.app.active(a.user)
+	file := fmt.Sprintf("%s/templates/en/%s.tmpl", av.base, path)
 	if !file_exists(file) {
 		return sl_error(fn, "template %q not found", path)
 	}

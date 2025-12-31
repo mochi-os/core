@@ -55,7 +55,7 @@ func (e *Event) route() error {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {
-			info("Event dropping to unknown user %q", e.to)
+			debug("Event dropping to unknown user %q", e.to)
 			return fmt.Errorf("unknown user %q", e.to)
 		}
 	}
@@ -65,10 +65,11 @@ func (e *Event) route() error {
 	a := app_by_id(e.to)
 	if a != nil {
 		// Check if this app actually handles the requested event
+		av := a.active(e.user)
 		apps_lock.Lock()
-		_, hasEvent := a.active.Events[e.event]
+		_, hasEvent := av.Events[e.event]
 		if !hasEvent {
-			_, hasEvent = a.active.Events[""]
+			_, hasEvent = av.Events[""]
 		}
 		apps_lock.Unlock()
 		if !hasEvent {
@@ -81,22 +82,25 @@ func (e *Event) route() error {
 		a = app_for_service(e.service)
 	}
 	if a == nil {
-		info("Event dropping to unknown service %q", e.service)
+		debug("Event dropping to unknown service %q", e.service)
 		return fmt.Errorf("unknown service %q", e.service)
 	}
 	e.app = a
-	if dev_reload {
-		a.active.reload()
+	if dev_reload && a.latest != nil {
+		a.latest.reload()
 	}
+
+	// Get the version to use for this event
+	av := a.active(e.user)
 
 	// Handle built-in attachment events for apps with a database
 	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
-	if strings.HasPrefix(e.event, "_attachment/") && a.active.Database.File != "" {
+	if strings.HasPrefix(e.event, "_attachment/") && av.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
 		}
-		e.db = db_app(e.user, a.active)
+		e.db = db_app(e.user, a)
 		if e.db == nil {
 			info("Event app %q has no database file", a.id)
 			return fmt.Errorf("no database file")
@@ -133,25 +137,25 @@ func (e *Event) route() error {
 
 	// Find event in app
 	apps_lock.Lock()
-	ae, found := a.active.Events[e.event]
+	ae, found := av.Events[e.event]
 	if !found {
-		ae, found = a.active.Events[""]
+		ae, found = av.Events[""]
 	}
 	apps_lock.Unlock()
 
 	if !found {
-		info("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
+		debug("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
 		return fmt.Errorf("unknown event %q", e.event)
 	}
 
 	// Load a database file for the app
-	if a.active.Database.File != "" {
+	if av.Database.File != "" {
 		if e.user == nil {
 			info("Event dropping broadcast for service requiring user")
 			return fmt.Errorf("broadcast for service requiring user")
 		}
 
-		e.db = db_app(e.user, a.active)
+		e.db = db_app(e.user, a)
 		if e.db == nil {
 			info("Event app %q has no database file", a.id)
 			return fmt.Errorf("no database file")
@@ -166,7 +170,7 @@ func (e *Event) route() error {
 	}
 
 	// Check which engine the app uses, and run it
-	switch a.active.Architecture.Engine {
+	switch av.Architecture.Engine {
 	case "": // Internal app
 		if ae.internal_function == nil {
 			info("Event dropping to event %q in internal app %q for service %q without handler", e.event, a.id, e.service)
@@ -191,7 +195,7 @@ func (e *Event) route() error {
 			return fmt.Errorf("no handler for event %q", e.event)
 		}
 
-		s := a.active.starlark()
+		s := av.starlark()
 		s.set("event", e)
 		s.set("app", a)
 		s.set("user", e.user)
@@ -202,8 +206,8 @@ func (e *Event) route() error {
 		return nil
 
 	default:
-		info("Event unknown engine %q version %q", a.active.Architecture.Engine, a.active.Architecture.Version)
-		return fmt.Errorf("unknown engine %q", a.active.Architecture.Engine)
+		info("Event unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)
+		return fmt.Errorf("unknown engine %q", av.Architecture.Engine)
 	}
 }
 

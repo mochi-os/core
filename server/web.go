@@ -47,7 +47,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Get the app version for this user (user preference or default)
-	av := a.active_for(user)
+	av := a.active(user)
 	if av == nil {
 		return false
 	}
@@ -236,7 +236,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Set up database connections if needed
 	if av.Database.File != "" {
 		if user != nil {
-			user.db = db_app(user, av)
+			user.db = db_app(user, a)
 			if user.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -245,7 +245,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 
 		if owner != nil && (user == nil || owner.ID != user.ID) {
-			owner.db = db_app(owner, av)
+			owner.db = db_app(owner, a)
 			if owner.db == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 				return true
@@ -406,7 +406,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Set up database connection if needed
 	if av.Database.File != "" && owner != nil {
-		owner.db = db_app(owner, av)
+		owner.db = db_app(owner, a)
 		if owner.db != nil {
 			defer owner.db.close()
 		}
@@ -706,7 +706,7 @@ func web_path(c *gin.Context) {
 
 		switch method.(string) {
 		case "app":
-			a := app_by_any(target)
+			a := app_by_any(user, target)
 			if a == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
 				return
@@ -754,7 +754,7 @@ func web_path(c *gin.Context) {
 
 	// Check for app that handles root path
 	if raw == "" {
-		if a := app_by_root(); a != nil {
+		if a := app_by_root(user); a != nil {
 			web_action(c, a, "", nil)
 			return
 		}
@@ -826,7 +826,7 @@ func web_path(c *gin.Context) {
 	}
 
 	// Unknown path - route to root app if available
-	if a := app_by_root(); a != nil {
+	if a := app_by_root(user); a != nil {
 		web_action(c, a, raw, nil)
 		return
 	}
@@ -973,7 +973,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		return web_serve_attachment_remote(c, app, entity, id, thumbnail)
 	}
 
-	db := db_app(user, app.active)
+	db := db_app(user, app)
 	if db == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return true

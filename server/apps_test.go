@@ -353,7 +353,7 @@ func TestAppResolveVersion(t *testing.T) {
 	}
 }
 
-// Test App.active_for version resolution priority
+// Test App.active version resolution priority
 func TestAppActiveFor(t *testing.T) {
 	cleanup := create_test_apps_db(t)
 	defer cleanup()
@@ -374,45 +374,45 @@ func TestAppActiveFor(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"] // Highest version
+	a.latest = a.versions["2.0"] // Highest version
 
 	// No user, no system default - should return highest
-	av := a.active_for(nil)
+	av := a.active(nil)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for(nil) = %v, want version 2.0", av)
+		t.Errorf("active(nil) = %v, want version 2.0", av)
 	}
 
 	// Set system default
 	a.set_default_version("1.5", "")
-	av = a.active_for(nil)
+	av = a.active(nil)
 	if av == nil || av.Version != "1.5" {
-		t.Errorf("active_for(nil) with system default = %v, want version 1.5", av)
+		t.Errorf("active(nil) with system default = %v, want version 1.5", av)
 	}
 
 	// User preference takes priority
 	user := &User{ID: 1, Username: "test@example.com"}
 	user.set_app_version("test-app", "1.0", "")
-	av = a.active_for(user)
+	av = a.active(user)
 	if av == nil || av.Version != "1.0" {
-		t.Errorf("active_for(user) with user pref = %v, want version 1.0", av)
+		t.Errorf("active(user) with user pref = %v, want version 1.0", av)
 	}
 
 	// Clear user preference, system default should apply
 	user.set_app_version("test-app", "", "")
-	av = a.active_for(user)
+	av = a.active(user)
 	if av == nil || av.Version != "1.5" {
-		t.Errorf("active_for(user) without user pref = %v, want version 1.5 (system default)", av)
+		t.Errorf("active(user) without user pref = %v, want version 1.5 (system default)", av)
 	}
 
 	// Clear system default, highest should apply
 	a.set_default_version("", "")
-	av = a.active_for(user)
+	av = a.active(user)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for(user) with no defaults = %v, want version 2.0 (highest)", av)
+		t.Errorf("active(user) with no defaults = %v, want version 2.0 (highest)", av)
 	}
 }
 
-// Test track-based version resolution in active_for
+// Test track-based version resolution in active
 func TestAppActiveForWithTrack(t *testing.T) {
 	cleanup := create_test_apps_db(t)
 	defer cleanup()
@@ -425,7 +425,7 @@ func TestAppActiveForWithTrack(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 
 	// Set up tracks
 	a.set_track("stable", "1.5")
@@ -433,16 +433,16 @@ func TestAppActiveForWithTrack(t *testing.T) {
 
 	// Set system default to follow stable track
 	a.set_default_version("", "stable")
-	av := a.active_for(nil)
+	av := a.active(nil)
 	if av == nil || av.Version != "1.5" {
-		t.Errorf("active_for(nil) following stable track = %v, want version 1.5", av)
+		t.Errorf("active(nil) following stable track = %v, want version 1.5", av)
 	}
 
 	// Update track pointer
 	a.set_track("stable", "1.0")
-	av = a.active_for(nil)
+	av = a.active(nil)
 	if av == nil || av.Version != "1.0" {
-		t.Errorf("active_for(nil) after track update = %v, want version 1.0", av)
+		t.Errorf("active(nil) after track update = %v, want version 1.0", av)
 	}
 }
 
@@ -490,7 +490,7 @@ func TestCleanupKeepsHighestVersion(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Run cleanup
@@ -524,7 +524,7 @@ func TestCleanupKeepsSystemDefault(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Set 1.5 as system default
@@ -557,7 +557,7 @@ func TestCleanupKeepsTrackVersions(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Set up tracks
@@ -599,7 +599,7 @@ func TestCleanupKeepsUserPreferences(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Set user preference for 1.0
@@ -909,6 +909,38 @@ func TestStarlarkAPIAppVersions(t *testing.T) {
 	}
 }
 
+// Test app_has_version helper function
+func TestAppHasVersion(t *testing.T) {
+	a := &App{
+		id: "test-app",
+		versions: map[string]*AppVersion{
+			"1.0": {Version: "1.0"},
+			"1.5": {Version: "1.5"},
+		},
+	}
+	orig_apps := apps
+	apps = map[string]*App{"test-app": a}
+	defer func() { apps = orig_apps }()
+
+	// Test existing version
+	if !app_has_version("test-app", "1.0") {
+		t.Error("app_has_version(test-app, 1.0) = false, want true")
+	}
+	if !app_has_version("test-app", "1.5") {
+		t.Error("app_has_version(test-app, 1.5) = false, want true")
+	}
+
+	// Test non-existing version
+	if app_has_version("test-app", "2.0") {
+		t.Error("app_has_version(test-app, 2.0) = true, want false")
+	}
+
+	// Test non-existing app
+	if app_has_version("non-existent-app", "1.0") {
+		t.Error("app_has_version(non-existent-app, 1.0) = true, want false")
+	}
+}
+
 // Test Starlark API: mochi.app.cleanup
 func TestStarlarkAPICleanup(t *testing.T) {
 	cleanup := create_test_cleanup_env(t)
@@ -922,7 +954,7 @@ func TestStarlarkAPICleanup(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	thread := create_test_starlark_thread()
@@ -1129,7 +1161,7 @@ func TestTrackToNonExistentVersion(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 
 	// Set track to non-existent version
 	a.set_track("stable", "9.9")
@@ -1138,9 +1170,9 @@ func TestTrackToNonExistentVersion(t *testing.T) {
 	a.set_default_version("", "stable")
 
 	// Should fall back to highest version since track points to non-existent
-	av := a.active_for(nil)
+	av := a.active(nil)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for with bad track = %v, want 2.0 (highest fallback)", av)
+		t.Errorf("active with bad track = %v, want 2.0 (highest fallback)", av)
 	}
 }
 
@@ -1162,7 +1194,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 
 	// Set system default
 	a.set_default_version("1.0", "")
@@ -1172,9 +1204,9 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 	user.set_app_version("test-app", "9.9", "")
 
 	// Should fall through to system default
-	av := a.active_for(user)
+	av := a.active(user)
 	if av == nil || av.Version != "1.0" {
-		t.Errorf("active_for with bad user pref = %v, want 1.0 (system default)", av)
+		t.Errorf("active with bad user pref = %v, want 1.0 (system default)", av)
 	}
 }
 
@@ -1190,7 +1222,7 @@ func TestCleanupNoUnusedVersions(t *testing.T) {
 			"1.0": {Version: "1.0"},
 		},
 	}
-	a.active = a.versions["1.0"]
+	a.latest = a.versions["1.0"]
 	apps["test-app"] = a
 
 	removed := apps_cleanup_unused_versions()
@@ -1212,7 +1244,7 @@ func TestCleanupAllVersionsReferenced(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Reference all versions: tracks for 1.0 and 1.5, highest is 2.0
@@ -1318,7 +1350,7 @@ func TestMultipleAppsCleanup(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	app1.active = app1.versions["2.0"]
+	app1.latest = app1.versions["2.0"]
 
 	app2 := &App{
 		id: "app2",
@@ -1328,7 +1360,7 @@ func TestMultipleAppsCleanup(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	app2.active = app2.versions["2.0"]
+	app2.latest = app2.versions["2.0"]
 
 	apps["app1"] = app1
 	apps["app2"] = app2
@@ -1378,9 +1410,9 @@ func TestCrossUserRouting(t *testing.T) {
 
 	// Setup apps
 	app1 := &App{id: "wiki-app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0"}}}
-	app1.active = app1.versions["1.0"]
+	app1.latest = app1.versions["1.0"]
 	app2 := &App{id: "wiki-app-2", versions: map[string]*AppVersion{"1.0": {Version: "1.0"}}}
-	app2.active = app2.versions["1.0"]
+	app2.latest = app2.versions["1.0"]
 	apps["wiki-app-1"] = app1
 	apps["wiki-app-2"] = app2
 
@@ -1430,7 +1462,7 @@ func TestCrossUserVersionSelection(t *testing.T) {
 			"2.1-beta": {Version: "2.1-beta"},
 		},
 	}
-	a.active = a.versions["2.1-beta"]
+	a.latest = a.versions["2.1-beta"]
 	apps["test-app"] = a
 
 	// Set up tracks
@@ -1457,19 +1489,19 @@ func TestCrossUserVersionSelection(t *testing.T) {
 	user3 := &User{ID: 3, Username: "user3@test.com"}
 
 	// Check each user gets correct version
-	av1 := a.active_for(user1)
+	av1 := a.active(user1)
 	if av1 == nil || av1.Version != "2.1-beta" {
-		t.Errorf("user1 active_for = %v, want 2.1-beta", av1)
+		t.Errorf("user1 active = %v, want 2.1-beta", av1)
 	}
 
-	av2 := a.active_for(user2)
+	av2 := a.active(user2)
 	if av2 == nil || av2.Version != "2.0" {
-		t.Errorf("user2 active_for = %v, want 2.0", av2)
+		t.Errorf("user2 active = %v, want 2.0", av2)
 	}
 
-	av3 := a.active_for(user3)
+	av3 := a.active(user3)
 	if av3 == nil || av3.Version != "1.0" {
-		t.Errorf("user3 active_for = %v, want 1.0 (system stable)", av3)
+		t.Errorf("user3 active = %v, want 1.0 (system stable)", av3)
 	}
 }
 
@@ -1485,7 +1517,7 @@ func TestTrackDeletedFallback(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Set up track and system default following it
@@ -1508,10 +1540,10 @@ func TestTrackDeletedFallback(t *testing.T) {
 		t.Errorf("resolve_version for deleted track = %v, want nil", av)
 	}
 
-	// active_for should fall back to highest since resolve_version returns nil
-	av = a.active_for(nil)
+	// active should fall back to highest since resolve_version returns nil
+	av = a.active(nil)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for after track deleted = %v, want 2.0 (highest)", av)
+		t.Errorf("active after track deleted = %v, want 2.0 (highest)", av)
 	}
 }
 
@@ -1527,7 +1559,7 @@ func TestVersionDeletedFallback(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// Set system default to 1.0
@@ -1548,10 +1580,10 @@ func TestVersionDeletedFallback(t *testing.T) {
 		t.Errorf("resolve_version for deleted version = %v, want nil", av)
 	}
 
-	// active_for should fall back to highest since default version is gone
-	av = a.active_for(nil)
+	// active should fall back to highest since default version is gone
+	av = a.active(nil)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for after version deleted = %v, want 2.0 (highest)", av)
+		t.Errorf("active after version deleted = %v, want 2.0 (highest)", av)
 	}
 }
 
@@ -1567,7 +1599,7 @@ func TestMultipleAppsDeclareSameClass(t *testing.T) {
 			"1.0": {Version: "1.0", Classes: []string{"wiki"}},
 		},
 	}
-	app1.active = app1.versions["1.0"]
+	app1.latest = app1.versions["1.0"]
 
 	app2 := &App{
 		id: "wiki-modern",
@@ -1575,7 +1607,7 @@ func TestMultipleAppsDeclareSameClass(t *testing.T) {
 			"1.0": {Version: "1.0", Classes: []string{"wiki"}},
 		},
 	}
-	app2.active = app2.versions["1.0"]
+	app2.latest = app2.versions["1.0"]
 
 	apps["wiki-classic"] = app1
 	apps["wiki-modern"] = app2
@@ -1603,11 +1635,11 @@ func TestCombinedRoutingTypes(t *testing.T) {
 	// Setup apps with different roles
 	wikiApp := &App{id: "wiki-app"}
 	wikiApp.versions = map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"wiki"}, Services: []string{"wiki-service"}, Paths: []string{"wikis"}}}
-	wikiApp.active = wikiApp.versions["1.0"]
+	wikiApp.latest = wikiApp.versions["1.0"]
 
 	forumApp := &App{id: "forum-app"}
 	forumApp.versions = map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"forum"}, Services: []string{"forum-service"}, Paths: []string{"forums"}}}
-	forumApp.active = forumApp.versions["1.0"]
+	forumApp.latest = forumApp.versions["1.0"]
 
 	apps["wiki-app"] = wikiApp
 	apps["forum-app"] = forumApp
@@ -1647,7 +1679,7 @@ func TestNilUserRouting(t *testing.T) {
 
 	app := &App{id: "test-app"}
 	app.versions = map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"test"}, Services: []string{"test-svc"}, Paths: []string{"test-path"}}}
-	app.active = app.versions["1.0"]
+	app.latest = app.versions["1.0"]
 	apps["test-app"] = app
 
 	apps_class_set("test", "test-app")
@@ -1678,23 +1710,23 @@ func TestNilUserVersionSelection(t *testing.T) {
 			"2.0": {Version: "2.0"},
 		},
 	}
-	a.active = a.versions["2.0"]
+	a.latest = a.versions["2.0"]
 	apps["test-app"] = a
 
 	// System default to 1.0
 	a.set_default_version("1.0", "")
 
 	// nil user should use system default
-	av := a.active_for(nil)
+	av := a.active(nil)
 	if av == nil || av.Version != "1.0" {
-		t.Errorf("active_for(nil) = %v, want 1.0 (system default)", av)
+		t.Errorf("active(nil) = %v, want 1.0 (system default)", av)
 	}
 
 	// Clear system default, should use highest
 	a.set_default_version("", "")
-	av = a.active_for(nil)
+	av = a.active(nil)
 	if av == nil || av.Version != "2.0" {
-		t.Errorf("active_for(nil) no default = %v, want 2.0 (highest)", av)
+		t.Errorf("active(nil) no default = %v, want 2.0 (highest)", av)
 	}
 }
 
@@ -1705,10 +1737,10 @@ func TestUserPreferencesIndependent(t *testing.T) {
 
 	app1 := &App{id: "app1"}
 	app1.versions = map[string]*AppVersion{"1.0": {Version: "1.0"}}
-	app1.active = app1.versions["1.0"]
+	app1.latest = app1.versions["1.0"]
 	app2 := &App{id: "app2"}
 	app2.versions = map[string]*AppVersion{"1.0": {Version: "1.0"}}
-	app2.active = app2.versions["1.0"]
+	app2.latest = app2.versions["1.0"]
 	apps["app1"] = app1
 	apps["app2"] = app2
 

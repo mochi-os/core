@@ -9,12 +9,15 @@ func broadcast(u *User, sender string, action string, entity string, content any
 	defer apps_lock.Unlock()
 
 	for _, a := range apps {
-		f, found := a.active.broadcasts[sender+"/"+action]
+		if a.internal == nil {
+			continue
+		}
+		f, found := a.internal.broadcasts[sender+"/"+action]
 		if found {
 			go f(u, sender, action, entity, content)
 
 		} else {
-			f, found := a.active.broadcasts[sender+"/"]
+			f, found := a.internal.broadcasts[sender+"/"]
 			if found {
 				go f(u, sender, action, entity, content)
 			}

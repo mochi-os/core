@@ -377,6 +377,23 @@ func app(id string) *App {
 	return a
 }
 
+// Get existing external app, or create a new one for loading Starlark apps
+func app_external(id string) *App {
+	apps_lock.Lock()
+	a, found := apps[id]
+	apps_lock.Unlock()
+
+	if !found {
+		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion)}
+
+		apps_lock.Lock()
+		apps[id] = a
+		apps_lock.Unlock()
+	}
+
+	return a
+}
+
 // Get an app by id, fingerprint, or path
 func app_by_any(user *User, s string) *App {
 	if s == "" {
@@ -1305,7 +1322,7 @@ func apps_load_dev() {
 			continue
 		}
 
-		a := app(id)
+		a := app_external(id)
 		a.load_version(av)
 		debug("Dev app loaded: %s", id)
 	}
@@ -1333,7 +1350,7 @@ func apps_load_published() {
 		if len(versions) == 0 {
 			continue
 		}
-		a := app(id)
+		a := app_external(id)
 
 		for _, version := range versions {
 			if strings.HasPrefix(version, ".") {
@@ -1393,13 +1410,13 @@ func (a *App) icon(action string, label string, file string) {
 }
 
 // Resolve an app label
-func (a *App) label(u *User, key string, values ...any) string {
+func (a *App) label(u *User, av *AppVersion, key string, values ...any) string {
 	language := "en"
 	if u != nil {
 		language = user_preference_get(u, "language", "en")
 	}
 
-	labels := a.active(u).labels
+	labels := av.labels
 	if labels == nil {
 		labels = map[string]map[string]string{}
 	}
@@ -1756,7 +1773,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 		}
 		result := map[string]any{
 			"id":     a.id,
-			"name":   a.label(user, av.Label),
+			"name":   a.label(user, av, av.Label),
 			"latest": latest,
 			"icon":   av.icon(),
 		}
@@ -1777,7 +1794,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	apps_lock.Lock()
 	for _, a := range apps {
 		av := a.active_locked(user)
-		if !av.user_allowed(user) {
+		if av == nil || !av.user_allowed(user) {
 			continue
 		}
 		for _, i := range av.Icons {
@@ -1788,7 +1805,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			if i.Action != "" {
 				path = path + "/" + i.Action
 			}
-			results = append(results, map[string]string{"id": a.id, "path": path, "name": a.label(user, i.Label), "file": i.File})
+			results = append(results, map[string]string{"id": a.id, "path": path, "name": a.label(user, av, i.Label), "file": i.File})
 		}
 	}
 	apps_lock.Unlock()
@@ -1946,7 +1963,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			continue
 		}
 		av := a.active_locked(user)
-		if !av.user_allowed(user) {
+		if av == nil || !av.user_allowed(user) {
 			continue
 		}
 		// Skip internal service apps without a Label
@@ -1957,7 +1974,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if a.latest != nil {
 			latest = a.latest.Version
 		}
-		results = append(results, map[string]string{"id": a.id, "name": a.label(user, av.Label), "latest": latest, "engine": av.Architecture.Engine, "icon": av.icon()})
+		results = append(results, map[string]string{"id": a.id, "name": a.label(user, av, av.Label), "active": av.Version, "latest": latest, "engine": av.Architecture.Engine, "icon": av.icon()})
 	}
 	apps_lock.Unlock()
 

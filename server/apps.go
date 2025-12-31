@@ -507,7 +507,8 @@ func app_check_version(id string) (string, bool) {
 	}
 	defer s.close()
 
-	s.write_content("track", "production")
+	// Empty track lets publisher use its default_track
+	s.write_content()
 
 	statusResp, err := s.read_content()
 	if err != nil {
@@ -936,6 +937,13 @@ func app_write_publisher(base string, peer string) {
 // Manage which apps and their versions are installed
 func apps_manager() {
 	time.Sleep(time.Second)
+
+	// If we already have apps installed, skip the setup wait
+	if len(file_list(data_dir+"/apps")) >= 2 {
+		apps_bootstrap_ready = true
+		debug("Apps already installed, skipping setup wait")
+	}
+
 	for {
 		todo := map[string]bool{}
 
@@ -2243,6 +2251,22 @@ func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if !ok {
 		return sl_error(fn, "invalid app_id")
 	}
+
+	// For published apps (entity IDs), scan the disk for installed versions
+	// This ensures we see all versions even if they were cleaned up from memory
+	if valid(app_id, "entity") {
+		dir := fmt.Sprintf("%s/apps/%s", data_dir, app_id)
+		var versions []string
+		for _, v := range file_list(dir) {
+			if valid(v, "version") {
+				versions = append(versions, v)
+			}
+		}
+		sort.Strings(versions)
+		return sl_encode(versions), nil
+	}
+
+	// For dev apps, use the in-memory versions map
 	a := app_by_id(app_id)
 	if a == nil {
 		return sl_encode([]string{}), nil

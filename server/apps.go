@@ -1788,6 +1788,7 @@ func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // mochi.app.file.install(id, file, check_only?, peer?) -> string: Install an app from a .zip file, returns version
+// Requires administrator role, or apps_install_user setting to be "true"
 func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 4 {
 		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string]")
@@ -1824,7 +1825,7 @@ func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	if !user.administrator() {
+	if !user.administrator() && setting_get("apps_install_user", "") != "true" {
 		return sl_error(fn, "not administrator")
 	}
 

@@ -1952,7 +1952,7 @@ func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 // mochi.app.list() -> list: Get list of installed apps
 func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
-	var results []map[string]string
+	var results []map[string]any
 
 	apps_lock.Lock()
 	for id, a := range apps {
@@ -1974,12 +1974,22 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if a.latest != nil {
 			latest = a.latest.Version
 		}
-		results = append(results, map[string]string{"id": a.id, "name": a.label(user, av, av.Label), "active": av.Version, "latest": latest, "engine": av.Architecture.Engine, "icon": av.icon()})
+		results = append(results, map[string]any{
+			"id":       a.id,
+			"name":     a.label(user, av, av.Label),
+			"active":   av.Version,
+			"latest":   latest,
+			"engine":   av.Architecture.Engine,
+			"icon":     av.icon(),
+			"classes":  av.Classes,
+			"services": av.Services,
+			"paths":    av.Paths,
+		})
 	}
 	apps_lock.Unlock()
 
 	sort.Slice(results, func(i, j int) bool {
-		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+		return strings.ToLower(results[i]["name"].(string)) < strings.ToLower(results[j]["name"].(string))
 	})
 
 	return sl_encode(results), nil
@@ -2043,12 +2053,8 @@ func api_app_class_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.True, nil
 }
 
-// mochi.app.class.list() -> dict: List all class bindings (admin only)
+// mochi.app.class.list() -> dict: List all class bindings
 func api_app_class_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
 	db := db_apps()
 	rows, _ := db.rows("select class, app from classes")
 	result := make(map[string]string)
@@ -2116,12 +2122,8 @@ func api_app_service_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	return sl.True, nil
 }
 
-// mochi.app.service.list() -> dict: List all service bindings (admin only)
+// mochi.app.service.list() -> dict: List all service bindings
 func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
 	db := db_apps()
 	rows, _ := db.rows("select service, app from services")
 	result := make(map[string]string)
@@ -2189,12 +2191,8 @@ func api_app_path_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.True, nil
 }
 
-// mochi.app.path.list() -> dict: List all path bindings (admin only)
+// mochi.app.path.list() -> dict: List all path bindings
 func api_app_path_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
 	db := db_apps()
 	rows, _ := db.rows("select path, app from paths")
 	result := make(map[string]string)

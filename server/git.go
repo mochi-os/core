@@ -609,12 +609,12 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl_error(fn, "failed to resolve ref: %v", err)
+		return sl.None, nil // ref not found
 	}
 
 	iter, err := repo.Log(&git.LogOptions{From: *hash})
 	if err != nil {
-		return sl_error(fn, "failed to get log: %v", err)
+		return sl.None, nil // log not found
 	}
 
 	var commits []map[string]any
@@ -738,17 +738,17 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl_error(fn, "failed to resolve ref: %v", err)
+		return sl.None, nil // ref not found
 	}
 
 	iter, err := repo.Log(&git.LogOptions{
-		From:     *hash,
+		From: *hash,
 		PathFilter: func(p string) bool {
 			return strings.HasPrefix(p, path) || p == path
 		},
 	})
 	if err != nil {
-		return sl_error(fn, "failed to get log: %v", err)
+		return sl.None, nil // log not found
 	}
 
 	var commits []map[string]any
@@ -805,23 +805,23 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 	baseHash, err := git_resolve_ref(repo, base)
 	if err != nil {
-		return sl_error(fn, "failed to resolve base: %v", err)
+		return sl.None, nil // base ref not found
 	}
 
 	headHash, err := git_resolve_ref(repo, head)
 	if err != nil {
-		return sl_error(fn, "failed to resolve head: %v", err)
+		return sl.None, nil // head ref not found
 	}
 
 	// Get commits reachable from head
 	headCommit, err := repo.CommitObject(*headHash)
 	if err != nil {
-		return sl_error(fn, "failed to get head commit: %v", err)
+		return sl.None, nil // head commit not found
 	}
 
 	baseCommit, err := repo.CommitObject(*baseHash)
 	if err != nil {
-		return sl_error(fn, "failed to get base commit: %v", err)
+		return sl.None, nil // base commit not found
 	}
 
 	// Find commits in head not in base
@@ -887,24 +887,24 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl_error(fn, "failed to resolve ref: %v", err)
+		return sl.None, nil // ref not found
 	}
 
 	commit, err := repo.CommitObject(*hash)
 	if err != nil {
-		return sl_error(fn, "failed to get commit: %v", err)
+		return sl.None, nil // commit not found
 	}
 
 	tree, err := commit.Tree()
 	if err != nil {
-		return sl_error(fn, "failed to get tree: %v", err)
+		return sl.None, nil // tree not found
 	}
 
 	// Navigate to path if specified
 	if path != "" {
 		tree, err = tree.Tree(path)
 		if err != nil {
-			return sl_error(fn, "path not found: %v", err)
+			return sl.None, nil // path not found
 		}
 	}
 
@@ -983,17 +983,17 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl_error(fn, "failed to resolve ref: %v", err)
+		return sl.None, nil // ref not found
 	}
 
 	commit, err := repo.CommitObject(*hash)
 	if err != nil {
-		return sl_error(fn, "failed to get commit: %v", err)
+		return sl.None, nil // commit not found
 	}
 
 	file, err := commit.File(path)
 	if err != nil {
-		return sl.None, nil
+		return sl.None, nil // file not found
 	}
 
 	content, err := file.Contents()
@@ -1037,17 +1037,17 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl_error(fn, "failed to resolve ref: %v", err)
+		return sl.None, nil // ref not found
 	}
 
 	commit, err := repo.CommitObject(*hash)
 	if err != nil {
-		return sl_error(fn, "failed to get commit: %v", err)
+		return sl.None, nil // commit not found
 	}
 
 	file, err := commit.File(path)
 	if err != nil {
-		return sl.None, nil
+		return sl.None, nil // file not found
 	}
 
 	// Check if binary by looking for null bytes in first 8KB

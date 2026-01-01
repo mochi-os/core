@@ -159,6 +159,17 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 	// Try as a tag
 	tagRef, err := repo.Reference(plumbing.NewTagReferenceName(ref), true)
 	if err == nil {
+		// For annotated tags, dereference to get the commit hash
+		tagObj, err := repo.TagObject(tagRef.Hash())
+		if err == nil {
+			// Annotated tag - get the commit it points to
+			commit, err := tagObj.Commit()
+			if err == nil {
+				hash := commit.Hash
+				return &hash, nil
+			}
+		}
+		// Lightweight tag or failed to dereference - use tag hash directly
 		hash := tagRef.Hash()
 		return &hash, nil
 	}

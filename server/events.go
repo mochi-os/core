@@ -78,8 +78,8 @@ func (e *Event) route() error {
 		}
 	}
 	if a == nil {
-		// Fall back to looking up by service
-		a = app_for_service(e.service)
+		// Fall back to looking up by service (respecting user preferences)
+		a = app_for_service_for(e.user, e.service)
 	}
 	if a == nil {
 		debug("Event dropping to unknown service %q", e.service)

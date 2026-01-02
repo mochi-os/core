@@ -185,6 +185,10 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		if !ok {
 			return sl_error(fn, "invalid user")
 		}
+		// Reject special subject markers - these are not valid user IDs
+		if user == "*" || user == "+" || strings.HasPrefix(user, "#") || strings.HasPrefix(user, "@") {
+			return sl_error(fn, "invalid user: special markers (*, +, #, @) are not valid user IDs")
+		}
 	}
 
 	resource, ok := sl.AsString(args[1])

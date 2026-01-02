@@ -115,8 +115,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		// For browser requests, redirect to login
 		if strings.Contains(c.GetHeader("Accept"), "text/html") {
 			// If user has a session cookie but auth failed (suspended, expired, etc),
-			// add reauth param so frontend clears its state and avoids redirect loop
+			// clear the invalid cookie to prevent redirect loops
 			if web_cookie_get(c, "session", "") != "" {
+				web_cookie_unset(c, "session")
 				c.Redirect(http.StatusFound, "/login?reauth=1")
 			} else {
 				c.Redirect(http.StatusFound, "/login")

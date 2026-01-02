@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 
@@ -16,7 +17,7 @@ import (
 )
 
 var (
-	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}.js$`)
+	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}\.(js|css)$`)
 	web_https   = false
 )
 
@@ -349,8 +350,18 @@ func web_cache_static(c *gin.Context, path string) {
 		return
 	}
 	if strings.HasSuffix(path, ".html") {
-		// HTML files should not be cached to ensure fresh content
+		// HTML files should revalidate on every request
+		// Add ETag based on file modification time for proper cache validation
 		c.Header("Cache-Control", "no-cache, must-revalidate")
+		if info, err := os.Stat(path); err == nil {
+			etag := fmt.Sprintf(`"%x"`, info.ModTime().UnixNano())
+			c.Header("ETag", etag)
+			// Check If-None-Match header for conditional request
+			if match := c.GetHeader("If-None-Match"); match == etag {
+				c.AbortWithStatus(http.StatusNotModified)
+				return
+			}
+		}
 	} else if match_react.MatchString(path) {
 		// debug("Web asking browser to long term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")

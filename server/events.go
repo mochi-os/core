@@ -66,14 +66,19 @@ func (e *Event) route() error {
 	if a != nil {
 		// Check if this app actually handles the requested event
 		av := a.active(e.user)
-		apps_lock.Lock()
-		_, hasEvent := av.Events[e.event]
-		if !hasEvent {
-			_, hasEvent = av.Events[""]
-		}
-		apps_lock.Unlock()
-		if !hasEvent {
-			// App doesn't handle this event, fall back to service lookup
+		if av != nil {
+			apps_lock.Lock()
+			_, hasEvent := av.Events[e.event]
+			if !hasEvent {
+				_, hasEvent = av.Events[""]
+			}
+			apps_lock.Unlock()
+			if !hasEvent {
+				// App doesn't handle this event, fall back to service lookup
+				a = nil
+			}
+		} else {
+			// No active version for this app
 			a = nil
 		}
 	}

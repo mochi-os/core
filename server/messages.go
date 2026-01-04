@@ -248,6 +248,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "database error: %v", err)
 	}
 	if !from_valid {
+		info("message.send: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
 		return sl_error(fn, "invalid from header")
 	}
 

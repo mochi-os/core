@@ -33,7 +33,6 @@ deb: $(deb)
 #	cp $(deb) ../apt/pool/main
 #	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
 #	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/
-#	git push github $(version)
 
 format:
 	go fmt server/*.go

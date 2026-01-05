@@ -72,6 +72,7 @@ func init() {
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
 			"valid":     sl.NewBuiltin("mochi.valid", api_valid),
+			"webpush":   api_webpush,
 			"websocket": api_websocket,
 		}),
 	}

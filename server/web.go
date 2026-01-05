@@ -918,6 +918,7 @@ func web_start() {
 	r.POST("/_/logout", web_logout)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/p2p/info", web_p2p_info)
+	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/_/context", web_context)
 	r.GET("/_/websocket", websocket_connection)
 

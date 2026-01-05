@@ -342,6 +342,10 @@ func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.print(strings...) -> None: Print raw content to browser
 func (a *Action) sl_print(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Set status 200 on first write (matches a.error() pattern)
+	if !a.web.Writer.Written() {
+		a.web.Status(200)
+	}
 	for _, arg := range args {
 		s, ok := sl.AsString(arg)
 		if ok {

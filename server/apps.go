@@ -23,8 +23,8 @@ type App struct {
 	id          string
 	fingerprint string
 	versions    map[string]*AppVersion
-	latest      *AppVersion   // Highest installed version (external apps)
-	internal    *AppVersion   // Single version for internal Go apps
+	latest      *AppVersion // Highest installed version (external apps)
+	internal    *AppVersion // Single version for internal Go apps
 }
 
 type AppAction struct {
@@ -63,7 +63,7 @@ type AppVersion struct {
 	Classes  []string `json:"classes"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
-	Require struct {
+	Require  struct {
 		Role    string `json:"role"`
 		Version struct {
 			Minimum string `json:"minimum"`
@@ -1112,7 +1112,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	for _, path := range av.Paths {
-		if !valid(path, "path") {
+		if !valid(path, "apppath") {
 			return nil, fmt.Errorf("App bad path %q", path)
 		}
 	}

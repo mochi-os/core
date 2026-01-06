@@ -362,10 +362,6 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if !valid(path, "path") {
-		return sl_error(fn, "invalid path %q", path)
-	}
-
 	a.web.Redirect(301, path)
 	return sl.None, nil
 }

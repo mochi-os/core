@@ -342,6 +342,8 @@ func valid(s string, match string) bool {
 	switch match {
 	case "action":
 		match = "^[0-9a-zA-Z/\\-:_*.]{1,100}$"
+	case "apppath":
+		match = "^[0-9a-zA-Z-]{0,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "entity":
@@ -375,7 +377,7 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z/:_-]{1,200}$"
 	case "path":
 		match = "^[0-9a-zA-Z-/]{0,1000}$"
-	case "postive":
+	case "positive":
 		match = "^\\d{1,9}$"
 	case "privacy":
 		match = "^(public|private)$"

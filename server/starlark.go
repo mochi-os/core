@@ -308,6 +308,7 @@ func sl_encode_tuple(in ...any) sl.Tuple {
 // Helper function to return an error
 func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 	format := "Unknown error type"
+	var underlyingErr error
 
 	switch v := e.(type) {
 	case error:
@@ -315,17 +316,33 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 			format = "Nil error"
 		} else {
 			format = v.Error()
+			underlyingErr = v
 		}
 
 	case string:
 		format = v
 	}
 
-	if fn == nil {
-		return sl.None, fmt.Errorf(format, values...)
-	} else {
-		return sl.None, fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+	// Check if any of the values is an error we should preserve
+	for _, v := range values {
+		if err, ok := v.(error); ok && underlyingErr == nil {
+			underlyingErr = err
+		}
 	}
+
+	var finalErr error
+	if fn == nil {
+		finalErr = fmt.Errorf(format, values...)
+	} else {
+		finalErr = fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+	}
+
+	// Wrap with the underlying error to preserve error types for errors.As
+	if underlyingErr != nil {
+		finalErr = fmt.Errorf("%w: %v", underlyingErr, finalErr)
+	}
+
+	return sl.None, finalErr
 }
 
 // Call a Starlark function

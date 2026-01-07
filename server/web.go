@@ -5,6 +5,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -55,6 +56,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if dev_reload {
 		av.reload()
 	}
+
+	// Run first-time setup for this user and app (grants default permissions)
+	app_user_setup(user, a.id)
 
 	// When entity is provided via domain routing, try entity-prefixed actions.
 	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
@@ -324,6 +328,16 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 		result, err := s.call(aa.Function, sl.Tuple{&action})
 		if err != nil {
+			// Check for permission error and return structured response
+			var permErr *PermissionError
+			if errors.As(err, &permErr) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":      "permission_required",
+					"permission": permErr.Permission,
+					"restricted": permErr.Restricted,
+				})
+				return true
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return true
 		}

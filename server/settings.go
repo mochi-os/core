@@ -174,6 +174,11 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.setting.set(name, value) -> bool: Set a system setting value (admin only)
 func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Check setting/write permission
+	if err := require_permission(t, fn, "setting/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <name: string>, <value: string>")
 	}

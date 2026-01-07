@@ -291,6 +291,15 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not authorized to delete this entity")
 	}
 
+	// Verify the calling app controls the entity's class
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	if e.Class != "" && apps_class_get(e.Class) != app.id {
+		return sl_error(fn, "app does not control class %q", e.Class)
+	}
+
 	// Delete the entity
 	e.delete()
 	return sl.True, nil

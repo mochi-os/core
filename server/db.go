@@ -24,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 22
+	schema_version = 24
 )
 
 var (
@@ -82,9 +82,10 @@ func db_create() {
 	// TOTP secrets
 	users.exec("create table totp (user integer primary key references users(id) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
 
-	// API tokens
-	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, name text not null default '', scopes text not null default '', expires text not null default '', created text not null default '', last_used text not null default '')")
+	// API tokens (app-scoped)
+	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, used integer not null default 0, expires integer not null default 0)")
 	users.exec("create index tokens_user on tokens(user)")
+	users.exec("create index tokens_app on tokens(app)")
 
 	// Entities
 	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
@@ -177,6 +178,7 @@ func db_user(u *User, name string) *DB {
 	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
 		db.groups_setup()
+		db.permissions_setup()
 
 		// App preferences (for multi-version and user-configurable routing)
 		db.exec("create table if not exists classes (class text not null primary key, app text not null)")
@@ -377,6 +379,28 @@ func db_upgrade() {
 			users := db_open("db/users.db")
 			users.exec("create table if not exists tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, name text not null default '', scopes text not null default '', expires text not null default '', created text not null default '', last_used text not null default '')")
 			users.exec("create index if not exists tokens_user on tokens(user)")
+		}
+
+		if schema == 23 {
+			// Migration: default app permissions (now handled lazily by app_user_init)
+		}
+
+		if schema == 24 {
+			// Migration: recreate tokens table with app scoping and integer timestamps
+			users := db_open("db/users.db")
+			users.exec("drop table if exists tokens")
+			users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, used integer not null default 0, expires integer not null default 0)")
+			users.exec("create index tokens_user on tokens(user)")
+			users.exec("create index tokens_app on tokens(app)")
+
+			// Migration: rename permissions/manage to permission/manage in all user databases
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				if id, ok := row["id"].(int64); ok {
+					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.exec("update permissions set permission='permission/manage' where permission='permissions/manage'")
+				}
+			}
 		}
 
 		setting_set("schema", itoa(int(schema)))

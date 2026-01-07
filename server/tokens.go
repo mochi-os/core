@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -18,12 +17,13 @@ import (
 type Token struct {
 	Hash     string   `db:"hash"`
 	User     int      `db:"user"`
+	App      string   `db:"app"`
 	Name     string   `db:"name"`
 	Scopes   []string `db:"-"`
 	ScopesDB string   `db:"scopes"`
-	Expires  string   `db:"expires"`
-	Created  string   `db:"created"`
-	LastUsed string   `db:"last_used"`
+	Created  int64    `db:"created"`
+	Used     int64    `db:"used"`
+	Expires  int64    `db:"expires"`
 }
 
 var api_token = sls.FromStringDict(sl.String("mochi.token"), sl.StringDict{
@@ -52,7 +52,7 @@ func token_hash(token string) string {
 }
 
 // Create a new token for a user and return the plaintext token
-func token_create(user int, name string, scopes []string, expires string) string {
+func token_create(user int, app string, name string, scopes []string, expires int64) string {
 	token := token_generate()
 	if token == "" {
 		return ""
@@ -62,8 +62,8 @@ func token_create(user int, name string, scopes []string, expires string) string
 	scopesJSON, _ := json.Marshal(scopes)
 
 	db := db_open("db/users.db")
-	db.exec("insert into tokens (hash, user, name, scopes, expires, created, last_used) values (?, ?, ?, ?, ?, ?, '')",
-		hash, user, name, string(scopesJSON), expires, time.Now().Format("2006-01-02 15:04:05"))
+	db.exec("insert into tokens (hash, user, app, name, scopes, created, used, expires) values (?, ?, ?, ?, ?, ?, 0, ?)",
+		hash, user, app, name, string(scopesJSON), now(), expires)
 
 	return token
 }
@@ -75,10 +75,10 @@ func token_delete(hash string) bool {
 	return true
 }
 
-// Return all tokens for a user (without the actual token values)
-func token_list(user int) []map[string]any {
+// Return all tokens for a user and app (without the actual token values)
+func token_list(user int, app string) []map[string]any {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select hash, name, scopes, expires, created, last_used from tokens where user = ?", user)
+	rows, _ := db.rows("select hash, name, scopes, created, used, expires from tokens where user = ? and app = ?", user, app)
 
 	var results []map[string]any
 	for _, row := range rows {
@@ -87,12 +87,12 @@ func token_list(user int) []map[string]any {
 		json.Unmarshal([]byte(scopesJSON), &scopes)
 
 		results = append(results, map[string]any{
-			"hash":      row["hash"],
-			"name":      row["name"],
-			"scopes":    scopes,
-			"expires":   row["expires"],
-			"created":   row["created"],
-			"last_used": row["last_used"],
+			"hash":    row["hash"],
+			"name":    row["name"],
+			"scopes":  scopes,
+			"created": row["created"],
+			"used":    row["used"],
+			"expires": row["expires"],
 		})
 	}
 	return results
@@ -108,23 +108,20 @@ func token_validate(token string) *Token {
 	db := db_open("db/users.db")
 
 	var t Token
-	if !db.scan(&t, "select hash, user, name, scopes, expires, created, last_used from tokens where hash = ?", hash) {
+	if !db.scan(&t, "select hash, user, app, name, scopes, created, used, expires from tokens where hash = ?", hash) {
 		return nil
 	}
 
-	// Check expiration
-	if t.Expires != "" {
-		expires, err := time.Parse("2006-01-02 15:04:05", t.Expires)
-		if err == nil && time.Now().After(expires) {
-			return nil // Token expired
-		}
+	// Check expiration (0 means no expiration)
+	if t.Expires > 0 && now() > t.Expires {
+		return nil
 	}
 
 	// Parse scopes
 	json.Unmarshal([]byte(t.ScopesDB), &t.Scopes)
 
-	// Update last_used
-	db.exec("update tokens set last_used = ? where hash = ?", time.Now().Format("2006-01-02 15:04:05"), hash)
+	// Update used timestamp
+	db.exec("update tokens set used = ? where hash = ?", now(), hash)
 
 	return &t
 }
@@ -153,8 +150,13 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
 	if len(args) < 1 {
-		return sl_error(fn, "syntax: <name: string>, [scopes: list], [expires: string]")
+		return sl_error(fn, "syntax: <name: string>, [scopes: list], [expires: int]")
 	}
 
 	name, ok := sl.AsString(args[0])
@@ -174,12 +176,16 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
-	expires := ""
+	var expires int64 = 0
 	if len(args) > 2 && args[2] != sl.None {
-		expires, _ = sl.AsString(args[2])
+		exp, ok := args[2].(sl.Int)
+		if !ok {
+			return sl_error(fn, "expires must be an integer")
+		}
+		expires, _ = exp.Int64()
 	}
 
-	token := token_create(user.ID, name, scopes, expires)
+	token := token_create(user.ID, app.id, name, scopes, expires)
 	if token == "" {
 		return sl_error(fn, "failed to create token")
 	}
@@ -194,6 +200,11 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <hash: string>")
 	}
@@ -203,28 +214,36 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "hash must be a string")
 	}
 
-	// Verify the token belongs to this user
+	// Verify the token belongs to this user and app
 	db := db_open("db/users.db")
-	row, _ := db.row("select user from tokens where hash = ?", hash)
+	row, _ := db.row("select user, app from tokens where hash = ?", hash)
 	if row == nil {
 		return sl.False, nil
 	}
 	if int(row["user"].(int64)) != user.ID {
 		return sl_error(fn, "token does not belong to user")
 	}
+	if row["app"].(string) != app.id {
+		return sl_error(fn, "token does not belong to app")
+	}
 
 	token_delete(hash)
 	return sl.True, nil
 }
 
-// mochi.token.list() -> list: List all tokens for the current user
+// mochi.token.list() -> list: List all tokens for the current user and app
 func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "not authenticated")
 	}
 
-	tokens := token_list(user.ID)
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	tokens := token_list(user.ID, app.id)
 	return sl_encode(tokens), nil
 }
 
@@ -291,11 +310,12 @@ func api_token_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	return sl_encode(map[string]any{
-		"user":      token.User,
-		"name":      token.Name,
-		"scopes":    token.Scopes,
-		"expires":   token.Expires,
-		"created":   token.Created,
-		"last_used": token.LastUsed,
+		"user":    token.User,
+		"app":     token.App,
+		"name":    token.Name,
+		"scopes":  token.Scopes,
+		"created": token.Created,
+		"used":    token.Used,
+		"expires": token.Expires,
 	}), nil
 }

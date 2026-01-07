@@ -398,9 +398,10 @@ func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	return require_permission(t, fn, "url:"+domain)
 }
 
-// require_permission_service checks service permission for a specific service
+// require_permission_service checks service permission for a specific service.
+// Services are permissionless - the receiving service decides whether to accept calls.
 func require_permission_service(t *sl.Thread, fn *sl.Builtin, service string) error {
-	return require_permission(t, fn, "service:"+service)
+	return nil
 }
 
 // mochi.permission.check(permission) -> bool: Check if current app has a permission

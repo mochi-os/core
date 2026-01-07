@@ -39,7 +39,8 @@ func init() {
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
 			}),
-			"message": api_message,
+			"message":    api_message,
+			"permission": api_permission,
 			"peer": sls.FromStringDict(sl.String("mochi.peer"), sl.StringDict{
 				"connect": sls.FromStringDict(sl.String("mochi.peer.connect"), sl.StringDict{
 					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
@@ -120,6 +121,11 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	function, ok := sl.AsString(args[1])
 	if !ok {
 		return sl_error(fn, "invalid function")
+	}
+
+	// Check service permission
+	if err := require_permission_service(t, fn, service); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	// Check for deep recursion
@@ -397,6 +403,11 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	url, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid URL")
+	}
+
+	// Check url permission for external URLs
+	if err := require_permission_url(t, fn, url); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	var options map[string]string

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gin-gonic/gin"
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -59,6 +59,11 @@ func api_webpush_key(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.webpush.send(endpoint, auth, p256dh, payload) -> bool: Send push notification
 func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Check webpush/send permission
+	if err := require_permission(t, fn, "webpush/send"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	var endpoint, auth, p256dh, payload string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
 		"endpoint", &endpoint,

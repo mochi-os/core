@@ -238,31 +238,31 @@ func TestAppVersionNoRequirement(t *testing.T) {
 func TestMochiVersionScenarios(t *testing.T) {
 	// Simulate real Mochi version progression
 	scenarios := []struct {
-		name       string
-		appMin     string
-		appMax     string
-		compatible []string
+		name         string
+		appMin       string
+		appMax       string
+		compatible   []string
 		incompatible []string
 	}{
 		{
-			name:       "repositories app (0.3+)",
-			appMin:     "0.3",
-			appMax:     "",
-			compatible: []string{"0.3.0", "0.3.1", "0.4.0", "1.0.0"},
+			name:         "repositories app (0.3+)",
+			appMin:       "0.3",
+			appMax:       "",
+			compatible:   []string{"0.3.0", "0.3.1", "0.4.0", "1.0.0"},
 			incompatible: []string{"0.2.0", "0.2.37", "0.1.0"},
 		},
 		{
-			name:       "legacy app (0.1-0.2)",
-			appMin:     "0.1",
-			appMax:     "0.2",
-			compatible: []string{"0.1.0", "0.1.5", "0.2.0", "0.2.37"},
+			name:         "legacy app (0.1-0.2)",
+			appMin:       "0.1",
+			appMax:       "0.2",
+			compatible:   []string{"0.1.0", "0.1.5", "0.2.0", "0.2.37"},
 			incompatible: []string{"0.3.0", "1.0.0"},
 		},
 		{
-			name:       "future app (1.0+)",
-			appMin:     "1.0",
-			appMax:     "",
-			compatible: []string{"1.0.0", "1.1.0", "2.0.0"},
+			name:         "future app (1.0+)",
+			appMin:       "1.0",
+			appMax:       "",
+			compatible:   []string{"1.0.0", "1.1.0", "2.0.0"},
 			incompatible: []string{"0.3.0", "0.9.9"},
 		},
 	}

@@ -26,11 +26,11 @@ import (
 )
 
 var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
-	"init":   sl.NewBuiltin("mochi.git.init", api_git_init),
-	"delete": sl.NewBuiltin("mochi.git.delete", api_git_delete),
-	"path":   sl.NewBuiltin("mochi.git.path", api_git_path),
-	"size":   sl.NewBuiltin("mochi.git.size", api_git_size),
-	"refs":   sl.NewBuiltin("mochi.git.refs", api_git_refs),
+	"init":     sl.NewBuiltin("mochi.git.init", api_git_init),
+	"delete":   sl.NewBuiltin("mochi.git.delete", api_git_delete),
+	"path":     sl.NewBuiltin("mochi.git.path", api_git_path),
+	"size":     sl.NewBuiltin("mochi.git.size", api_git_size),
+	"refs":     sl.NewBuiltin("mochi.git.refs", api_git_refs),
 	"branches": sl.NewBuiltin("mochi.git.branches", api_git_branches),
 	"tags":     sl.NewBuiltin("mochi.git.tags", api_git_tags),
 	"tree":     sl.NewBuiltin("mochi.git.tree", api_git_tree),
@@ -320,10 +320,10 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		}
 
 		refs = append(refs, map[string]any{
-			"name":  shortName,
-			"full":  name,
-			"type":  refType,
-			"sha":   ref.Hash().String(),
+			"name": shortName,
+			"full": name,
+			"type": refType,
+			"sha":  ref.Hash().String(),
 		})
 		return nil
 	})

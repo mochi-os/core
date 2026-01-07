@@ -85,7 +85,7 @@ func TestVersionCompare(t *testing.T) {
 		{"1.0", "1.0", 0},
 		{"1.1", "1.0", 1},
 		{"1.0", "1.1", -1},
-		{"1.11", "1.9", 1},  // Numeric comparison, not string
+		{"1.11", "1.9", 1}, // Numeric comparison, not string
 		{"2.0", "1.99", 1},
 		{"1.0.0", "1.0", 0}, // 1.0.0 is in 1.0.x family
 		{"1.0.1", "1.0", 0}, // 1.0.1 is in 1.0.x family
@@ -1266,8 +1266,8 @@ func TestVersionCompareEdgeCases(t *testing.T) {
 		a, b string
 		want int
 	}{
-		{"", "", 0},           // Empty versions
-		{"1", "1", 0},         // Single part
+		{"", "", 0},   // Empty versions
+		{"1", "1", 0}, // Single part
 		{"1", "2", -1},
 		{"10", "9", 1},        // Double digit
 		{"1.0.0.0", "1", 0},   // Many parts vs one
@@ -1387,12 +1387,12 @@ func TestVersionComparePreRelease(t *testing.T) {
 		a, b string
 		want int
 	}{
-		{"1.0-alpha", "1.0-beta", -1},   // alpha < beta alphabetically
+		{"1.0-alpha", "1.0-beta", -1}, // alpha < beta alphabetically
 		{"1.0-alpha.1", "1.0-alpha.2", -1},
-		{"1.0-rc.1", "1.0-rc.10", -1},   // Numeric comparison in pre-release
-		{"2.0-beta", "1.0", 1},          // Major version wins
-		{"1.0-alpha", "1.0", -1},        // Pre-release < release (by string comparison, alpha < empty would vary)
-		{"1.0.0-alpha", "1.0.0", -1},    // Pre-release suffix makes it "less"
+		{"1.0-rc.1", "1.0-rc.10", -1}, // Numeric comparison in pre-release
+		{"2.0-beta", "1.0", 1},        // Major version wins
+		{"1.0-alpha", "1.0", -1},      // Pre-release < release (by string comparison, alpha < empty would vary)
+		{"1.0.0-alpha", "1.0.0", -1},  // Pre-release suffix makes it "less"
 	}
 
 	for _, tc := range tests {

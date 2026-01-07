@@ -284,19 +284,47 @@ func version_greater(a, b string) bool {
 	return false
 }
 
+// DefaultApp defines a default app and its permissions
+type DefaultApp struct {
+	ID          string
+	Name        string
+	Permissions []struct{ Permission, Object string }
+}
+
 var (
 	// Default apps to install, in priority order (Login and Home first for usability)
-	apps_install_by_default = []string{
-		"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F",  // Login
-		"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", // Home
-		"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", // App Manager
-		"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92",  // Chat
-		"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", // Feeds
-		"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", // Forums
-		"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", // Notifications
-		"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV",  // People
-		"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky",  // Settings
-		"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", // Wikis
+	apps_default = []DefaultApp{
+		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", nil},
+		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
+		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
+			{"permission/manage", ""},
+		}},
+		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
+			{"service", "friends"},
+			{"service", "notifications"},
+		}},
+		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
+			{"service", "friends"},
+			{"service", "notifications"},
+		}},
+		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
+			{"service", "friends"},
+		}},
+		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
+			{"webpush/send", ""},
+		}},
+		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
+			{"group/manage", ""},
+			{"user/read", ""},
+			{"service", "notifications"},
+		}},
+		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
+			{"setting/write", ""},
+			{"user/read", ""},
+		}},
+		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
+			{"service", "friends"},
+		}},
 	}
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}
@@ -1044,9 +1072,9 @@ func apps_manager() {
 		todo := map[string]bool{}
 
 		// Install default apps in priority order (Login and Home first)
-		for i, id := range apps_install_by_default {
-			todo[id] = true
-			app_check_install(id)
+		for i, app := range apps_default {
+			todo[app.ID] = true
+			app_check_install(app.ID)
 
 			// Mark bootstrap ready after Login and Home (first two) are installed
 			if i == 1 && !apps_bootstrap_ready {

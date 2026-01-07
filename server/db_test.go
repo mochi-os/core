@@ -511,3 +511,58 @@ func TestDbMaxPageCountConstant(t *testing.T) {
 	}
 }
 
+// Test app_user_setup grants default permissions on first app access
+func TestAppUserSetup(t *testing.T) {
+	// Create temp directory
+	tmp_dir, err := os.MkdirTemp("", "mochi_app_user_init_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	// Save and set data_dir
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Create user directory
+	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
+
+	user := &User{ID: 1}
+
+	// App Manager app ID with permission/manage default
+	appsAppID := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
+
+	// Verify no permissions exist before app_user_init
+	db1 := db_user(user, "user")
+	db1.permissions_setup()
+	hasPermission, _ := db1.exists("select 1 from permissions where app=? and permission='permission/manage' and granted=1", appsAppID)
+	if hasPermission {
+		t.Error("User should not have permission/manage before app_user_setup")
+	}
+
+	// Run app_user_setup for the Apps app
+	app_user_setup(user, appsAppID)
+
+	// Verify permissions are now granted
+	hasPermission, _ = db1.exists("select 1 from permissions where app=? and permission='permission/manage' and granted=1", appsAppID)
+	if !hasPermission {
+		t.Error("User should have permission/manage after app_user_setup")
+	}
+
+	// Verify setup timestamp is recorded in apps table
+	db1.apps_setup()
+	setup := db1.integer("select setup from apps where app=?", appsAppID)
+	if setup == 0 {
+		t.Error("Setup timestamp should be non-zero after app_user_setup")
+	}
+
+	// Run app_user_setup again - should be idempotent
+	app_user_setup(user, appsAppID)
+
+	// Verify only one permission row exists (not duplicated)
+	count := db1.integer("select count(*) from permissions where app=? and permission='permission/manage'", appsAppID)
+	if count != 1 {
+		t.Errorf("Expected 1 permission row, got %d", count)
+	}
+}

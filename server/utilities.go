@@ -7,7 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/rand"
-	sha "crypto/sha1"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/btcsuite/btcutil/base58"
@@ -101,9 +101,7 @@ func check(err error) {
 }
 
 func fingerprint(in string) string {
-	s := sha.New()
-	s.Write([]byte(in))
-	hash := s.Sum(nil)
+	hash := sha256.Sum256([]byte(in))
 
 	// Encode using unambiguous characters (55 chars)
 	out := make([]byte, 9)

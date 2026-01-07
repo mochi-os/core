@@ -24,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 24
+	schema_version = 25
 )
 
 var (
@@ -116,8 +116,7 @@ func db_create() {
 
 	// Directory
 	directory := db_open("db/directory.db")
-	directory.exec("create table directory ( id text not null primary key, fingerprint text not null, name text not null, class text not null, location text not null default '', data text not null default '', created integer not null, updated integer not null )")
-	directory.exec("create index directory_fingerprint on directory( fingerprint )")
+	directory.exec("create table directory ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', created integer not null, updated integer not null )")
 	directory.exec("create index directory_name on directory( name )")
 	directory.exec("create index directory_class on directory( class )")
 	directory.exec("create index directory_location on directory( location )")
@@ -401,6 +400,30 @@ func db_upgrade() {
 					udb.exec("update permissions set permission='permission/manage' where permission='permissions/manage'")
 				}
 			}
+		}
+
+		if schema == 25 {
+			// Migration: recalculate entity fingerprints using SHA256 (was SHA1)
+			users := db_open("db/users.db")
+			erows, _ := users.rows("select id from entities")
+			for _, erow := range erows {
+				if eid, ok := erow["id"].(string); ok {
+					fp := fingerprint(eid)
+					users.exec("update entities set fingerprint=? where id=?", fp, eid)
+				}
+			}
+
+			// Remove fingerprint column from directory (now computed on the fly)
+			dir := db_open("db/directory.db")
+			dir.exec("create table directory_new ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', created integer not null, updated integer not null )")
+			dir.exec("insert into directory_new (id, name, class, location, data, created, updated) select id, name, class, location, data, created, updated from directory")
+			dir.exec("drop table directory")
+			dir.exec("alter table directory_new rename to directory")
+			dir.exec("create index directory_name on directory(name)")
+			dir.exec("create index directory_class on directory(class)")
+			dir.exec("create index directory_location on directory(location)")
+			dir.exec("create index directory_created on directory(created)")
+			dir.exec("create index directory_updated on directory(updated)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

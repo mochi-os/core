@@ -73,7 +73,7 @@ func directory_create(e *Entity) {
 	now := now()
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", e.ID, e.Fingerprint, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
+	db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
 }
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory
@@ -131,7 +131,7 @@ func directory_download_from_peer(peer string) bool {
 		}
 
 		debug("Directory got update %s %q", d.ID, d.Name)
-		db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", d.ID, fingerprint(d.ID), d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
+		db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
 
@@ -253,7 +253,7 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory ( id, fingerprint, name, class, location, data, created, updated ) values ( ?, ?, ?, ?, ?, ?, ?, ? )", id, fingerprint(id), name, class, location, data, created, now)
+	db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, created, now)
 
 	go queue_check_entity(id)
 }
@@ -279,8 +279,8 @@ func directory_search(u *User, class string, search string, include_self bool) *
 		return &ds
 	}
 
-	for i, _ := range ds {
-		ds[i].Fingerprint = fingerprint_hyphens(ds[i].Fingerprint)
+	for i := range ds {
+		ds[i].Fingerprint = fingerprint_hyphens(fingerprint(ds[i].ID))
 	}
 
 	if u == nil || include_self || class != "person" {
@@ -328,6 +328,7 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if d == nil {
 		return sl.None, nil
 	}
+	d["fingerprint"] = fingerprint(d["id"].(string))
 	d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
 
 	return sl_encode(d), nil
@@ -359,6 +360,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	for _, d := range ds {
+		d["fingerprint"] = fingerprint(d["id"].(string))
 		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
 	}
 

@@ -486,12 +486,19 @@ func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return d, nil
 }
 
-// a.header(name, value) -> None: Set response header
+// a.header(name, value?) -> string|None: Get request header (1 arg) or set response header (2 args)
 func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name, value string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "value", &value); err != nil {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "value?", &value); err != nil {
 		return nil, err
 	}
+
+	// One argument: read request header
+	if len(args) == 1 && value == "" {
+		return sl.String(a.web.GetHeader(name)), nil
+	}
+
+	// Two arguments: set response header
 	a.web.Header(name, value)
 	return sl.None, nil
 }

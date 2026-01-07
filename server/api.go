@@ -123,11 +123,6 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid function")
 	}
 
-	// Check service permission
-	if err := require_permission_service(t, fn, service); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
 	// Check for deep recursion
 	depth := 1
 	depth_var := t.Local("depth")

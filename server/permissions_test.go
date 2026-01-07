@@ -76,7 +76,6 @@ func TestPermissionRestrictedStandard(t *testing.T) {
 	standardPerms := []string{
 		"group/manage",
 		"url:example.com",
-		"service:friends",
 	}
 
 	for _, perm := range standardPerms {
@@ -128,7 +127,6 @@ func TestPermissionAdministrator(t *testing.T) {
 	nonAdminPerms := []string{
 		"group/manage",
 		"url:example.com",
-		"service:friends",
 	}
 
 	for _, perm := range nonAdminPerms {
@@ -150,7 +148,6 @@ func TestPermissionSplit(t *testing.T) {
 	}{
 		{"url:github.com", "url", "github.com"},
 		{"url:*", "url", "*"},
-		{"service:friends", "service", "friends"},
 		{"group/manage", "group/manage", ""},
 		{"user/read", "user/read", ""},
 	}
@@ -172,7 +169,6 @@ func TestPermissionJoin(t *testing.T) {
 	}{
 		{"url", "github.com", "url:github.com"},
 		{"url", "*", "url:*"},
-		{"service", "friends", "service:friends"},
 		{"group/manage", "", "group/manage"},
 	}
 
@@ -318,7 +314,6 @@ func TestInternalAppBypassesPermissions(t *testing.T) {
 	permissions := []string{
 		"group/manage",
 		"url:example.com",
-		"service:friends",
 	}
 
 	for _, perm := range permissions {
@@ -385,12 +380,11 @@ func TestPermissionsList(t *testing.T) {
 	// Grant multiple permissions
 	permission_grant(user, appID, "group/manage")
 	permission_grant(user, appID, "url:github.com")
-	permission_grant(user, appID, "service:friends")
 
 	perms := permissions_list(user, appID)
 
-	if len(perms) < 3 {
-		t.Errorf("permissions_list returned %d permissions, want at least 3", len(perms))
+	if len(perms) < 2 {
+		t.Errorf("permissions_list returned %d permissions, want at least 2", len(perms))
 	}
 
 	// Check that permissions are in the list
@@ -400,7 +394,7 @@ func TestPermissionsList(t *testing.T) {
 		found[perm] = true
 	}
 
-	expected := []string{"group/manage", "url:github.com", "service:friends"}
+	expected := []string{"group/manage", "url:github.com"}
 	for _, exp := range expected {
 		if !found[exp] {
 			t.Errorf("permissions_list missing %q", exp)
@@ -615,38 +609,6 @@ func TestRequirePermissionURLInvalid(t *testing.T) {
 	err := require_permission_url(thread, fn, "not-a-valid-url")
 	if err == nil {
 		t.Error("require_permission_url with invalid URL should return error")
-	}
-}
-
-// =============================================================================
-// require_permission_service Tests
-// =============================================================================
-
-func TestRequirePermissionService(t *testing.T) {
-	setupTestDataDir(t)
-	defer cleanupTestDataDir(t)
-
-	user := createTestUser(t, 1)
-	app := createExternalApp("test-app")
-	thread := createTestThread(user, app)
-	fn := sl.NewBuiltin("test", nil)
-
-	// Services are permissionless - the receiving service decides whether to accept calls
-	// All service calls should succeed without needing permission
-
-	err := require_permission_service(thread, fn, "friends")
-	if err != nil {
-		t.Errorf("require_permission_service(friends) returned error: %v", err)
-	}
-
-	err = require_permission_service(thread, fn, "notifications")
-	if err != nil {
-		t.Errorf("require_permission_service(notifications) returned error: %v", err)
-	}
-
-	err = require_permission_service(thread, fn, "any-service")
-	if err != nil {
-		t.Errorf("require_permission_service(any-service) returned error: %v", err)
 	}
 }
 
@@ -1065,26 +1027,6 @@ func TestInternalAppBypassURLPermission(t *testing.T) {
 	}
 }
 
-func TestInternalAppBypassServicePermission(t *testing.T) {
-	setupTestDataDir(t)
-	defer cleanupTestDataDir(t)
-
-	user := createTestUser(t, 1)
-	internalApp := createInternalApp("test-internal")
-	thread := createTestThread(user, internalApp)
-	fn := sl.NewBuiltin("test", nil)
-
-	// Internal app should bypass service permission checks
-	services := []string{"friends", "notifications", "settings", "any-service"}
-
-	for _, service := range services {
-		err := require_permission_service(thread, fn, service)
-		if err != nil {
-			t.Errorf("require_permission_service(%q) for internal app returned error: %v", service, err)
-		}
-	}
-}
-
 // =============================================================================
 // All Defined Permissions Tests
 // =============================================================================
@@ -1296,8 +1238,6 @@ func TestPermissionSpecialCharacters(t *testing.T) {
 	specialPerms := []string{
 		"url:example.com/path?query=1",
 		"url:example.com:8080",
-		"service:my-service",
-		"service:my_service",
 	}
 
 	for _, perm := range specialPerms {

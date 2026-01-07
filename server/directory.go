@@ -29,10 +29,10 @@ var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDi
 func init() {
 	a := app("directory")
 	a.service("directory")
-	a.event("delete", directory_delete_event)                // Requires signature (from == entity being deleted)
-	a.event_anonymous("download", directory_download_event)  // Unsigned request for directory sync
-	a.event_anonymous("publish", directory_publish_event)    // Allows anonymous from bootstrap peers
-	a.event_anonymous("request", directory_request_event)    // Unsigned pubsub broadcast
+	a.event("delete", directory_delete_event)               // Requires signature (from == entity being deleted)
+	a.event_anonymous("download", directory_download_event) // Unsigned request for directory sync
+	a.event_anonymous("publish", directory_publish_event)   // Allows anonymous from bootstrap peers
+	a.event_anonymous("request", directory_request_event)   // Unsigned pubsub broadcast
 }
 
 // Handle incoming delete events from the network

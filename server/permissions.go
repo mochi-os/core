@@ -289,11 +289,13 @@ func permissions_list(u *User, app_id string) []map[string]any {
 		perm := row["permission"].(string)
 		obj := row["object"].(string)
 		granted := row["granted"].(int64) == 1
+		full := permission_join(perm, obj)
 
 		result = append(result, map[string]any{
-			"permission": permission_join(perm, obj),
+			"permission": full,
 			"granted":    granted,
-			"restricted": permission_restricted(permission_join(perm, obj)),
+			"restricted": permission_restricted(full),
+			"admin":      permission_administrator(full),
 		})
 	}
 	return result

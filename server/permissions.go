@@ -39,7 +39,7 @@ func (e *PermissionError) Error() string {
 	return fmt.Sprintf("permission required: %s (%s)", e.Permission, level)
 }
 
-// permissions defines all available permissions except dynamic ones (url, service)
+// permissions defines all available permissions except dynamic url permissions
 var permissions = []Permission{
 	// Standard permissions
 	{"group/manage", false, false},
@@ -62,17 +62,12 @@ var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.String
 })
 
 // permission_restricted returns whether a permission is restricted.
-// Dynamic permissions: url:* is restricted, url:<domain> is standard, service:<name> is standard.
+// Dynamic permissions: url:* is restricted, url:<domain> is standard.
 func permission_restricted(name string) bool {
 	// Handle dynamic url permission
 	if strings.HasPrefix(name, "url:") {
 		object := name[4:]
 		return object == "*"
-	}
-
-	// Handle dynamic service permission
-	if strings.HasPrefix(name, "service:") {
-		return false
 	}
 
 	// Look up static permission
@@ -88,8 +83,8 @@ func permission_restricted(name string) bool {
 
 // permission_administrator returns whether a permission requires admin role
 func permission_administrator(name string) bool {
-	// Dynamic permissions don't require admin
-	if strings.HasPrefix(name, "url:") || strings.HasPrefix(name, "service:") {
+	// Dynamic url permissions don't require admin
+	if strings.HasPrefix(name, "url:") {
 		return false
 	}
 
@@ -109,15 +104,12 @@ func permission_split(permission string) (name, object string) {
 	if strings.HasPrefix(permission, "url:") {
 		return "url", permission[4:]
 	}
-	if strings.HasPrefix(permission, "service:") {
-		return "service", permission[8:]
-	}
 	return permission, ""
 }
 
 // permission_join joins a name and object back into a permission string
 func permission_join(name, object string) string {
-	if name == "url" || name == "service" {
+	if name == "url" {
 		return name + ":" + object
 	}
 	return name
@@ -400,11 +392,6 @@ func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	return require_permission(t, fn, "url:"+domain)
 }
 
-// require_permission_service checks service permission for a specific service.
-// Services are permissionless - the receiving service decides whether to accept calls.
-func require_permission_service(t *sl.Thread, fn *sl.Builtin, service string) error {
-	return nil
-}
 
 // mochi.permission.check(permission) -> bool: Check if current app has a permission
 func api_permission_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

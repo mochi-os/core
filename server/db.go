@@ -24,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 25
+	schema_version = 26
 )
 
 var (
@@ -184,6 +184,10 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists services (service text not null primary key, app text not null)")
 		db.exec("create table if not exists paths (path text not null primary key, app text not null)")
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
+
+		// Connected accounts (email, browser push, AI services, MCP)
+		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0)")
+		db.exec("create index if not exists accounts_type on accounts(type)")
 	}
 
 	return db
@@ -397,6 +401,7 @@ func db_upgrade() {
 			for _, row := range rows {
 				if id, ok := row["id"].(int64); ok {
 					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.permissions_setup() // Ensure table exists before updating
 					udb.exec("update permissions set permission='permission/manage' where permission='permissions/manage'")
 				}
 			}
@@ -424,6 +429,19 @@ func db_upgrade() {
 			dir.exec("create index directory_location on directory(location)")
 			dir.exec("create index directory_created on directory(created)")
 			dir.exec("create index directory_updated on directory(updated)")
+		}
+
+		if schema == 26 {
+			// Migration: add accounts table for connected accounts (email, browser push, AI, MCP)
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				if id, ok := row["id"].(int64); ok {
+					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0)")
+					udb.exec("create index if not exists accounts_type on accounts(type)")
+				}
+			}
 		}
 
 		setting_set("schema", itoa(int(schema)))

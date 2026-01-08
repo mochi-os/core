@@ -312,6 +312,8 @@ var (
 		}},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},
+			{"account/read", ""},
+			{"account/manage", ""},
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"group/manage", ""},
@@ -321,6 +323,8 @@ var (
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"setting/write", ""},
 			{"user/read", ""},
+			{"account/read", ""},
+			{"account/manage", ""},
 		}},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
 			{"service", "friends"},

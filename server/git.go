@@ -1510,34 +1510,23 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 
 // git_authenticate extracts and validates Basic Auth credentials from the request
 func git_authenticate(c *gin.Context) *User {
-	username, password, ok := c.Request.BasicAuth()
+	_, password, ok := c.Request.BasicAuth()
 	if !ok {
 		return nil
 	}
 
-	// For git authentication, we accept:
-	// - username: anything (often the git username or "x-access-token")
-	// - password: a valid mochi token
-
-	// Validate token
-	db := db_open("db/users.db")
-	hash := token_hash(password)
-
-	row, err := db.row("select user from tokens where hash = ?", hash)
-	if err != nil || row == nil {
-		// Token not found
-		_ = username // Silence unused variable warning
-		return nil
-	}
-	userID, ok := row["user"].(int64)
-	if !ok {
+	// Validate token (checks expiration, updates used timestamp)
+	token := token_validate(password)
+	if token == nil {
 		return nil
 	}
 
-	// Update last_used
-	db.exec("update tokens set last_used = ? where hash = ?", time.Now().Format("2006-01-02 15:04:05"), hash)
+	// Token must be for repositories app
+	if token.App != "repositories" {
+		return nil
+	}
 
-	return user_by_id(int(userID))
+	return user_by_id(token.User)
 }
 
 // git_info_refs handles GET /info/refs?service=git-upload-pack|git-receive-pack

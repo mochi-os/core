@@ -26,6 +26,7 @@ func init() {
 		"json": starlarkjson.Module,
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"access":     api_access,
+			"account":    api_account,
 			"app":        api_app,
 			"attachment": api_attachment,
 			"db":         api_db,

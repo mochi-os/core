@@ -1686,7 +1686,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			aa.parameters[pname] = strings.Join(value_segments[greedy_pos:greedy_end], "/")
 		}
 
-		debug("App matched %q to pattern %q, params=%v", name, aa.name, aa.parameters)
+		//debug("App matched %q to pattern %q, params=%v", name, aa.name, aa.parameters)
 		return &aa
 	}
 

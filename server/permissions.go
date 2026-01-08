@@ -43,12 +43,16 @@ func (e *PermissionError) Error() string {
 var permissions = []Permission{
 	// Standard permissions
 	{"group/manage", false, false},
+	{"account/read", false, false},
+	{"account/manage", false, false},
 
 	// Restricted permissions
 	{"user/read", true, true},
 	{"setting/write", true, true},
 	{"permission/manage", true, false},
-	{"webpush/send", true, false},
+	{"account/notify", true, false},
+	{"account/ai", true, false},
+	{"account/mcp", true, false},
 }
 
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{

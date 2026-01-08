@@ -150,8 +150,8 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
-	app := t.Local("app").(*App)
-	if app == nil {
+	currentApp := t.Local("app").(*App)
+	if currentApp == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -185,7 +185,7 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		expires, _ = exp.Int64()
 	}
 
-	token := token_create(user.ID, app.id, name, scopes, expires)
+	token := token_create(user.ID, currentApp.id, name, scopes, expires)
 	if token == "" {
 		return sl_error(fn, "failed to create token")
 	}

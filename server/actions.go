@@ -21,6 +21,7 @@ type Action struct {
 	owner  *User
 	domain *DomainInfo
 	app    *App
+	token  *Token
 	web    *gin.Context
 	inputs map[string]string
 }
@@ -117,7 +118,7 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "upload", "user", "write_from_file", "write_from_stream"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -150,6 +151,16 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("redirect", a.sl_redirect), nil
 	case "template":
 		return sl.NewBuiltin("template", a.sl_template), nil
+	case "token":
+		if a.token == nil {
+			return sl.None, nil
+		}
+		return sl_encode(map[string]any{
+			"name":    a.token.Name,
+			"created": a.token.Created,
+			"used":    a.token.Used,
+			"expires": a.token.Expires,
+		}), nil
 	case "upload":
 		return sl.NewBuiltin("upload", a.sl_upload), nil
 	case "user":

@@ -28,22 +28,53 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return false
 	}
 
-	// Get user authentication via cookie first (needed for version selection)
-	user := web_auth(c)
+	var user *User
+	var apiToken *Token
+
+	// Check query parameter token first (for RSS feeds, etc.)
+	// This takes priority over cookies so RSS tokens work in logged-in browsers
+	if queryToken := c.Query("token"); queryToken != "" {
+		apiToken = token_validate(queryToken)
+		if apiToken != nil {
+			user = user_by_id(apiToken.User)
+			if user == nil {
+				debug("Query token valid but user %d not found", apiToken.User)
+				apiToken = nil
+			}
+		}
+	}
+
+	// Get user authentication via cookie (needed for version selection)
+	if user == nil {
+		user = web_auth(c)
+	}
 
 	// If no cookie auth, try Bearer token authentication
 	if user == nil {
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
-			token := strings.TrimPrefix(auth_header, "Bearer ")
-			if uid, err := jwt_verify(token); err == nil && uid > 0 {
-				if u := user_by_id(uid); u != nil {
-					user = u
-				} else {
-					debug("API JWT token valid but user %d not found", uid)
+			bearer := strings.TrimPrefix(auth_header, "Bearer ")
+			if strings.HasPrefix(bearer, "mochi_") {
+				// API token authentication
+				apiToken = token_validate(bearer)
+				if apiToken != nil {
+					user = user_by_id(apiToken.User)
+					if user == nil {
+						debug("API token valid but user %d not found", apiToken.User)
+						apiToken = nil
+					}
 				}
 			} else {
-				debug("API JWT token verification failed: %v", err)
+				// JWT authentication
+				if uid, err := jwt_verify(bearer); err == nil && uid > 0 {
+					if u := user_by_id(uid); u != nil {
+						user = u
+					} else {
+						debug("API JWT token valid but user %d not found", uid)
+					}
+				} else {
+					debug("API JWT token verification failed: %v", err)
+				}
 			}
 		}
 	}
@@ -55,6 +86,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 	if dev_reload {
 		av.reload()
+	}
+
+	// API tokens are restricted to their app
+	if apiToken != nil && apiToken.App != a.id {
+		c.JSON(http.StatusForbidden, gin.H{"error": "token not valid for this app"})
+		return true
 	}
 
 	// Run first-time setup for this user and app (grants default permissions)
@@ -278,6 +315,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			},
 		},
 		app:    a,
+		token:  apiToken,
 		web:    c,
 		inputs: make(map[string]string),
 	}

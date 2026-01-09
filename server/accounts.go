@@ -9,8 +9,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"io"
+	"net/http"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -115,6 +118,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
+	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
 	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
 	"verify":    sl.NewBuiltin("mochi.account.verify", api_account_verify),
 })
@@ -774,4 +778,331 @@ func account_send_verification_email(to string, code string) {
 </body>
 </html>`
 	email_send_html(to, subject, html)
+}
+
+// AccountTestResult represents the result of testing an account
+type AccountTestResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// mochi.account.test(id) -> dict: Test an account connection
+func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: integer>")
+	}
+
+	if err := require_permission(t, fn, "account/manage"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	db := db_user(user, "user")
+
+	// Get account with data
+	row, err := db.row("select id, type, identifier, data from accounts where id=?", id)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	if row == nil {
+		return sl_error(fn, "account not found")
+	}
+
+	ptype, _ := row["type"].(string)
+	identifier, _ := row["identifier"].(string)
+	dataStr, _ := row["data"].(string)
+
+	var data map[string]any
+	if dataStr != "" {
+		json.Unmarshal([]byte(dataStr), &data)
+	}
+
+	var result AccountTestResult
+
+	switch ptype {
+	case "email":
+		result = account_test_email(identifier)
+
+	case "browser":
+		result = account_test_browser(data)
+
+	case "pushbullet":
+		token, _ := data["token"].(string)
+		result = account_test_pushbullet(token)
+
+	case "claude":
+		apiKey, _ := data["api_key"].(string)
+		result = account_test_claude(apiKey)
+
+	case "openai":
+		apiKey, _ := data["api_key"].(string)
+		result = account_test_openai(apiKey)
+
+	case "mcp":
+		url := identifier
+		token, _ := data["token"].(string)
+		result = account_test_mcp(url, token)
+
+	default:
+		result = AccountTestResult{Success: false, Message: "Unknown account type"}
+	}
+
+	return sl_encode(map[string]any{
+		"success": result.Success,
+		"message": result.Message,
+	}), nil
+}
+
+// account_test_email sends a test email
+func account_test_email(address string) AccountTestResult {
+	subject := "Mochi test notification"
+	html := `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    <tr>
+      <td align="center" style="padding: 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
+          <tr>
+            <td style="padding: 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #18181b;">Mochi test notification</h1>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+	email_send_html(address, subject, html)
+	return AccountTestResult{Success: true, Message: "Test email sent"}
+}
+
+// account_test_browser sends a test browser push notification
+func account_test_browser(data map[string]any) AccountTestResult {
+	webpush_ensure()
+	if webpush_public == "" || webpush_private == "" {
+		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
+	}
+
+	endpoint, _ := data["endpoint"].(string)
+	auth, _ := data["auth"].(string)
+	p256dh, _ := data["p256dh"].(string)
+
+	if endpoint == "" || auth == "" || p256dh == "" {
+		return AccountTestResult{Success: false, Message: "Invalid subscription data"}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"title": "Mochi test notification",
+		"body":  "",
+	})
+
+	sub := webpush.Subscription{
+		Endpoint: endpoint,
+		Keys: webpush.Keys{
+			Auth:   auth,
+			P256dh: p256dh,
+		},
+	}
+
+	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		Subscriber:      "mailto:webpush@localhost",
+		VAPIDPublicKey:  webpush_public,
+		VAPIDPrivateKey: webpush_private,
+		TTL:             60,
+	})
+
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Push notification failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 201 {
+		return AccountTestResult{Success: true, Message: "Test notification sent"}
+	} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		return AccountTestResult{Success: false, Message: "Subscription expired"}
+	}
+
+	return AccountTestResult{Success: false, Message: "Push notification failed"}
+}
+
+// account_test_pushbullet sends a test notification via Pushbullet
+func account_test_pushbullet(token string) AccountTestResult {
+	if token == "" {
+		return AccountTestResult{Success: false, Message: "No access token"}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"type":  "note",
+		"title": "Mochi test notification",
+		"body":  "",
+	})
+
+	req, _ := http.NewRequest("POST", "https://api.pushbullet.com/v2/pushes", bytes.NewReader(payload))
+	req.Header.Set("Access-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return AccountTestResult{Success: true, Message: "Test push sent"}
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var errResp map[string]any
+	json.Unmarshal(body, &errResp)
+	if errMap, ok := errResp["error"].(map[string]any); ok {
+		if msg, ok := errMap["message"].(string); ok {
+			return AccountTestResult{Success: false, Message: msg}
+		}
+	}
+
+	return AccountTestResult{Success: false, Message: "Pushbullet error"}
+}
+
+// account_test_claude verifies a Claude API key
+func account_test_claude(apiKey string) AccountTestResult {
+	if apiKey == "" {
+		return AccountTestResult{Success: false, Message: "No API key"}
+	}
+
+	// Use a minimal request to verify the key works
+	payload, _ := json.Marshal(map[string]any{
+		"model":      "claude-3-haiku-20240307",
+		"max_tokens": 1,
+		"messages": []map[string]string{
+			{"role": "user", "content": "Hi"},
+		},
+	})
+
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(payload))
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return AccountTestResult{Success: true, Message: "API key verified"}
+	}
+	if resp.StatusCode == 401 {
+		return AccountTestResult{Success: false, Message: "Invalid API key"}
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var errResp map[string]any
+	json.Unmarshal(body, &errResp)
+	if errMap, ok := errResp["error"].(map[string]any); ok {
+		if msg, ok := errMap["message"].(string); ok {
+			return AccountTestResult{Success: false, Message: msg}
+		}
+	}
+
+	return AccountTestResult{Success: false, Message: "API verification failed"}
+}
+
+// account_test_openai verifies an OpenAI API key
+func account_test_openai(apiKey string) AccountTestResult {
+	if apiKey == "" {
+		return AccountTestResult{Success: false, Message: "No API key"}
+	}
+
+	req, _ := http.NewRequest("GET", "https://api.openai.com/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return AccountTestResult{Success: true, Message: "API key verified"}
+	}
+	if resp.StatusCode == 401 {
+		return AccountTestResult{Success: false, Message: "Invalid API key"}
+	}
+
+	return AccountTestResult{Success: false, Message: "API verification failed"}
+}
+
+// account_test_mcp tests connection to an MCP server
+func account_test_mcp(url, token string) AccountTestResult {
+	if url == "" {
+		return AccountTestResult{Success: false, Message: "No server URL"}
+	}
+
+	// Send MCP initialize request
+	payload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]string{
+				"name":    "mochi",
+				"version": "1.0",
+			},
+		},
+	})
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		body, _ := io.ReadAll(resp.Body)
+		var result map[string]any
+		if json.Unmarshal(body, &result) == nil {
+			if _, ok := result["result"]; ok {
+				return AccountTestResult{Success: true, Message: "Server connected"}
+			}
+			if errMap, ok := result["error"].(map[string]any); ok {
+				if msg, ok := errMap["message"].(string); ok {
+					return AccountTestResult{Success: false, Message: msg}
+				}
+			}
+		}
+		return AccountTestResult{Success: true, Message: "Server connected"}
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return AccountTestResult{Success: false, Message: "Authentication failed"}
+	}
+
+	return AccountTestResult{Success: false, Message: "Connection failed"}
 }

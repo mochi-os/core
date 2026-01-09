@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -36,7 +37,7 @@ type ProviderField struct {
 	Placeholder string `json:"placeholder"`
 }
 
-// providers defines all available account providers
+// providers defines all available account providers (sorted alphabetically)
 var providers = []Provider{
 	{
 		Type:         "browser",
@@ -47,34 +48,34 @@ var providers = []Provider{
 		Verify:       false,
 	},
 	{
+		Type:         "claude",
+		Label:        "Claude",
+		Capabilities: []string{"ai"},
+		Flow:         "form",
+		Fields: []ProviderField{
+			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
+			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
+	{
 		Type:         "email",
 		Label:        "Email",
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "address", Label: "Email address", Type: "email", Required: true, Placeholder: "you@example.com"},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: "Personal, Work, etc."},
 		},
 		Verify: true,
 	},
 	{
-		Type:         "pushbullet",
-		Label:        "Pushbullet",
-		Capabilities: []string{"notify"},
+		Type:         "mcp",
+		Label:        "MCP server",
+		Capabilities: []string{"mcp"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "token", Label: "Access token", Type: "password", Required: true, Placeholder: ""},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
-		},
-		Verify: false,
-	},
-	{
-		Type:         "claude",
-		Label:        "Claude (Anthropic)",
-		Capabilities: []string{"ai"},
-		Flow:         "form",
-		Fields: []ProviderField{
-			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
+			{Name: "url", Label: "Server URL", Type: "url", Required: true, Placeholder: "https://mcp.example.com"},
+			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -91,13 +92,12 @@ var providers = []Provider{
 		Verify: false,
 	},
 	{
-		Type:         "mcp",
-		Label:        "MCP server",
-		Capabilities: []string{"mcp"},
+		Type:         "pushbullet",
+		Label:        "Pushbullet",
+		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "url", Label: "Server URL", Type: "url", Required: true, Placeholder: "https://mcp.example.com"},
-			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
+			{Name: "token", Label: "Access token", Type: "password", Required: true, Placeholder: ""},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -112,6 +112,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
+	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
@@ -232,6 +233,10 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.account.list(capability?) -> list: List user's accounts
 func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	app, _ := t.Local("app").(*App)
+	if app != nil {
+		info("account.list: app.id=%s", app.id)
+	}
 	if err := require_permission(t, fn, "account/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -592,7 +597,10 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		expires, _ := data["expires"].(float64)
 
 		if existingCode != "" && int64(expires) > now {
-			// Reuse existing code
+			// Reuse existing code, extend expiration
+			data["expires"] = now + 3600
+			dataJSON, _ := json.Marshal(data)
+			db.exec("update accounts set data=? where id=?", string(dataJSON), id)
 			account_send_verification_email(identifier, existingCode)
 		} else {
 			// Generate new code
@@ -628,6 +636,102 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db.exec("update accounts set verified=?, data=? where id=?", now, string(dataJSON), id)
 
 	return sl.True, nil
+}
+
+// mochi.account.notify(title, body, link, tag) -> int: Send push notification to all browser accounts
+func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "account/notify"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	var title, body, link, tag string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
+		"title", &title,
+		"body", &body,
+		"link?", &link,
+		"tag?", &tag,
+	); err != nil {
+		return nil, err
+	}
+
+	webpush_ensure()
+	if webpush_public == "" || webpush_private == "" {
+		return sl.MakeInt(0), nil
+	}
+
+	db := db_user(user, "user")
+
+	// Get all browser accounts with their secrets
+	rows, err := db.rows("select id, identifier, data from accounts where type='browser' and verified > 0")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	// Build notification payload
+	payload, _ := json.Marshal(map[string]string{
+		"title": title,
+		"body":  body,
+		"link":  link,
+		"tag":   tag,
+	})
+
+	sent := 0
+	for _, row := range rows {
+		id := row["id"]
+		dataStr, _ := row["data"].(string)
+		if dataStr == "" {
+			continue
+		}
+
+		var data map[string]any
+		if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
+			continue
+		}
+
+		endpoint, _ := data["endpoint"].(string)
+		auth, _ := data["auth"].(string)
+		p256dh, _ := data["p256dh"].(string)
+
+		if endpoint == "" || auth == "" || p256dh == "" {
+			continue
+		}
+
+		sub := webpush.Subscription{
+			Endpoint: endpoint,
+			Keys: webpush.Keys{
+				Auth:   auth,
+				P256dh: p256dh,
+			},
+		}
+
+		resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+			Subscriber:      "mailto:webpush@localhost",
+			VAPIDPublicKey:  webpush_public,
+			VAPIDPrivateKey: webpush_private,
+			TTL:             86400,
+		})
+
+		if err != nil {
+			// Send failed, remove subscription
+			db.exec("delete from accounts where id=?", id)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == 201 {
+			sent++
+		} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
+			// Subscription expired, remove it
+			db.exec("delete from accounts where id=?", id)
+		}
+	}
+
+	return sl.MakeInt(sent), nil
 }
 
 // account_send_verification_email sends a styled HTML email with a verification code

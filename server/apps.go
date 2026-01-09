@@ -258,7 +258,7 @@ func (av *AppVersion) user_allowed(user *User) bool {
 
 const (
 	app_version_minimum = 2
-	app_version_maximum = 2
+	app_version_maximum = 3
 )
 
 // version_greater returns true if version a is greater than version b
@@ -314,6 +314,7 @@ var (
 			{"webpush/send", ""},
 			{"account/read", ""},
 			{"account/manage", ""},
+			{"account/notify", ""},
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"group/manage", ""},

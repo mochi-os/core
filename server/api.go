@@ -134,6 +134,12 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "reached maximum service recursion depth")
 	}
 
+	// Capture calling app ID before switching context
+	caller_id := ""
+	if caller, ok := t.Local("app").(*App); ok && caller != nil {
+		caller_id = caller.id
+	}
+
 	// Look for matching app function, using user preferences
 	user, _ := t.Local("user").(*User)
 	a := app_for_service_for(user, service)
@@ -160,16 +166,29 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	s.set("owner", t.Local("owner").(*User))
 	s.set("depth", depth+1)
 
-	//debug("mochi.service.call() calling app %q service %q function %q args: %+v", a.id, service, function, args[2:])
+	// Build call args based on target app's architecture version
+	var call_args sl.Tuple
+	if av.Architecture.Version >= 3 {
+		// v3+: prepend context dict with caller app ID
+		context := sl.NewDict(1)
+		context.SetKey(sl.String("app"), sl.String(caller_id))
+		if len(args) > 2 {
+			call_args = make(sl.Tuple, 0, len(args)-1)
+			call_args = append(call_args, context)
+			call_args = append(call_args, args[2:]...)
+		} else {
+			call_args = sl.Tuple{context}
+		}
+	} else {
+		// v2: original behavior
+		if len(args) > 2 {
+			call_args = args[2:]
+		}
+	}
+
 	var result sl.Value
 	var err error
-
-	if len(args) > 2 {
-		result, err = s.call(f.Function, args[2:])
-	} else {
-		result, err = s.call(f.Function, nil)
-	}
-	//debug("mochi.service.call() result '%+v', type %T", result, result)
+	result, err = s.call(f.Function, call_args)
 	if err != nil {
 		info("mochi.service.call() error: %v", err)
 	}

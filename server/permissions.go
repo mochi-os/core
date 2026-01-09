@@ -396,7 +396,6 @@ func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	return require_permission(t, fn, "url:"+domain)
 }
 
-
 // mochi.permission.check(permission) -> bool: Check if current app has a permission
 func api_permission_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {

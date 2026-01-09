@@ -187,9 +187,9 @@ func TestPermissionJoin(t *testing.T) {
 
 func TestDomainExtract(t *testing.T) {
 	tests := []struct {
-		url      string
-		want     string
-		wantErr  bool
+		url     string
+		want    string
+		wantErr bool
 	}{
 		{"https://github.com/foo/bar", "github.com", false},
 		{"https://api.github.com/v1/users", "api.github.com", false},

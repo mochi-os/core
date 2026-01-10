@@ -10,7 +10,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,7 +27,6 @@ import (
 // Provider defines an account provider type
 type Provider struct {
 	Type         string          `json:"type"`
-	Label        string          `json:"label"`
 	Capabilities []string        `json:"capabilities"`
 	Flow         string          `json:"flow"` // "form", "browser", "oauth"
 	Fields       []ProviderField `json:"fields"`
@@ -40,11 +42,10 @@ type ProviderField struct {
 	Placeholder string `json:"placeholder"`
 }
 
-// providers defines all available account providers (sorted alphabetically)
+// providers defines all available account providers (sorted alphabetically by type)
 var providers = []Provider{
 	{
 		Type:         "browser",
-		Label:        "Browser notifications",
 		Capabilities: []string{"notify"},
 		Flow:         "browser",
 		Fields:       nil, // handled by JavaScript
@@ -52,7 +53,6 @@ var providers = []Provider{
 	},
 	{
 		Type:         "claude",
-		Label:        "Claude",
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
@@ -63,7 +63,6 @@ var providers = []Provider{
 	},
 	{
 		Type:         "email",
-		Label:        "Email",
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
@@ -73,7 +72,6 @@ var providers = []Provider{
 	},
 	{
 		Type:         "mcp",
-		Label:        "MCP server",
 		Capabilities: []string{"mcp"},
 		Flow:         "form",
 		Fields: []ProviderField{
@@ -85,7 +83,6 @@ var providers = []Provider{
 	},
 	{
 		Type:         "openai",
-		Label:        "OpenAI",
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
@@ -96,11 +93,21 @@ var providers = []Provider{
 	},
 	{
 		Type:         "pushbullet",
-		Label:        "Pushbullet",
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "token", Label: "Access token", Type: "password", Required: true, Placeholder: ""},
+			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
+	{
+		Type:         "url",
+		Capabilities: []string{"notify"},
+		Flow:         "form",
+		Fields: []ProviderField{
+			{Name: "url", Label: "URL", Type: "url", Required: true, Placeholder: ""},
+			{Name: "secret", Label: "Signing secret", Type: "password", Required: false, Placeholder: ""},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -110,9 +117,19 @@ var providers = []Provider{
 // Unambiguous character set for verification codes (no 0/O, 1/l/I confusion)
 const verificationCharset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
 
+// Starlark API module for filter operations
+var api_account_filter = sls.FromStringDict(sl.String("mochi.account.filter"), sl.StringDict{
+	"add":    sl.NewBuiltin("mochi.account.filter.add", api_account_filter_add),
+	"clear":  sl.NewBuiltin("mochi.account.filter.clear", api_account_filter_clear),
+	"list":   sl.NewBuiltin("mochi.account.filter.list", api_account_filters),
+	"remove": sl.NewBuiltin("mochi.account.filter.remove", api_account_filter_remove),
+})
+
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
+	"deliver":   sl.NewBuiltin("mochi.account.deliver", api_account_deliver),
+	"filter":    api_account_filter,
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
@@ -207,7 +224,6 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	for _, p := range list {
 		pm := map[string]any{
 			"type":         p.Type,
-			"label":        p.Label,
 			"capabilities": p.Capabilities,
 			"flow":         p.Flow,
 			"verify":       p.Verify,
@@ -421,6 +437,14 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		token, _ := fields["token"].(string)
 		identifier = url
 		data["token"] = token
+
+	case "url":
+		url, _ := fields["url"].(string)
+		secret, _ := fields["secret"].(string)
+		identifier = url
+		if secret != "" {
+			data["secret"] = secret
+		}
 	}
 
 	// Serialize data to JSON
@@ -852,6 +876,11 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		token, _ := data["token"].(string)
 		result = account_test_mcp(url, token)
 
+	case "url":
+		url := identifier
+		secret, _ := data["secret"].(string)
+		result = account_test_url(url, secret)
+
 	default:
 		result = AccountTestResult{Success: false, Message: "Unknown account type"}
 	}
@@ -1105,4 +1134,532 @@ func account_test_mcp(url, token string) AccountTestResult {
 	}
 
 	return AccountTestResult{Success: false, Message: "Connection failed"}
+}
+
+// account_test_url tests an external URL
+func account_test_url(url, secret string) AccountTestResult {
+	if url == "" {
+		return AccountTestResult{Success: false, Message: "No URL configured"}
+	}
+
+	// Send a test notification
+	payload := []byte(`{"test":true}`)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Mochi-Event", "test")
+
+	if secret != "" {
+		timestamp := time.Now().Unix()
+		signature := account_url_signature(timestamp, payload, secret)
+		req.Header.Set("X-Mochi-Timestamp", itoa(int(timestamp)))
+		req.Header.Set("X-Mochi-Signature", signature)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return AccountTestResult{Success: true, Message: "External URL test sent"}
+	}
+
+	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
+}
+
+// mochi.account.filter.list(account_id) -> list: List filters for an account
+func api_account_filters(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <account_id: integer>")
+	}
+
+	if err := require_permission(t, fn, "account/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	accountID, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid account_id")
+	}
+
+	db := db_user(user, "user")
+
+	// Verify account exists and belongs to user
+	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
+	if !exists {
+		return sl_error(fn, "account not found")
+	}
+
+	rows, err := db.rows("select id, account, action, app, category, urgency from filters where account=?", accountID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	return sl_encode(rows), nil
+}
+
+// mochi.account.filter.add(account_id, action, app?, category?, urgency?) -> dict: Add a filter
+func api_account_filter_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "account/manage"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	var accountID int
+	var action string
+	var appVal, categoryVal, urgencyVal sl.Value
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
+		"account", &accountID,
+		"action", &action,
+		"app?", &appVal,
+		"category?", &categoryVal,
+		"urgency?", &urgencyVal,
+	); err != nil {
+		return nil, err
+	}
+
+	// Extract string values, treating None as empty string
+	app := sl_string(appVal)
+	category := sl_string(categoryVal)
+	urgency := sl_string(urgencyVal)
+
+	// Validate action
+	if action != "include" && action != "exclude" {
+		return sl_error(fn, "action must be 'include' or 'exclude'")
+	}
+
+	db := db_user(user, "user")
+
+	// Verify account exists
+	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
+	if !exists {
+		return sl_error(fn, "account not found")
+	}
+
+	// Insert filter
+	result, err := db.handle.Exec(
+		"insert into filters (account, action, app, category, urgency) values (?, ?, ?, ?, ?)",
+		accountID, action,
+		nullString(app), nullString(category), nullString(urgency),
+	)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	id, _ := result.LastInsertId()
+
+	return sl_encode(map[string]any{
+		"id":       id,
+		"account":  accountID,
+		"action":   action,
+		"app":      nullString(app),
+		"category": nullString(category),
+		"urgency":  nullString(urgency),
+	}), nil
+}
+
+// mochi.account.filter.remove(filter_id) -> bool: Remove a filter
+func api_account_filter_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <filter_id: integer>")
+	}
+
+	if err := require_permission(t, fn, "account/manage"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	filterID, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid filter_id")
+	}
+
+	db := db_user(user, "user")
+
+	// Verify filter exists (implicitly belongs to user via their database)
+	exists, _ := db.exists("select 1 from filters where id=?", filterID)
+	if !exists {
+		return sl.False, nil
+	}
+
+	db.exec("delete from filters where id=?", filterID)
+	return sl.True, nil
+}
+
+// mochi.account.filter.clear(account_id) -> bool: Clear all filters for an account
+func api_account_filter_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <account_id: integer>")
+	}
+
+	if err := require_permission(t, fn, "account/manage"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	accountID, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid account_id")
+	}
+
+	db := db_user(user, "user")
+
+	// Verify account exists
+	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
+	if !exists {
+		return sl.False, nil
+	}
+
+	db.exec("delete from filters where account=?", accountID)
+	return sl.True, nil
+}
+
+// filter_matches checks if a notification matches the filters for an account
+// Returns true if the notification should be delivered
+func filter_matches(db *DB, accountID int64, app, category, urgency string) bool {
+	// Get all filters for this account
+	rows, err := db.rows("select action, app, category, urgency from filters where account=?", accountID)
+	if err != nil || len(rows) == 0 {
+		// No filters = receive all notifications
+		return true
+	}
+
+	// Separate include and exclude filters
+	var includes, excludes []map[string]any
+	for _, row := range rows {
+		action, _ := row["action"].(string)
+		if action == "include" {
+			includes = append(includes, row)
+		} else if action == "exclude" {
+			excludes = append(excludes, row)
+		}
+	}
+
+	// Check exclude filters first (if any match, block the notification)
+	for _, filter := range excludes {
+		if filter_row_matches(filter, app, category, urgency) {
+			return false
+		}
+	}
+
+	// If there are include filters, notification must match at least one
+	if len(includes) > 0 {
+		for _, filter := range includes {
+			if filter_row_matches(filter, app, category, urgency) {
+				return true
+			}
+		}
+		// Had include filters but none matched
+		return false
+	}
+
+	// No include filters and no exclude matched = allow
+	return true
+}
+
+// filter_row_matches checks if a single filter row matches the notification
+// All non-NULL fields must match (AND), NULL = wildcard
+func filter_row_matches(filter map[string]any, app, category, urgency string) bool {
+	// Check app filter
+	if filterApp := getString(filter, "app"); filterApp != "" {
+		if filterApp != app {
+			return false
+		}
+	}
+
+	// Check category filter
+	if filterCategory := getString(filter, "category"); filterCategory != "" {
+		if filterCategory != category {
+			return false
+		}
+	}
+
+	// Check urgency filter
+	if filterUrgency := getString(filter, "urgency"); filterUrgency != "" {
+		if filterUrgency != urgency {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getString safely extracts a string from a map, handling nil and type conversion
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// nullString returns nil for empty strings (for SQL NULL)
+func nullString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// mochi.account.deliver(app, category, object, content, link, urgency?) -> dict: Deliver notification to all matching accounts
+func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "account/notify"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	var app, category, object, content, link, urgency string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
+		"app", &app,
+		"category", &category,
+		"object", &object,
+		"content", &content,
+		"link?", &link,
+		"urgency?", &urgency,
+	); err != nil {
+		return nil, err
+	}
+
+	db := db_user(user, "user")
+
+	// Get all verified accounts with notify capability
+	rows, err := db.rows("select id, type, identifier, data from accounts where verified > 0")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	sent := 0
+	filtered := 0
+	failed := 0
+
+	for _, row := range rows {
+		accountID, _ := row["id"].(int64)
+		ptype, _ := row["type"].(string)
+
+		// Check if provider has notify capability
+		if !provider_has_capability(ptype, "notify") {
+			continue
+		}
+
+		// Check filters
+		if !filter_matches(db, accountID, app, category, urgency) {
+			filtered++
+			continue
+		}
+
+		// Deliver based on type
+		identifier, _ := row["identifier"].(string)
+		dataStr, _ := row["data"].(string)
+		var data map[string]any
+		if dataStr != "" {
+			json.Unmarshal([]byte(dataStr), &data)
+		}
+
+		var success bool
+		switch ptype {
+		case "browser":
+			success = account_deliver_browser(data, content, link, app+"-"+category+"-"+object)
+		case "email":
+			success = account_deliver_email(identifier, app, category, content, link)
+		case "pushbullet":
+			token, _ := data["token"].(string)
+			success = account_deliver_pushbullet(token, content, link)
+		case "url":
+			secret, _ := data["secret"].(string)
+			success = account_deliver_url(identifier, secret, app, category, object, content, link)
+		default:
+			continue
+		}
+
+		if success {
+			sent++
+		} else {
+			failed++
+			// Remove expired browser subscriptions
+			if ptype == "browser" {
+				db.exec("delete from accounts where id=?", accountID)
+			}
+		}
+	}
+
+	return sl_encode(map[string]any{
+		"sent":     sent,
+		"filtered": filtered,
+		"failed":   failed,
+	}), nil
+}
+
+// account_deliver_browser sends a push notification to a browser
+func account_deliver_browser(data map[string]any, body, link, tag string) bool {
+	webpush_ensure()
+	if webpush_public == "" || webpush_private == "" {
+		return false
+	}
+
+	endpoint, _ := data["endpoint"].(string)
+	auth, _ := data["auth"].(string)
+	p256dh, _ := data["p256dh"].(string)
+
+	if endpoint == "" || auth == "" || p256dh == "" {
+		return false
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"title": "Mochi",
+		"body":  body,
+		"link":  link,
+		"tag":   tag,
+	})
+
+	sub := webpush.Subscription{
+		Endpoint: endpoint,
+		Keys: webpush.Keys{
+			Auth:   auth,
+			P256dh: p256dh,
+		},
+	}
+
+	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		Subscriber:      "mailto:webpush@localhost",
+		VAPIDPublicKey:  webpush_public,
+		VAPIDPrivateKey: webpush_private,
+		TTL:             86400,
+	})
+
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+
+	return resp.StatusCode == 201
+}
+
+// account_deliver_email sends a notification via email
+func account_deliver_email(address, app, category, content, link string) bool {
+	subject := "Mochi: " + app + " " + category
+	html := `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    <tr>
+      <td align="center" style="padding: 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
+          <tr>
+            <td style="padding: 32px 40px;">
+              <h1 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #18181b;">` + app + `: ` + category + `</h1>
+              <p style="margin: 0 0 24px 0; font-size: 15px; color: #3f3f46; line-height: 1.5;">` + content + `</p>`
+	if link != "" {
+		html += `
+              <a href="` + link + `" style="display: inline-block; padding: 10px 20px; background-color: #18181b; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500;">View</a>`
+	}
+	html += `
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+	email_send_html(address, subject, html)
+	return true
+}
+
+// account_deliver_pushbullet sends a notification via Pushbullet
+func account_deliver_pushbullet(token, content, link string) bool {
+	if token == "" {
+		return false
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"type":  "note",
+		"title": "Mochi",
+		"body":  content,
+		"url":   link,
+	})
+
+	req, _ := http.NewRequest("POST", "https://api.pushbullet.com/v2/pushes", bytes.NewReader(payload))
+	req.Header.Set("Access-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == 200
+}
+
+// account_deliver_url sends a notification to an external URL
+func account_deliver_url(url, secret, app, category, object, content, link string) bool {
+	if url == "" {
+		return false
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"app":      app,
+		"category": category,
+		"object":   object,
+		"content":  content,
+		"link":     link,
+		"created":  time.Now().Unix(),
+	})
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Mochi-Event", "notification")
+
+	if secret != "" {
+		timestamp := time.Now().Unix()
+		signature := account_url_signature(timestamp, payload, secret)
+		req.Header.Set("X-Mochi-Timestamp", itoa(int(timestamp)))
+		req.Header.Set("X-Mochi-Signature", signature)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// account_url_signature generates HMAC-SHA256 signature for external URL requests
+func account_url_signature(timestamp int64, payload []byte, secret string) string {
+	message := itoa(int(timestamp)) + "." + string(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(message))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }

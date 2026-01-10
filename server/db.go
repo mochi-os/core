@@ -24,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 27
+	schema_version = 28
 )
 
 var (
@@ -186,7 +186,7 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 
 		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0)")
+		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1)")
 		db.exec("create index if not exists accounts_type on accounts(type)")
 	}
 
@@ -440,6 +440,18 @@ func db_upgrade() {
 					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
 					udb.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0)")
 					udb.exec("create index if not exists accounts_type on accounts(type)")
+				}
+			}
+		}
+
+		if schema == 28 {
+			// Migration: add enabled column to accounts table for notification subscription defaults
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				if id, ok := row["id"].(int64); ok {
+					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.exec("alter table accounts add column enabled integer not null default 1")
 				}
 			}
 		}

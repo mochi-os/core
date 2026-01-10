@@ -297,10 +297,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Check access
-	if aa.Access.Resource != "" && owner != nil && owner.db != nil && !owner.db.access_check_operation(user, owner, aa) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return true
+	// Check access (uses system database, always available)
+	if aa.Access.Resource != "" && owner != nil {
+		sysdb := db_app_system(owner, a)
+		if sysdb != nil && !sysdb.access_check_operation(user, owner, aa) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+			return true
+		}
 	}
 
 	// Create action
@@ -1043,14 +1046,14 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		return web_serve_attachment_remote(c, app, entity, id, thumbnail)
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return true
 	}
 
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
 		return true
 	}
@@ -1072,7 +1075,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 			}
 			file_write(path, data)
 			// Clear entity so future requests serve from local storage
-			db.exec(`update _attachments set entity = '' where id = ?`, id)
+			db.exec(`update attachments set entity = '' where id = ?`, id)
 			info("Attachment %s fetched and stored locally on demand", id)
 		} else {
 			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})

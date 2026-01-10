@@ -6,7 +6,9 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"regexp"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 28
+	schema_version = 33
 )
 
 var (
@@ -37,9 +39,6 @@ var (
 		"row":     sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":    sl.NewBuiltin("mochi.db.rows", api_db_query),
 	})
-
-	// Pattern to detect modifications to system tables (starting with _)
-	system_table_pattern = regexp.MustCompile(`(?i)(insert\s+(or\s+\w+\s+)?into|replace\s+into|update|delete\s+from|drop\s+(table|index|trigger)|alter\s+table|create\s+(table|index|trigger))\s+_`)
 )
 
 func init() {
@@ -196,7 +195,9 @@ func db_user(u *User, name string) *DB {
 // Maximum database size per app per user (1GB / 4KB page size = 262144 pages)
 const db_max_page_count = 262144
 
-// Open a database file for an app, creating, upgrading, or downgrading it as necessary
+// db_app opens a database file for an app, creating, upgrading, or downgrading it as necessary.
+// App databases are stored in users/{user_id}/{app_id}/db/{file.db}.
+// Schema version is tracked in the system database (app.db).
 func db_app(u *User, app *App) *DB {
 	av := app.active(u)
 	if av == nil {
@@ -209,7 +210,7 @@ func db_app(u *User, app *App) *DB {
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%d/%s/%s", u.ID, app.id, av.Database.File)
+	path := fmt.Sprintf("users/%d/%s/db/%s", u.ID, app.id, av.Database.File)
 	db, _, reused := db_open_work(path)
 	db.user = u
 
@@ -225,19 +226,13 @@ func db_app(u *User, app *App) *DB {
 	l.Lock()
 	defer l.Unlock()
 
-	// Check if _settings table exists, if not create it with schema 0
-	has_settings, _ := db.exists("select name from sqlite_master where type='table' and name='_settings'")
-	if !has_settings {
-		db.schema(0)
-	}
-
-	schema := db.integer("select cast(value as integer) from _settings where name='schema'")
+	// Get schema version from system database (app.db)
+	schema := db_app_schema_get(u, app)
 
 	// Check if app tables exist - if not, call database_create()
 	// We always check actual database state rather than relying on file creation status,
 	// because multiple goroutines may race to create the same database file.
-	// Note: Use ESCAPE to treat underscore literally (it's a LIKE wildcard otherwise)
-	has_tables, _ := db.exists("select name from sqlite_master where type='table' and name not like '\\_%' escape '\\'")
+	has_tables, _ := db.exists("select name from sqlite_master where type='table'")
 	if !has_tables {
 		debug("Database app creating %q", path)
 
@@ -252,7 +247,7 @@ func db_app(u *User, app *App) *DB {
 			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
 			return nil
 		}
-		db.schema(av.Database.Schema)
+		db_app_schema_set(u, app, av.Database.Schema)
 		schema = av.Database.Schema
 	}
 
@@ -262,7 +257,7 @@ func db_app(u *User, app *App) *DB {
 			if err := av.starlark_db(u, av.Database.Upgrade.Function, sl_encode_tuple(version)); err != nil {
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
 			}
-			db.schema(version)
+			db_app_schema_set(u, app, version)
 			audit_app_schema_migrated(av.app.id, version-1, version)
 		}
 	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
@@ -271,12 +266,59 @@ func db_app(u *User, app *App) *DB {
 			if err := av.starlark_db(u, av.Database.Downgrade.Function, sl_encode_tuple(version)); err != nil {
 				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
 			}
-			db.schema(version - 1)
+			db_app_schema_set(u, app, version-1)
 			audit_app_schema_migrated(av.app.id, version, version-1)
 		}
 	}
 
 	return db
+}
+
+// db_app_system opens the system database (app.db) for an app.
+// Contains settings, access, and attachments tables managed by the platform.
+// Always available even if app has no declared database file.
+func db_app_system(u *User, app *App) *DB {
+	if u == nil || app == nil {
+		return nil
+	}
+
+	path := fmt.Sprintf("users/%d/%s/app.db", u.ID, app.id)
+	db, _, reused := db_open_work(path)
+	db.user = u
+	db.exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
+
+	if reused {
+		return db
+	}
+
+	l := lock(path)
+	l.Lock()
+	defer l.Unlock()
+
+	// Create system tables
+	db.exec("create table if not exists settings (name text not null primary key, value text not null)")
+	db.access_setup()
+	db.attachments_setup()
+
+	return db
+}
+
+// db_app_schema_get reads the app database schema version from the system database
+func db_app_schema_get(u *User, app *App) int {
+	sysdb := db_app_system(u, app)
+	if sysdb == nil {
+		return 0
+	}
+	return sysdb.integer("select cast(value as integer) from settings where name='schema'")
+}
+
+// db_app_schema_set writes the app database schema version to the system database
+func db_app_schema_set(u *User, app *App, version int) {
+	sysdb := db_app_system(u, app)
+	if sysdb == nil {
+		return
+	}
+	sysdb.exec("replace into settings (name, value) values ('schema', ?)", version)
 }
 
 func db_manager() {
@@ -458,6 +500,150 @@ func db_upgrade() {
 			}
 		}
 
+		if schema >= 29 && schema <= 33 {
+			// Migration: separate app databases from system databases
+			// Move app database files to db/ subdirectory and extract system tables to app.db
+			// This migration opens databases directly (not via pool) so we can close them before moving files
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				uid, ok := row["id"].(int64)
+				if !ok {
+					continue
+				}
+
+				userDir := fmt.Sprintf("%s/users/%d", data_dir, uid)
+				entries, err := os.ReadDir(userDir)
+				if err != nil {
+					continue
+				}
+
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+
+					appDir := filepath.Join(userDir, entry.Name())
+					newDbDir := filepath.Join(appDir, "db")
+
+					// Find database files in the app directory (exclude app.db which is system db)
+					dbFiles, err := os.ReadDir(appDir)
+					if err != nil {
+						continue
+					}
+
+					for _, dbFile := range dbFiles {
+						if dbFile.IsDir() || !strings.HasSuffix(dbFile.Name(), ".db") || dbFile.Name() == "app.db" {
+							continue
+						}
+
+						oldDbPath := filepath.Join(appDir, dbFile.Name())
+						sysDbPath := filepath.Join(appDir, "app.db")
+						newDbPath := filepath.Join(newDbDir, dbFile.Name())
+
+						// Open databases directly (bypass pool) so we can close them properly
+						oldHandle, err := sqlx.Open("sqlite3", oldDbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+						if err != nil {
+							warn("Migration: failed to open %s: %v", oldDbPath, err)
+							continue
+						}
+
+						// Check if old database still has _settings table (indicating it needs migration)
+						var hasSettings int
+						oldHandle.Get(&hasSettings, "select count(*) from sqlite_master where type='table' and name='_settings'")
+						if hasSettings == 0 {
+							oldHandle.Close()
+							continue
+						}
+
+						sysHandle, err := sqlx.Open("sqlite3", sysDbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+						if err != nil {
+							oldHandle.Close()
+							warn("Migration: failed to open %s: %v", sysDbPath, err)
+							continue
+						}
+
+						// If db/ already has this file (created by server), remove it so we can migrate properly
+						if _, err := os.Stat(newDbPath); err == nil {
+							os.Remove(newDbPath)
+							os.Remove(newDbPath + "-wal")
+							os.Remove(newDbPath + "-shm")
+						}
+
+						// Create system tables
+						sysHandle.Exec("create table if not exists settings (name text not null primary key, value text not null)")
+						sysHandle.Exec("create table if not exists access (id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique(subject, resource, operation))")
+						sysHandle.Exec("create index if not exists access_resource on access(resource, operation)")
+						sysHandle.Exec("create index if not exists access_subject on access(subject)")
+						sysHandle.Exec("create table if not exists attachments (id integer primary key autoincrement, object text not null, name text not null, type text not null, length integer not null, hash text not null, file text not null, peer text not null default '', flag integer not null default 0, created integer not null, updated integer not null)")
+						sysHandle.Exec("create index if not exists attachments_object on attachments(object)")
+
+						// Copy _settings to settings
+						settingsRows, _ := oldHandle.Queryx("select name, value from _settings")
+						if settingsRows != nil {
+							for settingsRows.Next() {
+								var name, value string
+								if settingsRows.Scan(&name, &value) == nil {
+									sysHandle.Exec("insert or replace into settings (name, value) values (?, ?)", name, value)
+								}
+							}
+							settingsRows.Close()
+						}
+
+						// Copy _access to access
+						accessRows, _ := oldHandle.Queryx("select subject, resource, operation, grant, granter, created from _access")
+						if accessRows != nil {
+							for accessRows.Next() {
+								var subject, resource, operation, granter string
+								var grant, created int64
+								if accessRows.Scan(&subject, &resource, &operation, &grant, &granter, &created) == nil {
+									sysHandle.Exec("insert or replace into access (subject, resource, operation, grant, granter, created) values (?, ?, ?, ?, ?, ?)", subject, resource, operation, grant, granter, created)
+								}
+							}
+							accessRows.Close()
+						}
+
+						// Copy _attachments to attachments
+						attachRows, _ := oldHandle.Queryx("select object, name, type, length, hash, file, peer, flag, created, updated from _attachments")
+						if attachRows != nil {
+							for attachRows.Next() {
+								var object, name, atype, hash, file, peer string
+								var length, flag, created, updated int64
+								if attachRows.Scan(&object, &name, &atype, &length, &hash, &file, &peer, &flag, &created, &updated) == nil {
+									sysHandle.Exec("insert into attachments (object, name, type, length, hash, file, peer, flag, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", object, name, atype, length, hash, file, peer, flag, created, updated)
+								}
+							}
+							attachRows.Close()
+						}
+
+						// Drop old system tables from app database
+						oldHandle.Exec("drop table if exists _settings")
+						oldHandle.Exec("drop table if exists _access")
+						oldHandle.Exec("drop table if exists _attachments")
+
+						// Force WAL checkpoint to consolidate files before closing
+						oldHandle.Exec("pragma wal_checkpoint(truncate)")
+						sysHandle.Exec("pragma wal_checkpoint(truncate)")
+
+						// Close database connections before moving files
+						oldHandle.Close()
+						sysHandle.Close()
+
+						// Create db/ subdirectory and move app database
+						os.MkdirAll(newDbDir, 0755)
+						if err := os.Rename(oldDbPath, newDbPath); err != nil {
+							warn("Migration: failed to move %s to %s: %v", oldDbPath, newDbPath, err)
+						}
+						// Move WAL and SHM files if they exist (ignore errors)
+						os.Rename(oldDbPath+"-wal", newDbPath+"-wal")
+						os.Rename(oldDbPath+"-shm", newDbPath+"-shm")
+
+						info("Migration: migrated %s", oldDbPath)
+					}
+				}
+			}
+		}
+
 		setting_set("schema", itoa(int(schema)))
 		audit_schema_migrated(int(schema-1), int(schema))
 	}
@@ -576,11 +762,6 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	query, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid SQL statement %q", query)
-	}
-
-	// Block modifications to system tables (starting with _)
-	if system_table_pattern.MatchString(query) {
-		return sl_error(fn, "cannot modify system tables")
 	}
 
 	as := sl_decode(args[1:]).([]any)

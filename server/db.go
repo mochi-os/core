@@ -24,7 +24,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 26
+	schema_version = 27
 )
 
 var (

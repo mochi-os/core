@@ -117,19 +117,10 @@ var providers = []Provider{
 // Unambiguous character set for verification codes (no 0/O, 1/l/I confusion)
 const verificationCharset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
 
-// Starlark API module for filter operations
-var api_account_filter = sls.FromStringDict(sl.String("mochi.account.filter"), sl.StringDict{
-	"add":    sl.NewBuiltin("mochi.account.filter.add", api_account_filter_add),
-	"clear":  sl.NewBuiltin("mochi.account.filter.clear", api_account_filter_clear),
-	"list":   sl.NewBuiltin("mochi.account.filter.list", api_account_filters),
-	"remove": sl.NewBuiltin("mochi.account.filter.remove", api_account_filter_remove),
-})
-
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
 	"deliver":   sl.NewBuiltin("mochi.account.deliver", api_account_deliver),
-	"filter":    api_account_filter,
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
@@ -1169,259 +1160,7 @@ func account_test_url(url, secret string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
 }
 
-// mochi.account.filter.list(account_id) -> list: List filters for an account
-func api_account_filters(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <account_id: integer>")
-	}
-
-	if err := require_permission(t, fn, "account/read"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	accountID, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid account_id")
-	}
-
-	db := db_user(user, "user")
-
-	// Verify account exists and belongs to user
-	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
-	if !exists {
-		return sl_error(fn, "account not found")
-	}
-
-	rows, err := db.rows("select id, account, action, app, category, urgency from filters where account=?", accountID)
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-
-	return sl_encode(rows), nil
-}
-
-// mochi.account.filter.add(account_id, action, app?, category?, urgency?) -> dict: Add a filter
-func api_account_filter_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "account/manage"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	var accountID int
-	var action string
-	var appVal, categoryVal, urgencyVal sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
-		"account", &accountID,
-		"action", &action,
-		"app?", &appVal,
-		"category?", &categoryVal,
-		"urgency?", &urgencyVal,
-	); err != nil {
-		return nil, err
-	}
-
-	// Extract string values, treating None as empty string
-	app := sl_string(appVal)
-	category := sl_string(categoryVal)
-	urgency := sl_string(urgencyVal)
-
-	// Validate action
-	if action != "include" && action != "exclude" {
-		return sl_error(fn, "action must be 'include' or 'exclude'")
-	}
-
-	db := db_user(user, "user")
-
-	// Verify account exists
-	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
-	if !exists {
-		return sl_error(fn, "account not found")
-	}
-
-	// Insert filter
-	result, err := db.handle.Exec(
-		"insert into filters (account, action, app, category, urgency) values (?, ?, ?, ?, ?)",
-		accountID, action,
-		nullString(app), nullString(category), nullString(urgency),
-	)
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-
-	id, _ := result.LastInsertId()
-
-	return sl_encode(map[string]any{
-		"id":       id,
-		"account":  accountID,
-		"action":   action,
-		"app":      nullString(app),
-		"category": nullString(category),
-		"urgency":  nullString(urgency),
-	}), nil
-}
-
-// mochi.account.filter.remove(filter_id) -> bool: Remove a filter
-func api_account_filter_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <filter_id: integer>")
-	}
-
-	if err := require_permission(t, fn, "account/manage"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	filterID, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid filter_id")
-	}
-
-	db := db_user(user, "user")
-
-	// Verify filter exists (implicitly belongs to user via their database)
-	exists, _ := db.exists("select 1 from filters where id=?", filterID)
-	if !exists {
-		return sl.False, nil
-	}
-
-	db.exec("delete from filters where id=?", filterID)
-	return sl.True, nil
-}
-
-// mochi.account.filter.clear(account_id) -> bool: Clear all filters for an account
-func api_account_filter_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <account_id: integer>")
-	}
-
-	if err := require_permission(t, fn, "account/manage"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	accountID, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid account_id")
-	}
-
-	db := db_user(user, "user")
-
-	// Verify account exists
-	exists, _ := db.exists("select 1 from accounts where id=?", accountID)
-	if !exists {
-		return sl.False, nil
-	}
-
-	db.exec("delete from filters where account=?", accountID)
-	return sl.True, nil
-}
-
-// filter_matches checks if a notification matches the filters for an account
-// Returns true if the notification should be delivered
-func filter_matches(db *DB, accountID int64, app, category, urgency string) bool {
-	// Get all filters for this account
-	rows, err := db.rows("select action, app, category, urgency from filters where account=?", accountID)
-	if err != nil || len(rows) == 0 {
-		// No filters = receive all notifications
-		return true
-	}
-
-	// Separate include and exclude filters
-	var includes, excludes []map[string]any
-	for _, row := range rows {
-		action, _ := row["action"].(string)
-		if action == "include" {
-			includes = append(includes, row)
-		} else if action == "exclude" {
-			excludes = append(excludes, row)
-		}
-	}
-
-	// Check exclude filters first (if any match, block the notification)
-	for _, filter := range excludes {
-		if filter_row_matches(filter, app, category, urgency) {
-			return false
-		}
-	}
-
-	// If there are include filters, notification must match at least one
-	if len(includes) > 0 {
-		for _, filter := range includes {
-			if filter_row_matches(filter, app, category, urgency) {
-				return true
-			}
-		}
-		// Had include filters but none matched
-		return false
-	}
-
-	// No include filters and no exclude matched = allow
-	return true
-}
-
-// filter_row_matches checks if a single filter row matches the notification
-// All non-NULL fields must match (AND), NULL = wildcard
-func filter_row_matches(filter map[string]any, app, category, urgency string) bool {
-	// Check app filter
-	if filterApp := getString(filter, "app"); filterApp != "" {
-		if filterApp != app {
-			return false
-		}
-	}
-
-	// Check category filter
-	if filterCategory := getString(filter, "category"); filterCategory != "" {
-		if filterCategory != category {
-			return false
-		}
-	}
-
-	// Check urgency filter
-	if filterUrgency := getString(filter, "urgency"); filterUrgency != "" {
-		if filterUrgency != urgency {
-			return false
-		}
-	}
-
-	return true
-}
-
-// getString safely extracts a string from a map, handling nil and type conversion
-func getString(m map[string]any, key string) string {
-	if v, ok := m[key]; ok && v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// nullString returns nil for empty strings (for SQL NULL)
-func nullString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-// mochi.account.deliver(app, category, object, content, link, urgency?) -> dict: Deliver notification to all matching accounts
+// mochi.account.deliver(app, category, object, content, link, urgency?) -> dict: Deliver notification to all accounts
 func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "account/notify"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1453,7 +1192,6 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	sent := 0
-	filtered := 0
 	failed := 0
 
 	for _, row := range rows {
@@ -1462,12 +1200,6 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 		// Check if provider has notify capability
 		if !provider_has_capability(ptype, "notify") {
-			continue
-		}
-
-		// Check filters
-		if !filter_matches(db, accountID, app, category, urgency) {
-			filtered++
 			continue
 		}
 
@@ -1507,9 +1239,8 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	return sl_encode(map[string]any{
-		"sent":     sent,
-		"filtered": filtered,
-		"failed":   failed,
+		"sent":   sent,
+		"failed": failed,
 	}), nil
 }
 

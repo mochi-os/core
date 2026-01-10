@@ -94,6 +94,9 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 			for _, subj := range subjects {
 				var a Access
 				if db.scan(&a, "select grant from _access where subject=? and resource=? and operation=?", subj, res, act) {
+					if a.Grant != 1 {
+						audit_access_denied(user, resource, operation)
+					}
 					return a.Grant == 1
 				}
 			}
@@ -112,6 +115,7 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 	}
 
 	db.exec("replace into _access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
+	audit_permission_changed(granter, subject, resource, operation, grant)
 }
 
 // Clear all access rules for a resource

@@ -348,6 +348,11 @@ func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	web_cookie_unset(a.web, "session")
 
+	// Audit log logout
+	if a.user != nil {
+		audit_logout(a.user.Username, rate_limit_client_ip(a.web))
+	}
+
 	return sl.None, nil
 }
 

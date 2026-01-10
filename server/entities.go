@@ -86,6 +86,10 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 
 	e := Entity{ID: public, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 
+	// Audit log entity/identity creation
+	audit_identity_created(u.Username, public, class)
+	audit_key_generated(public, class)
+
 	if privacy == "public" {
 		directory_create(&e)
 		directory_publish(&e, true)
@@ -135,6 +139,14 @@ func entities_manager() {
 
 // Delete an entity: broadcast deletion to network, remove from directory and entities table
 func (e *Entity) delete() {
+	// Get user for audit logging
+	db := db_open("db/users.db")
+	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.id", e.ID)
+	username := ""
+	if row != nil {
+		username = row["username"].(string)
+	}
+
 	// Broadcast deletion (signs synchronously, dispatches async)
 	m := message(e.ID, "", "directory", "delete")
 	m.set("entity", e.ID)
@@ -144,7 +156,10 @@ func (e *Entity) delete() {
 	db_open("db/directory.db").exec("delete from directory where id=?", e.ID)
 
 	// Remove entity
-	db_open("db/users.db").exec("delete from entities where id=?", e.ID)
+	db.exec("delete from entities where id=?", e.ID)
+
+	// Audit log entity deletion
+	audit_identity_deleted(username, e.ID)
 }
 
 // Get the peer an entity is at

@@ -143,12 +143,16 @@ func (a *App) default_version() (version, track string) {
 }
 
 // set_default_version sets the system default version or track for this app
-func (a *App) set_default_version(version, track string) {
+// admin should be passed when called from admin API, empty for system operations
+func (a *App) set_default_version(version, track, admin string) {
 	db := db_apps()
 	if version == "" && track == "" {
 		db.exec("delete from versions where app = ?", a.id)
 	} else {
 		db.exec("replace into versions (app, version, track) values (?, ?, ?)", a.id, version, track)
+	}
+	if admin != "" {
+		audit_default_version_changed(admin, a.id, version, track)
 	}
 }
 
@@ -163,12 +167,16 @@ func (a *App) track(name string) string {
 }
 
 // set_track sets the version for a named track
-func (a *App) set_track(name, version string) {
+// admin should be passed when called from admin API, empty for system operations
+func (a *App) set_track(name, version, admin string) {
 	db := db_apps()
 	if version == "" {
 		db.exec("delete from tracks where app = ? and track = ?", a.id, name)
 	} else {
 		db.exec("replace into tracks (app, track, version) values (?, ?, ?)", a.id, name, version)
+	}
+	if admin != "" {
+		audit_default_track_changed(admin, a.id, name, version)
 	}
 }
 
@@ -1016,12 +1024,27 @@ func app_install(id string, version string, file string, check_only bool, peer .
 		app_write_publisher(tmp, peer[0])
 	}
 
+	// Check if this is a new install or upgrade before modifying filesystem
+	installed := apps_installed(id) > 0
+	a := app_by_id(id)
+	previous := ""
+	if a != nil && a.latest != nil {
+		previous = a.latest.Version
+	}
+
 	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
 	if file_exists(av.base) {
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
 		file_delete_all(av.base)
 	}
 	file_move(tmp, av.base)
+
+	// Audit log installation or upgrade
+	if !installed {
+		audit_app_installed(id, av.Version)
+	} else if previous != "" && version_greater(av.Version, previous) {
+		audit_app_upgraded(id, previous, av.Version)
+	}
 
 	debug("App %q version %q installed", id, av.Version)
 	return av, nil
@@ -2280,7 +2303,7 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if len(args) > 2 && args[2] != sl.None {
 		track, _ = sl.AsString(args[2])
 	}
-	a.set_default_version(version, track)
+	a.set_default_version(version, track, user.Username)
 	return sl.True, nil
 }
 
@@ -2370,7 +2393,7 @@ func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if a == nil {
 		return sl_error(fn, "app not found")
 	}
-	a.set_track(track, version)
+	a.set_track(track, version, user.Username)
 	return sl.True, nil
 }
 

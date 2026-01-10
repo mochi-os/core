@@ -234,21 +234,21 @@ func TestAppDefaultVersion(t *testing.T) {
 	}
 
 	// Set explicit version
-	a.set_default_version("1.5", "")
+	a.set_default_version("1.5", "", "")
 	version, track = a.default_version()
 	if version != "1.5" || track != "" {
 		t.Errorf("default_version() = (%q, %q), want ('1.5', '')", version, track)
 	}
 
 	// Set track instead
-	a.set_default_version("", "stable")
+	a.set_default_version("", "stable", "")
 	version, track = a.default_version()
 	if version != "" || track != "stable" {
 		t.Errorf("default_version() = (%q, %q), want ('', 'stable')", version, track)
 	}
 
 	// Clear default
-	a.set_default_version("", "")
+	a.set_default_version("", "", "")
 	version, track = a.default_version()
 	if version != "" || track != "" {
 		t.Errorf("default_version() after clear = (%q, %q), want ('', '')", version, track)
@@ -269,14 +269,14 @@ func TestAppTracks(t *testing.T) {
 	}
 
 	// Set track
-	a.set_track("stable", "1.5")
+	a.set_track("stable", "1.5", "")
 	v = a.track("stable")
 	if v != "1.5" {
 		t.Errorf("track(stable) = %q, want '1.5'", v)
 	}
 
 	// Set another track
-	a.set_track("beta", "1.6")
+	a.set_track("beta", "1.6", "")
 
 	// Get all tracks
 	tracks := a.tracks()
@@ -291,14 +291,14 @@ func TestAppTracks(t *testing.T) {
 	}
 
 	// Update track
-	a.set_track("stable", "1.5.1")
+	a.set_track("stable", "1.5.1", "")
 	v = a.track("stable")
 	if v != "1.5.1" {
 		t.Errorf("track(stable) after update = %q, want '1.5.1'", v)
 	}
 
 	// Delete track
-	a.set_track("beta", "")
+	a.set_track("beta", "", "")
 	v = a.track("beta")
 	if v != "" {
 		t.Errorf("track(beta) after delete = %q, want ''", v)
@@ -320,7 +320,7 @@ func TestAppResolveVersion(t *testing.T) {
 	}
 
 	// Set up a track
-	a.set_track("stable", "1.5")
+	a.set_track("stable", "1.5", "")
 
 	// Resolve explicit version
 	av := a.resolve_version("1.5", "")
@@ -383,7 +383,7 @@ func TestAppActiveFor(t *testing.T) {
 	}
 
 	// Set system default
-	a.set_default_version("1.5", "")
+	a.set_default_version("1.5", "", "")
 	av = a.active(nil)
 	if av == nil || av.Version != "1.5" {
 		t.Errorf("active(nil) with system default = %v, want version 1.5", av)
@@ -405,7 +405,7 @@ func TestAppActiveFor(t *testing.T) {
 	}
 
 	// Clear system default, highest should apply
-	a.set_default_version("", "")
+	a.set_default_version("", "", "")
 	av = a.active(user)
 	if av == nil || av.Version != "2.0" {
 		t.Errorf("active(user) with no defaults = %v, want version 2.0 (highest)", av)
@@ -428,18 +428,18 @@ func TestAppActiveForWithTrack(t *testing.T) {
 	a.latest = a.versions["2.0"]
 
 	// Set up tracks
-	a.set_track("stable", "1.5")
-	a.set_track("beta", "2.0")
+	a.set_track("stable", "1.5", "")
+	a.set_track("beta", "2.0", "")
 
 	// Set system default to follow stable track
-	a.set_default_version("", "stable")
+	a.set_default_version("", "stable", "")
 	av := a.active(nil)
 	if av == nil || av.Version != "1.5" {
 		t.Errorf("active(nil) following stable track = %v, want version 1.5", av)
 	}
 
 	// Update track pointer
-	a.set_track("stable", "1.0")
+	a.set_track("stable", "1.0", "")
 	av = a.active(nil)
 	if av == nil || av.Version != "1.0" {
 		t.Errorf("active(nil) after track update = %v, want version 1.0", av)
@@ -528,7 +528,7 @@ func TestCleanupKeepsSystemDefault(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set 1.5 as system default
-	a.set_default_version("1.5", "")
+	a.set_default_version("1.5", "", "")
 
 	removed := apps_cleanup_unused_versions()
 
@@ -561,8 +561,8 @@ func TestCleanupKeepsTrackVersions(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set up tracks
-	a.set_track("stable", "1.0")
-	a.set_track("beta", "1.5")
+	a.set_track("stable", "1.0", "")
+	a.set_track("beta", "1.5", "")
 
 	removed := apps_cleanup_unused_versions()
 
@@ -861,8 +861,8 @@ func TestStarlarkAPIAppTracks(t *testing.T) {
 	defer func() { apps = orig_apps }()
 
 	// Set up tracks
-	a.set_track("stable", "1.0")
-	a.set_track("beta", "2.0")
+	a.set_track("stable", "1.0", "")
+	a.set_track("beta", "2.0", "")
 
 	thread := create_test_starlark_thread()
 	result, err := api_app_tracks(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
@@ -1164,10 +1164,10 @@ func TestTrackToNonExistentVersion(t *testing.T) {
 	a.latest = a.versions["2.0"]
 
 	// Set track to non-existent version
-	a.set_track("stable", "9.9")
+	a.set_track("stable", "9.9", "")
 
 	// Set system default to follow this track
-	a.set_default_version("", "stable")
+	a.set_default_version("", "stable", "")
 
 	// Should fall back to highest version since track points to non-existent
 	av := a.active(nil)
@@ -1197,7 +1197,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 	a.latest = a.versions["2.0"]
 
 	// Set system default
-	a.set_default_version("1.0", "")
+	a.set_default_version("1.0", "", "")
 
 	// User prefers non-existent version
 	user := &User{ID: 1, Username: "test@example.com"}
@@ -1248,8 +1248,8 @@ func TestCleanupAllVersionsReferenced(t *testing.T) {
 	apps["test-app"] = a
 
 	// Reference all versions: tracks for 1.0 and 1.5, highest is 2.0
-	a.set_track("legacy", "1.0")
-	a.set_track("stable", "1.5")
+	a.set_track("legacy", "1.0", "")
+	a.set_track("stable", "1.5", "")
 
 	removed := apps_cleanup_unused_versions()
 	if removed != 0 {
@@ -1296,7 +1296,7 @@ func TestResolveVersionPrecedence(t *testing.T) {
 	}
 
 	// Set track to 2.0
-	a.set_track("stable", "2.0")
+	a.set_track("stable", "2.0", "")
 
 	// When version is specified, track should be ignored
 	// (In the current implementation, if track is set, it overrides version)
@@ -1466,12 +1466,12 @@ func TestCrossUserVersionSelection(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set up tracks
-	a.set_track("stable", "1.0")
-	a.set_track("latest", "2.0")
-	a.set_track("beta", "2.1-beta")
+	a.set_track("stable", "1.0", "")
+	a.set_track("latest", "2.0", "")
+	a.set_track("beta", "2.1-beta", "")
 
 	// System follows stable
-	a.set_default_version("", "stable")
+	a.set_default_version("", "stable", "")
 
 	// User 1 follows beta track
 	user1 := &User{ID: 1, Username: "user1@test.com"}
@@ -1521,8 +1521,8 @@ func TestTrackDeletedFallback(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set up track and system default following it
-	a.set_track("stable", "1.0")
-	a.set_default_version("", "stable")
+	a.set_track("stable", "1.0", "")
+	a.set_default_version("", "stable", "")
 
 	// Verify stable works
 	av := a.resolve_version("", "stable")
@@ -1563,7 +1563,7 @@ func TestVersionDeletedFallback(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set system default to 1.0
-	a.set_default_version("1.0", "")
+	a.set_default_version("1.0", "", "")
 
 	// Verify 1.0 is returned
 	av := a.resolve_version("1.0", "")
@@ -1714,7 +1714,7 @@ func TestNilUserVersionSelection(t *testing.T) {
 	apps["test-app"] = a
 
 	// System default to 1.0
-	a.set_default_version("1.0", "")
+	a.set_default_version("1.0", "", "")
 
 	// nil user should use system default
 	av := a.active(nil)
@@ -1723,7 +1723,7 @@ func TestNilUserVersionSelection(t *testing.T) {
 	}
 
 	// Clear system default, should use highest
-	a.set_default_version("", "")
+	a.set_default_version("", "", "")
 	av = a.active(nil)
 	if av == nil || av.Version != "2.0" {
 		t.Errorf("active(nil) no default = %v, want 2.0 (highest)", av)

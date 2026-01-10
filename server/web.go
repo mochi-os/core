@@ -733,7 +733,12 @@ func web_login_identity(c *gin.Context) {
 func web_logout(c *gin.Context) {
 	session := web_cookie_get(c, "session", "")
 	if session != "" {
+		// Get user before deleting session for audit log
+		user := web_auth(c)
 		login_delete(session)
+		if user != nil {
+			audit_logout(user.Username, rate_limit_client_ip(c))
+		}
 	}
 	web_cookie_unset(c, "session")
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

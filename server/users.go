@@ -307,6 +307,7 @@ func (u *User) set_class_app(class, app string) {
 	} else {
 		db.exec("replace into classes (class, app) values (?, ?)", class, app)
 	}
+	audit_user_routing_changed(u.Username, "class", class, app)
 }
 
 // service_app returns the user's preferred app for a service, or empty string if not set
@@ -327,6 +328,7 @@ func (u *User) set_service_app(service, app string) {
 	} else {
 		db.exec("replace into services (service, app) values (?, ?)", service, app)
 	}
+	audit_user_routing_changed(u.Username, "service", service, app)
 }
 
 // path_app returns the user's preferred app for a path, or empty string if not set
@@ -347,6 +349,7 @@ func (u *User) set_path_app(path, app string) {
 	} else {
 		db.exec("replace into paths (path, app) values (?, ?)", path, app)
 	}
+	audit_user_routing_changed(u.Username, "path", path, app)
 }
 
 // app_version returns the user's preferred version and track for an app
@@ -367,6 +370,7 @@ func (u *User) set_app_version(app, version, track string) {
 	} else {
 		db.exec("replace into versions (app, version, track) values (?, ?, ?)", app, version, track)
 	}
+	audit_user_version_changed(u.Username, app, version, track)
 }
 
 // mochi.user.get.id(id) -> dict | None: Get a user by ID (admin only)
@@ -671,6 +675,7 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "failed to create user")
 	}
 
+	audit_user_created(user.Username, username, role)
 	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
@@ -704,7 +709,16 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if !ok || !email_valid(username) {
 			return sl_error(fn, "invalid username")
 		}
+		// Get old username for audit
+		row, _ := db.row("select username from users where id=?", id)
+		old := ""
+		if row != nil {
+			old = row["username"].(string)
+		}
 		db.exec("update users set username=? where id=?", username, id)
+		if old != username {
+			audit_email_changed(user.Username, fmt.Sprintf("%d", id), old, username)
+		}
 	}
 
 	if len(args) > 2 && args[2] != sl.None {
@@ -712,7 +726,18 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if !ok || (role != "user" && role != "administrator") {
 			return sl_error(fn, "invalid role")
 		}
+		// Get old role for audit
+		row, _ := db.row("select role from users where id=?", id)
+		old := ""
+		if row != nil {
+			old = row["role"].(string)
+		}
 		db.exec("update users set role=? where id=?", role, id)
+		if old != role && role == "administrator" {
+			audit_admin_escalation(user.Username, fmt.Sprintf("%d", id), "promote")
+		} else if old != role && old == "administrator" {
+			audit_admin_escalation(user.Username, fmt.Sprintf("%d", id), "demote")
+		}
 	}
 
 	return sl.True, nil
@@ -769,12 +794,17 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Delete recovery codes
 	db.exec("delete from recovery where user=?", id)
 
+	// Get username before deletion for audit
+	var target User
+	db.scan(&target, "select username from users where id=?", id)
+
 	// Delete user
 	db.exec("delete from users where id=?", id)
 
 	// Delete user's data directory
 	os.RemoveAll(fmt.Sprintf("%s/users/%d", data_dir, id))
 
+	audit_user_deleted(user.Username, target.Username)
 	return sl.True, nil
 }
 

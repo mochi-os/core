@@ -36,6 +36,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	audit_init()
+	audit_server_start(build_version)
+
 	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
 	data_dir = ini_string("directories", "data", "/var/lib/mochi")
 	dev_apps_dir = ini_string("development", "apps", "")
@@ -71,6 +74,7 @@ func main() {
 	<-sig
 
 	info("Shutdown signal received, stopping gracefully...")
+	audit_server_stop()
 
 	// Wait for queue to drain (with timeout)
 	queue_drain(10 * time.Second)
@@ -83,5 +87,6 @@ func main() {
 		p2p_me.Close()
 	}
 
+	audit_close()
 	info("Shutdown complete")
 }

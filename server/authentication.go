@@ -56,6 +56,7 @@ func web_login_verify(c *gin.Context) {
 	}
 	user, reason := user_from_code(body.Code)
 	if user == nil {
+		audit_login_failed("", rate_limit_client_ip(c), reason)
 		switch reason {
 		case "signup_disabled":
 			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
@@ -122,6 +123,9 @@ func auth_complete_login(c *gin.Context, user *User) {
 	// Set session cookie for web browser authentication
 	web_cookie_set(c, "session", session)
 
+	// Audit log successful login
+	audit_login(user.Username, rate_limit_client_ip(c))
+
 	response := gin.H{
 		"token":   token,
 		"session": session,
@@ -186,16 +190,19 @@ func web_auth_totp(c *gin.Context) {
 
 	user := user_by_username(input.Email)
 	if user == nil {
+		audit_login_failed(input.Email, rate_limit_client_ip(c), "user_not_found")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
 	if user.Status == "suspended" {
+		audit_login_failed(input.Email, rate_limit_client_ip(c), "suspended")
 		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
 		return
 	}
 
 	// Verify TOTP code
 	if !totp_verify(user.ID, input.Code) {
+		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
 		return
 	}
@@ -757,6 +764,7 @@ func web_recovery_login(c *gin.Context) {
 	if row == nil {
 		// Timing-safe: always do bcrypt comparison even if user not found
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), []byte(code))
+		audit_login_failed(input.Username, rate_limit_client_ip(c), "user_not_found")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
@@ -773,6 +781,7 @@ func web_recovery_login(c *gin.Context) {
 	}
 
 	if matched < 0 {
+		audit_login_failed(input.Username, rate_limit_client_ip(c), "invalid_recovery_code")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}

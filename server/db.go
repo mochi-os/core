@@ -263,6 +263,7 @@ func db_app(u *User, app *App) *DB {
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
 			}
 			db.schema(version)
+			audit_app_schema_migrated(av.app.id, version-1, version)
 		}
 	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
 		for version := schema; version > av.Database.Schema; version-- {
@@ -271,6 +272,7 @@ func db_app(u *User, app *App) *DB {
 				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
 			}
 			db.schema(version - 1)
+			audit_app_schema_migrated(av.app.id, version, version-1)
 		}
 	}
 
@@ -457,6 +459,7 @@ func db_upgrade() {
 		}
 
 		setting_set("schema", itoa(int(schema)))
+		audit_schema_migrated(int(schema-1), int(schema))
 	}
 
 	// Migrate email_from from config to system setting

@@ -104,12 +104,14 @@ func (h *Headers) verify(challenge []byte) bool {
 	public := base58_decode(h.From, "")
 	if len(public) != ed25519.PublicKeySize {
 		info("Invalid from header length %d!=%d", len(public), ed25519.PublicKeySize)
+		audit_signature_failed(h.From, "invalid_key_length")
 		return false
 	}
 
 	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.ID, h.AckID, challenge)
 	if !ed25519.Verify(public, signable, base58_decode(h.Signature, "")) {
 		info("Incorrect signature")
+		audit_signature_failed(h.From, "invalid_signature")
 		return false
 	}
 

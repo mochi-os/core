@@ -42,11 +42,11 @@ var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	"revoke": sl.NewBuiltin("mochi.access.revoke", api_access_revoke),
 })
 
-// Create access control table
+// Create access control table in the system database (app.db)
 func (db *DB) access_setup() {
-	db.exec("create table if not exists _access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
-	db.exec("create index if not exists _access_resource on _access( resource, operation )")
-	db.exec("create index if not exists _access_subject on _access( subject )")
+	db.exec("create table if not exists access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
+	db.exec("create index if not exists access_resource on access( resource, operation )")
+	db.exec("create index if not exists access_subject on access( subject )")
 }
 
 // Check if a user has access to perform an operation on a resource
@@ -93,7 +93,7 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 		for _, act := range operations {
 			for _, subj := range subjects {
 				var a Access
-				if db.scan(&a, "select grant from _access where subject=? and resource=? and operation=?", subj, res, act) {
+				if db.scan(&a, "select grant from access where subject=? and resource=? and operation=?", subj, res, act) {
 					if a.Grant != 1 {
 						audit_access_denied(user, resource, operation)
 					}
@@ -114,36 +114,36 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 		g = 1
 	}
 
-	db.exec("replace into _access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
+	db.exec("replace into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
 	audit_permission_changed(granter, subject, resource, operation, grant)
 }
 
 // Clear all access rules for a resource
 func (db *DB) access_clear_resource(resource string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from _access where resource=? or resource like ?", resource, resource+"/%")
+	db.exec("delete from access where resource=? or resource like ?", resource, resource+"/%")
 }
 
 // Clear all access rules for a subject
 func (db *DB) access_clear_subject(subject string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from _access where subject=?", subject)
+	db.exec("delete from access where subject=?", subject)
 }
 
 // List access rules for a resource
 func (db *DB) access_list_resource(resource string) ([]map[string]any, error) {
-	return db.rows("select * from _access where resource=? order by subject", resource)
+	return db.rows("select * from access where resource=? order by subject", resource)
 }
 
 // List access rules for a subject
 func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
-	return db.rows("select * from _access where subject=? order by resource, operation", subject)
+	return db.rows("select * from access where subject=? order by resource, operation", subject)
 }
 
 // Revoke access
 func (db *DB) access_revoke(subject string, resource string, operation string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from _access where subject=? and resource=? and operation=?", subject, resource, operation)
+	db.exec("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
 }
 
 // Check access for an operation based on the "access" field in app.json
@@ -222,7 +222,7 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db.access_check(owner, user, role, resource, operation) {
 		return sl.True, nil
 	}
@@ -275,7 +275,7 @@ func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	db.access_set(subject, resource, operation, grant, granter)
 	return sl.None, nil
 }
@@ -311,7 +311,7 @@ func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	db.access_revoke(subject, resource, operation)
 	return sl.None, nil
 }
@@ -337,7 +337,7 @@ func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	db.access_clear_resource(resource)
 	return sl.None, nil
 }
@@ -363,7 +363,7 @@ func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	db.access_clear_subject(subject)
 	return sl.None, nil
 }
@@ -389,7 +389,7 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	rows, err := db.access_list_resource(resource)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -418,7 +418,7 @@ func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	rows, err := db.access_list_subject(subject)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)

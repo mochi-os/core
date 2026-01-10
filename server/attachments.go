@@ -57,10 +57,10 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"fetch":              sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
-// Create attachments table
+// Create attachments table in the system database (app.db)
 func (db *DB) attachments_setup() {
-	db.exec("create table if not exists _attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
-	db.exec("create index if not exists _attachments_object on _attachments( object )")
+	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	db.exec("create index if not exists attachments_object on attachments( object )")
 }
 
 // Get the file path for an attachment
@@ -75,7 +75,7 @@ func attachment_path(user_id int, app_id string, id string, name string) string 
 // Get the next rank for an object
 func (db *DB) attachment_next_rank(object string) int {
 	var max_rank int
-	row, _ := db.row("select max(rank) as max_rank from _attachments where object=?", object)
+	row, _ := db.row("select max(rank) as max_rank from attachments where object=?", object)
 	if row != nil && row["max_rank"] != nil {
 		switch v := row["max_rank"].(type) {
 		case int64:
@@ -89,12 +89,12 @@ func (db *DB) attachment_next_rank(object string) int {
 
 // Shift ranks up from a position
 func (db *DB) attachment_shift_up(object string, from_rank int) {
-	db.exec("update _attachments set rank = rank + 1 where object = ? and rank >= ?", object, from_rank)
+	db.exec("update attachments set rank = rank + 1 where object = ? and rank >= ?", object, from_rank)
 }
 
 // Shift ranks down from a position
 func (db *DB) attachment_shift_down(object string, from_rank int) {
-	db.exec("update _attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
+	db.exec("update attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
 }
 
 // Create attachment record for file already at final path
@@ -116,7 +116,7 @@ func attachment_create_record(db *DB, app *App, owner *User, object, name, id st
 		Created:     now(),
 	}
 
-	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
 	result := att.to_map(app.url_path(owner))
@@ -238,7 +238,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -316,7 +316,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		file_write(data_dir+"/"+path, data)
 
 		// Insert record
-		db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
 		results = append(results, att.to_map(app.url_path(owner)))
@@ -396,7 +396,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -436,7 +436,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	file_write(data_dir+"/"+path, bytes)
 
 	// Insert record
-	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
 	result := att.to_map(app.url_path(owner))
@@ -515,7 +515,7 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -624,7 +624,7 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -745,7 +745,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		creator = user.Identity.ID
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -787,7 +787,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	file_write(data_dir+"/"+path, bytes)
 
 	// Insert record
-	db.exec("insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 
 	result := att.to_map(app.url_path(owner))
@@ -836,18 +836,18 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	// Update record
-	db.exec("update _attachments set caption = ?, description = ? where id = ?", caption, description, id)
+	db.exec("update attachments set caption = ?, description = ? where id = ?", caption, description, id)
 
 	// Get updated record
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -892,7 +892,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -900,7 +900,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get current attachment
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl_error(fn, "attachment not found")
 	}
 
@@ -910,16 +910,16 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if old_rank != new_rank {
 		if new_rank < old_rank {
 			// Moving up: shift items in [new_rank, old_rank) up by 1
-			db.exec("update _attachments set rank = rank + 1 where object = ? and rank >= ? and rank < ?", att.Object, new_rank, old_rank)
+			db.exec("update attachments set rank = rank + 1 where object = ? and rank >= ? and rank < ?", att.Object, new_rank, old_rank)
 		} else {
 			// Moving down: shift items in (old_rank, new_rank] down by 1
-			db.exec("update _attachments set rank = rank - 1 where object = ? and rank > ? and rank <= ?", att.Object, old_rank, new_rank)
+			db.exec("update attachments set rank = rank - 1 where object = ? and rank > ? and rank <= ?", att.Object, old_rank, new_rank)
 		}
-		db.exec("update _attachments set rank = ? where id = ?", new_rank, id)
+		db.exec("update attachments set rank = ? where id = ?", new_rank, id)
 	}
 
 	// Get updated record
-	db.scan(&att, "select * from _attachments where id = ?", id)
+	db.scan(&att, "select * from attachments where id = ?", id)
 	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify
@@ -956,7 +956,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -964,7 +964,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Get attachment to delete
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		debug("attachment_delete: attachment %s not found in user %d database", id, owner.ID)
 		return sl.False, nil
 	}
@@ -975,7 +975,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	file_delete(thumbnail_path(path))
 
 	// Delete record and shift ranks
-	db.exec("delete from _attachments where id = ?", id)
+	db.exec("delete from attachments where id = ?", id)
 	db.attachment_shift_down(att.Object, att.Rank)
 
 	// Handle federation notify
@@ -1012,7 +1012,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1020,7 +1020,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Get all attachments for object
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from _attachments where object = ?", object)
+	err := db.scans(&attachments, "select * from attachments where object = ?", object)
 	if err != nil {
 		warn("Database error loading attachments for deletion: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Delete records
-	db.exec("delete from _attachments where object = ?", object)
+	db.exec("delete from attachments where object = ?", object)
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -1072,14 +1072,14 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	err := db.scans(&attachments, "select * from attachments where object = ? order by rank", object)
 	if err != nil {
 		return sl.None, fmt.Errorf("database error: %v", err)
 	}
@@ -1113,14 +1113,14 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1148,13 +1148,13 @@ func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
-	exists, _ := db.exists("select 1 from _attachments where id = ?", id)
+	exists, _ := db.exists("select 1 from attachments where id = ?", id)
 	return sl.Bool(exists), nil
 }
 
@@ -1179,14 +1179,14 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1227,14 +1227,14 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1275,14 +1275,14 @@ func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1558,7 +1558,7 @@ func (e *Event) attachment_event_create() {
 		}
 		name, _ := att["name"].(string)
 
-		e.db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 		// Fetch the file immediately to create a full local copy
@@ -1568,7 +1568,7 @@ func (e *Event) attachment_event_create() {
 			if data != nil {
 				path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
 				file_write(path, data)
-				e.db.exec(`update _attachments set entity = '' where id = ?`, id)
+				e.db.exec(`update attachments set entity = '' where id = ?`, id)
 				info("Attachment %s fetched and stored locally", id)
 			}
 		}
@@ -1621,7 +1621,7 @@ func (e *Event) attachment_event_insert() {
 
 	name, _ := att["name"].(string)
 
-	e.db.exec(`insert into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	e.db.exec(`insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 
 	// Fetch the file immediately to create a full local copy
@@ -1632,7 +1632,7 @@ func (e *Event) attachment_event_insert() {
 			path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
 			file_write(path, data)
 			// File stored locally, clear entity so it's served from local storage
-			e.db.exec(`update _attachments set entity = '' where id = ?`, id)
+			e.db.exec(`update attachments set entity = '' where id = ?`, id)
 			info("Attachment %s fetched and stored locally", id)
 		}
 	}
@@ -1660,7 +1660,7 @@ func (e *Event) attachment_event_update() {
 	}
 
 	// Only update if we have this attachment and it's from this source
-	e.db.exec(`update _attachments set caption = ?, description = ? where id = ? and entity = ?`,
+	e.db.exec(`update attachments set caption = ?, description = ? where id = ? and entity = ?`,
 		att["caption"], att["description"], id, source)
 }
 
@@ -1698,11 +1698,11 @@ func (e *Event) attachment_event_move() {
 
 	if old_rank > 0 && new_rank > 0 && old_rank != new_rank {
 		if new_rank < old_rank {
-			e.db.exec("update _attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)
+			e.db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)
 		} else {
-			e.db.exec("update _attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, source, old_rank, new_rank)
+			e.db.exec("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, source, old_rank, new_rank)
 		}
-		e.db.exec("update _attachments set rank = ? where id = ? and entity = ?", new_rank, id, source)
+		e.db.exec("update attachments set rank = ? where id = ? and entity = ?", new_rank, id, source)
 	}
 }
 
@@ -1725,8 +1725,8 @@ func (e *Event) attachment_event_delete() {
 
 	// Get attachment before deleting (may have empty entity if stored locally)
 	var att Attachment
-	if e.db.scan(&att, "select * from _attachments where id = ?", id) {
-		e.db.exec("delete from _attachments where id = ?", id)
+	if e.db.scan(&att, "select * from attachments where id = ?", id) {
+		e.db.exec("delete from attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
 		// Delete local file and thumbnail if exists
@@ -1760,7 +1760,7 @@ func (e *Event) attachment_event_clear() {
 
 	// Get all attachments to delete cached files
 	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from _attachments where object = ? and entity = ?", object, source)
+	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = ?", object, source)
 	if err != nil {
 		warn("Database error loading attachments for cache deletion: %v", err)
 	}
@@ -1770,7 +1770,7 @@ func (e *Event) attachment_event_clear() {
 		file_delete(cache_path)
 	}
 
-	e.db.exec("delete from _attachments where object = ? and entity = ?", object, source)
+	e.db.exec("delete from attachments where object = ? and entity = ?", object, source)
 }
 
 // Event handler: attachment/data (responds with file bytes)
@@ -1792,7 +1792,7 @@ func (e *Event) attachment_event_data() {
 
 	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
-	if !e.db.scan(&att, "select * from _attachments where id = ?", id) {
+	if !e.db.scan(&att, "select * from attachments where id = ?", id) {
 		warn("attachment_event_data: attachment not found in db, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
@@ -1848,7 +1848,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1856,7 +1856,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get existing attachments for object
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from _attachments where object = ? order by rank", object)
+	err := db.scans(&attachments, "select * from attachments where object = ? order by rank", object)
 	if err != nil {
 		return sl.None, fmt.Errorf("database error: %v", err)
 	}
@@ -1903,7 +1903,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
-	db := db_app(owner, app)
+	db := db_app_system(owner, app)
 	if db == nil {
 		return sl_error(fn, "no database")
 	}
@@ -1948,7 +1948,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		rank, _ := att["rank"].(float64)
 		created, _ := att["created"].(float64)
 
-		db.exec(`replace into _attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, obj, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
 	}
@@ -1971,7 +1971,7 @@ func (e *Event) attachment_event_fetch() {
 
 	// Get attachments for this object that we own (entity is empty)
 	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from _attachments where object = ? and entity = '' order by rank", object)
+	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = '' order by rank", object)
 	if err != nil {
 		warn("Database error loading attachments: %v", err)
 		e.stream.write([]map[string]any{})

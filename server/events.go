@@ -98,17 +98,18 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 
-	// Handle built-in attachment events for apps with a database
+	// Handle built-in attachment events
 	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
-	if strings.HasPrefix(e.event, "_attachment/") && av.Database.File != "" {
+	// System database (app.db) is always available, even for apps without a declared database file
+	if strings.HasPrefix(e.event, "_attachment/") {
 		if e.user == nil {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
 		}
-		e.db = db_app(e.user, a)
+		e.db = db_app_system(e.user, a)
 		if e.db == nil {
-			info("Event app %q has no database file", a.id)
-			return fmt.Errorf("no database file")
+			info("Event app %q failed to open system database", a.id)
+			return fmt.Errorf("no system database")
 		}
 		defer e.db.close()
 

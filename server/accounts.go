@@ -189,6 +189,7 @@ func account_redact(row map[string]any) map[string]any {
 		"identifier": row["identifier"],
 		"created":    row["created"],
 		"verified":   row["verified"],
+		"enabled":    row["enabled"],
 	}
 }
 
@@ -268,7 +269,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		capability = cap
 	}
 
-	rows, err := db.rows("select id, type, label, identifier, created, verified from accounts order by created desc")
+	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled from accounts order by created desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -309,7 +310,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
-	row, err := db.row("select id, type, label, identifier, created, verified from accounts where id=?", id)
+	row, err := db.row("select id, type, label, identifier, created, verified, enabled from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -504,9 +505,25 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.False, nil
 	}
 
-	// Only label can be updated for now
+	// Update label if provided
 	if label, ok := fields["label"].(string); ok {
 		db.exec("update accounts set label=? where id=?", label, id)
+	}
+
+	// Update enabled if provided
+	if enabled, ok := fields["enabled"]; ok {
+		var val int
+		switch v := enabled.(type) {
+		case bool:
+			if v {
+				val = 1
+			}
+		case int64:
+			val = int(v)
+		case int:
+			val = v
+		}
+		db.exec("update accounts set enabled=? where id=?", val, id)
 	}
 
 	return sl.True, nil

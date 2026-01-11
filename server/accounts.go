@@ -1177,7 +1177,7 @@ func account_test_url(url, secret string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
 }
 
-// mochi.account.deliver(app, category, object, content, link, urgency?) -> dict: Deliver notification to all accounts
+// mochi.account.deliver(app, category, object, title, body, link, urgency?, account?) -> dict: Deliver notification to accounts
 func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "account/notify"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1188,22 +1188,31 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no user")
 	}
 
-	var app, category, object, content, link, urgency string
+	var app, category, object, title, body, link, urgency string
+	var account int
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
 		"app", &app,
 		"category", &category,
 		"object", &object,
-		"content", &content,
+		"title", &title,
+		"body", &body,
 		"link?", &link,
 		"urgency?", &urgency,
+		"account?", &account,
 	); err != nil {
 		return nil, err
 	}
 
 	db := db_user(user, "user")
 
-	// Get all verified accounts with notify capability
-	rows, err := db.rows("select id, type, identifier, data from accounts where verified > 0")
+	// Get verified accounts with notify capability (optionally filtered by account ID)
+	var rows []map[string]any
+	var err error
+	if account > 0 {
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0 and id = ?", account)
+	} else {
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0")
+	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -1231,15 +1240,15 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		var success bool
 		switch ptype {
 		case "browser":
-			success = account_deliver_browser(data, content, link, app+"-"+category+"-"+object)
+			success = account_deliver_browser(data, title, body, link, app+"-"+category+"-"+object)
 		case "email":
-			success = account_deliver_email(identifier, app, category, content, link)
+			success = account_deliver_email(identifier, title, body, link)
 		case "pushbullet":
 			token, _ := data["token"].(string)
-			success = account_deliver_pushbullet(token, content, link)
+			success = account_deliver_pushbullet(token, title, body, link)
 		case "url":
 			secret, _ := data["secret"].(string)
-			success = account_deliver_url(identifier, secret, app, category, object, content, link)
+			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
 		default:
 			continue
 		}
@@ -1262,7 +1271,7 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 }
 
 // account_deliver_browser sends a push notification to a browser
-func account_deliver_browser(data map[string]any, body, link, tag string) bool {
+func account_deliver_browser(data map[string]any, title, body, link, tag string) bool {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
 		return false
@@ -1277,7 +1286,7 @@ func account_deliver_browser(data map[string]any, body, link, tag string) bool {
 	}
 
 	payload, _ := json.Marshal(map[string]string{
-		"title": "Mochi",
+		"title": title,
 		"body":  body,
 		"link":  link,
 		"tag":   tag,
@@ -1307,8 +1316,8 @@ func account_deliver_browser(data map[string]any, body, link, tag string) bool {
 }
 
 // account_deliver_email sends a notification via email
-func account_deliver_email(address, app, category, content, link string) bool {
-	subject := "Mochi: " + app + " " + category
+func account_deliver_email(address, title, body, link string) bool {
+	text := title + "\n\n" + body
 	html := `<!DOCTYPE html>
 <html>
 <head>
@@ -1322,13 +1331,8 @@ func account_deliver_email(address, app, category, content, link string) bool {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 32px 40px;">
-              <h1 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #18181b;">` + app + `: ` + category + `</h1>
-              <p style="margin: 0 0 24px 0; font-size: 15px; color: #3f3f46; line-height: 1.5;">` + content + `</p>`
-	if link != "" {
-		html += `
-              <a href="` + link + `" style="display: inline-block; padding: 10px 20px; background-color: #18181b; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500;">View</a>`
-	}
-	html += `
+              <h1 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #18181b;">` + title + `</h1>
+              <p style="margin: 0; font-size: 15px; color: #3f3f46; line-height: 1.5;">` + body + `</p>
             </td>
           </tr>
         </table>
@@ -1337,21 +1341,20 @@ func account_deliver_email(address, app, category, content, link string) bool {
   </table>
 </body>
 </html>`
-	email_send_html(address, subject, html)
+	email_send_multipart(address, title, text, html)
 	return true
 }
 
 // account_deliver_pushbullet sends a notification via Pushbullet
-func account_deliver_pushbullet(token, content, link string) bool {
+func account_deliver_pushbullet(token, title, body, link string) bool {
 	if token == "" {
 		return false
 	}
 
 	payload, _ := json.Marshal(map[string]string{
 		"type":  "note",
-		"title": "Mochi",
-		"body":  content,
-		"url":   link,
+		"title": title,
+		"body":  body,
 	})
 
 	req, _ := http.NewRequest("POST", "https://api.pushbullet.com/v2/pushes", bytes.NewReader(payload))
@@ -1369,7 +1372,7 @@ func account_deliver_pushbullet(token, content, link string) bool {
 }
 
 // account_deliver_url sends a notification to an external URL
-func account_deliver_url(url, secret, app, category, object, content, link string) bool {
+func account_deliver_url(url, secret, app, category, object, title, body, link string) bool {
 	if url == "" {
 		return false
 	}
@@ -1378,7 +1381,8 @@ func account_deliver_url(url, secret, app, category, object, content, link strin
 		"app":      app,
 		"category": category,
 		"object":   object,
-		"content":  content,
+		"title":    title,
+		"body":     body,
 		"link":     link,
 		"created":  time.Now().Unix(),
 	})

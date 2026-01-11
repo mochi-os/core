@@ -110,6 +110,37 @@ func email_login_code(to string, code string) {
 	email_send_html(to, subject, html)
 }
 
+// email_send_multipart sends an email with both plain text and HTML parts.
+func email_send_multipart(to string, subject string, text string, html string) {
+	m := gm.NewMsg()
+
+	from := setting_get("email_from", "mochi-server@localhost")
+	err := m.From(from)
+	if err != nil {
+		warn("Email failed to set from address %q: %v", from, err)
+		return
+	}
+	err = m.To(to)
+	if err != nil {
+		warn("Email failed to set to address %q: %v", to, err)
+		return
+	}
+	m.Subject(subject)
+	m.SetBodyString(gm.TypeTextPlain, text)
+	m.AddAlternativeString(gm.TypeTextHTML, html)
+
+	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
+	if err != nil {
+		warn("Email failed to create mail client: %v", err)
+		return
+	}
+	err = c.DialAndSend(m)
+	if err != nil {
+		warn("Email failed to send message: %v", err)
+		return
+	}
+}
+
 func email_valid(address string) bool {
 	_, err := mail.ParseAddress(address)
 	if err != nil {

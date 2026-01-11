@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 33
+	schema_version = 34
 )
 
 var (
@@ -500,10 +500,10 @@ func db_upgrade() {
 			}
 		}
 
-		if schema >= 29 && schema <= 33 {
-			// Migration: separate app databases from system databases
-			// Move app database files to db/ subdirectory and extract system tables to app.db
-			// This migration opens databases directly (not via pool) so we can close them before moving files
+		if schema == 34 {
+			// Migration: fix attachments table schema in app.db files
+			// The schema 29-33 migration created attachments with old columns (type, length, hash, file, peer, flag, updated)
+			// but the current code expects new columns (entity, size, content_type, creator, caption, description, rank)
 			users := db_open("db/users.db")
 			rows, _ := users.rows("select id from users")
 			for _, row := range rows {
@@ -513,6 +513,52 @@ func db_upgrade() {
 				}
 
 				userDir := fmt.Sprintf("%s/users/%d", data_dir, uid)
+				entries, err := os.ReadDir(userDir)
+				if err != nil {
+					continue
+				}
+
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+
+					appDbPath := filepath.Join(userDir, entry.Name(), "app.db")
+					if !file_exists(appDbPath) {
+						continue
+					}
+
+					appDb := db_open(fmt.Sprintf("users/%d/%s/app.db", uid, entry.Name()))
+
+					// Check if attachments table has old schema (has 'type' column) or new schema (has 'rank' column)
+					hasType, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='type'")
+					hasRank, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='rank'")
+
+					if hasType && !hasRank {
+						// Old schema from migration 29-33: drop and recreate with new schema
+						appDb.exec("drop table if exists attachments")
+						appDb.attachments_setup()
+					} else if !hasRank {
+						// New schema but missing rank column: add it
+						appDb.exec("alter table attachments add column rank integer not null default 0")
+					}
+				}
+			}
+		}
+
+		if schema >= 29 && schema <= 33 {
+			// Migration: separate app databases from system databases
+			// Move app database files to db/ subdirectory and extract system tables to app.db
+			// This migration opens databases directly (not via pool) so we can close them before moving files
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				userId, ok := row["id"].(int64)
+				if !ok {
+					continue
+				}
+
+				userDir := fmt.Sprintf("%s/users/%d", data_dir, userId)
 				entries, err := os.ReadDir(userDir)
 				if err != nil {
 					continue
@@ -575,7 +621,7 @@ func db_upgrade() {
 						sysHandle.Exec("create table if not exists access (id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique(subject, resource, operation))")
 						sysHandle.Exec("create index if not exists access_resource on access(resource, operation)")
 						sysHandle.Exec("create index if not exists access_subject on access(subject)")
-						sysHandle.Exec("create table if not exists attachments (id integer primary key autoincrement, object text not null, name text not null, type text not null, length integer not null, hash text not null, file text not null, peer text not null default '', flag integer not null default 0, created integer not null, updated integer not null)")
+						sysHandle.Exec("create table if not exists attachments (id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null)")
 						sysHandle.Exec("create index if not exists attachments_object on attachments(object)")
 
 						// Copy _settings to settings
@@ -603,17 +649,36 @@ func db_upgrade() {
 							accessRows.Close()
 						}
 
-						// Copy _attachments to attachments
-						attachRows, _ := oldHandle.Queryx("select object, name, type, length, hash, file, peer, flag, created, updated from _attachments")
-						if attachRows != nil {
-							for attachRows.Next() {
-								var object, name, atype, hash, file, peer string
-								var length, flag, created, updated int64
-								if attachRows.Scan(&object, &name, &atype, &length, &hash, &file, &peer, &flag, &created, &updated) == nil {
-									sysHandle.Exec("insert into attachments (object, name, type, length, hash, file, peer, flag, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", object, name, atype, length, hash, file, peer, flag, created, updated)
+						// Copy _attachments to attachments (handle both old and new schemas)
+						// Check if _attachments has new schema (has 'rank' column) or old schema (has 'type' column)
+						var hasRankCol int
+						oldHandle.Get(&hasRankCol, "select count(*) from pragma_table_info('_attachments') where name='rank'")
+						if hasRankCol > 0 {
+							// New schema: copy all columns
+							attachRows, _ := oldHandle.Queryx("select id, object, entity, name, size, content_type, creator, caption, description, rank, created from _attachments")
+							if attachRows != nil {
+								for attachRows.Next() {
+									var id, object, entity, name, content_type, creator, caption, description string
+									var size, rank, created int64
+									if attachRows.Scan(&id, &object, &entity, &name, &size, &content_type, &creator, &caption, &description, &rank, &created) == nil {
+										sysHandle.Exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+									}
 								}
+								attachRows.Close()
 							}
-							attachRows.Close()
+						} else {
+							// Old schema: map what we can (object, name, created), generate id, leave others as default
+							attachRows, _ := oldHandle.Queryx("select object, name, type, length, created from _attachments")
+							if attachRows != nil {
+								for attachRows.Next() {
+									var object, name, atype string
+									var length, created int64
+									if attachRows.Scan(&object, &name, &atype, &length, &created) == nil {
+										sysHandle.Exec("insert into attachments (id, object, name, size, content_type, created) values (?, ?, ?, ?, ?, ?)", uid(), object, name, length, atype, created)
+									}
+								}
+								attachRows.Close()
+							}
 						}
 
 						// Drop old system tables from app database

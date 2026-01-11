@@ -61,6 +61,12 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 func (db *DB) attachments_setup() {
 	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
 	db.exec("create index if not exists attachments_object on attachments( object )")
+
+	// Add rank column if missing (for databases created before rank was added)
+	hasRank, _ := db.exists("select 1 from pragma_table_info('attachments') where name='rank'")
+	if !hasRank {
+		db.exec("alter table attachments add column rank integer not null default 0")
+	}
 }
 
 // Get the file path for an attachment

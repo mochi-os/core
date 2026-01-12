@@ -82,6 +82,18 @@ var providers = []Provider{
 		Verify: false,
 	},
 	{
+		Type:         "ntfy",
+		Capabilities: []string{"notify"},
+		Flow:         "form",
+		Fields: []ProviderField{
+			{Name: "topic", Label: "Topic", Type: "text", Required: true, Placeholder: "my-notifications"},
+			{Name: "server", Label: "Server URL", Type: "url", Required: false, Placeholder: "https://ntfy.sh"},
+			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
+	{
 		Type:         "openai",
 		Capabilities: []string{"ai"},
 		Flow:         "form",
@@ -204,7 +216,7 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		capability = cap
 	}
 
-	var result []map[string]any
+	result := []map[string]any{}
 	var list []Provider
 
 	if capability != "" {
@@ -274,7 +286,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "database error: %v", err)
 	}
 
-	var result []map[string]any
+	result := []map[string]any{}
 	for _, row := range rows {
 		// Filter by capability if specified
 		if capability != "" {
@@ -429,6 +441,20 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		token, _ := fields["token"].(string)
 		identifier = url
 		data["token"] = token
+
+	case "ntfy":
+		topic, _ := fields["topic"].(string)
+		server, _ := fields["server"].(string)
+		token, _ := fields["token"].(string)
+		if server == "" {
+			server = "https://ntfy.sh"
+		}
+		identifier = server + "/" + topic
+		data["topic"] = topic
+		data["server"] = server
+		if token != "" {
+			data["token"] = token
+		}
 
 	case "url":
 		url, _ := fields["url"].(string)
@@ -884,6 +910,12 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		token, _ := data["token"].(string)
 		result = account_test_mcp(url, token)
 
+	case "ntfy":
+		server, _ := data["server"].(string)
+		topic, _ := data["topic"].(string)
+		token, _ := data["token"].(string)
+		result = account_test_ntfy(server, topic, token)
+
 	case "url":
 		url := identifier
 		secret, _ := data["secret"].(string)
@@ -1144,6 +1176,39 @@ func account_test_mcp(url, token string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: "Connection failed"}
 }
 
+// account_test_ntfy sends a test notification via ntfy
+func account_test_ntfy(server, topic, token string) AccountTestResult {
+	if topic == "" {
+		return AccountTestResult{Success: false, Message: "No topic configured"}
+	}
+	if server == "" {
+		server = "https://ntfy.sh"
+	}
+
+	url := server + "/" + topic
+	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte("Mochi test notification")))
+	req.Header.Set("Title", "Mochi test notification")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return AccountTestResult{Success: true, Message: "Test notification sent"}
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return AccountTestResult{Success: false, Message: "Authentication failed"}
+	}
+
+	return AccountTestResult{Success: false, Message: "ntfy returned " + itoa(resp.StatusCode)}
+}
+
 // account_test_url tests an external URL
 func account_test_url(url, secret string) AccountTestResult {
 	if url == "" {
@@ -1246,6 +1311,11 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		case "pushbullet":
 			token, _ := data["token"].(string)
 			success = account_deliver_pushbullet(token, title, body, link)
+		case "ntfy":
+			server, _ := data["server"].(string)
+			topic, _ := data["topic"].(string)
+			token, _ := data["token"].(string)
+			success = account_deliver_ntfy(server, topic, token, title, body, link)
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
@@ -1360,6 +1430,35 @@ func account_deliver_pushbullet(token, title, body, link string) bool {
 	req, _ := http.NewRequest("POST", "https://api.pushbullet.com/v2/pushes", bytes.NewReader(payload))
 	req.Header.Set("Access-Token", token)
 	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == 200
+}
+
+// account_deliver_ntfy sends a notification via ntfy
+func account_deliver_ntfy(server, topic, token, title, body, link string) bool {
+	if topic == "" {
+		return false
+	}
+	if server == "" {
+		server = "https://ntfy.sh"
+	}
+
+	url := server + "/" + topic
+	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte(body)))
+	req.Header.Set("Title", title)
+	if link != "" {
+		req.Header.Set("Click", link)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

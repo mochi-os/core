@@ -311,8 +311,11 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if e.Class != "" && apps_class_get(e.Class) != app.id {
-		return sl_error(fn, "app does not control class %q", e.Class)
+	if e.Class != "" {
+		controlling := class_app_for(user, e.Class)
+		if controlling == nil || controlling.id != app.id {
+			return sl_error(fn, "app does not control class %q", e.Class)
+		}
 	}
 
 	// Delete the entity

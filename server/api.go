@@ -159,6 +159,9 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "unknown function %q for service %q", function, service)
 	}
 
+	// Run first-time setup for target service app (grants default permissions)
+	app_user_setup(user, a.id)
+
 	// Call function
 	s := av.starlark()
 	s.set("app", a)

@@ -61,7 +61,7 @@ func websocket_connection(c *gin.Context) {
 	}
 	websockets[u.ID][key][id] = ws
 	websockets_lock.Unlock()
-	//debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
+	debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
 
 	for {
 		t, j, err := ws.Read(websocket_context)
@@ -78,7 +78,7 @@ func websocket_connection(c *gin.Context) {
 }
 
 func websockets_send(u *User, key string, content any) {
-	//debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
+	debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
 	j := ""
 	var failed []string
 

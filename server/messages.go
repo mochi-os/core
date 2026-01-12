@@ -141,9 +141,13 @@ func (m *Message) send_work() {
 		return
 	}
 
+	// Mark as sending to prevent other queue processors from picking it up
+	queue_sending(m.ID)
+
 	s := peer_stream(peer)
 	if s == nil {
 		debug("Unable to open stream to peer, will retry from queue")
+		queue_fail(m.ID, "unable to open stream")
 		return
 	}
 	defer s.close()

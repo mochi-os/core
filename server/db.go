@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 34
+	schema_version = 36
 )
 
 var (
@@ -704,6 +704,30 @@ func db_upgrade() {
 						os.Rename(oldDbPath+"-shm", newDbPath+"-shm")
 
 						info("Migration: migrated %s", oldDbPath)
+					}
+				}
+			}
+		}
+
+		if schema == 36 {
+			// Migration: sync all default permissions for all default apps
+			// Permissions added to apps_default after user setup were missing
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				if id, ok := row["id"].(int64); ok {
+					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.permissions_setup()
+					// Get all apps this user has set up
+					appRows, _ := udb.rows("select app from apps where setup > 0")
+					for _, appRow := range appRows {
+						if appName, ok := appRow["app"].(string); ok {
+							// Get default permissions for this app and grant any missing ones
+							defaults := apps_default_get(appName)
+							for _, p := range defaults {
+								udb.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", appName, p.Permission, p.Object)
+							}
+						}
 					}
 				}
 			}

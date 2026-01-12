@@ -865,13 +865,7 @@ func web_path(c *gin.Context) {
 		}
 
 		// Route on /<app>/<action...>
-		// Strip leading "-/" - it's used in entity context to separate API from pages,
-		// but in class context it's redundant (e.g., /wiki/-/info -> /wiki/info)
-		actionSegments := segments[1:]
-		if len(actionSegments) > 0 && actionSegments[0] == "-" {
-			actionSegments = actionSegments[1:]
-		}
-		classAction := strings.Join(actionSegments, "/")
+		classAction := strings.Join(segments[1:], "/")
 
 		web_action(c, a, classAction, nil)
 		return

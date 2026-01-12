@@ -72,6 +72,12 @@ func queue_ack(id string) {
 	//debug("Queue ACK received for %q", id)
 }
 
+// Mark a message as being sent (prevents other processors from picking it up)
+func queue_sending(id string) {
+	db := db_open("db/queue.db")
+	db.exec("update queue set status='sending' where id=?", id)
+}
+
 // Mark a message as failed and schedule retry or drop
 func queue_fail(id string, err string) {
 	db := db_open("db/queue.db")

@@ -855,16 +855,42 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	as := sl_decode(args[1:]).([]any)
 
-	// For entity context, use owner's database (entity data lives there).
-	// For class context, use authenticated user's database.
+	// Determine which user's database to use based on authentication and routing context.
+	// - Not logged in + entity: owner's database (viewing public content)
+	// - Not logged in + no entity: error (can't determine owner)
+	// - Logged in + domain routing + entity: owner's database (accessing via custom domain)
+	// - Logged in + domain routing + no entity: error (can't determine owner)
+	// - Logged in + not domain routing: user's database (user's own actions)
 	owner := t.Local("owner").(*User)
 	user := t.Local("user").(*User)
-	db_user := owner
-	if db_user == nil {
-		db_user = user
+
+	var db_user *User
+	var domain_routing bool
+
+	// Check if domain routing is active
+	if action := t.Local("action"); action != nil {
+		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
+			domain_routing = a.domain.route.context != ""
+		}
 	}
-	if db_user == nil {
-		return sl_error(fn, "no user")
+
+	if user == nil {
+		// Not logged in
+		if owner != nil {
+			db_user = owner
+		} else {
+			return sl_error(fn, "no user context available")
+		}
+	} else if domain_routing {
+		// Logged in with domain routing
+		if owner != nil {
+			db_user = owner
+		} else {
+			return sl_error(fn, "no owner context for domain routing")
+		}
+	} else {
+		// Logged in without domain routing - use authenticated user's database
+		db_user = user
 	}
 
 	app := t.Local("app").(*App)

@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 36
+	schema_version = 37
 )
 
 var (
@@ -153,6 +153,12 @@ func db_create() {
 	apps.exec("create table versions (app text not null primary key, version text, track text)")
 	apps.exec("create table tracks (app text not null, track text not null, version text not null, primary key (app, track))")
 	apps.exec("create table apps (app text not null primary key, installed integer not null)")
+
+	// Scheduled events
+	schedule := db_open("db/schedule.db")
+	schedule.exec("create table schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+	schedule.exec("create index schedule_due on schedule(due)")
+	schedule.exec("create index schedule_app_event on schedule(app, event)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed
@@ -731,6 +737,14 @@ func db_upgrade() {
 					}
 				}
 			}
+		}
+
+		if schema == 37 {
+			// Migration: create scheduled events database
+			schedule := db_open("db/schedule.db")
+			schedule.exec("create table if not exists schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+			schedule.exec("create index if not exists schedule_due on schedule(due)")
+			schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
 		}
 
 		setting_set("schema", itoa(int(schema)))

@@ -67,6 +67,7 @@ func main() {
 	go sessions_manager()
 	go web_start()
 	go apps_manager()
+	go schedule_start()
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)

@@ -47,7 +47,8 @@ func init() {
 					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
 				}),
 			}),
-			"remote": api_remote,
+			"remote":   api_remote,
+			"schedule": api_schedule,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 			}),

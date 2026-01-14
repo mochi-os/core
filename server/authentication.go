@@ -21,7 +21,7 @@ import (
 const recovery_code_count = 10
 
 var (
-	jwt_expiry = int64(3600)
+	jwt_expiry = int64(365 * 86400) // 1 year, matching session cookie lifetime
 )
 
 var api_user_recovery = sls.FromStringDict(sl.String("mochi.user.recovery"), sl.StringDict{

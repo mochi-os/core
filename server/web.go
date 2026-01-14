@@ -393,9 +393,15 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	return true
 }
 
-// Get user for session cookie
+// Get user for session cookie and refresh it to extend expiry
 func web_auth(c *gin.Context) *User {
-	return user_by_login(web_cookie_get(c, "session", ""))
+	session := web_cookie_get(c, "session", "")
+	user := user_by_login(session)
+	if user != nil {
+		// Refresh cookie to reset browser expiry limits
+		web_cookie_set(c, "session", session)
+	}
+	return user
 }
 
 // Ask browser to cache static files

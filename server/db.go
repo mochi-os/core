@@ -537,6 +537,7 @@ func db_upgrade() {
 					appDb := db_open(fmt.Sprintf("users/%d/%s/app.db", uid, entry.Name()))
 
 					// Check if attachments table has old schema (has 'type' column) or new schema (has 'rank' column)
+					hasTable, _ := appDb.exists("select 1 from sqlite_master where type='table' and name='attachments'")
 					hasType, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='type'")
 					hasRank, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='rank'")
 
@@ -544,8 +545,8 @@ func db_upgrade() {
 						// Old schema from migration 29-33: drop and recreate with new schema
 						appDb.exec("drop table if exists attachments")
 						appDb.attachments_setup()
-					} else if !hasRank {
-						// New schema but missing rank column: add it
+					} else if hasTable && !hasRank {
+						// Table exists with new schema but missing rank column: add it
 						appDb.exec("alter table attachments add column rank integer not null default 0")
 					}
 				}

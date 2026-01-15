@@ -4,7 +4,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -53,12 +52,7 @@ func file_delete_all(path string) {
 
 func file_exists(path string) bool {
 	_, err := os.Stat(path)
-	if err == nil {
-		return true
-	} else if errors.Is(err, os.ErrNotExist) {
-		return false
-	}
-	panic(err)
+	return err == nil
 }
 
 func file_is_directory(path string) bool {

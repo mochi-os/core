@@ -534,7 +534,7 @@ func db_upgrade() {
 						continue
 					}
 
-					app_db := db_open(fmt.Sprintf("users/%d/%s/app.db", uid, entry.Name()))
+					app_db := db_open(fmt.Sprintf("users/%d/%s/app.db", user, entry.Name()))
 
 					// Check if attachments table has old schema (has 'type' column) or new schema (has 'rank' column)
 					has_table, _ := app_db.exists("select 1 from sqlite_master where type='table' and name='attachments'")

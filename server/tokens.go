@@ -35,14 +35,14 @@ var api_token = sls.FromStringDict(sl.String("mochi.token"), sl.StringDict{
 	"validate": sl.NewBuiltin("mochi.token.validate", api_token_validate),
 })
 
-// Generate a new token with the format mochi_xxxxxxxxxxxxxxxxxxxx
+// Generate a new token with the format mochi-xxxxxxxxxxxxxxxxxxxx
 func token_generate() string {
 	bytes := make([]byte, 20)
 	_, err := rand.Read(bytes)
 	if err != nil {
 		return ""
 	}
-	return "mochi_" + hex.EncodeToString(bytes)
+	return "mochi-" + hex.EncodeToString(bytes)
 }
 
 // Return the SHA256 hash of a token for storage
@@ -100,7 +100,7 @@ func token_list(user int, app string) []map[string]any {
 
 // Validate a token and return its info, or nil if invalid
 func token_validate(token string) *Token {
-	if token == "" || len(token) < 7 || token[:6] != "mochi_" {
+	if token == "" || len(token) < 7 || token[:6] != "mochi-" {
 		return nil
 	}
 

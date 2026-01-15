@@ -14,9 +14,9 @@ import (
 func TestTokenGenerate(t *testing.T) {
 	token := token_generate()
 
-	// Should start with mochi_ prefix
-	if !strings.HasPrefix(token, "mochi_") {
-		t.Errorf("Token should start with 'mochi_', got: %s", token)
+	// Should start with mochi- prefix
+	if !strings.HasPrefix(token, "mochi-") {
+		t.Errorf("Token should start with 'mochi-', got: %s", token)
 	}
 
 	// Should be 46 characters total (6 prefix + 40 hex)
@@ -33,7 +33,7 @@ func TestTokenGenerate(t *testing.T) {
 
 // Test token hashing is deterministic
 func TestTokenHash(t *testing.T) {
-	token := "mochi_0123456789abcdef0123456789abcdef01234567"
+	token := "mochi-0123456789abcdef0123456789abcdef01234567"
 
 	hash1 := token_hash(token)
 	hash2 := token_hash(token)
@@ -91,7 +91,7 @@ func TestTokenGenerateUniqueness(t *testing.T) {
 func TestTokenPrefix(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		token := token_generate()
-		if !strings.HasPrefix(token, "mochi_") {
+		if !strings.HasPrefix(token, "mochi-") {
 			t.Errorf("Token missing prefix: %s", token)
 		}
 	}

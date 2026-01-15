@@ -54,7 +54,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			bearer := strings.TrimPrefix(auth_header, "Bearer ")
-			if strings.HasPrefix(bearer, "mochi_") {
+			if strings.HasPrefix(bearer, "mochi-") {
 				// API token authentication
 				api_token = token_validate(bearer)
 				if api_token != nil {

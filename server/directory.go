@@ -184,6 +184,19 @@ func directory_manager() {
 			debug("Directory deleting stale entries")
 			db := db_open("db/directory.db")
 			db.exec("delete from directory where updated<?", now()-30*86400)
+
+			// Clean up local directory entries for deleted entities
+			location := "p2p/" + p2p_id
+			users := db_open("db/users.db")
+			rows, _ := db.rows("select id from directory where location=?", location)
+			for _, row := range rows {
+				id := row["id"].(string)
+				exists, _ := users.exists("select 1 from entities where id=?", id)
+				if !exists {
+					debug("Directory removing orphaned local entry %q", id)
+					db.exec("delete from directory where id=?", id)
+				}
+			}
 		}
 	}
 }

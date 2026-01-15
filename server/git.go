@@ -140,9 +140,9 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 		// HEAD might point to a non-existent branch (e.g., master when main was pushed)
 		// Try common default branch names
 		for _, branch := range []string{"main", "master"} {
-			branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
+			branch_ref, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
 			if err == nil {
-				hash := branchRef.Hash()
+				hash := branch_ref.Hash()
 				return &hash, nil
 			}
 		}
@@ -150,27 +150,27 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 	}
 
 	// Try as a branch
-	branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(ref), true)
+	branch_ref, err := repo.Reference(plumbing.NewBranchReferenceName(ref), true)
 	if err == nil {
-		hash := branchRef.Hash()
+		hash := branch_ref.Hash()
 		return &hash, nil
 	}
 
 	// Try as a tag
-	tagRef, err := repo.Reference(plumbing.NewTagReferenceName(ref), true)
+	tag_ref, err := repo.Reference(plumbing.NewTagReferenceName(ref), true)
 	if err == nil {
 		// For annotated tags, dereference to get the commit hash
-		tagObj, err := repo.TagObject(tagRef.Hash())
+		tag_obj, err := repo.TagObject(tag_ref.Hash())
 		if err == nil {
 			// Annotated tag - get the commit it points to
-			commit, err := tagObj.Commit()
+			commit, err := tag_obj.Commit()
 			if err == nil {
 				hash := commit.Hash
 				return &hash, nil
 			}
 		}
 		// Lightweight tag or failed to dereference - use tag hash directly
-		hash := tagRef.Hash()
+		hash := tag_ref.Hash()
 		return &hash, nil
 	}
 
@@ -411,11 +411,11 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		}
 
 		// Try to get annotated tag info
-		tagObj, err := repo.TagObject(ref.Hash())
+		tag_obj, err := repo.TagObject(ref.Hash())
 		if err == nil {
-			tag["message"] = strings.TrimSpace(tagObj.Message)
-			tag["tagger"] = tagObj.Tagger.Name
-			tag["date"] = tagObj.Tagger.When.Unix()
+			tag["message"] = strings.TrimSpace(tag_obj.Message)
+			tag["tagger"] = tag_obj.Tagger.Name
+			tag["date"] = tag_obj.Tagger.When.Unix()
 		}
 
 		tags = append(tags, tag)
@@ -465,8 +465,8 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "failed to resolve ref: %v", err)
 	}
 
-	branchRef := plumbing.NewBranchReferenceName(name)
-	newRef := plumbing.NewHashReference(branchRef, *hash)
+	branch_ref := plumbing.NewBranchReferenceName(name)
+	newRef := plumbing.NewHashReference(branch_ref, *hash)
 	err = repo.Storer.SetReference(newRef)
 	if err != nil {
 		return sl_error(fn, "failed to create branch: %v", err)
@@ -501,8 +501,8 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	branchRef := plumbing.NewBranchReferenceName(name)
-	err = repo.Storer.RemoveReference(branchRef)
+	branch_ref := plumbing.NewBranchReferenceName(name)
+	err = repo.Storer.RemoveReference(branch_ref)
 	if err != nil {
 		return sl_error(fn, "failed to delete branch: %v", err)
 	}
@@ -567,13 +567,13 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	// Verify the branch exists
-	branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
+	branch_ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
 	if err != nil {
 		return sl_error(fn, "branch %q does not exist", name)
 	}
 
 	// Set HEAD to point to the branch
-	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, branchRef.Name())
+	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, branch_ref.Name())
 	err = repo.Storer.SetReference(headRef)
 	if err != nil {
 		return sl_error(fn, "failed to set default branch: %v", err)
@@ -814,37 +814,37 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	baseHash, err := git_resolve_ref(repo, base)
+	base_hash, err := git_resolve_ref(repo, base)
 	if err != nil {
 		return sl.None, nil // base ref not found
 	}
 
-	headHash, err := git_resolve_ref(repo, head)
+	head_hash, err := git_resolve_ref(repo, head)
 	if err != nil {
 		return sl.None, nil // head ref not found
 	}
 
 	// Get commits reachable from head
-	headCommit, err := repo.CommitObject(*headHash)
+	head_commit, err := repo.CommitObject(*head_hash)
 	if err != nil {
 		return sl.None, nil // head commit not found
 	}
 
-	baseCommit, err := repo.CommitObject(*baseHash)
+	base_commit, err := repo.CommitObject(*base_hash)
 	if err != nil {
 		return sl.None, nil // base commit not found
 	}
 
 	// Find commits in head not in base
 	baseAncestors := make(map[plumbing.Hash]bool)
-	baseIter := object.NewCommitIterCTime(baseCommit, nil, nil)
+	baseIter := object.NewCommitIterCTime(base_commit, nil, nil)
 	baseIter.ForEach(func(c *object.Commit) error {
 		baseAncestors[c.Hash] = true
 		return nil
 	})
 
 	var commits []map[string]any
-	headIter := object.NewCommitIterCTime(headCommit, nil, nil)
+	headIter := object.NewCommitIterCTime(head_commit, nil, nil)
 	headIter.ForEach(func(c *object.Commit) error {
 		if !baseAncestors[c.Hash] {
 			commits = append(commits, map[string]any{
@@ -1116,37 +1116,37 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	baseHash, err := git_resolve_ref(repo, base)
+	base_hash, err := git_resolve_ref(repo, base)
 	if err != nil {
 		return sl_error(fn, "failed to resolve base: %v", err)
 	}
 
-	headHash, err := git_resolve_ref(repo, head)
+	head_hash, err := git_resolve_ref(repo, head)
 	if err != nil {
 		return sl_error(fn, "failed to resolve head: %v", err)
 	}
 
-	baseCommit, err := repo.CommitObject(*baseHash)
+	base_commit, err := repo.CommitObject(*base_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get base commit: %v", err)
 	}
 
-	headCommit, err := repo.CommitObject(*headHash)
+	head_commit, err := repo.CommitObject(*head_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get head commit: %v", err)
 	}
 
-	baseTree, err := baseCommit.Tree()
+	base_tree, err := base_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get base tree: %v", err)
 	}
 
-	headTree, err := headCommit.Tree()
+	head_tree, err := head_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get head tree: %v", err)
 	}
 
-	changes, err := baseTree.Diff(headTree)
+	changes, err := base_tree.Diff(head_tree)
 	if err != nil {
 		return sl_error(fn, "failed to compute diff: %v", err)
 	}
@@ -1190,37 +1190,37 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	baseHash, err := git_resolve_ref(repo, base)
+	base_hash, err := git_resolve_ref(repo, base)
 	if err != nil {
 		return sl_error(fn, "failed to resolve base: %v", err)
 	}
 
-	headHash, err := git_resolve_ref(repo, head)
+	head_hash, err := git_resolve_ref(repo, head)
 	if err != nil {
 		return sl_error(fn, "failed to resolve head: %v", err)
 	}
 
-	baseCommit, err := repo.CommitObject(*baseHash)
+	base_commit, err := repo.CommitObject(*base_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get base commit: %v", err)
 	}
 
-	headCommit, err := repo.CommitObject(*headHash)
+	head_commit, err := repo.CommitObject(*head_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get head commit: %v", err)
 	}
 
-	baseTree, err := baseCommit.Tree()
+	base_tree, err := base_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get base tree: %v", err)
 	}
 
-	headTree, err := headCommit.Tree()
+	head_tree, err := head_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get head tree: %v", err)
 	}
 
-	changes, err := baseTree.Diff(headTree)
+	changes, err := base_tree.Diff(head_tree)
 	if err != nil {
 		return sl_error(fn, "failed to compute diff: %v", err)
 	}
@@ -1346,28 +1346,28 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	sourceHash, err := git_resolve_ref(repo, source)
+	source_hash, err := git_resolve_ref(repo, source)
 	if err != nil {
 		return sl_error(fn, "failed to resolve source: %v", err)
 	}
 
-	targetHash, err := git_resolve_ref(repo, target)
+	target_hash, err := git_resolve_ref(repo, target)
 	if err != nil {
 		return sl_error(fn, "failed to resolve target: %v", err)
 	}
 
-	sourceCommit, err := repo.CommitObject(*sourceHash)
+	source_commit, err := repo.CommitObject(*source_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get source commit: %v", err)
 	}
 
-	targetCommit, err := repo.CommitObject(*targetHash)
+	target_commit, err := repo.CommitObject(*target_hash)
 	if err != nil {
 		return sl_error(fn, "failed to get target commit: %v", err)
 	}
 
 	// Find merge base
-	bases, err := sourceCommit.MergeBase(targetCommit)
+	bases, err := source_commit.MergeBase(target_commit)
 	if err != nil || len(bases) == 0 {
 		return sl_encode(map[string]any{
 			"mergeable": false,
@@ -1377,39 +1377,39 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Check for conflicts by comparing trees
-	sourceTree, err := sourceCommit.Tree()
+	source_tree, err := source_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get source tree: %v", err)
 	}
 
-	targetTree, err := targetCommit.Tree()
+	target_tree, err := target_commit.Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get target tree: %v", err)
 	}
 
-	baseTree, err := bases[0].Tree()
+	base_tree, err := bases[0].Tree()
 	if err != nil {
 		return sl_error(fn, "failed to get base tree: %v", err)
 	}
 
 	// Get changes from base to source and base to target
-	sourceChanges, _ := baseTree.Diff(sourceTree)
-	targetChanges, _ := baseTree.Diff(targetTree)
+	source_changes, _ := base_tree.Diff(source_tree)
+	target_changes, _ := base_tree.Diff(target_tree)
 
 	// Check for overlapping changes (potential conflicts)
-	sourceFiles := make(map[string]bool)
-	for _, change := range sourceChanges {
+	source_files := make(map[string]bool)
+	for _, change := range source_changes {
 		from, to, _ := change.Files()
 		if from != nil {
-			sourceFiles[from.Name] = true
+			source_files[from.Name] = true
 		}
 		if to != nil {
-			sourceFiles[to.Name] = true
+			source_files[to.Name] = true
 		}
 	}
 
 	var conflicts []string
-	for _, change := range targetChanges {
+	for _, change := range target_changes {
 		from, to, _ := change.Files()
 		var name string
 		if from != nil {
@@ -1417,7 +1417,7 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		} else if to != nil {
 			name = to.Name
 		}
-		if name != "" && sourceFiles[name] {
+		if name != "" && source_files[name] {
 			conflicts = append(conflicts, name)
 		}
 	}
@@ -1449,15 +1449,15 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
 	}
-	repoID, ok := row["id"].(string)
-	if !ok || repoID == "" {
+	id, ok := row["id"].(string)
+	if !ok || id == "" {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
 	}
 
 	// Build repository path
-	repoPath := git_repo_path(owner, repoID)
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+	repo_path := git_repo_path(owner, id)
+	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
 	}
@@ -1473,10 +1473,10 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	}
 
 	// Determine if this is a read or write operation
-	isWrite := service == "git-receive-pack"
+	is_write := service == "git-receive-pack"
 
 	// For write operations, require authentication
-	if isWrite {
+	if is_write {
 		if user == nil {
 			// Try Basic Auth with token
 			user = git_authenticate(c)
@@ -1497,11 +1497,11 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 
 	// Route to appropriate handler
 	if strings.HasSuffix(path, "info/refs") {
-		return git_info_refs(c, repoPath, service)
+		return git_info_refs(c, repo_path, service)
 	} else if strings.HasSuffix(path, "git-upload-pack") {
-		return git_service_rpc(c, repoPath, "git-upload-pack")
+		return git_service_rpc(c, repo_path, "git-upload-pack")
 	} else if strings.HasSuffix(path, "git-receive-pack") {
-		return git_service_rpc(c, repoPath, "git-receive-pack")
+		return git_service_rpc(c, repo_path, "git-receive-pack")
 	}
 
 	c.String(http.StatusNotFound, "Not found")
@@ -1530,7 +1530,7 @@ func git_authenticate(c *gin.Context) *User {
 }
 
 // git_info_refs handles GET /info/refs?service=git-upload-pack|git-receive-pack
-func git_info_refs(c *gin.Context, repoPath string, service string) bool {
+func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	if service != "git-upload-pack" && service != "git-receive-pack" {
 		c.String(http.StatusForbidden, "Service not enabled")
 		return true
@@ -1541,12 +1541,12 @@ func git_info_refs(c *gin.Context, repoPath string, service string) bool {
 	c.Header("Cache-Control", "no-cache")
 
 	// Git protocol: first send a packet-line with the service name
-	gitService := fmt.Sprintf("# service=%s\n", service)
-	pktLine := fmt.Sprintf("%04x%s0000", len(gitService)+4, gitService)
-	c.Writer.WriteString(pktLine)
+	git_service := fmt.Sprintf("# service=%s\n", service)
+	pkt_line := fmt.Sprintf("%04x%s0000", len(git_service)+4, git_service)
+	c.Writer.WriteString(pkt_line)
 
 	// Run the git command to get refs
-	cmd := exec.Command(service, "--stateless-rpc", "--advertise-refs", repoPath)
+	cmd := exec.Command(service, "--stateless-rpc", "--advertise-refs", repo_path)
 	cmd.Stdout = c.Writer
 	cmd.Stderr = os.Stderr
 
@@ -1559,7 +1559,7 @@ func git_info_refs(c *gin.Context, repoPath string, service string) bool {
 }
 
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
-func git_service_rpc(c *gin.Context, repoPath string, service string) bool {
+func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
 	c.Status(http.StatusOK)
 	c.Header("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	c.Header("Cache-Control", "no-cache")
@@ -1567,17 +1567,17 @@ func git_service_rpc(c *gin.Context, repoPath string, service string) bool {
 	// Handle gzip compressed request body
 	var reader io.Reader = c.Request.Body
 	if c.GetHeader("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(c.Request.Body)
+		gz_reader, err := gzip.NewReader(c.Request.Body)
 		if err != nil {
 			c.String(http.StatusBadRequest, "Invalid gzip data")
 			return true
 		}
-		defer gzReader.Close()
-		reader = gzReader
+		defer gz_reader.Close()
+		reader = gz_reader
 	}
 
 	// Run the git command
-	cmd := exec.Command(service, "--stateless-rpc", repoPath)
+	cmd := exec.Command(service, "--stateless-rpc", repo_path)
 	cmd.Stdin = reader
 	cmd.Stdout = c.Writer
 	cmd.Stderr = os.Stderr

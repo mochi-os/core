@@ -29,17 +29,17 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	var user *User
-	var apiToken *Token
+	var api_token *Token
 
 	// Check query parameter token first (for RSS feeds, etc.)
 	// This takes priority over cookies so RSS tokens work in logged-in browsers
-	if queryToken := c.Query("token"); queryToken != "" {
-		apiToken = token_validate(queryToken)
-		if apiToken != nil {
-			user = user_by_id(apiToken.User)
+	if query_token := c.Query("token"); query_token != "" {
+		api_token = token_validate(query_token)
+		if api_token != nil {
+			user = user_by_id(api_token.User)
 			if user == nil {
-				debug("Query token valid but user %d not found", apiToken.User)
-				apiToken = nil
+				debug("Query token valid but user %d not found", api_token.User)
+				api_token = nil
 			}
 		}
 	}
@@ -56,12 +56,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			bearer := strings.TrimPrefix(auth_header, "Bearer ")
 			if strings.HasPrefix(bearer, "mochi_") {
 				// API token authentication
-				apiToken = token_validate(bearer)
-				if apiToken != nil {
-					user = user_by_id(apiToken.User)
+				api_token = token_validate(bearer)
+				if api_token != nil {
+					user = user_by_id(api_token.User)
 					if user == nil {
-						debug("API token valid but user %d not found", apiToken.User)
-						apiToken = nil
+						debug("API token valid but user %d not found", api_token.User)
+						api_token = nil
 					}
 				}
 			} else {
@@ -89,7 +89,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// API tokens are restricted to their app
-	if apiToken != nil && apiToken.App != a.id {
+	if api_token != nil && api_token.App != a.id {
 		c.JSON(http.StatusForbidden, gin.H{"error": "token not valid for this app"})
 		return true
 	}
@@ -226,17 +226,17 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// - HTML requests (browsers/crawlers) get the file with opengraph tags
 	// - API requests get the function response
 	if aa.File != "" {
-		serveFile := true
+		serve_file := true
 
 		// Content negotiation: if we have both file and function, check Accept header
 		if aa.Function != "" && aa.OpenGraph != "" {
 			accept := c.GetHeader("Accept")
 			// Serve file only for HTML requests (browsers/crawlers)
 			// API requests (application/json, */*) should call the function
-			serveFile = strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+			serve_file = strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 		}
 
-		if serveFile {
+		if serve_file {
 			file := av.base + "/" + aa.File
 
 			// If opengraph function specified, inject dynamic meta tags
@@ -318,7 +318,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			},
 		},
 		app:    a,
-		token:  apiToken,
+		token:  api_token,
 		web:    c,
 		inputs: make(map[string]string),
 	}
@@ -654,15 +654,15 @@ func web_login_begin(c *gin.Context) {
 	}
 
 	// Check if user has passkey as an alternative login method
-	hasPasskey := false
+	has_passkey := false
 	count, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
 	if count != nil && count["count"].(int64) > 0 {
-		hasPasskey = true
+		has_passkey = true
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"methods":    methods,
-		"hasPasskey": hasPasskey,
+		"methods":     methods,
+		"has_passkey": has_passkey,
 	})
 }
 
@@ -871,9 +871,9 @@ func web_path(c *gin.Context) {
 		}
 
 		// Route on /<app>/<action...>
-		classAction := strings.Join(segments[1:], "/")
+		class_action := strings.Join(segments[1:], "/")
 
-		web_action(c, a, classAction, nil)
+		web_action(c, a, class_action, nil)
 		return
 	}
 
@@ -1005,14 +1005,14 @@ func web_start() {
 				continue
 			}
 			web_https = true
-			tlsConfig := &tls.Config{
+			tls_config := &tls.Config{
 				GetCertificate: domains_get_certificate,
 			}
 			info("Web listening on %s:443 (HTTPS)", listen)
 			if last {
-				must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
+				must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tls_config))
 			} else {
-				go must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tlsConfig))
+				go must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tls_config))
 			}
 		} else {
 			addr := fmt.Sprintf("%s:%d", listen, port)

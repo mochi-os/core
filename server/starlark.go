@@ -319,7 +319,7 @@ func sl_encode_tuple(in ...any) sl.Tuple {
 // Helper function to return an error
 func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 	format := "Unknown error type"
-	var underlyingErr error
+	var underlying_err error
 
 	switch v := e.(type) {
 	case error:
@@ -327,7 +327,7 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 			format = "Nil error"
 		} else {
 			format = v.Error()
-			underlyingErr = v
+			underlying_err = v
 		}
 
 	case string:
@@ -336,24 +336,24 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 
 	// Check if any of the values is an error we should preserve
 	for _, v := range values {
-		if err, ok := v.(error); ok && underlyingErr == nil {
-			underlyingErr = err
+		if err, ok := v.(error); ok && underlying_err == nil {
+			underlying_err = err
 		}
 	}
 
-	var finalErr error
+	var final_err error
 	if fn == nil {
-		finalErr = fmt.Errorf(format, values...)
+		final_err = fmt.Errorf(format, values...)
 	} else {
-		finalErr = fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+		final_err = fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
 	}
 
 	// Wrap with the underlying error to preserve error types for errors.As
-	if underlyingErr != nil {
-		finalErr = fmt.Errorf("%w: %v", underlyingErr, finalErr)
+	if underlying_err != nil {
+		final_err = fmt.Errorf("%w: %v", underlying_err, final_err)
 	}
 
-	return sl.None, finalErr
+	return sl.None, final_err
 }
 
 // Call a Starlark function
@@ -380,23 +380,23 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	// Run the call in a goroutine so we can interrupt on timeout
 	done := make(chan struct{})
 	var result sl.Value
-	var callErr error
+	var call_err error
 
 	go func() {
-		result, callErr = sl.Call(s.thread, f, args, nil)
+		result, call_err = sl.Call(s.thread, f, args, nil)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		if callErr == nil {
+		if call_err == nil {
 			//debug("Starlark finished")
 		} else {
 			a, ok := s.thread.Local("app").(*App)
 			if a == nil {
-				debug("%s(): %v", function, callErr)
+				debug("%s(): %v", function, call_err)
 			} else if ok {
-				debug("App %s:%s() %v", a.id, function, callErr)
+				debug("App %s:%s() %v", a.id, function, call_err)
 			}
 		}
 		// Clean up any streams opened during script execution
@@ -406,12 +406,12 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 			}
 			s.thread.SetLocal("streams", nil)
 		}
-		return result, callErr
+		return result, call_err
 	case <-time.After(starlark_default_timeout):
 		s.thread.Cancel("timeout")
 		debug("Starlark %s() timed out after %s", function, starlark_default_timeout)
-		if callErr == nil {
-			callErr = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
+		if call_err == nil {
+			call_err = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
 		}
 		// Clean up any streams opened during script execution
 		if streams, ok := s.thread.Local("streams").([]*Stream); ok {
@@ -420,7 +420,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 			}
 			s.thread.SetLocal("streams", nil)
 		}
-		return nil, callErr
+		return nil, call_err
 	}
 }
 

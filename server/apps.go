@@ -272,20 +272,20 @@ const (
 // version_greater returns true if version a is greater than version b
 // Versions are compared numerically by splitting on "." (e.g., "1.11" > "1.9")
 func version_greater(a, b string) bool {
-	partsA := strings.Split(a, ".")
-	partsB := strings.Split(b, ".")
-	for i := 0; i < len(partsA) || i < len(partsB); i++ {
-		var numA, numB int
-		if i < len(partsA) {
-			numA, _ = strconv.Atoi(partsA[i])
+	parts_a := strings.Split(a, ".")
+	parts_b := strings.Split(b, ".")
+	for i := 0; i < len(parts_a) || i < len(parts_b); i++ {
+		var num_a, num_b int
+		if i < len(parts_a) {
+			num_a, _ = strconv.Atoi(parts_a[i])
 		}
-		if i < len(partsB) {
-			numB, _ = strconv.Atoi(partsB[i])
+		if i < len(parts_b) {
+			num_b, _ = strconv.Atoi(parts_b[i])
 		}
-		if numA > numB {
+		if num_a > num_b {
 			return true
 		}
-		if numA < numB {
+		if num_a < num_b {
 			return false
 		}
 	}
@@ -502,7 +502,7 @@ func app_check_install(id string) bool {
 	debug("App %q checking install status", id)
 
 	// Get all track versions from publisher
-	tracks, _, defaultVersion, ok := app_check_version(id)
+	tracks, _, default_version, ok := app_check_version(id)
 	if !ok {
 		return false
 	}
@@ -522,15 +522,15 @@ func app_check_install(id string) bool {
 	}
 
 	// If no new versions were downloaded and we already have the default version, we're done
-	if !downloaded && app_has_version(id, defaultVersion) {
+	if !downloaded && app_has_version(id, default_version) {
 		debug("App %q all versions up to date", id)
 		return true
 	}
 
 	// Ensure we have at least the default version
-	if !app_has_version(id, defaultVersion) {
-		debug("App %q downloading default version %q as fallback", id, defaultVersion)
-		if !app_download_version(id, defaultVersion) {
+	if !app_has_version(id, default_version) {
+		debug("App %q downloading default version %q as fallback", id, default_version)
+		if !app_download_version(id, default_version) {
 			return false
 		}
 	}
@@ -555,13 +555,13 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 	// Empty track lets publisher use its default_track
 	s.write_content()
 
-	statusResp, err := s.read_content()
+	resp, err := s.read_content()
 	if err != nil {
 		debug("%v", err)
 		return nil, "", "", false
 	}
-	statusCode, _ := statusResp["status"].(string)
-	if statusCode != "200" {
+	status, _ := resp["status"].(string)
+	if status != "200" {
 		return nil, "", "", false
 	}
 
@@ -572,9 +572,9 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 	}
 
 	// Parse default track and version (always present for backward compat)
-	defaultTrack, _ := v["default_track"].(string)
-	defaultVersion, _ := v["version"].(string)
-	if !valid(defaultVersion, "version") {
+	default_track, _ := v["default_track"].(string)
+	default_version, _ := v["version"].(string)
+	if !valid(default_version, "version") {
 		return nil, "", "", false
 	}
 
@@ -598,10 +598,10 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 		if !valid(track, "constant") {
 			track = "Production"
 		}
-		tracks[track] = defaultVersion
+		tracks[track] = default_version
 	}
 
-	return tracks, defaultTrack, defaultVersion, true
+	return tracks, default_track, default_version, true
 }
 
 // Check if a specific version of an app is already installed
@@ -641,9 +641,9 @@ func app_download_version(id, version string) bool {
 	if err != nil {
 		return false
 	}
-	respStatus, _ := response["status"].(string)
-	if respStatus != "200" {
-		debug("App %q download failed with status %q", id, respStatus)
+	status, _ := response["status"].(string)
+	if status != "200" {
+		debug("App %q download failed with status %q", id, status)
 		return false
 	}
 
@@ -851,30 +851,30 @@ func app_select_best(candidates []*App) *App {
 	}
 
 	// Separate dev apps (non-entity IDs) from published apps (entity IDs)
-	var devApps, publishedApps []*App
+	var dev, published []*App
 	for _, a := range candidates {
 		if is_entity_id(a.id) {
-			publishedApps = append(publishedApps, a)
+			published = append(published, a)
 		} else {
-			devApps = append(devApps, a)
+			dev = append(dev, a)
 		}
 	}
 
 	// Dev apps take precedence
-	if len(devApps) > 0 {
-		candidates = devApps
+	if len(dev) > 0 {
+		candidates = dev
 	} else {
-		candidates = publishedApps
+		candidates = published
 	}
 
 	// If multiple, pick the one with earliest install time
 	var best *App
-	var bestTime int64 = 0
+	var best_time int64 = 0
 	for _, a := range candidates {
 		installed := apps_installed(a.id)
-		if best == nil || (installed > 0 && installed < bestTime) || (bestTime == 0 && installed > 0) {
+		if best == nil || (installed > 0 && installed < best_time) || (best_time == 0 && installed > 0) {
 			best = a
-			bestTime = installed
+			best_time = installed
 		}
 	}
 
@@ -1065,18 +1065,18 @@ func app_write_publisher(base string, peer string) {
 		return
 	}
 
-	var appJson map[string]any
-	err = json.Unmarshal(standardized, &appJson)
+	var manifest map[string]any
+	err = json.Unmarshal(standardized, &manifest)
 	if err != nil {
 		info("Failed to parse app.json: %v", err)
 		return
 	}
 
 	// Add or update publisher field
-	appJson["publisher"] = map[string]string{"peer": peer}
+	manifest["publisher"] = map[string]string{"peer": peer}
 
 	// Write back
-	output, err := json.MarshalIndent(appJson, "", "\t")
+	output, err := json.MarshalIndent(manifest, "", "\t")
 	if err != nil {
 		info("Failed to marshal app.json: %v", err)
 		return
@@ -1921,9 +1921,9 @@ func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Read label from labels/en.conf
 	name := av.Label
-	labelsPath := tmp + "/labels/en.conf"
-	if file_exists(labelsPath) {
-		f, err := os.Open(labelsPath)
+	labels_path := tmp + "/labels/en.conf"
+	if file_exists(labels_path) {
+		f, err := os.Open(labels_path)
 		if err == nil {
 			s := bufio.NewScanner(f)
 			for s.Scan() {
@@ -2586,22 +2586,22 @@ func apps_cleanup_unused_versions() int {
 // "0.2" means "any 0.2.x", so version_compare("0.2.37", "0.2") returns 0.
 // "0.2.0" means exactly 0.2.0, so version_compare("0.2.37", "0.2.0") returns 1.
 func version_compare(a, b string) int {
-	partsA := strings.Split(a, ".")
-	partsB := strings.Split(b, ".")
+	parts_a := strings.Split(a, ".")
+	parts_b := strings.Split(b, ".")
 
 	// Compare only up to the segment count of the shorter version
-	minLen := len(partsA)
-	if len(partsB) < minLen {
-		minLen = len(partsB)
+	min := len(parts_a)
+	if len(parts_b) < min {
+		min = len(parts_b)
 	}
 
-	for i := 0; i < minLen; i++ {
-		numA, _ := strconv.Atoi(partsA[i])
-		numB, _ := strconv.Atoi(partsB[i])
-		if numA > numB {
+	for i := 0; i < min; i++ {
+		num_a, _ := strconv.Atoi(parts_a[i])
+		num_b, _ := strconv.Atoi(parts_b[i])
+		if num_a > num_b {
 			return 1
 		}
-		if numA < numB {
+		if num_a < num_b {
 			return -1
 		}
 	}

@@ -414,9 +414,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			data["endpoint"] = endpoint
 			data["auth"] = auth
 			data["p256dh"] = p256dh
-			dataJSON, _ := json.Marshal(data)
+			data_json, _ := json.Marshal(data)
 
-			db.exec("update accounts set data=?, created=? where id=?", string(dataJSON), now, existing["id"])
+			db.exec("update accounts set data=?, created=? where id=?", string(data_json), now, existing["id"])
 			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
 			return sl_encode(account_redact(row)), nil
 		}
@@ -433,8 +433,8 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["token"] = token
 
 	case "claude", "openai":
-		apiKey, _ := fields["api_key"].(string)
-		data["api_key"] = apiKey
+		api_key, _ := fields["api_key"].(string)
+		data["api_key"] = api_key
 
 	case "mcp":
 		url, _ := fields["url"].(string)
@@ -466,10 +466,10 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Serialize data to JSON
-	dataJSON := ""
+	data_json := ""
 	if len(data) > 0 {
 		b, _ := json.Marshal(data)
-		dataJSON = string(b)
+		data_json = string(b)
 	}
 
 	verified := int64(0)
@@ -480,7 +480,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Insert account
 	result, err := db.handle.Exec(
 		"insert into accounts (type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?)",
-		ptype, label, identifier, dataJSON, now, verified,
+		ptype, label, identifier, data_json, now, verified,
 	)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -641,11 +641,11 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	identifier, _ := row["identifier"].(string)
-	dataStr, _ := row["data"].(string)
+	raw, _ := row["data"].(string)
 
 	var data map[string]any
-	if dataStr != "" {
-		json.Unmarshal([]byte(dataStr), &data)
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &data)
 	}
 	if data == nil {
 		data = make(map[string]any)
@@ -655,34 +655,34 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	if code == "" {
 		// Resend verification code
-		existingCode, _ := data["code"].(string)
+		existing_code, _ := data["code"].(string)
 		expires, _ := data["expires"].(float64)
 
-		if existingCode != "" && int64(expires) > now {
+		if existing_code != "" && int64(expires) > now {
 			// Reuse existing code, extend expiration
 			data["expires"] = now + 3600
-			dataJSON, _ := json.Marshal(data)
-			db.exec("update accounts set data=? where id=?", string(dataJSON), id)
-			account_send_verification_email(identifier, existingCode)
+			data_json, _ := json.Marshal(data)
+			db.exec("update accounts set data=? where id=?", string(data_json), id)
+			account_send_verification_email(identifier, existing_code)
 		} else {
 			// Generate new code
-			newCode := account_generate_code(10)
-			data["code"] = newCode
+			new_code := account_generate_code(10)
+			data["code"] = new_code
 			data["expires"] = now + 3600
 
-			dataJSON, _ := json.Marshal(data)
-			db.exec("update accounts set data=? where id=?", string(dataJSON), id)
+			data_json, _ := json.Marshal(data)
+			db.exec("update accounts set data=? where id=?", string(data_json), id)
 
-			account_send_verification_email(identifier, newCode)
+			account_send_verification_email(identifier, new_code)
 		}
 		return sl.True, nil
 	}
 
 	// Verify the code
-	storedCode, _ := data["code"].(string)
+	stored_code, _ := data["code"].(string)
 	expires, _ := data["expires"].(float64)
 
-	if storedCode == "" || code != storedCode {
+	if stored_code == "" || code != stored_code {
 		return sl.False, nil
 	}
 
@@ -694,8 +694,8 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	delete(data, "code")
 	delete(data, "expires")
 
-	dataJSON, _ := json.Marshal(data)
-	db.exec("update accounts set verified=?, data=? where id=?", now, string(dataJSON), id)
+	data_json, _ := json.Marshal(data)
+	db.exec("update accounts set verified=?, data=? where id=?", now, string(data_json), id)
 
 	return sl.True, nil
 }
@@ -745,13 +745,13 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	sent := 0
 	for _, row := range rows {
 		id := row["id"]
-		dataStr, _ := row["data"].(string)
-		if dataStr == "" {
+		raw, _ := row["data"].(string)
+		if raw == "" {
 			continue
 		}
 
 		var data map[string]any
-		if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
+		if err := json.Unmarshal([]byte(raw), &data); err != nil {
 			continue
 		}
 
@@ -877,11 +877,11 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	ptype, _ := row["type"].(string)
 	identifier, _ := row["identifier"].(string)
-	dataStr, _ := row["data"].(string)
+	raw, _ := row["data"].(string)
 
 	var data map[string]any
-	if dataStr != "" {
-		json.Unmarshal([]byte(dataStr), &data)
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &data)
 	}
 
 	var result AccountTestResult
@@ -898,12 +898,12 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		result = account_test_pushbullet(token)
 
 	case "claude":
-		apiKey, _ := data["api_key"].(string)
-		result = account_test_claude(apiKey)
+		api_key, _ := data["api_key"].(string)
+		result = account_test_claude(api_key)
 
 	case "openai":
-		apiKey, _ := data["api_key"].(string)
-		result = account_test_openai(apiKey)
+		api_key, _ := data["api_key"].(string)
+		result = account_test_openai(api_key)
 
 	case "mcp":
 		url := identifier
@@ -1037,9 +1037,9 @@ func account_test_pushbullet(token string) AccountTestResult {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	var errResp map[string]any
-	json.Unmarshal(body, &errResp)
-	if errMap, ok := errResp["error"].(map[string]any); ok {
+	var data map[string]any
+	json.Unmarshal(body, &data)
+	if errMap, ok := data["error"].(map[string]any); ok {
 		if msg, ok := errMap["message"].(string); ok {
 			return AccountTestResult{Success: false, Message: msg}
 		}
@@ -1049,8 +1049,8 @@ func account_test_pushbullet(token string) AccountTestResult {
 }
 
 // account_test_claude verifies a Claude API key
-func account_test_claude(apiKey string) AccountTestResult {
-	if apiKey == "" {
+func account_test_claude(api_key string) AccountTestResult {
+	if api_key == "" {
 		return AccountTestResult{Success: false, Message: "No API key"}
 	}
 
@@ -1064,7 +1064,7 @@ func account_test_claude(apiKey string) AccountTestResult {
 	})
 
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(payload))
-	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("x-api-key", api_key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1083,9 +1083,9 @@ func account_test_claude(apiKey string) AccountTestResult {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	var errResp map[string]any
-	json.Unmarshal(body, &errResp)
-	if errMap, ok := errResp["error"].(map[string]any); ok {
+	var data map[string]any
+	json.Unmarshal(body, &data)
+	if errMap, ok := data["error"].(map[string]any); ok {
 		if msg, ok := errMap["message"].(string); ok {
 			return AccountTestResult{Success: false, Message: msg}
 		}
@@ -1095,13 +1095,13 @@ func account_test_claude(apiKey string) AccountTestResult {
 }
 
 // account_test_openai verifies an OpenAI API key
-func account_test_openai(apiKey string) AccountTestResult {
-	if apiKey == "" {
+func account_test_openai(api_key string) AccountTestResult {
+	if api_key == "" {
 		return AccountTestResult{Success: false, Message: "No API key"}
 	}
 
 	req, _ := http.NewRequest("GET", "https://api.openai.com/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+api_key)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -1286,7 +1286,7 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	failed := 0
 
 	for _, row := range rows {
-		accountID, _ := row["id"].(int64)
+		account, _ := row["id"].(int64)
 		ptype, _ := row["type"].(string)
 
 		// Check if provider has notify capability
@@ -1296,10 +1296,10 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 		// Deliver based on type
 		identifier, _ := row["identifier"].(string)
-		dataStr, _ := row["data"].(string)
+		raw, _ := row["data"].(string)
 		var data map[string]any
-		if dataStr != "" {
-			json.Unmarshal([]byte(dataStr), &data)
+		if raw != "" {
+			json.Unmarshal([]byte(raw), &data)
 		}
 
 		var success bool
@@ -1329,7 +1329,7 @@ func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			failed++
 			// Remove expired browser subscriptions
 			if ptype == "browser" {
-				db.exec("delete from accounts where id=?", accountID)
+				db.exec("delete from accounts where id=?", account)
 			}
 		}
 	}

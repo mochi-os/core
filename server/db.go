@@ -513,13 +513,13 @@ func db_upgrade() {
 			users := db_open("db/users.db")
 			rows, _ := users.rows("select id from users")
 			for _, row := range rows {
-				uid, ok := row["id"].(int64)
+				user, ok := row["id"].(int64)
 				if !ok {
 					continue
 				}
 
-				userDir := fmt.Sprintf("%s/users/%d", data_dir, uid)
-				entries, err := os.ReadDir(userDir)
+				user_dir := fmt.Sprintf("%s/users/%d", data_dir, user)
+				entries, err := os.ReadDir(user_dir)
 				if err != nil {
 					continue
 				}
@@ -529,25 +529,25 @@ func db_upgrade() {
 						continue
 					}
 
-					appDbPath := filepath.Join(userDir, entry.Name(), "app.db")
-					if !file_exists(appDbPath) {
+					app_db_path := filepath.Join(user_dir, entry.Name(), "app.db")
+					if !file_exists(app_db_path) {
 						continue
 					}
 
-					appDb := db_open(fmt.Sprintf("users/%d/%s/app.db", uid, entry.Name()))
+					app_db := db_open(fmt.Sprintf("users/%d/%s/app.db", uid, entry.Name()))
 
 					// Check if attachments table has old schema (has 'type' column) or new schema (has 'rank' column)
-					hasTable, _ := appDb.exists("select 1 from sqlite_master where type='table' and name='attachments'")
-					hasType, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='type'")
-					hasRank, _ := appDb.exists("select 1 from pragma_table_info('attachments') where name='rank'")
+					has_table, _ := app_db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
+					has_type, _ := app_db.exists("select 1 from pragma_table_info('attachments') where name='type'")
+					has_rank, _ := app_db.exists("select 1 from pragma_table_info('attachments') where name='rank'")
 
-					if hasType && !hasRank {
+					if has_type && !has_rank {
 						// Old schema from migration 29-33: drop and recreate with new schema
-						appDb.exec("drop table if exists attachments")
-						appDb.attachments_setup()
-					} else if hasTable && !hasRank {
+						app_db.exec("drop table if exists attachments")
+						app_db.attachments_setup()
+					} else if has_table && !has_rank {
 						// Table exists with new schema but missing rank column: add it
-						appDb.exec("alter table attachments add column rank integer not null default 0")
+						app_db.exec("alter table attachments add column rank integer not null default 0")
 					}
 				}
 			}
@@ -560,13 +560,13 @@ func db_upgrade() {
 			users := db_open("db/users.db")
 			rows, _ := users.rows("select id from users")
 			for _, row := range rows {
-				userId, ok := row["id"].(int64)
+				user, ok := row["id"].(int64)
 				if !ok {
 					continue
 				}
 
-				userDir := fmt.Sprintf("%s/users/%d", data_dir, userId)
-				entries, err := os.ReadDir(userDir)
+				user_dir := fmt.Sprintf("%s/users/%d", data_dir, user)
+				entries, err := os.ReadDir(user_dir)
 				if err != nil {
 					continue
 				}
@@ -576,141 +576,141 @@ func db_upgrade() {
 						continue
 					}
 
-					appDir := filepath.Join(userDir, entry.Name())
-					newDbDir := filepath.Join(appDir, "db")
+					app_dir := filepath.Join(user_dir, entry.Name())
+					new_db_dir := filepath.Join(app_dir, "db")
 
 					// Find database files in the app directory (exclude app.db which is system db)
-					dbFiles, err := os.ReadDir(appDir)
+					db_files, err := os.ReadDir(app_dir)
 					if err != nil {
 						continue
 					}
 
-					for _, dbFile := range dbFiles {
-						if dbFile.IsDir() || !strings.HasSuffix(dbFile.Name(), ".db") || dbFile.Name() == "app.db" {
+					for _, db_file := range db_files {
+						if db_file.IsDir() || !strings.HasSuffix(db_file.Name(), ".db") || db_file.Name() == "app.db" {
 							continue
 						}
 
-						oldDbPath := filepath.Join(appDir, dbFile.Name())
-						sysDbPath := filepath.Join(appDir, "app.db")
-						newDbPath := filepath.Join(newDbDir, dbFile.Name())
+						old_db_path := filepath.Join(app_dir, db_file.Name())
+						sys_db_path := filepath.Join(app_dir, "app.db")
+						new_db_path := filepath.Join(new_db_dir, db_file.Name())
 
 						// Open databases directly (bypass pool) so we can close them properly
-						oldHandle, err := sqlx.Open("sqlite3", oldDbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+						old_handle, err := sqlx.Open("sqlite3", old_db_path+"?_journal_mode=WAL&_busy_timeout=5000")
 						if err != nil {
-							warn("Migration: failed to open %s: %v", oldDbPath, err)
+							warn("Migration: failed to open %s: %v", old_db_path, err)
 							continue
 						}
 
 						// Check if old database still has _settings table (indicating it needs migration)
-						var hasSettings int
-						oldHandle.Get(&hasSettings, "select count(*) from sqlite_master where type='table' and name='_settings'")
-						if hasSettings == 0 {
-							oldHandle.Close()
+						var has_settings int
+						old_handle.Get(&has_settings, "select count(*) from sqlite_master where type='table' and name='_settings'")
+						if has_settings == 0 {
+							old_handle.Close()
 							continue
 						}
 
-						sysHandle, err := sqlx.Open("sqlite3", sysDbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+						sys_handle, err := sqlx.Open("sqlite3", sys_db_path+"?_journal_mode=WAL&_busy_timeout=5000")
 						if err != nil {
-							oldHandle.Close()
-							warn("Migration: failed to open %s: %v", sysDbPath, err)
+							old_handle.Close()
+							warn("Migration: failed to open %s: %v", sys_db_path, err)
 							continue
 						}
 
 						// If db/ already has this file (created by server), remove it so we can migrate properly
-						if _, err := os.Stat(newDbPath); err == nil {
-							os.Remove(newDbPath)
-							os.Remove(newDbPath + "-wal")
-							os.Remove(newDbPath + "-shm")
+						if _, err := os.Stat(new_db_path); err == nil {
+							os.Remove(new_db_path)
+							os.Remove(new_db_path + "-wal")
+							os.Remove(new_db_path + "-shm")
 						}
 
 						// Create system tables
-						sysHandle.Exec("create table if not exists settings (name text not null primary key, value text not null)")
-						sysHandle.Exec("create table if not exists access (id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique(subject, resource, operation))")
-						sysHandle.Exec("create index if not exists access_resource on access(resource, operation)")
-						sysHandle.Exec("create index if not exists access_subject on access(subject)")
-						sysHandle.Exec("create table if not exists attachments (id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null)")
-						sysHandle.Exec("create index if not exists attachments_object on attachments(object)")
+						sys_handle.Exec("create table if not exists settings (name text not null primary key, value text not null)")
+						sys_handle.Exec("create table if not exists access (id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique(subject, resource, operation))")
+						sys_handle.Exec("create index if not exists access_resource on access(resource, operation)")
+						sys_handle.Exec("create index if not exists access_subject on access(subject)")
+						sys_handle.Exec("create table if not exists attachments (id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null)")
+						sys_handle.Exec("create index if not exists attachments_object on attachments(object)")
 
 						// Copy _settings to settings
-						settingsRows, _ := oldHandle.Queryx("select name, value from _settings")
-						if settingsRows != nil {
-							for settingsRows.Next() {
+						settings_rows, _ := old_handle.Queryx("select name, value from _settings")
+						if settings_rows != nil {
+							for settings_rows.Next() {
 								var name, value string
-								if settingsRows.Scan(&name, &value) == nil {
-									sysHandle.Exec("insert or replace into settings (name, value) values (?, ?)", name, value)
+								if settings_rows.Scan(&name, &value) == nil {
+									sys_handle.Exec("insert or replace into settings (name, value) values (?, ?)", name, value)
 								}
 							}
-							settingsRows.Close()
+							settings_rows.Close()
 						}
 
 						// Copy _access to access
-						accessRows, _ := oldHandle.Queryx("select subject, resource, operation, grant, granter, created from _access")
-						if accessRows != nil {
-							for accessRows.Next() {
+						access_rows, _ := old_handle.Queryx("select subject, resource, operation, grant, granter, created from _access")
+						if access_rows != nil {
+							for access_rows.Next() {
 								var subject, resource, operation, granter string
 								var grant, created int64
-								if accessRows.Scan(&subject, &resource, &operation, &grant, &granter, &created) == nil {
-									sysHandle.Exec("insert or replace into access (subject, resource, operation, grant, granter, created) values (?, ?, ?, ?, ?, ?)", subject, resource, operation, grant, granter, created)
+								if access_rows.Scan(&subject, &resource, &operation, &grant, &granter, &created) == nil {
+									sys_handle.Exec("insert or replace into access (subject, resource, operation, grant, granter, created) values (?, ?, ?, ?, ?, ?)", subject, resource, operation, grant, granter, created)
 								}
 							}
-							accessRows.Close()
+							access_rows.Close()
 						}
 
 						// Copy _attachments to attachments (handle both old and new schemas)
 						// Check if _attachments has new schema (has 'rank' column) or old schema (has 'type' column)
-						var hasRankCol int
-						oldHandle.Get(&hasRankCol, "select count(*) from pragma_table_info('_attachments') where name='rank'")
-						if hasRankCol > 0 {
+						var has_rank_col int
+						old_handle.Get(&has_rank_col, "select count(*) from pragma_table_info('_attachments') where name='rank'")
+						if has_rank_col > 0 {
 							// New schema: copy all columns
-							attachRows, _ := oldHandle.Queryx("select id, object, entity, name, size, content_type, creator, caption, description, rank, created from _attachments")
-							if attachRows != nil {
-								for attachRows.Next() {
+							attach_rows, _ := old_handle.Queryx("select id, object, entity, name, size, content_type, creator, caption, description, rank, created from _attachments")
+							if attach_rows != nil {
+								for attach_rows.Next() {
 									var id, object, entity, name, content_type, creator, caption, description string
 									var size, rank, created int64
-									if attachRows.Scan(&id, &object, &entity, &name, &size, &content_type, &creator, &caption, &description, &rank, &created) == nil {
-										sysHandle.Exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+									if attach_rows.Scan(&id, &object, &entity, &name, &size, &content_type, &creator, &caption, &description, &rank, &created) == nil {
+										sys_handle.Exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 									}
 								}
-								attachRows.Close()
+								attach_rows.Close()
 							}
 						} else {
 							// Old schema: map what we can (object, name, created), generate id, leave others as default
-							attachRows, _ := oldHandle.Queryx("select object, name, type, length, created from _attachments")
-							if attachRows != nil {
-								for attachRows.Next() {
+							attach_rows, _ := old_handle.Queryx("select object, name, type, length, created from _attachments")
+							if attach_rows != nil {
+								for attach_rows.Next() {
 									var object, name, atype string
 									var length, created int64
-									if attachRows.Scan(&object, &name, &atype, &length, &created) == nil {
-										sysHandle.Exec("insert into attachments (id, object, name, size, content_type, created) values (?, ?, ?, ?, ?, ?)", uid(), object, name, length, atype, created)
+									if attach_rows.Scan(&object, &name, &atype, &length, &created) == nil {
+										sys_handle.Exec("insert into attachments (id, object, name, size, content_type, created) values (?, ?, ?, ?, ?, ?)", uid(), object, name, length, atype, created)
 									}
 								}
-								attachRows.Close()
+								attach_rows.Close()
 							}
 						}
 
 						// Drop old system tables from app database
-						oldHandle.Exec("drop table if exists _settings")
-						oldHandle.Exec("drop table if exists _access")
-						oldHandle.Exec("drop table if exists _attachments")
+						old_handle.Exec("drop table if exists _settings")
+						old_handle.Exec("drop table if exists _access")
+						old_handle.Exec("drop table if exists _attachments")
 
 						// Force WAL checkpoint to consolidate files before closing
-						oldHandle.Exec("pragma wal_checkpoint(truncate)")
-						sysHandle.Exec("pragma wal_checkpoint(truncate)")
+						old_handle.Exec("pragma wal_checkpoint(truncate)")
+						sys_handle.Exec("pragma wal_checkpoint(truncate)")
 
 						// Close database connections before moving files
-						oldHandle.Close()
-						sysHandle.Close()
+						old_handle.Close()
+						sys_handle.Close()
 
 						// Create db/ subdirectory and move app database
-						os.MkdirAll(newDbDir, 0755)
-						if err := os.Rename(oldDbPath, newDbPath); err != nil {
-							warn("Migration: failed to move %s to %s: %v", oldDbPath, newDbPath, err)
+						os.MkdirAll(new_db_dir, 0755)
+						if err := os.Rename(old_db_path, new_db_path); err != nil {
+							warn("Migration: failed to move %s to %s: %v", old_db_path, new_db_path, err)
 						}
 						// Move WAL and SHM files if they exist (ignore errors)
-						os.Rename(oldDbPath+"-wal", newDbPath+"-wal")
-						os.Rename(oldDbPath+"-shm", newDbPath+"-shm")
+						os.Rename(old_db_path+"-wal", new_db_path+"-wal")
+						os.Rename(old_db_path+"-shm", new_db_path+"-shm")
 
-						info("Migration: migrated %s", oldDbPath)
+						info("Migration: migrated %s", old_db_path)
 					}
 				}
 			}
@@ -726,13 +726,13 @@ func db_upgrade() {
 					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
 					udb.permissions_setup()
 					// Get all apps this user has set up
-					appRows, _ := udb.rows("select app from apps where setup > 0")
-					for _, appRow := range appRows {
-						if appName, ok := appRow["app"].(string); ok {
+					app_rows, _ := udb.rows("select app from apps where setup > 0")
+					for _, app_row := range app_rows {
+						if app_name, ok := app_row["app"].(string); ok {
 							// Get default permissions for this app and grant any missing ones
-							defaults := apps_default_get(appName)
+							defaults := apps_default_get(app_name)
 							for _, p := range defaults {
-								udb.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", appName, p.Permission, p.Object)
+								udb.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_name, p.Permission, p.Object)
 							}
 						}
 					}

@@ -90,7 +90,7 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 		}
 
 		// Handle blob fields that may come back as string or []byte
-		var id, publicKey []byte
+		var id, public_key []byte
 		switch v := row["id"].(type) {
 		case []byte:
 			id = v
@@ -99,14 +99,14 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 		}
 		switch v := row["public_key"].(type) {
 		case []byte:
-			publicKey = v
+			public_key = v
 		case string:
-			publicKey = []byte(v)
+			public_key = []byte(v)
 		}
 
 		creds = append(creds, webauthn.Credential{
 			ID:              id,
-			PublicKey:       publicKey,
+			PublicKey:       public_key,
 			AttestationType: "none",
 			Transport:       transports,
 			Flags: webauthn.CredentialFlags{
@@ -390,16 +390,16 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	}
 
 	// The credential can be a JSON string or a Starlark dict
-	var credentialJSON string
+	var credential_json string
 	switch cred := args[1].(type) {
 	case sl.String:
-		credentialJSON = string(cred)
+		credential_json = string(cred)
 	case *sl.Dict:
 		body, err := starlark_to_json(cred)
 		if err != nil {
 			return sl_error(fn, "invalid credential format")
 		}
-		credentialJSON = string(body)
+		credential_json = string(body)
 	default:
 		return sl_error(fn, "invalid credential")
 	}
@@ -424,7 +424,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	json.Unmarshal([]byte(row["data"].(string)), &session)
 
 	// Parse the credential response
-	parsed, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(credentialJSON))
+	parsed, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(credential_json))
 	if err != nil {
 		return sl_error(fn, "invalid credential: %v", err)
 	}

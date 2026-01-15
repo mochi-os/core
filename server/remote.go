@@ -47,8 +47,8 @@ func peer_connect_url(url string) (string, error) {
 	}
 
 	// Fetch P2P info from the server
-	infoUrl := strings.TrimSuffix(url, "/") + "/_/p2p/info"
-	resp, err := url_request("GET", infoUrl, nil, nil, nil)
+	info_url := strings.TrimSuffix(url, "/") + "/_/p2p/info"
+	resp, err := url_request("GET", info_url, nil, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch p2p info: %v", err)
 	}

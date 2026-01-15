@@ -63,8 +63,8 @@ func (db *DB) attachments_setup() {
 	db.exec("create index if not exists attachments_object on attachments( object )")
 
 	// Add rank column if missing (for databases created before rank was added)
-	hasRank, _ := db.exists("select 1 from pragma_table_info('attachments') where name='rank'")
-	if !hasRank {
+	has_rank, _ := db.exists("select 1 from pragma_table_info('attachments') where name='rank'")
+	if !has_rank {
 		db.exec("alter table attachments add column rank integer not null default 0")
 	}
 }

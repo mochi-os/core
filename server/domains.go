@@ -824,14 +824,14 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	context := ""
-	ownerOverride := 0
+	owner_override := 0
 	for _, kw := range kwargs {
 		key, _ := sl.AsString(kw[0])
 		if key == "context" {
 			context, _ = sl.AsString(kw[1])
 		} else if key == "owner" {
 			if o, err := sl.AsInt32(kw[1]); err == nil {
-				ownerOverride = int(o)
+				owner_override = int(o)
 			}
 		}
 	}
@@ -852,8 +852,8 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	// Owner defaults to user's ID; admins can override
 	owner := user.ID
-	if ownerOverride > 0 && user.administrator() {
-		owner = ownerOverride
+	if owner_override > 0 && user.administrator() {
+		owner = owner_override
 	}
 
 	_, err := route_create(domain, path, method, target, context, owner, priority)

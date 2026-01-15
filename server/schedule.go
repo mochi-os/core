@@ -147,20 +147,20 @@ func schedule_manager() {
 			schedule_run_due(now)
 
 			// Calculate sleep duration
-			var sleepDuration time.Duration
+			var sleep_duration time.Duration
 			next := schedule_next()
 			if next != nil && time.Unix(next.Due, 0).Before(now.Add(1*time.Minute)) {
-				sleepDuration = time.Until(time.Unix(next.Due, 0))
-				if sleepDuration < 0 {
-					sleepDuration = 0
+				sleep_duration = time.Until(time.Unix(next.Due, 0))
+				if sleep_duration < 0 {
+					sleep_duration = 0
 				}
 			} else {
-				sleepDuration = 1 * time.Minute
+				sleep_duration = 1 * time.Minute
 			}
 
 			// Wait for either the timer or a wake signal
-			if sleepDuration > 0 {
-				timer := time.NewTimer(sleepDuration)
+			if sleep_duration > 0 {
+				timer := time.NewTimer(sleep_duration)
 				select {
 				case <-timer.C:
 					// Timer expired, check for due events
@@ -476,8 +476,8 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid event name")
 	}
 
-	dataVal := sl_decode(args[1])
-	dataMap, ok := dataVal.(map[string]any)
+	data_val := sl_decode(args[1])
+	data_map, ok := data_val.(map[string]any)
 	if !ok {
 		return sl_error(fn, "data must be a dictionary")
 	}
@@ -494,18 +494,18 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no app context")
 	}
 
-	var userID int64
+	var uid int64
 	if user != nil {
-		userID = int64(user.ID)
+		uid = int64(user.ID)
 	}
 
 	// Serialize data
-	dataJSON, _ := json.Marshal(dataMap)
+	data_json, _ := json.Marshal(data_map)
 
 	// If time is in the past, run immediately (but still schedule for audit trail)
-	dueTime := int64(due)
+	due_time := int64(due)
 
-	id := schedule_create(userID, app.id, dueTime, event, string(dataJSON), 0)
+	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
 	se := schedule_get(id)
 	if se == nil {
 		return sl_error(fn, "failed to create scheduled event")
@@ -525,8 +525,8 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid event name")
 	}
 
-	dataVal := sl_decode(args[1])
-	dataMap, ok := dataVal.(map[string]any)
+	data_val := sl_decode(args[1])
+	data_map, ok := data_val.(map[string]any)
 	if !ok {
 		return sl_error(fn, "data must be a dictionary")
 	}
@@ -543,21 +543,21 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app context")
 	}
 
-	var userID int64
+	var uid int64
 	if user != nil {
-		userID = int64(user.ID)
+		uid = int64(user.ID)
 	}
 
 	// Serialize data
-	dataJSON, _ := json.Marshal(dataMap)
+	data_json, _ := json.Marshal(data_map)
 
 	// If delay is zero or negative, run immediately
-	dueTime := now() + int64(delay)
+	due_time := now() + int64(delay)
 	if delay <= 0 {
-		dueTime = now()
+		due_time = now()
 	}
 
-	id := schedule_create(userID, app.id, dueTime, event, string(dataJSON), 0)
+	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
 	se := schedule_get(id)
 	if se == nil {
 		return sl_error(fn, "failed to create scheduled event")
@@ -577,8 +577,8 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid event name")
 	}
 
-	dataVal := sl_decode(args[1])
-	dataMap, ok := dataVal.(map[string]any)
+	data_val := sl_decode(args[1])
+	data_map, ok := data_val.(map[string]any)
 	if !ok {
 		return sl_error(fn, "data must be a dictionary")
 	}
@@ -600,18 +600,18 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app context")
 	}
 
-	var userID int64
+	var uid int64
 	if user != nil {
-		userID = int64(user.ID)
+		uid = int64(user.ID)
 	}
 
 	// Serialize data
-	dataJSON, _ := json.Marshal(dataMap)
+	data_json, _ := json.Marshal(data_map)
 
 	// First run is after the interval
-	dueTime := now() + int64(interval)
+	due_time := now() + int64(interval)
 
-	id := schedule_create(userID, app.id, dueTime, event, string(dataJSON), int64(interval))
+	id := schedule_create(uid, app.id, due_time, event, string(data_json), int64(interval))
 	se := schedule_get(id)
 	if se == nil {
 		return sl_error(fn, "failed to create scheduled event")
@@ -663,12 +663,12 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app context")
 	}
 
-	var userID int64
+	var uid int64
 	if user != nil {
-		userID = int64(user.ID)
+		uid = int64(user.ID)
 	}
 
-	events := schedule_list(app.id, userID)
+	events := schedule_list(app.id, uid)
 	result := make([]sl.Value, len(events))
 	for i, se := range events {
 		result[i] = newSlScheduledEvent(&se)

@@ -342,28 +342,28 @@ func web_auth_mfa(c *gin.Context) {
 	completed := row["completed"].(string)
 
 	// Determine which methods to validate
-	var methodsToValidate []string
+	var methods []string
 	if len(input.Methods) > 0 {
-		methodsToValidate = input.Methods
+		methods = input.Methods
 	} else if input.Method != "" {
-		methodsToValidate = []string{input.Method}
+		methods = []string{input.Method}
 	} else {
 		// Auto-detect from provided codes
 		if input.EmailCode != "" {
-			methodsToValidate = append(methodsToValidate, "email")
+			methods = append(methods, "email")
 		}
 		if input.TotpCode != "" {
-			methodsToValidate = append(methodsToValidate, "totp")
+			methods = append(methods, "totp")
 		}
 	}
 
-	if len(methodsToValidate) == 0 {
+	if len(methods) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no_methods"})
 		return
 	}
 
 	// Check all methods are in remaining list
-	for _, method := range methodsToValidate {
+	for _, method := range methods {
 		found := false
 		for _, m := range remaining {
 			if m == method {
@@ -378,7 +378,7 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	// Get codes for each method
-	getCode := func(method string) string {
+	lookup := func(method string) string {
 		switch method {
 		case "email":
 			if input.EmailCode != "" {
@@ -397,8 +397,8 @@ func web_auth_mfa(c *gin.Context) {
 
 	// Validate all methods WITHOUT consuming codes first
 	// For email, we need to check without deleting; for TOTP, it's stateless
-	for _, method := range methodsToValidate {
-		code := getCode(method)
+	for _, method := range methods {
+		code := lookup(method)
 		switch method {
 		case "email":
 			if !email_code_check(user.Username, code) {
@@ -417,15 +417,15 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	// All validations passed - now consume the codes
-	for _, method := range methodsToValidate {
-		code := getCode(method)
+	for _, method := range methods {
+		code := lookup(method)
 		if method == "email" {
 			email_code_consume(code)
 		}
 	}
 
 	// Update completed methods
-	for _, method := range methodsToValidate {
+	for _, method := range methods {
 		if completed != "" {
 			completed += ","
 		}
@@ -433,28 +433,28 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	// Calculate new remaining
-	var newRemaining []string
+	var pending []string
 	for _, m := range remaining {
-		stillRemaining := true
-		for _, validated := range methodsToValidate {
+		still_remaining := true
+		for _, validated := range methods {
 			if m == validated {
-				stillRemaining = false
+				still_remaining = false
 				break
 			}
 		}
-		if stillRemaining {
-			newRemaining = append(newRemaining, m)
+		if still_remaining {
+			pending = append(pending, m)
 		}
 	}
 
-	if len(newRemaining) > 0 {
+	if len(pending) > 0 {
 		// Still more methods required
 		db.exec("update partial set completed=?, remaining=? where id=?",
-			completed, strings.Join(newRemaining, ","), input.Partial)
+			completed, strings.Join(pending, ","), input.Partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   input.Partial,
-			"remaining": newRemaining,
+			"remaining": pending,
 		})
 		return
 	}

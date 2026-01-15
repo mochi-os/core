@@ -59,11 +59,11 @@ func token_create(user int, app string, name string, scopes []string, expires in
 	}
 
 	hash := token_hash(token)
-	scopesJSON, _ := json.Marshal(scopes)
+	scopes_json, _ := json.Marshal(scopes)
 
 	db := db_open("db/users.db")
 	db.exec("insert into tokens (hash, user, app, name, scopes, created, used, expires) values (?, ?, ?, ?, ?, ?, 0, ?)",
-		hash, user, app, name, string(scopesJSON), now(), expires)
+		hash, user, app, name, string(scopes_json), now(), expires)
 
 	return token
 }
@@ -82,9 +82,9 @@ func token_list(user int, app string) []map[string]any {
 
 	var results []map[string]any
 	for _, row := range rows {
-		scopesJSON := row["scopes"].(string)
+		scopes_json := row["scopes"].(string)
 		var scopes []string
-		json.Unmarshal([]byte(scopesJSON), &scopes)
+		json.Unmarshal([]byte(scopes_json), &scopes)
 
 		results = append(results, map[string]any{
 			"hash":    row["hash"],
@@ -150,8 +150,8 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
-	currentApp := t.Local("app").(*App)
-	if currentApp == nil {
+	current_app := t.Local("app").(*App)
+	if current_app == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -185,7 +185,7 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		expires, _ = exp.Int64()
 	}
 
-	token := token_create(user.ID, currentApp.id, name, scopes, expires)
+	token := token_create(user.ID, current_app.id, name, scopes, expires)
 	if token == "" {
 		return sl_error(fn, "failed to create token")
 	}
@@ -253,7 +253,7 @@ func api_token_scope(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "syntax: <token: string>, <scope: string>")
 	}
 
-	tokenStr, ok := sl.AsString(args[0])
+	token_str, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "token must be a string")
 	}
@@ -263,7 +263,7 @@ func api_token_scope(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "scope must be a string")
 	}
 
-	token := token_validate(tokenStr)
+	token := token_validate(token_str)
 	if token == nil {
 		return sl.False, nil
 	}
@@ -280,12 +280,12 @@ func api_token_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "syntax: <token: string>")
 	}
 
-	tokenStr, ok := sl.AsString(args[0])
+	token_str, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "token must be a string")
 	}
 
-	token := token_validate(tokenStr)
+	token := token_validate(token_str)
 	if token == nil {
 		return sl.None, nil
 	}
@@ -299,12 +299,12 @@ func api_token_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <token: string>")
 	}
 
-	tokenStr, ok := sl.AsString(args[0])
+	token_str, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "token must be a string")
 	}
 
-	token := token_validate(tokenStr)
+	token := token_validate(token_str)
 	if token == nil {
 		return sl.None, nil
 	}

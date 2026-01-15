@@ -1364,6 +1364,12 @@ func apps_load_dev() {
 			continue
 		}
 
+		// Skip non-directories and directories without app.json
+		base := dev_apps_dir + "/" + id
+		if !file_is_directory(base) || !file_exists(base+"/app.json") {
+			continue
+		}
+
 		// Dev apps must have constant IDs
 		if !valid(id, "constant") {
 			debug("Dev app skipping invalid ID %q (must be constant)", id)
@@ -1371,7 +1377,6 @@ func apps_load_dev() {
 		}
 
 		// Read app.json directly (no version subdirectory)
-		base := dev_apps_dir + "/" + id
 		av, err := app_read(id, base)
 		if err != nil {
 			info("Dev app load error for %q: %v", id, err)
@@ -1388,6 +1393,11 @@ func apps_load_dev() {
 func apps_load_published() {
 	for _, id := range file_list(data_dir + "/apps") {
 		if strings.HasPrefix(id, ".") {
+			continue
+		}
+
+		// Skip non-directories
+		if !file_is_directory(data_dir + "/apps/" + id) {
 			continue
 		}
 

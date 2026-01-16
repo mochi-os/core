@@ -63,6 +63,15 @@ func file_is_directory(path string) bool {
 	return info.IsDir()
 }
 
+// Check if path is a symlink
+func file_is_symlink(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
+}
+
 func file_list(path string) []string {
 	var files []string
 	found, _ := os.ReadDir(path)
@@ -128,20 +137,32 @@ func file_name_safe(s string) string {
 
 func file_name_type(name string) string {
 	switch path.Ext(name) {
+	case ".css":
+		return "text/css"
 	case ".gif":
 		return "image/gif"
+	case ".html":
+		return "text/html"
 	case ".jpeg":
 		return "image/jpeg"
 	case ".jpg":
 		return "image/jpeg"
+	case ".js":
+		return "text/javascript"
+	case ".json":
+		return "application/json"
 	case ".pdf":
 		return "application/pdf"
 	case ".png":
 		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
 	case ".txt":
 		return "text/plain"
 	case ".webp":
 		return "image/webp"
+	case ".xml":
+		return "application/xml"
 	}
 
 	return "application/octet-stream"
@@ -203,6 +224,15 @@ func file_write_from_reader_count(path string, r io.Reader) (int64, bool) {
 // Helper function to get the path of a file
 func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
+}
+
+// Helper function to get the path of a file in an app's directory
+func app_local_path(a *App, u *User, file string) string {
+	av := a.active(u)
+	if av == nil {
+		return ""
+	}
+	return filepath.Join(av.base, file)
 }
 
 // Helper function to get the base directory for a user's storage

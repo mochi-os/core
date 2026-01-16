@@ -343,9 +343,9 @@ var (
 	apps                 = map[string]*App{}
 	apps_lock            = &sync.Mutex{}
 
-	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
-		"get":     sl.NewBuiltin("mochi.app.file.get", api_app_file_get),
-		"install": sl.NewBuiltin("mochi.app.file.install", api_app_file_install),
+	api_app_package = sls.FromStringDict(sl.String("mochi.app.package"), sl.StringDict{
+		"get":     sl.NewBuiltin("mochi.app.package.get", api_app_package_get),
+		"install": sl.NewBuiltin("mochi.app.package.install", api_app_package_install),
 	})
 
 	api_app_class = sls.FromStringDict(sl.String("mochi.app.class"), sl.StringDict{
@@ -381,6 +381,12 @@ var (
 		"list": sl.NewBuiltin("mochi.app.track.list", api_app_track_list),
 	})
 
+	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
+		"exists": sl.NewBuiltin("mochi.app.file.exists", api_app_file_exists),
+		"list":   sl.NewBuiltin("mochi.app.file.list", api_app_file_list),
+		"read":   sl.NewBuiltin("mochi.app.file.read", api_app_file_read),
+	})
+
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
 		"class":    api_app_class,
 		"cleanup":  sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
@@ -388,6 +394,7 @@ var (
 		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
 		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
 		"list":     sl.NewBuiltin("mochi.app.list", api_app_list),
+		"package":  api_app_package,
 		"path":     api_app_path,
 		"service":  api_app_service,
 		"track":    api_app_track,
@@ -1883,8 +1890,8 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(results), nil
 }
 
-// mochi.app.file.get(file) -> dict: Read app info from a .zip file without installing
-func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.package.get(file) -> dict: Read app info from a .zip file without installing
+func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
 	}
@@ -1955,9 +1962,9 @@ func api_app_file_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
-// mochi.app.file.install(id, file, check_only?, peer?) -> string: Install an app from a .zip file, returns version
+// mochi.app.package.install(id, file, check_only?, peer?) -> string: Install an app from a .zip file, returns version
 // Requires administrator role, or apps_install_user setting to be "true"
-func api_app_file_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 4 {
 		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string]")
 	}
@@ -2616,4 +2623,111 @@ func version_compare(a, b string) int {
 		}
 	}
 	return 0
+}
+
+// mochi.app.file.exists(path) -> bool: Check if a file exists in the app's directory
+func api_app_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+
+	path, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "path must be a string")
+	}
+	if !valid(path, "filepath") {
+		return sl.False, nil
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	user, _ := t.Local("user").(*User)
+	full := app_local_path(app, user, path)
+	if full == "" {
+		return sl.False, nil
+	}
+
+	// Reject symlinks
+	if file_is_symlink(full) {
+		return sl.False, nil
+	}
+
+	if file_exists(full) {
+		return sl.True, nil
+	}
+	return sl.False, nil
+}
+
+// mochi.app.file.list(path) -> list: List files in an app directory
+func api_app_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+
+	path, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "path must be a string")
+	}
+	if !valid(path, "filepath") {
+		return sl.NewList(nil), nil
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	user, _ := t.Local("user").(*User)
+	full := app_local_path(app, user, path)
+	if full == "" {
+		return sl_encode([]string{}), nil
+	}
+
+	// Reject symlinks
+	if file_is_symlink(full) {
+		return sl_encode([]string{}), nil
+	}
+
+	if !file_exists(full) || !file_is_directory(full) {
+		return sl_encode([]string{}), nil
+	}
+
+	return sl_encode(file_list(full)), nil
+}
+
+// mochi.app.file.read(path) -> bytes: Read a file from the app's directory
+func api_app_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+
+	path, ok := sl.AsString(args[0])
+	if !ok || !valid(path, "filepath") {
+		return sl_error(fn, "invalid path")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	user, _ := t.Local("user").(*User)
+	full := app_local_path(app, user, path)
+	if full == "" {
+		return sl_error(fn, "no active app version")
+	}
+
+	// Reject symlinks
+	if file_is_symlink(full) {
+		return sl_error(fn, "file not found")
+	}
+
+	if !file_exists(full) {
+		return sl_error(fn, "file not found")
+	}
+
+	return sl.Bytes(file_read(full)), nil
 }

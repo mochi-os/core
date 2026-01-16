@@ -118,7 +118,7 @@ func (a *Action) redirect(code int, location string) {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_stream"}
+	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -170,6 +170,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return a.user, nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", a.sl_write_from_file), nil
+	case "write_from_app":
+		return sl.NewBuiltin("write_from_app", a.sl_write_from_app), nil
 	case "write_from_stream":
 		return sl.NewBuiltin("write_from_stream", a.sl_write_from_stream), nil
 	default:
@@ -539,6 +541,51 @@ func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 
 	app := t.Local("app").(*App)
 	file := api_file_path(owner, app, path)
+
+	a.web.File(file)
+	return sl.None, nil
+}
+
+// a.write_from_app(path) -> None: Serve file from app's directory
+func (a *Action) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var path string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
+		return nil, err
+	}
+
+	if !valid(path, "filepath") {
+		a.error(400, "Invalid path")
+		return sl.None, nil
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		a.error(500, "No app")
+		return sl.None, nil
+	}
+
+	user, _ := t.Local("user").(*User)
+	file := app_local_path(app, user, path)
+	if file == "" {
+		a.error(500, "No active app version")
+		return sl.None, nil
+	}
+
+	// Reject symlinks
+	if file_is_symlink(file) {
+		a.error(404, "File not found")
+		return sl.None, nil
+	}
+
+	if !file_exists(file) {
+		a.error(404, "File not found")
+		return sl.None, nil
+	}
+
+	// Auto-set Content-Type if not already set
+	if a.web.Writer.Header().Get("Content-Type") == "" {
+		a.web.Header("Content-Type", file_name_type(path))
+	}
 
 	a.web.File(file)
 	return sl.None, nil

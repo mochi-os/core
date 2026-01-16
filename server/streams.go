@@ -480,7 +480,7 @@ func (s *Stream) write_raw(data []byte) error {
 
 // Starlark methods
 func (s *Stream) AttrNames() []string {
-	return []string{"read", "read_to_file", "write", "write_raw", "write_from_file", "close"}
+	return []string{"read", "read_to_file", "write", "write_raw", "write_from_file", "write_from_app", "close"}
 }
 
 func (s *Stream) Attr(name string) (sl.Value, error) {
@@ -495,6 +495,8 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("write_raw", s.sl_write_raw), nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", s.sl_write_from_file), nil
+	case "write_from_app":
+		return sl.NewBuiltin("write_from_app", s.sl_write_from_app), nil
 	case "close":
 		return sl.NewBuiltin("close", s.sl_close), nil
 	default:
@@ -641,6 +643,46 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	}
 
 	// debug("Stream %d wrote %d bytes from file", s.id, n)
+	return sl.MakeInt64(n), nil
+}
+
+// s.write_from_app(path) -> int: Send app file contents as raw bytes, returns bytes written
+func (s *Stream) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	defer s.close_write()
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <path: string>")
+	}
+
+	path, ok := sl.AsString(args[0])
+	if !ok || !valid(path, "filepath") {
+		return sl_error(fn, "invalid path %q", path)
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	user, _ := t.Local("user").(*User)
+	file := app_local_path(app, user, path)
+	if file == "" {
+		return sl_error(fn, "no active app version")
+	}
+
+	// Reject symlinks
+	if file_is_symlink(file) {
+		return sl_error(fn, "file not found")
+	}
+
+	if !file_exists(file) {
+		return sl_error(fn, "file not found")
+	}
+
+	n, err := s.write_file(file)
+	if err != nil {
+		return sl_error(fn, "unable to send file")
+	}
+
 	return sl.MakeInt64(n), nil
 }
 

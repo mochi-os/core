@@ -333,10 +333,10 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(account_redact(row)), nil
 }
 
-// mochi.account.add(type, fields) -> dict: Add an account
+// mochi.account.add(type, label=..., address=..., token=..., api_key=..., url=..., endpoint=..., auth=..., p256dh=..., secret=..., topic=..., server=...) -> dict: Add an account
 func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <type: string>, <fields: dict>")
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <type: string>, [label=...], [address=...], [token=...], [api_key=...], [url=...], [endpoint=...], [auth=...], [p256dh=...], [secret=...], [topic=...], [server=...]")
 	}
 
 	if err := require_permission(t, fn, "account/manage"); err != nil {
@@ -358,9 +358,12 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "unknown provider type %q", ptype)
 	}
 
-	fields := sl_decode_map(args[1])
-	if fields == nil {
-		return sl_error(fn, "invalid fields")
+	// Extract fields from kwargs
+	fields := make(map[string]any)
+	for _, kv := range kwargs {
+		key := string(kv[0].(sl.String))
+		val, _ := sl.AsString(kv[1])
+		fields[key] = val
 	}
 
 	// Validate required fields
@@ -498,10 +501,10 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}), nil
 }
 
-// mochi.account.update(id, fields) -> bool: Update an account
+// mochi.account.update(id, label=..., enabled=...) -> bool: Update an account
 func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <id: integer>, <fields: dict>")
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
 	}
 
 	if err := require_permission(t, fn, "account/manage"); err != nil {
@@ -518,11 +521,6 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid id")
 	}
 
-	fields := sl_decode_map(args[1])
-	if fields == nil {
-		return sl_error(fn, "invalid fields")
-	}
-
 	db := db_user(user, "user")
 
 	// Check account exists
@@ -531,25 +529,27 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.False, nil
 	}
 
-	// Update label if provided
-	if label, ok := fields["label"].(string); ok {
-		db.exec("update accounts set label=? where id=?", label, id)
-	}
+	// Process kwargs
+	for _, kv := range kwargs {
+		key := string(kv[0].(sl.String))
+		switch key {
+		case "label":
+			label, _ := sl.AsString(kv[1])
+			db.exec("update accounts set label=? where id=?", label, id)
 
-	// Update enabled if provided
-	if enabled, ok := fields["enabled"]; ok {
-		var val int
-		switch v := enabled.(type) {
-		case bool:
-			if v {
-				val = 1
+		case "enabled":
+			var val int
+			switch v := kv[1].(type) {
+			case sl.Bool:
+				if v {
+					val = 1
+				}
+			case sl.Int:
+				i, _ := v.Int64()
+				val = int(i)
 			}
-		case int64:
-			val = int(v)
-		case int:
-			val = v
+			db.exec("update accounts set enabled=? where id=?", val, id)
 		}
-		db.exec("update accounts set enabled=? where id=?", val, id)
 	}
 
 	return sl.True, nil

@@ -338,6 +338,10 @@ var (
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
 			{"service", "friends"},
 		}},
+		{"test", "Test", []struct{ Permission, Object string }{
+			{"account/read", ""},
+			{"account/manage", ""},
+		}},
 	}
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}

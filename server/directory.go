@@ -67,13 +67,19 @@ func directory_by_id(id string) *Directory {
 	return nil
 }
 
-// Create a new directory entry for a local entity
+// Create or update a directory entry for a local entity.
+// Preserves the original created timestamp if entry already exists.
 func directory_create(e *Entity) {
 	debug("Directory creating entry %q %q", e.ID, e.Name)
 	now := now()
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
+	exists, _ := db.exists("select 1 from directory where id=?", e.ID)
+	if exists {
+		db.exec("update directory set name=?, class=?, location=?, data=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, e.ID)
+	} else {
+		db.exec("insert into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
+	}
 }
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory

@@ -35,11 +35,7 @@ var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"info":        sl.NewBuiltin("mochi.entity.info", api_entity_info),
 	"name":        sl.NewBuiltin("mochi.entity.name", api_entity_name),
 	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
-	"privacy":     api_entity_privacy,
-})
-
-var api_entity_privacy = sls.FromStringDict(sl.String("mochi.entity.privacy"), sl.StringDict{
-	"set": sl.NewBuiltin("mochi.entity.privacy.set", api_entity_privacy_set),
+	"update":      sl.NewBuiltin("mochi.entity.update", api_entity_update),
 })
 
 // Get an entity by id or fingerprint
@@ -272,6 +268,16 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
+	// Verify the calling app controls the specified class
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	controlling := class_app_for(user, class)
+	if controlling == nil || controlling.id != app.id {
+		return sl_error(fn, "app does not control class %q", class)
+	}
+
 	e, err := entity_create(user, class, name, privacy, data)
 	if err != nil {
 		return sl_error(fn, "unable to create entity: ", err)
@@ -457,20 +463,15 @@ func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl_encode(entities), nil
 }
 
-// mochi.entity.privacy.set(id, privacy) -> bool: Update entity privacy setting
-func api_entity_privacy_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <id: string>, <privacy: string>")
+// mochi.entity.update(id, name=..., data=..., privacy=...) -> bool: Update entity fields
+func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>, [name=string], [data=string], [privacy=string]")
 	}
 
 	id, ok := sl.AsString(args[0])
 	if !ok || !valid(id, "entity") {
 		return sl_error(fn, "invalid id %q", id)
-	}
-
-	privacy, ok := sl.AsString(args[1])
-	if !ok || (privacy != "public" && privacy != "private") {
-		return sl_error(fn, "privacy must be 'public' or 'private'")
 	}
 
 	// Get user from context
@@ -479,20 +480,92 @@ func api_entity_privacy_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "no user")
 	}
 
-	// Verify ownership
+	// Verify entity exists and is owned by the current user
 	db := db_open("db/users.db")
-	row, err := db.row("select user from entities where id=?", id)
-	if err != nil || row == nil {
-		return sl.False, nil
+	var e Entity
+	if !db.scan(&e, "select * from entities where id=?", id) {
+		return sl_error(fn, "entity not found")
+	}
+	if e.User != user.ID {
+		return sl_error(fn, "not authorized to update this entity")
 	}
 
-	owner_id, _ := row["user"].(int64)
-	if owner_id != int64(user.ID) {
-		return sl_error(fn, "not owner")
+	// Verify the calling app controls the entity's class
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	if e.Class != "" {
+		controlling := class_app_for(user, e.Class)
+		if controlling == nil || controlling.id != app.id {
+			return sl_error(fn, "app does not control class %q", e.Class)
+		}
 	}
 
-	// Update privacy
-	db.exec("update entities set privacy=? where id=?", privacy, id)
+	old_privacy := e.Privacy
+	changed_to_private := false
+	name_changed := false
+
+	// Process kwargs - validate and apply database updates
+	for _, kv := range kwargs {
+		key := string(kv[0].(sl.String))
+		switch key {
+		case "name":
+			name, ok := sl.AsString(kv[1])
+			if !ok || !valid(name, "name") {
+				return sl_error(fn, "invalid name %q", name)
+			}
+			if name != e.Name {
+				db.exec("update entities set name=? where id=?", name, id)
+				name_changed = true
+			}
+
+		case "data":
+			data, ok := sl.AsString(kv[1])
+			if !ok || !valid(data, "text") {
+				return sl_error(fn, "invalid data %q", data)
+			}
+			db.exec("update entities set data=? where id=?", data, id)
+
+		case "privacy":
+			privacy, ok := sl.AsString(kv[1])
+			if !ok || (privacy != "public" && privacy != "private") {
+				return sl_error(fn, "privacy must be 'public' or 'private'")
+			}
+			if privacy != old_privacy {
+				db.exec("update entities set privacy=? where id=?", privacy, id)
+				if privacy == "private" {
+					changed_to_private = true
+				}
+			}
+
+		default:
+			return sl_error(fn, "unknown parameter %q", key)
+		}
+	}
+
+	// Update directory after all changes are applied
+	if changed_to_private {
+		// Remove from directory and broadcast deletion
+		db_open("db/directory.db").exec("delete from directory where id=?", id)
+		m := message(id, "", "directory", "delete")
+		m.set("entity", id)
+		go m.publish(false)
+	} else {
+		// Reload entity to get all updated fields
+		db.scan(&e, "select * from entities where id=?", id)
+		if e.Privacy == "public" {
+			// Update local directory and publish to network
+			directory_create(&e)
+			// If name changed, reset the created timestamp. This prevents impersonation
+			// by creating a blank entry early, waiting for a legitimate entity with the
+			// same name, then renaming to appear first in search results.
+			if name_changed {
+				db_open("db/directory.db").exec("update directory set created=? where id=?", now(), id)
+			}
+			directory_publish(&e, true)
+		}
+	}
 
 	return sl.True, nil
 }

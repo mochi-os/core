@@ -688,14 +688,6 @@ func app_for_service(service string) *App {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
 
-	// Handle "app/<id>" service names used by attachment federation
-	if strings.HasPrefix(service, "app/") {
-		app_id := service[4:]
-		if a, found := apps[app_id]; found {
-			return a
-		}
-	}
-
 	// Handle app entity ID as service (for mochi.remote.stream calls)
 	if a, found := apps[service]; found {
 		return a
@@ -1822,6 +1814,7 @@ func (av *AppVersion) reload() {
 	av.Actions = fresh.Actions
 	av.Events = fresh.Events
 	av.Functions = fresh.Functions
+	av.Database = fresh.Database
 	av.labels = labels
 	apps_lock.Unlock()
 }

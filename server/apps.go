@@ -2012,7 +2012,7 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	if !check_only {
-		na := app(id)
+		na := app_external(id)
 		na.load_version(av)
 	}
 

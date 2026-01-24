@@ -237,21 +237,35 @@ func unzip(file string, destination string) error {
 	}
 	defer r.Close()
 
+	// Create destination if it doesn't exist
+	file_mkdir(destination)
+
+	// Use os.Root for traversal-resistant file extraction
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return fmt.Errorf("unable to open destination: %v", err)
+	}
+	defer root.Close()
+
 	for _, f := range r.File {
-		path := filepath.Join(destination, f.Name)
-
-		if !strings.HasPrefix(path, filepath.Clean(destination)+string(os.PathSeparator)) {
-			return fmt.Errorf("Invalid file path %q", path)
-		}
-
 		if f.FileInfo().IsDir() {
-			file_mkdir(path)
+			// Create directory within root (os.Root automatically prevents traversal)
+			if err := root.MkdirAll(f.Name, 0755); err != nil {
+				return err
+			}
 			continue
 		}
 
-		file_mkdir_for_file(path)
+		// Create parent directories if needed
+		dir := filepath.Dir(f.Name)
+		if dir != "." && dir != "" {
+			if err := root.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+		}
 
-		d, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		// Create file within root (os.Root automatically prevents traversal)
+		d, err := root.OpenFile(f.Name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
 			return err
 		}

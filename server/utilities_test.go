@@ -4,6 +4,8 @@
 package main
 
 import (
+	"archive/zip"
+	"os"
 	"strings"
 	"testing"
 )
@@ -390,6 +392,105 @@ func BenchmarkLikeEscape(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		like_escape(inputs[i%len(inputs)])
 	}
+}
+
+// Test unzip function
+func TestUnzip(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Create a simple test zip file
+	zipPath := tmpDir + "/test.zip"
+	destDir := tmpDir + "/dest"
+
+	// Create zip with a normal file
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to create zip file: %v", err)
+	}
+
+	zipWriter := zip.NewWriter(zipFile)
+
+	// Add a normal file
+	w, err := zipWriter.Create("hello.txt")
+	if err != nil {
+		t.Fatalf("Failed to create file in zip: %v", err)
+	}
+	w.Write([]byte("Hello, World!"))
+
+	// Add a file in a subdirectory
+	w, err = zipWriter.Create("subdir/nested.txt")
+	if err != nil {
+		t.Fatalf("Failed to create nested file in zip: %v", err)
+	}
+	w.Write([]byte("Nested content"))
+
+	zipWriter.Close()
+	zipFile.Close()
+
+	// Test normal extraction
+	err = unzip(zipPath, destDir)
+	if err != nil {
+		t.Fatalf("unzip failed: %v", err)
+	}
+
+	// Verify files were extracted
+	content, err := os.ReadFile(destDir + "/hello.txt")
+	if err != nil {
+		t.Errorf("Failed to read extracted file: %v", err)
+	}
+	if string(content) != "Hello, World!" {
+		t.Errorf("Extracted content = %q, want %q", string(content), "Hello, World!")
+	}
+
+	content, err = os.ReadFile(destDir + "/subdir/nested.txt")
+	if err != nil {
+		t.Errorf("Failed to read nested extracted file: %v", err)
+	}
+	if string(content) != "Nested content" {
+		t.Errorf("Nested extracted content = %q, want %q", string(content), "Nested content")
+	}
+}
+
+// Test unzip path traversal protection
+func TestUnzipPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := tmpDir + "/malicious.zip"
+	destDir := tmpDir + "/dest"
+	outsideFile := tmpDir + "/outside.txt"
+
+	// Create zip with path traversal attempt
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to create zip file: %v", err)
+	}
+
+	zipWriter := zip.NewWriter(zipFile)
+
+	// Try to create a file outside the destination using ../
+	w, err := zipWriter.Create("../outside.txt")
+	if err != nil {
+		t.Fatalf("Failed to create file in zip: %v", err)
+	}
+	w.Write([]byte("malicious content"))
+
+	zipWriter.Close()
+	zipFile.Close()
+
+	// Create destination directory
+	os.MkdirAll(destDir, 0755)
+
+	// Attempt extraction - os.Root should prevent the traversal
+	err = unzip(zipPath, destDir)
+
+	// os.Root returns an error for path traversal attempts
+	if err == nil {
+		// If no error, verify the file was NOT created outside
+		if _, statErr := os.Stat(outsideFile); statErr == nil {
+			t.Errorf("Path traversal succeeded - file created outside destination")
+		}
+	}
+	// If err != nil, that's also acceptable - os.Root rejected the traversal
 }
 
 // Test url_is_cloud_metadata function

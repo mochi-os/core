@@ -227,6 +227,61 @@ func TestAttachmentPath(t *testing.T) {
 	}
 }
 
+// Test attachment_files_base helper function
+func TestAttachmentFilesBase(t *testing.T) {
+	origDataDir := data_dir
+	data_dir = "/var/lib/mochi"
+	defer func() { data_dir = origDataDir }()
+
+	tests := []struct {
+		name     string
+		user_id  int
+		app_id   string
+		expected string
+	}{
+		{"basic", 42, "chat", "/var/lib/mochi/users/42/chat/files"},
+		{"user 1", 1, "forums", "/var/lib/mochi/users/1/forums/files"},
+		{"large user id", 999999, "feeds", "/var/lib/mochi/users/999999/feeds/files"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := attachment_files_base(tt.user_id, tt.app_id)
+			if result != tt.expected {
+				t.Errorf("attachment_files_base(%d, %q) = %q, want %q", tt.user_id, tt.app_id, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test attachment_filename helper function
+func TestAttachmentFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       string
+		filename string
+		expected string
+	}{
+		{"normal file", "abc123", "document.pdf", "abc123_document.pdf"},
+		{"with spaces", "xyz789", "my file.txt", "xyz789_my file.txt"},
+		{"path traversal blocked", "id1", "../../../etc/passwd", "id1_passwd"},
+		{"absolute path blocked", "id2", "/etc/shadow", "id2_shadow"},
+		{"empty name", "id3", "", "id3_file"},
+		{"dot only", "id4", ".", "id4_file"},
+		{"dot dot", "id5", "..", "id5_file"},
+		{"nested path", "id6", "subdir/nested/file.txt", "id6_file.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := attachment_filename(tt.id, tt.filename)
+			if result != tt.expected {
+				t.Errorf("attachment_filename(%q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
+			}
+		})
+	}
+}
+
 // Benchmark attachment_content_type
 func BenchmarkAttachmentContentType(b *testing.B) {
 	filenames := []string{

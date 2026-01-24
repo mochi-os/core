@@ -201,29 +201,14 @@ func file_write_from_reader(path string, r io.Reader) bool {
 	return true
 }
 
-// Write file contents from reader, returning bytes written
-func file_write_from_reader_count(path string, r io.Reader) (int64, bool) {
-	file_mkdir_for_file(path)
-
-	f, err := os.Create(path)
-	if err != nil {
-		warn("Unable to open file %q for writing: %v", path, err)
-		return 0, false
-	}
-	defer f.Close()
-
-	n, err := io.Copy(f, r)
-	if err != nil {
-		warn("Unable to write to file %q: %v", path, err)
-		return 0, false
-	}
-
-	return n, true
-}
-
 // Helper function to get the path of a file
 func api_file_path(u *User, a *App, file string) string {
 	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
+}
+
+// Helper function to get the base directory for a user's app files (for use with os.Root)
+func api_file_base(u *User, a *App) string {
+	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, u.ID, a.id)
 }
 
 // Helper function to get the path of a file in an app's directory
@@ -273,7 +258,14 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no app")
 	}
 
-	file_delete(api_file_path(user, app, file))
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl.None, nil // Directory doesn't exist, nothing to delete
+	}
+	defer root.Close()
+
+	root.Remove(file)
 	return sl.None, nil
 }
 
@@ -298,11 +290,18 @@ func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no app")
 	}
 
-	if file_exists(api_file_path(user, app, file)) {
-		return sl.True, nil
-	} else {
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl.False, nil // Directory doesn't exist
+	}
+	defer root.Close()
+
+	_, err = root.Stat(file)
+	if err != nil {
 		return sl.False, nil
 	}
+	return sl.True, nil
 }
 
 // mochi.file.list(subdirectory) -> list: List files in a subdirectory
@@ -326,15 +325,40 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "no app")
 	}
 
-	path := api_file_path(user, app, dir)
-	if !file_exists(path) {
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
 		return sl_error(fn, "does not exist")
 	}
-	if !file_is_directory(path) {
+	defer root.Close()
+
+	info, err := root.Stat(dir)
+	if err != nil {
+		return sl_error(fn, "does not exist")
+	}
+	if !info.IsDir() {
 		return sl_error(fn, "not a directory")
 	}
 
-	return sl_encode(file_list(path)), nil
+	// Open the directory within the root
+	d, err := root.OpenFile(dir, os.O_RDONLY, 0)
+	if err != nil {
+		return sl_error(fn, "does not exist")
+	}
+	defer d.Close()
+
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return sl_error(fn, "unable to list directory")
+	}
+
+	var files []string
+	for _, e := range entries {
+		files = append(files, e.Name())
+	}
+	sort.Strings(files)
+
+	return sl_encode(files), nil
 }
 
 // mochi.file.read(file) -> bytes: Read a file into memory
@@ -358,7 +382,25 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "no app")
 	}
 
-	return sl_encode(file_read(api_file_path(user, app, file))), nil
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer root.Close()
+
+	f, err := root.Open(file)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return sl_error(fn, "unable to read file")
+	}
+
+	return sl_encode(data), nil
 }
 
 // mochi.file.write(file, data) -> None: Write a file from memory
@@ -393,7 +435,34 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "storage limit exceeded")
 	}
 
-	file_write(api_file_path(user, app, file), []byte(data))
+	// Ensure base directory exists before opening root
+	base := api_file_base(user, app)
+	file_mkdir(base)
+
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	// Create parent directories within the root if needed
+	dir := filepath.Dir(file)
+	if dir != "." && dir != "" {
+		if err := root.MkdirAll(dir, 0755); err != nil {
+			return sl_error(fn, "unable to create directory")
+		}
+	}
+
+	f, err := root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
+
+	_, err = f.Write([]byte(data))
+	f.Close()
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
 
 	return sl.None, nil
 }

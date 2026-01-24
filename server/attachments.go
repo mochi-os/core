@@ -69,13 +69,27 @@ func (db *DB) attachments_setup() {
 	}
 }
 
-// Get the file path for an attachment
+// Get the file path for an attachment (relative to data_dir)
 func attachment_path(user_id int, app_id string, id string, name string) string {
 	safe_name := filepath.Base(name)
 	if safe_name == "" || safe_name == "." || safe_name == ".." {
 		safe_name = "file"
 	}
 	return fmt.Sprintf("users/%d/%s/files/%s_%s", user_id, app_id, id, safe_name)
+}
+
+// Get the base directory for attachment files (for use with os.Root)
+func attachment_files_base(user_id int, app_id string) string {
+	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, user_id, app_id)
+}
+
+// Get just the filename for an attachment (for use with os.Root)
+func attachment_filename(id string, name string) string {
+	safe_name := filepath.Base(name)
+	if safe_name == "" || safe_name == "." || safe_name == ".." {
+		safe_name = "file"
+	}
+	return fmt.Sprintf("%s_%s", id, safe_name)
 }
 
 // Get the next rank for an object
@@ -261,6 +275,15 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_encode([]map[string]any{}), nil
 	}
 
+	// Open root once for all files (traversal protection)
+	base := attachment_files_base(owner.ID, app.id)
+	file_mkdir(base)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
 	var results []map[string]any
 	for i, fh := range files {
 		// Check size
@@ -314,12 +337,20 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 
 		// Save file
-		path := attachment_path(owner.ID, app.id, id, fh.Filename)
+		filename := attachment_filename(id, fh.Filename)
 		data, err := io.ReadAll(src)
 		if err != nil {
 			return sl_error(fn, "unable to read uploaded file: %v", err)
 		}
-		file_write(data_dir+"/"+path, data)
+		f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			return sl_error(fn, "unable to write file")
+		}
+		_, err = f.Write(data)
+		f.Close()
+		if err != nil {
+			return sl_error(fn, "unable to write file")
+		}
 
 		// Insert record
 		db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -437,9 +468,25 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		Created:     now(),
 	}
 
-	// Save file
-	path := attachment_path(owner.ID, app.id, id, name)
-	file_write(data_dir+"/"+path, bytes)
+	// Save file using os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	file_mkdir(base)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	filename := attachment_filename(id, name)
+	f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
+	_, err = f.Write(bytes)
+	f.Close()
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
 
 	// Insert record
 	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -650,8 +697,17 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 		id = uid()
 	}
 
-	// Stream directly to final attachment path
-	dest_path := data_dir + "/" + attachment_path(owner.ID, app.id, id, name)
+	// Use os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	file_mkdir(base)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		stream.reader.Close()
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	filename := attachment_filename(id, name)
 
 	// Use raw_reader() to include any bytes buffered by the CBOR decoder
 	reader := stream.raw_reader()
@@ -663,15 +719,24 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	}
 	limited := io.LimitReader(reader, max_size)
 
-	size, ok := file_write_from_reader_count(dest_path, limited)
+	// Write to file within root
+	f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		stream.reader.Close()
+		return sl_error(fn, "failed to write attachment")
+	}
+
+	size, err := io.Copy(f, limited)
+	f.Close()
 	stream.reader.Close()
-	if !ok {
-		file_delete(dest_path)
+
+	if err != nil {
+		root.Remove(filename)
 		return sl_error(fn, "failed to write attachment")
 	}
 
 	if size == 0 {
-		file_delete(dest_path)
+		root.Remove(filename)
 		return sl_error(fn, "empty attachment")
 	}
 
@@ -788,9 +853,25 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		Created:     now(),
 	}
 
-	// Save file
-	path := attachment_path(owner.ID, app.id, id, name)
-	file_write(data_dir+"/"+path, bytes)
+	// Save file using os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	file_mkdir(base)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	filename := attachment_filename(id, name)
+	f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
+	_, err = f.Write(bytes)
+	f.Close()
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
 
 	// Insert record
 	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -975,10 +1056,18 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.False, nil
 	}
 
-	// Delete file and thumbnail
-	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
-	file_delete(path)
-	file_delete(thumbnail_path(path))
+	// Delete file and thumbnail using os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	root, err := os.OpenRoot(base)
+	if err == nil {
+		filename := attachment_filename(att.ID, att.Name)
+		root.Remove(filename)
+		// Thumbnail is stored in thumbnails subdirectory with _thumbnail suffix before extension
+		ext := filepath.Ext(filename)
+		thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
+		root.Remove(thumbname)
+		root.Close()
+	}
 
 	// Delete record and shift ranks
 	db.exec("delete from attachments where id = ?", id)
@@ -1031,10 +1120,19 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		warn("Database error loading attachments for deletion: %v", err)
 	}
 
-	// Delete files
-	for _, att := range attachments {
-		path := attachment_path(owner.ID, app.id, att.ID, att.Name)
-		file_delete(data_dir + "/" + path)
+	// Delete files using os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	root, err := os.OpenRoot(base)
+	if err == nil {
+		for _, att := range attachments {
+			filename := attachment_filename(att.ID, att.Name)
+			root.Remove(filename)
+			// Also remove thumbnail if it exists
+			ext := filepath.Ext(filename)
+			thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
+			root.Remove(thumbname)
+		}
+		root.Close()
 	}
 
 	// Delete records
@@ -1205,9 +1303,25 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 
-	// Local file
-	path := attachment_path(owner.ID, app.id, att.ID, att.Name)
-	data := file_read(data_dir + "/" + path)
+	// Local file - read using os.Root for traversal protection
+	base := attachment_files_base(owner.ID, app.id)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer root.Close()
+
+	filename := attachment_filename(att.ID, att.Name)
+	f, err := root.Open(filename)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return sl_error(fn, "unable to read file")
+	}
 	return sl_encode(data), nil
 }
 
@@ -1572,10 +1686,23 @@ func (e *Event) attachment_event_create() {
 		if e.user != nil && e.app != nil && name != "" {
 			data := attachment_fetch_remote(e.app, source, id)
 			if data != nil {
-				path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
-				file_write(path, data)
-				e.db.exec(`update attachments set entity = '' where id = ?`, id)
-				info("Attachment %s fetched and stored locally", id)
+				// Write file using os.Root for traversal protection
+				base := attachment_files_base(e.user.ID, e.app.id)
+				file_mkdir(base)
+				root, err := os.OpenRoot(base)
+				if err == nil {
+					filename := attachment_filename(id, name)
+					f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+					if err == nil {
+						_, err = f.Write(data)
+						f.Close()
+						if err == nil {
+							e.db.exec(`update attachments set entity = '' where id = ?`, id)
+							info("Attachment %s fetched and stored locally", id)
+						}
+					}
+					root.Close()
+				}
 			}
 		}
 	}
@@ -1635,11 +1762,24 @@ func (e *Event) attachment_event_insert() {
 	if e.user != nil && e.app != nil && name != "" {
 		data := attachment_fetch_remote(e.app, source, id)
 		if data != nil {
-			path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, id, name)
-			file_write(path, data)
-			// File stored locally, clear entity so it's served from local storage
-			e.db.exec(`update attachments set entity = '' where id = ?`, id)
-			info("Attachment %s fetched and stored locally", id)
+			// Write file using os.Root for traversal protection
+			base := attachment_files_base(e.user.ID, e.app.id)
+			file_mkdir(base)
+			root, err := os.OpenRoot(base)
+			if err == nil {
+				filename := attachment_filename(id, name)
+				f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+				if err == nil {
+					_, err = f.Write(data)
+					f.Close()
+					if err == nil {
+						// File stored locally, clear entity so it's served from local storage
+						e.db.exec(`update attachments set entity = '' where id = ?`, id)
+						info("Attachment %s fetched and stored locally", id)
+					}
+				}
+				root.Close()
+			}
 		}
 	}
 }
@@ -1735,11 +1875,19 @@ func (e *Event) attachment_event_delete() {
 		e.db.exec("delete from attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
-		// Delete local file and thumbnail if exists
+		// Delete local file and thumbnail using os.Root for traversal protection
 		if e.user != nil && e.app != nil {
-			local_path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, att.ID, att.Name)
-			file_delete(local_path)
-			file_delete(thumbnail_path(local_path))
+			base := attachment_files_base(e.user.ID, e.app.id)
+			root, err := os.OpenRoot(base)
+			if err == nil {
+				filename := attachment_filename(att.ID, att.Name)
+				root.Remove(filename)
+				// Also remove thumbnail if it exists
+				ext := filepath.Ext(filename)
+				thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
+				root.Remove(thumbname)
+				root.Close()
+			}
 		}
 
 		// Delete cached file if exists
@@ -1813,17 +1961,28 @@ func (e *Event) attachment_event_data() {
 		return
 	}
 
-	path := data_dir + "/" + attachment_path(e.user.ID, e.app.id, att.ID, att.Name)
-	//debug("attachment_event_data: checking file path=%s", path)
-	if !file_exists(path) {
-		warn("attachment_event_data: file not found at %s, returning 404", path)
+	// Open file using os.Root for traversal protection
+	base := attachment_files_base(e.user.ID, e.app.id)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		warn("attachment_event_data: unable to open root, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}
+	defer root.Close()
 
-	//debug("attachment_event_data: sending file %s", path)
+	filename := attachment_filename(att.ID, att.Name)
+	f, err := root.Open(filename)
+	if err != nil {
+		warn("attachment_event_data: file not found, returning 404")
+		e.stream.write(map[string]string{"status": "404"})
+		return
+	}
+	defer f.Close()
+
+	//debug("attachment_event_data: sending file %s", filename)
 	e.stream.write(map[string]string{"status": "200"})
-	e.stream.write_file(path)
+	io.Copy(e.stream.writer, f)
 	e.stream.close_write()
 	//debug("attachment_event_data: done")
 }

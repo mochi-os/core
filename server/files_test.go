@@ -425,6 +425,197 @@ func TestFileStorageLimitConstant(t *testing.T) {
 	}
 }
 
+// Test api_file_base helper function
+func TestApiFileBase(t *testing.T) {
+	origDataDir := data_dir
+	data_dir = "/var/lib/mochi"
+	defer func() { data_dir = origDataDir }()
+
+	user := &User{ID: 42}
+	app := &App{id: "testapp"}
+
+	result := api_file_base(user, app)
+	expected := "/var/lib/mochi/users/42/testapp/files"
+
+	if result != expected {
+		t.Errorf("api_file_base() = %q, want %q", result, expected)
+	}
+}
+
+// Test api_file_path helper function
+func TestApiFilePath(t *testing.T) {
+	origDataDir := data_dir
+	data_dir = "/var/lib/mochi"
+	defer func() { data_dir = origDataDir }()
+
+	user := &User{ID: 42}
+	app := &App{id: "testapp"}
+
+	result := api_file_path(user, app, "subdir/file.txt")
+	expected := "/var/lib/mochi/users/42/testapp/files/subdir/file.txt"
+
+	if result != expected {
+		t.Errorf("api_file_path() = %q, want %q", result, expected)
+	}
+}
+
+// Test os.Root prevents path traversal for file operations
+func TestOsRootPathTraversalProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+
+	// Create target directory
+	os.MkdirAll(targetDir, 0755)
+
+	// Create a file outside the target that we'll try to access
+	os.WriteFile(outsideFile, []byte("secret data"), 0644)
+
+	// Open root at target directory
+	root, err := os.OpenRoot(targetDir)
+	if err != nil {
+		t.Fatalf("Failed to open root: %v", err)
+	}
+	defer root.Close()
+
+	// Try to read file outside root using path traversal
+	_, err = root.Open("../outside.txt")
+	if err == nil {
+		t.Error("os.Root should prevent path traversal with ../")
+	}
+
+	// Try to create file outside root using path traversal
+	_, err = root.OpenFile("../escape.txt", os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		t.Error("os.Root should prevent creating files outside root with ../")
+	}
+
+	// Verify the escape file was not created
+	if file_exists(filepath.Join(tmpDir, "escape.txt")) {
+		t.Error("File was created outside root despite os.Root protection")
+	}
+}
+
+// Test os.Root prevents absolute path access
+func TestOsRootAbsolutePathProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+
+	os.MkdirAll(targetDir, 0755)
+
+	root, err := os.OpenRoot(targetDir)
+	if err != nil {
+		t.Fatalf("Failed to open root: %v", err)
+	}
+	defer root.Close()
+
+	// Try to access absolute path
+	_, err = root.Open("/etc/passwd")
+	if err == nil {
+		t.Error("os.Root should prevent absolute path access")
+	}
+}
+
+// Test os.Root prevents symlink escape
+func TestOsRootSymlinkProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	outsideDir := filepath.Join(tmpDir, "outside")
+
+	os.MkdirAll(targetDir, 0755)
+	os.MkdirAll(outsideDir, 0755)
+
+	// Create a secret file outside target
+	secretFile := filepath.Join(outsideDir, "secret.txt")
+	os.WriteFile(secretFile, []byte("secret"), 0644)
+
+	// Create a symlink inside target pointing outside
+	symlinkPath := filepath.Join(targetDir, "link")
+	err := os.Symlink(outsideDir, symlinkPath)
+	if err != nil {
+		t.Skipf("Symlink creation failed (may require privileges): %v", err)
+	}
+
+	root, err := os.OpenRoot(targetDir)
+	if err != nil {
+		t.Fatalf("Failed to open root: %v", err)
+	}
+	defer root.Close()
+
+	// Try to access file through symlink
+	_, err = root.Open("link/secret.txt")
+	if err == nil {
+		t.Error("os.Root should prevent symlink escape")
+	}
+}
+
+// Test os.Root allows normal operations within root
+func TestOsRootNormalOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to open root: %v", err)
+	}
+	defer root.Close()
+
+	// Create a file
+	f, err := root.OpenFile("test.txt", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+	f.Write([]byte("hello"))
+	f.Close()
+
+	// Read the file
+	f, err = root.Open("test.txt")
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	data := make([]byte, 100)
+	n, _ := f.Read(data)
+	f.Close()
+
+	if string(data[:n]) != "hello" {
+		t.Errorf("Read data = %q, want %q", string(data[:n]), "hello")
+	}
+
+	// Create subdirectory
+	err = root.Mkdir("subdir", 0755)
+	if err != nil {
+		t.Fatalf("Failed to create subdir: %v", err)
+	}
+
+	// Create file in subdirectory
+	f, err = root.OpenFile("subdir/nested.txt", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create nested file: %v", err)
+	}
+	f.Write([]byte("nested"))
+	f.Close()
+
+	// Stat the file
+	info, err := root.Stat("subdir/nested.txt")
+	if err != nil {
+		t.Fatalf("Failed to stat nested file: %v", err)
+	}
+	if info.Size() != 6 {
+		t.Errorf("File size = %d, want 6", info.Size())
+	}
+
+	// Remove the file
+	err = root.Remove("test.txt")
+	if err != nil {
+		t.Fatalf("Failed to remove file: %v", err)
+	}
+
+	// Verify it's gone
+	_, err = root.Stat("test.txt")
+	if err == nil {
+		t.Error("File should not exist after removal")
+	}
+}
+
 // Test cache cleanup removes old files
 func TestCacheCleanup(t *testing.T) {
 	// Save and restore cache_dir

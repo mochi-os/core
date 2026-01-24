@@ -10,6 +10,7 @@ import (
 	sl "go.starlark.net/starlark"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -567,14 +568,42 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "storage limit exceeded")
 	}
 
+	// Ensure base directory exists and open root for traversal protection
+	base := api_file_base(user, app)
+	file_mkdir(base)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		s.reader.Close()
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	// Create parent directories within the root if needed
+	dir := filepath.Dir(file)
+	if dir != "." && dir != "" {
+		if err := root.MkdirAll(dir, 0755); err != nil {
+			s.reader.Close()
+			return sl_error(fn, "unable to create directory")
+		}
+	}
+
+	// Open file within root for writing
+	f, err := root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		s.reader.Close()
+		return sl_error(fn, "unable to write file")
+	}
+
 	// Use raw_reader() to include any bytes buffered by the CBOR decoder
 	// This is critical when read_to_file follows a read() call
 	reader := s.raw_reader()
 
 	// Limit reader to remaining storage space
 	limited := io.LimitReader(reader, remaining)
-	n, ok := file_write_from_reader_count(api_file_path(user, app, file), limited)
-	if !ok {
+	n, err := io.Copy(f, limited)
+	f.Close()
+
+	if err != nil {
 		s.reader.Close()
 		return sl_error(fn, "unable to save file %q", file)
 	}
@@ -637,7 +666,21 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	n, err := s.write_file(api_file_path(user, app, file))
+	// Open file using os.Root for traversal protection
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer root.Close()
+
+	f, err := root.Open(file)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer f.Close()
+
+	n, err := io.Copy(s.writer, f)
 	if err != nil {
 		return sl_error(fn, "unable to send file")
 	}

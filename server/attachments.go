@@ -52,7 +52,9 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"exists":             sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
 	"data":               sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
 	"path":               sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
-	"thumbnail_path":     sl.NewBuiltin("mochi.attachment.thumbnail_path", api_attachment_thumbnail_path),
+	"thumbnail": sls.FromStringDict(sl.String("mochi.attachment.thumbnail"), sl.StringDict{
+		"path": sl.NewBuiltin("mochi.attachment.thumbnail.path", api_attachment_thumbnail_path),
+	}),
 	"sync":               sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch":              sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
@@ -1373,7 +1375,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(fmt.Sprintf("%s_%s", att.ID, safe_name)), nil
 }
 
-// mochi.attachment.thumbnail_path(id) -> string or None: Get thumbnail path, creating thumbnail if needed
+// mochi.attachment.thumbnail.path(id) -> string or None: Get thumbnail path, creating thumbnail if needed
 // Returns the thumbnail filename relative to the app's files directory
 func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -1443,7 +1445,7 @@ func attachment_notify_create(app *App, owner *User, object string, attachments 
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/create")
+		m := message(from, entity, app.id, "attachment/create")
 		m.content = map[string]any{
 			"object": object,
 		}
@@ -1466,7 +1468,7 @@ func attachment_notify_insert(app *App, owner *User, object string, attachment m
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/insert")
+		m := message(from, entity, app.id, "attachment/insert")
 		m.content = map[string]any{
 			"object": object,
 		}
@@ -1489,7 +1491,7 @@ func attachment_notify_update(app *App, owner *User, attachment map[string]any, 
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/update")
+		m := message(from, entity, app.id, "attachment/update")
 		m.add(attachment)
 		m.send()
 	}
@@ -1509,7 +1511,7 @@ func attachment_notify_move(app *App, owner *User, attachment map[string]any, ol
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/move")
+		m := message(from, entity, app.id, "attachment/move")
 		m.content = map[string]any{
 			"old_rank": fmt.Sprintf("%d", old_rank),
 		}
@@ -1532,7 +1534,7 @@ func attachment_notify_delete(app *App, owner *User, object string, id string, n
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/delete")
+		m := message(from, entity, app.id, "attachment/delete")
 		m.content = map[string]any{
 			"object": object,
 			"id":     id,
@@ -1555,7 +1557,7 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/clear")
+		m := message(from, entity, app.id, "attachment/clear")
 		m.content = map[string]any{
 			"object": object,
 		}
@@ -1579,8 +1581,8 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 	}
 
 	// Fetch from remote
-	//debug("attachment_fetch_remote: opening stream to %s service app/%s event __attachment/data", entity, app.id)
-	s, err := stream("", entity, app.id, "_attachment/data")
+	//debug("attachment_fetch_remote: opening stream to %s service app/%s event attachment/data", entity, app.id)
+	s, err := stream("", entity, app.id, "attachment/data")
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
 		return nil
@@ -1644,7 +1646,7 @@ func sl_extract_string(v sl.Value) string {
 	return ""
 }
 
-// Event handler: _attachment/create
+// Event handler: attachment/create
 func (e *Event) attachment_event_create() {
 	object := e.get("object", "")
 	if object == "" {
@@ -1708,7 +1710,7 @@ func (e *Event) attachment_event_create() {
 	}
 }
 
-// Event handler: _attachment/insert
+// Event handler: attachment/insert
 func (e *Event) attachment_event_insert() {
 	object := e.get("object", "")
 	if object == "" {
@@ -1784,7 +1786,7 @@ func (e *Event) attachment_event_insert() {
 	}
 }
 
-// Event handler: _attachment/update
+// Event handler: attachment/update
 func (e *Event) attachment_event_update() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
@@ -1810,7 +1812,7 @@ func (e *Event) attachment_event_update() {
 		att["caption"], att["description"], id, source)
 }
 
-// Event handler: _attachment/move
+// Event handler: attachment/move
 func (e *Event) attachment_event_move() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
@@ -1852,7 +1854,7 @@ func (e *Event) attachment_event_move() {
 	}
 }
 
-// Event handler: _attachment/delete
+// Event handler: attachment/delete
 func (e *Event) attachment_event_delete() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
@@ -1896,7 +1898,7 @@ func (e *Event) attachment_event_delete() {
 	}
 }
 
-// Event handler: _attachment/clear
+// Event handler: attachment/clear
 func (e *Event) attachment_event_clear() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
@@ -1927,7 +1929,7 @@ func (e *Event) attachment_event_clear() {
 	e.db.exec("delete from attachments where object = ? and entity = ?", object, source)
 }
 
-// Event handler: _attachment/data (responds with file bytes)
+// Event handler: attachment/data (responds with file bytes)
 func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: called with content=%v", e.content)
 
@@ -2083,7 +2085,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Open stream to remote entity
-	s, err := stream(from, entity, app.id, "_attachment/fetch")
+	s, err := stream(from, entity, app.id, "attachment/fetch")
 	if err != nil {
 		return sl_encode([]map[string]any{}), nil
 	}
@@ -2121,7 +2123,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl_encode(attachments), nil
 }
 
-// Event handler: _attachment/fetch (responds with attachments for object via stream)
+// Event handler: attachment/fetch (responds with attachments for object via stream)
 func (e *Event) attachment_event_fetch() {
 	object := e.get("object", "")
 	if object == "" {

@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 37
+	schema_version = 38
 )
 
 var (
@@ -203,7 +203,7 @@ const db_max_page_count = 262144
 
 // db_app opens a database file for an app, creating, upgrading, or downgrading it as necessary.
 // App databases are stored in users/{user_id}/{app_id}/db/{file.db}.
-// Schema version is tracked in the system database (app.db).
+// Schema version is tracked using SQLite's user_version pragma.
 func db_app(u *User, app *App) *DB {
 	av := app.active(u)
 	if av == nil {
@@ -232,8 +232,8 @@ func db_app(u *User, app *App) *DB {
 	l.Lock()
 	defer l.Unlock()
 
-	// Get schema version from system database (app.db)
-	schema := db_app_schema_get(u, app)
+	// Get schema version from user_version pragma
+	schema := db_app_schema_get(db)
 
 	// Check if app tables exist - if not, call database_create()
 	// We always check actual database state rather than relying on file creation status,
@@ -253,7 +253,7 @@ func db_app(u *User, app *App) *DB {
 			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
 			return nil
 		}
-		db_app_schema_set(u, app, av.Database.Schema)
+		db_app_schema_set(db, av.Database.Schema)
 		schema = av.Database.Schema
 	}
 
@@ -263,7 +263,7 @@ func db_app(u *User, app *App) *DB {
 			if err := av.starlark_db(u, av.Database.Upgrade.Function, sl_encode_tuple(version)); err != nil {
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
 			}
-			db_app_schema_set(u, app, version)
+			db_app_schema_set(db, version)
 			audit_app_schema_migrated(av.app.id, version-1, version)
 		}
 	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
@@ -272,7 +272,7 @@ func db_app(u *User, app *App) *DB {
 			if err := av.starlark_db(u, av.Database.Downgrade.Function, sl_encode_tuple(version)); err != nil {
 				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
 			}
-			db_app_schema_set(u, app, version-1)
+			db_app_schema_set(db, version-1)
 			audit_app_schema_migrated(av.app.id, version, version-1)
 		}
 	}
@@ -281,7 +281,7 @@ func db_app(u *User, app *App) *DB {
 }
 
 // db_app_system opens the system database (app.db) for an app.
-// Contains settings, access, and attachments tables managed by the platform.
+// Contains access and attachments tables managed by the platform.
 // Always available even if app has no declared database file.
 func db_app_system(u *User, app *App) *DB {
 	if u == nil || app == nil {
@@ -302,29 +302,20 @@ func db_app_system(u *User, app *App) *DB {
 	defer l.Unlock()
 
 	// Create system tables
-	db.exec("create table if not exists settings (name text not null primary key, value text not null)")
 	db.access_setup()
 	db.attachments_setup()
 
 	return db
 }
 
-// db_app_schema_get reads the app database schema version from the system database
-func db_app_schema_get(u *User, app *App) int {
-	sysdb := db_app_system(u, app)
-	if sysdb == nil {
-		return 0
-	}
-	return sysdb.integer("select cast(value as integer) from settings where name='schema'")
+// db_app_schema_get reads the app database schema version from user_version pragma
+func db_app_schema_get(db *DB) int {
+	return db.integer("pragma user_version")
 }
 
-// db_app_schema_set writes the app database schema version to the system database
-func db_app_schema_set(u *User, app *App, version int) {
-	sysdb := db_app_system(u, app)
-	if sysdb == nil {
-		return
-	}
-	sysdb.exec("replace into settings (name, value) values ('schema', ?)", version)
+// db_app_schema_set writes the app database schema version to user_version pragma
+func db_app_schema_set(db *DB, version int) {
+	db.exec(fmt.Sprintf("pragma user_version=%d", version))
 }
 
 func db_manager() {
@@ -746,6 +737,60 @@ func db_upgrade() {
 			schedule.exec("create table if not exists schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 			schedule.exec("create index if not exists schedule_due on schedule(due)")
 			schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
+		}
+
+		if schema == 38 {
+			// Migration: move app database schema versions from app.db settings to user_version pragma
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				user, ok := row["id"].(int64)
+				if !ok {
+					continue
+				}
+
+				user_dir := fmt.Sprintf("%s/users/%d", data_dir, user)
+				entries, err := os.ReadDir(user_dir)
+				if err != nil {
+					continue
+				}
+
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+
+					app_db_path := filepath.Join(user_dir, entry.Name(), "app.db")
+					if !file_exists(app_db_path) {
+						continue
+					}
+
+					// Read schema version from app.db settings table
+					sys_db := db_open(fmt.Sprintf("users/%d/%s/app.db", user, entry.Name()))
+					version := sys_db.integer("select cast(value as integer) from settings where name='schema'")
+					if version == 0 {
+						continue
+					}
+
+					// Find database files in db/ subdirectory and set user_version
+					db_dir := filepath.Join(user_dir, entry.Name(), "db")
+					db_files, err := os.ReadDir(db_dir)
+					if err != nil {
+						continue
+					}
+
+					for _, db_file := range db_files {
+						if db_file.IsDir() || !strings.HasSuffix(db_file.Name(), ".db") {
+							continue
+						}
+						app_data_db := db_open(fmt.Sprintf("users/%d/%s/db/%s", user, entry.Name(), db_file.Name()))
+						app_data_db.exec(fmt.Sprintf("pragma user_version=%d", version))
+					}
+
+					// Drop settings table from app.db (schema was its only use)
+					sys_db.exec("drop table if exists settings")
+				}
+			}
 		}
 
 		setting_set("schema", itoa(int(schema)))

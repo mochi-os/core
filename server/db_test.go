@@ -566,3 +566,70 @@ func TestAppUserSetup(t *testing.T) {
 		t.Errorf("Expected 1 permission row, got %d", count)
 	}
 }
+
+// Test db_app_schema_get returns 0 for new database
+func TestAppSchemaGetDefault(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	version := db_app_schema_get(db)
+	if version != 0 {
+		t.Errorf("db_app_schema_get() = %d, want 0 for new database", version)
+	}
+}
+
+// Test db_app_schema_set and db_app_schema_get roundtrip
+func TestAppSchemaSetGet(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	db_app_schema_set(db, 5)
+	version := db_app_schema_get(db)
+	if version != 5 {
+		t.Errorf("db_app_schema_get() = %d, want 5", version)
+	}
+
+	db_app_schema_set(db, 12)
+	version = db_app_schema_get(db)
+	if version != 12 {
+		t.Errorf("db_app_schema_get() = %d, want 12", version)
+	}
+}
+
+// Test db_app_system does not create a settings table
+func TestAppSystemNoSettingsTable(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	os.MkdirAll(filepath.Join(tmp_dir, "users", "1", "testapp"), 0755)
+
+	user := &User{ID: 1}
+	a := &App{id: "testapp"}
+	db := db_app_system(user, a)
+	if db == nil {
+		t.Fatal("db_app_system returned nil")
+	}
+
+	exists, _ := db.exists("select name from sqlite_master where type='table' and name='settings'")
+	if exists {
+		t.Error("app.db should not have a settings table")
+	}
+
+	// Verify access and attachments tables do exist
+	exists, _ = db.exists("select name from sqlite_master where type='table' and name='access'")
+	if !exists {
+		t.Error("app.db should have an access table")
+	}
+
+	exists, _ = db.exists("select name from sqlite_master where type='table' and name='attachments'")
+	if !exists {
+		t.Error("app.db should have an attachments table")
+	}
+}

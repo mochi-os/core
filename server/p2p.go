@@ -101,8 +101,8 @@ func p2p_pubsubs() {
 		}
 		peer := m.ReceivedFrom.String()
 		if peer != p2p_id {
-			// Rate limit inbound pubsub messages per peer
-			if !rate_limit_pubsub_in.allow(peer) {
+			// Rate limit inbound pubsub messages per peer (skip bootstrap peers)
+			if !peer_is_bootstrap(peer) && !rate_limit_pubsub_in.allow(peer) {
 				debug("P2P pubsub rate limited peer %q", peer)
 				continue
 			}
@@ -119,8 +119,8 @@ func p2p_receive_1(s p2p_network.Stream) {
 	defer s.Close()
 	peer := s.Conn().RemotePeer().String()
 
-	// Rate limit incoming streams per peer
-	if !rate_limit_p2p.allow(peer) {
+	// Rate limit incoming streams per peer (skip bootstrap peers)
+	if !peer_is_bootstrap(peer) && !rate_limit_p2p.allow(peer) {
 		debug("P2P rate limited peer %q", peer)
 		return
 	}

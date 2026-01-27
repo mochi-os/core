@@ -99,9 +99,9 @@ func (e *Event) route() error {
 	av := a.active(e.user)
 
 	// Handle built-in attachment events
-	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
+	// This must happen before the event lookup since attachment/* events aren't registered in app.json
 	// System database (app.db) is always available, even for apps without a declared database file
-	if strings.HasPrefix(e.event, "_attachment/") {
+	if strings.HasPrefix(e.event, "attachment/") {
 		if e.user == nil {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
@@ -114,28 +114,28 @@ func (e *Event) route() error {
 		defer e.db.close()
 
 		switch e.event {
-		case "_attachment/create":
+		case "attachment/create":
 			e.attachment_event_create()
 			return nil
-		case "_attachment/insert":
+		case "attachment/insert":
 			e.attachment_event_insert()
 			return nil
-		case "_attachment/update":
+		case "attachment/update":
 			e.attachment_event_update()
 			return nil
-		case "_attachment/move":
+		case "attachment/move":
 			e.attachment_event_move()
 			return nil
-		case "_attachment/delete":
+		case "attachment/delete":
 			e.attachment_event_delete()
 			return nil
-		case "_attachment/clear":
+		case "attachment/clear":
 			e.attachment_event_clear()
 			return nil
-		case "_attachment/data":
+		case "attachment/data":
 			e.attachment_event_data()
 			return nil
-		case "_attachment/fetch":
+		case "attachment/fetch":
 			e.attachment_event_fetch()
 			return nil
 		}
@@ -325,6 +325,8 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_encode(e.service), nil
 	case "event":
 		return sl_encode(e.event), nil
+	case "peer":
+		return sl_encode(e.peer), nil
 	default:
 		return sl_error(fn, "invalid header %q", header)
 	}

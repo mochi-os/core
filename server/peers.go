@@ -49,6 +49,16 @@ func init() {
 	})
 }
 
+// peer_is_bootstrap returns true if the peer ID is a bootstrap peer
+func peer_is_bootstrap(id string) bool {
+	for _, p := range peers_bootstrap {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // Add some peers we already know about from the database
 func peers_add_from_db(limit int) {
 	var ps []Peer

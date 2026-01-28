@@ -29,7 +29,7 @@ func starlark_configure() {
 		return
 	}
 
-	c := ini_int("starlark", "concurrency", 4)
+	c := ini_int("starlark", "concurrency", 32)
 	if c < 1 {
 		c = 4
 	}

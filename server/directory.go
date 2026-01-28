@@ -128,6 +128,7 @@ func directory_download_from_peer(peer string) bool {
 	debug("Directory asking for directory updates since %s", time_local(nil, start))
 	s.write_content("start", i64toa(start), "version", build_version)
 
+	users := db_open("db/users.db")
 	for {
 		var d Directory
 		err := s.read(&d)
@@ -137,6 +138,13 @@ func directory_download_from_peer(peer string) bool {
 		}
 
 		debug("Directory got update %s %q", d.ID, d.Name)
+
+		// Don't let remote peers override location for local entities
+		local, _ := users.exists("select 1 from entities where id=?", d.ID)
+		if local {
+			d.Location = "p2p/" + p2p_id
+		}
+
 		db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
@@ -252,14 +260,7 @@ func directory_publish_event(e *Event) {
 	created := now
 
 	if e.from == "" {
-		found := false
-		for _, p := range peers_bootstrap {
-			if e.peer == p.ID {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !peer_is_bootstrap(e.peer) {
 			info("Directory dropping anonymous event from untrusted peer")
 			return
 		}
@@ -269,6 +270,13 @@ func directory_publish_event(e *Event) {
 	} else if e.from != id {
 		info("Directory dropping event from incorrect sender: %q!=%q", id, e.from)
 		return
+	}
+
+	// Don't let remote peers override location for local entities
+	users := db_open("db/users.db")
+	local, _ := users.exists("select 1 from entities where id=?", id)
+	if local {
+		location = "p2p/" + p2p_id
 	}
 
 	db := db_open("db/directory.db")

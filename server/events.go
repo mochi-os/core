@@ -99,9 +99,9 @@ func (e *Event) route() error {
 	av := a.active(e.user)
 
 	// Handle built-in attachment events
-	// This must happen before the event lookup since attachment/* events aren't registered in app.json
+	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
 	// System database (app.db) is always available, even for apps without a declared database file
-	if strings.HasPrefix(e.event, "attachment/") {
+	if strings.HasPrefix(e.event, "_attachment/") {
 		if e.user == nil {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
@@ -114,28 +114,28 @@ func (e *Event) route() error {
 		defer e.db.close()
 
 		switch e.event {
-		case "attachment/create":
+		case "_attachment/create":
 			e.attachment_event_create()
 			return nil
-		case "attachment/insert":
+		case "_attachment/insert":
 			e.attachment_event_insert()
 			return nil
-		case "attachment/update":
+		case "_attachment/update":
 			e.attachment_event_update()
 			return nil
-		case "attachment/move":
+		case "_attachment/move":
 			e.attachment_event_move()
 			return nil
-		case "attachment/delete":
+		case "_attachment/delete":
 			e.attachment_event_delete()
 			return nil
-		case "attachment/clear":
+		case "_attachment/clear":
 			e.attachment_event_clear()
 			return nil
-		case "attachment/data":
+		case "_attachment/data":
 			e.attachment_event_data()
 			return nil
-		case "attachment/fetch":
+		case "_attachment/fetch":
 			e.attachment_event_fetch()
 			return nil
 		}

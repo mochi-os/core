@@ -4,6 +4,8 @@
 package main
 
 import (
+	"fmt"
+
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"sync"
@@ -44,9 +46,32 @@ func message_seen_cleanup() {
 }
 
 var api_message = sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
-	"send":    sl.NewBuiltin("mochi.message.send", api_message_send),
+	"send":    &messageSendModule{},
 	"publish": sl.NewBuiltin("mochi.message.publish", api_message_publish),
 })
+
+// messageSendModule is a callable module that also has a .peer method
+// Usage: mochi.message.send(headers, content) or mochi.message.send.peer(peer, headers, content)
+type messageSendModule struct{}
+
+func (m *messageSendModule) String() string        { return "mochi.message.send" }
+func (m *messageSendModule) Type() string          { return "module" }
+func (m *messageSendModule) Freeze()               {}
+func (m *messageSendModule) Truth() sl.Bool        { return sl.True }
+func (m *messageSendModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *messageSendModule) AttrNames() []string   { return []string{"peer"} }
+func (m *messageSendModule) Name() string          { return "mochi.message.send" }
+
+func (m *messageSendModule) Attr(name string) (sl.Value, error) {
+	if name == "peer" {
+		return sl.NewBuiltin("mochi.message.send.peer", api_message_send_peer), nil
+	}
+	return nil, nil
+}
+
+func (m *messageSendModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_message_send(thread, nil, args, kwargs)
+}
 
 type Message struct {
 	ID        string `cbor:"-"`
@@ -289,6 +314,79 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	m.send()
+	return sl.None, nil
+}
+
+// mochi.message.send.peer(peer, headers, content?, data?, expires=seconds) -> None: Send a P2P message to a specific peer
+func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 || len(args) > 4 {
+		return sl_error(fn, "syntax: <peer: string>, <headers: dictionary>, [content: dictionary], [data: bytes]")
+	}
+
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "peer not specified or invalid")
+	}
+
+	// Rate limit by app ID
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_p2p_send.allow(app.id) {
+		return sl_error(fn, "rate limit exceeded (20 messages per second)")
+	}
+
+	headers := sl_decode_strings(args[1])
+	if headers == nil {
+		return sl_error(fn, "headers not specified or invalid")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	if !from_valid {
+		info("message.send.peer: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
+		return sl_error(fn, "invalid from header")
+	}
+
+	if !valid(headers["to"], "entity") {
+		return sl_error(fn, "invalid to header")
+	}
+
+	if !valid(headers["service"], "constant") {
+		return sl_error(fn, "invalid service header")
+	}
+
+	if !valid(headers["event"], "constant") {
+		return sl_error(fn, "invalid event header")
+	}
+
+	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
+	if len(args) > 2 {
+		if content, ok := sl_decode(args[2]).(map[string]any); ok {
+			m.content = content
+		}
+	}
+
+	if len(args) > 3 {
+		m.add(sl_decode(args[3]))
+	}
+
+	// Parse expires kwarg (seconds from now)
+	for _, kw := range kwargs {
+		if string(kw[0].(sl.String)) == "expires" {
+			if v, ok := kw[1].(sl.Int); ok {
+				m.expires = now() + v.BigInt().Int64()
+			}
+		}
+	}
+
+	m.send_peer(peer)
 	return sl.None, nil
 }
 

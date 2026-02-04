@@ -1589,10 +1589,12 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		candidates = append(candidates, aa)
 	}
 
-	// Sort candidates: type files first, then more segments first, then more literals first
+	// Sort candidates: files/feature routes first, then more segments first, then more literals first
 	sort.Slice(candidates, func(i, j int) bool {
-		if (candidates[i].Files != "") != (candidates[j].Files != "") {
-			return candidates[i].Files != ""
+		iSpecial := candidates[i].Files != "" || candidates[i].Feature != ""
+		jSpecial := candidates[j].Files != "" || candidates[j].Feature != ""
+		if iSpecial != jSpecial {
+			return iSpecial
 		} else if candidates[i].segments != candidates[j].segments {
 			return candidates[i].segments > candidates[j].segments
 		} else {
@@ -1622,7 +1624,6 @@ func (av *AppVersion) find_action(name string) *AppAction {
 				// Try exact match first
 				if aa.name == match {
 					aa.filepath = suffix
-					//debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
 					return &aa
 				}
 				// Try parameterized match
@@ -1642,7 +1643,6 @@ func (av *AppVersion) find_action(name string) *AppAction {
 					}
 					if ok {
 						aa.filepath = suffix
-						//debug("App found files action %q via pattern %q, filepath %q", name, aa.name, suffix)
 						return &aa
 					}
 				}
@@ -1727,7 +1727,6 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			aa.parameters[pname] = strings.Join(value_segments[greedy_pos:greedy_end], "/")
 		}
 
-		//debug("App matched %q to pattern %q, params=%v", name, aa.name, aa.parameters)
 		return &aa
 	}
 

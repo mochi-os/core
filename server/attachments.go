@@ -55,8 +55,8 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"thumbnail": sls.FromStringDict(sl.String("mochi.attachment.thumbnail"), sl.StringDict{
 		"path": sl.NewBuiltin("mochi.attachment.thumbnail.path", api_attachment_thumbnail_path),
 	}),
-	"sync":               sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
-	"fetch":              sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
+	"sync":  sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
+	"fetch": sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
 // Create attachments table in the system database (app.db)

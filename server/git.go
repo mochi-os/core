@@ -5,22 +5,29 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/server"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -58,6 +65,21 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 		"check": sl.NewBuiltin("mochi.git.merge.check", api_git_merge_check),
 	}),
 })
+
+// git_loader implements server.Loader to load repository storage from filesystem paths
+type git_loader struct{}
+
+// Load loads a storer.Storer for the given endpoint path
+func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
+	fs := osfs.New(ep.Path)
+	if _, err := fs.Stat("config"); err != nil {
+		return nil, transport.ErrRepositoryNotFound
+	}
+	return filesystem.NewStorage(fs, cache.NewObjectLRUDefault()), nil
+}
+
+// git_transport is the go-git server transport for handling git protocol
+var git_transport = server.NewServer(&git_loader{})
 
 // gitDiffModule is a callable module that also has a .stats method
 type gitDiffModule struct{}
@@ -1536,6 +1558,38 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 		return true
 	}
 
+	// Create endpoint for the repository path
+	ep := &transport.Endpoint{Path: repo_path}
+	ctx := context.Background()
+
+	// Create appropriate session based on service and get advertised refs
+	var refs *packp.AdvRefs
+	if service == "git-upload-pack" {
+		session, err := git_transport.NewUploadPackSession(ep, nil)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+			return true
+		}
+		defer session.Close()
+		refs, err = session.AdvertisedReferencesContext(ctx)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to get refs: %v", err)
+			return true
+		}
+	} else {
+		session, err := git_transport.NewReceivePackSession(ep, nil)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+			return true
+		}
+		defer session.Close()
+		refs, err = session.AdvertisedReferencesContext(ctx)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to get refs: %v", err)
+			return true
+		}
+	}
+
 	c.Status(http.StatusOK)
 	c.Header("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	c.Header("Cache-Control", "no-cache")
@@ -1545,14 +1599,9 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	pkt_line := fmt.Sprintf("%04x%s0000", len(git_service)+4, git_service)
 	c.Writer.WriteString(pkt_line)
 
-	// Run the git command to get refs
-	cmd := exec.Command(service, "--stateless-rpc", "--advertise-refs", repo_path)
-	cmd.Stdout = c.Writer
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		// Already started writing, can't send error status
-		info("git_info_refs: %s failed: %v", service, err)
+	// Encode advertised refs
+	if err := refs.Encode(c.Writer); err != nil {
+		info("git_info_refs: failed to encode refs: %v", err)
 	}
 
 	return true
@@ -1560,12 +1609,8 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
 func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
-	c.Status(http.StatusOK)
-	c.Header("Content-Type", fmt.Sprintf("application/x-%s-result", service))
-	c.Header("Cache-Control", "no-cache")
-
 	// Handle gzip compressed request body
-	var reader io.Reader = c.Request.Body
+	var reader io.ReadCloser = c.Request.Body
 	if c.GetHeader("Content-Encoding") == "gzip" {
 		gz_reader, err := gzip.NewReader(c.Request.Body)
 		if err != nil {
@@ -1576,14 +1621,84 @@ func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
 		reader = gz_reader
 	}
 
-	// Run the git command
-	cmd := exec.Command(service, "--stateless-rpc", repo_path)
-	cmd.Stdin = reader
-	cmd.Stdout = c.Writer
-	cmd.Stderr = os.Stderr
+	if service == "git-upload-pack" {
+		return git_upload_pack(c, repo_path, reader)
+	}
+	return git_receive_pack(c, repo_path, reader)
+}
 
-	if err := cmd.Run(); err != nil {
-		info("git_service_rpc: %s failed: %v", service, err)
+// git_upload_pack handles the git-upload-pack service (fetch/clone)
+func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
+	ep := &transport.Endpoint{Path: repo_path}
+	ctx := context.Background()
+
+	session, err := git_transport.NewUploadPackSession(ep, nil)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+		return true
+	}
+	defer session.Close()
+
+	// Decode the upload-pack request from the client
+	req := packp.NewUploadPackRequest()
+	if err := req.Decode(reader); err != nil {
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		return true
+	}
+
+	// Process the upload-pack request
+	resp, err := session.UploadPack(ctx, req)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Upload pack failed: %v", err)
+		return true
+	}
+	defer resp.Close()
+
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "application/x-git-upload-pack-result")
+	c.Header("Cache-Control", "no-cache")
+
+	// Encode the response
+	if err := resp.Encode(c.Writer); err != nil {
+		info("git_upload_pack: failed to encode response: %v", err)
+	}
+
+	return true
+}
+
+// git_receive_pack handles the git-receive-pack service (push)
+func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
+	ep := &transport.Endpoint{Path: repo_path}
+	ctx := context.Background()
+
+	session, err := git_transport.NewReceivePackSession(ep, nil)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+		return true
+	}
+	defer session.Close()
+
+	// Decode the reference update request from the client
+	req := packp.NewReferenceUpdateRequest()
+	if err := req.Decode(reader); err != nil {
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		return true
+	}
+
+	// Process the receive-pack request
+	status, err := session.ReceivePack(ctx, req)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Receive pack failed: %v", err)
+		return true
+	}
+
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "application/x-git-receive-pack-result")
+	c.Header("Cache-Control", "no-cache")
+
+	// Encode the status report
+	if err := status.Encode(c.Writer); err != nil {
+		info("git_receive_pack: failed to encode status: %v", err)
 	}
 
 	return true

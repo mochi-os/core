@@ -205,6 +205,37 @@ func random_unambiguous(length int) string {
 	return string(out)
 }
 
+// Recursively create directories within a root
+func root_mkdir_all(root *os.Root, path string) error {
+	path = filepath.Clean(path)
+	parts := strings.Split(path, string(os.PathSeparator))
+
+	current := ""
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if current != "" {
+			current = current + string(os.PathSeparator) + part
+		} else {
+			current = part
+		}
+
+		err := root.Mkdir(current, 0755)
+		if err != nil && !os.IsExist(err) {
+			// Check if it's a directory (might be a file)
+			info, statErr := root.Stat(current)
+			if statErr == nil && !info.IsDir() {
+				return fmt.Errorf("path %q is a file", current)
+			}
+			if statErr != nil && !os.IsExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func time_local(u *User, t int64) string {
 	timezone := "UTC"
 	if u != nil {
@@ -250,7 +281,7 @@ func unzip(file string, destination string) error {
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			// Create directory within root (os.Root automatically prevents traversal)
-			if err := root.MkdirAll(f.Name, 0755); err != nil {
+			if err := root_mkdir_all(root, f.Name); err != nil {
 				return err
 			}
 			continue
@@ -259,7 +290,7 @@ func unzip(file string, destination string) error {
 		// Create parent directories if needed
 		dir := filepath.Dir(f.Name)
 		if dir != "." && dir != "" {
-			if err := root.MkdirAll(dir, 0755); err != nil {
+			if err := root_mkdir_all(root, dir); err != nil {
 				return err
 			}
 		}

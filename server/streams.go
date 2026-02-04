@@ -581,7 +581,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// Create parent directories within the root if needed
 	dir := filepath.Dir(file)
 	if dir != "." && dir != "" {
-		if err := root.MkdirAll(dir, 0755); err != nil {
+		if err := root_mkdir_all(root, dir); err != nil {
 			s.reader.Close()
 			return sl_error(fn, "unable to create directory")
 		}

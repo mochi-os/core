@@ -604,7 +604,7 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 
 	// Move file to attachment location
-	dest_path := data_dir + "/" + attachment_path(owner.ID, app.id, id, name)
+	dest_path := filepath.Join(data_dir, attachment_path(owner.ID, app.id, id, name))
 	file_move(full_src_path, dest_path)
 
 	// Create record using shared helper
@@ -1414,7 +1414,7 @@ func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	}
 
 	// Get full path and create thumbnail
-	path := data_dir + "/" + attachment_path(owner.ID, app.id, att.ID, att.Name)
+	path := filepath.Join(data_dir, attachment_path(owner.ID, app.id, att.ID, att.Name))
 	thumb, err := thumbnail_create(path)
 	if err != nil || thumb == "" {
 		return sl.None, nil
@@ -1423,7 +1423,7 @@ func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	// Return relative path from app's files directory
 	// The thumbnail is at: data_dir/users/{user}/app/files/thumbnails/id_name_thumbnail.ext
 	// We need to return: thumbnails/id_name_thumbnail.ext
-	base := data_dir + "/" + fmt.Sprintf("users/%d/%s/files/", owner.ID, app.id)
+	base := filepath.Join(data_dir, "users", fmt.Sprintf("%d", owner.ID), app.id, "files")
 	rel, err := filepath.Rel(base, thumb)
 	if err != nil {
 		return sl.None, nil

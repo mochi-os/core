@@ -448,7 +448,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	// Create parent directories within the root if needed
 	dir := filepath.Dir(file)
 	if dir != "." && dir != "" {
-		if err := root.MkdirAll(dir, 0755); err != nil {
+		if err := root_mkdir_all(root, dir); err != nil {
 			return sl_error(fn, "unable to create directory")
 		}
 	}

@@ -8,6 +8,11 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
 	p2p "github.com/libp2p/go-libp2p"
 	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -20,9 +25,6 @@ import (
 	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	multiaddr "github.com/multiformats/go-multiaddr"
-	"io"
-	"os"
-	"time"
 )
 
 type mdns_notifee struct {
@@ -138,8 +140,10 @@ func p2p_receive_1(s p2p_network.Stream) {
 func p2p_start() {
 	// Read or create private/public key pair
 	var private p2p_crypto.PrivKey
-	if file_exists(data_dir + "/p2p/private.key") {
-		private = must(p2p_crypto.UnmarshalPrivateKey(file_read(data_dir + "/p2p/private.key")))
+	p2p_dir := filepath.Join(data_dir, "p2p")
+	key_path := filepath.Join(p2p_dir, "private.key")
+	if file_exists(key_path) {
+		private = must(p2p_crypto.UnmarshalPrivateKey(file_read(key_path)))
 	} else {
 		private, _, err := p2p_crypto.GenerateKeyPairWithReader(p2p_crypto.Ed25519, 256, rand.Reader)
 		if err != nil {
@@ -149,8 +153,8 @@ func p2p_start() {
 		if err != nil {
 			panic(fmt.Sprintf("P2P failed to marshal private key: %v", err))
 		}
-		file_mkdir(data_dir + "/p2p")
-		if err := os.WriteFile(data_dir+"/p2p/private.key", p, 0600); err != nil {
+		file_mkdir(p2p_dir)
+		if err := os.WriteFile(key_path, p, 0600); err != nil {
 			panic(fmt.Sprintf("P2P failed to write private key: %v", err))
 		}
 	}

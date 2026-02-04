@@ -7,7 +7,8 @@ import (
 	"flag"
 	"os"
 	"os/signal"
-	"syscall"
+	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -27,8 +28,22 @@ var (
 func main() {
 	info("Mochi %s starting", build_version)
 
+	// Platform-aware default paths
+	default_config := "/etc/mochi/mochi.conf"
+	default_cache := "/var/cache/mochi"
+	default_data := "/var/lib/mochi"
+	if runtime.GOOS == "windows" {
+		local_app_data := os.Getenv("LOCALAPPDATA")
+		if local_app_data == "" {
+			local_app_data = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		default_config = filepath.Join(local_app_data, "mochi", "mochi.conf")
+		default_cache = filepath.Join(local_app_data, "mochi", "cache")
+		default_data = filepath.Join(local_app_data, "mochi", "data")
+	}
+
 	var file string
-	flag.StringVar(&file, "f", "/etc/mochi/mochi.conf", "Configuration file")
+	flag.StringVar(&file, "f", default_config, "Configuration file")
 	flag.Parse()
 	err := ini_load(file)
 	if err != nil {
@@ -39,8 +54,8 @@ func main() {
 	audit_init()
 	audit_server_start(build_version)
 
-	cache_dir = ini_string("directories", "cache", "/var/cache/mochi")
-	data_dir = ini_string("directories", "data", "/var/lib/mochi")
+	cache_dir = ini_string("directories", "cache", default_cache)
+	data_dir = ini_string("directories", "data", default_data)
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	web_cache = ini_bool("web", "cache", true)
@@ -69,9 +84,9 @@ func main() {
 	go apps_manager()
 	go schedule_start()
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal (os.Interrupt works cross-platform)
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sig, os.Interrupt)
 	<-sig
 
 	info("Shutdown signal received, stopping gracefully...")

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -994,8 +995,8 @@ func app_install(id string, version string, file string, check_only bool, peer .
 	} else {
 		debug("App %q installing version %q from %q", id, version, file)
 	}
-	file_mkdir(data_dir + "/tmp")
-	tmp := fmt.Sprintf("%s/tmp/app_install_%s_%s", data_dir, id, random_alphanumeric(8))
+	file_mkdir(filepath.Join(data_dir, "tmp"))
+	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_install_%s_%s", id, random_alphanumeric(8)))
 	err := unzip(file, tmp)
 	if err != nil {
 		info("App unzip failed: %v", err)
@@ -1094,7 +1095,7 @@ func apps_manager() {
 	time.Sleep(time.Second)
 
 	// If we already have apps installed, skip the setup wait
-	if len(file_list(data_dir+"/apps")) >= 2 {
+	if len(file_list(filepath.Join(data_dir, "apps"))) >= 2 {
 		apps_bootstrap_ready = true
 		debug("Apps already installed, skipping setup wait")
 	}
@@ -1115,7 +1116,7 @@ func apps_manager() {
 		}
 
 		// Check any other installed apps
-		for _, id := range file_list(data_dir + "/apps") {
+		for _, id := range file_list(filepath.Join(data_dir, "apps")) {
 			if !todo[id] {
 				todo[id] = true
 				app_check_install(id)
@@ -1394,13 +1395,14 @@ func apps_load_dev() {
 
 // Load published apps from data_dir/apps (versioned)
 func apps_load_published() {
-	for _, id := range file_list(data_dir + "/apps") {
+	apps_dir := filepath.Join(data_dir, "apps")
+	for _, id := range file_list(apps_dir) {
 		if strings.HasPrefix(id, ".") {
 			continue
 		}
 
 		// Skip non-directories
-		if !file_is_directory(data_dir + "/apps/" + id) {
+		if !file_is_directory(filepath.Join(apps_dir, id)) {
 			continue
 		}
 
@@ -1415,7 +1417,8 @@ func apps_load_published() {
 			continue
 		}
 
-		versions := file_list(data_dir + "/apps/" + id)
+		app_dir := filepath.Join(apps_dir, id)
+		versions := file_list(app_dir)
 		if len(versions) == 0 {
 			continue
 		}
@@ -1431,7 +1434,7 @@ func apps_load_published() {
 				continue
 			}
 
-			av, err := app_read(id, fmt.Sprintf("%s/apps/%s/%s", data_dir, id, version))
+			av, err := app_read(id, filepath.Join(app_dir, version))
 			if err != nil {
 				info("App load error: %v", err)
 				continue
@@ -1908,8 +1911,8 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Unzip to temp directory
-	file_mkdir(data_dir + "/tmp")
-	tmp := fmt.Sprintf("%s/tmp/app_info_%s", data_dir, random_alphanumeric(8))
+	file_mkdir(filepath.Join(data_dir, "tmp"))
+	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_info_%s", random_alphanumeric(8)))
 	err := unzip(api_file_path(user, a, file), tmp)
 	if err != nil {
 		file_delete_all(tmp)
@@ -1918,12 +1921,12 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	defer file_delete_all(tmp)
 
 	// Read app.json
-	if !file_exists(tmp + "/app.json") {
+	if !file_exists(filepath.Join(tmp, "app.json")) {
 		return sl_error(fn, "no app.json in archive")
 	}
 
 	var av AppVersion
-	data, err := hujson.Standardize(file_read(tmp + "/app.json"))
+	data, err := hujson.Standardize(file_read(filepath.Join(tmp, "app.json")))
 	if err != nil {
 		return sl_error(fn, "bad app.json: %v", err)
 	}

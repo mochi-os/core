@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -1059,7 +1060,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 	}
 
 	// Get file path - always use local storage, fetching from remote if needed
-	path := data_dir + "/" + attachment_path(user.ID, app.id, att.ID, att.Name)
+	path := filepath.Join(data_dir, attachment_path(user.ID, app.id, att.ID, att.Name))
 	if !file_exists(path) {
 		// Prefer route entity (e.g., feed ID from URL) over stored entity (may be post ID)
 		fetch_entity := entity
@@ -1109,7 +1110,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 // Serve an attachment from a remote entity (for bookmarked wikis, etc.)
 func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, thumbnail bool) bool {
 	// Cache path for remote attachments
-	path := cache_dir + "/attachments/" + app.id + "/" + entity + "/" + id
+	path := filepath.Join(cache_dir, "attachments", app.id, entity, id)
 
 	// Check if already cached
 	if !file_exists(path) {

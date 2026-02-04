@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*"
+             Name="Mochi Server"
+             Language="1033"
+             Version="$(var.Version)"
+             Manufacturer="Mochi"
+             UpgradeCode="8D5E5A7B-9F3C-4D2E-A1B0-7C8E9F0A1B2C">
+
+        <Package InstallerVersion="200"
+                 Compressed="yes"
+                 InstallScope="perMachine"
+                 Description="Mochi Server $(var.Version)"
+                 Comments="Decentralized social platform server" />
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of Mochi Server is already installed." />
+        <MediaTemplate EmbedCab="yes" />
+
+        <Feature Id="ProductFeature" Title="Mochi Server" Level="1">
+            <ComponentGroupRef Id="ProductComponents" />
+            <ComponentGroupRef Id="DataDirectories" />
+        </Feature>
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <!-- Program Files -->
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="Mochi">
+                    <Directory Id="BinFolder" Name="bin" />
+                </Directory>
+            </Directory>
+
+            <!-- LocalAppData for config and data -->
+            <Directory Id="LocalAppDataFolder">
+                <Directory Id="MochiDataFolder" Name="mochi">
+                    <Directory Id="CacheFolder" Name="cache" />
+                    <Directory Id="DataFolder" Name="data" />
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <ComponentGroup Id="ProductComponents" Directory="BinFolder">
+            <Component Id="MainExecutable" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890" Win64="yes">
+                <File Id="MochiServerExe"
+                      Name="mochi-server.exe"
+                      Source="$(var.SourceDir)\mochi-server.exe"
+                      KeyPath="yes" />
+            </Component>
+            <Component Id="ConfigFile" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
+                <File Id="MochiConf"
+                      Name="mochi.conf.example"
+                      Source="$(var.SourceDir)\mochi.conf"
+                      KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+        <ComponentGroup Id="DataDirectories">
+            <Component Id="CacheFolderComp" Directory="CacheFolder" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">
+                <CreateFolder />
+                <RemoveFolder Id="RemoveCacheFolder" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\Mochi" Name="CacheFolder" Type="string" Value="[CacheFolder]" KeyPath="yes" />
+            </Component>
+            <Component Id="DataFolderComp" Directory="DataFolder" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
+                <CreateFolder />
+                <RemoveFolder Id="RemoveDataFolder" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\Mochi" Name="DataFolder" Type="string" Value="[DataFolder]" KeyPath="yes" />
+            </Component>
+            <Component Id="MochiDataFolderComp" Directory="MochiDataFolder" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
+                <CreateFolder />
+                <RemoveFolder Id="RemoveMochiDataFolder" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\Mochi" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+    </Product>
+</Wix>

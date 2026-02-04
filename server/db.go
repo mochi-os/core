@@ -43,14 +43,15 @@ var (
 
 func init() {
 	// Register a SQLite driver that blocks ATTACH/DETACH to prevent sandbox escape
+	// Using literal values for cross-compilation compatibility (CGO not available)
+	// SQLITE_OK=0, SQLITE_DENY=1, SQLITE_ATTACH=24, SQLITE_DETACH=25
 	sql.Register("sqlite3_noattach", &sqlite3.SQLiteDriver{
 		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
 			conn.RegisterAuthorizer(func(action int, arg1, arg2, arg3 string) int {
-				// SQLITE_ATTACH=24, SQLITE_DETACH=25
 				if action == 24 || action == 25 {
-					return sqlite3.SQLITE_DENY
+					return 1 // SQLITE_DENY
 				}
-				return sqlite3.SQLITE_OK
+				return 0 // SQLITE_OK
 			})
 			return nil
 		},
@@ -344,7 +345,7 @@ func db_open(file string) *DB {
 }
 
 func db_open_work(file string) (*DB, bool, bool) {
-	path := data_dir + "/" + file
+	path := filepath.Join(data_dir, file)
 
 	databases_lock.Lock()
 	db, found := databases[path]
@@ -375,7 +376,7 @@ func db_open_work(file string) (*DB, bool, bool) {
 }
 
 func db_start() bool {
-	if file_exists(data_dir + "/db/users.db") {
+	if file_exists(filepath.Join(data_dir, "db", "users.db")) {
 		db_upgrade()
 		go db_manager()
 	} else {

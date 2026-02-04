@@ -32,7 +32,14 @@ func main() {
 	default_config := "/etc/mochi/mochi.conf"
 	default_cache := "/var/cache/mochi"
 	default_data := "/var/lib/mochi"
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "darwin":
+		home := os.Getenv("HOME")
+		app_support := filepath.Join(home, "Library", "Application Support", "Mochi")
+		default_config = filepath.Join(app_support, "mochi.conf")
+		default_cache = filepath.Join(home, "Library", "Caches", "Mochi")
+		default_data = app_support
+	case "windows":
 		local_app_data := os.Getenv("LOCALAPPDATA")
 		if local_app_data == "" {
 			local_app_data = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")

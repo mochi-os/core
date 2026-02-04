@@ -7,6 +7,10 @@ version = 0.3.4
 build_linux = /tmp/mochi-server_$(version)_linux_amd64
 deb = $(build_linux).deb
 
+# macOS build paths
+build_darwin_amd64 = /tmp/mochi-server_$(version)_darwin_amd64
+build_darwin_arm64 = /tmp/mochi-server_$(version)_darwin_arm64
+
 # Windows build paths
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
@@ -14,7 +18,7 @@ msi = $(build_windows).msi
 all: mochi-server
 
 clean:
-	rm -f mochi-server mochi-server.exe
+	rm -f mochi-server mochi-server.exe mochi-server-darwin-amd64 mochi-server-darwin-arm64
 
 mochi-server: $(shell find server -name '*.go')
 	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server ./server
@@ -50,6 +54,16 @@ $(msi): mochi-server.exe
 msi: $(msi)
 
 windows: mochi-server.exe
+
+# macOS executables (cross-compile from Linux)
+# Note: CGO cross-compilation for macOS requires osxcross toolchain
+mochi-server-darwin-amd64: $(shell find server -name '*.go')
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-amd64 ./server
+
+mochi-server-darwin-arm64: $(shell find server -name '*.go')
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-arm64 ./server
+
+macos: mochi-server-darwin-amd64 mochi-server-darwin-arm64
 
 release: $(deb)
 	git tag -a $(version) -m "$(version)"

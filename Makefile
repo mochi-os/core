@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.3.4
+version = 0.3.6
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -10,6 +10,10 @@ build_linux_armhf = /tmp/mochi-server_$(version)_linux_armhf
 deb_amd64 = $(build_linux_amd64).deb
 deb_arm64 = $(build_linux_arm64).deb
 deb_armhf = $(build_linux_armhf).deb
+rpm_x86_64 = /tmp/mochi-server-$(version)-1.x86_64.rpm
+rpm_aarch64 = /tmp/mochi-server-$(version)-1.aarch64.rpm
+rpm_armv7hl = /tmp/mochi-server-$(version)-1.armv7hl.rpm
+rpmbuild_dir = /tmp/mochi-rpmbuild
 
 # macOS build paths
 build_darwin_amd64 = /tmp/mochi-server_$(version)_darwin_amd64
@@ -88,6 +92,54 @@ deb-armhf: $(deb_armhf)
 
 deb: deb-amd64 deb-arm64 deb-armhf
 
+# x86_64 .rpm package
+# Requires: apt install rpm
+$(rpm_x86_64): mochi-server
+	rm -rf $(rpmbuild_dir)
+	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	cp mochi-server $(rpmbuild_dir)/SOURCES/
+	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
+	strip $(rpmbuild_dir)/SOURCES/mochi-server
+	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
+	cp $(rpmbuild_dir)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
+	rm -rf $(rpmbuild_dir)
+	ls -l $(rpm_x86_64)
+
+rpm-x86_64: $(rpm_x86_64)
+
+# aarch64 .rpm package
+$(rpm_aarch64): mochi-server-linux-arm64
+	rm -rf $(rpmbuild_dir)
+	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	cp mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
+	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
+	aarch64-linux-gnu-strip $(rpmbuild_dir)/SOURCES/mochi-server
+	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
+	cp $(rpmbuild_dir)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
+	rm -rf $(rpmbuild_dir)
+	ls -l $(rpm_aarch64)
+
+rpm-aarch64: $(rpm_aarch64)
+
+# armv7hl .rpm package
+$(rpm_armv7hl): mochi-server-linux-arm
+	rm -rf $(rpmbuild_dir)
+	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	cp mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
+	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
+	arm-linux-gnueabihf-strip $(rpmbuild_dir)/SOURCES/mochi-server
+	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
+	cp $(rpmbuild_dir)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
+	rm -rf $(rpmbuild_dir)
+	ls -l $(rpm_armv7hl)
+
+rpm-armv7hl: $(rpm_armv7hl)
+
+rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
+
 # Windows executable (cross-compile from Linux)
 # Requires: apt install gcc-mingw-w64-x86-64 (for CGO/SQLite support)
 mochi-server.exe: $(shell find server -name '*.go')
@@ -116,12 +168,16 @@ mochi-server-darwin-arm64: $(shell find server -name '*.go')
 
 macos: mochi-server-darwin-amd64 mochi-server-darwin-arm64
 
-release: deb
+release: deb rpm
 	git tag -a $(version) -m "$(version)"
-	rm -f ../apt/pool/main/mochi-server_*.deb
-	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../apt/pool/main
-	./build/deb/scripts/apt-repository-update ../apt `cat local/gpg.txt | tr -d '\n'`
-	rsync -av --delete ../apt/ root@packages.mochi-os.org:/srv/apt/
+	rm -f ../packages/apt/pool/main/mochi-server_*.deb
+	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
+	./build/deb/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
+	rsync -av --delete ../packages/apt/ root@packages.mochi-os.org:/srv/apt/
+	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
+	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
+	./build/rpm/scripts/rpm-repository-update ../packages/rpm
+	rsync -av --delete ../packages/rpm/ root@packages.mochi-os.org:/srv/rpm/
 
 format:
 	go fmt server/*.go

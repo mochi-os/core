@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ $# -lt 1 ]; then
+    echo "Syntax: $0 <root directory of repository>"
+    exit 1
+fi
+
+cd $1
+createrepo_c --update .

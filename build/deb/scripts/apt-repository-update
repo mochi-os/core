@@ -20,8 +20,12 @@ if [ $# -lt 2 ]; then
 fi
 
 cd $1
-dpkg-scanpackages --arch amd64 pool > dists/stable/main/binary-amd64/Packages
-cat dists/stable/main/binary-amd64/Packages | gzip -9 > dists/stable/main/binary-amd64/Packages.gz
+
+# Generate Packages files for each architecture
+for arch in amd64 arm64 armhf; do
+    dpkg-scanpackages --arch $arch pool > dists/stable/main/binary-$arch/Packages
+    gzip -9 -k -f dists/stable/main/binary-$arch/Packages
+done
 
 cd dists/stable
 rm -f Release

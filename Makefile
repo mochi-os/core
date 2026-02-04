@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.3.6
+version = 0.3.8
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -96,7 +96,7 @@ deb: deb-amd64 deb-arm64 deb-armhf
 # Requires: apt install rpm
 $(rpm_x86_64): mochi-server
 	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp mochi-server $(rpmbuild_dir)/SOURCES/
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
@@ -111,7 +111,7 @@ rpm-x86_64: $(rpm_x86_64)
 # aarch64 .rpm package
 $(rpm_aarch64): mochi-server-linux-arm64
 	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
@@ -126,7 +126,7 @@ rpm-aarch64: $(rpm_aarch64)
 # armv7hl .rpm package
 $(rpm_armv7hl): mochi-server-linux-arm
 	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
@@ -168,15 +168,15 @@ mochi-server-darwin-arm64: $(shell find server -name '*.go')
 
 macos: mochi-server-darwin-amd64 mochi-server-darwin-arm64
 
-release: deb rpm
+release: clean deb rpm
 	git tag -a $(version) -m "$(version)"
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
-	./build/deb/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
+	./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
 	rsync -av --delete ../packages/apt/ root@packages.mochi-os.org:/srv/apt/
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
-	./build/rpm/scripts/rpm-repository-update ../packages/rpm
+	./build/scripts/rpm-repository-update ../packages/rpm
 	rsync -av --delete ../packages/rpm/ root@packages.mochi-os.org:/srv/rpm/
 
 format:

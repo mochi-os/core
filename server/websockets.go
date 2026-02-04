@@ -61,7 +61,7 @@ func websocket_connection(c *gin.Context) {
 	}
 	websockets[u.ID][key][id] = ws
 	websockets_lock.Unlock()
-	debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
+	// debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
 
 	for {
 		t, j, err := ws.Read(websocket_context)

@@ -691,6 +691,34 @@ func web_login_code(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// Return identity information for the current authenticated user
+func web_identity_get(c *gin.Context) {
+	u := web_auth(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	response := gin.H{
+		"user": gin.H{
+			"email": u.Username,
+			"name":  "", // Will be populated below if identity exists
+		},
+	}
+
+	if u.Identity != nil {
+		response["user"].(gin.H)["name"] = u.Identity.Name
+		response["identity"] = gin.H{
+			"id":          u.Identity.ID,
+			"name":        u.Identity.Name,
+			"privacy":     u.Identity.Privacy,
+			"fingerprint": u.Identity.Fingerprint,
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
 // Create an identity for a new user
 func web_login_identity(c *gin.Context) {
 	u := web_auth(c)
@@ -975,6 +1003,7 @@ func web_start() {
 	r.GET("/_/auth/methods", web_auth_methods)
 
 	// Other system endpoints
+	r.GET("/_/identity", web_identity_get)
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
 	r.GET("/_/ping", web_ping)

@@ -207,8 +207,8 @@ func p2p_start() {
 	// Add bootstrap peers
 	for _, p := range peers_bootstrap {
 		if p.ID != p2p_id {
-			debug("Adding bootstrap peer %q at %v", p.ID, p.addresses)
-			peer_add_known(p.ID, p.addresses)
+			debug("Adding bootstrap peer %q at %v", p.ID, peer_address_strings(p.addresses))
+			peer_add_known(p.ID, peer_address_strings(p.addresses))
 			go peer_connect(p.ID)
 		}
 	}

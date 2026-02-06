@@ -19,8 +19,23 @@ type Peer struct {
 	ID        string
 	Address   string
 	Updated   int64
-	addresses []string
+	addresses []PeerAddress
 	connected bool
+}
+
+// PeerAddress tracks a peer's address with a last-seen timestamp
+type PeerAddress struct {
+	Address string
+	Updated int64
+}
+
+// peer_address_strings extracts address strings from a slice of PeerAddress
+func peer_address_strings(addrs []PeerAddress) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.Address
+	}
+	return out
 }
 
 const (
@@ -31,7 +46,10 @@ const (
 var (
 	peer_default_publisher = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 	peers_bootstrap        = []Peer{
-		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", addresses: []string{"/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"}},
+		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", addresses: []PeerAddress{
+			{Address: "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
+			{Address: "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
+		}},
 	}
 	peers             map[string]Peer = map[string]Peer{}
 	peer_publish_chan                 = make(chan bool)
@@ -93,7 +111,12 @@ func peer_add_known(id string, addresses []string) {
 	if _, found := peers[id]; found {
 		return
 	}
-	peers[id] = Peer{ID: id, addresses: addresses, connected: false}
+	t := now()
+	pas := make([]PeerAddress, len(addresses))
+	for i, a := range addresses {
+		pas[i] = PeerAddress{Address: a, Updated: t}
+	}
+	peers[id] = Peer{ID: id, addresses: pas, connected: false}
 }
 
 // Get details of a peer, either from memory, or from database
@@ -121,7 +144,7 @@ func peer_by_id(id string) *Peer {
 	}
 	for _, a := range ps {
 		debug("Peer %q adding address %q from database", id, a.Address)
-		p.addresses = append(p.addresses, a.Address)
+		p.addresses = append(p.addresses, PeerAddress{Address: a.Address, Updated: a.Updated})
 	}
 
 	peers_lock.Lock()
@@ -150,13 +173,49 @@ func peer_connect(id string) bool {
 	if p.connected {
 		return true
 	}
-	p.connected = p2p_connect(id, p.addresses)
+	p.connected = p2p_connect(id, peer_address_strings(p.addresses))
+
+	// Refresh the timestamp of the address we actually connected on
+	if p.connected {
+		peer_refresh_connected_address(id)
+	}
 
 	peers_lock.Lock()
 	peers[id] = p
 	peers_lock.Unlock()
 
 	return p.connected
+}
+
+// Refresh the timestamp of the address we actually connected on
+func peer_refresh_connected_address(id string) {
+	pid, err := p2p_peer.Decode(id)
+	if err != nil {
+		return
+	}
+
+	conns := p2p_me.Network().ConnsToPeer(pid)
+	if len(conns) == 0 {
+		return
+	}
+
+	t := now()
+	addr := conns[0].RemoteMultiaddr().String() + "/p2p/" + id
+
+	peers_lock.Lock()
+	if p, found := peers[id]; found {
+		for i, a := range p.addresses {
+			if a.Address == addr {
+				p.addresses[i].Updated = t
+				peers[id] = p
+				break
+			}
+		}
+	}
+	peers_lock.Unlock()
+
+	db := db_open("db/peers.db")
+	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, addr, t)
 }
 
 // Peer has become disconnected
@@ -195,9 +254,9 @@ func peer_discovered_address(id string, address string) {
 	go queue_check_peer(id)
 }
 
-// Do the work for the above two function
+// Do the work for the above two functions
 func peer_discovered_work(id string, address string) {
-	now := now()
+	t := now()
 	save := false
 
 	peers_lock.Lock()
@@ -205,22 +264,35 @@ func peer_discovered_work(id string, address string) {
 
 	if found {
 		exists := false
-		for _, a := range p.addresses {
-			if a == address {
+		for i, a := range p.addresses {
+			if a.Address == address {
 				exists = true
+				p.addresses[i].Updated = t
 				break
 			}
 		}
-		if !exists && len(p.addresses) < peer_maximum_addresses {
-			p.addresses = append(p.addresses, address)
+		if !exists {
+			pa := PeerAddress{Address: address, Updated: t}
+			if len(p.addresses) < peer_maximum_addresses {
+				p.addresses = append(p.addresses, pa)
+			} else {
+				// Replace the oldest address
+				oldest := 0
+				for i, a := range p.addresses {
+					if a.Updated < p.addresses[oldest].Updated {
+						oldest = i
+					}
+				}
+				p.addresses[oldest] = pa
+			}
 		}
 
-		if p.Updated < now-int64(3600) {
+		if p.Updated < t-int64(3600) {
 			save = true
-			p.Updated = now
+			p.Updated = t
 		}
 	} else {
-		p = Peer{ID: id, addresses: []string{address}, Updated: now}
+		p = Peer{ID: id, addresses: []PeerAddress{{Address: address, Updated: t}}, Updated: t}
 		save = true
 	}
 
@@ -229,15 +301,50 @@ func peer_discovered_work(id string, address string) {
 
 	if save {
 		db := db_open("db/peers.db")
-		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, now)
+		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, t)
 	}
 }
 
 // Clean up stale peers
 func peers_manager() {
 	for range time.Tick(24 * time.Hour) {
+		expiry := now() - 14*86400
+
+		// Prune stale addresses from the database
 		db := db_open("db/peers.db")
-		db.exec("delete from peers where updated<?", now()-30*86400)
+		db.exec("delete from peers where updated<?", expiry)
+
+		// Prune stale addresses from memory
+		peers_lock.Lock()
+		for id, p := range peers {
+			// Collect bootstrap addresses for this peer so we never prune them
+			bootstrap := map[string]bool{}
+			for _, bp := range peers_bootstrap {
+				if bp.ID == id {
+					for _, a := range bp.addresses {
+						bootstrap[a.Address] = true
+					}
+					break
+				}
+			}
+
+			// Keep addresses that are recent or are bootstrap hardcoded
+			kept := []PeerAddress{}
+			for _, a := range p.addresses {
+				if a.Updated >= expiry || bootstrap[a.Address] {
+					kept = append(kept, a)
+				}
+			}
+			p.addresses = kept
+
+			// Remove peer from memory if no addresses remain and not connected
+			if len(p.addresses) == 0 && !p.connected {
+				delete(peers, id)
+			} else {
+				peers[id] = p
+			}
+		}
+		peers_lock.Unlock()
 	}
 }
 

@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.3.8
+version = 0.3.9
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64

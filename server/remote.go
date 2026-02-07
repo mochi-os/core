@@ -39,8 +39,17 @@ func api_remote_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.String(peer), nil
 }
 
-// Connect to a peer by server URL, returning the peer ID
+// Connect to a peer by server URL or peer ID, returning the peer ID
 func peer_connect_url(url string) (string, error) {
+	// Handle p2p/ prefixed peer IDs (e.g. from directory location field)
+	if strings.HasPrefix(url, "p2p/") {
+		peer := strings.TrimPrefix(url, "p2p/")
+		if peer_connect(peer) {
+			return peer, nil
+		}
+		return "", fmt.Errorf("failed to connect to peer %s", peer)
+	}
+
 	// Normalize URL: add https:// if no scheme present
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		url = "https://" + url

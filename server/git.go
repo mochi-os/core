@@ -1487,8 +1487,8 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.git.merge.perform(entity_id, source, target, message, author_name, author_email) -> dict: Perform a merge
 func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 6 {
-		return sl_error(fn, "syntax: <entity_id: string>, <source: string>, <target: string>, <message: string>, <author_name: string>, <author_email: string>")
+	if len(args) < 6 || len(args) > 7 {
+		return sl_error(fn, "syntax: <entity_id: string>, <source: string>, <target: string>, <message: string>, <author_name: string>, <author_email: string>, [method: string]")
 	}
 
 	entity_id, ok := sl.AsString(args[0])
@@ -1517,6 +1517,17 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	author_email, _ := sl.AsString(args[5])
+
+	method := "merge"
+	if len(args) == 7 {
+		m, ok := sl.AsString(args[6])
+		if ok && m != "" {
+			method = m
+		}
+	}
+	if method != "merge" && method != "squash" && method != "rebase" {
+		return sl_error(fn, "invalid method: must be 'merge', 'squash', or 'rebase'")
+	}
 
 	owner := t.Local("owner").(*User)
 	if owner == nil {
@@ -1555,8 +1566,13 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	base_commit := bases[0]
 
-	// Fast-forward: if target is the merge base, just update the ref
+	// Fast-forward: if target is the merge base, just update the ref (all methods)
 	if base_commit.Hash == *target_hash {
+		if method == "squash" {
+			// Squash: create a single commit with source tree on top of target
+			return git_merge_squash(repo, source_commit, target_hash, target, message, author_name, author_email)
+		}
+		// Merge and rebase: fast-forward
 		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), *source_hash)
 		err = repo.Storer.SetReference(target_ref)
 		if err != nil {
@@ -1680,42 +1696,229 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "failed to build merged tree: %v", err)
 	}
 
-	// Create merge commit with two parents (target first, source second)
 	now := time.Now()
 	author := object.Signature{
 		Name:  author_name,
 		Email: author_email,
 		When:  now,
 	}
-	merge_commit := &object.Commit{
+
+	switch method {
+	case "squash":
+		// Create a single commit with merged tree, only target as parent
+		squash_commit := &object.Commit{
+			Author:       author,
+			Committer:    author,
+			Message:      message,
+			TreeHash:     merged_tree_hash,
+			ParentHashes: []plumbing.Hash{*target_hash},
+		}
+		obj := repo.Storer.NewEncodedObject()
+		obj.SetType(plumbing.CommitObject)
+		err = squash_commit.Encode(obj)
+		if err != nil {
+			return sl_error(fn, "failed to encode squash commit: %v", err)
+		}
+		commit_hash, err := repo.Storer.SetEncodedObject(obj)
+		if err != nil {
+			return sl_error(fn, "failed to store squash commit: %v", err)
+		}
+		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
+		err = repo.Storer.SetReference(target_ref)
+		if err != nil {
+			return sl_error(fn, "failed to update target branch: %v", err)
+		}
+		return sl_encode(map[string]any{
+			"success":      true,
+			"commit":       commit_hash.String(),
+			"fast_forward": false,
+		}), nil
+
+	case "rebase":
+		// Replay source commits from merge base to HEAD on top of target
+		return git_merge_rebase(repo, source_commit, &base_commit.Hash, target_hash, target, author_name, author_email)
+
+	default:
+		// Standard merge commit with two parents
+		merge_commit := &object.Commit{
+			Author:       author,
+			Committer:    author,
+			Message:      message,
+			TreeHash:     merged_tree_hash,
+			ParentHashes: []plumbing.Hash{*target_hash, *source_hash},
+		}
+		obj := repo.Storer.NewEncodedObject()
+		obj.SetType(plumbing.CommitObject)
+		err = merge_commit.Encode(obj)
+		if err != nil {
+			return sl_error(fn, "failed to encode merge commit: %v", err)
+		}
+		commit_hash, err := repo.Storer.SetEncodedObject(obj)
+		if err != nil {
+			return sl_error(fn, "failed to store merge commit: %v", err)
+		}
+		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
+		err = repo.Storer.SetReference(target_ref)
+		if err != nil {
+			return sl_error(fn, "failed to update target branch: %v", err)
+		}
+		return sl_encode(map[string]any{
+			"success":      true,
+			"commit":       commit_hash.String(),
+			"fast_forward": false,
+		}), nil
+	}
+}
+
+// git_merge_squash creates a single squash commit with source tree on top of target (for fast-forward case)
+func git_merge_squash(repo *git.Repository, source_commit *object.Commit, target_hash *plumbing.Hash, target, message, author_name, author_email string) (sl.Value, error) {
+	now := time.Now()
+	author := object.Signature{Name: author_name, Email: author_email, When: now}
+	squash := &object.Commit{
 		Author:       author,
 		Committer:    author,
 		Message:      message,
-		TreeHash:     merged_tree_hash,
-		ParentHashes: []plumbing.Hash{*target_hash, *source_hash},
+		TreeHash:     source_commit.TreeHash,
+		ParentHashes: []plumbing.Hash{*target_hash},
 	}
-
 	obj := repo.Storer.NewEncodedObject()
 	obj.SetType(plumbing.CommitObject)
-	err = merge_commit.Encode(obj)
-	if err != nil {
-		return sl_error(fn, "failed to encode merge commit: %v", err)
+	if err := squash.Encode(obj); err != nil {
+		return sl_error(nil, "failed to encode squash commit: %v", err)
 	}
 	commit_hash, err := repo.Storer.SetEncodedObject(obj)
 	if err != nil {
-		return sl_error(fn, "failed to store merge commit: %v", err)
+		return sl_error(nil, "failed to store squash commit: %v", err)
+	}
+	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
+	if err := repo.Storer.SetReference(target_ref); err != nil {
+		return sl_error(nil, "failed to update target branch: %v", err)
+	}
+	return sl_encode(map[string]any{
+		"success":      true,
+		"commit":       commit_hash.String(),
+		"fast_forward": false,
+	}), nil
+}
+
+// git_merge_rebase replays source commits from merge base to HEAD on top of target
+func git_merge_rebase(repo *git.Repository, source_commit *object.Commit, base_hash, target_hash *plumbing.Hash, target, author_name, author_email string) (sl.Value, error) {
+	// Collect commits from source back to merge base
+	var commits []*object.Commit
+	current := source_commit
+	for current.Hash != *base_hash {
+		commits = append(commits, current)
+		if len(current.ParentHashes) == 0 {
+			break
+		}
+		parent, err := repo.CommitObject(current.ParentHashes[0])
+		if err != nil {
+			return sl_error(nil, "failed to walk commit history: %v", err)
+		}
+		current = parent
 	}
 
-	// Update target branch ref to point to the merge commit
-	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
-	err = repo.Storer.SetReference(target_ref)
-	if err != nil {
-		return sl_error(fn, "failed to update target branch: %v", err)
+	// Reverse to replay in chronological order
+	for i, j := 0, len(commits)-1; i < j; i, j = i+1, j-1 {
+		commits[i], commits[j] = commits[j], commits[i]
+	}
+
+	// Replay each commit on top of target
+	current_parent := *target_hash
+	now := time.Now()
+	for _, c := range commits {
+		// Get this commit's tree and its parent's tree
+		commit_tree, err := c.Tree()
+		if err != nil {
+			return sl_error(nil, "failed to get commit tree: %v", err)
+		}
+
+		var parent_tree *object.Tree
+		if len(c.ParentHashes) > 0 {
+			parent_commit, err := repo.CommitObject(c.ParentHashes[0])
+			if err != nil {
+				return sl_error(nil, "failed to get parent commit: %v", err)
+			}
+			parent_tree, err = parent_commit.Tree()
+			if err != nil {
+				return sl_error(nil, "failed to get parent tree: %v", err)
+			}
+		}
+
+		// Get the current base tree we're replaying onto
+		base_commit, err := repo.CommitObject(current_parent)
+		if err != nil {
+			return sl_error(nil, "failed to get base commit for replay: %v", err)
+		}
+		base_tree, err := base_commit.Tree()
+		if err != nil {
+			return sl_error(nil, "failed to get base tree for replay: %v", err)
+		}
+
+		// Diff the commit against its parent to get its changes
+		var changes object.Changes
+		if parent_tree != nil {
+			changes, err = parent_tree.Diff(commit_tree)
+		} else {
+			changes, err = (&object.Tree{}).Diff(commit_tree)
+		}
+		if err != nil {
+			return sl_error(nil, "failed to diff commit: %v", err)
+		}
+
+		// Apply changes to base tree
+		entries := make(map[string]object.TreeEntry)
+		git_tree_flatten(base_tree, "", entries)
+
+		for _, change := range changes {
+			from, to, _ := change.Files()
+			if from != nil && to == nil {
+				delete(entries, from.Name)
+			} else if from == nil && to != nil {
+				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.Mode, Hash: to.Hash}
+			} else if from != nil && to != nil {
+				if from.Name != to.Name {
+					delete(entries, from.Name)
+				}
+				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.Mode, Hash: to.Hash}
+			}
+		}
+
+		new_tree_hash, err := git_build_tree(repo, entries)
+		if err != nil {
+			return sl_error(nil, "failed to build rebased tree: %v", err)
+		}
+
+		// Create new commit preserving original author and message
+		committer := object.Signature{Name: author_name, Email: author_email, When: now}
+		rebased := &object.Commit{
+			Author:       c.Author,
+			Committer:    committer,
+			Message:      c.Message,
+			TreeHash:     new_tree_hash,
+			ParentHashes: []plumbing.Hash{current_parent},
+		}
+		obj := repo.Storer.NewEncodedObject()
+		obj.SetType(plumbing.CommitObject)
+		if err := rebased.Encode(obj); err != nil {
+			return sl_error(nil, "failed to encode rebased commit: %v", err)
+		}
+		hash, err := repo.Storer.SetEncodedObject(obj)
+		if err != nil {
+			return sl_error(nil, "failed to store rebased commit: %v", err)
+		}
+		current_parent = hash
+	}
+
+	// Update target branch ref
+	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), current_parent)
+	if err := repo.Storer.SetReference(target_ref); err != nil {
+		return sl_error(nil, "failed to update target branch: %v", err)
 	}
 
 	return sl_encode(map[string]any{
 		"success":      true,
-		"commit":       commit_hash.String(),
+		"commit":       current_parent.String(),
 		"fast_forward": false,
 	}), nil
 }

@@ -61,8 +61,9 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 	}),
 	"diff": &gitDiffModule{},
 	"merge": sls.FromStringDict(sl.String("mochi.git.merge"), sl.StringDict{
-		"base":  sl.NewBuiltin("mochi.git.merge.base", api_git_merge_base),
-		"check": sl.NewBuiltin("mochi.git.merge.check", api_git_merge_check),
+		"base":    sl.NewBuiltin("mochi.git.merge.base", api_git_merge_base),
+		"check":   sl.NewBuiltin("mochi.git.merge.check", api_git_merge_check),
+		"perform": sl.NewBuiltin("mochi.git.merge.perform", api_git_merge_perform),
 	}),
 })
 
@@ -75,7 +76,17 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	if _, err := fs.Stat("config"); err != nil {
 		return nil, transport.ErrRepositoryNotFound
 	}
-	return filesystem.NewStorage(fs, cache.NewObjectLRUDefault()), nil
+	// Wrap in git_storage to hide PackfileWriter interface. Without this,
+	// packfile.UpdateObjectStorage takes a raw-copy path that can't resolve
+	// thin pack deltas (base objects not included in the pack). The wrapper
+	// forces the parser path which looks up base objects from the storer.
+	return &git_storage{filesystem.NewStorage(fs, cache.NewObjectLRUDefault())}, nil
+}
+
+// git_storage wraps storer.Storer to hide PackfileWriter, forcing the packfile
+// parser to resolve thin pack delta references from the existing object store
+type git_storage struct {
+	storer.Storer
 }
 
 // git_transport is the go-git server transport for handling git protocol
@@ -1392,11 +1403,32 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	bases, err := source_commit.MergeBase(target_commit)
 	if err != nil || len(bases) == 0 {
 		return sl_encode(map[string]any{
-			"mergeable": false,
+			"can_merge": false,
 			"conflicts": []string{},
 			"error":     "no common ancestor",
 		}), nil
 	}
+
+	// Count ahead/behind
+	ahead := 0
+	behind := 0
+	base_hash := bases[0].Hash
+	source_iter := object.NewCommitIterCTime(source_commit, nil, nil)
+	source_iter.ForEach(func(c *object.Commit) error {
+		if c.Hash == base_hash {
+			return io.EOF
+		}
+		ahead++
+		return nil
+	})
+	target_iter := object.NewCommitIterCTime(target_commit, nil, nil)
+	target_iter.ForEach(func(c *object.Commit) error {
+		if c.Hash == base_hash {
+			return io.EOF
+		}
+		behind++
+		return nil
+	})
 
 	// Check for conflicts by comparing trees
 	source_tree, err := source_commit.Tree()
@@ -1445,10 +1477,365 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	return sl_encode(map[string]any{
-		"mergeable": len(conflicts) == 0,
+		"can_merge": len(conflicts) == 0,
 		"conflicts": conflicts,
 		"base":      bases[0].Hash.String(),
+		"ahead":     ahead,
+		"behind":    behind,
 	}), nil
+}
+
+// mochi.git.merge.perform(entity_id, source, target, message, author_name, author_email) -> dict: Perform a merge
+func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 6 {
+		return sl_error(fn, "syntax: <entity_id: string>, <source: string>, <target: string>, <message: string>, <author_name: string>, <author_email: string>")
+	}
+
+	entity_id, ok := sl.AsString(args[0])
+	if !ok || entity_id == "" {
+		return sl_error(fn, "invalid entity_id")
+	}
+
+	source, ok := sl.AsString(args[1])
+	if !ok || source == "" {
+		return sl_error(fn, "invalid source")
+	}
+
+	target, ok := sl.AsString(args[2])
+	if !ok || target == "" {
+		return sl_error(fn, "invalid target")
+	}
+
+	message, ok := sl.AsString(args[3])
+	if !ok || message == "" {
+		message = "Merge branch"
+	}
+
+	author_name, ok := sl.AsString(args[4])
+	if !ok || author_name == "" {
+		author_name = "Mochi"
+	}
+
+	author_email, _ := sl.AsString(args[5])
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	repo, err := git_open(owner, entity_id)
+	if err != nil {
+		return sl_error(fn, "failed to open repository: %v", err)
+	}
+
+	source_hash, err := git_resolve_ref(repo, source)
+	if err != nil {
+		return sl_error(fn, "failed to resolve source: %v", err)
+	}
+
+	target_hash, err := git_resolve_ref(repo, target)
+	if err != nil {
+		return sl_error(fn, "failed to resolve target: %v", err)
+	}
+
+	source_commit, err := repo.CommitObject(*source_hash)
+	if err != nil {
+		return sl_error(fn, "failed to get source commit: %v", err)
+	}
+
+	target_commit, err := repo.CommitObject(*target_hash)
+	if err != nil {
+		return sl_error(fn, "failed to get target commit: %v", err)
+	}
+
+	// Find merge base
+	bases, err := source_commit.MergeBase(target_commit)
+	if err != nil || len(bases) == 0 {
+		return sl_error(fn, "no common ancestor between source and target")
+	}
+	base_commit := bases[0]
+
+	// Fast-forward: if target is the merge base, just update the ref
+	if base_commit.Hash == *target_hash {
+		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), *source_hash)
+		err = repo.Storer.SetReference(target_ref)
+		if err != nil {
+			return sl_error(fn, "failed to fast-forward: %v", err)
+		}
+		return sl_encode(map[string]any{
+			"success":      true,
+			"commit":       source_hash.String(),
+			"fast_forward": true,
+		}), nil
+	}
+
+	// Already up to date: source is an ancestor of target
+	if base_commit.Hash == *source_hash {
+		return sl_encode(map[string]any{
+			"success":      true,
+			"commit":       target_hash.String(),
+			"fast_forward": false,
+			"up_to_date":   true,
+		}), nil
+	}
+
+	// Three-way merge required
+	base_tree, err := base_commit.Tree()
+	if err != nil {
+		return sl_error(fn, "failed to get base tree: %v", err)
+	}
+
+	source_tree, err := source_commit.Tree()
+	if err != nil {
+		return sl_error(fn, "failed to get source tree: %v", err)
+	}
+
+	target_tree, err := target_commit.Tree()
+	if err != nil {
+		return sl_error(fn, "failed to get target tree: %v", err)
+	}
+
+	// Compute diffs from base to each branch
+	source_changes, err := base_tree.Diff(source_tree)
+	if err != nil {
+		return sl_error(fn, "failed to diff base to source: %v", err)
+	}
+
+	target_changes, err := base_tree.Diff(target_tree)
+	if err != nil {
+		return sl_error(fn, "failed to diff base to target: %v", err)
+	}
+
+	// Build map of source-side changes
+	type file_change struct {
+		action string // "add", "modify", "delete"
+		hash   plumbing.Hash
+		mode   filemode.FileMode
+	}
+	source_file_changes := make(map[string]*file_change)
+	for _, change := range source_changes {
+		from, to, _ := change.Files()
+		if from != nil && to == nil {
+			source_file_changes[from.Name] = &file_change{action: "delete"}
+		} else if from == nil && to != nil {
+			source_file_changes[to.Name] = &file_change{action: "add", hash: to.Hash, mode: to.Mode}
+		} else if from != nil && to != nil {
+			if from.Name != to.Name {
+				source_file_changes[from.Name] = &file_change{action: "delete"}
+				source_file_changes[to.Name] = &file_change{action: "add", hash: to.Hash, mode: to.Mode}
+			} else {
+				source_file_changes[to.Name] = &file_change{action: "modify", hash: to.Hash, mode: to.Mode}
+			}
+		}
+	}
+
+	// Build map of target-side changes for conflict detection
+	target_changed_files := make(map[string]bool)
+	for _, change := range target_changes {
+		from, to, _ := change.Files()
+		if from != nil {
+			target_changed_files[from.Name] = true
+		}
+		if to != nil {
+			target_changed_files[to.Name] = true
+		}
+	}
+
+	// Check for conflicts (same file changed on both sides)
+	var conflicts []string
+	for name := range source_file_changes {
+		if target_changed_files[name] {
+			conflicts = append(conflicts, name)
+		}
+	}
+	if len(conflicts) > 0 {
+		sort.Strings(conflicts)
+		return sl_encode(map[string]any{
+			"success":   false,
+			"conflicts": conflicts,
+		}), nil
+	}
+
+	// Build merged tree: start from target tree, apply source changes
+	merged_entries := make(map[string]object.TreeEntry)
+	git_tree_flatten(target_tree, "", merged_entries)
+
+	// Apply source changes
+	for name, change := range source_file_changes {
+		switch change.action {
+		case "delete":
+			delete(merged_entries, name)
+		case "add", "modify":
+			merged_entries[name] = object.TreeEntry{
+				Name: name,
+				Mode: change.mode,
+				Hash: change.hash,
+			}
+		}
+	}
+
+	// Build the merged tree object hierarchy and store it
+	merged_tree_hash, err := git_build_tree(repo, merged_entries)
+	if err != nil {
+		return sl_error(fn, "failed to build merged tree: %v", err)
+	}
+
+	// Create merge commit with two parents (target first, source second)
+	now := time.Now()
+	author := object.Signature{
+		Name:  author_name,
+		Email: author_email,
+		When:  now,
+	}
+	merge_commit := &object.Commit{
+		Author:       author,
+		Committer:    author,
+		Message:      message,
+		TreeHash:     merged_tree_hash,
+		ParentHashes: []plumbing.Hash{*target_hash, *source_hash},
+	}
+
+	obj := repo.Storer.NewEncodedObject()
+	obj.SetType(plumbing.CommitObject)
+	err = merge_commit.Encode(obj)
+	if err != nil {
+		return sl_error(fn, "failed to encode merge commit: %v", err)
+	}
+	commit_hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		return sl_error(fn, "failed to store merge commit: %v", err)
+	}
+
+	// Update target branch ref to point to the merge commit
+	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
+	err = repo.Storer.SetReference(target_ref)
+	if err != nil {
+		return sl_error(fn, "failed to update target branch: %v", err)
+	}
+
+	return sl_encode(map[string]any{
+		"success":      true,
+		"commit":       commit_hash.String(),
+		"fast_forward": false,
+	}), nil
+}
+
+// git_tree_flatten collects all entries from a tree into a flat map keyed by path
+func git_tree_flatten(tree *object.Tree, prefix string, entries map[string]object.TreeEntry) {
+	for _, entry := range tree.Entries {
+		path := entry.Name
+		if prefix != "" {
+			path = prefix + "/" + entry.Name
+		}
+		if entry.Mode == filemode.Dir {
+			// Recurse into subtree
+			subtree, err := tree.Tree(entry.Name)
+			if err == nil {
+				git_tree_flatten(subtree, path, entries)
+			}
+		} else {
+			entries[path] = object.TreeEntry{
+				Name: path,
+				Mode: entry.Mode,
+				Hash: entry.Hash,
+			}
+		}
+	}
+}
+
+// git_dir_node represents a directory in a tree being built
+type git_dir_node struct {
+	entries  []object.TreeEntry
+	children map[string]*git_dir_node
+}
+
+// git_build_tree builds a tree object hierarchy from a flat map of path→entry and stores it in the repo
+func git_build_tree(repo *git.Repository, entries map[string]object.TreeEntry) (plumbing.Hash, error) {
+	root := &git_dir_node{children: make(map[string]*git_dir_node)}
+
+	// Sort paths for deterministic output
+	paths := make([]string, 0, len(entries))
+	for path := range entries {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		entry := entries[path]
+		parts := strings.Split(path, "/")
+		node := root
+		for i := 0; i < len(parts)-1; i++ {
+			child, exists := node.children[parts[i]]
+			if !exists {
+				child = &git_dir_node{children: make(map[string]*git_dir_node)}
+				node.children[parts[i]] = child
+			}
+			node = child
+		}
+		node.entries = append(node.entries, object.TreeEntry{
+			Name: parts[len(parts)-1],
+			Mode: entry.Mode,
+			Hash: entry.Hash,
+		})
+	}
+
+	// Recursively build tree objects from leaves up
+	return git_store_tree(repo, root)
+}
+
+// git_store_tree recursively stores tree objects and returns the hash
+func git_store_tree(repo *git.Repository, node *git_dir_node) (plumbing.Hash, error) {
+	var all_entries []object.TreeEntry
+
+	// Process child directories first
+	child_names := make([]string, 0, len(node.children))
+	for name := range node.children {
+		child_names = append(child_names, name)
+	}
+	sort.Strings(child_names)
+
+	for _, name := range child_names {
+		child := node.children[name]
+		child_hash, err := git_store_tree(repo, child)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		all_entries = append(all_entries, object.TreeEntry{
+			Name: name,
+			Mode: filemode.Dir,
+			Hash: child_hash,
+		})
+	}
+
+	// Add file entries
+	all_entries = append(all_entries, node.entries...)
+
+	// Sort entries (git requires sorted tree entries)
+	sort.Slice(all_entries, func(i, j int) bool {
+		// Git sorts directories with trailing slash
+		ni := all_entries[i].Name
+		nj := all_entries[j].Name
+		if all_entries[i].Mode == filemode.Dir {
+			ni += "/"
+		}
+		if all_entries[j].Mode == filemode.Dir {
+			nj += "/"
+		}
+		return ni < nj
+	})
+
+	tree := &object.Tree{Entries: all_entries}
+	obj := repo.Storer.NewEncodedObject()
+	obj.SetType(plumbing.TreeObject)
+	err := tree.Encode(obj)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to encode tree: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to store tree: %v", err)
+	}
+	return hash, nil
 }
 
 // Unused but kept for potential future use
@@ -1673,6 +2060,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bo
 
 	session, err := git_transport.NewReceivePackSession(ep, nil)
 	if err != nil {
+		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
 		return true
 	}
@@ -1681,6 +2069,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bo
 	// Decode the reference update request from the client
 	req := packp.NewReferenceUpdateRequest()
 	if err := req.Decode(reader); err != nil {
+		info("git_receive_pack: failed to decode request for %s: %v", repo_path, err)
 		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
 		return true
 	}
@@ -1688,17 +2077,24 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bo
 	// Process the receive-pack request
 	status, err := session.ReceivePack(ctx, req)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Receive pack failed: %v", err)
+		info("git_receive_pack: %s: %v", repo_path, err)
+	}
+
+	// Always send the report status back to the client if available,
+	// even on error — the git protocol requires it
+	if status != nil {
+		c.Status(http.StatusOK)
+		c.Header("Content-Type", "application/x-git-receive-pack-result")
+		c.Header("Cache-Control", "no-cache")
+		if err := status.Encode(c.Writer); err != nil {
+			info("git_receive_pack: failed to encode status: %v", err)
+		}
 		return true
 	}
 
-	c.Status(http.StatusOK)
-	c.Header("Content-Type", "application/x-git-receive-pack-result")
-	c.Header("Cache-Control", "no-cache")
-
-	// Encode the status report
-	if err := status.Encode(c.Writer); err != nil {
-		info("git_receive_pack: failed to encode status: %v", err)
+	// No status report at all — something went very wrong
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Receive pack failed: %v", err)
 	}
 
 	return true

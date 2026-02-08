@@ -26,6 +26,56 @@ type Action struct {
 	inputs map[string]string
 }
 
+// ActionInput provides input methods (callable as a.input(), with a.input.has())
+type ActionInput struct {
+	action *Action
+}
+
+func (ai *ActionInput) String() string        { return "action.input" }
+func (ai *ActionInput) Type() string          { return "action.input" }
+func (ai *ActionInput) Freeze()               {}
+func (ai *ActionInput) Truth() sl.Bool        { return true }
+func (ai *ActionInput) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: action.input") }
+func (ai *ActionInput) Name() string          { return "input" }
+
+// Callable: a.input(field, default?) -> string
+func (ai *ActionInput) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var field string
+	var def string
+	err := sl.UnpackArgs("input", args, kwargs, "field", &field, "default?", &def)
+	if err != nil {
+		return nil, err
+	}
+
+	value := ai.action.input(field)
+	if value == "" {
+		value = def
+	}
+	return sl.String(value), nil
+}
+
+func (ai *ActionInput) AttrNames() []string { return []string{"exists"} }
+
+func (ai *ActionInput) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "exists":
+		return sl.NewBuiltin("input.exists", ai.sl_exists), nil
+	}
+	return nil, nil
+}
+
+// a.input.exists(field) -> bool: Check if a form/query input field was explicitly provided
+func (ai *ActionInput) sl_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var field string
+	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	_, found := ai.action.inputs[field]
+	return sl.Bool(found), nil
+}
+
 // ActionCookie provides cookie manipulation methods for actions
 type ActionCookie struct {
 	action *Action
@@ -138,7 +188,7 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 	case "header":
 		return sl.NewBuiltin("header", a.sl_header), nil
 	case "input":
-		return sl.NewBuiltin("input", a.sl_input), nil
+		return &ActionInput{action: a}, nil
 	case "inputs":
 		return sl.NewBuiltin("inputs", a.sl_inputs), nil
 	case "json":
@@ -288,22 +338,6 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	a.error(code, "%s", message)
 
 	return sl.None, nil
-}
-
-// a.input(field, default?) -> string: Get form/query input parameter
-func (a *Action) sl_input(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var field string
-	var def string
-	err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "default?", &def)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	value := a.input(field)
-	if value == "" {
-		value = def
-	}
-	return sl.String(value), nil
 }
 
 // a.inputs(field) -> list: Get all values for a form/query input field

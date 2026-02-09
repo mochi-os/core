@@ -2,6 +2,7 @@
 local
 mochi-server
 mochi-server-*
+server/server
 
 # Dependencies
 node_modules/

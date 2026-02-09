@@ -258,7 +258,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
 	if app != nil && !rate_limit_p2p_send.allow(app.id) {
-		return sl_error(fn, "rate limit exceeded (20 messages per second)")
+		return sl_error(fn, "rate limit exceeded (100 messages per second)")
 	}
 
 	headers := sl_decode_strings(args[0])
@@ -331,7 +331,7 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
 	if app != nil && !rate_limit_p2p_send.allow(app.id) {
-		return sl_error(fn, "rate limit exceeded (20 messages per second)")
+		return sl_error(fn, "rate limit exceeded (100 messages per second)")
 	}
 
 	headers := sl_decode_strings(args[1])

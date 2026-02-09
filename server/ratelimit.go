@@ -66,10 +66,10 @@ var (
 		window:  60,
 	}
 
-	// Direct P2P message rate limiter: 20 per second per app
+	// Direct P2P message rate limiter: 100 per second per app
 	rate_limit_p2p_send = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   20,
+		limit:   100,
 		window:  1,
 	}
 )

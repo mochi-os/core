@@ -151,6 +151,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				owner = user_by_id(uid)
 			}
 		}
+		// Fall back to primary user for public class-level actions
+		if owner == nil && aa.Public {
+			owner = user_by_id(1)
+		}
 	}
 
 	// Require authentication for non-public actions
@@ -271,8 +275,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Require authentication for database-backed apps
-	if av.Database.File != "" && user == nil && owner == nil {
+	// Require authentication for database-backed apps (unless action is public)
+	if av.Database.File != "" && user == nil && owner == nil && !aa.Public {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
 		return true
 	}

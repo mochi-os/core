@@ -84,7 +84,7 @@ func code_send(email string) string {
 
 	// Generate 10 character unambiguous mixed-case code
 	code := random_unambiguous(10)
-	debug("Code %s", code)
+	//bug("Code %s", code)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_login_code(email, code)

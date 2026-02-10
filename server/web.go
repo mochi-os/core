@@ -668,7 +668,41 @@ func web_login_begin(c *gin.Context) {
 }
 
 func web_identity_get(c *gin.Context) {
+	user_by_id_allow_no_identity := func(id int) *User {
+		db := db_open("db/users.db")
+		var user User
+		if !db.scan(&user, "select id, username, role, methods, status from users where id=?", id) {
+			return nil
+		}
+		user.Preferences = user_preferences_load(&user)
+		user.Identity = user.identity()
+		return &user
+	}
+
 	u := web_auth(c)
+
+	// If no cookie auth, try Bearer token authentication
+	if u == nil {
+		auth_header := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth_header, "Bearer ") {
+			bearer := strings.TrimPrefix(auth_header, "Bearer ")
+			if strings.HasPrefix(bearer, "mochi-") {
+				// API token authentication
+				api_token := token_validate(bearer)
+				if api_token != nil {
+					u = user_by_id_allow_no_identity(api_token.User)
+				}
+			} else {
+				// JWT authentication
+				if uid, err := jwt_verify(bearer); err == nil && uid > 0 {
+					if user := user_by_id_allow_no_identity(uid); user != nil {
+						u = user
+					}
+				}
+			}
+		}
+	}
+
 	if u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
@@ -693,7 +727,6 @@ func web_identity_get(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
-
 
 // Handle login: request code via email (POST with JSON)
 func web_login_code(c *gin.Context) {

@@ -110,6 +110,11 @@ func auth_remaining_methods(user *User, completed string) []string {
 
 // auth_complete_login creates a full session and returns token/session to client
 func auth_complete_login(c *gin.Context, user *User) {
+	// Ensure identity is loaded so login responses can include name when available.
+	if user != nil && user.Identity == nil {
+		user.Identity = user.identity()
+	}
+
 	// Create session entry (per-device) which stores a per-session secret
 	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 

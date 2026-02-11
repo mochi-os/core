@@ -33,6 +33,7 @@ type AppAction struct {
 	File      string `json:"file"`
 	Files     string `json:"files"`
 	Feature   string `json:"feature"`
+	Cache     string `json:"cache"`
 	Public    bool   `json:"public"`
 	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 	Access    struct {
@@ -338,6 +339,10 @@ var (
 		}},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
 			{"service", "friends"},
+		}},
+		{"", "Projects", []struct{ Permission, Object string }{
+			{"url", "*"},
+			{"service", "notifications"},
 		}},
 		{"test", "Test", []struct{ Permission, Object string }{
 			{"account/read", ""},
@@ -1252,6 +1257,15 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 		if a.OpenGraph != "" && !valid(a.OpenGraph, "function") {
 			return nil, fmt.Errorf("App bad opengraph function %q", a.OpenGraph)
+		}
+
+		if a.Cache != "" {
+			switch a.Cache {
+			case "immutable", "static", "revalidate", "none":
+				// valid
+			default:
+				return nil, fmt.Errorf("App bad cache policy %q for action %q", a.Cache, action)
+			}
 		}
 
 		if a.Access.Resource != "" {

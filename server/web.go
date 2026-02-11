@@ -252,7 +252,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 
 			//debug("Serving single file for app %q: %q", a.id, file)
-			web_cache_static(c, file)
+			web_cache_static(c, file, aa.Cache)
 			c.File(file)
 			return true
 		}
@@ -267,7 +267,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 			file := av.base + "/" + aa.Files + "/" + aa.filepath
 			//debug("Serving file from directory for app %q: %q", a.id, file)
-			web_cache_static(c, file)
+			web_cache_static(c, file, aa.Cache)
 			c.File(file)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
@@ -410,11 +410,33 @@ func web_auth(c *gin.Context) *User {
 }
 
 // Ask browser to cache static files
-func web_cache_static(c *gin.Context, path string) {
+func web_cache_static(c *gin.Context, path string, cache string) {
 	if !web_cache {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		return
 	}
+	// Use explicit cache policy if set in app.json action
+	if cache != "" {
+		switch cache {
+		case "immutable":
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		case "static":
+			c.Header("Cache-Control", "public, max-age=300")
+		case "revalidate":
+			c.Header("Cache-Control", "no-cache, must-revalidate")
+			if info, err := os.Stat(path); err == nil {
+				etag := fmt.Sprintf(`"%x"`, info.ModTime().UnixNano())
+				c.Header("ETag", etag)
+				if match := c.GetHeader("If-None-Match"); match == etag {
+					c.AbortWithStatus(http.StatusNotModified)
+				}
+			}
+		case "none":
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		return
+	}
+	// Auto-detect cache policy from file path
 	if strings.HasSuffix(path, ".html") {
 		// HTML files should revalidate on every request
 		// Add ETag based on file modification time for proper cache validation
@@ -577,7 +599,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	web_cache_static(c, file)
+	web_cache_static(c, file, aa.Cache)
 	c.String(http.StatusOK, content)
 	return true
 }

@@ -302,15 +302,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Check access (uses system database, always available)
-	if aa.Access.Resource != "" && owner != nil {
-		sysdb := db_app_system(owner, a)
-		if sysdb != nil && !sysdb.access_check_operation(user, owner, aa) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return true
-		}
-	}
-
 	// Create action
 	action := Action{
 		id:    action_id(),

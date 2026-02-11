@@ -374,6 +374,9 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	//debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)
 
+	// Reset cancel state from any previous timeout
+	s.thread.Uncancel()
+
 	// Set execution step limit
 	s.thread.SetMaxExecutionSteps(starlark_max_steps)
 
@@ -409,6 +412,11 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		return result, call_err
 	case <-time.After(starlark_default_timeout):
 		s.thread.Cancel("timeout")
+		// Wait for goroutine to observe the cancel and exit
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 		debug("Starlark %s() timed out after %s", function, starlark_default_timeout)
 		if call_err == nil {
 			call_err = fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)

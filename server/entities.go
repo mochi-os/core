@@ -347,7 +347,9 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 }
 
-// mochi.entity.get(id) -> list: Get an entity owned by the current user
+// mochi.entity.get(id) -> list: Get an entity owned by the effective user
+// Uses the same logic as database access to determine the effective user:
+// anonymous or domain routing -> owner, otherwise -> authenticated user.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -358,14 +360,32 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid id %q", id)
 	}
 
+	// Determine effective user using the same logic as database access
+	owner, _ := t.Local("owner").(*User)
 	user, _ := t.Local("user").(*User)
+
+	var effective *User
+	var domain_routing bool
+	if action := t.Local("action"); action != nil {
+		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
+			domain_routing = a.domain.route.context != ""
+		}
+	}
+
 	if user == nil {
-		// No user means no entities owned by them
+		effective = owner
+	} else if domain_routing {
+		effective = owner
+	} else {
+		effective = user
+	}
+
+	if effective == nil {
 		return sl_encode([]any{}), nil
 	}
 
 	db := db_open("db/users.db")
-	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, user.ID)
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, effective.ID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

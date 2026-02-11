@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	gotime "time"
@@ -47,7 +48,10 @@ func init() {
 					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
 				}),
 			}),
-			"remote":   api_remote,
+			"remote": api_remote,
+			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
+				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
+			}),
 			"schedule": api_schedule,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
@@ -407,6 +411,17 @@ func api_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl
 	return sl_encode(uid()), nil
 }
 
+// header_to_map converts http.Header to a flat map using the first value per key
+func header_to_map(h http.Header) map[string]string {
+	m := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			m[k] = v[0]
+		}
+	}
+	return m
+}
+
 // mochi.url.get/post/put/patch/delete(url, options?, headers?, body?) -> dict: Make HTTP request
 func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 4 {
@@ -447,12 +462,12 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	parts := strings.Split(fn.Name(), ".")
 	r, err := url_request(parts[len(parts)-1], url, options, headers, body)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return sl_encode(map[string]any{"status": 0, "headers": map[string]string{}, "body": ""}), nil
 	}
 	defer r.Body.Close()
 
 	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
-	return sl_encode(map[string]any{"status": r.StatusCode, "headers": r.Header, "body": string(data)}), nil
+	return sl_encode(map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}), nil
 }
 
 // mochi.valid(string, pattern) -> bool: Check if a string matches a validation pattern

@@ -135,7 +135,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	var ok bool
 	entity_id, ok = sl.AsString(args[0])
-	if !ok || !valid(entity_id, "entity") {
+	if !ok || (!valid(entity_id, "entity") && !valid(entity_id, "fingerprint")) {
 		return sl_error(fn, "invalid entity_id")
 	}
 
@@ -214,7 +214,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	var ok bool
 	entity_id, ok = sl.AsString(args[0])
-	if !ok || !valid(entity_id, "entity") {
+	if !ok || (!valid(entity_id, "entity") && !valid(entity_id, "fingerprint")) {
 		return sl_error(fn, "invalid entity_id")
 	}
 
@@ -287,7 +287,7 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	var ok bool
 	entity_id, ok = sl.AsString(args[0])
-	if !ok || !valid(entity_id, "entity") {
+	if !ok || (!valid(entity_id, "entity") && !valid(entity_id, "fingerprint")) {
 		return sl_error(fn, "invalid entity_id")
 	}
 

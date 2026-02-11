@@ -77,7 +77,7 @@ func (h *Headers) valid() bool {
 		return false
 	}
 
-	if h.To != "" && !valid(h.To, "entity") {
+	if h.To != "" && !valid(h.To, "entity") && !valid(h.To, "fingerprint") {
 		info("Invalid to header %q", h.To)
 		return false
 	}

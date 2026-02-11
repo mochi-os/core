@@ -146,36 +146,6 @@ func (db *DB) access_revoke(subject string, resource string, operation string) {
 	db.exec("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
 }
 
-// Check access for an operation based on the "access" field in app.json
-func (db *DB) access_check_operation(u *User, owner *User, aa *AppAction) bool {
-	if aa.Access.Resource == "" {
-		return true
-	}
-
-	// Substitute parameters in resource
-	resource := aa.Access.Resource
-	for k, v := range aa.parameters {
-		resource = strings.ReplaceAll(resource, ":"+k, v)
-	}
-
-	operation := aa.Access.Operation
-	if operation == "" {
-		operation = "*"
-	}
-
-	// Get user identity and role
-	user := ""
-	role := ""
-	if u != nil {
-		if u.Identity != nil {
-			user = u.Identity.ID
-		}
-		role = u.Role
-	}
-
-	return db.access_check(owner, user, role, resource, operation)
-}
-
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource
 func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {

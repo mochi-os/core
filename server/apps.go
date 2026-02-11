@@ -36,10 +36,6 @@ type AppAction struct {
 	Cache     string `json:"cache"`
 	Public    bool   `json:"public"`
 	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
-	Access    struct {
-		Resource  string `json:"resource"`
-		Operation string `json:"operation"`
-	} `json:"access"`
 
 	name              string            `json:"-"`
 	internal_function func(*Action)     `json:"-"`
@@ -342,7 +338,6 @@ var (
 		}},
 		{"", "Projects", []struct{ Permission, Object string }{
 			{"url", "*"},
-			{"service", "notifications"},
 		}},
 		{"test", "Test", []struct{ Permission, Object string }{
 			{"account/read", ""},
@@ -1268,20 +1263,6 @@ func app_read(id string, base string) (*AppVersion, error) {
 			}
 		}
 
-		if a.Access.Resource != "" {
-			if !valid(a.Access.Resource, "parampath") {
-				return nil, fmt.Errorf("action %q has invalid access resource", action)
-			}
-			if a.Access.Operation == "" {
-				return nil, fmt.Errorf("action %q has access resource but no access operation", action)
-			}
-			if !valid(a.Access.Operation, "constant") {
-				return nil, fmt.Errorf("action %q has invalid access operation", action)
-			}
-		}
-		if a.Access.Operation != "" && a.Access.Resource == "" {
-			return nil, fmt.Errorf("action %q has access operation but no access resource", action)
-		}
 	}
 
 	for event, e := range av.Events {

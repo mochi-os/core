@@ -52,6 +52,14 @@ func (e *Event) get(field string, def string) string {
 
 // Route a received event to the correct app. Returns error on failure.
 func (e *Event) route() error {
+	// Resolve fingerprint to entity ID
+	if e.to != "" && valid(e.to, "fingerprint") {
+		ent := entity_by_any(e.to)
+		if ent != nil {
+			e.to = ent.ID
+		}
+	}
+
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -307,8 +306,8 @@ func (db *DB) apps_setup() {
 	db.exec("create table if not exists apps (app text primary key, setup integer not null default 0)")
 }
 
-// app_user_setup runs first-time setup when a user accesses an app.
-// This grants default permissions for known apps and records the setup timestamp.
+// app_user_setup grants default permissions when a user first accesses an app.
+// Tracks the number of default permissions so new ones are applied after server updates.
 func app_user_setup(u *User, app_id string) {
 	if u == nil || app_id == "" {
 		return
@@ -317,21 +316,23 @@ func app_user_setup(u *User, app_id string) {
 	db := db_user(u, "user")
 	db.apps_setup()
 
-	// Check if already set up
+	defaults := apps_default_get(app_id)
+	expected := len(defaults) + 1
+
+	// Check if already set up with the current set of default permissions
 	setup := db.integer("select setup from apps where app=?", app_id)
-	if setup > 0 {
+	if setup == expected {
 		return
 	}
 
-	// Run setup: grant default permissions
+	// Grant default permissions (insert or ignore preserves user-revoked permissions on re-setup)
 	db.permissions_setup()
-	defaults := apps_default_get(app_id)
 	for _, p := range defaults {
-		db.exec("replace into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, p.Permission, p.Object)
+		db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, p.Permission, p.Object)
 	}
 
-	// Record setup timestamp
-	db.exec("replace into apps (app, setup) values (?, ?)", app_id, time.Now().Unix())
+	// Record permission count so we detect when defaults change
+	db.exec("replace into apps (app, setup) values (?, ?)", app_id, expected)
 }
 
 // apps_default_get returns the default permissions for an app.

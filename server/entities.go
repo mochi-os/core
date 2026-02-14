@@ -348,6 +348,7 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 }
 
 // mochi.entity.get(id) -> list: Get an entity owned by the effective user
+// Accepts either an entity ID or a fingerprint.
 // Uses the same logic as database access to determine the effective user:
 // anonymous or domain routing -> owner, otherwise -> authenticated user.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
@@ -356,7 +357,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
 		return sl_error(fn, "invalid id %q", id)
 	}
 
@@ -385,7 +386,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_open("db/users.db")
-	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where id=? and user=?", id, effective.ID)
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where (id=? or fingerprint=?) and user=?", id, id, effective.ID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

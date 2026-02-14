@@ -1579,7 +1579,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		aa.segments = len(segments)
 		aa.literals = 0
 		for _, s := range segments {
-			if !strings.HasPrefix(s, ":") {
+			if !strings.HasPrefix(s, ":") && !strings.HasPrefix(s, "*") {
 				aa.literals++
 			}
 		}

@@ -1187,12 +1187,12 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		}
 		if fetch_entity != "" {
 			// Fetch from remote and store locally
-			data := attachment_fetch_remote(app, fetch_entity, id)
-			if data == nil {
+			cached := attachment_fetch_remote(app, fetch_entity, id)
+			if cached == "" {
 				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 				return true
 			}
-			file_write(path, data)
+			file_copy(cached, path)
 			// Clear entity so future requests serve from local storage
 			db.exec(`update attachments set entity = '' where id = ?`, id)
 			info("Attachment %s fetched and stored locally on demand", id)
@@ -1228,8 +1228,8 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 // Serve an attachment from a remote entity (for bookmarked wikis, etc.)
 func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, thumbnail bool) bool {
 	// Fetch from remote (thumbnail generated on remote side if requested)
-	data := attachment_fetch_remote(app, entity, id, thumbnail)
-	if data == nil {
+	path := attachment_fetch_remote(app, entity, id, thumbnail)
+	if path == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
 		return true
 	}
@@ -1248,6 +1248,6 @@ func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, th
 		return true
 	}
 
-	c.Data(http.StatusOK, http.DetectContentType(data), data)
+	c.File(path)
 	return true
 }

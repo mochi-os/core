@@ -246,24 +246,6 @@ func web_auth_totp(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
-// Create a JWT using a specific HMAC secret
-func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
-	claims := mochi_claims{
-		User: user_id,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
-			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(secret)
-	if err != nil {
-		return "", err
-	}
-	return signed, nil
-}
-
 // Verify a JWT and return the user id, or -1 if invalid.
 // If the token header contains a "kid" referencing a login code, attempt to verify
 // using that login's secret. Otherwise fall back to the global secret.
@@ -612,15 +594,6 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // ============================================================================
 // TOTP authentication
 // ============================================================================
-
-// email_code_verify checks an email code for a user and consumes it (used by MFA endpoint)
-func email_code_verify(username string, code string) bool {
-	if !email_code_check(username, code) {
-		return false
-	}
-	email_code_consume(code)
-	return true
-}
 
 // email_code_check validates an email code without consuming it
 func email_code_check(username string, code string) bool {

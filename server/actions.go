@@ -158,14 +158,6 @@ func (a *Action) input(name string) string {
 	return ""
 }
 
-func (a *Action) json(in any) {
-	a.web.JSON(200, in)
-}
-
-func (a *Action) redirect(code int, location string) {
-	a.web.Redirect(code, location)
-}
-
 // Starlark methods
 func (a *Action) AttrNames() []string {
 	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}

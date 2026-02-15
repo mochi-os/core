@@ -18,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -2040,10 +2039,6 @@ func git_store_tree(repo *git.Repository, node *git_dir_node) (plumbing.Hash, er
 	}
 	return hash, nil
 }
-
-// Unused but kept for potential future use
-var _ = config.Config{}
-var _ = time.Now
 
 // git_http_handler handles the Smart HTTP protocol for git clone/push/fetch
 // Path format: /info/refs, /git-upload-pack, /git-receive-pack

@@ -6,9 +6,28 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 )
+
+// Create a JWT using a specific HMAC secret (test helper)
+func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
+	claims := mochi_claims{
+		User: user_id,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
+			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		return "", err
+	}
+	return signed, nil
+}
 
 // Test jwt_create_with_secret function
 func TestJwtCreateWithSecret(t *testing.T) {

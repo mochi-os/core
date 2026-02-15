@@ -9,11 +9,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strings"
 	"time"
-	"unicode"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -23,10 +20,6 @@ import (
 var file_max_storage int64 = 10 * 1024 * 1024 * 1024
 
 var (
-	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)
-	match_unsafe_chars        = regexp.MustCompile(`[\x00-\x1f\x7f/\\:*?"<>|]+`)
-	reserved_names            = map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true}
-
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
 		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
@@ -95,46 +88,6 @@ func file_move(old string, new string) {
 	must(os.Rename(old, new))
 }
 
-func file_name_safe(s string) string {
-	s = match_unsafe_chars.ReplaceAllString(s, "")
-
-	s = strings.TrimFunc(s, func(r rune) bool {
-		return unicode.IsSpace(r) || r == '.'
-	})
-
-	s = match_repeated_separators.ReplaceAllString(s, "_")
-
-	s = strings.TrimLeft(s, ".")
-
-	if s == "" {
-		return "unnamed"
-	}
-
-	base := s
-	i := strings.LastIndex(s, ".")
-	if i > 0 {
-		base = s[:i]
-	}
-	if reserved_names[strings.ToUpper(base)] {
-		s = "_" + s
-	}
-
-	if len(s) > 240 {
-		ext := ""
-		i := strings.LastIndex(s, ".")
-		if i > 0 && len(s)-i <= 10 {
-			ext = s[i:]
-			s = s[:i]
-		}
-		if len(s) > 240-len(ext) {
-			s = s[:240-len(ext)]
-		}
-		s = strings.TrimRight(s, " ._-") + ext
-	}
-
-	return s
-}
-
 func file_name_type(name string) string {
 	switch path.Ext(name) {
 	case ".css":
@@ -170,11 +123,6 @@ func file_name_type(name string) string {
 
 func file_read(path string) []byte {
 	return must(os.ReadFile(path))
-}
-
-func file_size(path string) int64 {
-	f := must(os.Stat(path))
-	return f.Size()
 }
 
 func file_write(path string, data []byte) {

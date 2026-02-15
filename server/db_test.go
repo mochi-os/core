@@ -328,41 +328,6 @@ func TestDBScans(t *testing.T) {
 	}
 }
 
-// Test db.schema creates _settings table
-func TestDBSchema(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
-
-	db.schema(5)
-
-	// Check _settings table exists
-	exists, _ := db.exists("SELECT name FROM sqlite_master WHERE type='table' AND name='_settings'")
-	if !exists {
-		t.Error("_settings table should exist after schema()")
-	}
-
-	// Check schema version is set
-	version := db.integer("SELECT CAST(value AS INTEGER) FROM _settings WHERE name='schema'")
-	if version != 5 {
-		t.Errorf("schema version = %d, want 5", version)
-	}
-}
-
-// Test db.schema updates existing version
-func TestDBSchemaUpdate(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
-
-	db.schema(1)
-	db.schema(2)
-	db.schema(3)
-
-	version := db.integer("SELECT CAST(value AS INTEGER) FROM _settings WHERE name='schema'")
-	if version != 3 {
-		t.Errorf("schema version = %d, want 3", version)
-	}
-}
-
 // Test database path creation
 func TestDBOpenCreatesFile(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")

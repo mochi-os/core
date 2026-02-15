@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// schedule_update_due updates the due time for a scheduled event (test helper)
+func schedule_update_due(id int64, due int64) {
+	db := schedule_db()
+	db.exec("update schedule set due=? where id=?", due, id)
+}
+
 func TestScheduleDatabase(t *testing.T) {
 	// Setup test environment
 	data_dir = t.TempDir()

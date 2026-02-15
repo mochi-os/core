@@ -898,11 +898,6 @@ func (db *DB) scans(out any, query string, values ...any) error {
 	return db.handle.Select(out, query, values...)
 }
 
-func (db *DB) schema(version int) {
-	db.exec("create table if not exists _settings ( name text not null primary key, value text not null )")
-	db.exec("replace into _settings ( name, value ) values ( 'schema', ? )", version)
-}
-
 // mochi.db.execute/exists/query/row/rows(sql, params...) -> nil/bool/list/dict/list: Execute database query
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {

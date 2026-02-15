@@ -147,7 +147,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Look for matching app function, using user preferences
 	user, _ := t.Local("user").(*User)
-	a := app_for_service_for(user, service)
+	a := app_for_service(user, service)
 	if a == nil {
 		// Return None for missing service (allows graceful degradation during bootstrap)
 		return sl.None, nil

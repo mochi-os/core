@@ -219,6 +219,7 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	setting_set(name, value)
+	audit_settings_changed(user.Username, name, value)
 	return sl.True, nil
 }
 

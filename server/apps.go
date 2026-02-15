@@ -2100,6 +2100,7 @@ func api_app_class_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid app_id")
 	}
 	apps_class_set(class, app_id)
+	audit_default_routing_changed(user.Username, "class", class, app_id)
 	return sl.True, nil
 }
 
@@ -2169,6 +2170,7 @@ func api_app_service_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid app_id")
 	}
 	apps_service_set(service, app_id)
+	audit_default_routing_changed(user.Username, "service", service, app_id)
 	return sl.True, nil
 }
 
@@ -2238,6 +2240,7 @@ func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid app_id")
 	}
 	apps_path_set(path, app_id)
+	audit_default_routing_changed(user.Username, "path", path, app_id)
 	return sl.True, nil
 }
 

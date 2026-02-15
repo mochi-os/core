@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -569,6 +570,7 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db.exec("update users set methods=? where id=?", strings.Join(methods, ","), user.ID)
+	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
 
@@ -597,7 +599,13 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "user not found")
 	}
 
+	target := user_by_id(int(id))
+	target_name := fmt.Sprintf("%d", id)
+	if target != nil {
+		target_name = target.Username
+	}
 	db.exec("update users set methods='email' where id=?", id)
+	audit_password_changed(target_name, "admin_reset")
 	return sl.True, nil
 }
 
@@ -706,6 +714,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Mark as verified
 	db.exec("update totp set verified=1 where user=?", user.ID)
+	audit_password_changed(user.Username, "totp_enabled")
 	return sl.True, nil
 }
 
@@ -738,6 +747,7 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	db.exec("delete from totp where user=?", user.ID)
+	audit_password_changed(user.Username, "totp_disabled")
 	return sl.True, nil
 }
 
@@ -828,6 +838,7 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 	// Delete existing codes
 	db.exec("delete from recovery where user=?", user.ID)
+	audit_password_changed(user.Username, "recovery_regenerated")
 
 	// Generate new codes
 	for i := 0; i < recovery_code_count; i++ {

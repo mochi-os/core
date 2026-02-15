@@ -339,20 +339,16 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			Created:     now(),
 		}
 
-		// Save file
+		// Save file (stream directly to disk without buffering)
 		filename := attachment_filename(id, fh.Filename)
-		data, err := io.ReadAll(src)
-		if err != nil {
-			return sl_error(fn, "unable to read uploaded file: %v", err)
-		}
 		f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
 			return sl_error(fn, "unable to write file")
 		}
-		_, err = f.Write(data)
+		_, err = io.Copy(f, src)
 		f.Close()
 		if err != nil {
-			return sl_error(fn, "unable to write file")
+			return sl_error(fn, "unable to write file: %v", err)
 		}
 
 		// Insert record

@@ -476,6 +476,9 @@ func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (
 		return sl_error(fn, "syntax: <string to check: string>, <pattern to match: string>")
 	}
 
+	if args[0] == sl.None {
+		return sl.False, nil
+	}
 	s, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid string to check %q", s)

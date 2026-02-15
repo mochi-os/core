@@ -257,10 +257,6 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.account.list(capability?) -> list: List user's accounts
 func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	app, _ := t.Local("app").(*App)
-	if app != nil {
-		info("account.list: app.id=%s", app.id)
-	}
 	if err := require_permission(t, fn, "account/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}

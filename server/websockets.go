@@ -78,7 +78,7 @@ func websocket_connection(c *gin.Context) {
 }
 
 func websockets_send(u *User, key string, content any) {
-	debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
+	// debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
 	j := ""
 	var failed []string
 

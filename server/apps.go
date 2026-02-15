@@ -263,7 +263,7 @@ func (av *AppVersion) user_allowed(user *User) bool {
 
 const (
 	app_version_minimum = 2
-	app_version_maximum = 3
+	app_version_maximum = 4
 )
 
 // version_greater returns true if version a is greater than version b

@@ -164,6 +164,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			// If user has a session cookie but auth failed (suspended, expired, etc),
 			// clear the invalid cookie to prevent redirect loops
 			if web_cookie_get(c, "session", "") != "" {
+				audit_session_anomaly("", rate_limit_client_ip(c), "invalid_session")
 				web_cookie_unset(c, "session")
 				c.Redirect(http.StatusFound, "/login?reauth=1")
 			} else {

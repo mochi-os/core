@@ -457,6 +457,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		credential.Authenticator.SignCount, name, transports,
 		credential.Flags.BackupEligible, credential.Flags.BackupState, now(), 0)
 
+	audit_password_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
 }
 
@@ -533,6 +534,7 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db.exec("delete from credentials where id=? and user=?", id, user.ID)
+	audit_password_changed(user.Username, "passkey_deleted")
 	return sl.True, nil
 }
 

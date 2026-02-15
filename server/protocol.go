@@ -54,41 +54,49 @@ func (h *Headers) valid() bool {
 	t := h.msg_type()
 	if t != "msg" && t != "ack" && t != "nack" {
 		info("Invalid message type %q", t)
+		audit_message_rejected(h.From, "invalid_type")
 		return false
 	}
 
 	if (t == "ack" || t == "nack") && h.AckID == "" {
 		info("ACK/NACK missing ack ID")
+		audit_message_rejected(h.From, "missing_ack_id")
 		return false
 	}
 
 	if h.ID != "" && len(h.ID) > max_id_length {
 		info("Message ID too long: %d > %d", len(h.ID), max_id_length)
+		audit_message_rejected(h.From, "id_too_long")
 		return false
 	}
 
 	if h.AckID != "" && len(h.AckID) > max_id_length {
 		info("Ack ID too long: %d > %d", len(h.AckID), max_id_length)
+		audit_message_rejected(h.From, "ack_id_too_long")
 		return false
 	}
 
 	if h.From != "" && !valid(h.From, "entity") {
 		info("Invalid from header %q", h.From)
+		audit_message_rejected(h.From, "invalid_from")
 		return false
 	}
 
 	if h.To != "" && !valid(h.To, "entity") && !valid(h.To, "fingerprint") {
 		info("Invalid to header %q", h.To)
+		audit_message_rejected(h.From, "invalid_to")
 		return false
 	}
 
 	if h.Service != "" && !valid(h.Service, "constant") {
 		info("Invalid service header %q", h.Service)
+		audit_message_rejected(h.From, "invalid_service")
 		return false
 	}
 
 	if t == "msg" && h.Service != "" && !valid(h.Event, "constant") {
 		info("Invalid event header %q", h.Event)
+		audit_message_rejected(h.From, "invalid_event")
 		return false
 	}
 

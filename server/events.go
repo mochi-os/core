@@ -180,6 +180,7 @@ func (e *Event) route() error {
 	// Reject events without a verified sender (unless anonymous is allowed)
 	if e.from == "" && !ae.Anonymous {
 		info("Event dropping unsigned message to app %q", a.id)
+		audit_message_rejected("", "unsigned")
 		return fmt.Errorf("unsigned message")
 	}
 

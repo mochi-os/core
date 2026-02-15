@@ -167,6 +167,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 
 	if !rate_limit_login.allow(ip) {
 		audit_rate_limit(ip, "login")
+		audit_repeated_failures(ip, rate_limit_login.limit, "login")
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts. Please try again later."})
 		c.Abort()
 		return

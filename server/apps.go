@@ -100,7 +100,6 @@ type AppVersion struct {
 	base             string                                              `json:"-"`
 	labels           map[string]map[string]string                        `json:"-"`
 	starlark_runtime *Starlark                                           `json:"-"`
-	broadcasts       map[string]func(*User, string, string, string, any) `json:"-"`
 }
 
 type Icon struct {
@@ -677,24 +676,6 @@ func app_download_version(id, version string) bool {
 	a.load_version(av)
 	debug("App %q version %q installed", id, version)
 	return true
-}
-
-// Find the best app for a service (prefers dev apps over published apps)
-func app_for_service(service string) *App {
-	// Use the fallback logic which properly prefers dev apps
-	if a := app_for_service_fallback(nil, service); a != nil {
-		return a
-	}
-
-	apps_lock.Lock()
-	defer apps_lock.Unlock()
-
-	// Handle app entity ID as service (for mochi.remote.stream calls)
-	if a, found := apps[service]; found {
-		return a
-	}
-
-	return nil
 }
 
 // app_for_service_for finds the best app for a service with user preferences.
@@ -1445,22 +1426,6 @@ func apps_load_published() {
 	}
 }
 
-// Register an action for an internal app
-func (a *App) action(action string, f func(*Action)) {
-	a.internal.Actions[action] = AppAction{name: action, internal_function: f}
-}
-
-// Register a broadcast for an internal app
-func (a *App) broadcast(sender string, action string, f func(*User, string, string, string, any)) {
-	a.internal.broadcasts[sender+"/"+action] = f
-}
-
-// Register the user database file for an internal app
-func (a *App) db(file string, create func(*DB)) {
-	a.internal.Database.File = file
-	a.internal.Database.create_function = create
-}
-
 // Register an event handler for an internal app
 func (a *App) event(event string, f func(*Event)) {
 	a.internal.Events[event] = AppEvent{internal_function: f}
@@ -1469,11 +1434,6 @@ func (a *App) event(event string, f func(*Event)) {
 // Register an anonymous event handler for an internal app
 func (a *App) event_anonymous(event string, f func(*Event)) {
 	a.internal.Events[event] = AppEvent{internal_function: f, Anonymous: true}
-}
-
-// Register an icon for an internal app
-func (a *App) icon(action string, label string, file string) {
-	a.internal.Icons = append(a.internal.Icons, Icon{Action: action, Label: label, File: file})
 }
 
 // Resolve an app label
@@ -1557,11 +1517,6 @@ func (a *App) load_version(av *AppVersion) {
 	apps_lock.Unlock()
 
 	debug("App %q, %q version %q loaded", av.labels["en"][av.Label], a.id, av.Version)
-}
-
-// Register a path for an internal app
-func (a *App) path(path string) {
-	a.internal.Paths = append(a.internal.Paths, path)
 }
 
 // Register a service for an internal app

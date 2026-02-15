@@ -162,22 +162,6 @@ func app_is_internal(app *App) bool {
 	return app != nil && app.internal != nil
 }
 
-// app_label returns the human-readable label for an app
-func app_label(app *App, user *User) string {
-	if app == nil {
-		return ""
-	}
-	av := app.active(user)
-	if av != nil && av.Label != "" {
-		return av.Label
-	}
-	// Fallback: convert "my-app" to "My App"
-	name := app.id
-	name = strings.ReplaceAll(name, "-", " ")
-	name = strings.ReplaceAll(name, "_", " ")
-	return strings.Title(name)
-}
-
 // permission_granted checks if a permission is granted for an app to a user.
 // For default apps, permissions are lazily granted on first check.
 func permission_granted(u *User, app_id string, permission string) bool {

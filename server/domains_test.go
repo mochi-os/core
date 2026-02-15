@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+// route_list returns all routes for a domain (test helper)
+func route_list(domain_name string) []route {
+	db := db_open("db/domains.db")
+	var routes []route
+	db.scans(&routes, "select * from routes where domain=? order by priority desc, length(path) desc", domain_name)
+	return routes
+}
+
 // create_domains_test_env sets up a test environment for domains testing
 func create_domains_test_env(t *testing.T) func() {
 	tmp_dir, err := os.MkdirTemp("", "mochi_domains_test")

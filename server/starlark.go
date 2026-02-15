@@ -164,17 +164,6 @@ func sl_decode_string(value any) string {
 	}
 }
 
-// Extract a string from a Starlark value, returning empty string for None
-func sl_string(value sl.Value) string {
-	if value == nil || value == sl.None {
-		return ""
-	}
-	if s, ok := value.(sl.String); ok {
-		return string(s)
-	}
-	return ""
-}
-
 // Decode a single Starlark value to a map of strings to strings
 func sl_decode_strings(value any) map[string]string {
 	//debug("Decoding to strings '%#v'", value)

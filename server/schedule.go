@@ -72,12 +72,6 @@ func schedule_delete(id int64) {
 	db.exec("delete from schedule where id=?", id)
 }
 
-// schedule_update_due updates the due time for a recurring event
-func schedule_update_due(id int64, due int64) {
-	db := schedule_db()
-	db.exec("update schedule set due=? where id=?", due, id)
-}
-
 // schedule_list returns all scheduled events for an app and user
 func schedule_list(app string, user int64) []ScheduledEvent {
 	db := schedule_db()

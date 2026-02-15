@@ -57,16 +57,6 @@ func directory_delete_event(e *Event) {
 	debug("Removed entity %s from directory (deletion announcement)", id)
 }
 
-// Get a directory entry
-func directory_by_id(id string) *Directory {
-	db := db_open("db/directory.db")
-	var d Directory
-	if db.scan(&d, "select * from directory where id=?", id) {
-		return &d
-	}
-	return nil
-}
-
 // Create or update a directory entry for a local entity.
 // Preserves the original created timestamp if entry already exists.
 func directory_create(e *Entity) {
@@ -148,9 +138,6 @@ func directory_download_from_peer(peer string) bool {
 		db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
-
-	debug("Directory finished downloading updates")
-	return true
 }
 
 // Reply to a directory download request
@@ -294,46 +281,6 @@ func directory_request_event(e *Event) {
 	if db.scan(&r, "select * from entities where id=? and privacy='public'", e.to) {
 		directory_publish(&r, false)
 	}
-}
-
-// Search the directory
-func directory_search(u *User, class string, search string, include_self bool) *[]Directory {
-	dbd := db_open("db/directory.db")
-	var ds []Directory
-	err := dbd.scans(&ds, "select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
-	if err != nil {
-		warn("Database error searching directory: %v", err)
-		return &ds
-	}
-
-	for i := range ds {
-		ds[i].Fingerprint = fingerprint_hyphens(fingerprint(ds[i].ID))
-	}
-
-	if u == nil || include_self || class != "person" {
-		return &ds
-	}
-
-	dbu := db_open("db/users.db")
-	var es []Entity
-	err = dbu.scans(&es, "select id from entities where user=?", u.ID)
-	if err != nil {
-		warn("Database error loading user entities: %v", err)
-		return &ds
-	}
-	im := map[string]bool{}
-	for _, e := range es {
-		im[e.ID] = true
-	}
-
-	var o []Directory
-	for _, d := range ds {
-		_, found := im[d.ID]
-		if !found {
-			o = append(o, d)
-		}
-	}
-	return &o
 }
 
 // mochi.directory.get(id) -> dict or None: Get a directory entry

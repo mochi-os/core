@@ -367,14 +367,6 @@ func route_get(domain_name, path string) *route {
 	return &r
 }
 
-// route_list returns all routes for a domain
-func route_list(domain_name string) []route {
-	db := db_open("db/domains.db")
-	var routes []route
-	db.scans(&routes, "select * from routes where domain=? order by priority desc, length(path) desc", domain_name)
-	return routes
-}
-
 // route_create creates a new route
 func route_create(domain_name, path, method, target, context string, owner, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
@@ -428,22 +420,6 @@ func delegation_get(domain_name, path string, owner int) *delegation {
 		return nil
 	}
 	return &d
-}
-
-// delegation_list returns all delegations for a domain, or all delegations for an owner
-func delegation_list(domain_name string, owner int) []delegation {
-	db := db_open("db/domains.db")
-	var delegations []delegation
-	if domain_name != "" && owner != 0 {
-		db.scans(&delegations, "select * from delegations where domain=? and owner=? order by path", domain_name, owner)
-	} else if domain_name != "" {
-		db.scans(&delegations, "select * from delegations where domain=? order by path, owner", domain_name)
-	} else if owner != 0 {
-		db.scans(&delegations, "select * from delegations where owner=? order by domain, path", owner)
-	} else {
-		db.scans(&delegations, "select * from delegations order by domain, path, owner")
-	}
-	return delegations
 }
 
 // delegation_create creates a new path delegation, or returns existing if already delegated

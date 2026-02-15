@@ -243,15 +243,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 		if serve_file {
 			file := av.base + "/" + aa.File
-
-			// If opengraph function specified, inject dynamic meta tags
-			if aa.OpenGraph != "" && strings.HasSuffix(aa.File, ".html") {
-				if web_serve_file_with_opengraph(c, a, av, aa, e, file) {
-					return true
-				}
+			if strings.HasSuffix(aa.File, ".html") {
+				web_serve_html(c, a, av, aa, e, file)
+				return true
 			}
-
-			//debug("Serving single file for app %q: %q", a.id, file)
 			web_cache_static(c, file, aa.Cache)
 			c.File(file)
 			return true
@@ -588,11 +583,66 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 		content = regexp_replace_meta(content, "og:url", url)
 	}
 
+	// Inject routing meta tags
+	content = web_inject_meta_tags(c, e, content)
+
 	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	web_cache_static(c, file, aa.Cache)
 	c.String(http.StatusOK, content)
 	return true
+}
+
+// Check if a URL segment looks like an entity identifier (fingerprint or full ID)
+var entity_segment_re = regexp.MustCompile(`^[1-9A-HJ-NP-Za-km-z]{9}$|^[1-9A-HJ-NP-Za-km-z]{50,51}$`)
+
+func is_entity_segment(s string) bool {
+	return entity_segment_re.MatchString(s)
+}
+
+// Build routing meta tags and inject them after <head>
+func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
+	var tags []string
+	if app := c.GetString("mochi_app_path"); app != "" {
+		tags = append(tags, `<meta name="mochi:app" content="`+app+`">`)
+	}
+	if e != nil {
+		tags = append(tags, `<meta name="mochi:class" content="`+e.Class+`">`)
+		tags = append(tags, `<meta name="mochi:entity" content="`+e.ID+`">`)
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+e.Fingerprint+`">`)
+	} else if seg := c.GetString("mochi_entity_segment"); seg != "" {
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+seg+`">`)
+	}
+	if dm := c.GetString("domain_method"); dm == "entity" || dm == "app" {
+		tags = append(tags, `<meta name="mochi:domain">`)
+	}
+	if len(tags) > 0 {
+		injection := "\n    " + strings.Join(tags, "\n    ")
+		content = strings.Replace(content, "<head>", "<head>"+injection, 1)
+	}
+	return content
+}
+
+// Serve an HTML file with routing meta tags injected after <head>
+func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
+	// Try OG injection first (it also injects routing meta tags)
+	if aa.OpenGraph != "" {
+		if web_serve_file_with_opengraph(c, a, av, aa, e, file) {
+			return
+		}
+	}
+
+	// Read HTML file
+	html := file_read(file)
+	if html == nil {
+		c.String(http.StatusNotFound, "File not found")
+		return
+	}
+	content := web_inject_meta_tags(c, e, string(html))
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	web_cache_static(c, file, aa.Cache)
+	c.String(http.StatusOK, content)
 }
 
 // Replace Open Graph meta tag content
@@ -925,6 +975,9 @@ func web_path(c *gin.Context) {
 	// Check for app matching first segment (user preferences, then system defaults, then fallback)
 	a := app_for_path_for(user, first)
 	if a != nil {
+		// Set app path segment so HTML serving can inject meta tags
+		c.Set("mochi_app_path", first)
+
 		// Redirect /app to /app/ for correct relative path resolution
 		if len(segments) == 1 && !strings.HasSuffix(c.Request.URL.Path, "/") {
 			c.Redirect(http.StatusMovedPermanently, "/"+first+"/")
@@ -947,6 +1000,9 @@ func web_path(c *gin.Context) {
 			if web_action(c, a, action, e) {
 				return
 			}
+		} else if is_entity_segment(second) {
+			// Remote entity not known locally — pass identifier for meta tag injection
+			c.Set("mochi_entity_segment", second)
 		}
 
 		// Route on /<app>/<action...>
@@ -1000,24 +1056,6 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-// Return domain routing context for the current request
-func web_context(c *gin.Context) {
-	result := gin.H{}
-
-	if method, exists := c.Get("domain_method"); exists && method.(string) == "entity" {
-		target := c.GetString("domain_target")
-		if e := entity_by_any(target); e != nil {
-			result["entity"] = gin.H{
-				"id":          e.ID,
-				"fingerprint": e.Fingerprint,
-				"class":       e.Class,
-			}
-		}
-	}
-
-	c.JSON(http.StatusOK, result)
-}
-
 // Start the web server
 func web_start() {
 	listen := ini_string("web", "listen", "")
@@ -1059,7 +1097,6 @@ func web_start() {
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
-	r.GET("/_/context", web_context)
 	r.GET("/_/websocket", websocket_connection)
 
 	// All other paths are handled by web_path()

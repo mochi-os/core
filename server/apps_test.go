@@ -1065,7 +1065,7 @@ func TestClassAppForResolution(t *testing.T) {
 	}
 }
 
-// Test app_for_service_for resolution priority
+// Test app_for_service resolution priority
 func TestAppForServiceForResolution(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -1080,20 +1080,20 @@ func TestAppForServiceForResolution(t *testing.T) {
 
 	// Set system binding
 	apps_service_set("notifications", "notif-app-1")
-	result := app_for_service_for(nil, "notifications")
+	result := app_for_service(nil, "notifications")
 	if result == nil || result.id != "notif-app-1" {
-		t.Errorf("app_for_service_for with system binding = %v, want notif-app-1", result)
+		t.Errorf("app_for_service with system binding = %v, want notif-app-1", result)
 	}
 
 	// User binding takes priority
 	user.set_service_app("notifications", "notif-app-2")
-	result = app_for_service_for(user, "notifications")
+	result = app_for_service(user, "notifications")
 	if result == nil || result.id != "notif-app-2" {
-		t.Errorf("app_for_service_for with user binding = %v, want notif-app-2", result)
+		t.Errorf("app_for_service with user binding = %v, want notif-app-2", result)
 	}
 }
 
-// Test app_for_path_for resolution priority
+// Test app_for_path resolution priority
 func TestAppForPathForResolution(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -1108,16 +1108,16 @@ func TestAppForPathForResolution(t *testing.T) {
 
 	// Set system binding
 	apps_path_set("forums", "forum-app-1")
-	result := app_for_path_for(nil, "forums")
+	result := app_for_path(nil, "forums")
 	if result == nil || result.id != "forum-app-1" {
-		t.Errorf("app_for_path_for with system binding = %v, want forum-app-1", result)
+		t.Errorf("app_for_path with system binding = %v, want forum-app-1", result)
 	}
 
 	// User binding takes priority
 	user.set_path_app("forums", "forum-app-2")
-	result = app_for_path_for(user, "forums")
+	result = app_for_path(user, "forums")
 	if result == nil || result.id != "forum-app-2" {
-		t.Errorf("app_for_path_for with user binding = %v, want forum-app-2", result)
+		t.Errorf("app_for_path with user binding = %v, want forum-app-2", result)
 	}
 }
 
@@ -1662,12 +1662,12 @@ func TestCombinedRoutingTypes(t *testing.T) {
 	}
 
 	// Service should use system default (no user override)
-	if result := app_for_service_for(user, "wiki-service"); result == nil || result.id != "wiki-app" {
+	if result := app_for_service(user, "wiki-service"); result == nil || result.id != "wiki-app" {
 		t.Errorf("service routing = %v, want wiki-app", result)
 	}
 
 	// Path should use system default (no user override)
-	if result := app_for_path_for(user, "wikis"); result == nil || result.id != "wiki-app" {
+	if result := app_for_path(user, "wikis"); result == nil || result.id != "wiki-app" {
 		t.Errorf("path routing = %v, want wiki-app", result)
 	}
 }
@@ -1690,11 +1690,11 @@ func TestNilUserRouting(t *testing.T) {
 	if result := class_app_for(nil, "test"); result == nil || result.id != "test-app" {
 		t.Errorf("class_app_for(nil) = %v, want test-app", result)
 	}
-	if result := app_for_service_for(nil, "test-svc"); result == nil || result.id != "test-app" {
-		t.Errorf("app_for_service_for(nil) = %v, want test-app", result)
+	if result := app_for_service(nil, "test-svc"); result == nil || result.id != "test-app" {
+		t.Errorf("app_for_service(nil) = %v, want test-app", result)
 	}
-	if result := app_for_path_for(nil, "test-path"); result == nil || result.id != "test-app" {
-		t.Errorf("app_for_path_for(nil) = %v, want test-app", result)
+	if result := app_for_path(nil, "test-path"); result == nil || result.id != "test-app" {
+		t.Errorf("app_for_path(nil) = %v, want test-app", result)
 	}
 }
 

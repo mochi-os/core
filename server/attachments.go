@@ -55,6 +55,7 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"thumbnail": sls.FromStringDict(sl.String("mochi.attachment.thumbnail"), sl.StringDict{
 		"path": sl.NewBuiltin("mochi.attachment.thumbnail.path", api_attachment_thumbnail_path),
 	}),
+	"store": sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
 	"sync":  sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch": sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
@@ -1360,8 +1361,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 
-	// If entity is set, this is a remote attachment - not available locally
-	// Use mochi.attachment.fetch() for remote attachments
+	// Remote attachments not available locally - served by web layer via feature:"attachment"
 	if att.Entity != "" {
 		return sl.None, nil
 	}
@@ -1408,12 +1408,11 @@ func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl.None, nil
 	}
 
-	// If entity is set, this is a remote attachment - not available locally
+	// Remote attachments not available locally - served by web layer via feature:"attachment"
 	if att.Entity != "" {
 		return sl.None, nil
 	}
 
-	// Get full path and create thumbnail
 	path := filepath.Join(data_dir, attachment_path(owner.ID, app.id, att.ID, att.Name))
 	thumb, err := thumbnail_create(path)
 	if err != nil || thumb == "" {
@@ -1566,11 +1565,15 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 }
 
 // Federation: fetch attachment data from remote entity
-func attachment_fetch_remote(app *App, entity string, id string) []byte {
+func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bool) []byte {
 	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
+	want_thumbnail := len(thumbnail) > 0 && thumbnail[0]
 
-	// Check cache first
+	// Cache path for remote attachments (thumbnails cached separately)
 	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
+	if want_thumbnail {
+		cache_path += ".thumb"
+	}
 	if fi, err := os.Stat(cache_path); err == nil {
 		if time.Since(fi.ModTime()) > cache_max_age {
 			os.Remove(cache_path) // expired, will refetch below
@@ -1589,8 +1592,12 @@ func attachment_fetch_remote(app *App, entity string, id string) []byte {
 	}
 	defer s.close()
 
-	//debug("attachment_fetch_remote: sending id=%s", id)
-	s.write_content("id", id)
+	//debug("attachment_fetch_remote: sending id=%s thumbnail=%v", id, want_thumbnail)
+	content := map[string]string{"id": id}
+	if want_thumbnail {
+		content["thumbnail"] = "true"
+	}
+	s.write(content)
 
 	//debug("attachment_fetch_remote: waiting for status response...")
 	status, err := s.read_content()
@@ -1682,31 +1689,6 @@ func (e *Event) attachment_event_create() {
 
 		e.db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
-
-		// Fetch the file immediately to create a full local copy
-		// Fetch from source (sender's identity) since that's where the file is stored
-		if e.user != nil && e.app != nil && name != "" {
-			data := attachment_fetch_remote(e.app, source, id)
-			if data != nil {
-				// Write file using os.Root for traversal protection
-				base := attachment_files_base(e.user.ID, e.app.id)
-				file_mkdir(base)
-				root, err := os.OpenRoot(base)
-				if err == nil {
-					filename := attachment_filename(id, name)
-					f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-					if err == nil {
-						_, err = f.Write(data)
-						f.Close()
-						if err == nil {
-							e.db.exec(`update attachments set entity = '' where id = ?`, id)
-							info("Attachment %s fetched and stored locally", id)
-						}
-					}
-					root.Close()
-				}
-			}
-		}
 	}
 }
 
@@ -1758,32 +1740,6 @@ func (e *Event) attachment_event_insert() {
 
 	e.db.exec(`insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
-
-	// Fetch the file immediately to create a full local copy
-	// Fetch from source (sender's identity) since that's where the file is stored
-	if e.user != nil && e.app != nil && name != "" {
-		data := attachment_fetch_remote(e.app, source, id)
-		if data != nil {
-			// Write file using os.Root for traversal protection
-			base := attachment_files_base(e.user.ID, e.app.id)
-			file_mkdir(base)
-			root, err := os.OpenRoot(base)
-			if err == nil {
-				filename := attachment_filename(id, name)
-				f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-				if err == nil {
-					_, err = f.Write(data)
-					f.Close()
-					if err == nil {
-						// File stored locally, clear entity so it's served from local storage
-						e.db.exec(`update attachments set entity = '' where id = ?`, id)
-						info("Attachment %s fetched and stored locally", id)
-					}
-				}
-				root.Close()
-			}
-		}
-	}
 }
 
 // Event handler: _attachment/update
@@ -1945,6 +1901,7 @@ func (e *Event) attachment_event_data() {
 		e.stream.write(map[string]string{"status": "400"})
 		return
 	}
+	thumbnail := e.get("thumbnail", "") == "true"
 
 	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
@@ -1974,6 +1931,23 @@ func (e *Event) attachment_event_data() {
 	defer root.Close()
 
 	filename := attachment_filename(att.ID, att.Name)
+
+	// Serve thumbnail if requested and the file is an image
+	if thumbnail && is_image(att.Name) {
+		path := filepath.Join(base, filename)
+		thumb, err := thumbnail_create(path)
+		if err == nil && thumb != "" {
+			f, err := os.Open(thumb)
+			if err == nil {
+				defer f.Close()
+				e.stream.write(map[string]string{"status": "200"})
+				io.Copy(e.stream.writer, f)
+				e.stream.close_write()
+				return
+			}
+		}
+	}
+
 	f, err := root.Open(filename)
 	if err != nil {
 		warn("attachment_event_data: file not found, returning 404")
@@ -1987,6 +1961,108 @@ func (e *Event) attachment_event_data() {
 	io.Copy(e.stream.writer, f)
 	e.stream.close_write()
 	//debug("attachment_event_data: done")
+}
+
+// mochi.attachment.store(attachments, entity, object?) -> int: Store remote attachment metadata without downloading files
+func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return sl_error(fn, "syntax: <attachments: list>, <entity: string>, [object: string]")
+	}
+
+	entity, ok := sl.AsString(args[1])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
+	}
+
+	object_override := ""
+	if len(args) > 2 {
+		object_override, _ = sl.AsString(args[2])
+	}
+
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	db := db_app_system(owner, app)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+	db.attachments_setup()
+
+	// Decode attachments list
+	attachments := sl_decode(args[0])
+	list, ok := attachments.([]any)
+	if !ok {
+		return sl_error(fn, "attachments must be a list")
+	}
+
+	count := 0
+	for _, item := range list {
+		att, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		id, _ := att["id"].(string)
+		if !valid(id, "id") {
+			continue
+		}
+
+		object := object_override
+		if object == "" {
+			object, _ = att["object"].(string)
+		}
+		name, _ := att["name"].(string)
+		content_type, _ := att["content_type"].(string)
+		creator, _ := att["creator"].(string)
+		caption, _ := att["caption"].(string)
+		description, _ := att["description"].(string)
+
+		var size int64
+		switch v := att["size"].(type) {
+		case int:
+			size = int64(v)
+		case int64:
+			size = v
+		case float64:
+			size = int64(v)
+		}
+
+		var rank int
+		switch v := att["rank"].(type) {
+		case int:
+			rank = v
+		case int64:
+			rank = int(v)
+		case float64:
+			rank = int(v)
+		}
+
+		var created int64
+		switch v := att["created"].(type) {
+		case int:
+			created = int64(v)
+		case int64:
+			created = v
+		case float64:
+			created = int64(v)
+		}
+		if created == 0 {
+			created = now()
+		}
+
+		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+		count++
+	}
+
+	return sl_encode(count), nil
 }
 
 // mochi.attachment.sync(object, recipients) -> int: Sync attachments to recipients, returns count

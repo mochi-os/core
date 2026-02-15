@@ -195,24 +195,19 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Serve attachment - ID comes from :id parameter
-	// Use owner (entity owner) for database lookup since attachments belong to the entity
 	if aa.Feature == "attachment" || aa.Feature == "attachment/thumbnail" {
 		attachment := aa.parameters["id"]
 		entity := ""
-		att_owner := owner
 		if e != nil {
 			entity = e.ID
 		} else if aa.parameters["wiki"] != "" {
 			entity = aa.parameters["wiki"]
-			att_owner = user_owning_entity(entity)
 		} else if aa.parameters["feed"] != "" {
 			entity = aa.parameters["feed"]
-			att_owner = user_owning_entity(entity)
 		} else if aa.parameters["forum"] != "" {
 			entity = aa.parameters["forum"]
-			att_owner = user_owning_entity(entity)
 		}
-		return web_serve_attachment(c, a, att_owner, entity, attachment, aa.Feature == "attachment/thumbnail")
+		return web_serve_attachment(c, a, owner, entity, attachment, aa.Feature == "attachment/thumbnail")
 	}
 
 	// Handle git Smart HTTP protocol
@@ -974,7 +969,7 @@ func web_path(c *gin.Context) {
 	first := segments[0]
 
 	// Check for app matching first segment (user preferences, then system defaults, then fallback)
-	a := app_for_path_for(user, first)
+	a := app_for_path(user, first)
 	if a != nil {
 		// Set app path segment so HTML serving can inject meta tags
 		c.Set("mochi_app_path", first)
@@ -1157,7 +1152,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 
 	// If no local owner, try to fetch from remote entity (e.g., bookmarked wikis)
 	if user == nil {
-		if entity == "" || !valid(entity, "entity") {
+		if entity == "" || (!valid(entity, "entity") && !valid(entity, "fingerprint")) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
 			return true
 		}
@@ -1172,6 +1167,11 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 
 	var att Attachment
 	if !db.scan(&att, "select * from attachments where id = ?", id) {
+		// Attachment record not in local database — try remote if entity is available
+		// (e.g., subscribed feed whose attachments haven't been piggybacked)
+		if entity != "" && (valid(entity, "entity") || valid(entity, "fingerprint")) {
+			return web_serve_attachment_remote(c, app, entity, id, thumbnail)
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
 		return true
 	}
@@ -1226,23 +1226,19 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 
 // Serve an attachment from a remote entity (for bookmarked wikis, etc.)
 func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, thumbnail bool) bool {
-	// Cache path for remote attachments
-	path := filepath.Join(cache_dir, "attachments", app.id, entity, id)
-
-	// Check if already cached
-	if !file_exists(path) {
-		// Fetch from remote entity
-		data := attachment_fetch_remote(app, entity, id)
-		if data == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
-			return true
-		}
-		file_write(path, data)
-		info("Remote attachment %s from %s cached on demand", id, entity)
+	// Fetch from remote (thumbnail generated on remote side if requested)
+	data := attachment_fetch_remote(app, entity, id, thumbnail)
+	if data == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return true
 	}
 
-	// Use ETag for cache validation
-	etag := fmt.Sprintf(`"%s"`, id)
+	// ETag cache validation
+	suffix := ""
+	if thumbnail {
+		suffix = "-thumb"
+	}
+	etag := fmt.Sprintf(`"%s%s"`, id, suffix)
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "private, must-revalidate")
 
@@ -1251,13 +1247,6 @@ func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, th
 		return true
 	}
 
-	if thumbnail {
-		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
-			c.File(thumb)
-			return true
-		}
-	}
-
-	c.File(path)
+	c.Data(http.StatusOK, http.DetectContentType(data), data)
 	return true
 }

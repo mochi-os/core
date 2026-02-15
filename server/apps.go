@@ -678,12 +678,12 @@ func app_download_version(id, version string) bool {
 	return true
 }
 
-// app_for_service_for finds the best app for a service with user preferences.
+// app_for_service finds the best app for a service with user preferences.
 // Resolution order:
 // 1. User's binding (if user is not nil)
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this service (dev apps first, then by install time)
-func app_for_service_for(user *User, service string) *App {
+func app_for_service(user *User, service string) *App {
 	// 1. Check user's binding
 	if user != nil {
 		if app_id := user.service_app(service); app_id != "" {
@@ -701,7 +701,12 @@ func app_for_service_for(user *User, service string) *App {
 	}
 
 	// 3. Fallback: First app that declares this service
-	return app_for_service_fallback(user, service)
+	if a := app_for_service_fallback(user, service); a != nil {
+		return a
+	}
+
+	// 4. Handle app entity ID as service (e.g. attachment sync from published apps)
+	return app_by_id(service)
 }
 
 // app_for_service_fallback finds the first app that declares a service.
@@ -727,12 +732,12 @@ func app_for_service_fallback(user *User, service string) *App {
 	return app_select_best(candidates)
 }
 
-// app_for_path_for finds the best app for a URL path with user preferences.
+// app_for_path finds the best app for a URL path with user preferences.
 // Resolution order:
 // 1. User's binding (if user is not nil)
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this path (dev apps first, then by install time)
-func app_for_path_for(user *User, path string) *App {
+func app_for_path(user *User, path string) *App {
 	// 1. Check user's binding
 	if user != nil {
 		if app_id := user.path_app(path); app_id != "" {

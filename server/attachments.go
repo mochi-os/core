@@ -1299,9 +1299,9 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// If entity is set, this is a cached reference - fetch from remote
 	if att.Entity != "" {
-		data := attachment_fetch_remote(app, att.Entity, id)
-		if data != nil {
-			return sl_encode(data), nil
+		path := attachment_fetch_remote(app, att.Entity, id)
+		if path != "" {
+			return sl_encode(file_read(path)), nil
 		}
 		return sl.None, nil
 	}
@@ -1564,8 +1564,8 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 	}
 }
 
-// Federation: fetch attachment data from remote entity
-func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bool) []byte {
+// Federation: fetch attachment data from remote entity, returns cache file path
+func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bool) string {
 	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
 	want_thumbnail := len(thumbnail) > 0 && thumbnail[0]
 
@@ -1579,7 +1579,7 @@ func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bo
 			os.Remove(cache_path) // expired, will refetch below
 		} else {
 			//debug("attachment_fetch_remote: returning cached file %s", cache_path)
-			return file_read(cache_path)
+			return cache_path
 		}
 	}
 
@@ -1588,7 +1588,7 @@ func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bo
 	s, err := stream("", entity, app.id, "_attachment/data")
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
-		return nil
+		return ""
 	}
 	defer s.close()
 
@@ -1604,17 +1604,17 @@ func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bo
 	//debug("attachment_fetch_remote: received status=%v err=%v", status, err)
 	if err != nil || status["status"] != "200" {
 		warn("attachment_fetch_remote: bad status: %v", status)
-		return nil
+		return ""
 	}
 
 	// Stream directly to cache file (use raw_reader to include any buffered data from CBOR decoder)
 	file_mkdir(filepath.Dir(cache_path))
 	if !file_write_from_reader(cache_path, s.raw_reader()) {
 		//debug("attachment_fetch_remote: failed to write cache file")
-		return nil
+		return ""
 	}
 
-	return file_read(cache_path)
+	return cache_path
 }
 
 // Decode a Starlark value to a string list

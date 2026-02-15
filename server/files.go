@@ -125,6 +125,24 @@ func file_read(path string) []byte {
 	return must(os.ReadFile(path))
 }
 
+// file_copy copies a file by streaming, without loading into memory
+func file_copy(src, dst string) {
+	file_mkdir_for_file(dst)
+	s, err := os.Open(src)
+	if err != nil {
+		warn("Unable to open file %q for copying: %v", src, err)
+		return
+	}
+	defer s.Close()
+	d, err := os.Create(dst)
+	if err != nil {
+		warn("Unable to create file %q for copying: %v", dst, err)
+		return
+	}
+	defer d.Close()
+	io.Copy(d, s)
+}
+
 func file_write(path string, data []byte) {
 	file_mkdir_for_file(path)
 	must(os.WriteFile(path, data, 0644))

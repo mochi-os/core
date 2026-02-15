@@ -21,6 +21,7 @@ type Action struct {
 	owner  *User
 	domain *DomainInfo
 	app    *App
+	active *AppVersion
 	token  *Token
 	web    *gin.Context
 	inputs map[string]string
@@ -38,27 +39,43 @@ func (ai *ActionInput) Truth() sl.Bool        { return true }
 func (ai *ActionInput) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: action.input") }
 func (ai *ActionInput) Name() string          { return "input" }
 
-// Callable: a.input(field, default?) -> string
+// Callable: a.input(field, default?) -> string or None
 func (ai *ActionInput) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field string
-	var def string
+	var def sl.Value
 	err := sl.UnpackArgs("input", args, kwargs, "field", &field, "default?", &def)
 	if err != nil {
 		return nil, err
 	}
 
 	value := ai.action.input(field)
-	if value == "" {
-		value = def
+	if value != "" {
+		return sl.String(value), nil
 	}
-	return sl.String(value), nil
+
+	// Field is missing
+	if def != nil {
+		return def, nil
+	}
+	if ai.action.active.Architecture.Version >= 4 {
+		return sl.None, nil
+	}
+	return sl.String(""), nil
 }
 
-func (ai *ActionInput) AttrNames() []string { return []string{"exists"} }
+func (ai *ActionInput) AttrNames() []string {
+	if ai.action.active.Architecture.Version >= 4 {
+		return nil
+	}
+	return []string{"exists"}
+}
 
 func (ai *ActionInput) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "exists":
+		if ai.action.active.Architecture.Version >= 4 {
+			return nil, fmt.Errorf("a.input.exists() is not available in API version 4+; use 'a.input(field) != None' instead")
+		}
 		return sl.NewBuiltin("input.exists", ai.sl_exists), nil
 	}
 	return nil, nil
@@ -664,13 +681,27 @@ func (c *ActionCookie) String() string        { return "ActionCookie" }
 func (c *ActionCookie) Truth() sl.Bool        { return sl.True }
 func (c *ActionCookie) Type() string          { return "ActionCookie" }
 
-// a.cookie.get(name, default?) -> string: Get cookie value
+// a.cookie.get(name, default?) -> string or None: Get cookie value
 func (c *ActionCookie) sl_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var name, def string
+	var name string
+	var def sl.Value
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "default?", &def); err != nil {
 		return nil, err
 	}
-	return sl.String(web_cookie_get(c.action.web, name, def)), nil
+
+	value, err := c.action.web.Cookie(name)
+	if err == nil {
+		return sl.String(value), nil
+	}
+
+	// Cookie not found
+	if def != nil {
+		return def, nil
+	}
+	if c.action.active.Architecture.Version >= 4 {
+		return sl.None, nil
+	}
+	return sl.String(""), nil
 }
 
 // a.cookie.set(name, value) -> None: Set a cookie

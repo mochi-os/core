@@ -305,6 +305,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			},
 		},
 		app:    a,
+		active: av,
 		token:  api_token,
 		web:    c,
 		inputs: make(map[string]string),

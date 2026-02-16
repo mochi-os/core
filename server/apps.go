@@ -100,6 +100,7 @@ type AppVersion struct {
 	base             string                                              `json:"-"`
 	labels           map[string]map[string]string                        `json:"-"`
 	starlark_runtime *Starlark                                           `json:"-"`
+	starlark_events  *Starlark                                           `json:"-"`
 }
 
 type Icon struct {
@@ -1725,6 +1726,18 @@ func (av *AppVersion) starlark() *Starlark {
 		av.starlark_runtime = starlark(av.Execute)
 	}
 	return av.starlark_runtime
+}
+
+// Get a Starlark interpreter for event handling, separate from the main runtime
+// to avoid mutex deadlock when an action triggers a P2P event on the same server
+func (av *AppVersion) starlark_event() *Starlark {
+	if dev_reload {
+		return starlark(av.Execute)
+	}
+	if av.starlark_events == nil {
+		av.starlark_events = starlark(av.Execute)
+	}
+	return av.starlark_events
 }
 
 // Call a Starlark database function (create, upgrade, downgrade)

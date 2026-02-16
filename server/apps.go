@@ -706,7 +706,23 @@ func app_for_service(user *User, service string) *App {
 	}
 
 	// 4. Handle app entity ID as service (e.g. attachment sync from published apps)
-	return app_by_id(service)
+	a := app_by_id(service)
+	if a == nil {
+		return nil
+	}
+	// If a published app was found, check if a dev app provides the same service
+	if is_entity_id(a.id) {
+		av := a.active(user)
+		if av != nil {
+			for _, s := range av.Services {
+				if dev := app_for_service_fallback(user, s); dev != nil && !is_entity_id(dev.id) {
+					debug("app_for_service: published app %q -> dev app %q for service %q", a.id, dev.id, s)
+					return dev
+				}
+			}
+		}
+	}
+	return a
 }
 
 // app_for_service_fallback finds the first app that declares a service.

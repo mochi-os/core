@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
@@ -18,7 +19,10 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-var webauthn_instance *webauthn.WebAuthn
+var (
+	webauthn_instances map[string]*webauthn.WebAuthn
+	webauthn_mu        sync.RWMutex
+)
 
 var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.StringDict{
 	"count":  sl.NewBuiltin("mochi.user.passkey.count", api_user_passkey_count),
@@ -31,25 +35,45 @@ var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.St
 	}),
 })
 
-// Initialize WebAuthn with server configuration
+// Initialize the WebAuthn instance cache
 func passkey_init() {
-	domain := ini_string("web", "domain", "localhost")
+	webauthn_instances = make(map[string]*webauthn.WebAuthn)
+}
+
+// Return a WebAuthn instance for the given request host, creating one if needed
+func webauthn_for_host(host string) *webauthn.WebAuthn {
+	// Strip port from host
+	domain := host
+	if i := strings.IndexByte(domain, ':'); i != -1 {
+		domain = domain[:i]
+	}
+
+	webauthn_mu.RLock()
+	instance := webauthn_instances[domain]
+	webauthn_mu.RUnlock()
+	if instance != nil {
+		return instance
+	}
+
 	origins := []string{"https://" + domain}
 	if domain == "localhost" {
 		origins = append(origins, "http://localhost", "http://localhost:8080", "http://localhost:8081")
 	}
 
-	cfg := &webauthn.Config{
+	instance, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: "Mochi",
 		RPID:          domain,
 		RPOrigins:     origins,
+	})
+	if err != nil {
+		warn("Failed to initialize WebAuthn for %s: %v", domain, err)
+		return nil
 	}
 
-	var err error
-	webauthn_instance, err = webauthn.New(cfg)
-	if err != nil {
-		warn("Failed to initialize WebAuthn: %v", err)
-	}
+	webauthn_mu.Lock()
+	webauthn_instances[domain] = instance
+	webauthn_mu.Unlock()
+	return instance
 }
 
 // WebAuthnUser adapts User for the go-webauthn library
@@ -127,7 +151,8 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 
 // POST /_/auth/passkey/begin - Start discoverable login
 func web_passkey_login_begin(c *gin.Context) {
-	if webauthn_instance == nil {
+	wa := webauthn_for_host(c.Request.Host)
+	if wa == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_not_configured"})
 		return
 	}
@@ -137,7 +162,7 @@ func web_passkey_login_begin(c *gin.Context) {
 		return
 	}
 
-	options, session, err := webauthn_instance.BeginDiscoverableLogin()
+	options, session, err := wa.BeginDiscoverableLogin()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_error"})
 		return
@@ -158,7 +183,8 @@ func web_passkey_login_begin(c *gin.Context) {
 
 // POST /_/auth/passkey/finish - Complete discoverable login
 func web_passkey_login_finish(c *gin.Context) {
-	if webauthn_instance == nil {
+	wa := webauthn_for_host(c.Request.Host)
+	if wa == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_not_configured"})
 		return
 	}
@@ -216,7 +242,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		return &WebAuthnUser{user: user}, nil
 	}
 
-	credential, err := webauthn_instance.ValidateDiscoverableLogin(handler, session, parsed)
+	credential, err := wa.ValidateDiscoverableLogin(handler, session, parsed)
 	if err != nil {
 		info("Passkey login failed: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication_failed"})
@@ -331,7 +357,9 @@ func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 // mochi.user.passkey.register.begin() -> dict: Start passkey registration
 func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if webauthn_instance == nil {
+	host, _ := t.Local("host").(string)
+	wa := webauthn_for_host(host)
+	if wa == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
 
@@ -345,7 +373,7 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 
 	wu := &WebAuthnUser{user: user}
-	options, session, err := webauthn_instance.BeginRegistration(wu,
+	options, session, err := wa.BeginRegistration(wu,
 		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 	)
 	if err != nil {
@@ -367,7 +395,9 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 
 // mochi.user.passkey.register.finish(ceremony, credential, name?) -> dict: Complete registration
 func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if webauthn_instance == nil {
+	host, _ := t.Local("host").(string)
+	wa := webauthn_for_host(host)
+	if wa == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
 
@@ -430,7 +460,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	}
 
 	wu := &WebAuthnUser{user: user}
-	credential, err := webauthn_instance.CreateCredential(wu, session, parsed)
+	credential, err := wa.CreateCredential(wu, session, parsed)
 	if err != nil {
 		return sl_error(fn, "registration failed: %v", err)
 	}

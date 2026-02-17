@@ -352,6 +352,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		s := av.starlark()
 		s.set("action", &action)
 		s.set("app", a)
+		s.set("host", c.Request.Host)
 		s.set("user", user)
 		s.set("owner", owner)
 

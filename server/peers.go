@@ -43,6 +43,12 @@ const (
 	peer_maximum_addresses = 20
 )
 
+// Reconnection state for a disconnected peer
+type PeerReconnect struct {
+	NextRetry int64
+	Attempts  int
+}
+
 var (
 	peer_default_publisher = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 	peers_bootstrap        = []Peer{
@@ -51,9 +57,11 @@ var (
 			{Address: "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
 		}},
 	}
-	peers             map[string]Peer = map[string]Peer{}
-	peer_publish_chan                 = make(chan bool)
-	peers_lock                        = &sync.Mutex{}
+	peers               map[string]Peer = map[string]Peer{}
+	peer_publish_chan                   = make(chan bool)
+	peers_lock                          = &sync.Mutex{}
+	peer_reconnects                     = map[string]PeerReconnect{}
+	peer_reconnect_lock                 = &sync.Mutex{}
 )
 
 func init() {
@@ -178,6 +186,7 @@ func peer_connect(id string) bool {
 	// Refresh the timestamp of the address we actually connected on
 	if p.connected {
 		peer_refresh_connected_address(id)
+		peer_reconnected(id)
 	}
 
 	peers_lock.Lock()
@@ -226,12 +235,27 @@ func peer_disconnected(id string) {
 	debug("Peer %q disconnected", id)
 
 	peers_lock.Lock()
-	defer peers_lock.Unlock()
-
 	if p, found := peers[id]; found {
 		p.connected = false
 		peers[id] = p
 	}
+	peers_lock.Unlock()
+
+	// Schedule reconnection if not already scheduled
+	peer_reconnect_lock.Lock()
+	if _, scheduled := peer_reconnects[id]; !scheduled {
+		delay := int64(10) + rand.Int64N(5) // 10-14 seconds initial delay with jitter
+		peer_reconnects[id] = PeerReconnect{NextRetry: now() + delay, Attempts: 0}
+		debug("Peer %q scheduled for reconnection in %ds", id, delay)
+	}
+	peer_reconnect_lock.Unlock()
+}
+
+// Clear reconnection state for a peer (called when peer connects by any means)
+func peer_reconnected(id string) {
+	peer_reconnect_lock.Lock()
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
 }
 
 // New or existing peer discovered or re-discovered at unknown address
@@ -345,6 +369,47 @@ func peers_manager() {
 			}
 		}
 		peers_lock.Unlock()
+	}
+}
+
+// Reconnect to disconnected peers with exponential backoff
+func peer_reconnect_manager() {
+	for range time.Tick(10 * time.Second) {
+		t := now()
+		var ready []string
+
+		// Collect peers ready for reconnection (max 3 per tick)
+		peer_reconnect_lock.Lock()
+		for id, r := range peer_reconnects {
+			if r.NextRetry <= t {
+				ready = append(ready, id)
+				if len(ready) >= 3 {
+					break
+				}
+			}
+		}
+		peer_reconnect_lock.Unlock()
+
+		for _, id := range ready {
+			if peer_connect(id) {
+				debug("Peer %q reconnected successfully", id)
+				continue
+			}
+
+			// Backoff: 10s, 20s, 40s, 80s, 160s, 300s (capped at 5 minutes)
+			peer_reconnect_lock.Lock()
+			r := peer_reconnects[id]
+			r.Attempts++
+			delay := int64(10) << min(r.Attempts, 5) // 20, 40, 80, 160, 320
+			if delay > 300 {
+				delay = 300
+			}
+			delay += rand.Int64N(delay/4 + 1) // 0-25% jitter
+			r.NextRetry = now() + delay
+			peer_reconnects[id] = r
+			peer_reconnect_lock.Unlock()
+			debug("Peer %q reconnect attempt %d failed, next retry in %ds", id, r.Attempts, delay)
+		}
 	}
 }
 

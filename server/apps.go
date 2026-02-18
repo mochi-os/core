@@ -99,8 +99,8 @@ type AppVersion struct {
 	app              *App                                                `json:"-"`
 	base             string                                              `json:"-"`
 	labels           map[string]map[string]string                        `json:"-"`
-	starlark_runtime *Starlark                                           `json:"-"`
-	starlark_events  *Starlark                                           `json:"-"`
+	starlark_once    sync.Once                                            `json:"-"`
+	starlark_globals sl.StringDict                                        `json:"-"`
 }
 
 type Icon struct {
@@ -298,24 +298,16 @@ type DefaultApp struct {
 }
 
 var (
-	// Default apps to install, in priority order (Login and Home first for usability)
+	// Default apps to install. Login and Home must be first two (bootstrap depends on it), then alphabetical.
 	apps_default = []DefaultApp{
 		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", nil},
 		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
 			{"permission/manage", ""},
 		}},
-		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
-			{"service", "friends"},
-			{"service", "notifications"},
-		}},
-		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
-			{"service", "friends"},
-			{"service", "notifications"},
-		}},
-		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
-			{"service", "friends"},
-		}},
+		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", nil},
+		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", nil},
+		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},
 			{"account/read", ""},
@@ -325,24 +317,17 @@ var (
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"group/manage", ""},
 			{"user/read", ""},
-			{"service", "notifications"},
 		}},
+		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", nil},
+		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", nil},
+		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", nil},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"setting/write", ""},
 			{"user/read", ""},
 			{"account/read", ""},
 			{"account/manage", ""},
 		}},
-		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
-			{"service", "friends"},
-		}},
-		{"", "Projects", []struct{ Permission, Object string }{
-			{"url", "*"},
-		}},
-		{"test", "Test", []struct{ Permission, Object string }{
-			{"account/read", ""},
-			{"account/manage", ""},
-		}},
+		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
 	}
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}
@@ -1722,22 +1707,13 @@ func (av *AppVersion) starlark() *Starlark {
 	if dev_reload {
 		return starlark(av.Execute)
 	}
-	if av.starlark_runtime == nil {
-		av.starlark_runtime = starlark(av.Execute)
+	av.starlark_once.Do(func() {
+		av.starlark_globals = starlark(av.Execute).globals
+	})
+	return &Starlark{
+		thread:  &sl.Thread{Name: "main"},
+		globals: av.starlark_globals,
 	}
-	return av.starlark_runtime
-}
-
-// Get a Starlark interpreter for event handling, separate from the main runtime
-// to avoid mutex deadlock when an action triggers a P2P event on the same server
-func (av *AppVersion) starlark_event() *Starlark {
-	if dev_reload {
-		return starlark(av.Execute)
-	}
-	if av.starlark_events == nil {
-		av.starlark_events = starlark(av.Execute)
-	}
-	return av.starlark_events
 }
 
 // Call a Starlark database function (create, upgrade, downgrade)

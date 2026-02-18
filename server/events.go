@@ -210,7 +210,7 @@ func (e *Event) route() error {
 			return fmt.Errorf("no handler for event %q", e.event)
 		}
 
-		s := av.starlark_event()
+		s := av.starlark()
 		s.set("event", e)
 		s.set("app", a)
 		s.set("user", e.user)

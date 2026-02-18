@@ -243,6 +243,10 @@ func queue_check_ack_timeout() {
 	timeout := now() - 30
 	db.exec("update queue set status = 'pending', next_retry = ? where status = 'sent' and created < ?",
 		queue_next_retry(0), timeout)
+	// Messages stuck in 'sending' for more than 60 seconds (safety net)
+	stuck := now() - 60
+	db.exec("update queue set status = 'pending', next_retry = ? where status = 'sending' and created < ?",
+		queue_next_retry(0), stuck)
 }
 
 // Check queue for messages to a specific entity (called when entity location discovered)

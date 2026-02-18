@@ -96,11 +96,11 @@ type AppVersion struct {
 		Peer string `json:"peer,omitempty"`
 	} `json:"publisher,omitempty"`
 
-	app              *App                                                `json:"-"`
-	base             string                                              `json:"-"`
-	labels           map[string]map[string]string                        `json:"-"`
-	starlark_once    sync.Once                                            `json:"-"`
-	starlark_globals sl.StringDict                                        `json:"-"`
+	app              *App                         `json:"-"`
+	base             string                       `json:"-"`
+	labels           map[string]map[string]string `json:"-"`
+	starlark_once    sync.Once                    `json:"-"`
+	starlark_globals sl.StringDict                `json:"-"`
 }
 
 type Icon struct {

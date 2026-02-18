@@ -181,6 +181,7 @@ func (m *Message) send_work() {
 	challenge, err := s.read_challenge()
 	if err != nil {
 		debug("Unable to read challenge: %v, will retry from queue", err)
+		queue_fail(m.ID, "challenge read failed")
 		return
 	}
 

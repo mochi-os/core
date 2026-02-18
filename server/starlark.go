@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sync"
 	"time"
 
 	"go.starlark.net/resolve"
@@ -45,7 +44,6 @@ func starlark_configure() {
 type Starlark struct {
 	thread  *sl.Thread
 	globals sl.StringDict
-	mu      sync.Mutex
 }
 
 // Create a new Starlark interpreter for a set of files
@@ -352,10 +350,6 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		return nil, fmt.Errorf("Starlark app function %q not found", function)
 	}
 
-	// Acquire mutex to protect thread locals from concurrent access
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Acquire semaphore to limit concurrency
 	starlark_sem <- struct{}{}
 	defer func() { <-starlark_sem }()
@@ -423,7 +417,5 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 
 // Set a Starlark thread variable
 func (s *Starlark) set(key string, value any) {
-	s.mu.Lock()
 	s.thread.SetLocal(key, value)
-	s.mu.Unlock()
 }

@@ -83,6 +83,7 @@ func main() {
 	go entities_manager()
 	go directory_manager()
 	go peers_manager()
+	go peer_reconnect_manager()
 	go peers_publish()
 	go queue_manager()
 	go ratelimit_manager()

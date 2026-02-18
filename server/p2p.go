@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	p2p "github.com/libp2p/go-libp2p"
@@ -184,11 +185,50 @@ func p2p_start() {
 
 	// Create p2p instance
 	port := ini_int("p2p", "port", 1443)
-	p2p_me = must(p2p.New(p2p.ListenAddrStrings(
-		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
-		fmt.Sprintf("/ip6/::/tcp/%d", port),
-		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-		fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)), p2p.Identity(private), p2p.ResourceManager(rm)))
+	opts := []p2p.Option{
+		p2p.ListenAddrStrings(
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
+			fmt.Sprintf("/ip6/::/tcp/%d", port),
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)),
+		p2p.Identity(private),
+		p2p.ResourceManager(rm),
+		p2p.NATPortMap(),
+		p2p.EnableAutoNATv2(),
+		p2p.EnableNATService(),
+		p2p.EnableHolePunching(),
+	}
+
+	// AutoRelay: use bootstrap peers as relays when behind NAT
+	var relayPeers []p2p_peer.AddrInfo
+	for _, bp := range peers_bootstrap {
+		pid, err := p2p_peer.Decode(bp.ID)
+		if err != nil {
+			continue
+		}
+		ai := p2p_peer.AddrInfo{ID: pid}
+		for _, a := range bp.addresses {
+			ma, err := multiaddr.NewMultiaddr(strings.TrimSuffix(a.Address, "/p2p/"+bp.ID))
+			if err != nil {
+				continue
+			}
+			ai.Addrs = append(ai.Addrs, ma)
+		}
+		if len(ai.Addrs) > 0 {
+			relayPeers = append(relayPeers, ai)
+		}
+	}
+	if len(relayPeers) > 0 {
+		opts = append(opts, p2p.EnableAutoRelayWithStaticRelays(relayPeers))
+	}
+
+	// Relay server: serve as relay for NAT peers when configured
+	if ini_bool("p2p", "relay", false) {
+		opts = append(opts, p2p.EnableRelayService())
+		info("P2P relay service enabled")
+	}
+
+	p2p_me = must(p2p.New(opts...))
 	p2p_id = p2p_me.ID().String()
 	info("P2P listening on port %d with id %q", port, p2p_id)
 

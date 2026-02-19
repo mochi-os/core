@@ -363,6 +363,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			if errors.As(err, &permErr) {
 				c.JSON(http.StatusForbidden, gin.H{
 					"error":      "permission_required",
+					"app":        a.id,
 					"permission": permErr.Permission,
 					"restricted": permErr.Restricted,
 				})

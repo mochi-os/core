@@ -111,12 +111,18 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			published = item.UpdatedParsed.Unix()
 		}
 
+		cats := make([]any, 0, len(item.Categories))
+		for _, c := range item.Categories {
+			cats = append(cats, c)
+		}
+
 		items = append(items, map[string]any{
 			"title":       item.Title,
 			"description": description,
 			"link":        item.Link,
 			"guid":        guid,
 			"published":   published,
+			"categories":  cats,
 		})
 	}
 

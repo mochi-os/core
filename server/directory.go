@@ -86,8 +86,6 @@ func directory_download() {
 
 // Download directory updates from a specific peer
 func directory_download_from_peer(peer string) bool {
-	debug("Directory downloading from peer %q", peer)
-
 	s := peer_stream(peer)
 	if s == nil {
 		debug("Stream unable to open to peer %q", peer)
@@ -102,8 +100,6 @@ func directory_download_from_peer(peer string) bool {
 		return false
 	}
 
-	debug("Stream %d open to peer %q: from '', to '', service 'directory', event 'download'", s.id, peer)
-
 	err = s.write(Headers{Service: "directory", Event: "download"})
 	if err != nil {
 		return false
@@ -115,7 +111,7 @@ func directory_download_from_peer(peer string) bool {
 	if db.scan(&u, "select updated from directory order by updated desc limit 1") {
 		start = u.Updated
 	}
-	debug("Directory asking for directory updates since %s", time_local(nil, start))
+	debug("Directory downloading updates since %s from peer %q", time_local(nil, start), peer)
 	s.write_content("start", i64toa(start), "version", build_version)
 
 	users := db_open("db/users.db")
@@ -123,7 +119,7 @@ func directory_download_from_peer(peer string) bool {
 		var d Directory
 		err := s.read(&d)
 		if err != nil {
-			debug("Directory no more updates")
+			debug("Directory download finished")
 			return true
 		}
 

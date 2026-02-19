@@ -412,7 +412,7 @@ func valid(s string, match string) bool {
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "name":
-		match = "^[^<>\r\n\\;\"'`]{1,1000}$"
+		match = "^[^<>\r\n]{1,1000}$"
 	case "natural":
 		match = "^\\d{1,9}$"
 	case "parampath":

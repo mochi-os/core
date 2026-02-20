@@ -127,6 +127,7 @@ func entities_manager() {
 			}
 			for _, e := range es {
 				db.exec("update entities set published=? where id=?", now(), e.ID)
+				directory_create(&e)
 				directory_publish(&e, false)
 			}
 		}

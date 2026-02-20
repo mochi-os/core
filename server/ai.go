@@ -121,7 +121,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	// Determine model
-	if model == "" {
+	if model == "" || model == "default" {
 		model = aiProviderDefaults[ptype]
 	}
 

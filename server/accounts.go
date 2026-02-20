@@ -57,7 +57,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
-			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: ""},
+			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -100,7 +100,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-..."},
-			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: ""},
+			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -437,7 +437,10 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		api_key, _ := fields["api_key"].(string)
 		data["api_key"] = api_key
 		if model, _ := fields["model"].(string); model != "" {
+			identifier = model
 			data["model"] = model
+		} else {
+			identifier = "default"
 		}
 
 	case "mcp":
@@ -553,7 +556,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 		case "model":
 			model, _ := sl.AsString(kv[1])
-			row, err := db.row("select data from accounts where id=?", id)
+			row, err := db.row("select type, data from accounts where id=?", id)
 			if err == nil && row != nil {
 				raw, _ := row["data"].(string)
 				var d map[string]any
@@ -569,7 +572,17 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 					delete(d, "model")
 				}
 				j, _ := json.Marshal(d)
-				db.exec("update accounts set data=? where id=?", string(j), id)
+				// Keep identifier in sync for AI accounts
+				ptype, _ := row["type"].(string)
+				if ptype == "claude" || ptype == "openai" {
+					ident := "default"
+					if model != "" {
+						ident = model
+					}
+					db.exec("update accounts set data=?, identifier=? where id=?", string(j), ident, id)
+				} else {
+					db.exec("update accounts set data=? where id=?", string(j), id)
+				}
 			}
 		}
 	}

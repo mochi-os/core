@@ -57,6 +57,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
+			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: ""},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -99,6 +100,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-..."},
+			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: ""},
 			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -208,7 +210,7 @@ func account_redact(row map[string]any) map[string]any {
 // mochi.account.providers(capability?) -> list: Get available providers
 func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var capability string
-	if len(args) > 0 {
+	if len(args) > 0 && args[0] != sl.None {
 		cap, ok := sl.AsString(args[0])
 		if !ok {
 			return sl_error(fn, "invalid capability")
@@ -434,6 +436,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	case "claude", "openai":
 		api_key, _ := fields["api_key"].(string)
 		data["api_key"] = api_key
+		if model, _ := fields["model"].(string); model != "" {
+			data["model"] = model
+		}
 
 	case "mcp":
 		url, _ := fields["url"].(string)
@@ -545,6 +550,27 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				val = int(i)
 			}
 			db.exec("update accounts set enabled=? where id=?", val, id)
+
+		case "model":
+			model, _ := sl.AsString(kv[1])
+			row, err := db.row("select data from accounts where id=?", id)
+			if err == nil && row != nil {
+				raw, _ := row["data"].(string)
+				var d map[string]any
+				if raw != "" {
+					json.Unmarshal([]byte(raw), &d)
+				}
+				if d == nil {
+					d = make(map[string]any)
+				}
+				if model != "" {
+					d["model"] = model
+				} else {
+					delete(d, "model")
+				}
+				j, _ := json.Marshal(d)
+				db.exec("update accounts set data=? where id=?", string(j), id)
+			}
 		}
 	}
 

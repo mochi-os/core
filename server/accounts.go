@@ -58,7 +58,7 @@ var providers = []Provider{
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
 			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -78,7 +78,7 @@ var providers = []Provider{
 		Fields: []ProviderField{
 			{Name: "url", Label: "Server URL", Type: "url", Required: true, Placeholder: "https://mcp.example.com"},
 			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -90,7 +90,7 @@ var providers = []Provider{
 			{Name: "topic", Label: "Topic", Type: "text", Required: true, Placeholder: "my-notifications"},
 			{Name: "server", Label: "Server URL", Type: "url", Required: false, Placeholder: "https://ntfy.sh"},
 			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -101,7 +101,7 @@ var providers = []Provider{
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-..."},
 			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -111,7 +111,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "token", Label: "Access token", Type: "password", Required: true, Placeholder: ""},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -122,7 +122,7 @@ var providers = []Provider{
 		Fields: []ProviderField{
 			{Name: "url", Label: "URL", Type: "url", Required: true, Placeholder: ""},
 			{Name: "secret", Label: "Signing secret", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Label", Type: "text", Required: false, Placeholder: ""},
+			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},

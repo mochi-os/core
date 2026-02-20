@@ -28,6 +28,7 @@ func init() {
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"access":     api_access,
 			"account":    api_account,
+			"ai":         api_ai,
 			"app":        api_app,
 			"attachment": api_attachment,
 			"db":         api_db,
@@ -43,6 +44,7 @@ func init() {
 			}),
 			"message":    api_message,
 			"permission": api_permission,
+			"qid":        api_qid,
 			"peer": sls.FromStringDict(sl.String("mochi.peer"), sl.StringDict{
 				"connect": sls.FromStringDict(sl.String("mochi.peer.connect"), sl.StringDict{
 					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),

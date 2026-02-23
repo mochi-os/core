@@ -29,8 +29,7 @@ type QueueEntry struct {
 }
 
 const (
-	queue_max_attempts = 10
-	queue_max_age      = 7 * 86400 // 7 days
+	queue_max_age = 7 * 86400 // 7 days
 )
 
 // Retry delays: 1m, 2m, 4m, 8m, 15m, 30m, 1h
@@ -88,9 +87,10 @@ func queue_fail(id string, err string) {
 	}
 
 	attempts := q.Attempts + 1
+	age := time.Now().Unix() - q.Created
 
-	if attempts >= queue_max_attempts {
-		// Log and drop after max attempts
+	if age > queue_max_age {
+		// Log and drop after max age
 		warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q",
 			attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec("delete from queue where id = ?", id)

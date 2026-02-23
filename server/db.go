@@ -194,6 +194,12 @@ func db_user(u *User, name string) *DB {
 		// Connected accounts (email, browser push, AI services, MCP)
 		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1)")
 		db.exec("create index if not exists accounts_type on accounts(type)")
+
+		// User interest profiles for personalised ranking
+		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
+
+		// Internal key-value settings (Go-only, no Starlark API)
+		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
 	}
 
 	return db

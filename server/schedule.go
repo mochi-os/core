@@ -43,17 +43,17 @@ func schedule_db() *DB {
 // schedule_create inserts a new scheduled event and returns its ID
 func schedule_create(user int64, app string, due int64, event string, data string, interval int64) int64 {
 	db := schedule_db()
-	db.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
-		user, app, due, event, data, interval, now())
-	row, _ := db.row("select last_insert_rowid() as id")
-	if row == nil {
+	result := must(db.handle.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+		user, app, due, event, data, interval, now()))
+	id, _ := result.LastInsertId()
+	if id == 0 {
 		return 0
 	}
 
 	// Wake up the scheduler to check for the new event
 	schedule_notify()
 
-	return row["id"].(int64)
+	return id
 }
 
 // schedule_get retrieves a scheduled event by ID
@@ -500,12 +500,14 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	due_time := int64(due)
 
 	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
-	se := schedule_get(id)
-	if se == nil {
+	if id == 0 {
 		return sl_error(fn, "failed to create scheduled event")
 	}
 
-	return newSlScheduledEvent(se), nil
+	return newSlScheduledEvent(&ScheduledEvent{
+		ID: id, User: uid, App: app.id, Due: due_time,
+		Event: event, Data: string(data_json), Created: now(),
+	}), nil
 }
 
 // mochi.schedule.after(event, data, delay) -> ScheduledEvent: Schedule an event after a delay
@@ -552,12 +554,14 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
-	se := schedule_get(id)
-	if se == nil {
+	if id == 0 {
 		return sl_error(fn, "failed to create scheduled event")
 	}
 
-	return newSlScheduledEvent(se), nil
+	return newSlScheduledEvent(&ScheduledEvent{
+		ID: id, User: uid, App: app.id, Due: due_time,
+		Event: event, Data: string(data_json), Created: now(),
+	}), nil
 }
 
 // mochi.schedule.every(event, data, interval) -> ScheduledEvent: Schedule a recurring event
@@ -606,9 +610,13 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	due_time := now() + int64(interval)
 
 	id := schedule_create(uid, app.id, due_time, event, string(data_json), int64(interval))
-	se := schedule_get(id)
-	if se == nil {
+	if id == 0 {
 		return sl_error(fn, "failed to create scheduled event")
+	}
+
+	se := &ScheduledEvent{
+		ID: id, User: uid, App: app.id, Due: due_time,
+		Event: event, Data: string(data_json), Interval: int64(interval), Created: now(),
 	}
 
 	return newSlScheduledEvent(se), nil

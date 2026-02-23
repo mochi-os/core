@@ -116,6 +116,19 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			cats = append(cats, c)
 		}
 
+		// Extract image URL: prefer item.Image, fall back to image enclosure
+		image := ""
+		if item.Image != nil && item.Image.URL != "" {
+			image = item.Image.URL
+		} else {
+			for _, enc := range item.Enclosures {
+				if strings.HasPrefix(enc.Type, "image/") {
+					image = enc.URL
+					break
+				}
+			}
+		}
+
 		items = append(items, map[string]any{
 			"title":       item.Title,
 			"description": description,
@@ -123,6 +136,7 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			"guid":        guid,
 			"published":   published,
 			"categories":  cats,
+			"image":       image,
 		})
 	}
 

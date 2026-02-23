@@ -38,6 +38,7 @@ func init() {
 			"file":       api_file,
 			"git":        api_git,
 			"group":      api_group,
+			"interests":  api_interests,
 			"log":        api_log,
 			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
 				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),

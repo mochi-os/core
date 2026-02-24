@@ -133,8 +133,50 @@ func git_init(owner *User, entity_id string) error {
 		return err
 	}
 
-	_, err := git.PlainInit(path, true) // true = bare repository
-	return err
+	repo, err := git.PlainInit(path, true) // true = bare repository
+	if err != nil {
+		return err
+	}
+
+	// Create initial empty commit so the "main" branch ref exists
+	empty_tree := &object.Tree{Entries: []object.TreeEntry{}}
+	tree_obj := repo.Storer.NewEncodedObject()
+	tree_obj.SetType(plumbing.TreeObject)
+	if err := empty_tree.Encode(tree_obj); err != nil {
+		return fmt.Errorf("failed to encode empty tree: %v", err)
+	}
+	tree_hash, err := repo.Storer.SetEncodedObject(tree_obj)
+	if err != nil {
+		return fmt.Errorf("failed to store empty tree: %v", err)
+	}
+
+	now := time.Now()
+	sig := object.Signature{Name: "Mochi", Email: "mochi@localhost", When: now}
+	commit := &object.Commit{
+		Author:    sig,
+		Committer: sig,
+		Message:   "Initial commit\n",
+		TreeHash:  tree_hash,
+	}
+	commit_obj := repo.Storer.NewEncodedObject()
+	commit_obj.SetType(plumbing.CommitObject)
+	if err := commit.Encode(commit_obj); err != nil {
+		return fmt.Errorf("failed to encode initial commit: %v", err)
+	}
+	commit_hash, err := repo.Storer.SetEncodedObject(commit_obj)
+	if err != nil {
+		return fmt.Errorf("failed to store initial commit: %v", err)
+	}
+
+	// Set refs/heads/main to the initial commit
+	ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), commit_hash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		return fmt.Errorf("failed to set main branch: %v", err)
+	}
+
+	// Set HEAD to point to main
+	head := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main"))
+	return repo.Storer.SetReference(head)
 }
 
 // Delete a repository

@@ -532,6 +532,169 @@ func TestAppUserSetup(t *testing.T) {
 	}
 }
 
+// Test that db_user on a fresh database creates accounts with the "default" column and sets user_version=1
+func TestDBUserCreatesAccountsWithDefault(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_dbuser_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Create user directory
+	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
+
+	user := &User{ID: 1}
+	db := db_user(user, "user")
+
+	// Verify user_version is 1
+	uv := db.integer("pragma user_version")
+	if uv != 1 {
+		t.Errorf("user_version = %d, want 1", uv)
+	}
+
+	// Verify accounts table has "default" column
+	has_default, err := db.exists("select 1 from pragma_table_info('accounts') where name='default'")
+	if err != nil {
+		t.Fatalf("pragma_table_info query failed: %v", err)
+	}
+	if !has_default {
+		t.Error("accounts table should have 'default' column")
+	}
+
+	// Clean up from databases map
+	path := filepath.Join(tmp_dir, "users", "1", "user.db")
+	databases_lock.Lock()
+	delete(databases, path)
+	databases_lock.Unlock()
+	db.handle.Close()
+}
+
+// Test that db_user migrates a pre-existing user.db that lacks the "default" column
+func TestDBUserMigratesExistingDB(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_dbuser_migrate_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Create user directory
+	user_dir := filepath.Join(tmp_dir, "users", "2")
+	os.MkdirAll(user_dir, 0755)
+
+	// Manually create a user.db with the OLD accounts schema (no "default" column)
+	db_path := filepath.Join(user_dir, "user.db")
+	old_db := db_open("users/2/user.db")
+	old_db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1)")
+	old_db.exec("create index if not exists accounts_type on accounts(type)")
+	old_db.exec("insert into accounts (id, type, created) values (1, 'email', 1000)")
+	old_db.exec("pragma user_version=0")
+
+	// Remove from databases map so db_user reopens it
+	databases_lock.Lock()
+	delete(databases, db_path)
+	databases_lock.Unlock()
+	old_db.handle.Close()
+
+	// Now call db_user — should run migration
+	user := &User{ID: 2}
+	db := db_user(user, "user")
+
+	// Verify user_version is now 1
+	uv := db.integer("pragma user_version")
+	if uv != 1 {
+		t.Errorf("user_version = %d, want 1 after migration", uv)
+	}
+
+	// Verify accounts table now has "default" column
+	has_default, err := db.exists("select 1 from pragma_table_info('accounts') where name='default'")
+	if err != nil {
+		t.Fatalf("pragma_table_info query failed: %v", err)
+	}
+	if !has_default {
+		t.Error("accounts table should have 'default' column after migration")
+	}
+
+	// Verify existing row's "default" is empty string
+	row, err := db.row("select \"default\" from accounts where id=1")
+	if err != nil {
+		t.Fatalf("select default failed: %v", err)
+	}
+	if row == nil {
+		t.Fatal("existing account row should still exist after migration")
+	}
+	if row["default"] != "" {
+		t.Errorf("existing row default = %q, want empty string", row["default"])
+	}
+
+	// Clean up from databases map
+	databases_lock.Lock()
+	delete(databases, db_path)
+	databases_lock.Unlock()
+	db.handle.Close()
+}
+
+// Test that calling db_user twice doesn't re-run migrations or cause errors
+func TestDBUserIdempotent(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_dbuser_idempotent_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Create user directory
+	os.MkdirAll(filepath.Join(tmp_dir, "users", "3"), 0755)
+
+	user := &User{ID: 3}
+
+	// First call
+	db := db_user(user, "user")
+	uv := db.integer("pragma user_version")
+	if uv != 1 {
+		t.Errorf("first call: user_version = %d, want 1", uv)
+	}
+
+	// Remove from databases map to force reopen
+	db_path := filepath.Join(tmp_dir, "users", "3", "user.db")
+	databases_lock.Lock()
+	delete(databases, db_path)
+	databases_lock.Unlock()
+	db.handle.Close()
+
+	// Second call — should not error or change version
+	db2 := db_user(user, "user")
+	uv2 := db2.integer("pragma user_version")
+	if uv2 != 1 {
+		t.Errorf("second call: user_version = %d, want 1", uv2)
+	}
+
+	// Verify accounts table still has "default" column
+	has_default, err := db2.exists("select 1 from pragma_table_info('accounts') where name='default'")
+	if err != nil {
+		t.Fatalf("pragma_table_info query failed: %v", err)
+	}
+	if !has_default {
+		t.Error("accounts table should still have 'default' column after second call")
+	}
+
+	// Clean up from databases map
+	databases_lock.Lock()
+	delete(databases, db_path)
+	databases_lock.Unlock()
+	db2.handle.Close()
+}
+
 // Test db_app_schema_get returns 0 for new database
 func TestAppSchemaGetDefault(t *testing.T) {
 	db, cleanup := create_test_db(t)

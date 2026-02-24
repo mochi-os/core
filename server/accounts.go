@@ -204,6 +204,7 @@ func account_redact(row map[string]any) map[string]any {
 		"created":    row["created"],
 		"verified":   row["verified"],
 		"enabled":    row["enabled"],
+		"default":    row["default"],
 	}
 }
 
@@ -279,7 +280,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		capability = cap
 	}
 
-	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled from accounts order by created desc")
+	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts order by created desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -320,7 +321,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
-	row, err := db.row("select id, type, label, identifier, created, verified, enabled from accounts where id=?", id)
+	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -553,6 +554,13 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				val = int(i)
 			}
 			db.exec("update accounts set enabled=? where id=?", val, id)
+
+		case "default":
+			val, _ := sl.AsString(kv[1])
+			if val != "" {
+				db.exec("update accounts set \"default\"='' where \"default\"=?", val)
+			}
+			db.exec("update accounts set \"default\"=? where id=?", val, id)
 
 		case "model":
 			model, _ := sl.AsString(kv[1])

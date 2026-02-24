@@ -192,7 +192,7 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 
 		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1)")
+		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '')")
 		db.exec("create index if not exists accounts_type on accounts(type)")
 
 		// User interest profiles for personalised ranking
@@ -200,6 +200,18 @@ func db_user(u *User, name string) *DB {
 
 		// Internal key-value settings (Go-only, no Starlark API)
 		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
+
+		// user.db schema migrations
+		uv := db.integer("pragma user_version")
+
+		if uv < 1 {
+			// Add "default" column to accounts for default AI account
+			has_default, _ := db.exists("select 1 from pragma_table_info('accounts') where name='default'")
+			if !has_default {
+				db.exec("alter table accounts add column \"default\" text not null default ''")
+			}
+			db.exec("pragma user_version=1")
+		}
 	}
 
 	return db

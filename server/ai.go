@@ -93,31 +93,22 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		api_key, _ = data["api_key"].(string)
 		model, _ = data["model"].(string)
 	} else {
-		// Find first enabled AI account
-		rows, err := db.rows("select type, data, enabled from accounts order by id")
-		if err != nil {
+		// Use the designated default AI account
+		row, err := db.row("select type, data, enabled from accounts where \"default\"='ai' and enabled=1")
+		if err != nil || row == nil {
 			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 		}
-		found := false
-		for _, row := range rows {
-			t, _ := row["type"].(string)
-			enabled, _ := row["enabled"].(int64)
-			if enabled == 1 && provider_has_capability(t, "ai") {
-				ptype = t
-				raw, _ := row["data"].(string)
-				var data map[string]any
-				if raw != "" {
-					json.Unmarshal([]byte(raw), &data)
-				}
-				api_key, _ = data["api_key"].(string)
-				model, _ = data["model"].(string)
-				found = true
-				break
-			}
-		}
-		if !found {
+		ptype, _ = row["type"].(string)
+		if !provider_has_capability(ptype, "ai") {
 			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 		}
+		raw, _ := row["data"].(string)
+		var data map[string]any
+		if raw != "" {
+			json.Unmarshal([]byte(raw), &data)
+		}
+		api_key, _ = data["api_key"].(string)
+		model, _ = data["model"].(string)
 	}
 
 	// Determine model

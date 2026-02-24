@@ -144,6 +144,7 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		"status":  r.StatusCode,
 		"headers": resp_headers,
 		"title":   feed.Title,
+		"link":    feed.Link,
 		"ttl":     ttl,
 		"items":   items,
 	}

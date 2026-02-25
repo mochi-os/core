@@ -536,8 +536,8 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	}
 
 	// Read HTML file
-	html := file_read(file)
-	if html == nil {
+	html, readErr := os.ReadFile(file)
+	if readErr != nil {
 		return false
 	}
 	content := string(html)
@@ -632,8 +632,8 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 	}
 
 	// Read HTML file
-	html := file_read(file)
-	if html == nil {
+	html, err := os.ReadFile(file)
+	if err != nil {
 		c.String(http.StatusNotFound, "File not found")
 		return
 	}

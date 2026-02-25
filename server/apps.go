@@ -309,10 +309,14 @@ var (
 		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
 			{"account/ai", ""},
 			{"account/read", ""},
+			{"interests/read", ""},
+			{"interests/write", ""},
 		}},
 		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
 			{"account/ai", ""},
 			{"account/read", ""},
+			{"interests/read", ""},
+			{"interests/write", ""},
 		}},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},
@@ -332,6 +336,8 @@ var (
 			{"user/read", ""},
 			{"account/read", ""},
 			{"account/manage", ""},
+			{"interests/read", ""},
+			{"interests/write", ""},
 		}},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
 	}

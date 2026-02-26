@@ -21,7 +21,6 @@ const (
 	cbor_max_depth    = 32                // Max nesting depth
 	cbor_max_pairs    = 1000              // Max map pairs
 	cbor_max_elements = 10000             // Max array elements
-	headers_max_size  = 4 * 1024          // 4KB max headers size
 	content_max_key   = 256               // Max content key length
 	content_max_value = 100 * 1024 * 1024 // 100MB max content value length
 )

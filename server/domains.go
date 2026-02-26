@@ -19,8 +19,6 @@ import (
 	"gopkg.in/ini.v1"
 )
 
-const acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
-
 var (
 	domains_certs        map[string]*tls.Certificate
 	domains_acme_manager *autocert.Manager

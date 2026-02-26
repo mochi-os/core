@@ -1,8 +1,11 @@
 # Local files
 local
+mochi
 mochi-server
 mochi-server-*
 mochi-server.exe
+access
+nohup.out
 server/server
 
 # Dependencies

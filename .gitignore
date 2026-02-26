@@ -2,6 +2,7 @@
 local
 mochi-server
 mochi-server-*
+mochi-server.exe
 server/server
 
 # Dependencies

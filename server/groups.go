@@ -17,13 +17,6 @@ const (
 	group_max_depth = 10
 )
 
-type Group struct {
-	ID          string
-	Name        string
-	Description string
-	Created     int64
-}
-
 type GroupMember struct {
 	Parent  string `db:"parent"`
 	Member  string `db:"member"`

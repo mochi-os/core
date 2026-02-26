@@ -18,13 +18,7 @@ import (
 )
 
 type Access struct {
-	ID        int
-	Subject   string
-	Resource  string
-	Operation string
-	Grant     int
-	Granter   string
-	Created   int64
+	Grant int
 }
 
 var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{

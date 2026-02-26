@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Create mochi user and group if they don't exist
+if ! dscl . -read /Groups/_mochi &>/dev/null; then
+    # Find an unused GID
+    GID=400
+    while dscl . -read /Groups/gid/$GID &>/dev/null 2>&1; do
+        GID=$((GID + 1))
+    done
+    dscl . -create /Groups/_mochi
+    dscl . -create /Groups/_mochi PrimaryGroupID $GID
+fi
+
+if ! dscl . -read /Users/_mochi &>/dev/null; then
+    # Find an unused UID
+    UID_NUM=400
+    while dscl . -read /Users/uid/$UID_NUM &>/dev/null 2>&1; do
+        UID_NUM=$((UID_NUM + 1))
+    done
+    GID=$(dscl . -read /Groups/_mochi PrimaryGroupID | awk '{print $2}')
+    dscl . -create /Users/_mochi
+    dscl . -create /Users/_mochi UniqueID $UID_NUM
+    dscl . -create /Users/_mochi PrimaryGroupID $GID
+    dscl . -create /Users/_mochi UserShell /usr/bin/false
+    dscl . -create /Users/_mochi NFSHomeDirectory /var/lib/mochi
+    dscl . -create /Users/_mochi RealName "Mochi Server"
+fi
+
+# Create directories
+mkdir -p /var/cache/mochi /var/lib/mochi /etc/mochi
+
+exit 0

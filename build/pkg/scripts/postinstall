@@ -1,0 +1,10 @@
+#!/bin/bash
+
+chown -R _mochi:_mochi /var/lib/mochi
+chown -R _mochi:_mochi /var/cache/mochi
+
+# Load the launchd service
+launchctl bootout system/org.mochi-os.server 2>/dev/null
+launchctl bootstrap system /Library/LaunchDaemons/org.mochi-os.server.plist
+
+exit 0

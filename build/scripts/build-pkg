@@ -1,0 +1,69 @@
+#!/bin/bash
+# Build a macOS .pkg installer from Linux
+# Usage: build-pkg <binary> <version> <arch> <output.pkg>
+# Requires: mkbom (bomutils), xar
+
+set -e
+
+BINARY="$1"
+VERSION="$2"
+ARCH="$3"
+OUTPUT="$4"
+SCRIPT_DIR="$(dirname "$0")"
+BUILD_DIR="$(mktemp -d)"
+PKG_DIR="$BUILD_DIR/pkg"
+ROOT_DIR="$BUILD_DIR/root"
+SCRIPTS_DIR="$BUILD_DIR/scripts"
+
+trap "rm -rf $BUILD_DIR" EXIT
+
+# Create payload directory structure
+mkdir -p "$ROOT_DIR/usr/local/bin"
+mkdir -p "$ROOT_DIR/etc/mochi"
+mkdir -p "$ROOT_DIR/Library/LaunchDaemons"
+mkdir -p "$ROOT_DIR/var/cache/mochi"
+mkdir -p "$ROOT_DIR/var/lib/mochi"
+
+cp "$BINARY" "$ROOT_DIR/usr/local/bin/mochi-server"
+chmod 755 "$ROOT_DIR/usr/local/bin/mochi-server"
+cp "$SCRIPT_DIR/../pkg/mochi.conf" "$ROOT_DIR/etc/mochi/mochi.conf"
+cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemons/"
+
+# Copy install scripts
+cp -a "$SCRIPT_DIR/../pkg/scripts" "$SCRIPTS_DIR"
+
+# Create the flat package structure
+mkdir -p "$PKG_DIR"
+
+# Build BOM
+ls4mkbom -u 0 -g 0 "$ROOT_DIR" > "$BUILD_DIR/bom.list"
+mkbom -i "$BUILD_DIR/bom.list" "$PKG_DIR/Bom"
+
+# Build Payload (cpio gzipped)
+(cd "$ROOT_DIR" && find . | cpio -o --format odc 2>/dev/null | gzip -c) > "$PKG_DIR/Payload"
+
+# Calculate payload size in KB
+PAYLOAD_SIZE=$(du -sk "$ROOT_DIR" | cut -f1)
+NUM_FILES=$(find "$ROOT_DIR" -type f | wc -l)
+
+# Create PackageInfo
+cat > "$PKG_DIR/PackageInfo" << EOF
+<?xml version="1.0" encoding="utf-8"?>
+<pkg-info format-version="2" identifier="org.mochi-os.server" version="$VERSION" install-location="/" auth="root" overwrite-permissions="false">
+    <payload installKBytes="$PAYLOAD_SIZE" numberOfFiles="$NUM_FILES"/>
+    <scripts>
+        <preinstall file="preinstall"/>
+        <postinstall file="postinstall"/>
+    </scripts>
+</pkg-info>
+EOF
+
+# Add scripts to package
+cp "$SCRIPTS_DIR/preinstall" "$PKG_DIR/preinstall"
+cp "$SCRIPTS_DIR/postinstall" "$PKG_DIR/postinstall"
+chmod 755 "$PKG_DIR/preinstall" "$PKG_DIR/postinstall"
+
+# Build the .pkg using xar
+(cd "$PKG_DIR" && xar --compression none -cf "$OUTPUT" .)
+
+echo "Built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

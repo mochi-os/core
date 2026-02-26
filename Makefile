@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.3.41
+version = 0.3.43
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -18,6 +18,8 @@ rpmbuild_dir = /tmp/mochi-rpmbuild
 # macOS build paths
 build_darwin_amd64 = /tmp/mochi-server_$(version)_darwin_amd64
 build_darwin_arm64 = /tmp/mochi-server_$(version)_darwin_arm64
+pkg_amd64 = /tmp/mochi-server_$(version)_darwin_amd64.pkg
+pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
 
 # Windows build paths
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
@@ -166,18 +168,36 @@ mochi-server-darwin-amd64: $(shell find server -name '*.go')
 mochi-server-darwin-arm64: $(shell find server -name '*.go')
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-arm64 ./server
 
+# macOS .pkg installers
+# Requires: bomutils (/opt/bomutils), xar
+$(pkg_amd64): mochi-server-darwin-amd64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64)
+
+$(pkg_arm64): mochi-server-darwin-arm64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64)
+
+pkg-amd64: $(pkg_amd64)
+
+pkg-arm64: $(pkg_arm64)
+
+pkg: pkg-amd64 pkg-arm64
+
 macos: mochi-server-darwin-amd64 mochi-server-darwin-arm64
 
-release: clean deb rpm
-	git tag -a $(version) -m "$(version)"
+release: clean deb rpm msi pkg
+	git tag -fa $(version) -m "$(version)"
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
 	./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
-	rsync -av --delete ../packages/apt/ root@packages.mochi-os.org:/srv/apt/
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
 	./build/scripts/rpm-repository-update ../packages/rpm
-	rsync -av --delete ../packages/rpm/ root@packages.mochi-os.org:/srv/rpm/
+	cp $(msi) ../packages/windows/mochi-server.msi
+	echo '{"tracks": {"production": "$(version)"}}' > ../packages/windows/versions.json
+	cp $(pkg_amd64) ../packages/macos/mochi-server-amd64.pkg
+	cp $(pkg_arm64) ../packages/macos/mochi-server-arm64.pkg
+	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
+	rsync -av --delete ../packages/ root@packages.mochi-os.org:/srv/packages/
 
 format:
 	go fmt server/*.go

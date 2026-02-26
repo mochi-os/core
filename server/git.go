@@ -2128,7 +2128,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	if is_write {
 		if user == nil {
 			// Try Basic Auth with token
-			user = git_authenticate(c)
+			user = git_authenticate(c, a)
 			if user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
@@ -2136,9 +2136,14 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 			}
 		}
 
-		// Check write access
-		// For now, only the owner can push
-		if user.ID != owner.ID {
+		// Check write access using the app's access control system
+		identity := user.identity()
+		if identity == nil {
+			c.String(http.StatusForbidden, "No write access to repository")
+			return true
+		}
+		app_db := db_app_system(owner, a)
+		if app_db == nil || !app_db.access_check(owner, identity.ID, user.Role, "repo/"+id, "write") {
 			c.String(http.StatusForbidden, "No write access to repository")
 			return true
 		}
@@ -2158,7 +2163,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 }
 
 // git_authenticate extracts and validates Basic Auth credentials from the request
-func git_authenticate(c *gin.Context) *User {
+func git_authenticate(c *gin.Context, a *App) *User {
 	_, password, ok := c.Request.BasicAuth()
 	if !ok {
 		return nil
@@ -2170,8 +2175,8 @@ func git_authenticate(c *gin.Context) *User {
 		return nil
 	}
 
-	// Token must be for repositories app
-	if token.App != "repositories" {
+	// Token must be for the repositories app
+	if token.App != a.id {
 		return nil
 	}
 

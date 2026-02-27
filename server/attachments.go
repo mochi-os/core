@@ -1583,9 +1583,13 @@ func attachment_fetch_remote(app *App, from string, entity string, id string, th
 		}
 	}
 
-	// Fetch from remote
-	//debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
-	s, err := stream(from, entity, app.id, "_attachment/data", app.id, app_services(app, nil))
+	// Fetch from remote — use declared service name (not app.id which may be an entity ID for published apps)
+	service := app.id
+	av := app.active(nil)
+	if av != nil && len(av.Services) > 0 {
+		service = av.Services[0]
+	}
+	s, err := stream(from, entity, service, "_attachment/data", app.id, app_services(app, nil))
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
 		return ""

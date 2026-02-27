@@ -48,6 +48,7 @@ type AppAction struct {
 type AppEvent struct {
 	Function          string       `json:"function"`
 	Anonymous         bool         `json:"anonymous"`
+	Apps              []any        `json:"apps,omitempty"`
 	internal_function func(*Event) `json:"-"`
 }
 
@@ -551,10 +552,10 @@ func app_check_install(id string) bool {
 // Check all track versions of an app on the remote server
 // Returns: tracks map (track->version), default track name, default version, success
 func app_check_version(id string) (map[string]string, string, string, bool) {
-	s, err := stream("", id, "publisher", "version")
+	s, err := stream("", id, "publisher", "version", "")
 	if err != nil {
 		debug("App %q using fallback to default publisher", id)
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version")
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version", "")
 	}
 	if err != nil {
 		debug("App %q version check failed: %v", id, err)
@@ -632,9 +633,9 @@ func app_has_version(id, version string) bool {
 func app_download_version(id, version string) bool {
 	debug("App %q downloading version %q", id, version)
 
-	s, err := stream("", id, "publisher", "get")
+	s, err := stream("", id, "publisher", "get", "")
 	if err != nil {
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get")
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "")
 	}
 	if err != nil {
 		debug("App %q download stream failed: %v", id, err)
@@ -722,6 +723,12 @@ func app_for_service(user *User, service string) *App {
 		}
 	}
 	return a
+}
+
+// app_handles_service checks if app is the active handler for the given service
+func app_handles_service(a *App, user *User, service string) bool {
+	resolved := app_for_service(user, service)
+	return resolved != nil && resolved.id == a.id
 }
 
 // app_for_service_fallback finds the first app that declares a service.

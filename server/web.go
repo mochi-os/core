@@ -1159,7 +1159,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
 			return true
 		}
-		return web_serve_attachment_remote(c, app, entity, id, thumbnail)
+		return web_serve_attachment_remote(c, app, nil, entity, id, thumbnail)
 	}
 
 	db := db_app_system(user, app)
@@ -1173,7 +1173,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		// Attachment record not in local database — try remote if entity is available
 		// (e.g., subscribed feed whose attachments haven't been piggybacked)
 		if entity != "" && (valid(entity, "entity") || valid(entity, "fingerprint")) {
-			return web_serve_attachment_remote(c, app, entity, id, thumbnail)
+			return web_serve_attachment_remote(c, app, user, entity, id, thumbnail)
 		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
 		return true
@@ -1189,7 +1189,11 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		}
 		if fetch_entity != "" {
 			// Fetch from remote and store locally
-			cached := attachment_fetch_remote(app, fetch_entity, id)
+			from := ""
+			if user.Identity != nil {
+				from = user.Identity.ID
+			}
+			cached := attachment_fetch_remote(app, from, fetch_entity, id)
 			if cached == "" {
 				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 				return true
@@ -1228,9 +1232,13 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 }
 
 // Serve an attachment from a remote entity (for bookmarked wikis, etc.)
-func web_serve_attachment_remote(c *gin.Context, app *App, entity, id string, thumbnail bool) bool {
+func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, id string, thumbnail bool) bool {
+	from := ""
+	if user != nil && user.Identity != nil {
+		from = user.Identity.ID
+	}
 	// Fetch from remote (thumbnail generated on remote side if requested)
-	path := attachment_fetch_remote(app, entity, id, thumbnail)
+	path := attachment_fetch_remote(app, from, entity, id, thumbnail)
 	if path == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
 		return true

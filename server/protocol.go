@@ -16,15 +16,18 @@ type SignableHeaders struct {
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
+	App       string `cbor:"app,omitempty"`
 	ID        string `cbor:"id,omitempty"`
 	AckID     string `cbor:"ack,omitempty"`
 	Challenge []byte `cbor:"challenge,omitempty"`
 }
 
 // Create signable headers
-func signable_headers(msg_type, from, to, service, event, id, ack_id string, challenge []byte) []byte {
+func signable_headers(msg_type, from, to, service, event, app, id, ack_id string, challenge []byte) []byte {
 	return cbor_encode(SignableHeaders{
 		Type: msg_type, From: from, To: to, Service: service, Event: event,
+		// Phase 2: uncomment to include App in signature
+		// App: app,
 		ID: id, AckID: ack_id, Challenge: challenge,
 	})
 }
@@ -36,6 +39,7 @@ type Headers struct {
 	To        string `cbor:"to,omitempty"`
 	Service   string `cbor:"service,omitempty"`
 	Event     string `cbor:"event,omitempty"`
+	App       string `cbor:"app,omitempty"`
 	ID        string `cbor:"id,omitempty"`
 	AckID     string `cbor:"ack,omitempty"`
 	Signature string `cbor:"signature,omitempty"`
@@ -94,6 +98,12 @@ func (h *Headers) valid() bool {
 		return false
 	}
 
+	if h.App != "" && !valid(h.App, "constant") {
+		info("Invalid app header %q", h.App)
+		audit_message_rejected(h.From, "invalid_app")
+		return false
+	}
+
 	if t == "msg" && h.Service != "" && !valid(h.Event, "constant") {
 		info("Invalid event header %q", h.Event)
 		audit_message_rejected(h.From, "invalid_event")
@@ -116,12 +126,23 @@ func (h *Headers) verify(challenge []byte) bool {
 		return false
 	}
 
-	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.ID, h.AckID, challenge)
-	if !ed25519.Verify(public, signable, base58_decode(h.Signature, "")) {
-		info("Incorrect signature")
-		audit_signature_failed(h.From, "invalid_signature")
-		return false
+	sig := base58_decode(h.Signature, "")
+
+	// Try without App first (Phase 1 and old servers sign without App)
+	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, challenge)
+	if ed25519.Verify(public, signable, sig) {
+		return true
 	}
 
-	return true
+	// Try with App (Phase 2 servers will sign with App)
+	if h.App != "" {
+		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.App, h.ID, h.AckID, challenge)
+		if ed25519.Verify(public, signable, sig) {
+			return true
+		}
+	}
+
+	info("Incorrect signature")
+	audit_signature_failed(h.From, "invalid_signature")
+	return false
 }

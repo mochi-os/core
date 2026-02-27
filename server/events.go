@@ -12,18 +12,19 @@ import (
 )
 
 type Event struct {
-	id      int64
-	msg_id  string
-	from    string
-	to      string
-	service string
-	event   string
-	peer    string
-	content map[string]any
-	user    *User
-	app     *App
-	db      *DB
-	stream  *Stream
+	id         int64
+	msg_id     string
+	from       string
+	to         string
+	service    string
+	event      string
+	sender_app string
+	peer       string
+	content    map[string]any
+	user       *User
+	app        *App
+	db         *DB
+	stream     *Stream
 }
 
 var (
@@ -110,6 +111,11 @@ func (e *Event) route() error {
 	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
 	// System database (app.db) is always available, even for apps without a declared database file
 	if strings.HasPrefix(e.event, "_attachment/") {
+		if e.from == "" {
+			info("Event dropping unsigned attachment event")
+			audit_message_rejected("", "unsigned")
+			return fmt.Errorf("unsigned attachment event")
+		}
 		if e.user == nil {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
@@ -182,6 +188,27 @@ func (e *Event) route() error {
 		info("Event dropping unsigned message to app %q", a.id)
 		audit_message_rejected("", "unsigned")
 		return fmt.Errorf("unsigned message")
+	}
+
+	// Check sender app against allowed apps list (if specified)
+	if len(ae.Apps) > 0 {
+		allowed := false
+		for _, entry := range ae.Apps {
+			switch v := entry.(type) {
+			case bool:
+				if v && e.sender_app == a.id {
+					allowed = true
+				}
+			case string:
+				if e.sender_app == v {
+					allowed = true
+				}
+			}
+		}
+		if !allowed {
+			info("Event dropping message from app %q not in allowed list for event %q in app %q", e.sender_app, e.event, a.id)
+			return fmt.Errorf("app %q not allowed", e.sender_app)
+		}
 	}
 
 	// Check which engine the app uses, and run it
@@ -311,7 +338,7 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // e.dump() -> dict: Return event details as a dictionary
 func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "content": e.content}), nil
+	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "app": e.sender_app, "content": e.content}), nil
 }
 
 // e.header(name) -> string: Get an event header (from, to, service, event)
@@ -334,6 +361,8 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_encode(e.service), nil
 	case "event":
 		return sl_encode(e.event), nil
+	case "app":
+		return sl_encode(e.sender_app), nil
 	case "peer":
 		return sl_encode(e.peer), nil
 	default:

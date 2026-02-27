@@ -165,6 +165,15 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "user has no identity")
 	}
 
+	app, _ := t.Local("app").(*App)
+	app_id := ""
+	if app != nil {
+		if !app_handles_service(app, user, service) {
+			return sl_error(fn, "app is not the handler for service %q", service)
+		}
+		app_id = app.id
+	}
+
 	// Connect to remote
 	peer, err := remote_connect(entity_id, peer)
 	if err != nil {
@@ -173,7 +182,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	// Create stream
 	from := user.Identity.ID
-	s, err := stream_to_peer(peer, from, entity_id, service, event)
+	s, err := stream_to_peer(peer, from, entity_id, service, event, app_id)
 	if err != nil {
 		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
 	}
@@ -244,6 +253,15 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "user has no identity")
 	}
 
+	app, _ := t.Local("app").(*App)
+	app_id := ""
+	if app != nil {
+		if !app_handles_service(app, user, service) {
+			return sl_error(fn, "app is not the handler for service %q", service)
+		}
+		app_id = app.id
+	}
+
 	// Connect to remote
 	peer, err := remote_connect(entity_id, peer)
 	if err != nil {
@@ -252,7 +270,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// Create stream
 	from := user.Identity.ID
-	s, err := stream_to_peer(peer, from, entity_id, service, event)
+	s, err := stream_to_peer(peer, from, entity_id, service, event, app_id)
 	if err != nil {
 		return sl.None, nil
 	}

@@ -130,9 +130,12 @@ func db_create() {
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
-	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, app text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
+	if exists, _ := queue.exists("select 1 from pragma_table_info('queue') where name='app'"); !exists {
+		queue.exec("alter table queue add column app text not null default ''")
+	}
 
 	// Domains
 	domains := db_open("db/domains.db")

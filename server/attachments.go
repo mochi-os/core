@@ -1295,7 +1295,11 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// If entity is set, this is a cached reference - fetch from remote
 	if att.Entity != "" {
-		path := attachment_fetch_remote(app, att.Entity, id)
+		from := ""
+		if owner.Identity != nil {
+			from = owner.Identity.ID
+		}
+		path := attachment_fetch_remote(app, from, att.Entity, id)
 		if path != "" {
 			return sl_encode(file_read(path)), nil
 		}
@@ -1561,7 +1565,7 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 }
 
 // Federation: fetch attachment data from remote entity, returns cache file path
-func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bool) string {
+func attachment_fetch_remote(app *App, from string, entity string, id string, thumbnail ...bool) string {
 	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
 	want_thumbnail := len(thumbnail) > 0 && thumbnail[0]
 
@@ -1581,7 +1585,7 @@ func attachment_fetch_remote(app *App, entity string, id string, thumbnail ...bo
 
 	// Fetch from remote
 	//debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
-	s, err := stream("", entity, app.id, "_attachment/data")
+	s, err := stream(from, entity, app.id, "_attachment/data", app.id)
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
 		return ""
@@ -2157,7 +2161,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Open stream to remote entity
-	s, err := stream(from, entity, app.id, "_attachment/fetch")
+	s, err := stream(from, entity, app.id, "_attachment/fetch", app.id)
 	if err != nil {
 		return sl_encode([]map[string]any{}), nil
 	}

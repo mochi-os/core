@@ -64,7 +64,7 @@ func stream_challenge() ([]byte, error) {
 }
 
 // Create a new stream with specified headers (reads challenge, then sends)
-func stream(from string, to string, service string, event string) (*Stream, error) {
+func stream(from string, to string, service string, event string, app string) (*Stream, error) {
 	peer := entity_peer(to)
 	if peer == "" {
 		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
@@ -84,8 +84,8 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	id := uid()
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
-	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, ID: id, Signature: signature})
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, app, id, "", challenge)))
+	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, App: app, ID: id, Signature: signature})
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func stream(from string, to string, service string, event string) (*Stream, erro
 }
 
 // Create a stream to a specific peer (without entity lookup)
-func stream_to_peer(peer string, from string, to string, service string, event string) (*Stream, error) {
+func stream_to_peer(peer string, from string, to string, service string, event string, app string) (*Stream, error) {
 	s := peer_stream(peer)
 	if s == nil {
 		return nil, fmt.Errorf("stream unable to open to peer %q", peer)
@@ -109,8 +109,8 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	id := uid()
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, id, "", challenge)))
-	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, ID: id, Signature: signature})
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, app, id, "", challenge)))
+	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, App: app, ID: id, Signature: signature})
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ func stream_receive(s *Stream, version int, peer string) {
 	//debug("Stream %d from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
 
 	// Create event and route to app
-	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, peer: peer, content: content, stream: s}
+	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, sender_app: h.App, peer: peer, content: content, stream: s}
 	route_err := e.route()
 
 	// Mark message as processed for deduplication
@@ -253,7 +253,7 @@ func stream_receive(s *Stream, version int, peer string) {
 
 // Send ACK/NACK on existing stream (no challenge - TLS provides security)
 func (s *Stream) send_ack(ack_type, ack_id, from, to string) {
-	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", ack_id, nil)))
+	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", "", ack_id, nil)))
 
 	headers := cbor_encode(Headers{
 		Type: ack_type, From: from, To: to, AckID: ack_id, Signature: signature,

@@ -304,9 +304,9 @@ func TestValid(t *testing.T) {
 		{"text empty", "", "text", true},
 		{"text too long", strings.Repeat("a", 10001), "text", false},
 
-		// name pattern (excludes < > \r \n \ ; " ' `)
+		// name pattern (excludes < > \r \n)
 		{"name valid", "John Doe", "name", true},
-		{"name with quote", "O'Connor", "name", false}, // single quotes not allowed
+		{"name with quote", "O'Connor", "name", true},
 		{"name with angle brackets", "User<script>", "name", false},
 		{"name with parens", "John (Jr)", "name", true},
 

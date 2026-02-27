@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 // Helper to create a test environment for git operations
@@ -57,39 +55,29 @@ func create_repo_with_commit(t *testing.T, user *User, repoID string) *git.Repos
 	// For bare repos, we need to create objects directly
 	repoPath := git_repo_path(user, repoID)
 
-	// Use git command to create initial commit (easier for bare repos)
+	// Use git CLI to create initial commit and push to bare repo
 	tmpWorkDir, _ := os.MkdirTemp("", "git_work")
 	defer os.RemoveAll(tmpWorkDir)
 
-	// Clone bare repo to work dir
-	_, err = git.PlainClone(tmpWorkDir, false, &git.CloneOptions{
-		URL: repoPath,
-	})
-	// Will fail because empty, so init fresh
-	workRepo, _ := git.PlainInit(tmpWorkDir, false)
-
-	// Create a file
-	testFile := filepath.Join(tmpWorkDir, "README.md")
-	os.WriteFile(testFile, []byte("# Test Repo\n"), 0644)
-
-	// Add and commit
-	wt, _ := workRepo.Worktree()
-	wt.Add("README.md")
-	_, err = wt.Commit("Initial commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Test User",
-			Email: "test@example.com",
-			When:  time.Now(),
-		},
-	})
-	if err != nil {
-		t.Logf("Commit warning: %v", err)
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmpWorkDir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test User",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test User",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("git %v: %s (%v)", args, out, err)
+		}
 	}
 
-	// Push to bare repo
-	cmd := exec.Command("git", "push", repoPath, "master:main")
-	cmd.Dir = tmpWorkDir
-	cmd.Run()
+	run("init", "-b", "main")
+	os.WriteFile(filepath.Join(tmpWorkDir, "README.md"), []byte("# Test Repo\n"), 0644)
+	run("add", "README.md")
+	run("commit", "-m", "Initial commit")
+	run("push", repoPath, "main")
 
 	// Re-open the bare repo
 	repo, _ = git_open(user, repoID)

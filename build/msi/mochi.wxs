@@ -17,8 +17,11 @@
         <MediaTemplate EmbedCab="yes" />
 
         <Feature Id="ProductFeature" Title="Mochi Server" Level="1">
-            <ComponentGroupRef Id="ProductComponents" />
-            <ComponentGroupRef Id="DataDirectories" />
+            <ComponentRef Id="MainExecutable" />
+            <ComponentRef Id="ConfigFile" />
+            <ComponentRef Id="CacheFolderComp" />
+            <ComponentRef Id="DataFolderComp" />
+            <ComponentRef Id="MochiDataFolderComp" />
         </Feature>
 
         <Directory Id="TARGETDIR" Name="SourceDir">
@@ -38,7 +41,7 @@
             </Directory>
         </Directory>
 
-        <ComponentGroup Id="ProductComponents" Directory="BinFolder">
+        <DirectoryRef Id="BinFolder">
             <Component Id="MainExecutable" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890" Win64="yes">
                 <File Id="MochiServerExe"
                       Name="mochi-server.exe"
@@ -51,25 +54,31 @@
                       Source="$(var.SourceDir)/mochi.conf"
                       KeyPath="yes" />
             </Component>
-        </ComponentGroup>
+        </DirectoryRef>
 
-        <ComponentGroup Id="DataDirectories">
-            <Component Id="CacheFolderComp" Directory="CacheFolder" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">
+        <DirectoryRef Id="CacheFolder">
+            <Component Id="CacheFolderComp" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">
                 <CreateFolder />
                 <RemoveFolder Id="RemoveCacheFolder" On="uninstall" />
                 <RegistryValue Root="HKCU" Key="Software\Mochi" Name="CacheFolder" Type="string" Value="[CacheFolder]" KeyPath="yes" />
             </Component>
-            <Component Id="DataFolderComp" Directory="DataFolder" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
+        </DirectoryRef>
+
+        <DirectoryRef Id="DataFolder">
+            <Component Id="DataFolderComp" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
                 <CreateFolder />
                 <RemoveFolder Id="RemoveDataFolder" On="uninstall" />
                 <RegistryValue Root="HKCU" Key="Software\Mochi" Name="DataFolder" Type="string" Value="[DataFolder]" KeyPath="yes" />
             </Component>
-            <Component Id="MochiDataFolderComp" Directory="MochiDataFolder" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
+        </DirectoryRef>
+
+        <DirectoryRef Id="MochiDataFolder">
+            <Component Id="MochiDataFolderComp" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
                 <CreateFolder />
                 <RemoveFolder Id="RemoveMochiDataFolder" On="uninstall" />
                 <RegistryValue Root="HKCU" Key="Software\Mochi" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
             </Component>
-        </ComponentGroup>
+        </DirectoryRef>
 
     </Product>
 </Wix>

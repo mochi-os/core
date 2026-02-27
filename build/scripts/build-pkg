@@ -11,9 +11,11 @@ ARCH="$3"
 OUTPUT="$4"
 SCRIPT_DIR="$(dirname "$0")"
 BUILD_DIR="$(mktemp -d)"
-PKG_DIR="$BUILD_DIR/pkg"
 ROOT_DIR="$BUILD_DIR/root"
 SCRIPTS_DIR="$BUILD_DIR/scripts"
+COMP_DIR="$BUILD_DIR/comp"
+PRODUCT_DIR="$BUILD_DIR/product"
+PKG_ID="org.mochi-os.server"
 
 trap "rm -rf $BUILD_DIR" EXIT
 
@@ -32,24 +34,27 @@ cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemo
 # Copy install scripts
 cp -a "$SCRIPT_DIR/../pkg/scripts" "$SCRIPTS_DIR"
 
-# Create the flat package structure
-mkdir -p "$PKG_DIR"
+# Build the component package
+mkdir -p "$COMP_DIR"
 
 # Build BOM
 ls4mkbom -u 0 -g 0 "$ROOT_DIR" > "$BUILD_DIR/bom.list"
-mkbom -i "$BUILD_DIR/bom.list" "$PKG_DIR/Bom"
+mkbom -i "$BUILD_DIR/bom.list" "$COMP_DIR/Bom"
 
-# Build Payload (cpio gzipped)
-(cd "$ROOT_DIR" && find . | cpio -o --format odc 2>/dev/null | gzip -c) > "$PKG_DIR/Payload"
+# Build Payload (gzipped cpio)
+(cd "$ROOT_DIR" && find . | cpio -o --format newc 2>/dev/null | gzip -c) > "$COMP_DIR/Payload"
+
+# Build Scripts archive (gzipped cpio of scripts directory)
+(cd "$SCRIPTS_DIR" && find . | cpio -o --format newc 2>/dev/null | gzip -c) > "$COMP_DIR/Scripts"
 
 # Calculate payload size in KB
 PAYLOAD_SIZE=$(du -sk "$ROOT_DIR" | cut -f1)
 NUM_FILES=$(find "$ROOT_DIR" -type f | wc -l)
 
 # Create PackageInfo
-cat > "$PKG_DIR/PackageInfo" << EOF
+cat > "$COMP_DIR/PackageInfo" << EOF
 <?xml version="1.0" encoding="utf-8"?>
-<pkg-info format-version="2" identifier="org.mochi-os.server" version="$VERSION" install-location="/" auth="root" overwrite-permissions="false">
+<pkg-info format-version="2" identifier="$PKG_ID" version="$VERSION" install-location="/" auth="root" overwrite-permissions="false">
     <payload installKBytes="$PAYLOAD_SIZE" numberOfFiles="$NUM_FILES"/>
     <scripts>
         <preinstall file="preinstall"/>
@@ -58,12 +63,30 @@ cat > "$PKG_DIR/PackageInfo" << EOF
 </pkg-info>
 EOF
 
-# Add scripts to package
-cp "$SCRIPTS_DIR/preinstall" "$PKG_DIR/preinstall"
-cp "$SCRIPTS_DIR/postinstall" "$PKG_DIR/postinstall"
-chmod 755 "$PKG_DIR/preinstall" "$PKG_DIR/postinstall"
+# Build product archive (required for macOS GUI Installer)
+mkdir -p "$PRODUCT_DIR/$PKG_ID.pkg"
+cp "$COMP_DIR/Bom" "$COMP_DIR/Payload" "$COMP_DIR/Scripts" "$COMP_DIR/PackageInfo" "$PRODUCT_DIR/$PKG_ID.pkg/"
+
+# Create Distribution file
+cat > "$PRODUCT_DIR/Distribution" << EOF
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Mochi Server</title>
+    <options customize="never" require-scripts="false"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="$PKG_ID"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="$PKG_ID" visible="false">
+        <pkg-ref id="$PKG_ID"/>
+    </choice>
+    <pkg-ref id="$PKG_ID" version="$VERSION" onConclusion="none">#$PKG_ID.pkg</pkg-ref>
+</installer-gui-script>
+EOF
 
 # Build the .pkg using xar
-(cd "$PKG_DIR" && xar --compression none -cf "$OUTPUT" .)
+(cd "$PRODUCT_DIR" && xar --compression none -cf "$OUTPUT" .)
 
 echo "Built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

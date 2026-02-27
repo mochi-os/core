@@ -40,6 +40,15 @@ var (
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 )
 
+func string_in_slice(s string, slice []string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 func atoi(s string, def int64) int64 {
 	i, err := strconv.Atoi(s)
 	if err != nil {

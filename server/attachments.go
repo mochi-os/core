@@ -1585,7 +1585,7 @@ func attachment_fetch_remote(app *App, from string, entity string, id string, th
 
 	// Fetch from remote
 	//debug("attachment_fetch_remote: opening stream to %s service app/%s event _attachment/data", entity, app.id)
-	s, err := stream(from, entity, app.id, "_attachment/data", app.id)
+	s, err := stream(from, entity, app.id, "_attachment/data", app.id, app_services(app, nil))
 	if err != nil {
 		warn("attachment_fetch_remote: stream error: %v", err)
 		return ""
@@ -2161,7 +2161,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Open stream to remote entity
-	s, err := stream(from, entity, app.id, "_attachment/fetch", app.id)
+	s, err := stream(from, entity, app.id, "_attachment/fetch", app.id, app_services(app, nil))
 	if err != nil {
 		return sl_encode([]map[string]any{}), nil
 	}

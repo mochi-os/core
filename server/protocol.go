@@ -11,38 +11,40 @@ const max_id_length = 64
 
 // Signable portion of headers
 type SignableHeaders struct {
-	Type      string `cbor:"type,omitempty"`
-	From      string `cbor:"from,omitempty"`
-	To        string `cbor:"to,omitempty"`
-	Service   string `cbor:"service,omitempty"`
-	Event     string `cbor:"event,omitempty"`
-	App       string `cbor:"app,omitempty"`
-	ID        string `cbor:"id,omitempty"`
-	AckID     string `cbor:"ack,omitempty"`
-	Challenge []byte `cbor:"challenge,omitempty"`
+	Type     string   `cbor:"type,omitempty"`
+	From     string   `cbor:"from,omitempty"`
+	To       string   `cbor:"to,omitempty"`
+	Service  string   `cbor:"service,omitempty"`
+	Event    string   `cbor:"event,omitempty"`
+	FromApp  string   `cbor:"from-app,omitempty"`
+	Services []string `cbor:"from-services,omitempty"`
+	ID       string   `cbor:"id,omitempty"`
+	AckID    string   `cbor:"ack,omitempty"`
+	Challenge []byte  `cbor:"challenge,omitempty"`
 }
 
 // Create signable headers
-func signable_headers(msg_type, from, to, service, event, app, id, ack_id string, challenge []byte) []byte {
+func signable_headers(msg_type, from, to, service, event, from_app, id, ack_id string, services []string, challenge []byte) []byte {
 	return cbor_encode(SignableHeaders{
 		Type: msg_type, From: from, To: to, Service: service, Event: event,
-		// Phase 2: uncomment to include App in signature
-		// App: app,
+		// Phase 2: uncomment to include FromApp and Services in signature
+		// FromApp: from_app, Services: services,
 		ID: id, AckID: ack_id, Challenge: challenge,
 	})
 }
 
 // Message headers
 type Headers struct {
-	Type      string `cbor:"type,omitempty"`
-	From      string `cbor:"from,omitempty"`
-	To        string `cbor:"to,omitempty"`
-	Service   string `cbor:"service,omitempty"`
-	Event     string `cbor:"event,omitempty"`
-	App       string `cbor:"app,omitempty"`
-	ID        string `cbor:"id,omitempty"`
-	AckID     string `cbor:"ack,omitempty"`
-	Signature string `cbor:"signature,omitempty"`
+	Type      string   `cbor:"type,omitempty"`
+	From      string   `cbor:"from,omitempty"`
+	To        string   `cbor:"to,omitempty"`
+	Service   string   `cbor:"service,omitempty"`
+	Event     string   `cbor:"event,omitempty"`
+	FromApp   string   `cbor:"from-app,omitempty"`
+	Services  []string `cbor:"from-services,omitempty"`
+	ID        string   `cbor:"id,omitempty"`
+	AckID     string   `cbor:"ack,omitempty"`
+	Signature string   `cbor:"signature,omitempty"`
 }
 
 // Get message type, defaulting to "msg"
@@ -98,10 +100,18 @@ func (h *Headers) valid() bool {
 		return false
 	}
 
-	if h.App != "" && !valid(h.App, "constant") {
-		info("Invalid app header %q", h.App)
-		audit_message_rejected(h.From, "invalid_app")
+	if h.FromApp != "" && !valid(h.FromApp, "constant") {
+		info("Invalid from-app header %q", h.FromApp)
+		audit_message_rejected(h.From, "invalid_from_app")
 		return false
+	}
+
+	for _, s := range h.Services {
+		if !valid(s, "constant") {
+			info("Invalid from-services entry %q", s)
+			audit_message_rejected(h.From, "invalid_from_services")
+			return false
+		}
 	}
 
 	if t == "msg" && h.Service != "" && !valid(h.Event, "constant") {
@@ -128,15 +138,15 @@ func (h *Headers) verify(challenge []byte) bool {
 
 	sig := base58_decode(h.Signature, "")
 
-	// Try without App first (Phase 1 and old servers sign without App)
-	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, challenge)
+	// Try without FromApp/Services first (Phase 1 and old servers sign without them)
+	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, nil, challenge)
 	if ed25519.Verify(public, signable, sig) {
 		return true
 	}
 
-	// Try with App (Phase 2 servers will sign with App)
-	if h.App != "" {
-		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.App, h.ID, h.AckID, challenge)
+	// Try with FromApp and Services (Phase 2 servers will sign with them)
+	if h.FromApp != "" || len(h.Services) > 0 {
+		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Services, challenge)
 		if ed25519.Verify(public, signable, sig) {
 			return true
 		}

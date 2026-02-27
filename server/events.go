@@ -12,19 +12,20 @@ import (
 )
 
 type Event struct {
-	id         int64
-	msg_id     string
-	from       string
-	to         string
-	service    string
-	event      string
-	sender_app string
-	peer       string
-	content    map[string]any
-	user       *User
-	app        *App
-	db         *DB
-	stream     *Stream
+	id              int64
+	msg_id          string
+	from            string
+	to              string
+	service         string
+	event           string
+	sender_app      string
+	sender_services []string
+	peer            string
+	content         map[string]any
+	user            *User
+	app             *App
+	db              *DB
+	stream          *Stream
 }
 
 var (
@@ -120,6 +121,10 @@ func (e *Event) route() error {
 			info("Event dropping attachment event for nil user")
 			return fmt.Errorf("attachment event requires user")
 		}
+		if !string_in_slice(e.service, e.sender_services) {
+			info("Event dropping attachment event: sender does not handle service %q", e.service)
+			return fmt.Errorf("sender does not handle service %q", e.service)
+		}
 		e.db = db_app_system(e.user, a)
 		if e.db == nil {
 			info("Event app %q failed to open system database", a.id)
@@ -208,6 +213,29 @@ func (e *Event) route() error {
 		if !allowed {
 			info("Event dropping message from app %q not in allowed list for event %q in app %q", e.sender_app, e.event, a.id)
 			return fmt.Errorf("app %q not allowed", e.sender_app)
+		}
+	}
+
+	// Check sender services against allowed services list (if specified)
+	// Skip for anonymous senders (e.from == "") since they have no services context
+	if len(ae.Services) > 0 && e.from != "" {
+		allowed := false
+		for _, entry := range ae.Services {
+			if entry == "." {
+				// "." means sender must handle the same service being called
+				if string_in_slice(e.service, e.sender_services) {
+					allowed = true
+				}
+			} else {
+				// Named service: sender must handle that specific service
+				if string_in_slice(entry, e.sender_services) {
+					allowed = true
+				}
+			}
+		}
+		if !allowed {
+			info("Event dropping message: sender services %v not in allowed list for event %q in app %q", e.sender_services, e.event, a.id)
+			return fmt.Errorf("sender services not allowed")
 		}
 	}
 
@@ -338,7 +366,7 @@ func (e *Event) sl_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // e.dump() -> dict: Return event details as a dictionary
 func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "app": e.sender_app, "content": e.content}), nil
+	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "app": e.sender_app, "services": e.sender_services, "content": e.content}), nil
 }
 
 // e.header(name) -> string: Get an event header (from, to, service, event)
@@ -363,6 +391,8 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_encode(e.event), nil
 	case "app":
 		return sl_encode(e.sender_app), nil
+	case "services":
+		return sl_encode(e.sender_services), nil
 	case "peer":
 		return sl_encode(e.peer), nil
 	default:

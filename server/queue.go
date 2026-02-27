@@ -5,28 +5,30 @@ package main
 
 import (
 	"math/rand"
+	"strings"
 	"time"
 )
 
 // Queue entry for outgoing messages
 type QueueEntry struct {
-	ID         string `db:"id"`
-	Type       string `db:"type"`
-	Target     string `db:"target"`
-	FromEntity string `db:"from_entity"`
-	ToEntity   string `db:"to_entity"`
-	Service    string `db:"service"`
-	Event      string `db:"event"`
-	App        string `db:"app"`
-	Content    []byte `db:"content"`
-	Data       []byte `db:"data"`
-	File       string `db:"file"`
-	Expires    int64  `db:"expires"`
-	Status     string `db:"status"`
-	Attempts   int    `db:"attempts"`
-	NextRetry  int64  `db:"next_retry"`
-	LastError  string `db:"last_error"`
-	Created    int64  `db:"created"`
+	ID           string `db:"id"`
+	Type         string `db:"type"`
+	Target       string `db:"target"`
+	FromEntity   string `db:"from_entity"`
+	ToEntity     string `db:"to_entity"`
+	Service      string `db:"service"`
+	Event        string `db:"event"`
+	FromApp      string `db:"from_app"`
+	FromServices string `db:"from_services"`
+	Content      []byte `db:"content"`
+	Data         []byte `db:"data"`
+	File         string `db:"file"`
+	Expires      int64  `db:"expires"`
+	Status       string `db:"status"`
+	Attempts     int    `db:"attempts"`
+	NextRetry    int64  `db:"next_retry"`
+	LastError    string `db:"last_error"`
+	Created      int64  `db:"created"`
 }
 
 const (
@@ -48,21 +50,23 @@ func queue_next_retry(attempts int) int64 {
 }
 
 // Add a direct message to the queue
-func queue_add_direct(id, target, from_entity, to_entity, service, event, app string, content, data []byte, file string, expires int64) {
+func queue_add_direct(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64) {
 	db := db_open("db/queue.db")
+	from_services := strings.Join(services, ",")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, app, content, data, file, expires, status, attempts, next_retry, created)
-		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-		id, target, from_entity, to_entity, service, event, app, content, data, file, expires, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created)
+		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now())
 }
 
 // Add a broadcast message to the queue
-func queue_add_broadcast(id, from_entity, to_entity, service, event, app string, content, data []byte, expires int64) {
+func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, expires int64) {
 	db := db_open("db/queue.db")
+	from_services := strings.Join(services, ",")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, app, content, data, file, expires, status, attempts, next_retry, created)
-		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?)`,
-		id, from_entity, to_entity, service, event, app, content, data, expires, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created)
+		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?)`,
+		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now())
 }
 
 // Mark a message as acknowledged (remove from queue)
@@ -126,11 +130,16 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.App, q.ID, "", challenge)))
+	var services []string
+	if q.FromServices != "" {
+		services = strings.Split(q.FromServices, ",")
+	}
+
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		App: q.App, ID: q.ID, Signature: signature,
+		FromApp: q.FromApp, Services: services, ID: q.ID, Signature: signature,
 	})
 
 	// Batch headers + content + data into single write
@@ -182,11 +191,16 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		return false
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.App, q.ID, "", nil)))
+	var services []string
+	if q.FromServices != "" {
+		services = strings.Split(q.FromServices, ",")
+	}
+
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, nil)))
 
 	msg := Message{
 		ID: q.ID, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		App: q.App, Signature: signature,
+		FromApp: q.FromApp, Services: services, Signature: signature,
 	}
 	data := cbor_encode(msg)
 	if len(q.Content) > 0 {

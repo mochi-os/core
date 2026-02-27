@@ -49,6 +49,7 @@ type AppEvent struct {
 	Function          string       `json:"function"`
 	Anonymous         bool         `json:"anonymous"`
 	Apps              []any        `json:"apps,omitempty"`
+	Services          []string     `json:"services,omitempty"`
 	internal_function func(*Event) `json:"-"`
 }
 
@@ -557,10 +558,10 @@ func app_check_install(id string) bool {
 // Check all track versions of an app on the remote server
 // Returns: tracks map (track->version), default track name, default version, success
 func app_check_version(id string) (map[string]string, string, string, bool) {
-	s, err := stream("", id, "publisher", "version", "")
+	s, err := stream("", id, "publisher", "version", "", nil)
 	if err != nil {
 		debug("App %q using fallback to default publisher", id)
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version", "")
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version", "", nil)
 	}
 	if err != nil {
 		debug("App %q version check failed: %v", id, err)
@@ -638,9 +639,9 @@ func app_has_version(id, version string) bool {
 func app_download_version(id, version string) bool {
 	debug("App %q downloading version %q", id, version)
 
-	s, err := stream("", id, "publisher", "get", "")
+	s, err := stream("", id, "publisher", "get", "", nil)
 	if err != nil {
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "")
+		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "", nil)
 	}
 	if err != nil {
 		debug("App %q download stream failed: %v", id, err)
@@ -730,10 +731,19 @@ func app_for_service(user *User, service string) *App {
 	return a
 }
 
-// app_handles_service checks if app is the active handler for the given service
-func app_handles_service(a *App, user *User, service string) bool {
-	resolved := app_for_service(user, service)
-	return resolved != nil && resolved.id == a.id
+// app_services returns the services this app is the active handler for
+func app_services(a *App, user *User) []string {
+	av := a.active(user)
+	if av == nil {
+		return nil
+	}
+	var result []string
+	for _, s := range av.Services {
+		if resolved := app_for_service(user, s); resolved != nil && resolved.id == a.id {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // app_for_service_fallback finds the first app that declares a service.

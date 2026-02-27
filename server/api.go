@@ -275,15 +275,14 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	}
 
 	app, _ := t.Local("app").(*App)
-	app_id := ""
+	from_app := ""
+	var services []string
 	if app != nil {
-		if !app_handles_service(app, user, headers["service"]) {
-			return sl_error(fn, "app is not the handler for service %q", headers["service"])
-		}
-		app_id = app.id
+		from_app = app.id
+		services = app_services(app, user)
 	}
 
-	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], app_id)
+	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -334,15 +333,14 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	app, _ := t.Local("app").(*App)
-	app_id := ""
+	from_app := ""
+	var services []string
 	if app != nil {
-		if !app_handles_service(app, user, headers["service"]) {
-			return sl_error(fn, "app is not the handler for service %q", headers["service"])
-		}
-		app_id = app.id
+		from_app = app.id
+		services = app_services(app, user)
 	}
 
-	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"], app_id)
+	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

@@ -74,13 +74,14 @@ func (m *messageSendModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwarg
 }
 
 type Message struct {
-	ID        string `cbor:"-"`
-	From      string `cbor:"from,omitempty"`
-	To        string `cbor:"to,omitempty"`
-	Service   string `cbor:"service,omitempty"`
-	Event     string `cbor:"event,omitempty"`
-	App       string `cbor:"app,omitempty"`
-	Signature string `cbor:"signature,omitempty"`
+	ID        string   `cbor:"-"`
+	From      string   `cbor:"from,omitempty"`
+	To        string   `cbor:"to,omitempty"`
+	Service   string   `cbor:"service,omitempty"`
+	Event     string   `cbor:"event,omitempty"`
+	FromApp   string   `cbor:"from-app,omitempty"`
+	Services  []string `cbor:"from-services,omitempty"`
+	Signature string   `cbor:"signature,omitempty"`
 	content   map[string]any
 	data      []byte
 	file      string
@@ -109,15 +110,15 @@ func (m *Message) publish(allow_queue bool) {
 	content := cbor_encode(m.content)
 
 	if allow_queue {
-		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.App, content, m.data, m.expires)
+		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.expires)
 	}
 
 	if peers_sufficient() {
 		// Broadcasts: sign without challenge (untrusted anyway)
-		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.App, m.ID, "", nil)))
+		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", m.Services, nil)))
 		headers := cbor_encode(Headers{
 			Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
-			App: m.App, ID: m.ID, Signature: signature,
+			FromApp: m.FromApp, Services: m.Services, ID: m.ID, Signature: signature,
 		})
 		data := headers
 		data = append(data, content...)
@@ -160,7 +161,7 @@ func (m *Message) send_work() {
 	//debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q", peer, m.ID, m.From, m.To, m.Service, m.Event)
 
 	content := cbor_encode(m.content)
-	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.App, content, m.data, m.file, m.expires)
+	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 
 	if peer == "" {
 		debug("Message unable to determine peer, will retry from queue")
@@ -186,11 +187,11 @@ func (m *Message) send_work() {
 		return
 	}
 
-	signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.App, m.ID, "", challenge)))
+	signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", m.Services, challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
-		App: m.App, ID: m.ID, Signature: signature,
+		FromApp: m.FromApp, Services: m.Services, ID: m.ID, Signature: signature,
 	})
 
 	// Batch headers + content + data into single write
@@ -295,15 +296,11 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid event header")
 	}
 
-	// Sender-side service enforcement
-	if app != nil && !app_handles_service(app, user, headers["service"]) {
-		return sl_error(fn, "app is not the handler for service %q", headers["service"])
-	}
-
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 
 	if app != nil {
-		m.App = app.id
+		m.FromApp = app.id
+		m.Services = app_services(app, user)
 	}
 
 	if len(args) > 1 {
@@ -378,15 +375,11 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid event header")
 	}
 
-	// Sender-side service enforcement
-	if app != nil && !app_handles_service(app, user, headers["service"]) {
-		return sl_error(fn, "app is not the handler for service %q", headers["service"])
-	}
-
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 
 	if app != nil {
-		m.App = app.id
+		m.FromApp = app.id
+		m.Services = app_services(app, user)
 	}
 
 	if len(args) > 2 {
@@ -455,15 +448,11 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	app, _ := t.Local("app").(*App)
 
-	// Sender-side service enforcement
-	if app != nil && !app_handles_service(app, user, headers["service"]) {
-		return sl_error(fn, "app is not the handler for service %q", headers["service"])
-	}
-
 	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
 
 	if app != nil {
-		m.App = app.id
+		m.FromApp = app.id
+		m.Services = app_services(app, user)
 	}
 
 	if len(args) > 1 {

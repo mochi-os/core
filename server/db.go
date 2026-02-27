@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 38
+	schema_version = 39
 )
 
 var (
@@ -133,9 +133,6 @@ func db_create() {
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, app text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
-	if exists, _ := queue.exists("select 1 from pragma_table_info('queue') where name='app'"); !exists {
-		queue.exec("alter table queue add column app text not null default ''")
-	}
 
 	// Domains
 	domains := db_open("db/domains.db")
@@ -812,6 +809,14 @@ func db_upgrade() {
 					// Drop settings table from app.db (schema was its only use)
 					sys_db.exec("drop table if exists settings")
 				}
+			}
+		}
+
+		if schema == 39 {
+			// Migration: add app column to queue table for P2P App header
+			queue := db_open("db/queue.db")
+			if exists, _ := queue.exists("select 1 from pragma_table_info('queue') where name='app'"); !exists {
+				queue.exec("alter table queue add column app text not null default ''")
 			}
 		}
 

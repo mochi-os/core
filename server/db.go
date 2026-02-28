@@ -948,6 +948,17 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	as := sl_decode(args[1:]).([]any)
 
+	// Flatten nested lists/tuples so Starlark can pass variable-length parameter lists.
+	flat := make([]any, 0, len(as))
+	for _, a := range as {
+		if list, ok := a.([]any); ok {
+			flat = append(flat, list...)
+		} else {
+			flat = append(flat, a)
+		}
+	}
+	as = flat
+
 	// Determine which user's database to use based on authentication and routing context.
 	// - Not logged in + entity: owner's database (viewing public content)
 	// - Not logged in + no entity: error (can't determine owner)

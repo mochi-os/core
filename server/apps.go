@@ -327,6 +327,7 @@ var (
 			{"interests/read", ""},
 			{"interests/write", ""},
 		}},
+		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},
 			{"account/read", ""},

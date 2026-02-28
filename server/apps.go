@@ -679,7 +679,7 @@ func app_download_version(id, version string) bool {
 
 	app_resolve_paths(av, id)
 
-	a := app(id)
+	a := app_external(id)
 	a.load_version(av)
 	debug("App %q version %q installed", id, version)
 	return true

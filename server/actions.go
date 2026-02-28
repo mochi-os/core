@@ -585,6 +585,7 @@ func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	app := t.Local("app").(*App)
 	file := api_file_path(owner, app, path)
 
+	t.SetLocal("file_serving", true)
 	a.web.File(file)
 	return sl.None, nil
 }
@@ -630,6 +631,7 @@ func (a *Action) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		a.web.Header("Content-Type", file_name_type(path))
 	}
 
+	t.SetLocal("file_serving", true)
 	a.web.File(file)
 	return sl.None, nil
 }

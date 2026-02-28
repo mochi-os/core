@@ -358,6 +358,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 		result, err := s.call(aa.Function, sl.Tuple{&action})
 		if err != nil {
+			// If the response has already been written (e.g. file serving),
+			// we can't send an error response
+			if c.Writer.Written() {
+				return true
+			}
 			// Check for permission error and return structured response
 			var permErr *PermissionError
 			if errors.As(err, &permErr) {
@@ -372,7 +377,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return true
 		}
-		if result != sl.None {
+		if result != sl.None && !c.Writer.Written() {
 			c.JSON(http.StatusOK, sl_decode(result))
 		}
 

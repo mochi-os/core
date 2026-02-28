@@ -394,6 +394,12 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 		}
 		return result, call_err
 	case <-time.After(starlark_default_timeout):
+		// If the action is serving a file, Starlark code has finished and
+		// only HTTP I/O remains — wait for it to complete instead of canceling
+		if serving, _ := s.thread.Local("file_serving").(bool); serving {
+			<-done
+			return result, call_err
+		}
 		s.thread.Cancel("timeout")
 		// Wait for goroutine to observe the cancel and exit
 		select {

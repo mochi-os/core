@@ -350,6 +350,7 @@ var (
 			{"interests/write", ""},
 		}},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
+		{"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy", "Words", nil},
 	}
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}

@@ -294,6 +294,15 @@ func TestValid(t *testing.T) {
 		{"natural zero", "0", "natural", true},
 		{"natural negative", "-1", "natural", false},
 
+		// numeric pattern (signed integer/decimal)
+		{"numeric integer", "-3", "numeric", true},
+		{"numeric zero", "0", "numeric", true},
+		{"numeric decimal", "6.5", "numeric", true},
+		{"numeric alpha", "abc", "numeric", false},
+		{"numeric comma", "6,5", "numeric", false},
+		{"numeric scientific", "1e3", "numeric", false},
+		{"numeric empty", "", "numeric", false},
+
 		// privacy pattern
 		{"privacy public", "public", "privacy", true},
 		{"privacy private", "private", "privacy", true},

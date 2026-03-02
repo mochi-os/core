@@ -451,7 +451,7 @@ func TestStarlarkStepLimit(t *testing.T) {
 	code := `
 def cpu_hog():
     x = 0
-    for i in range(1000000000):
+    for i in range(10000000000):
         x = x + i
     return x
 `

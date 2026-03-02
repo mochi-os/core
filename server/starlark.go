@@ -13,7 +13,7 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-const starlark_max_steps = 10000000 // 10 million steps
+const starlark_max_steps = 1000000000 // 1 billion steps
 
 var (
 	starlark_sem             chan struct{}

@@ -2124,27 +2124,33 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	// Determine if this is a read or write operation
 	is_write := service == "git-receive-pack"
 
-	// For write operations, require authentication
-	if is_write {
-		if user == nil {
-			// Try Basic Auth with token
-			user = git_authenticate(c, a)
-			if user == nil {
+	// Try to authenticate if credentials are provided
+	if user == nil {
+		user = git_authenticate(c, a)
+	}
+
+	// Check access control
+	app_db := db_app_system(owner, a)
+	if app_db != nil {
+		identity_id := ""
+		role := ""
+		if user != nil {
+			if ident := user.identity(); ident != nil {
+				identity_id = ident.ID
+			}
+			role = user.Role
+		}
+		op := "read"
+		if is_write {
+			op = "write"
+		}
+		if !app_db.access_check(owner, identity_id, role, "repo/"+id, op) {
+			if is_write && user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
-				return true
+			} else {
+				c.String(http.StatusNotFound, "Repository not found")
 			}
-		}
-
-		// Check write access using the app's access control system
-		identity := user.identity()
-		if identity == nil {
-			c.String(http.StatusForbidden, "No write access to repository")
-			return true
-		}
-		app_db := db_app_system(owner, a)
-		if app_db == nil || !app_db.access_check(owner, identity.ID, user.Role, "repo/"+id, "write") {
-			c.String(http.StatusForbidden, "No write access to repository")
 			return true
 		}
 	}
@@ -2190,27 +2196,33 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	// Determine if this is a read or write operation
 	is_write := service == "git-receive-pack"
 
-	// For write operations, require authentication
-	if is_write {
-		if user == nil {
-			// Try Basic Auth with token
-			user = git_authenticate(c, a)
-			if user == nil {
+	// Try to authenticate if credentials are provided
+	if user == nil {
+		user = git_authenticate(c, a)
+	}
+
+	// Check access control
+	app_db := db_app_system(owner, a)
+	if app_db != nil {
+		identity_id := ""
+		role := ""
+		if user != nil {
+			if id := user.identity(); id != nil {
+				identity_id = id.ID
+			}
+			role = user.Role
+		}
+		op := "read"
+		if is_write {
+			op = "write"
+		}
+		if !app_db.access_check(owner, identity_id, role, "repo/"+e.ID, op) {
+			if is_write && user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
-				return true
+			} else {
+				c.String(http.StatusNotFound, "Repository not found")
 			}
-		}
-
-		// Check write access
-		identity := user.identity()
-		if identity == nil {
-			c.String(http.StatusForbidden, "No write access to repository")
-			return true
-		}
-		app_db := db_app_system(owner, a)
-		if app_db == nil || !app_db.access_check(owner, identity.ID, user.Role, "repo/"+e.ID, "write") {
-			c.String(http.StatusForbidden, "No write access to repository")
 			return true
 		}
 	}

@@ -1,9 +1,11 @@
 // Mochi server: Users
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -84,7 +86,6 @@ func code_send(email string) string {
 
 	// Generate 10 character unambiguous mixed-case code
 	code := random_unambiguous(10)
-	//bug("Code %s", code)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
 	email_login_code(email, code)
@@ -272,10 +273,7 @@ func user_owning_entity(id string) *User {
 }
 
 func (u *User) administrator() bool {
-	if u.Role == "administrator" {
-		return true
-	}
-	return false
+	return u.Role == "administrator"
 }
 
 // class_app returns the user's preferred app for a class, or empty string if not set
@@ -916,6 +914,15 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "database error")
 	}
 
+	// Replace raw session codes with hashed identifiers
+	for _, row := range rows {
+		if code, ok := row["code"].(string); ok {
+			hash := sha256.Sum256([]byte(code))
+			row["id"] = hex.EncodeToString(hash[:8])
+			delete(row, "code")
+		}
+	}
+
 	return sl_encode(rows), nil
 }
 
@@ -946,17 +953,30 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	var count int
 
 	if len(args) == 2 {
-		// Revoke specific session
-		code, ok := sl.AsString(args[1])
+		// Revoke specific session by hashed identifier
+		id, ok := sl.AsString(args[1])
 		if !ok {
-			return sl_error(fn, "invalid code")
+			return sl_error(fn, "invalid session id")
 		}
-		// Verify session belongs to target user
-		exists, _ := db.exists("select 1 from sessions where user=? and code=?", target, code)
-		if !exists {
+		// Find the session by matching hash
+		codes, err := db.rows("select code from sessions where user=?", target)
+		if err != nil {
+			return sl_error(fn, "database error")
+		}
+		var found string
+		for _, row := range codes {
+			if code, ok := row["code"].(string); ok {
+				hash := sha256.Sum256([]byte(code))
+				if hex.EncodeToString(hash[:8]) == id {
+					found = code
+					break
+				}
+			}
+		}
+		if found == "" {
 			return sl_error(fn, "session not found")
 		}
-		db.exec("delete from sessions where user=? and code=?", target, code)
+		db.exec("delete from sessions where user=? and code=?", target, found)
 		count = 1
 	} else {
 		// Revoke all sessions for user

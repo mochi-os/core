@@ -1,5 +1,5 @@
-// Mochi server: Wesockets interface
-// Copyright Alistair Cunningham 2024-2025
+// Mochi server: Websockets interface
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 

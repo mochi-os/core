@@ -1,5 +1,5 @@
 // Mochi server: Utilities
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -38,6 +38,8 @@ var (
 	locks_lock         sync.Mutex
 	match_hyphens      = regexp.MustCompile(`-`)
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
+	regex_cache        = map[string]*regexp.Regexp{}
+	regex_cache_mu     sync.Mutex
 )
 
 func string_in_slice(s string, slice []string) bool {
@@ -397,6 +399,8 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z-]{0,100}$"
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
+	case "email":
+		return email_valid(s)
 	case "entity":
 		match = "^[\\w]{49,51}$"
 	case "filename":
@@ -448,10 +452,16 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z.-_]{1,20}$"
 	}
 
-	m := must(regexp.MatchString(match, s))
-	if !m {
-		return false
-	}
+	return regex_cached(match).MatchString(s)
+}
 
-	return true
+func regex_cached(pattern string) *regexp.Regexp {
+	regex_cache_mu.Lock()
+	defer regex_cache_mu.Unlock()
+	if re, ok := regex_cache[pattern]; ok {
+		return re
+	}
+	re := regexp.MustCompile(pattern)
+	regex_cache[pattern] = re
+	return re
 }

@@ -1,5 +1,5 @@
 // Mochi server: Sample web interface
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -154,6 +154,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		// Fall back to primary user for public class-level actions
 		if owner == nil && aa.Public {
 			owner = user_by_id(1)
+		}
+	}
+
+	// Handle git Smart HTTP protocol for domain-routed repository entities.
+	// Git clients send requests to /info/refs, /git-upload-pack, /git-receive-pack
+	// directly under the entity URL, bypassing standard app action routing.
+	if e != nil {
+		info("git check: entity=%s class=%q name=%q", e.Fingerprint, e.Class, name)
+	}
+	if e != nil && e.Class == "repository" {
+		if name == "info/refs" || name == "git-upload-pack" || name == "git-receive-pack" {
+			return git_http_handler_entity(c, a, owner, user, e, name)
 		}
 	}
 
@@ -662,6 +674,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 
 // Replace Open Graph meta tag content
 func escape_attr(value string) string {
+	value = strings.ReplaceAll(value, `&`, `&amp;`)
 	value = strings.ReplaceAll(value, `"`, `&quot;`)
 	value = strings.ReplaceAll(value, `<`, `&lt;`)
 	value = strings.ReplaceAll(value, `>`, `&gt;`)

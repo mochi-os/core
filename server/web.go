@@ -486,6 +486,15 @@ func web_security_headers(c *gin.Context) {
 	c.Next()
 }
 
+// Request body size limit middleware (skip multipart/form-data for file uploads)
+func web_body_limit(c *gin.Context) {
+	ct := c.GetHeader("Content-Type")
+	if !strings.HasPrefix(ct, "multipart/form-data") {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB
+	}
+	c.Next()
+}
+
 // Serve HTML file with dynamic Open Graph meta tags
 func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) bool {
 	// Get owner for database access - use entity owner if available
@@ -560,17 +569,18 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 		content = regexp_replace_meta_name(content, "description", desc)
 	}
 	if image, ok := og["image"].(string); ok && image != "" {
+		escaped := escape_attr(image)
 		// Add og:image if not already present
 		if !strings.Contains(content, `property="og:image"`) {
 			content = strings.Replace(content, `<meta property="og:description"`,
-				`<meta property="og:image" content="`+image+`" />`+"\n    "+`<meta property="og:description"`, 1)
+				`<meta property="og:image" content="`+escaped+`" />`+"\n    "+`<meta property="og:description"`, 1)
 		} else {
 			content = regexp_replace_meta(content, "og:image", image)
 		}
 		// Add twitter:image if not already present
 		if !strings.Contains(content, `property="twitter:image"`) {
 			content = strings.Replace(content, `<meta property="twitter:description"`,
-				`<meta property="twitter:image" content="`+image+`" />`+"\n    "+`<meta property="twitter:description"`, 1)
+				`<meta property="twitter:image" content="`+escaped+`" />`+"\n    "+`<meta property="twitter:description"`, 1)
 		} else {
 			content = regexp_replace_meta(content, "twitter:image", image)
 		}
@@ -581,8 +591,9 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Always set og:url to current URL
 	if !strings.Contains(content, `property="og:url"`) {
+		escaped := escape_attr(url)
 		content = strings.Replace(content, `<meta property="og:type"`,
-			`<meta property="og:url" content="`+url+`" />`+"\n    "+`<meta property="og:type"`, 1)
+			`<meta property="og:url" content="`+escaped+`" />`+"\n    "+`<meta property="og:type"`, 1)
 	} else {
 		content = regexp_replace_meta(content, "og:url", url)
 	}
@@ -608,14 +619,14 @@ func is_entity_segment(s string) bool {
 func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	var tags []string
 	if app := c.GetString("mochi_app_path"); app != "" {
-		tags = append(tags, `<meta name="mochi:app" content="`+app+`">`)
+		tags = append(tags, `<meta name="mochi:app" content="`+escape_attr(app)+`">`)
 	}
 	if e != nil {
-		tags = append(tags, `<meta name="mochi:class" content="`+e.Class+`">`)
-		tags = append(tags, `<meta name="mochi:entity" content="`+e.ID+`">`)
-		tags = append(tags, `<meta name="mochi:fingerprint" content="`+e.Fingerprint+`">`)
+		tags = append(tags, `<meta name="mochi:class" content="`+escape_attr(e.Class)+`">`)
+		tags = append(tags, `<meta name="mochi:entity" content="`+escape_attr(e.ID)+`">`)
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(e.Fingerprint)+`">`)
 	} else if seg := c.GetString("mochi_entity_segment"); seg != "" {
-		tags = append(tags, `<meta name="mochi:fingerprint" content="`+seg+`">`)
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(seg)+`">`)
 	}
 	if dm := c.GetString("domain_method"); dm == "entity" || dm == "app" {
 		tags = append(tags, `<meta name="mochi:domain">`)
@@ -650,11 +661,15 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 }
 
 // Replace Open Graph meta tag content
-func regexp_replace_meta(html, property, value string) string {
-	// Escape HTML in value
+func escape_attr(value string) string {
 	value = strings.ReplaceAll(value, `"`, `&quot;`)
 	value = strings.ReplaceAll(value, `<`, `&lt;`)
 	value = strings.ReplaceAll(value, `>`, `&gt;`)
+	return value
+}
+
+func regexp_replace_meta(html, property, value string) string {
+	value = escape_attr(value)
 
 	pattern := regexp.MustCompile(`<meta\s+property="` + regexp.QuoteMeta(property) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta property="` + property + `" content="` + value + `" />`
@@ -663,9 +678,7 @@ func regexp_replace_meta(html, property, value string) string {
 
 // Replace meta tag with name attribute
 func regexp_replace_meta_name(html, name, value string) string {
-	value = strings.ReplaceAll(value, `"`, `&quot;`)
-	value = strings.ReplaceAll(value, `<`, `&lt;`)
-	value = strings.ReplaceAll(value, `>`, `&gt;`)
+	value = escape_attr(value)
 
 	pattern := regexp.MustCompile(`<meta\s+name="` + regexp.QuoteMeta(name) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta name="` + name + `" content="` + value + `" />`
@@ -674,8 +687,7 @@ func regexp_replace_meta_name(html, name, value string) string {
 
 // Replace HTML tag content
 func regexp_replace_tag(html, tag, value string) string {
-	value = strings.ReplaceAll(value, `<`, `&lt;`)
-	value = strings.ReplaceAll(value, `>`, `&gt;`)
+	value = escape_attr(value)
 
 	pattern := regexp.MustCompile(`<` + regexp.QuoteMeta(tag) + `>[^<]*</` + regexp.QuoteMeta(tag) + `>`)
 	replacement := `<` + tag + `>` + value + `</` + tag + `>`
@@ -1077,8 +1089,8 @@ func web_start() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.Default()
-	r.SetTrustedProxies(nil)
 	r.Use(web_security_headers)
+	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)
 	r.Use(domains_middleware())
 	r.RedirectTrailingSlash = false

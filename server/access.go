@@ -48,7 +48,7 @@ func (db *DB) access_setup() {
 func (db *DB) access_check(owner *User, user string, role string, resource string, operation string) bool {
 	db.access_setup() // Ensure table exists
 
-	// Get resource hierarachy
+	// Get resource hierarchy
 	var resources []string
 	parts := strings.Split(resource, "/")
 	for i := len(parts); i > 0; i-- {

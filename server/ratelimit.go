@@ -123,28 +123,9 @@ func (r *rate_limiter) cleanup() {
 	}
 }
 
-// Get client IP, respecting X-Forwarded-For if behind proxy
+// Get client IP from the direct connection
 func rate_limit_client_ip(c *gin.Context) string {
-	// Check X-Forwarded-For header (first IP is the client)
-	xff := c.GetHeader("X-Forwarded-For")
-	if xff != "" {
-		// Take first IP in the chain
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
-		}
-		return xff
-	}
-
-	// Check X-Real-IP header
-	xri := c.GetHeader("X-Real-IP")
-	if xri != "" {
-		return xri
-	}
-
-	// Fall back to direct client IP
-	return c.ClientIP()
+	return c.RemoteIP()
 }
 
 // Middleware for general API rate limiting

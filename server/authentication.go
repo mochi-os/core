@@ -774,12 +774,6 @@ func web_recovery_login(c *gin.Context) {
 		return
 	}
 
-	// Delete used code
-	db.exec("delete from recovery where id=?", matched)
-
-	// Reset rate limit on successful login
-	rate_limit_login.reset(rate_limit_client_ip(c))
-
 	// Load user with identity
 	user := user_by_id(user_id)
 	if user == nil {
@@ -790,6 +784,12 @@ func web_recovery_login(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
 		return
 	}
+
+	// Delete used code (after suspension check to avoid consuming codes for suspended users)
+	db.exec("delete from recovery where id=?", matched)
+
+	// Reset rate limit on successful login
+	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	// Recovery bypasses all MFA - create full session directly
 	auth_complete_login(c, user)

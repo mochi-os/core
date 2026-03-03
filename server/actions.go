@@ -123,9 +123,9 @@ func (a *Action) dump(values ...any) {
 		}
 		data, err := json.MarshalIndent(v, "", "  ")
 		if err != nil {
-			a.web.Writer.WriteString(fmt.Sprintf("Error encoding value %d: %v", i, err))
+			a.web.Writer.WriteString(template.HTMLEscapeString(fmt.Sprintf("Error encoding value %d: %v", i, err)))
 		} else {
-			a.web.Writer.Write(data)
+			a.web.Writer.WriteString(template.HTMLEscapeString(string(data)))
 		}
 	}
 
@@ -147,7 +147,7 @@ func (a *Action) error(code int, message string, values ...any) {
 	a.web.Writer.WriteString("<html><head><title>Error</title></head><body>")
 	a.web.Writer.WriteString(fmt.Sprintf("<h1>Error %d</h1>", code))
 	a.web.Writer.WriteString("<pre>")
-	a.web.Writer.WriteString(msg)
+	a.web.Writer.WriteString(template.HTMLEscapeString(msg))
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 

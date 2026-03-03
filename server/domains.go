@@ -272,6 +272,9 @@ func domain_register(name string) (*domain, error) {
 	return domain_get(name), nil
 }
 
+// Valid column names for domain updates
+var domain_update_columns = map[string]bool{"verified": true, "tls": true}
+
 // domain_update updates a domain entry
 func domain_update(name string, updates map[string]any) error {
 	if len(updates) == 0 {
@@ -282,6 +285,9 @@ func domain_update(name string, updates map[string]any) error {
 	var sets []string
 	var args []any
 	for k, v := range updates {
+		if !domain_update_columns[k] {
+			return fmt.Errorf("invalid column: %s", k)
+		}
 		sets = append(sets, k+"=?")
 		args = append(args, v)
 	}
@@ -381,6 +387,9 @@ func route_create(domain_name, path, method, target, context string, owner, prio
 	return route_get(domain_name, path), nil
 }
 
+// Valid column names for route updates
+var route_update_columns = map[string]bool{"method": true, "target": true, "context": true, "priority": true, "enabled": true}
+
 // route_update updates a route
 func route_update(domain_name, path string, updates map[string]any) error {
 	if len(updates) == 0 {
@@ -391,6 +400,9 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	var sets []string
 	var args []any
 	for k, v := range updates {
+		if !route_update_columns[k] {
+			return fmt.Errorf("invalid column: %s", k)
+		}
 		sets = append(sets, k+"=?")
 		args = append(args, v)
 	}

@@ -1,5 +1,5 @@
 // Mochi server: Actions
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -416,14 +416,15 @@ func (a *Action) sl_print(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// a.redirect(path) -> None: Redirect to another path
+// a.redirect(path, code=302) -> None: Redirect to another path
 func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
-	err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path)
+	code := 302
+	err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path, "code?", &code)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	a.web.Redirect(301, path)
+	a.web.Redirect(code, path)
 	return sl.None, nil
 }
 

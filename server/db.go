@@ -1,5 +1,5 @@
 // Mochi server: Database
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 40
+	schema_version = 41
 )
 
 var (
@@ -116,10 +116,11 @@ func db_create() {
 
 	// Directory
 	directory := db_open("db/directory.db")
-	directory.exec("create table directory ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', created integer not null, updated integer not null )")
+	directory.exec("create table directory ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null )")
 	directory.exec("create index directory_name on directory( name )")
 	directory.exec("create index directory_class on directory( class )")
 	directory.exec("create index directory_location on directory( location )")
+	directory.exec("create index directory_fingerprint on directory( fingerprint )")
 	directory.exec("create index directory_created on directory( created )")
 	directory.exec("create index directory_updated on directory( updated )")
 
@@ -386,6 +387,12 @@ func db_open_work(file string) (*DB, bool, bool) {
 	db = &DB{path: path, handle: h, closed: 0}
 
 	databases_lock.Lock()
+	if existing, found := databases[path]; found {
+		databases_lock.Unlock()
+		h.Close()
+		existing.closed = 0
+		return existing, false, true
+	}
 	databases[path] = db
 	databases_lock.Unlock()
 
@@ -828,6 +835,23 @@ func db_upgrade() {
 			}
 			if exists, _ := queue.exists("select 1 from pragma_table_info('queue') where name='from_services'"); !exists {
 				queue.exec("alter table queue add column from_services text not null default ''")
+			}
+		}
+
+		if schema == 41 {
+			// Migration: add fingerprint column back to directory table (was removed in schema 25)
+			// Now stored as indexed column for efficient lookup instead of computed on-the-fly
+			dir := db_open("db/directory.db")
+			if exists, _ := dir.exists("select 1 from pragma_table_info('directory') where name='fingerprint'"); !exists {
+				dir.exec("alter table directory add column fingerprint text not null default ''")
+				dir.exec("create index directory_fingerprint on directory(fingerprint)")
+			}
+			// Backfill fingerprints for all existing entries
+			rows, _ := dir.rows("select id from directory where fingerprint=''")
+			for _, row := range rows {
+				if id, ok := row["id"].(string); ok {
+					dir.exec("update directory set fingerprint=? where id=?", fingerprint(id), id)
+				}
 			}
 		}
 

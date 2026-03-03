@@ -1,5 +1,5 @@
 // Mochi server: Directory
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -63,12 +63,13 @@ func directory_create(e *Entity) {
 	debug("Directory creating entry %q %q", e.ID, e.Name)
 	now := now()
 
+	fp := fingerprint(e.ID)
 	db := db_open("db/directory.db")
 	exists, _ := db.exists("select 1 from directory where id=?", e.ID)
 	if exists {
-		db.exec("update directory set name=?, class=?, location=?, data=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, e.ID)
+		db.exec("update directory set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, e.ID)
 	} else {
-		db.exec("insert into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, now, now)
+		db.exec("insert into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, now)
 	}
 }
 
@@ -131,7 +132,11 @@ func directory_download_from_peer(peer string) bool {
 			d.Location = "p2p/" + p2p_id
 		}
 
-		db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, d.Created, d.Updated)
+		fp := d.Fingerprint
+		if fp == "" {
+			fp = fingerprint(d.ID)
+		}
+		db.exec("replace into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
 }
@@ -263,7 +268,7 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("replace into directory (id, name, class, location, data, created, updated) values (?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, created, now)
+	db.exec("replace into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
 
 	go queue_check_entity(id)
 }
@@ -298,16 +303,20 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if d == nil {
 		return sl.None, nil
 	}
-	d["fingerprint"] = fingerprint(d["id"].(string))
-	d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+	fp, _ := d["fingerprint"].(string)
+	if fp == "" {
+		fp = fingerprint(d["id"].(string))
+	}
+	d["fingerprint"] = fp
+	d["fingerprint_hyphens"] = fingerprint_hyphens(fp)
 
 	return sl_encode(d), nil
 }
 
-// mochi.directory.search(class, search, include_self) -> list: Search the directory
+// mochi.directory.search(class, search, include_self, fingerprint="") -> list: Search the directory
 func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <class: string>, <search: string>, <include self: boolean>")
+		return sl_error(fn, "syntax: <class: string>, <search: string>, <include self: boolean>, [fingerprint: string]")
 	}
 
 	class, ok := sl.AsString(args[0])
@@ -321,17 +330,37 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	include_self := bool(args[2].Truth())
+
+	// Optional fingerprint kwarg for indexed lookup
+	fp_search := ""
+	for _, kv := range kwargs {
+		k, _ := sl.AsString(kv[0])
+		if k == "fingerprint" {
+			fp_search, _ = sl.AsString(kv[1])
+		}
+	}
+
 	u := t.Local("user").(*User)
 
 	db := db_open("db/directory.db")
-	ds, err := db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	var ds []map[string]any
+	var err error
+	if fp_search != "" {
+		ds, err = db.rows("select * from directory where class=? and fingerprint=? order by name, created", class, fp_search)
+	} else {
+		ds, err = db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
 
 	for _, d := range ds {
-		d["fingerprint"] = fingerprint(d["id"].(string))
-		d["fingerprint_hyphens"] = fingerprint_hyphens(d["fingerprint"].(string))
+		fp, _ := d["fingerprint"].(string)
+		if fp == "" {
+			fp = fingerprint(d["id"].(string))
+		}
+		d["fingerprint"] = fp
+		d["fingerprint_hyphens"] = fingerprint_hyphens(fp)
 	}
 
 	if u == nil || include_self || class != "person" {

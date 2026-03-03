@@ -160,9 +160,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Handle git Smart HTTP protocol for domain-routed repository entities.
 	// Git clients send requests to /info/refs, /git-upload-pack, /git-receive-pack
 	// directly under the entity URL, bypassing standard app action routing.
-	if e != nil {
-		info("git check: entity=%s class=%q name=%q", e.Fingerprint, e.Class, name)
-	}
 	if e != nil && e.Class == "repository" {
 		if name == "info/refs" || name == "git-upload-pack" || name == "git-receive-pack" {
 			return git_http_handler_entity(c, a, owner, user, e, name)
@@ -498,10 +495,11 @@ func web_security_headers(c *gin.Context) {
 	c.Next()
 }
 
-// Request body size limit middleware (skip multipart/form-data for file uploads)
+// Request body size limit middleware (skip multipart/form-data for file uploads
+// and git pack data for push operations)
 func web_body_limit(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
-	if !strings.HasPrefix(ct, "multipart/form-data") {
+	if !strings.HasPrefix(ct, "multipart/form-data") && !strings.HasPrefix(ct, "application/x-git-") {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB
 	}
 	c.Next()

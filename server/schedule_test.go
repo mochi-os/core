@@ -1,5 +1,5 @@
 // Mochi server: Scheduled Events Tests
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 
 package main
 

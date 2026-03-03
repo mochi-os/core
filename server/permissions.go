@@ -1,5 +1,5 @@
 // Mochi server: App permissions
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Fine-grained permissions to control which Starlark APIs third-party apps can access.
 // Built-in apps (internal != nil) bypass all permission checks.

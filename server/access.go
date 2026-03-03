@@ -1,5 +1,5 @@
 // Mochi server: Access control
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 
 /* Resolution order, first match wins:
 	1. User's ID

@@ -1,11 +1,13 @@
 // Mochi server: Email
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
 import (
-	gm "github.com/wneessen/go-mail"
+	"html"
 	"net/mail"
+
+	gm "github.com/wneessen/go-mail"
 )
 
 // email_send sends a plain text email.
@@ -91,7 +93,7 @@ func email_login_code(to string, code string) {
           <tr>
             <td style="padding: 0 40px;">
               <div style="background-color: #f4f4f5; border-radius: 8px; padding: 24px; text-align: center;">
-                <span style="font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 32px; font-weight: 600; letter-spacing: 4px; color: #18181b;">` + code + `</span>
+                <span style="font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 32px; font-weight: 600; letter-spacing: 4px; color: #18181b;">` + html.EscapeString(code) + `</span>
               </div>
             </td>
           </tr>

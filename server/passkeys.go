@@ -1,5 +1,5 @@
 // Mochi server: Passkey/WebAuthn authentication
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 
 package main
 

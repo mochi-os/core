@@ -1,5 +1,5 @@
 // Mochi server: Connected accounts
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Connected accounts allow users to link external services (email, push notifications,
 // AI providers, MCP servers) to their Mochi account. Apps access accounts via the

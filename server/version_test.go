@@ -1,5 +1,5 @@
 // Mochi server: App version requirement tests
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 
 package main
 

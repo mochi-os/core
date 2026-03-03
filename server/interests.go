@@ -1,5 +1,5 @@
 // Mochi server: User interest profiles API
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Provides mochi.interests.* builtins for managing user interest profiles.
 // Interests are stored as Wikidata QIDs with weights (0-100) in user.db.

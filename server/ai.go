@@ -1,5 +1,5 @@
 // Mochi server: AI prompt API
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Provides mochi.ai.prompt() for Starlark apps to send prompts to AI providers
 // (Claude, OpenAI) via the user's connected accounts. API keys are never exposed

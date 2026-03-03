@@ -1,5 +1,5 @@
 // Mochi server: p2p
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 

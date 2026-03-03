@@ -1,5 +1,5 @@
 // Mochi server: Groups for access control
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Provides app-level groups that can be used as subjects in access control.
 // Groups can contain users or other groups (up to group_max_depth levels).

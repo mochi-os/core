@@ -1,5 +1,5 @@
 // Mochi server: Wikidata QID lookup and search API
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Provides mochi.qid.lookup() and mochi.qid.search() for Starlark apps to resolve
 // Wikidata QIDs to labels and search for entities. Results are cached in external.db

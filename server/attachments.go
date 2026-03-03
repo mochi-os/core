@@ -1,5 +1,5 @@
 // Mochi server: Attachments
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 //
 // Provides app-level file attachments with federation support.
 // Attachments are associated with objects and can be synced between users.

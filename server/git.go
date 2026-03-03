@@ -1,5 +1,5 @@
 // Mochi server: Git repository operations
-// Copyright Alistair Cunningham 2025
+// Copyright Alistair Cunningham 2025-2026
 
 package main
 
@@ -2155,6 +2155,72 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	} else if strings.HasSuffix(path, "git-upload-pack") {
 		return git_service_rpc(c, repo_path, "git-upload-pack")
 	} else if strings.HasSuffix(path, "git-receive-pack") {
+		return git_service_rpc(c, repo_path, "git-receive-pack")
+	}
+
+	c.String(http.StatusNotFound, "Not found")
+	return true
+}
+
+// git_http_handler_entity handles git Smart HTTP for domain-routed entities.
+// The entity is already resolved, so no fingerprint lookup is needed.
+func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e *Entity, path string) bool {
+	if owner == nil {
+		c.String(http.StatusNotFound, "Repository not found")
+		return true
+	}
+
+	// Build repository path from the pre-resolved entity
+	repo_path := git_repo_path(owner, e.ID)
+	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
+		c.String(http.StatusNotFound, "Repository not found")
+		return true
+	}
+
+	// Determine operation
+	service := c.Query("service")
+	if service == "" {
+		if path == "git-upload-pack" {
+			service = "git-upload-pack"
+		} else if path == "git-receive-pack" {
+			service = "git-receive-pack"
+		}
+	}
+
+	// Determine if this is a read or write operation
+	is_write := service == "git-receive-pack"
+
+	// For write operations, require authentication
+	if is_write {
+		if user == nil {
+			// Try Basic Auth with token
+			user = git_authenticate(c, a)
+			if user == nil {
+				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
+				c.String(http.StatusUnauthorized, "Authentication required")
+				return true
+			}
+		}
+
+		// Check write access
+		identity := user.identity()
+		if identity == nil {
+			c.String(http.StatusForbidden, "No write access to repository")
+			return true
+		}
+		app_db := db_app_system(owner, a)
+		if app_db == nil || !app_db.access_check(owner, identity.ID, user.Role, "repo/"+e.ID, "write") {
+			c.String(http.StatusForbidden, "No write access to repository")
+			return true
+		}
+	}
+
+	// Route to appropriate handler
+	if path == "info/refs" {
+		return git_info_refs(c, repo_path, service)
+	} else if path == "git-upload-pack" {
+		return git_service_rpc(c, repo_path, "git-upload-pack")
+	} else if path == "git-receive-pack" {
 		return git_service_rpc(c, repo_path, "git-receive-pack")
 	}
 

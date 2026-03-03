@@ -1,5 +1,5 @@
 // Mochi server: Entities
-// Copyright Alistair Cunningham 2024-2025
+// Copyright Alistair Cunningham 2024-2026
 
 package main
 
@@ -144,10 +144,21 @@ func (e *Entity) delete() {
 		username = row["username"].(string)
 	}
 
-	// Broadcast deletion (signs synchronously, dispatches async)
+	// Broadcast deletion (must publish before deleting entity, since publish needs the private key to sign)
 	m := message(e.ID, "", "directory", "delete")
 	m.set("entity", e.ID)
-	go m.publish(false)
+	m.publish(false)
+
+	// Remove queued messages from/to this entity
+	queue := db_open("db/queue.db")
+	queue.exec("delete from queue where from_entity=?", e.ID)
+	queue.exec("delete from queue where to_entity=?", e.ID)
+
+	// Remove from group memberships
+	if e.User > 0 {
+		udb := db_open(fmt.Sprintf("users/%d/user.db", e.User))
+		udb.exec("delete from group_members where member=? and type='user'", e.ID)
+	}
 
 	// Remove from local directory
 	db_open("db/directory.db").exec("delete from directory where id=?", e.ID)

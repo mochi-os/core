@@ -2145,7 +2145,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 			op = "write"
 		}
 		if !app_db.access_check(owner, identity_id, role, "repo/"+id, op) {
-			if is_write && user == nil {
+			if user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
 			} else {
@@ -2217,7 +2217,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 			op = "write"
 		}
 		if !app_db.access_check(owner, identity_id, role, "repo/"+e.ID, op) {
-			if is_write && user == nil {
+			if user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
 			} else {

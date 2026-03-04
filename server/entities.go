@@ -199,7 +199,7 @@ func entity_sign(entity string, s string) string {
 	db := db_open("db/users.db")
 	var e Entity
 	if !db.scan(&e, "select private from entities where id=?", entity) {
-		warn("Signature entity %q not found", entity)
+		info("Signature entity %q not found", entity)
 		return ""
 	}
 

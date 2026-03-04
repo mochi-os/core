@@ -221,12 +221,22 @@ func queue_process() {
 		info("Queue processing %d entries", len(entries))
 	}
 
+	udb := db_open("db/users.db")
 	for _, q := range entries {
 		// Skip expired messages
 		if q.Expires > 0 && q.Expires < now() {
 			debug("Queue message %q expired", q.ID)
 			db.exec("delete from queue where id = ?", q.ID)
 			continue
+		}
+
+		// Drop messages from deleted entities (can't sign without the private key)
+		if q.FromEntity != "" {
+			if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
+				info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
+				db.exec("delete from queue where id = ?", q.ID)
+				continue
+			}
 		}
 
 		var ok bool

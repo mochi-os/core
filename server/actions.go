@@ -48,6 +48,12 @@ func (ai *ActionInput) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tup
 		return nil, err
 	}
 
+	// Check inputs map first (handles empty strings from JSON body)
+	if value, found := ai.action.inputs[field]; found {
+		return sl.String(value), nil
+	}
+
+	// Check query/form/file fallbacks
 	value := ai.action.input(field)
 	if value != "" {
 		return sl.String(value), nil

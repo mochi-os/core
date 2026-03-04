@@ -95,15 +95,12 @@ func queue_fail(id string, err string) {
 	age := time.Now().Unix() - q.Created
 
 	if age > queue_max_age {
-		// Log and drop after max age
-		warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q",
-			attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
+		//warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q", attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec("delete from queue where id = ?", id)
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)
-		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?",
-			attempts, next, err, id)
+		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?", attempts, next, err, id)
 		debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
 	}
 }
@@ -314,10 +311,9 @@ func queue_cleanup() {
 		warn("Database error loading expired queue entries: %v", err)
 		return
 	}
-	for _, q := range old {
-		warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d",
-			q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)
-	}
+	// for _, q := range old {
+	// 	warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d", q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)
+	// }
 	db.exec("delete from queue where created < ?", cutoff)
 }
 

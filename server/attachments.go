@@ -1919,7 +1919,6 @@ func (e *Event) attachment_event_data() {
 
 	// Only serve if we own this attachment (entity is empty)
 	if att.Entity != "" {
-		warn("attachment_event_data: not owner (entity=%s), returning 403", att.Entity)
 		e.stream.write(map[string]string{"status": "403"})
 		return
 	}

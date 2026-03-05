@@ -78,6 +78,7 @@ func stream(from string, to string, service string, event string, from_app strin
 	// Read challenge from receiver
 	challenge, err := s.read_challenge()
 	if err != nil {
+		s.close()
 		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
 	}
 
@@ -87,6 +88,7 @@ func stream(from string, to string, service string, event string, from_app strin
 	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
 	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature})
 	if err != nil {
+		s.close()
 		return nil, err
 	}
 
@@ -103,6 +105,7 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 	// Read challenge from receiver
 	challenge, err := s.read_challenge()
 	if err != nil {
+		s.close()
 		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
 	}
 
@@ -112,6 +115,7 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
 	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature})
 	if err != nil {
+		s.close()
 		return nil, err
 	}
 

@@ -145,7 +145,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 func ai_call_claude(api_key, model, prompt string) aiResult {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      model,
-		"max_tokens": 1024,
+		"max_tokens": 16384,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

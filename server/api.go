@@ -287,6 +287,11 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "%v", err)
 	}
 	s.write(sl_decode(args[1]))
+
+	// Register stream for cleanup when script returns
+	streams, _ := t.Local("streams").([]*Stream)
+	t.SetLocal("streams", append(streams, s))
+
 	return s, nil
 }
 
@@ -345,6 +350,11 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 	s.write(sl_decode(args[2]))
+
+	// Register stream for cleanup when script returns
+	streams, _ := t.Local("streams").([]*Stream)
+	t.SetLocal("streams", append(streams, s))
+
 	return s, nil
 }
 

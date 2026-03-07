@@ -2,7 +2,7 @@
 // Copyright Alistair Cunningham 2025-2026
 //
 // Provides mochi.interests.* builtins for managing user interest profiles.
-// Interests are stored as Wikidata QIDs with weights (0-100) in user.db.
+// Interests are stored as Wikidata QIDs with weights (-100 to 100) in user.db.
 // Used by feeds and forums for personalised "relevant" sort ranking.
 
 package main
@@ -22,6 +22,7 @@ var api_interests = sls.FromStringDict(sl.String("mochi.interests"), sl.StringDi
 	"remove":  sl.NewBuiltin("mochi.interests.remove", api_interests_remove),
 	"adjust":  sl.NewBuiltin("mochi.interests.adjust", api_interests_adjust),
 	"top":     sl.NewBuiltin("mochi.interests.top", api_interests_top),
+	"bottom":  sl.NewBuiltin("mochi.interests.bottom", api_interests_bottom),
 	"summary": sl.NewBuiltin("mochi.interests.summary", api_interests_summary),
 })
 
@@ -48,7 +49,7 @@ func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(rows), nil
 }
 
-// mochi.interests.set(qid, weight) -> None: Set an interest weight (0-100)
+// mochi.interests.set(qid, weight) -> None: Set an interest weight (-100 to 100)
 func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <qid: string>, <weight: int>")
@@ -68,9 +69,9 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid weight")
 	}
 
-	// Clamp weight to 0-100
-	if weight < 0 {
-		weight = 0
+	// Clamp weight to -100 to 100
+	if weight < -100 {
+		weight = -100
 	}
 	if weight > 100 {
 		weight = 100
@@ -178,16 +179,19 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			// Existing interest: adjust and clamp
 			current, _ := row["weight"].(int64)
 			w := int(current) + delta
-			if w < 0 {
-				w = 0
+			if w < -100 {
+				w = -100
 			}
 			if w > 100 {
 				w = 100
 			}
 			db.exec("update interests set weight=?, updated=? where qid=?", w, ts, qid)
-		} else if delta > 0 {
+		} else if delta != 0 {
 			// New interest: insert with delta as initial weight (clamped)
 			w := delta
+			if w < -100 {
+				w = -100
+			}
 			if w > 100 {
 				w = 100
 			}
@@ -223,6 +227,41 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	db := db_user(user, "user")
 	rows, err := db.rows("select qid, weight from interests where weight > 0 order by weight desc limit ?", n)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return sl_encode(rows), nil
+}
+
+// mochi.interests.bottom(n) -> list: Get bottom N interests by weight (negative only)
+func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <n: int>")
+	}
+
+	if err := require_permission(t, fn, "interests/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	n, err := sl.AsInt32(args[0])
+	if err != nil || n < 1 {
+		return sl_error(fn, "invalid count")
+	}
+	if n > 100 {
+		n = 100
+	}
+
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_user(user, "user")
+	rows, err := db.rows("select qid, weight from interests where weight < 0 order by weight asc limit ?", n)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -276,46 +315,77 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 func interests_generate_summary(user *User, db *DB) string {
 	rows, err := db.rows("select qid from interests where weight > 0 order by weight desc limit 30")
 	if err != nil || len(rows) == 0 {
-		return ""
+		rows = []map[string]any{}
 	}
 
-	var qids []string
+	var posQids []string
 	for _, row := range rows {
 		qid, _ := row["qid"].(string)
 		if qid != "" {
-			qids = append(qids, qid)
+			posQids = append(posQids, qid)
 		}
 	}
 
-	if len(qids) == 0 {
+	negRows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
+	if err != nil {
+		negRows = []map[string]any{}
+	}
+
+	var negQids []string
+	for _, row := range negRows {
+		qid, _ := row["qid"].(string)
+		if qid != "" {
+			negQids = append(negQids, qid)
+		}
+	}
+
+	if len(posQids) == 0 && len(negQids) == 0 {
 		return ""
 	}
 
-	// Resolve QID labels
-	labels := qid_fetch_labels(qids, "en")
+	// Resolve QID labels for both positive and negative
+	allQids := append(posQids, negQids...)
+	labels := qid_fetch_labels(allQids, "en")
 
 	// Try AI summary first
-	summary := interests_ai_summary(user, db, qids, labels)
+	summary := interests_ai_summary(user, db, posQids, negQids, labels)
 	if summary != "" {
 		return summary
 	}
 
 	// Fallback: simple label list
-	var parts []string
-	for _, qid := range qids {
+	var posParts []string
+	for _, qid := range posQids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			parts = append(parts, label)
+			posParts = append(posParts, label)
 		}
 	}
-	if len(parts) == 0 {
+	var negParts []string
+	for _, qid := range negQids {
+		label := labels[qid]
+		if label != "" && label != qid {
+			negParts = append(negParts, label)
+		}
+	}
+	if len(posParts) == 0 && len(negParts) == 0 {
 		return ""
 	}
-	return "Interested in: " + strings.Join(parts, ", ")
+	var result string
+	if len(posParts) > 0 {
+		result = "Interested in: " + strings.Join(posParts, ", ")
+	}
+	if len(negParts) > 0 {
+		if result != "" {
+			result += ". "
+		}
+		result += "Dislikes: " + strings.Join(negParts, ", ")
+	}
+	return result
 }
 
 // interests_ai_summary attempts to generate an AI-powered summary
-func interests_ai_summary(user *User, db *DB, qids []string, labels map[string]string) string {
+func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string, labels map[string]string) string {
 	// Find first enabled AI account
 	rows, err := db.rows("select id, type, data, enabled from accounts order by id")
 	if err != nil {
@@ -348,18 +418,33 @@ func interests_ai_summary(user *User, db *DB, qids []string, labels map[string]s
 	}
 
 	// Build interest list for prompt
-	var lines []string
-	for _, qid := range qids {
+	var posLines []string
+	for _, qid := range posQids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			lines = append(lines, fmt.Sprintf("- %s (%s)", label, qid))
+			posLines = append(posLines, fmt.Sprintf("- %s (%s)", label, qid))
 		}
 	}
-	if len(lines) == 0 {
+	var negLines []string
+	for _, qid := range negQids {
+		label := labels[qid]
+		if label != "" && label != qid {
+			negLines = append(negLines, fmt.Sprintf("- %s (%s)", label, qid))
+		}
+	}
+	if len(posLines) == 0 && len(negLines) == 0 {
 		return ""
 	}
 
-	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in.\n\n%s", strings.Join(lines, "\n"))
+	var sections []string
+	if len(posLines) > 0 {
+		sections = append(sections, "Liked topics:\n"+strings.Join(posLines, "\n"))
+	}
+	if len(negLines) > 0 {
+		sections = append(sections, "Disliked topics:\n"+strings.Join(negLines, "\n"))
+	}
+
+	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in, and what they dislike if applicable.\n\n%s", strings.Join(sections, "\n\n"))
 
 	var result aiResult
 	switch ptype {

@@ -62,6 +62,8 @@ var (
 	peers_lock                          = &sync.Mutex{}
 	peer_reconnects                     = map[string]PeerReconnect{}
 	peer_reconnect_lock                 = &sync.Mutex{}
+	peer_sems                           = map[string]chan struct{}{}
+	peer_sems_lock                      = &sync.Mutex{}
 )
 
 func init() {
@@ -440,6 +442,18 @@ func peer_request_event(e *Event) {
 	}
 }
 
+// Get or create a per-peer semaphore for outbound stream limiting
+func peer_sem(id string) chan struct{} {
+	peer_sems_lock.Lock()
+	defer peer_sems_lock.Unlock()
+	sem, ok := peer_sems[id]
+	if !ok {
+		sem = make(chan struct{}, peer_max_streams)
+		peer_sems[id] = sem
+	}
+	return sem
+}
+
 // Get a reader and writer to a peer, connecting if necessary
 func peer_stream(id string) *Stream {
 	if id == "" {
@@ -465,7 +479,23 @@ func peer_stream(id string) *Stream {
 		return nil
 	}
 
-	return p2p_stream(id)
+	// Limit concurrent outbound streams per peer
+	sem := peer_sem(id)
+	select {
+	case sem <- struct{}{}:
+	case <-time.After(10 * time.Second):
+		warn("P2P outbound stream to peer %q timed out waiting for slot", id)
+		return nil
+	}
+
+	s := p2p_stream(id)
+	if s == nil {
+		<-sem
+		return nil
+	}
+
+	s.on_close = func() { <-sem }
+	return s
 }
 
 // Check whether we have enough peers in the pubsub mesh to send broadcast messages to

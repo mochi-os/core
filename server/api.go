@@ -54,6 +54,7 @@ func init() {
 			"remote": api_remote,
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
+				"image": sl.NewBuiltin("mochi.rss.image", api_rss_image),
 			}),
 			"schedule": api_schedule,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{

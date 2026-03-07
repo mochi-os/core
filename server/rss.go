@@ -4,13 +4,16 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/mmcdole/gofeed"
 	"github.com/mmcdole/gofeed/rss"
 	sl "go.starlark.net/starlark"
+	"golang.org/x/net/html"
 )
 
 // mochi.rss.fetch(url, headers?) -> dict: Fetch and parse an RSS or Atom feed
@@ -150,6 +153,115 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	return sl_encode(result), nil
+}
+
+// mochi.rss.image(url) -> string: Fetch a web page and extract its og:image URL
+func api_rss_image(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <url: string>")
+	}
+
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_url.allow(app.id) {
+		return sl.String(""), nil
+	}
+
+	rawurl, ok := sl.AsString(args[0])
+	if !ok || rawurl == "" {
+		return sl.String(""), nil
+	}
+
+	if err := require_permission_url(t, fn, rawurl); err != nil {
+		return sl.String(""), nil
+	}
+
+	r, err := url_request("GET", rawurl, map[string]string{"timeout": "10"}, map[string]string{"User-Agent": "Mochi/1.0"}, nil)
+	if err != nil {
+		return sl.String(""), nil
+	}
+	defer r.Body.Close()
+
+	if r.StatusCode < 200 || r.StatusCode >= 300 {
+		return sl.String(""), nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		return sl.String(""), nil
+	}
+
+	return sl.String(extract_og_image(body, rawurl)), nil
+}
+
+// extract_og_image finds the og:image or twitter:image meta tag in HTML
+func extract_og_image(body []byte, pageURL string) string {
+	tokenizer := html.NewTokenizer(bytes.NewReader(body))
+	var ogImage, twitterImage string
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+			tn, hasAttr := tokenizer.TagName()
+			tagName := string(tn)
+
+			if tagName == "body" {
+				break
+			}
+
+			if tagName == "meta" && hasAttr {
+				var property, name, content string
+				for {
+					key, val, more := tokenizer.TagAttr()
+					k := string(key)
+					v := string(val)
+					switch k {
+					case "property":
+						property = v
+					case "name":
+						name = v
+					case "content":
+						content = v
+					}
+					if !more {
+						break
+					}
+				}
+				if property == "og:image" && content != "" {
+					ogImage = content
+				} else if twitterImage == "" && name == "twitter:image" && content != "" {
+					twitterImage = content
+				}
+			}
+		}
+		if tt == html.EndTagToken {
+			tn, _ := tokenizer.TagName()
+			if string(tn) == "head" {
+				break
+			}
+		}
+	}
+
+	result := ogImage
+	if result == "" {
+		result = twitterImage
+	}
+	if result == "" {
+		return ""
+	}
+
+	// Resolve relative URLs
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return result
+	}
+	ref, err := url.Parse(result)
+	if err != nil {
+		return result
+	}
+	return base.ResolveReference(ref).String()
 }
 
 // rss_extract_ttl parses TTL from RSS XML using the RSS-specific parser

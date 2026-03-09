@@ -34,7 +34,7 @@ func starlark_configure() {
 	}
 	starlark_sem = make(chan struct{}, c)
 
-	secs := ini_int("starlark", "timeout", 60)
+	secs := ini_int("starlark", "timeout", 90)
 	if secs < 1 {
 		secs = 60
 	}

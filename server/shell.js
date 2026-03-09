@@ -82,9 +82,14 @@
         return match ? match[1] : '';
     }
 
+    var lastNavigatedPath = window.location.pathname + window.location.search + window.location.hash;
+
     function handleNavigate(data) {
-        if (data.path) {
-            history.replaceState(null, '', data.path);
+        if (!data.path) return;
+        // Only push a new history entry when the path actually changed
+        if (data.path !== lastNavigatedPath) {
+            history.pushState(null, '', data.path);
+            lastNavigatedPath = data.path;
         }
     }
 
@@ -116,11 +121,12 @@
 
     window.addEventListener('popstate', function() {
         var path = window.location.pathname + window.location.search + window.location.hash;
+        lastNavigatedPath = path;
         var newApp = getAppNameFromPath(path);
         var oldApp = getAppNameFromPath(iframe.src || '');
 
         if (newApp !== oldApp) {
-            // Different app — swap iframe
+            // Different app — swap iframe and fetch new token
             currentAppId = newApp;
             storagePrefix = 'app:' + currentAppId + ':';
             fetchToken(newApp).then(function() {
@@ -130,7 +136,9 @@
                 iframe.src = path;
             });
         } else {
-            postToIframe({ type: 'popstate', path: path });
+            // Same app — reload iframe at the new path
+            // (pushState/replaceState don't work in sandboxed iframes with opaque origins)
+            iframe.src = path;
         }
     });
 
@@ -147,10 +155,12 @@
             case 'ready':
                 // App is ready — send init with token
                 var appName = getAppNameFromPath(window.location.pathname);
+                var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                 fetchToken(appName).then(function(token) {
                     postToIframe({
                         type: 'init',
                         token: token,
+                        theme: theme,
                         user: { name: config.userName },
                         inShell: true
                     });
@@ -159,6 +169,7 @@
                     postToIframe({
                         type: 'init',
                         token: '',
+                        theme: theme,
                         user: { name: config.userName },
                         inShell: true
                     });

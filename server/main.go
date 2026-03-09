@@ -69,7 +69,6 @@ func main() {
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
 
-	shell_init()
 	starlark_configure()
 	db_start()
 	passkey_init()

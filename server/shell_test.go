@@ -13,27 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Test web_should_serve_shell returns false when shell is disabled
-func TestShellDisabledNoIntercept(t *testing.T) {
-	shell_enabled = false
-
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/feeds/", nil)
-	c.Request.Header.Set("Sec-Fetch-Dest", "document")
-	c.Request.Header.Set("Accept", "text/html")
-
-	if web_should_serve_shell(c) {
-		t.Error("web_should_serve_shell should return false when shell_enabled is false")
-	}
-}
-
 // Test web_should_serve_shell requires Sec-Fetch-Dest: document
 func TestShellRequiresDocumentDest(t *testing.T) {
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -59,9 +40,6 @@ func TestShellRequiresDocumentDest(t *testing.T) {
 
 // Test web_should_serve_shell requires Accept: text/html
 func TestShellRequiresHtmlAccept(t *testing.T) {
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -76,9 +54,6 @@ func TestShellRequiresHtmlAccept(t *testing.T) {
 
 // Test web_should_serve_shell skips /_/ system endpoints
 func TestShellSkipsSystemEndpoints(t *testing.T) {
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -93,9 +68,6 @@ func TestShellSkipsSystemEndpoints(t *testing.T) {
 
 // Test web_should_serve_shell requires authenticated user
 func TestShellRequiresAuth(t *testing.T) {
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -113,37 +85,40 @@ func TestShellRequiresAuth(t *testing.T) {
 func TestIsIframeRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// When shell is disabled
-	shell_enabled = false
+	// Case 1: shell sets iframe.src → Sec-Fetch-Dest: iframe
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/feeds/", nil)
 	c.Request.Header.Set("Sec-Fetch-Dest", "iframe")
 
-	if web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return false when shell_enabled is false")
-	}
-
-	// When shell is enabled
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
 	if !web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe when shell is enabled")
+		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe")
 	}
 
-	// Non-iframe request
+	// Case 2: link click inside sandboxed iframe → document + cross-site
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
+	if !web_is_iframe_request(c) {
+		t.Error("web_is_iframe_request should return true for document + cross-site (sandboxed iframe navigation)")
+	}
+
+	// Case 3: normal top-level navigation → document + same-origin
+	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Set("Sec-Fetch-Site", "same-origin")
 	if web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return false for Sec-Fetch-Dest: document")
+		t.Error("web_is_iframe_request should return false for document + same-origin")
+	}
+
+	// Case 4: document without Sec-Fetch-Site
+	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Del("Sec-Fetch-Site")
+	if web_is_iframe_request(c) {
+		t.Error("web_is_iframe_request should return false for document without Sec-Fetch-Site")
 	}
 }
 
-// Test security headers when shell is enabled
-func TestSecurityHeadersShellEnabled(t *testing.T) {
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-
+// Test security headers
+func TestSecurityHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(web_security_headers)
@@ -157,28 +132,40 @@ func TestSecurityHeadersShellEnabled(t *testing.T) {
 
 	xfo := w.Header().Get("X-Frame-Options")
 	if xfo != "SAMEORIGIN" {
-		t.Errorf("Expected X-Frame-Options SAMEORIGIN when shell enabled, got %q", xfo)
+		t.Errorf("Expected X-Frame-Options SAMEORIGIN, got %q", xfo)
+	}
+
+	acao := w.Header().Get("Access-Control-Allow-Origin")
+	if acao != "*" {
+		t.Errorf("Expected Access-Control-Allow-Origin *, got %q", acao)
 	}
 }
 
-// Test security headers when shell is disabled
-func TestSecurityHeadersShellDisabled(t *testing.T) {
-	shell_enabled = false
-
+// Test CORS preflight handling
+func TestCorsPreflightHandling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(web_security_headers)
-	r.GET("/test", func(c *gin.Context) {
-		c.String(200, "ok")
+	r.OPTIONS("/test", func(c *gin.Context) {
+		c.String(200, "should not reach here")
 	})
 
-	req := httptest.NewRequest("GET", "/test", nil)
+	req := httptest.NewRequest("OPTIONS", "/test", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	xfo := w.Header().Get("X-Frame-Options")
-	if xfo != "DENY" {
-		t.Errorf("Expected X-Frame-Options DENY when shell disabled, got %q", xfo)
+	if w.Code != 204 {
+		t.Errorf("Expected 204 for OPTIONS preflight, got %d", w.Code)
+	}
+
+	methods := w.Header().Get("Access-Control-Allow-Methods")
+	if !strings.Contains(methods, "GET") || !strings.Contains(methods, "POST") {
+		t.Errorf("Expected Allow-Methods to include GET and POST, got %q", methods)
+	}
+
+	headers := w.Header().Get("Access-Control-Allow-Headers")
+	if !strings.Contains(headers, "Authorization") {
+		t.Errorf("Expected Allow-Headers to include Authorization, got %q", headers)
 	}
 }
 
@@ -323,24 +310,6 @@ func TestEscapeAttr(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("escape_attr(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
-	}
-}
-
-// Test notifications exception conditional on shell_enabled
-func TestNotificationsExceptionConditional(t *testing.T) {
-	// When shell is disabled, notifications exception should be active
-	shell_enabled = false
-	exception := !shell_enabled && "notifications" == "notifications"
-	if !exception {
-		t.Error("Notifications exception should be true when shell is disabled")
-	}
-
-	// When shell is enabled, notifications exception should be inactive
-	shell_enabled = true
-	defer func() { shell_enabled = false }()
-	exception = !shell_enabled && "notifications" == "notifications"
-	if exception {
-		t.Error("Notifications exception should be false when shell is enabled")
 	}
 }
 

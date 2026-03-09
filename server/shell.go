@@ -12,9 +12,50 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var (
-	shell_enabled = false // Controlled by [web] shell config flag
-)
+
+// shell_iframe_shim is injected into app HTML served inside sandboxed iframes.
+// It provides in-memory fallbacks for APIs forbidden by the sandbox:
+// - document.cookie (getter/setter)
+// - window.localStorage
+// - window.sessionStorage
+// This runs before any app code so third-party libraries don't throw.
+const shell_iframe_shim = `(function(){
+var s={},p=function(){
+this._d={};
+};
+p.prototype={
+getItem:function(k){return this._d.hasOwnProperty(k)?this._d[k]:null;},
+setItem:function(k,v){this._d[k]=String(v);},
+removeItem:function(k){delete this._d[k];},
+clear:function(){this._d={};},
+key:function(i){return Object.keys(this._d)[i]||null;},
+get length(){return Object.keys(this._d).length;}
+};
+try{window.localStorage}catch(e){Object.defineProperty(window,'localStorage',{value:new p(),configurable:true});}
+try{window.sessionStorage}catch(e){Object.defineProperty(window,'sessionStorage',{value:new p(),configurable:true});}
+try{document.cookie}catch(e){
+var c='';
+Object.defineProperty(document,'cookie',{
+get:function(){return c;},
+set:function(v){
+var parts=String(v).split(';');
+var kv=parts[0].split('=');
+if(kv.length>=2){
+var key=kv[0].trim();
+var val=kv.slice(1).join('=').trim();
+var pairs=c?c.split('; '):[];
+var found=false;
+for(var i=0;i<pairs.length;i++){
+if(pairs[i].split('=')[0]===key){pairs[i]=key+'='+val;found=true;break;}
+}
+if(!found)pairs.push(key+'='+val);
+c=pairs.join('; ');
+}
+},
+configurable:true
+});
+}
+})();`
 
 //go:embed shell.html
 var shell_html string
@@ -22,18 +63,10 @@ var shell_html string
 //go:embed shell.js
 var shell_js string
 
-// shell_init reads the shell config flag
-func shell_init() {
-	shell_enabled = ini_bool("web", "shell", false)
-}
 
 // web_should_serve_shell returns true when the request should get the shell page
 // instead of the app HTML directly
 func web_should_serve_shell(c *gin.Context) bool {
-	if !shell_enabled {
-		return false
-	}
-
 	// Only intercept top-level document navigations
 	dest := c.GetHeader("Sec-Fetch-Dest")
 	if dest != "document" {
@@ -155,7 +188,17 @@ func shell_menu_assets(a *App, user *User) (string, string) {
 		}
 	}
 
-	return js_path, css_path
+	// Wrap in HTML tags
+	js_tag := ""
+	css_tag := ""
+	if js_path != "" {
+		js_tag = `<script type="module" src="` + js_path + `"></script>`
+	}
+	if css_path != "" {
+		css_tag = `<link rel="stylesheet" href="` + css_path + `">`
+	}
+
+	return js_tag, css_tag
 }
 
 // web_shell_token handles POST /_/token — returns a per-app JWT token
@@ -169,12 +212,12 @@ func web_shell_token(c *gin.Context) {
 	var input struct {
 		App string `json:"app"`
 	}
-	if err := c.ShouldBindJSON(&input); err != nil || input.App == "" {
+	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "app required"})
 		return
 	}
 
-	// Resolve the app name to an app ID
+	// Resolve the app path to an app
 	a := app_for_path(user, input.App)
 	if a == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
@@ -191,10 +234,19 @@ func web_shell_token(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": token})
 }
 
-// web_is_iframe_request returns true if the request is from a sandboxed iframe
+// web_is_iframe_request returns true if the request is from a sandboxed iframe.
+// Detects two cases:
+// 1. Shell sets iframe.src → browser sends Sec-Fetch-Dest: iframe
+// 2. User clicks a link inside the iframe → browser sends Sec-Fetch-Dest: document
+//    with Sec-Fetch-Site: cross-site (opaque origin ≠ server origin)
 func web_is_iframe_request(c *gin.Context) bool {
-	if !shell_enabled {
-		return false
+	dest := c.GetHeader("Sec-Fetch-Dest")
+	if dest == "iframe" {
+		return true
 	}
-	return c.GetHeader("Sec-Fetch-Dest") == "iframe"
+	// Navigation from within a sandboxed iframe (opaque origin → cross-site)
+	if dest == "document" && c.GetHeader("Sec-Fetch-Site") == "cross-site" {
+		return true
+	}
+	return false
 }

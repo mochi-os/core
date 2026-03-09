@@ -94,7 +94,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		model, _ = data["model"].(string)
 	} else {
 		// Use the designated default AI account
-		row, err := db.row("select type, data, enabled from accounts where \"default\"='ai' and enabled=1")
+		row, err := db.row("select type, data, enabled from accounts where (',' || \"default\" || ',') like '%,ai,%' and enabled=1")
 		if err != nil || row == nil {
 			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 		}
@@ -159,7 +159,7 @@ func ai_call_claude(api_key, model, prompt string) aiResult {
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return aiResult{status: 500, text: ""}
@@ -217,7 +217,7 @@ func ai_call_openai(api_key, model, prompt string) aiResult {
 	req.Header.Set("Authorization", "Bearer "+api_key)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return aiResult{status: 500, text: ""}

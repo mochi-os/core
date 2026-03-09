@@ -446,13 +446,14 @@ func TestStarlarkStepLimit(t *testing.T) {
 		globals: sl.StringDict{},
 	}
 
-	// Define a CPU-bound loop using for with a huge range
-	// This will hit step limit before completing
+	// Define a nested loop using smaller ranges to hit step limit
+	// Each range() is small enough to allocate quickly, but total iterations exceed step limit
 	code := `
 def cpu_hog():
     x = 0
-    for i in range(10000000000):
-        x = x + i
+    for i in range(100000):
+        for j in range(100000):
+            x += 1
     return x
 `
 	globals, err := sl.ExecFile(s.thread, "test.star", code, s.globals)

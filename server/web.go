@@ -31,16 +31,30 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	var user *User
 	var api_token *Token
+	var jwt_app string
+	var has_bearer bool
 
-	// Check query parameter token first (for RSS feeds, etc.)
+	// Check query parameter token first (for RSS feeds, attachments in sandboxed iframes, etc.)
 	// This takes priority over cookies so RSS tokens work in logged-in browsers
 	if query_token := c.Query("token"); query_token != "" {
-		api_token = token_validate(query_token)
-		if api_token != nil {
-			user = user_by_id(api_token.User)
-			if user == nil {
-				debug("Query token valid but user %d not found", api_token.User)
-				api_token = nil
+		if strings.HasPrefix(query_token, "mochi-") {
+			// API token
+			api_token = token_validate(query_token)
+			if api_token != nil {
+				user = user_by_id(api_token.User)
+				if user == nil {
+					debug("Query token valid but user %d not found", api_token.User)
+					api_token = nil
+				}
+			}
+		} else {
+			// JWT token (used by sandboxed iframes for resource URLs like images)
+			if uid, app, err := jwt_verify(query_token); err == nil && uid > 0 {
+				user = user_by_id(uid)
+				if user != nil {
+					jwt_app = app
+					has_bearer = true // treat as bearer-authenticated
+				}
 			}
 		}
 	}
@@ -52,8 +66,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Always extract Bearer token for app authorization, even if user already
 	// identified via session cookie
-	var jwt_app string
-	var has_bearer bool
 	auth_header := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth_header, "Bearer ") {
 		bearer := strings.TrimPrefix(auth_header, "Bearer ")
@@ -175,8 +187,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
+	// Static asset files (JS/CSS/fonts) requested from sandboxed iframes have
+	// no cookies (opaque origin). These files are safe to serve without auth —
+	// they're already public static assets. The actual API auth is handled via
+	// Bearer tokens delivered through postMessage.
+	shell_static := aa.File != "" || aa.Files != "" && aa.filepath != "" || web_is_iframe_request(c)
+
 	// Require authentication for non-public actions
-	if user == nil && !aa.Public {
+	if user == nil && !aa.Public && !shell_static {
 		// For browser requests, redirect to login
 		if strings.Contains(c.GetHeader("Accept"), "text/html") {
 			// If user has a session cookie but auth failed (suspended, expired, etc),
@@ -208,10 +226,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// App token authorization: enforce that Bearer JWT matches the target app.
 	// Skip in dev mode (Vite serves HTML without meta tag injection).
-	// When shell is enabled, the menu app has its own notifications token,
-	// so the notifications exception is no longer needed.
-	notifications_exception := !shell_enabled && a.id == "notifications"
-	if user != nil && api_token == nil && !aa.Public && !dev_reload && !notifications_exception {
+	if user != nil && api_token == nil && !aa.Public && !dev_reload {
 		if !has_bearer {
 			c.JSON(http.StatusForbidden, gin.H{"error": "app token required"})
 			return true
@@ -222,8 +237,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
-	// Check app-level requirements
-	if !av.user_allowed(user) {
+	// Check app-level requirements (skip for static files in shell mode)
+	if !shell_static && !av.user_allowed(user) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return true
 	}
@@ -518,12 +533,22 @@ func web_cookie_unset(c *gin.Context, name string) {
 // Security headers middleware
 func web_security_headers(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
-	// When shell is enabled, apps must be frameable by the shell (SAMEORIGIN).
+	// Apps must be frameable by the shell (SAMEORIGIN).
 	// The shell page itself sets DENY in web_serve_shell().
-	if shell_enabled {
-		c.Header("X-Frame-Options", "SAMEORIGIN")
-	} else {
-		c.Header("X-Frame-Options", "DENY")
+	c.Header("X-Frame-Options", "SAMEORIGIN")
+	// Sandboxed iframes without allow-same-origin have an opaque (null) origin,
+	// so all requests are cross-origin. ES module scripts and crossorigin CSS
+	// require CORS headers. Static assets are public, so this is safe.
+	c.Header("Access-Control-Allow-Origin", "*")
+	// Handle CORS preflight requests from sandboxed iframes.
+	// When the iframe sends requests with Authorization header,
+	// browsers send an OPTIONS preflight first.
+	if c.Request.Method == "OPTIONS" {
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+		c.Header("Access-Control-Max-Age", "86400")
+		c.AbortWithStatus(204)
+		return
 	}
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 	c.Next()
@@ -721,10 +746,23 @@ func web_inject_app_token(c *gin.Context, a *App, content string) string {
 func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
 	// When shell is active and this is an iframe request, serve static HTML
 	// with no injection — token and context are delivered via postMessage.
+	// We patch the inline theme script to handle the sandboxed iframe's
+	// inability to access document.cookie (opaque origin).
 	if web_is_iframe_request(c) {
+		html, err := os.ReadFile(file)
+		if err != nil {
+			c.String(http.StatusNotFound, "File not found")
+			return
+		}
+		content := string(html)
+		// Inject a shim script before everything else. Sandboxed iframes without
+		// allow-same-origin cannot access cookies, localStorage, or sessionStorage.
+		// This shim provides in-memory fallbacks so third-party code (TanStack Router,
+		// js-cookie, etc.) doesn't throw.
+		content = strings.Replace(content, "<head>", "<head><script>"+shell_iframe_shim+"</script>", 1)
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		web_cache_static(c, file, aa.Cache)
-		c.File(file)
+		c.String(http.StatusOK, content)
 		return
 	}
 

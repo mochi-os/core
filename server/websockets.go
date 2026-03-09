@@ -29,7 +29,7 @@ func websocket_connection(c *gin.Context) {
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
-			user_id, err := jwt_verify(token)
+			user_id, _, err := jwt_verify(token)
 			if err == nil && user_id > 0 {
 				if user := user_by_id(user_id); user != nil {
 					u = user

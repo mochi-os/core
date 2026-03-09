@@ -50,32 +50,41 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		user = web_auth(c)
 	}
 
-	// If no cookie auth, try Bearer token authentication
-	if user == nil {
-		auth_header := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth_header, "Bearer ") {
-			bearer := strings.TrimPrefix(auth_header, "Bearer ")
-			if strings.HasPrefix(bearer, "mochi-") {
-				// API token authentication
+	// Always extract Bearer token for app authorization, even if user already
+	// identified via session cookie
+	var jwt_app string
+	var has_bearer bool
+	auth_header := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth_header, "Bearer ") {
+		bearer := strings.TrimPrefix(auth_header, "Bearer ")
+		has_bearer = true
+		if strings.HasPrefix(bearer, "mochi-") {
+			// API token authentication
+			if api_token == nil {
 				api_token = token_validate(bearer)
 				if api_token != nil {
-					user = user_by_id(api_token.User)
 					if user == nil {
-						debug("API token valid but user %d not found", api_token.User)
-						api_token = nil
+						user = user_by_id(api_token.User)
+						if user == nil {
+							debug("API token valid but user %d not found", api_token.User)
+							api_token = nil
+						}
 					}
 				}
-			} else {
-				// JWT authentication
-				if uid, err := jwt_verify(bearer); err == nil && uid > 0 {
+			}
+		} else {
+			// JWT authentication — extract app claim for authorization
+			if uid, app, err := jwt_verify(bearer); err == nil && uid > 0 {
+				jwt_app = app
+				if user == nil {
 					if u := user_by_id(uid); u != nil {
 						user = u
 					} else {
 						debug("API JWT token valid but user %d not found", uid)
 					}
-				} else {
-					debug("API JWT token verification failed: %v", err)
 				}
+			} else if user == nil {
+				debug("API JWT token verification failed: %v", err)
 			}
 		}
 	}
@@ -197,6 +206,22 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
+	// App token authorization: enforce that Bearer JWT matches the target app.
+	// Skip in dev mode (Vite serves HTML without meta tag injection).
+	// When shell is enabled, the menu app has its own notifications token,
+	// so the notifications exception is no longer needed.
+	notifications_exception := !shell_enabled && a.id == "notifications"
+	if user != nil && api_token == nil && !aa.Public && !dev_reload && !notifications_exception {
+		if !has_bearer {
+			c.JSON(http.StatusForbidden, gin.H{"error": "app token required"})
+			return true
+		}
+		if jwt_app != "" && jwt_app != a.id {
+			c.JSON(http.StatusForbidden, gin.H{"error": "app token mismatch"})
+			return true
+		}
+	}
+
 	// Check app-level requirements
 	if !av.user_allowed(user) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
@@ -209,6 +234,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		entity := ""
 		if e != nil {
 			entity = e.ID
+		} else if aa.parameters["entity"] != "" {
+			// Generic entity parameter (preferred)
+			entity = aa.parameters["entity"]
 		} else if aa.parameters["wiki"] != "" {
 			entity = aa.parameters["wiki"]
 		} else if aa.parameters["feed"] != "" {
@@ -490,7 +518,13 @@ func web_cookie_unset(c *gin.Context, name string) {
 // Security headers middleware
 func web_security_headers(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("X-Frame-Options", "DENY")
+	// When shell is enabled, apps must be frameable by the shell (SAMEORIGIN).
+	// The shell page itself sets DENY in web_serve_shell().
+	if shell_enabled {
+		c.Header("X-Frame-Options", "SAMEORIGIN")
+	} else {
+		c.Header("X-Frame-Options", "DENY")
+	}
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 	c.Next()
 }
@@ -608,8 +642,9 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 		content = regexp_replace_meta(content, "og:url", url)
 	}
 
-	// Inject routing meta tags
+	// Inject routing meta tags and app token
 	content = web_inject_meta_tags(c, e, content)
+	content = web_inject_app_token(c, a, content)
 
 	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
@@ -648,8 +683,51 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	return content
 }
 
+// Inject an app-scoped token into HTML for authenticated users.
+// Only injects on browser navigation requests (Sec-Fetch-Mode: navigate)
+// to prevent extraction via fetch() or XHR.
+func web_inject_app_token(c *gin.Context, a *App, content string) string {
+	// Only inject on navigation requests (or absent header for old browsers)
+	mode := c.GetHeader("Sec-Fetch-Mode")
+	if mode != "" && mode != "navigate" {
+		return content
+	}
+
+	// Get user via session cookie
+	session := web_cookie_get(c, "session", "")
+	if session == "" {
+		return content
+	}
+	user := user_by_login(session)
+	if user == nil {
+		return content
+	}
+
+	// Create app-scoped token
+	token := auth_create_app_token(user.ID, session, a.id)
+	if token == "" {
+		return content
+	}
+
+	// Prevent window.open() token extraction
+	c.Header("Cross-Origin-Opener-Policy", "same-origin")
+
+	// Inject token meta tag after <head>
+	tag := `<meta name="mochi:token" content="` + token + `">`
+	return strings.Replace(content, "<head>", "<head>\n    "+tag, 1)
+}
+
 // Serve an HTML file with routing meta tags injected after <head>
 func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
+	// When shell is active and this is an iframe request, serve static HTML
+	// with no injection — token and context are delivered via postMessage.
+	if web_is_iframe_request(c) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		web_cache_static(c, file, aa.Cache)
+		c.File(file)
+		return
+	}
+
 	// Try OG injection first (it also injects routing meta tags)
 	if aa.OpenGraph != "" {
 		if web_serve_file_with_opengraph(c, a, av, aa, e, file) {
@@ -664,6 +742,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		return
 	}
 	content := web_inject_meta_tags(c, e, string(html))
+	content = web_inject_app_token(c, a, content)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	web_cache_static(c, file, aa.Cache)
@@ -788,7 +867,7 @@ func web_identity_get(c *gin.Context) {
 				}
 			} else {
 				// JWT authentication
-				if uid, err := jwt_verify(bearer); err == nil && uid > 0 {
+				if uid, _, err := jwt_verify(bearer); err == nil && uid > 0 {
 					if user := user_by_id_allow_no_identity(uid); user != nil {
 						u = user
 					}
@@ -855,7 +934,7 @@ func web_login_identity(c *gin.Context) {
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
-			if uid, err := jwt_verify(token); err == nil && uid > 0 {
+			if uid, _, err := jwt_verify(token); err == nil && uid > 0 {
 				if user := user_by_id(uid); user != nil {
 					u = user
 					debug("Identity creation: JWT token accepted for user %d", u.ID)
@@ -912,6 +991,19 @@ func web_logout(c *gin.Context) {
 // Handle app paths
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
+
+	// Shell intercept: serve shell page for top-level document navigations
+	if web_should_serve_shell(c) {
+		// Determine the app ID from the path for the shell
+		raw := strings.Trim(c.Request.URL.Path, "/")
+		app_name := ""
+		if raw != "" {
+			segments := strings.Split(raw, "/")
+			app_name = segments[0]
+		}
+		web_serve_shell(c, app_name)
+		return
+	}
 
 	// Get user for path-based routing preferences
 	user := web_auth(c)
@@ -1125,6 +1217,7 @@ func web_start() {
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/_/websocket", websocket_connection)
+	r.POST("/_/token", web_shell_token)
 
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)

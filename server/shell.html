@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="mochi:token" content="{{NOTIF_TOKEN}}">
+    <meta name="mochi:shell" content="true">
+    <title>Mochi</title>
+    <link rel="icon" type="image/svg+xml" href="/images/logo-header.svg">
+    {{MENU_CSS}}
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; overflow: hidden; }
+        body { display: flex; flex-direction: column; }
+        #menu { flex-shrink: 0; }
+        #app-frame {
+            flex: 1;
+            width: 100%;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="menu"></div>
+    <iframe
+        id="app-frame"
+        sandbox="allow-scripts allow-forms allow-popups"
+        src="{{IFRAME_SRC}}"
+    ></iframe>
+
+    <script>
+    // Shell configuration injected by server
+    window.__mochi_shell = {
+        appId: "{{APP_ID}}",
+        userName: "{{USER_NAME}}"
+    };
+
+    {{SHELL_JS}}
+    </script>
+    {{MENU_JS}}
+</body>
+</html>

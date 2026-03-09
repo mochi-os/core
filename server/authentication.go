@@ -38,7 +38,8 @@ var api_user_totp = sls.FromStringDict(sl.String("mochi.user.totp"), sl.StringDi
 })
 
 type mochi_claims struct {
-	User int `json:"user"`
+	User int    `json:"user"`
+	App  string `json:"app,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -109,7 +110,7 @@ func auth_remaining_methods(user *User, completed string) []string {
 	return remaining
 }
 
-// auth_complete_login creates a full session and returns token/session to client
+// auth_complete_login creates a full session and returns session info to client
 func auth_complete_login(c *gin.Context, user *User) {
 	// Ensure identity is loaded so login responses can include name when available.
 	if user != nil && user.Identity == nil {
@@ -119,13 +120,6 @@ func auth_complete_login(c *gin.Context, user *User) {
 	// Create session entry (per-device) which stores a per-session secret
 	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 
-	// Create a JWT signed with the per-session secret
-	token := auth_create_token(user.ID, session)
-	if token == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to create token"})
-		return
-	}
-
 	// Set session cookie for web browser authentication
 	web_cookie_set(c, "session", session)
 
@@ -133,8 +127,7 @@ func auth_complete_login(c *gin.Context, user *User) {
 	audit_login(user.Username, rate_limit_client_ip(c))
 
 	response := gin.H{
-		"token":   token,
-		"session": session,
+		"has_identity": user.Identity != nil && user.Identity.Name != "",
 	}
 
 	if user.Identity != nil && user.Identity.Name != "" {
@@ -144,8 +137,8 @@ func auth_complete_login(c *gin.Context, user *User) {
 	c.JSON(http.StatusOK, response)
 }
 
-// auth_create_token creates a JWT for a session
-func auth_create_token(user_id int, login string) string {
+// auth_create_app_token creates an app-scoped JWT for a session
+func auth_create_app_token(user_id int, login string, app string) string {
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
@@ -158,6 +151,7 @@ func auth_create_token(user_id int, login string) string {
 
 	claims := mochi_claims{
 		User: user_id,
+		App:  app,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
 			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
@@ -246,28 +240,28 @@ func web_auth_totp(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
-// Verify a JWT and return the user id, or -1 if invalid.
+// Verify a JWT and return the user id and app claim, or -1 if invalid.
 // If the token header contains a "kid" referencing a login code, attempt to verify
 // using that login's secret. Otherwise fall back to the global secret.
-func jwt_verify(token_string string) (int, error) {
+func jwt_verify(token_string string) (int, string, error) {
 	// First parse the token without verification to read header/kid
 	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
 	if err != nil {
-		return -1, err
+		return -1, "", err
 	}
 
 	// Require kid header (login code) to look up per-login secret
 	kid, ok := token.Header["kid"].(string)
 	if !ok || kid == "" {
-		return -1, errors.New("token missing kid header referencing login code")
+		return -1, "", errors.New("token missing kid header referencing login code")
 	}
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", kid, now()) {
-		return -1, errors.New("session not found for kid")
+		return -1, "", errors.New("session not found for kid")
 	}
 	if s.Secret == "" {
-		return -1, errors.New("session has no secret")
+		return -1, "", errors.New("session has no secret")
 	}
 	secret := []byte(s.Secret)
 	var claims mochi_claims
@@ -275,12 +269,12 @@ func jwt_verify(token_string string) (int, error) {
 		return secret, nil
 	})
 	if err != nil {
-		return -1, err
+		return -1, "", err
 	}
 	if !tkn.Valid {
-		return -1, errors.New("invalid token")
+		return -1, "", errors.New("invalid token")
 	}
-	return claims.User, nil
+	return claims.User, claims.App, nil
 }
 
 // ============================================================================

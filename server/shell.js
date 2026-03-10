@@ -7,8 +7,23 @@
     var iframe = document.getElementById('app-frame');
     var config = window.__mochi_shell || {};
     var currentAppId = config.appId || '';
+    var currentAppPath = getAppNameFromPath(window.location.pathname);
     var tokenRefreshTimer = null;
     var navigating = false; // true during cross-app navigation (blocks storage requests)
+
+    // Replace the iframe element to avoid polluting browser history.
+    // Setting iframe.src creates history entries that interleave with pushState,
+    // causing back/forward to navigate the iframe and parent out of sync.
+    function swapIframe(newSrc) {
+        var parent = iframe.parentNode;
+        var next = document.createElement('iframe');
+        next.id = 'app-frame';
+        next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
+        next.style.cssText = 'width:100%;height:100%;border:none';
+        next.src = newSrc;
+        parent.replaceChild(next, iframe);
+        iframe = next;
+    }
 
     // --- Token management ---
 
@@ -104,22 +119,22 @@
     function handleNavigateExternal(data) {
         if (!data.url) return;
         var newApp = getAppNameFromPath(data.url);
-        var currentApp = getAppNameFromPath(window.location.pathname);
 
-        if (newApp && newApp !== currentApp) {
+        if (newApp !== currentAppPath) {
             // Cross-app navigation: update URL, fetch new token, swap iframe
             navigating = true;
+            currentAppPath = newApp;
             history.pushState(null, '', data.url);
 
             fetchToken(newApp).then(function(token) {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
-                iframe.src = data.url;
+                swapIframe(data.url);
                 scheduleTokenRefresh(newApp);
             }).catch(function() {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
-                iframe.src = data.url;
+                swapIframe(data.url);
             });
         } else {
             // Same app — just update iframe location
@@ -134,25 +149,25 @@
         var path = window.location.pathname + window.location.search + window.location.hash;
         lastNavigatedPath = path;
         var newApp = getAppNameFromPath(path);
-        var oldApp = getAppNameFromPath(iframe.src || '');
 
-        if (newApp !== oldApp) {
+        if (newApp !== currentAppPath) {
             // Different app — swap iframe and fetch new token
             navigating = true;
+            currentAppPath = newApp;
             fetchToken(newApp).then(function() {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
-                iframe.src = path;
+                swapIframe(path);
                 scheduleTokenRefresh(newApp);
             }).catch(function() {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
-                iframe.src = path;
+                swapIframe(path);
             });
         } else {
             // Same app — reload iframe at the new path
             // (pushState/replaceState don't work in sandboxed iframes with opaque origins)
-            iframe.src = path;
+            swapIframe(path);
         }
     });
 

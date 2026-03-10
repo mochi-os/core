@@ -72,7 +72,7 @@ func email_send_html(to string, subject string, html string) {
 
 // email_login_code sends a styled HTML email with a login code.
 func email_login_code(to string, code string) {
-	subject := "Your Mochi login code"
+	subject := "Mochi login code"
 	html := `<!DOCTYPE html>
 <html>
 <head>

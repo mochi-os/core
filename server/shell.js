@@ -8,6 +8,7 @@
     var config = window.__mochi_shell || {};
     var currentAppId = config.appId || '';
     var tokenRefreshTimer = null;
+    var navigating = false; // true during cross-app navigation (blocks storage requests)
 
     // --- Token management ---
 
@@ -52,6 +53,7 @@
     var storagePrefix = 'app:' + currentAppId + ':';
 
     function handleStorageGet(data) {
+        if (navigating) return;
         var value = null;
         try {
             value = localStorage.getItem(storagePrefix + data.key);
@@ -64,12 +66,14 @@
     }
 
     function handleStorageSet(data) {
+        if (navigating) return;
         try {
             localStorage.setItem(storagePrefix + data.key, data.value);
         } catch(e) { /* ignore */ }
     }
 
     function handleStorageRemove(data) {
+        if (navigating) return;
         try {
             localStorage.removeItem(storagePrefix + data.key);
         } catch(e) { /* ignore */ }
@@ -86,6 +90,10 @@
 
     function handleNavigate(data) {
         if (!data.path) return;
+        // Reject navigate messages for paths outside the current app (anti-spoofing)
+        var currentApp = getAppNameFromPath(window.location.pathname);
+        var navApp = getAppNameFromPath(data.path);
+        if (navApp && navApp !== currentApp) return;
         // Only push a new history entry when the path actually changed
         if (data.path !== lastNavigatedPath) {
             history.pushState(null, '', data.path);
@@ -100,14 +108,17 @@
 
         if (newApp && newApp !== currentApp) {
             // Cross-app navigation: update URL, fetch new token, swap iframe
+            navigating = true;
             history.pushState(null, '', data.url);
-            currentAppId = newApp;
-            storagePrefix = 'app:' + currentAppId + ':';
 
             fetchToken(newApp).then(function(token) {
+                currentAppId = newApp;
+                storagePrefix = 'app:' + currentAppId + ':';
                 iframe.src = data.url;
                 scheduleTokenRefresh(newApp);
             }).catch(function() {
+                currentAppId = newApp;
+                storagePrefix = 'app:' + currentAppId + ':';
                 iframe.src = data.url;
             });
         } else {
@@ -127,12 +138,15 @@
 
         if (newApp !== oldApp) {
             // Different app — swap iframe and fetch new token
-            currentAppId = newApp;
-            storagePrefix = 'app:' + currentAppId + ':';
+            navigating = true;
             fetchToken(newApp).then(function() {
+                currentAppId = newApp;
+                storagePrefix = 'app:' + currentAppId + ':';
                 iframe.src = path;
                 scheduleTokenRefresh(newApp);
             }).catch(function() {
+                currentAppId = newApp;
+                storagePrefix = 'app:' + currentAppId + ':';
                 iframe.src = path;
             });
         } else {
@@ -154,6 +168,7 @@
         switch (data.type) {
             case 'ready':
                 // App is ready — send init with token
+                navigating = false;
                 var appName = getAppNameFromPath(window.location.pathname);
                 var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                 fetchToken(appName).then(function(token) {

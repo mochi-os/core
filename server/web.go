@@ -194,22 +194,26 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	shell_static := aa.File != "" || aa.Files != "" && aa.filepath != "" || web_is_iframe_request(c)
 
 	// Require authentication for non-public actions
-	if user == nil && !aa.Public && !shell_static {
-		// For browser requests, redirect to login
-		if strings.Contains(c.GetHeader("Accept"), "text/html") {
+	if user == nil && !aa.Public {
+		// Top-level browser navigations: redirect to login page at /
+		// This applies even for file-serving actions (shell_static) — only iframe
+		// requests should bypass auth for static file loading.
+		if strings.Contains(c.GetHeader("Accept"), "text/html") && !web_is_iframe_request(c) {
 			// If user has a session cookie but auth failed (suspended, expired, etc),
 			// clear the invalid cookie to prevent redirect loops
 			if web_cookie_get(c, "session", "") != "" {
 				audit_session_anomaly("", rate_limit_client_ip(c), "invalid_session")
 				web_cookie_unset(c, "session")
-				c.Redirect(http.StatusFound, "/login?reauth=1")
+				c.Redirect(http.StatusFound, "/?reauth=1")
 			} else {
-				c.Redirect(http.StatusFound, "/login")
+				c.Redirect(http.StatusFound, "/")
 			}
 			return true
 		}
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return true
+		if !shell_static {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return true
+		}
 	}
 
 	// Require identity for authenticated users accessing non-login apps
@@ -225,8 +229,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// App token authorization: enforce that Bearer JWT matches the target app.
-	// Skip in dev mode (Vite serves HTML without meta tag injection).
-	if user != nil && api_token == nil && !aa.Public && !dev_reload {
+	// Skip for static file serving (HTML, JS, CSS) — these don't expose user data.
+	if user != nil && api_token == nil && !aa.Public && !shell_static {
 		if !has_bearer {
 			c.JSON(http.StatusForbidden, gin.H{"error": "app token required"})
 			return true
@@ -667,9 +671,8 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 		content = regexp_replace_meta(content, "og:url", url)
 	}
 
-	// Inject routing meta tags and app token
+	// Inject routing meta tags
 	content = web_inject_meta_tags(c, e, content)
-	content = web_inject_app_token(c, a, content)
 
 	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
@@ -708,39 +711,6 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	return content
 }
 
-// Inject an app-scoped token into HTML for authenticated users.
-// Only injects on browser navigation requests (Sec-Fetch-Mode: navigate)
-// to prevent extraction via fetch() or XHR.
-func web_inject_app_token(c *gin.Context, a *App, content string) string {
-	// Only inject on navigation requests (or absent header for old browsers)
-	mode := c.GetHeader("Sec-Fetch-Mode")
-	if mode != "" && mode != "navigate" {
-		return content
-	}
-
-	// Get user via session cookie
-	session := web_cookie_get(c, "session", "")
-	if session == "" {
-		return content
-	}
-	user := user_by_login(session)
-	if user == nil {
-		return content
-	}
-
-	// Create app-scoped token
-	token := auth_create_app_token(user.ID, session, a.id)
-	if token == "" {
-		return content
-	}
-
-	// Prevent window.open() token extraction
-	c.Header("Cross-Origin-Opener-Policy", "same-origin")
-
-	// Inject token meta tag after <head>
-	tag := `<meta name="mochi:token" content="` + token + `">`
-	return strings.Replace(content, "<head>", "<head>\n    "+tag, 1)
-}
 
 // Serve an HTML file with routing meta tags injected after <head>
 func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
@@ -780,7 +750,6 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		return
 	}
 	content := web_inject_meta_tags(c, e, string(html))
-	content = web_inject_app_token(c, a, content)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	web_cache_static(c, file, aa.Cache)
@@ -1118,6 +1087,13 @@ func web_path(c *gin.Context) {
 
 	// Check for app that handles root path
 	if raw == "" {
+		if user == nil && !web_is_iframe_request(c) {
+			// Serve login app for unauthenticated top-level navigations
+			if loginApp := app_for_path(nil, "login"); loginApp != nil {
+				web_action(c, loginApp, "", nil)
+				return
+			}
+		}
 		if a := app_by_root(user); a != nil {
 			web_action(c, a, "", nil)
 			return
@@ -1132,6 +1108,13 @@ func web_path(c *gin.Context) {
 	// Check for app matching first segment (user preferences, then system defaults, then fallback)
 	a := app_for_path(user, first)
 	if a != nil {
+		// 301 redirect /login -> / for unauthenticated users (bookmarks, password managers)
+		if first == "login" && len(segments) == 1 && user == nil &&
+			strings.Contains(c.GetHeader("Accept"), "text/html") {
+			c.Redirect(http.StatusMovedPermanently, "/")
+			return
+		}
+
 		// Set app path segment so HTML serving can inject meta tags
 		c.Set("mochi_app_path", first)
 

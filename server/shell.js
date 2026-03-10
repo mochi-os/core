@@ -5,24 +5,48 @@
     'use strict';
 
     var iframe = document.getElementById('app-frame');
+    var staleIframe = null; // old iframe kept visible during transition
     var config = window.__mochi_shell || {};
     var currentAppId = config.appId || '';
     var currentAppPath = getAppNameFromPath(window.location.pathname);
     var tokenRefreshTimer = null;
     var navigating = false; // true during cross-app navigation (blocks storage requests)
 
-    // Replace the iframe element to avoid polluting browser history.
-    // Setting iframe.src creates history entries that interleave with pushState,
-    // causing back/forward to navigate the iframe and parent out of sync.
+    // Replace the iframe with a new one, keeping the old visible until the new
+    // one sends its ready message. This avoids both history pollution (creating
+    // a new element instead of setting .src) and white flashes during transitions.
     function swapIframe(newSrc) {
-        var parent = iframe.parentNode;
+        var container = iframe.parentNode;
+
+        // Clean up any previous stale iframe
+        if (staleIframe && staleIframe.parentNode) {
+            staleIframe.parentNode.removeChild(staleIframe);
+        }
+
+        // Dim and disable the current iframe while the new one loads
+        staleIframe = iframe;
+        staleIframe.style.opacity = '0.6';
+        staleIframe.style.pointerEvents = 'none';
+        staleIframe.removeAttribute('id');
+
+        // Create the new iframe hidden behind the old one
         var next = document.createElement('iframe');
         next.id = 'app-frame';
         next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
-        next.style.cssText = 'width:100%;height:100%;border:none';
+        next.style.visibility = 'hidden';
         next.src = newSrc;
-        parent.replaceChild(next, iframe);
+        container.insertBefore(next, staleIframe);
+
         iframe = next;
+    }
+
+    // Called when the new iframe sends ready — complete the visual transition
+    function completeTransition() {
+        iframe.style.visibility = '';
+        if (staleIframe && staleIframe.parentNode) {
+            staleIframe.parentNode.removeChild(staleIframe);
+        }
+        staleIframe = null;
     }
 
     // --- Token management ---
@@ -182,7 +206,8 @@
 
         switch (data.type) {
             case 'ready':
-                // App is ready — send init with token
+                // App is ready — complete transition and send init with token
+                completeTransition();
                 navigating = false;
                 var appName = getAppNameFromPath(window.location.pathname);
                 var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';

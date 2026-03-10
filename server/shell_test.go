@@ -229,8 +229,8 @@ func TestShellHtmlTemplate(t *testing.T) {
 
 // Test shell HTML has sandboxed iframe with correct attributes
 func TestShellHtmlSandboxedIframe(t *testing.T) {
-	if !strings.Contains(shell_html, `sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"`) {
-		t.Error("shell_html should contain sandboxed iframe with allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox")
+	if !strings.Contains(shell_html, `sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"`) {
+		t.Error("shell_html should contain sandboxed iframe with allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads")
 	}
 
 	// Must NOT contain allow-same-origin (that would defeat the purpose)

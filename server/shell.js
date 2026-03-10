@@ -6,11 +6,26 @@
 
     var iframe = document.getElementById('app-frame');
     var staleIframe = null; // old iframe kept visible during transition
+    var menuEl = document.getElementById('menu');
     var config = window.__mochi_shell || {};
     var currentAppId = config.appId || '';
     var currentAppPath = getAppNameFromPath(window.location.pathname);
     var tokenRefreshTimer = null;
     var navigating = false; // true during cross-app navigation (blocks storage requests)
+
+    // --- Sidebar state ---
+    // Persisted across app switches so the sidebar stays collapsed/expanded.
+    var sidebarOpen = localStorage.getItem('sidebar_state') !== 'false';
+
+    function setSidebarState(open) {
+        sidebarOpen = open;
+        try { localStorage.setItem('sidebar_state', String(open)); } catch(e) {}
+        // Update menu element so the menu app can observe changes
+        if (menuEl) menuEl.setAttribute('data-sidebar', open ? 'expanded' : 'collapsed');
+    }
+
+    // Set initial state
+    setSidebarState(sidebarOpen);
 
     // Replace the iframe with a new one, keeping the old visible until the new
     // one sends its ready message. This avoids both history pollution (creating
@@ -32,7 +47,7 @@
         // Create the new iframe hidden behind the old one
         var next = document.createElement('iframe');
         next.id = 'app-frame';
-        next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
+        next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads');
         next.style.visibility = 'hidden';
         next.src = newSrc;
         container.insertBefore(next, staleIframe);
@@ -48,6 +63,20 @@
         }
         staleIframe = null;
     }
+
+    // --- Favicon ---
+    // Update the tab favicon to match the current app.
+    // Each app serves its favicon at /<path>/images/favicon.svg via the images action.
+    var faviconLink = document.querySelector('link[rel="icon"]');
+
+    function updateFavicon(appPath) {
+        if (!faviconLink) return;
+        var base = appPath ? '/' + appPath : '';
+        faviconLink.href = base + '/images/favicon.svg';
+    }
+
+    // Set initial favicon
+    updateFavicon(currentAppPath);
 
     // --- Token management ---
 
@@ -118,6 +147,24 @@
         } catch(e) { /* ignore */ }
     }
 
+    // --- Clipboard proxy ---
+    // Sandboxed iframes can't access navigator.clipboard (opaque origin).
+    // The shell proxies clipboard writes on behalf of the app.
+
+    function handleClipboardWrite(data) {
+        if (navigating) return;
+        var id = data.id;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(data.text).then(function() {
+                postToIframe({ type: 'clipboard.result', id: id, ok: true });
+            }).catch(function() {
+                postToIframe({ type: 'clipboard.result', id: id, ok: false });
+            });
+        } else {
+            postToIframe({ type: 'clipboard.result', id: id, ok: false });
+        }
+    }
+
     // --- URL sync ---
 
     function getAppNameFromPath(path) {
@@ -148,6 +195,8 @@
             // Cross-app navigation: update URL, fetch new token, swap iframe
             navigating = true;
             currentAppPath = newApp;
+            updateFavicon(newApp);
+            document.title = 'Mochi';
             history.pushState(null, '', data.url);
 
             fetchToken(newApp).then(function(token) {
@@ -178,6 +227,8 @@
             // Different app — swap iframe and fetch new token
             navigating = true;
             currentAppPath = newApp;
+            updateFavicon(newApp);
+            document.title = 'Mochi';
             fetchToken(newApp).then(function() {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
@@ -217,7 +268,8 @@
                         token: token,
                         theme: theme,
                         user: { name: config.userName },
-                        inShell: true
+                        inShell: true,
+                        sidebarOpen: sidebarOpen
                     });
                     scheduleTokenRefresh(appName);
                 }).catch(function() {
@@ -226,7 +278,8 @@
                         token: '',
                         theme: theme,
                         user: { name: config.userName },
-                        inShell: true
+                        inShell: true,
+                        sidebarOpen: sidebarOpen
                     });
                 });
                 break;
@@ -253,6 +306,14 @@
 
             case 'storage.remove':
                 handleStorageRemove(data);
+                break;
+
+            case 'clipboard.write':
+                handleClipboardWrite(data);
+                break;
+
+            case 'sidebar-state':
+                setSidebarState(!!data.open);
                 break;
         }
     });

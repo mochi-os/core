@@ -18,7 +18,7 @@
         var parent = iframe.parentNode;
         var next = document.createElement('iframe');
         next.id = 'app-frame';
-        next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
+        next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
         next.style.cssText = 'width:100%;height:100%;border:none';
         next.src = newSrc;
         parent.replaceChild(next, iframe);

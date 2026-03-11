@@ -306,6 +306,7 @@ var (
 		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", nil},
 		{"121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN", "Menu", []struct{ Permission, Object string }{
 			{"notifications/send", ""},
+			{"permission/manage", ""},
 		}},
 		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{

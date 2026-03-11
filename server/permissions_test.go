@@ -668,6 +668,95 @@ func TestDefaultPermissionsSettingsApp(t *testing.T) {
 	}
 }
 
+func TestDefaultPermissionsMenuApp(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+
+	// Menu app ID
+	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
+
+	// Run app_user_setup to grant default permissions
+	app_user_setup(user, menuAppID)
+
+	// Check if notifications/send is granted (existing default)
+	if !permission_granted(user, menuAppID, "notifications/send") {
+		t.Error("Default permission notifications/send not granted for menu app")
+	}
+
+	// Check if permission/manage is granted (new default for shell permission dialog)
+	if !permission_granted(user, menuAppID, "permission/manage") {
+		t.Error("Default permission permission/manage not granted for menu app")
+	}
+}
+
+func TestMenuAppCanGrantPermissionViaAPI(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+
+	// Menu app with permission/manage
+	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
+	menuApp := createExternalApp(menuAppID)
+	thread := createTestThread(user, menuApp)
+	fn := sl.NewBuiltin("mochi.permission.grant", nil)
+
+	// Grant permission/manage to menu app (simulates lazy grant from app_user_setup)
+	permission_grant(user, menuAppID, "permission/manage")
+
+	targetAppID := "feeds-app-id-12345"
+
+	// Menu app should be able to grant standard permissions to other apps
+	_, err := api_permission_grant(thread, fn, sl.Tuple{sl.String(targetAppID), sl.String("account/read")}, nil)
+	if err != nil {
+		t.Fatalf("Menu app with permission/manage could not grant permission: %v", err)
+	}
+
+	// Verify permission was actually granted
+	if !permission_granted(user, targetAppID, "account/read") {
+		t.Error("Permission account/read not granted to target app")
+	}
+}
+
+func TestMenuAppCannotGrantRestrictedPermission(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+
+	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
+	menuApp := createExternalApp(menuAppID)
+	thread := createTestThread(user, menuApp)
+	fn := sl.NewBuiltin("mochi.permission.restricted", nil)
+
+	// Verify that restricted permissions are correctly identified
+	// (the Starlark menu.star checks this before calling grant)
+	restrictedPerms := []string{"user/read", "setting/write", "url:*"}
+	for _, perm := range restrictedPerms {
+		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
+		if err != nil {
+			t.Fatalf("api_permission_restricted(%q) error: %v", perm, err)
+		}
+		if result != sl.True {
+			t.Errorf("api_permission_restricted(%q) = %v, want True", perm, result)
+		}
+	}
+
+	// Standard permissions should not be restricted
+	standardPerms := []string{"account/read", "group/manage", "url:example.com"}
+	for _, perm := range standardPerms {
+		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
+		if err != nil {
+			t.Fatalf("api_permission_restricted(%q) error: %v", perm, err)
+		}
+		if result != sl.False {
+			t.Errorf("api_permission_restricted(%q) = %v, want False", perm, result)
+		}
+	}
+}
+
 func TestDefaultPermissionsNonDefaultApp(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)

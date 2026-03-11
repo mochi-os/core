@@ -115,17 +115,16 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	// Get menu app to resolve its asset paths
 	menu := shell_menu_app(user)
 
-	// Get notification count for the menu app
-	notif_token := ""
-	notif_app := app_for_path(user, "notifications")
-	if notif_app != nil {
-		notif_token = auth_create_app_token(user.ID, session, notif_app.id)
-	}
-
 	// Get user profile info
 	name := ""
 	if ident := user.identity(); ident != nil {
 		name = ident.Name
+	}
+
+	// Generate menu app token so it can call its own backend actions
+	menu_token := ""
+	if menu != nil {
+		menu_token = auth_create_app_token(user.ID, session, menu.id)
 	}
 
 	// Build the shell page from template
@@ -134,8 +133,8 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	// Inject values
 	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(c.Request.URL.Path), 1)
 	page = strings.Replace(page, "{{APP_ID}}", escape_attr(app_id), 1)
-	page = strings.Replace(page, "{{NOTIF_TOKEN}}", notif_token, 1)
 	page = strings.Replace(page, "{{USER_NAME}}", escape_attr(name), 1)
+	page = strings.Replace(page, "{{MENU_TOKEN}}", menu_token, 1)
 	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
 
 	// Menu app assets

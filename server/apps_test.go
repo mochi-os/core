@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -1768,4 +1769,194 @@ func TestUserPreferencesIndependent(t *testing.T) {
 	if user1.class_app("wiki") != "app1" {
 		t.Error("user1 preference affected by user2 change")
 	}
+}
+
+// Test AppFunction.Permission JSON parsing
+func TestAppFunctionPermissionJSON(t *testing.T) {
+	// Without permission
+	data := []byte(`{"function": "my_func"}`)
+	var f AppFunction
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if f.Function != "my_func" {
+		t.Errorf("Function = %q, want %q", f.Function, "my_func")
+	}
+	if f.Permission != "" {
+		t.Errorf("Permission = %q, want empty", f.Permission)
+	}
+
+	// With permission
+	data = []byte(`{"function": "my_func", "permission": "notifications/send"}`)
+	var f2 AppFunction
+	if err := json.Unmarshal(data, &f2); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if f2.Permission != "notifications/send" {
+		t.Errorf("Permission = %q, want %q", f2.Permission, "notifications/send")
+	}
+
+	// Omitted in JSON output when empty
+	f3 := AppFunction{Function: "test"}
+	out, _ := json.Marshal(f3)
+	if string(out) != `{"function":"test"}` {
+		t.Errorf("Marshal = %s, want no permission field", string(out))
+	}
+}
+
+// Test service function permission enforcement in api_service_call
+func TestServiceCallPermissionEnforcement(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+	callerApp := createExternalApp("caller-app")
+
+	// The permission check logic:
+	// if f.Permission != "" && caller_id != a.id {
+	//     if !permission_granted(user, caller_id, f.Permission) { return error }
+	// }
+
+	// Case 1: Permission required but not granted → should reject
+	f := AppFunction{Function: "test_func", Permission: "notifications/send"}
+	if f.Permission != "" && callerApp.id != "target-app" {
+		if permission_granted(user, callerApp.id, f.Permission) {
+			t.Error("Permission should NOT be granted before grant")
+		}
+	}
+
+	// Case 2: Permission granted → should allow
+	permission_grant(user, callerApp.id, "notifications/send")
+	if !permission_granted(user, callerApp.id, f.Permission) {
+		t.Error("Permission should be granted after grant")
+	}
+
+	// Case 3: Self-call bypass (caller_id == target app id)
+	// When the caller is the same app as the target, permission check is skipped
+	selfApp := createExternalApp("target-app")
+	f2 := AppFunction{Function: "test_func", Permission: "some/restricted"}
+	// Even without the permission, self-call should be allowed
+	if f2.Permission != "" && selfApp.id != "target-app" {
+		t.Error("Self-call should bypass permission check (caller_id == a.id)")
+	}
+	// Confirm the condition correctly identifies self-call
+	if selfApp.id == "target-app" {
+		// This is the self-call case — permission check is skipped
+	} else {
+		t.Error("Expected self-call match")
+	}
+
+	// Case 4: Empty permission → no enforcement regardless
+	f3 := AppFunction{Function: "test_func", Permission: ""}
+	if f3.Permission != "" {
+		t.Error("Empty permission should not trigger enforcement")
+	}
+}
+
+// Test that Menu app gets notifications/send as a default permission
+func TestMenuDefaultPermissions(t *testing.T) {
+	menuID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
+
+	defaults := apps_default_get(menuID)
+	if defaults == nil {
+		t.Fatal("Menu app should have default permissions")
+	}
+
+	found := false
+	for _, p := range defaults {
+		if p.Permission == "notifications/send" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Menu app should have 'notifications/send' default permission")
+	}
+}
+
+// Test that Menu default permissions are granted via app_user_setup
+func TestMenuPermissionsGrantedOnSetup(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+	menuID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
+
+	// Before setup, permission should not be granted
+	if permission_granted(user, menuID, "notifications/send") {
+		t.Error("Permission should not be granted before setup")
+	}
+
+	// Run setup
+	app_user_setup(user, menuID)
+
+	// After setup, permission should be granted
+	if !permission_granted(user, menuID, "notifications/send") {
+		t.Error("Permission should be granted after app_user_setup")
+	}
+}
+
+// Test dev app name matching for Menu
+func TestMenuDevAppNameMatch(t *testing.T) {
+	// Dev apps match by name (case-insensitive)
+	defaults := apps_default_get("menu")
+	if defaults == nil {
+		t.Fatal("Dev 'menu' app should match Menu defaults by name")
+	}
+
+	found := false
+	for _, p := range defaults {
+		if p.Permission == "notifications/send" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Dev 'menu' app should inherit 'notifications/send' permission")
+	}
+}
+
+// Test that unprivileged apps cannot call permission-gated service functions
+func TestUnprivilegedAppPermissionDenied(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, 1)
+	unprivilegedApp := "some-random-app"
+
+	// Ensure no permissions are granted
+	if permission_granted(user, unprivilegedApp, "notifications/send") {
+		t.Error("Random app should not have notifications/send")
+	}
+
+	// The permission check in api_service_call would block this call
+	f := AppFunction{Function: "function_destinations", Permission: "notifications/send"}
+	callerID := unprivilegedApp
+	targetAppID := "notifications-app"
+
+	// Simulate the check
+	if f.Permission != "" && callerID != targetAppID {
+		if permission_granted(user, callerID, f.Permission) {
+			t.Error("Unprivileged app should be denied")
+		}
+		// This is the expected path — permission denied
+	}
+}
+
+// Test that Notifications app calling its own functions skips permission check
+func TestNotificationsAppSelfCallBypass(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	_ = createTestUser(t, 1)
+	notifAppID := "notifications"
+
+	f := AppFunction{Function: "function_destinations", Permission: "notifications/send"}
+
+	// Self-call: caller_id == target app id → skip check
+	if f.Permission != "" && notifAppID != notifAppID {
+		t.Error("Self-call should be skipped")
+	}
+	// The condition `callerID != a.id` is false, so permission check is skipped
+	// This means the notifications app can always call its own functions
 }

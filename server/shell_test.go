@@ -213,9 +213,9 @@ func TestShellHtmlTemplate(t *testing.T) {
 	required_placeholders := []string{
 		"{{IFRAME_SRC}}",
 		"{{APP_ID}}",
-		"{{NOTIF_TOKEN}}",
 		"{{USER_NAME}}",
 		"{{SHELL_JS}}",
+		"{{MENU_TOKEN}}",
 		"{{MENU_JS}}",
 		"{{MENU_CSS}}",
 	}

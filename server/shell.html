@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="mochi:token" content="{{NOTIF_TOKEN}}">
     <meta name="mochi:shell" content="true">
     <script>(function() {
   var theme = document.cookie.match(/mochi-theme=([^;]+)/);
@@ -39,7 +38,8 @@
     // Shell configuration injected by server
     window.__mochi_shell = {
         appId: "{{APP_ID}}",
-        userName: "{{USER_NAME}}"
+        userName: "{{USER_NAME}}",
+        menuToken: "{{MENU_TOKEN}}"
     };
 
     {{SHELL_JS}}

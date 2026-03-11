@@ -168,6 +168,13 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "unknown function %q for service %q", function, service)
 	}
 
+	// Enforce permission if declared on the function (skip when app calls its own service)
+	if f.Permission != "" && caller_id != a.id {
+		if !permission_granted(user, caller_id, f.Permission) {
+			return sl_error(fn, "permission %q required to call %s/%s", f.Permission, service, function)
+		}
+	}
+
 	// Run first-time setup for target service app (grants default permissions)
 	app_user_setup(user, a.id)
 

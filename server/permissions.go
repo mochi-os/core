@@ -117,6 +117,9 @@ func permission_join(name, object string) string {
 	if name == "url" {
 		return name + ":" + object
 	}
+	if object != "" {
+		return name + "/" + object
+	}
 	return name
 }
 

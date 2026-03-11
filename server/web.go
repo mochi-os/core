@@ -688,10 +688,26 @@ func is_entity_segment(s string) bool {
 	return entity_segment_re.MatchString(s)
 }
 
-// Build routing meta tags and inject them after <head>
+// Build routing meta tags and base href, inject them after <head>
 func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	var tags []string
-	if app := c.GetString("mochi_app_path"); app != "" {
+
+	// Compute base href for correct relative URL resolution on deep routes.
+	// Must be a static tag (not JS-generated) so the browser's preload scanner
+	// resolves ./assets/... correctly before any scripts execute.
+	app := c.GetString("mochi_app_path")
+	dm := c.GetString("domain_method")
+	if dm == "entity" || dm == "app" {
+		tags = append(tags, `<base href="/">`)
+	} else if e != nil && app != "" {
+		tags = append(tags, `<base href="/`+escape_attr(app)+`/`+escape_attr(e.Fingerprint)+`/">`)
+	} else if e != nil {
+		tags = append(tags, `<base href="/`+escape_attr(e.Fingerprint)+`/">`)
+	} else if app != "" {
+		tags = append(tags, `<base href="/`+escape_attr(app)+`/">`)
+	}
+
+	if app != "" {
 		tags = append(tags, `<meta name="mochi:app" content="`+escape_attr(app)+`">`)
 	}
 	if e != nil {
@@ -701,7 +717,7 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	} else if seg := c.GetString("mochi_entity_segment"); seg != "" {
 		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(seg)+`">`)
 	}
-	if dm := c.GetString("domain_method"); dm == "entity" || dm == "app" {
+	if dm == "entity" || dm == "app" {
 		tags = append(tags, `<meta name="mochi:domain">`)
 	}
 	if len(tags) > 0 {
@@ -725,6 +741,11 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 			return
 		}
 		content := string(html)
+		// Inject base href so the browser's preload scanner resolves relative
+		// asset paths (./assets/...) correctly even on deep URL paths.
+		if app := c.GetString("mochi_app_path"); app != "" {
+			content = strings.Replace(content, "<head>", `<head><base href="/`+escape_attr(app)+`/">`, 1)
+		}
 		// Inject a shim script before everything else. Sandboxed iframes without
 		// allow-same-origin cannot access cookies, localStorage, or sessionStorage.
 		// This shim provides in-memory fallbacks so third-party code (TanStack Router,

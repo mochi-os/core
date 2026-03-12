@@ -41,19 +41,20 @@ func (e *PermissionError) Error() string {
 // permissions defines all available permissions except dynamic url permissions
 var permissions = []Permission{
 	// Standard permissions
-	{"group/manage", false, false},
-	{"account/read", false, false},
-	{"account/manage", false, false},
+	{"accounts/read", false, false},
+	{"accounts/manage", false, false},
+	{"accounts/ai", false, false},
+	{"accounts/mcp", false, false},
+	{"groups/manage", false, false},
 	{"interests/read", false, false},
 	{"interests/write", false, false},
 
 	// Restricted permissions
-	{"user/read", true, true},
-	{"setting/write", true, true},
-	{"permission/manage", true, false},
-	{"account/notify", true, false},
-	{"account/ai", true, false},
-	{"account/mcp", true, false},
+	{"accounts/notify", true, false},
+	{"permissions/manage", true, false},
+	{"settings/write", true, true},
+	{"users/read", true, true},
+	{"webpush/send", true, false},
 }
 
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{
@@ -435,7 +436,7 @@ func api_permission_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Check that calling app has permissions/manage
-	if err := require_permission(t, fn, "permission/manage"); err != nil {
+	if err := require_permission(t, fn, "permissions/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -465,13 +466,13 @@ func api_permission_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Check that calling app has permissions/manage
-	if err := require_permission(t, fn, "permission/manage"); err != nil {
+	if err := require_permission(t, fn, "permissions/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
 	// Prevent an app from revoking its own permission/manage (prevents lockout)
 	calling_app, _ := t.Local("app").(*App)
-	if permission == "permission/manage" && calling_app != nil && calling_app.id == app_id {
+	if permission == "permissions/manage" && calling_app != nil && calling_app.id == app_id {
 		return sl_error(fn, "cannot revoke permission/manage from self")
 	}
 
@@ -516,7 +517,7 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	calling_app, _ := t.Local("app").(*App)
 	if calling_app == nil || calling_app.id != app_id {
 		// Require permission/manage to list other apps' permissions
-		if err := require_permission(t, fn, "permission/manage"); err != nil {
+		if err := require_permission(t, fn, "permissions/manage"); err != nil {
 			return nil, err
 		}
 	}

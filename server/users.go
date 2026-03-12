@@ -362,8 +362,8 @@ func (u *User) set_app_version(app, version, track string) {
 
 // mochi.user.get.id(id) -> dict | None: Get a user by ID (admin only)
 func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -395,8 +395,8 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
 func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -428,8 +428,8 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
 func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -471,8 +471,8 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
 func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -517,8 +517,8 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 
 // mochi.user.list(limit, offset) -> list: List all users (admin only)
 func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -558,8 +558,8 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // mochi.user.count() -> int: Count all users (admin only)
 func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -582,8 +582,8 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.user.search(query, limit) -> list: Search users by username prefix (admin only)
 func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check user/read permission
-	if err := require_permission(t, fn, "user/read"); err != nil {
+	// Check users/read permission
+	if err := require_permission(t, fn, "users/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

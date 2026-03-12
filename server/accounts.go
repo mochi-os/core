@@ -260,7 +260,7 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.account.list(capability?) -> list: List user's accounts
 func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "account/read"); err != nil {
+	if err := require_permission(t, fn, "accounts/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -306,7 +306,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "syntax: <id: integer>")
 	}
 
-	if err := require_permission(t, fn, "account/read"); err != nil {
+	if err := require_permission(t, fn, "accounts/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -338,7 +338,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "syntax: <type: string>, [label=...], [address=...], [token=...], [api_key=...], [url=...], [endpoint=...], [auth=...], [p256dh=...], [secret=...], [topic=...], [server=...]")
 	}
 
-	if err := require_permission(t, fn, "account/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -512,7 +512,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
 	}
 
-	if err := require_permission(t, fn, "account/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -604,7 +604,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>")
 	}
 
-	if err := require_permission(t, fn, "account/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -636,7 +636,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>, [code: string]")
 	}
 
-	if err := require_permission(t, fn, "account/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -745,7 +745,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 // mochi.account.notify(title, body, link, tag) -> int: Send push notification to all browser accounts
 func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "account/notify"); err != nil {
+	if err := require_permission(t, fn, "accounts/notify"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -893,7 +893,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "syntax: <id: integer>")
 	}
 
-	if err := require_permission(t, fn, "account/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -1287,7 +1287,7 @@ func account_test_url(url, secret string) AccountTestResult {
 
 // mochi.account.deliver(app, category, object, title, body, link, urgency?, account?) -> dict: Deliver notification to accounts
 func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "account/notify"); err != nil {
+	if err := require_permission(t, fn, "accounts/notify"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

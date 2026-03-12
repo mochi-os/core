@@ -40,7 +40,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "syntax: <prompt: string>, [account=<int>]")
 	}
 
-	if err := require_permission(t, fn, "account/ai"); err != nil {
+	if err := require_permission(t, fn, "accounts/ai"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

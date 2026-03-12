@@ -27,8 +27,7 @@ type SignableHeaders struct {
 func signable_headers(msg_type, from, to, service, event, from_app, id, ack_id string, services []string, challenge []byte) []byte {
 	return cbor_encode(SignableHeaders{
 		Type: msg_type, From: from, To: to, Service: service, Event: event,
-		// Phase 2: uncomment to include FromApp and Services in signature
-		// FromApp: from_app, Services: services,
+		FromApp: from_app, Services: services,
 		ID: id, AckID: ack_id, Challenge: challenge,
 	})
 }
@@ -138,15 +137,15 @@ func (h *Headers) verify(challenge []byte) bool {
 
 	sig := base58_decode(h.Signature, "")
 
-	// Try without FromApp/Services first (Phase 1 and old servers sign without them)
-	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, nil, challenge)
+	// Try with FromApp and Services (Phase 2: included in signature)
+	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Services, challenge)
 	if ed25519.Verify(public, signable, sig) {
 		return true
 	}
 
-	// Try with FromApp and Services (Phase 2 servers will sign with them)
+	// Fallback: try without FromApp/Services for messages signed by Phase 1 servers
 	if h.FromApp != "" || len(h.Services) > 0 {
-		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Services, challenge)
+		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, nil, challenge)
 		if ed25519.Verify(public, signable, sig) {
 			return true
 		}

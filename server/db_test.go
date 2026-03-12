@@ -495,24 +495,24 @@ func TestAppUserSetup(t *testing.T) {
 
 	user := &User{ID: 1}
 
-	// App Manager app ID with permission/manage default
+	// App Manager app ID with permissions/manage default
 	appsAppID := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
 
 	// Verify no permissions exist before app_user_init
 	db1 := db_user(user, "user")
 	db1.permissions_setup()
-	hasPermission, _ := db1.exists("select 1 from permissions where app=? and permission='permission/manage' and granted=1", appsAppID)
+	hasPermission, _ := db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", appsAppID)
 	if hasPermission {
-		t.Error("User should not have permission/manage before app_user_setup")
+		t.Error("User should not have permissions/manage before app_user_setup")
 	}
 
 	// Run app_user_setup for the Apps app
 	app_user_setup(user, appsAppID)
 
 	// Verify permissions are now granted
-	hasPermission, _ = db1.exists("select 1 from permissions where app=? and permission='permission/manage' and granted=1", appsAppID)
+	hasPermission, _ = db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", appsAppID)
 	if !hasPermission {
-		t.Error("User should have permission/manage after app_user_setup")
+		t.Error("User should have permissions/manage after app_user_setup")
 	}
 
 	// Verify setup timestamp is recorded in apps table
@@ -526,7 +526,7 @@ func TestAppUserSetup(t *testing.T) {
 	app_user_setup(user, appsAppID)
 
 	// Verify only one permission row exists (not duplicated)
-	count := db1.integer("select count(*) from permissions where app=? and permission='permission/manage'", appsAppID)
+	count := db1.integer("select count(*) from permissions where app=? and permission='permissions/manage'", appsAppID)
 	if count != 1 {
 		t.Errorf("Expected 1 permission row, got %d", count)
 	}

@@ -177,8 +177,8 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 
 // mochi.group.create(id, name, description?) -> dict: Create a new group
 func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check group/manage permission
-	if err := require_permission(t, fn, "group/manage"); err != nil {
+	// Check groups/manage permission
+	if err := require_permission(t, fn, "groups/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -256,8 +256,8 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.group.update(id, name=..., description=...) -> None: Update a group
 func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check group/manage permission
-	if err := require_permission(t, fn, "group/manage"); err != nil {
+	// Check groups/manage permission
+	if err := require_permission(t, fn, "groups/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -294,8 +294,8 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.group.delete(id) -> None: Delete a group and its memberships
 func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check group/manage permission
-	if err := require_permission(t, fn, "group/manage"); err != nil {
+	// Check groups/manage permission
+	if err := require_permission(t, fn, "groups/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -324,8 +324,8 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.group.add(group, member, type) -> None: Add a member to a group
 func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check group/manage permission
-	if err := require_permission(t, fn, "group/manage"); err != nil {
+	// Check groups/manage permission
+	if err := require_permission(t, fn, "groups/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -369,8 +369,8 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // mochi.group.remove(group, member) -> None: Remove a member from a group
 func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Check group/manage permission
-	if err := require_permission(t, fn, "group/manage"); err != nil {
+	// Check groups/manage permission
+	if err := require_permission(t, fn, "groups/manage"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

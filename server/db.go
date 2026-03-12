@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 41
+	schema_version = 42
 )
 
 var (
@@ -463,13 +463,13 @@ func db_upgrade() {
 			users.exec("create index tokens_user on tokens(user)")
 			users.exec("create index tokens_app on tokens(app)")
 
-			// Migration: rename permissions/manage to permission/manage in all user databases
+			// Migration: rename permission/manage back to permissions/manage in all user databases
 			rows, _ := users.rows("select id from users")
 			for _, row := range rows {
 				if id, ok := row["id"].(int64); ok {
 					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
 					udb.permissions_setup() // Ensure table exists before updating
-					udb.exec("update permissions set permission='permission/manage' where permission='permissions/manage'")
+					udb.exec("update permissions set permission='permissions/manage' where permission='permission/manage'")
 				}
 			}
 		}
@@ -851,6 +851,35 @@ func db_upgrade() {
 			for _, row := range rows {
 				if id, ok := row["id"].(string); ok {
 					dir.exec("update directory set fingerprint=? where id=?", fingerprint(id), id)
+				}
+			}
+		}
+
+		if schema == 42 {
+			// Migration: rename singular permissions to plural forms in all user databases
+			renames := [][2]string{
+				{"account/read", "accounts/read"},
+				{"account/manage", "accounts/manage"},
+				{"account/ai", "accounts/ai"},
+				{"account/mcp", "accounts/mcp"},
+				{"account/notify", "accounts/notify"},
+				{"group/manage", "groups/manage"},
+				{"permission/manage", "permissions/manage"},
+				{"setting/write", "settings/write"},
+				{"user/read", "users/read"},
+			}
+			users := db_open("db/users.db")
+			rows, _ := users.rows("select id from users")
+			for _, row := range rows {
+				if id, ok := row["id"].(int64); ok {
+					udb := db_open(fmt.Sprintf("users/%d/user.db", id))
+					udb.permissions_setup()
+					for _, r := range renames {
+						udb.exec("update permissions set permission=? where permission=?", r[1], r[0])
+					}
+					// Reset app setup counters so new default names are applied
+					udb.apps_setup()
+					udb.exec("delete from apps")
 				}
 			}
 		}

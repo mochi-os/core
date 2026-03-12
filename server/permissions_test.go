@@ -74,7 +74,7 @@ func cleanupTestUser(t *testing.T, id int) {
 
 func TestPermissionRestrictedStandard(t *testing.T) {
 	standardPerms := []string{
-		"group/manage",
+		"groups/manage",
 		"url:example.com",
 	}
 
@@ -87,9 +87,9 @@ func TestPermissionRestrictedStandard(t *testing.T) {
 
 func TestPermissionRestrictedRestricted(t *testing.T) {
 	restrictedPerms := []string{
-		"user/read",
-		"setting/write",
-		"permission/manage",
+		"users/read",
+		"settings/write",
+		"permissions/manage",
 		"webpush/send",
 		"url:*", // Wildcard URL is restricted
 	}
@@ -114,8 +114,8 @@ func TestPermissionRestrictedUnknown(t *testing.T) {
 
 func TestPermissionAdministrator(t *testing.T) {
 	adminOnlyPerms := []string{
-		"user/read",
-		"setting/write",
+		"users/read",
+		"settings/write",
 	}
 
 	for _, perm := range adminOnlyPerms {
@@ -125,7 +125,7 @@ func TestPermissionAdministrator(t *testing.T) {
 	}
 
 	nonAdminPerms := []string{
-		"group/manage",
+		"groups/manage",
 		"url:example.com",
 	}
 
@@ -148,8 +148,8 @@ func TestPermissionSplit(t *testing.T) {
 	}{
 		{"url:github.com", "url", "github.com"},
 		{"url:*", "url", "*"},
-		{"group/manage", "group/manage", ""},
-		{"user/read", "user/read", ""},
+		{"groups/manage", "groups/manage", ""},
+		{"users/read", "users/read", ""},
 	}
 
 	for _, tt := range tests {
@@ -169,7 +169,7 @@ func TestPermissionJoin(t *testing.T) {
 	}{
 		{"url", "github.com", "url:github.com"},
 		{"url", "*", "url:*"},
-		{"group/manage", "", "group/manage"},
+		{"groups/manage", "", "groups/manage"},
 	}
 
 	for _, tt := range tests {
@@ -312,7 +312,7 @@ func TestInternalAppBypassesPermissions(t *testing.T) {
 
 	// Internal app should always pass permission checks
 	permissions := []string{
-		"group/manage",
+		"groups/manage",
 		"url:example.com",
 	}
 
@@ -336,15 +336,15 @@ func TestPermissionGrantAndCheck(t *testing.T) {
 	appID := "test-app-123"
 
 	// Initially permission should not be granted
-	if permission_granted(user, appID, "group/manage") {
+	if permission_granted(user, appID, "groups/manage") {
 		t.Error("permission_granted before grant = true, want false")
 	}
 
 	// Grant the permission
-	permission_grant(user, appID, "group/manage")
+	permission_grant(user, appID, "groups/manage")
 
 	// Now it should be granted
-	if !permission_granted(user, appID, "group/manage") {
+	if !permission_granted(user, appID, "groups/manage") {
 		t.Error("permission_granted after grant = false, want true")
 	}
 }
@@ -378,7 +378,7 @@ func TestPermissionsList(t *testing.T) {
 	appID := "test-app-123"
 
 	// Grant multiple permissions
-	permission_grant(user, appID, "group/manage")
+	permission_grant(user, appID, "groups/manage")
 	permission_grant(user, appID, "url:github.com")
 
 	perms := permissions_list(user, appID)
@@ -394,7 +394,7 @@ func TestPermissionsList(t *testing.T) {
 		found[perm] = true
 	}
 
-	expected := []string{"group/manage", "url:github.com"}
+	expected := []string{"groups/manage", "url:github.com"}
 	for _, exp := range expected {
 		if !found[exp] {
 			t.Errorf("permissions_list missing %q", exp)
@@ -475,7 +475,7 @@ func TestRequirePermissionNoApp(t *testing.T) {
 	// No app set
 	fn := sl.NewBuiltin("test", nil)
 
-	err := require_permission(thread, fn, "group/manage")
+	err := require_permission(thread, fn, "groups/manage")
 	if err == nil {
 		t.Error("require_permission with no app should return error")
 	}
@@ -488,7 +488,7 @@ func TestRequirePermissionNoUser(t *testing.T) {
 	// No user set
 	fn := sl.NewBuiltin("test", nil)
 
-	err := require_permission(thread, fn, "group/manage")
+	err := require_permission(thread, fn, "groups/manage")
 	if err == nil {
 		t.Error("require_permission with no user should return error")
 	}
@@ -504,7 +504,7 @@ func TestRequirePermissionNotGranted(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 
 	// Don't grant any permission
-	err := require_permission(thread, fn, "group/manage")
+	err := require_permission(thread, fn, "groups/manage")
 	if err == nil {
 		t.Error("require_permission without grant should return error")
 	}
@@ -520,9 +520,9 @@ func TestRequirePermissionGranted(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 
 	// Grant the permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 
-	err := require_permission(thread, fn, "group/manage")
+	err := require_permission(thread, fn, "groups/manage")
 	if err != nil {
 		t.Errorf("require_permission with grant returned error: %v", err)
 	}
@@ -539,10 +539,10 @@ func TestRequirePermissionAdminOnly(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 
 	// Grant the permission
-	permission_grant(user, app.id, "user/read")
+	permission_grant(user, app.id, "users/read")
 
 	// Should fail because user is not admin
-	err := require_permission(thread, fn, "user/read")
+	err := require_permission(thread, fn, "users/read")
 	if err == nil {
 		t.Error("require_permission(user/read) for non-admin should return error")
 	}
@@ -553,9 +553,9 @@ func TestRequirePermissionAdminOnly(t *testing.T) {
 	adminThread := createTestThread(admin, adminApp)
 
 	// Grant the permission
-	permission_grant(admin, adminApp.id, "user/read")
+	permission_grant(admin, adminApp.id, "users/read")
 
-	err = require_permission(adminThread, fn, "user/read")
+	err = require_permission(adminThread, fn, "users/read")
 	if err != nil {
 		t.Errorf("require_permission(user/read) for admin returned error: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestDefaultPermissionsSettingsApp(t *testing.T) {
 	app_user_setup(user, settingsAppID)
 
 	// Check if setting/write is granted (Settings app's default permission)
-	granted := permission_granted(user, settingsAppID, "setting/write")
+	granted := permission_granted(user, settingsAppID, "settings/write")
 	if !granted {
 		t.Error("Default permission setting/write not granted for settings app")
 	}
@@ -686,7 +686,7 @@ func TestDefaultPermissionsMenuApp(t *testing.T) {
 	}
 
 	// Check if permission/manage is granted (new default for shell permission dialog)
-	if !permission_granted(user, menuAppID, "permission/manage") {
+	if !permission_granted(user, menuAppID, "permissions/manage") {
 		t.Error("Default permission permission/manage not granted for menu app")
 	}
 }
@@ -704,18 +704,18 @@ func TestMenuAppCanGrantPermissionViaAPI(t *testing.T) {
 	fn := sl.NewBuiltin("mochi.permission.grant", nil)
 
 	// Grant permission/manage to menu app (simulates lazy grant from app_user_setup)
-	permission_grant(user, menuAppID, "permission/manage")
+	permission_grant(user, menuAppID, "permissions/manage")
 
 	targetAppID := "feeds-app-id-12345"
 
 	// Menu app should be able to grant standard permissions to other apps
-	_, err := api_permission_grant(thread, fn, sl.Tuple{sl.String(targetAppID), sl.String("account/read")}, nil)
+	_, err := api_permission_grant(thread, fn, sl.Tuple{sl.String(targetAppID), sl.String("accounts/read")}, nil)
 	if err != nil {
 		t.Fatalf("Menu app with permission/manage could not grant permission: %v", err)
 	}
 
 	// Verify permission was actually granted
-	if !permission_granted(user, targetAppID, "account/read") {
+	if !permission_granted(user, targetAppID, "accounts/read") {
 		t.Error("Permission account/read not granted to target app")
 	}
 }
@@ -733,7 +733,7 @@ func TestMenuAppCannotGrantRestrictedPermission(t *testing.T) {
 
 	// Verify that restricted permissions are correctly identified
 	// (the Starlark menu.star checks this before calling grant)
-	restrictedPerms := []string{"user/read", "setting/write", "url:*"}
+	restrictedPerms := []string{"users/read", "settings/write", "url:*"}
 	for _, perm := range restrictedPerms {
 		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
 		if err != nil {
@@ -745,7 +745,7 @@ func TestMenuAppCannotGrantRestrictedPermission(t *testing.T) {
 	}
 
 	// Standard permissions should not be restricted
-	standardPerms := []string{"account/read", "group/manage", "url:example.com"}
+	standardPerms := []string{"accounts/read", "groups/manage", "url:example.com"}
 	for _, perm := range standardPerms {
 		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
 		if err != nil {
@@ -765,7 +765,7 @@ func TestDefaultPermissionsNonDefaultApp(t *testing.T) {
 	appID := "non-default-app-12345"
 
 	// Non-default apps should not get any automatic permissions
-	granted := permission_granted(user, appID, "group/manage")
+	granted := permission_granted(user, appID, "groups/manage")
 
 	if granted {
 		t.Error("Non-default app should not have permissions granted automatically")
@@ -786,7 +786,7 @@ func TestAPIPermissionCheck(t *testing.T) {
 
 	// Test mochi.permission.check for non-granted permission
 	result, err := api_permission_check(thread, sl.NewBuiltin("test", nil),
-		sl.Tuple{sl.String("group/manage")}, nil)
+		sl.Tuple{sl.String("groups/manage")}, nil)
 	if err != nil {
 		t.Fatalf("api_permission_check returned error: %v", err)
 	}
@@ -795,11 +795,11 @@ func TestAPIPermissionCheck(t *testing.T) {
 	}
 
 	// Grant the permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 
 	// Test mochi.permission.check for granted permission
 	result, err = api_permission_check(thread, sl.NewBuiltin("test", nil),
-		sl.Tuple{sl.String("group/manage")}, nil)
+		sl.Tuple{sl.String("groups/manage")}, nil)
 	if err != nil {
 		t.Fatalf("api_permission_check returned error: %v", err)
 	}
@@ -834,7 +834,7 @@ func TestAPIPermissionRestricted(t *testing.T) {
 		permission     string
 		wantRestricted bool
 	}{
-		{"group/manage", false},
+		{"groups/manage", false},
 		{"webpush/send", true},
 		{"url:example.com", false},
 		{"url:*", true},
@@ -862,9 +862,9 @@ func TestAPIPermissionAdministrator(t *testing.T) {
 		permission string
 		wantAdmin  bool
 	}{
-		{"user/read", true},
-		{"setting/write", true},
-		{"group/manage", false},
+		{"users/read", true},
+		{"settings/write", true},
+		{"groups/manage", false},
 		{"url:example.com", false},
 	}
 
@@ -895,29 +895,29 @@ func TestAPIPermissionGrantRevoke(t *testing.T) {
 	targetAppID := "target-app-123"
 
 	// Grant permission/manage to settings app first (it's a default)
-	permission_grant(user, settingsApp.id, "permission/manage")
+	permission_grant(user, settingsApp.id, "permissions/manage")
 
 	// Test granting a permission
 	_, err := api_permission_grant(thread, sl.NewBuiltin("test", nil),
-		sl.Tuple{sl.String(targetAppID), sl.String("group/manage")}, nil)
+		sl.Tuple{sl.String(targetAppID), sl.String("groups/manage")}, nil)
 	if err != nil {
 		t.Fatalf("api_permission_grant returned error: %v", err)
 	}
 
 	// Verify it was granted
-	if !permission_granted(user, targetAppID, "group/manage") {
+	if !permission_granted(user, targetAppID, "groups/manage") {
 		t.Error("Permission not granted after api_permission_grant")
 	}
 
 	// Test revoking the permission
 	_, err = api_permission_revoke(thread, sl.NewBuiltin("test", nil),
-		sl.Tuple{sl.String(targetAppID), sl.String("group/manage")}, nil)
+		sl.Tuple{sl.String(targetAppID), sl.String("groups/manage")}, nil)
 	if err != nil {
 		t.Fatalf("api_permission_revoke returned error: %v", err)
 	}
 
 	// Verify it was revoked
-	if permission_granted(user, targetAppID, "group/manage") {
+	if permission_granted(user, targetAppID, "groups/manage") {
 		t.Error("Permission still granted after api_permission_revoke")
 	}
 }
@@ -932,7 +932,7 @@ func TestAPIPermissionGrantWithoutManagePermission(t *testing.T) {
 
 	// Try to grant without permission/manage permission
 	_, err := api_permission_grant(thread, sl.NewBuiltin("test", nil),
-		sl.Tuple{sl.String("target-app"), sl.String("group/manage")}, nil)
+		sl.Tuple{sl.String("target-app"), sl.String("groups/manage")}, nil)
 	if err == nil {
 		t.Error("api_permission_grant without permission/manage should return error")
 	}
@@ -949,10 +949,10 @@ func TestAPIPermissionList(t *testing.T) {
 	targetAppID := "target-app-123"
 
 	// Grant permission/manage to calling app (required to list other apps' permissions)
-	permission_grant(user, app.id, "permission/manage")
+	permission_grant(user, app.id, "permissions/manage")
 
 	// Grant some permissions to target app
-	permission_grant(user, targetAppID, "group/manage")
+	permission_grant(user, targetAppID, "groups/manage")
 	permission_grant(user, targetAppID, "url:github.com")
 
 	// List permissions
@@ -986,15 +986,15 @@ func TestPermissionsUserIsolation(t *testing.T) {
 	appID := "test-app-123"
 
 	// Grant permission to user1
-	permission_grant(user1, appID, "group/manage")
+	permission_grant(user1, appID, "groups/manage")
 
 	// User1 should have the permission
-	if !permission_granted(user1, appID, "group/manage") {
+	if !permission_granted(user1, appID, "groups/manage") {
 		t.Error("User1 should have group/manage permission")
 	}
 
 	// User2 should NOT have the permission
-	if permission_granted(user2, appID, "group/manage") {
+	if permission_granted(user2, appID, "groups/manage") {
 		t.Error("User2 should NOT have group/manage permission")
 	}
 }
@@ -1005,15 +1005,15 @@ func TestPermissionsUserIsolation(t *testing.T) {
 
 func TestPermissionNilUser(t *testing.T) {
 	// permission_granted with nil user should return false
-	if permission_granted(nil, "test-app", "group/manage") {
+	if permission_granted(nil, "test-app", "groups/manage") {
 		t.Error("permission_granted(nil, ...) should return false")
 	}
 
 	// permission_grant with nil user should not panic
-	permission_grant(nil, "test-app", "group/manage") // Should not panic
+	permission_grant(nil, "test-app", "groups/manage") // Should not panic
 
 	// permission_revoke with nil user should not panic
-	permission_revoke(nil, "test-app", "group/manage") // Should not panic
+	permission_revoke(nil, "test-app", "groups/manage") // Should not panic
 
 	// permissions_list with nil user should return nil
 	perms := permissions_list(nil, "test-app")
@@ -1029,9 +1029,9 @@ func TestPermissionEmptyValues(t *testing.T) {
 	user := createTestUser(t, 1)
 
 	// Empty app ID should still work (no crash)
-	permission_grant(user, "", "group/manage")
-	permission_granted(user, "", "group/manage")
-	permission_revoke(user, "", "group/manage")
+	permission_grant(user, "", "groups/manage")
+	permission_granted(user, "", "groups/manage")
+	permission_revoke(user, "", "groups/manage")
 
 	// Empty permission should still work (no crash)
 	permission_grant(user, "test-app", "")
@@ -1051,11 +1051,11 @@ func TestPermissionGrantIdempotent(t *testing.T) {
 	appID := "test-app-123"
 
 	// Grant the same permission twice - should not error or duplicate
-	permission_grant(user, appID, "group/manage")
-	permission_grant(user, appID, "group/manage")
+	permission_grant(user, appID, "groups/manage")
+	permission_grant(user, appID, "groups/manage")
 
 	// Should still be granted
-	if !permission_granted(user, appID, "group/manage") {
+	if !permission_granted(user, appID, "groups/manage") {
 		t.Error("Permission should still be granted after double grant")
 	}
 
@@ -1063,7 +1063,7 @@ func TestPermissionGrantIdempotent(t *testing.T) {
 	perms := permissions_list(user, appID)
 	count := 0
 	for _, p := range perms {
-		if p["permission"] == "group/manage" {
+		if p["permission"] == "groups/manage" {
 			count++
 		}
 	}
@@ -1123,13 +1123,13 @@ func TestInternalAppBypassURLPermission(t *testing.T) {
 func TestAllDefinedPermissionRestriction(t *testing.T) {
 	// Verify all permissions in the permissions slice have correct restriction level
 	standardPerms := map[string]bool{
-		"group/manage": true,
+		"groups/manage": true,
 	}
 
 	restrictedPerms := map[string]bool{
-		"user/read":         true,
-		"setting/write":     true,
-		"permission/manage": true,
+		"users/read":         true,
+		"settings/write":     true,
+		"permissions/manage": true,
 		"webpush/send":      true,
 	}
 
@@ -1149,13 +1149,13 @@ func TestAllDefinedPermissionRestriction(t *testing.T) {
 func TestAllDefinedPermissionAdminFlags(t *testing.T) {
 	// Only user/read and setting/write should be admin-only
 	adminOnlyPerms := map[string]bool{
-		"user/read":     true,
-		"setting/write": true,
+		"users/read":     true,
+		"settings/write": true,
 	}
 
 	allPerms := []string{
-		"group/manage", "user/read", "setting/write",
-		"permission/manage", "webpush/send",
+		"groups/manage", "users/read", "settings/write",
+		"permissions/manage", "webpush/send",
 	}
 
 	for _, perm := range allPerms {
@@ -1203,7 +1203,7 @@ func TestAPIPermissionGrantWrongArgs(t *testing.T) {
 	thread := createTestThread(user, settingsApp)
 	fn := sl.NewBuiltin("test", nil)
 
-	permission_grant(user, settingsApp.id, "permission/manage")
+	permission_grant(user, settingsApp.id, "permissions/manage")
 
 	// No arguments
 	_, err := api_permission_grant(thread, fn, sl.Tuple{}, nil)
@@ -1227,7 +1227,7 @@ func TestAPIPermissionRevokeWrongArgs(t *testing.T) {
 	thread := createTestThread(user, settingsApp)
 	fn := sl.NewBuiltin("test", nil)
 
-	permission_grant(user, settingsApp.id, "permission/manage")
+	permission_grant(user, settingsApp.id, "permissions/manage")
 
 	// No arguments
 	_, err := api_permission_revoke(thread, fn, sl.Tuple{}, nil)
@@ -1296,18 +1296,18 @@ func TestSettingsAppPermissionsManageProtection(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 
 	// Grant permission/manage to settings app
-	permission_grant(user, settingsAppID, "permission/manage")
+	permission_grant(user, settingsAppID, "permissions/manage")
 
 	// Try to revoke permission/manage from settings app via API
 	// This should fail to prevent lockout
 	_, err := api_permission_revoke(thread, fn,
-		sl.Tuple{sl.String(settingsAppID), sl.String("permission/manage")}, nil)
+		sl.Tuple{sl.String(settingsAppID), sl.String("permissions/manage")}, nil)
 	if err == nil {
 		t.Error("Should not be able to revoke permission/manage from settings app")
 	}
 
 	// Verify it's still granted
-	if !permission_granted(user, settingsAppID, "permission/manage") {
+	if !permission_granted(user, settingsAppID, "permissions/manage") {
 		t.Error("permission/manage should still be granted to settings app after failed revoke")
 	}
 }
@@ -1355,11 +1355,11 @@ func TestMultipleAppsPerUser(t *testing.T) {
 	app2 := "app-two"
 
 	// Grant different permissions to different apps
-	permission_grant(user, app1, "group/manage")
+	permission_grant(user, app1, "groups/manage")
 	permission_grant(user, app2, "webpush/send")
 
 	// Verify app1 has its permission but not app2's
-	if !permission_granted(user, app1, "group/manage") {
+	if !permission_granted(user, app1, "groups/manage") {
 		t.Error("App1 should have group/manage")
 	}
 	if permission_granted(user, app1, "webpush/send") {
@@ -1370,7 +1370,7 @@ func TestMultipleAppsPerUser(t *testing.T) {
 	if !permission_granted(user, app2, "webpush/send") {
 		t.Error("App2 should have webpush/send")
 	}
-	if permission_granted(user, app2, "group/manage") {
+	if permission_granted(user, app2, "groups/manage") {
 		t.Error("App2 should NOT have group/manage")
 	}
 }
@@ -1433,7 +1433,7 @@ func TestAPIGroupCreateRequiresPermission(t *testing.T) {
 	}
 
 	// With permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 	_, err = api_group_create(thread, fn, sl.Tuple{sl.String("test-group")}, nil)
 	if err != nil && containsPermissionError(err) {
 		t.Errorf("api_group_create should succeed with permission: %v", err)
@@ -1456,7 +1456,7 @@ func TestAPIGroupDeleteRequiresPermission(t *testing.T) {
 	}
 
 	// With permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 	_, err = api_group_delete(thread, fn, sl.Tuple{sl.String("test-group")}, nil)
 	if err != nil && containsPermissionError(err) {
 		t.Errorf("api_group_delete should succeed with permission: %v", err)
@@ -1479,7 +1479,7 @@ func TestAPIGroupAddRequiresPermission(t *testing.T) {
 	}
 
 	// With permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 	_, err = api_group_add(thread, fn, sl.Tuple{sl.String("test-group"), sl.String("member")}, nil)
 	if err != nil && containsPermissionError(err) {
 		t.Errorf("api_group_add should succeed with permission: %v", err)
@@ -1502,7 +1502,7 @@ func TestAPIGroupRemoveRequiresPermission(t *testing.T) {
 	}
 
 	// With permission
-	permission_grant(user, app.id, "group/manage")
+	permission_grant(user, app.id, "groups/manage")
 	_, err = api_group_remove(thread, fn, sl.Tuple{sl.String("test-group"), sl.String("member")}, nil)
 	if err != nil && containsPermissionError(err) {
 		t.Errorf("api_group_remove should succeed with permission: %v", err)
@@ -1604,7 +1604,7 @@ func TestAPIUserReadDeniedForNonAdmin(t *testing.T) {
 	fn := sl.NewBuiltin("mochi.user.list", nil)
 
 	// Grant permission but still should fail since user is not admin
-	permission_grant(user, app.id, "user/read")
+	permission_grant(user, app.id, "users/read")
 	_, err := api_user_list(thread, fn, sl.Tuple{}, nil)
 	if err == nil {
 		t.Error("api_user_list should deny non-admin even with user/read permission")
@@ -1644,7 +1644,7 @@ func TestAPISettingSetDeniedForNonAdmin(t *testing.T) {
 	fn := sl.NewBuiltin("mochi.setting.set", nil)
 
 	// Grant permission but still should fail since user is not admin
-	permission_grant(user, app.id, "setting/write")
+	permission_grant(user, app.id, "settings/write")
 	_, err := api_setting_set(thread, fn, sl.Tuple{sl.String("signup_enabled"), sl.String("true")}, nil)
 	if err == nil {
 		t.Error("api_setting_set should deny non-admin even with setting/write permission")

@@ -89,16 +89,15 @@ func TestSignableHeaders(t *testing.T) {
 		t.Error("Different challenge should produce different signable headers")
 	}
 
-	// Phase 1: FromApp and Services are intentionally not included in signable headers yet
-	// Phase 2: uncomment these tests when FromApp/Services are included in signature
-	// h5 := signable_headers("msg", "from", "to", "service", "event", "myapp", "id", "", nil, challenge)
-	// if string(h1) == string(h5) {
-	// 	t.Error("Different from-app should produce different signable headers")
-	// }
-	// h6 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", []string{"wikis"}, challenge)
-	// if string(h1) == string(h6) {
-	// 	t.Error("Different services should produce different signable headers")
-	// }
+	// Phase 2: FromApp and Services are now included in signable headers
+	h5 := signable_headers("msg", "from", "to", "service", "event", "myapp", "id", "", nil, challenge)
+	if string(h1) == string(h5) {
+		t.Error("Different from-app should produce different signable headers")
+	}
+	h6 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", []string{"wikis"}, challenge)
+	if string(h1) == string(h6) {
+		t.Error("Different services should produce different signable headers")
+	}
 }
 
 // Test Headers.verify() with nil challenge (broadcast case)

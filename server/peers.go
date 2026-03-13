@@ -243,6 +243,11 @@ func peer_disconnected(id string) {
 	}
 	peers_lock.Unlock()
 
+	// Clean up per-peer stream semaphore
+	peer_sems_lock.Lock()
+	delete(peer_sems, id)
+	peer_sems_lock.Unlock()
+
 	// Schedule reconnection if not already scheduled
 	peer_reconnect_lock.Lock()
 	if _, scheduled := peer_reconnects[id]; !scheduled {

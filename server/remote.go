@@ -185,14 +185,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
 	}
-	defer func() {
-		if s.reader != nil {
-			s.reader.Close()
-		}
-		if s.writer != nil {
-			s.writer.Close()
-		}
-	}()
+	defer s.close()
 
 	// Send payload
 	err = s.write(sl_decode(payload))
@@ -276,12 +269,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// Send payload
 	err = s.write(sl_decode(payload))
 	if err != nil {
-		if s.reader != nil {
-			s.reader.Close()
-		}
-		if s.writer != nil {
-			s.writer.Close()
-		}
+		s.close()
 		return sl_error(fn, "failed to send: %v", err)
 	}
 

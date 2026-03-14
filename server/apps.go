@@ -1812,7 +1812,14 @@ func (av *AppVersion) reload() {
 		f.Close()
 	}
 
-	// Update fields that are safe to reload
+	// Convert relative execute paths to absolute
+	for i, file := range fresh.Execute {
+		fresh.Execute[i] = av.base + "/" + file
+	}
+
+	// Update fields that are safe to reload.
+	// Paths is excluded: it controls URL routing, and by the time reload()
+	// runs the request has already been routed to this app by its current path.
 	apps_lock.Lock()
 	av.Label = fresh.Label
 	av.Icons = fresh.Icons
@@ -1820,6 +1827,10 @@ func (av *AppVersion) reload() {
 	av.Events = fresh.Events
 	av.Functions = fresh.Functions
 	av.Database = fresh.Database
+	av.Services = fresh.Services
+	av.Classes = fresh.Classes
+	av.Architecture = fresh.Architecture
+	av.Execute = fresh.Execute
 	av.labels = labels
 	apps_lock.Unlock()
 }

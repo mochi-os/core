@@ -826,6 +826,20 @@ func app_for_path_fallback(user *User, path string) *App {
 	return app_select_best(candidates)
 }
 
+// app_declares_class returns true if the app's active version declares the given class.
+func app_declares_class(app *App, user *User, class string) bool {
+	av := app.active(user)
+	if av == nil {
+		return false
+	}
+	for _, c := range av.Classes {
+		if c == class {
+			return true
+		}
+	}
+	return false
+}
+
 // class_app_for finds the best app for a class with user preferences.
 // Resolution order:
 // 1. User's binding (if user is not nil)

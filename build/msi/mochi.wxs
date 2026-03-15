@@ -16,6 +16,12 @@
         <MajorUpgrade DowngradeErrorMessage="A newer version of Mochi Server is already installed." />
         <MediaTemplate EmbedCab="yes" />
 
+        <?ifndef var.WIXL ?>
+        <UIRef Id="WixUI_InstallDir" />
+        <UIRef Id="WixUI_ErrorProgressText" />
+        <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+        <?endif ?>
+
         <Feature Id="ProductFeature" Title="Mochi Server" Level="1">
             <ComponentRef Id="MainExecutable" />
             <ComponentRef Id="ConfigFile" />
@@ -47,12 +53,12 @@
                       Name="mochi-server.exe"
                       Source="$(var.SourceDir)/mochi-server.exe"
                       KeyPath="yes" />
-            </Component>
-            <Component Id="ConfigFile" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
-                <File Id="MochiConf"
-                      Name="mochi.conf.example"
-                      Source="$(var.SourceDir)/mochi.conf"
-                      KeyPath="yes" />
+                <Environment Id="AddMochiToPath"
+                             Name="PATH"
+                             Value="[BinFolder]"
+                             Permanent="no"
+                             Part="last"
+                             Action="set" />
             </Component>
         </DirectoryRef>
 
@@ -77,6 +83,12 @@
                 <CreateFolder />
                 <RemoveFolder Id="RemoveMochiDataFolder" On="uninstall" />
                 <RegistryValue Root="HKCU" Key="Software\Mochi" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
+            <Component Id="ConfigFile" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
+                <File Id="MochiConf"
+                      Name="mochi.conf"
+                      Source="$(var.SourceDir)/mochi.conf"
+                      KeyPath="yes" />
             </Component>
         </DirectoryRef>
 

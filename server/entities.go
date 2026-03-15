@@ -280,13 +280,12 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
-	// Verify the calling app controls the specified class
+	// Verify the calling app declares the specified class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	controlling := class_app_for(user, class)
-	if controlling == nil || controlling.id != app.id {
+	if !app_declares_class(app, user, class) {
 		return sl_error(fn, "app does not control class %q", class)
 	}
 
@@ -324,16 +323,13 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not authorized to delete this entity")
 	}
 
-	// Verify the calling app controls the entity's class
+	// Verify the calling app declares the entity's class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if e.Class != "" {
-		controlling := class_app_for(user, e.Class)
-		if controlling == nil || controlling.id != app.id {
-			return sl_error(fn, "app does not control class %q", e.Class)
-		}
+	if e.Class != "" && !app_declares_class(app, user, e.Class) {
+		return sl_error(fn, "app does not control class %q", e.Class)
 	}
 
 	// Delete the entity
@@ -523,16 +519,13 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not authorized to update this entity")
 	}
 
-	// Verify the calling app controls the entity's class
+	// Verify the calling app declares the entity's class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if e.Class != "" {
-		controlling := class_app_for(user, e.Class)
-		if controlling == nil || controlling.id != app.id {
-			return sl_error(fn, "app does not control class %q", e.Class)
-		}
+	if e.Class != "" && !app_declares_class(app, user, e.Class) {
+		return sl_error(fn, "app does not control class %q", e.Class)
 	}
 
 	old_privacy := e.Privacy

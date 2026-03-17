@@ -489,7 +489,7 @@ func peer_stream(id string) *Stream {
 	select {
 	case sem <- struct{}{}:
 	case <-time.After(10 * time.Second):
-		warn("P2P outbound stream to peer %q timed out waiting for slot", id)
+		info("P2P outbound stream to peer %q timed out waiting for slot", id)
 		return nil
 	}
 

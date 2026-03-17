@@ -603,11 +603,9 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 		return nil, "", "", false
 	}
 
-	// Build tracks map - try new format first, fall back to old format
-	// TODO(0.3-cleanup): Remove old format fallback when all servers are 0.3
+	// Build tracks map from tracks array
 	tracks := make(map[string]string)
 	if tracksArray, ok := v["tracks"].([]interface{}); ok {
-		// New format (0.3+) - parse all tracks
 		for _, t := range tracksArray {
 			if tm, ok := t.(map[string]interface{}); ok {
 				track, _ := tm["track"].(string)
@@ -617,13 +615,6 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 				}
 			}
 		}
-	} else {
-		// Old format (0.2) - single track only
-		track, _ := v["track"].(string)
-		if !valid(track, "constant") {
-			track = "Production"
-		}
-		tracks[track] = default_version
 	}
 
 	return tracks, default_track, default_version, true

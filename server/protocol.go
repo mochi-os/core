@@ -137,18 +137,9 @@ func (h *Headers) verify(challenge []byte) bool {
 
 	sig := base58_decode(h.Signature, "")
 
-	// Try with FromApp and Services (Phase 2: included in signature)
 	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Services, challenge)
 	if ed25519.Verify(public, signable, sig) {
 		return true
-	}
-
-	// Fallback: try without FromApp/Services for messages signed by Phase 1 servers
-	if h.FromApp != "" || len(h.Services) > 0 {
-		signable = signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, "", h.ID, h.AckID, nil, challenge)
-		if ed25519.Verify(public, signable, sig) {
-			return true
-		}
 	}
 
 	info("Incorrect signature")

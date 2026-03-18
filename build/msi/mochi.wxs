@@ -19,7 +19,6 @@
         <?ifndef var.WIXL ?>
         <UIRef Id="WixUI_InstallDir" />
         <UIRef Id="WixUI_ErrorProgressText" />
-        <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
         <?endif ?>
 
         <Feature Id="ProductFeature" Title="Mochi Server" Level="1">

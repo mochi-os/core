@@ -275,7 +275,7 @@ func p2p_stream(peer string) *Stream {
 
 	s, err := p2p_me.NewStream(p2p_context, p, "/mochi/1")
 	if err != nil {
-		warn("P2P unable to create stream to %q: %v'", peer, err)
+		info("P2P unable to create stream to %q: %v", peer, err)
 		return nil
 	}
 

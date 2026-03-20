@@ -111,14 +111,38 @@ func api_qid_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	labels := make(map[string]string)
 	var misses []string
 
-	// Check cache
-	for _, qid := range qids {
-		row, err := db.row("select label from qids where qid=? and lang=?", qid, lang)
+	// Batch cache lookup
+	if len(qids) == 1 {
+		row, err := db.row("select label from qids where qid=? and lang=?", qids[0], lang)
 		if err == nil && row != nil {
 			label, _ := row["label"].(string)
-			labels[qid] = label
+			labels[qids[0]] = label
 		} else {
-			misses = append(misses, qid)
+			misses = append(misses, qids[0])
+		}
+	} else {
+		placeholders := make([]string, len(qids))
+		args := make([]any, 0, len(qids)+1)
+		for i, qid := range qids {
+			placeholders[i] = "?"
+			args = append(args, qid)
+		}
+		args = append(args, lang)
+		rows, err := db.rows("select qid, label from qids where qid in ("+strings.Join(placeholders, ",")+") and lang=?", args...)
+		cached := make(map[string]string)
+		if err == nil {
+			for _, row := range rows {
+				qid, _ := row["qid"].(string)
+				label, _ := row["label"].(string)
+				cached[qid] = label
+			}
+		}
+		for _, qid := range qids {
+			if label, ok := cached[qid]; ok {
+				labels[qid] = label
+			} else {
+				misses = append(misses, qid)
+			}
 		}
 	}
 

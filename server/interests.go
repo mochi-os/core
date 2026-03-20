@@ -297,14 +297,22 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			text, _ := row["text"].(string)
 			cached_at, _ := row["number"].(int64)
 
-			// Check staleness: regenerate if older than 24 hours
-			if text != "" && now()-cached_at < 86400 {
+			if text != "" {
+				// Fresh cache: return immediately
+				if now()-cached_at < 86400 {
+					return sl.String(text), nil
+				}
+				// Stale cache: return stale value, regenerate in background
+				go func() {
+					summary := interests_generate_summary(user, db)
+					db.exec("replace into settings (key, text, number) values ('interest_summary', ?, ?)", summary, now())
+				}()
 				return sl.String(text), nil
 			}
 		}
 	}
 
-	// Regenerate summary
+	// No cached summary or force=True: regenerate synchronously
 	summary := interests_generate_summary(user, db)
 	db.exec("replace into settings (key, text, number) values ('interest_summary', ?, ?)", summary, now())
 

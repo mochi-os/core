@@ -230,7 +230,7 @@ func web_shell_token(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	c.JSON(http.StatusOK, gin.H{"token": token, "app": a.id})
 }
 
 // web_is_iframe_request returns true if the request is from a sandboxed iframe.

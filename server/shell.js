@@ -90,6 +90,10 @@
             if (!r.ok) throw new Error('Token fetch failed');
             return r.json();
         }).then(function(data) {
+            if (data.app) {
+                currentAppId = data.app;
+                config.appId = data.app;
+            }
             return data.token || '';
         });
     }

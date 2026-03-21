@@ -1917,14 +1917,35 @@ func (e *Event) attachment_event_data() {
 
 	//debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
 
-	// Only serve if we own this attachment (entity is empty)
+	// Resolve the file path — fetch from the original uploader if needed
+	base := attachment_files_base(e.user.ID, e.app.id)
+	filename := attachment_filename(att.ID, att.Name)
+	path := filepath.Join(base, filename)
+
 	if att.Entity != "" {
-		e.stream.write(map[string]string{"status": "403"})
-		return
+		// We don't own this attachment — file may not be local.
+		// Try to fetch from the entity that uploaded it (e.g., subscriber
+		// uploaded to a project we own; we have metadata but not the file).
+		if !file_exists(path) {
+			from := ""
+			if e.user.Identity != nil {
+				from = e.user.Identity.ID
+			}
+			cached := attachment_fetch_remote(e.app, from, att.Entity, id)
+			if cached == "" {
+				e.stream.write(map[string]string{"status": "404"})
+				return
+			}
+			// Store locally so future requests don't need the uploader online
+			file_mkdir(base)
+			file_copy(cached, path)
+			e.db.exec("update attachments set entity = '' where id = ?", id)
+			info("Attachment %s fetched from uploader and stored locally", id)
+		}
+		// File now exists locally — serve it below
 	}
 
 	// Open file using os.Root for traversal protection
-	base := attachment_files_base(e.user.ID, e.app.id)
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		warn("attachment_event_data: unable to open root, returning 404")
@@ -1933,11 +1954,8 @@ func (e *Event) attachment_event_data() {
 	}
 	defer root.Close()
 
-	filename := attachment_filename(att.ID, att.Name)
-
 	// Serve thumbnail if requested and the file is an image
 	if thumbnail && is_image(att.Name) {
-		path := filepath.Join(base, filename)
 		thumb, err := thumbnail_create(path)
 		if err == nil && thumb != "" {
 			f, err := os.Open(thumb)

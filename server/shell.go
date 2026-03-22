@@ -112,6 +112,12 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		return
 	}
 
+	// Resolve app path to entity ID so config.appId is canonical from the start
+	// (avoids race where subscribe-notifications uses path name before fetchToken completes)
+	if a := app_for_path(user, app_id); a != nil {
+		app_id = a.id
+	}
+
 	// Get menu app to resolve its asset paths
 	menu := shell_menu_app(user)
 

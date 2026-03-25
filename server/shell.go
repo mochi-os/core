@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-
 // shell_iframe_shim is injected into app HTML served inside sandboxed iframes.
 // It provides in-memory fallbacks for APIs forbidden by the sandbox:
 // - document.cookie (getter/setter)
@@ -62,7 +61,6 @@ var shell_html string
 
 //go:embed shell.js
 var shell_js string
-
 
 // web_should_serve_shell returns true when the request should get the shell page
 // instead of the app HTML directly
@@ -241,9 +239,9 @@ func web_shell_token(c *gin.Context) {
 
 // web_is_iframe_request returns true if the request is from a sandboxed iframe.
 // Detects two cases:
-// 1. Shell sets iframe.src → browser sends Sec-Fetch-Dest: iframe
-// 2. User clicks a link inside the iframe → browser sends Sec-Fetch-Dest: document
-//    with Sec-Fetch-Site: cross-site (opaque origin ≠ server origin)
+//  1. Shell sets iframe.src → browser sends Sec-Fetch-Dest: iframe
+//  2. User clicks a link inside the iframe → browser sends Sec-Fetch-Dest: document
+//     with Sec-Fetch-Site: cross-site (opaque origin ≠ server origin)
 func web_is_iframe_request(c *gin.Context) bool {
 	dest := c.GetHeader("Sec-Fetch-Dest")
 	if dest == "iframe" {

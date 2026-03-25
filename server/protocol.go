@@ -11,16 +11,16 @@ const max_id_length = 64
 
 // Signable portion of headers
 type SignableHeaders struct {
-	Type     string   `cbor:"type,omitempty"`
-	From     string   `cbor:"from,omitempty"`
-	To       string   `cbor:"to,omitempty"`
-	Service  string   `cbor:"service,omitempty"`
-	Event    string   `cbor:"event,omitempty"`
-	FromApp  string   `cbor:"from-app,omitempty"`
-	Services []string `cbor:"from-services,omitempty"`
-	ID       string   `cbor:"id,omitempty"`
-	AckID    string   `cbor:"ack,omitempty"`
-	Challenge []byte  `cbor:"challenge,omitempty"`
+	Type      string   `cbor:"type,omitempty"`
+	From      string   `cbor:"from,omitempty"`
+	To        string   `cbor:"to,omitempty"`
+	Service   string   `cbor:"service,omitempty"`
+	Event     string   `cbor:"event,omitempty"`
+	FromApp   string   `cbor:"from-app,omitempty"`
+	Services  []string `cbor:"from-services,omitempty"`
+	ID        string   `cbor:"id,omitempty"`
+	AckID     string   `cbor:"ack,omitempty"`
+	Challenge []byte   `cbor:"challenge,omitempty"`
 }
 
 // Create signable headers

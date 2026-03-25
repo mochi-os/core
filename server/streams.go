@@ -153,6 +153,18 @@ func (s *Stream) close_write() {
 	}
 }
 
+// Close only the read direction of a stream (if supported), otherwise close entirely
+func (s *Stream) close_read() {
+	if s.reader == nil {
+		return
+	}
+	if cr, ok := s.reader.(interface{ CloseRead() error }); ok {
+		cr.CloseRead()
+	} else {
+		s.reader.Close()
+	}
+}
+
 // Close closes both the reader and writer of the stream
 func (s *Stream) close() {
 	if s.reader != nil {
@@ -548,25 +560,25 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// debug("Stream %d reading rest of stream to file", s.id)
 
 	if len(args) != 1 {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "syntax: <file: string>")
 	}
 
 	user := t.Local("user").(*User)
 	if user == nil {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "no user")
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "no app")
 	}
 
 	file, ok := sl.AsString(args[0])
 	if !ok || !valid(file, "filepath") {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "invalid file %q", file)
 	}
 
@@ -574,7 +586,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	current := dir_size(user_storage_dir(user))
 	remaining := file_max_storage - current
 	if remaining <= 0 {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "storage limit exceeded")
 	}
 
@@ -583,7 +595,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	file_mkdir(base)
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "unable to access files directory")
 	}
 	defer root.Close()
@@ -592,7 +604,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	dir := filepath.Dir(file)
 	if dir != "." && dir != "" {
 		if err := root_mkdir_all(root, dir); err != nil {
-			s.reader.Close()
+			s.close_read()
 			return sl_error(fn, "unable to create directory")
 		}
 	}
@@ -600,7 +612,7 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// Open file within root for writing
 	f, err := root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "unable to write file")
 	}
 
@@ -614,11 +626,11 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	f.Close()
 
 	if err != nil {
-		s.reader.Close()
+		s.close_read()
 		return sl_error(fn, "unable to save file %q", file)
 	}
 
-	s.reader.Close()
+	s.close_read()
 	// debug("Stream %d read %d bytes to file", s.id, n)
 	return sl.MakeInt64(n), nil
 }

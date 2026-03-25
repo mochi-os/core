@@ -1130,7 +1130,7 @@ func TestAllDefinedPermissionRestriction(t *testing.T) {
 		"users/read":         true,
 		"settings/write":     true,
 		"permissions/manage": true,
-		"webpush/send":      true,
+		"webpush/send":       true,
 	}
 
 	for perm := range standardPerms {

@@ -12,6 +12,7 @@
     var currentAppPath = getAppNameFromPath(window.location.pathname);
     var tokenRefreshTimer = null;
     var navigating = false; // true during cross-app navigation (blocks storage requests)
+    var progressBar = document.getElementById('shell-progress');
 
     // --- Sidebar state ---
     // Persisted across app switches so the sidebar stays collapsed/expanded.
@@ -38,6 +39,9 @@
             staleIframe.parentNode.removeChild(staleIframe);
         }
 
+        // Show loading indicator
+        if (progressBar) progressBar.style.display = '';
+
         // Dim and disable the current iframe while the new one loads
         staleIframe = iframe;
         staleIframe.style.opacity = '0.6';
@@ -57,6 +61,7 @@
 
     // Called when the new iframe sends ready — complete the visual transition
     function completeTransition() {
+        if (progressBar) progressBar.style.display = 'none';
         iframe.style.visibility = '';
         if (staleIframe && staleIframe.parentNode) {
             staleIframe.parentNode.removeChild(staleIframe);

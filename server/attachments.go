@@ -686,7 +686,7 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	current := dir_size(user_storage_dir(owner))
 	remaining := file_max_storage - current
 	if remaining <= 0 {
-		stream.reader.Close()
+		stream.close_read()
 		return sl_error(fn, "storage limit exceeded")
 	}
 
@@ -701,7 +701,7 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	file_mkdir(base)
 	root, err := os.OpenRoot(base)
 	if err != nil {
-		stream.reader.Close()
+		stream.close_read()
 		return sl_error(fn, "unable to access files directory")
 	}
 	defer root.Close()
@@ -721,13 +721,13 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	// Write to file within root
 	f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		stream.reader.Close()
+		stream.close_read()
 		return sl_error(fn, "failed to write attachment")
 	}
 
 	size, err := io.Copy(f, limited)
 	f.Close()
-	stream.reader.Close()
+	stream.close_read()
 
 	if err != nil {
 		root.Remove(filename)

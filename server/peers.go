@@ -557,7 +557,7 @@ func api_peer_connect_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "server returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, url_max_response_size))
 	if err != nil {
 		return sl_error(fn, "failed to read response: %v", err)
 	}

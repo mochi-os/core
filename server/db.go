@@ -510,7 +510,8 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	// Block PRAGMA statements from Starlark to prevent overriding server-set limits
-	if len(query) >= 6 && strings.EqualFold(query[:6], "PRAGMA") {
+	trimmed := strings.TrimSpace(query)
+	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "PRAGMA") {
 		return sl_error(fn, "PRAGMA statements are not allowed")
 	}
 

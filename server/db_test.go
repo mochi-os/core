@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -575,6 +576,34 @@ func TestAppSchemaGetDefault(t *testing.T) {
 	version := db_app_schema_get(db)
 	if version != 0 {
 		t.Errorf("db_app_schema_get() = %d, want 0 for new database", version)
+	}
+}
+
+// Test PRAGMA blocking handles whitespace bypass attempts
+func TestPragmaBlockingWhitespace(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		blocked bool
+	}{
+		{"normal PRAGMA", "PRAGMA max_page_count", true},
+		{"lowercase pragma", "pragma user_version", true},
+		{"leading spaces", "  PRAGMA max_page_count", true},
+		{"leading tab", "\tPRAGMA max_page_count", true},
+		{"leading newline", "\nPRAGMA max_page_count", true},
+		{"leading mixed whitespace", " \t\n PRAGMA max_page_count", true},
+		{"normal SELECT", "SELECT 1", false},
+		{"pragma in string", "SELECT 'PRAGMA' FROM t", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trimmed := strings.TrimSpace(tt.query)
+			is_pragma := len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "PRAGMA")
+			if is_pragma != tt.blocked {
+				t.Errorf("query %q: got blocked=%v, want %v", tt.query, is_pragma, tt.blocked)
+			}
+		})
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"html"
 	"io"
 	"net/http"
 	"time"
@@ -1168,6 +1169,9 @@ func account_test_mcp(url, token string) AccountTestResult {
 	if url == "" {
 		return AccountTestResult{Success: false, Message: "No server URL"}
 	}
+	if url_is_cloud_metadata(url) {
+		return AccountTestResult{Success: false, Message: "URL not allowed"}
+	}
 
 	// Send MCP initialize request
 	payload, _ := json.Marshal(map[string]any{
@@ -1229,6 +1233,9 @@ func account_test_ntfy(server, topic, token string) AccountTestResult {
 	}
 
 	url := server + "/" + topic
+	if url_is_cloud_metadata(url) {
+		return AccountTestResult{Success: false, Message: "URL not allowed"}
+	}
 	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte("Mochi test notification")))
 	req.Header.Set("Title", "Mochi test notification")
 	if token != "" {
@@ -1256,6 +1263,9 @@ func account_test_ntfy(server, topic, token string) AccountTestResult {
 func account_test_url(url, secret string) AccountTestResult {
 	if url == "" {
 		return AccountTestResult{Success: false, Message: "No URL configured"}
+	}
+	if url_is_cloud_metadata(url) {
+		return AccountTestResult{Success: false, Message: "URL not allowed"}
 	}
 
 	// Send a test notification
@@ -1431,7 +1441,9 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 // account_deliver_email sends a notification via email
 func account_deliver_email(address, title, body, link string) bool {
 	text := title + "\n\n" + body
-	html := `<!DOCTYPE html>
+	escaped_title := html.EscapeString(title)
+	escaped_body := html.EscapeString(body)
+	markup := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -1444,8 +1456,8 @@ func account_deliver_email(address, title, body, link string) bool {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 32px 40px;">
-              <h1 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #18181b;">` + title + `</h1>
-              <p style="margin: 0; font-size: 15px; color: #3f3f46; line-height: 1.5;">` + body + `</p>
+              <h1 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #18181b;">` + escaped_title + `</h1>
+              <p style="margin: 0; font-size: 15px; color: #3f3f46; line-height: 1.5;">` + escaped_body + `</p>
             </td>
           </tr>
         </table>
@@ -1454,7 +1466,7 @@ func account_deliver_email(address, title, body, link string) bool {
   </table>
 </body>
 </html>`
-	email_send_multipart(address, title, text, html)
+	email_send_multipart(address, title, text, markup)
 	return true
 }
 
@@ -1494,6 +1506,9 @@ func account_deliver_ntfy(server, topic, token, title, body, link string) bool {
 	}
 
 	url := server + "/" + topic
+	if url_is_cloud_metadata(url) {
+		return false
+	}
 	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte(body)))
 	req.Header.Set("Title", title)
 	if link != "" {
@@ -1515,7 +1530,7 @@ func account_deliver_ntfy(server, topic, token, title, body, link string) bool {
 
 // account_deliver_url sends a notification to an external URL
 func account_deliver_url(url, secret, app, category, object, title, body, link string) bool {
-	if url == "" {
+	if url == "" || url_is_cloud_metadata(url) {
 		return false
 	}
 

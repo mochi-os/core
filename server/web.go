@@ -727,7 +727,6 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	return content
 }
 
-
 // Serve an HTML file with routing meta tags injected after <head>
 func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
 	// When shell is active and this is an iframe request, serve static HTML
@@ -1217,6 +1216,22 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
+// Serve robots.txt
+func web_robots(c *gin.Context) {
+	c.String(http.StatusOK, "User-agent: *\nAllow: /\n\nSitemap: https://%s/sitemap.xml\n", c.Request.Host)
+}
+
+// Serve sitemap.xml
+func web_sitemap(c *gin.Context) {
+	c.Data(http.StatusOK, "application/xml; charset=utf-8", []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://`+c.Request.Host+`/</loc>
+  </url>
+</urlset>
+`))
+}
+
 // Start the web server
 func web_start() {
 	listen := ini_string("web", "listen", "")
@@ -1258,6 +1273,8 @@ func web_start() {
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
+	r.GET("/robots.txt", web_robots)
+	r.GET("/sitemap.xml", web_sitemap)
 	r.GET("/_/websocket", websocket_connection)
 	r.POST("/_/token", web_shell_token)
 

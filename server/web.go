@@ -191,7 +191,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// no cookies (opaque origin). These files are safe to serve without auth —
 	// they're already public static assets. The actual API auth is handled via
 	// Bearer tokens delivered through postMessage.
-	shell_static := aa.File != "" || aa.Files != "" && aa.filepath != "" || web_is_iframe_request(c)
+	shell_static := aa.File != "" || (aa.Files != "" && aa.filepath != "") || (web_is_iframe_request(c) && (aa.File != "" || aa.Files != ""))
 
 	// Require authentication for non-public actions
 	if user == nil && !aa.Public {

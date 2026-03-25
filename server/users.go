@@ -130,6 +130,10 @@ func user_by_id(id int) *User {
 		return nil
 	}
 
+	if u.Status == "suspended" {
+		return nil
+	}
+
 	u.Preferences = user_preferences_load(&u)
 	u.Identity = u.identity()
 	if u.Identity == nil {

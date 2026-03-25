@@ -227,9 +227,9 @@ func stream_receive(s *Stream, version int, peer string) {
 		return
 	}
 
-	// Verify signature (challenge is nil for pubsub, which allows unsigned broadcasts)
+	// Verify signature — challenge is nil for pubsub, non-nil for direct streams.
 	// For anonymous events, allow through with cleared From header - event handler checks Anonymous flag
-	if s.challenge != nil && !h.verify(s.challenge) {
+	if !h.verify(s.challenge) {
 		h.From = ""
 	}
 

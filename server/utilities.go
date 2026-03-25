@@ -336,8 +336,9 @@ func url_is_cloud_metadata(url string) bool {
 		strings.Contains(url, "metadata.google.internal")
 }
 
-// Make an HTTP request to a URL
-func url_request(method string, url string, options map[string]string, headers map[string]string, body any) (*http.Response, error) {
+// Make an HTTP request to a URL.
+// If allowed_domains is non-empty, redirect targets are validated against them.
+func url_request(method string, url string, options map[string]string, headers map[string]string, body any, allowed_domains ...string) (*http.Response, error) {
 	if url_is_cloud_metadata(url) {
 		return nil, fmt.Errorf("access to cloud metadata service is blocked")
 	}
@@ -383,6 +384,31 @@ func url_request(method string, url string, options map[string]string, headers m
 	}
 
 	c := &http.Client{Timeout: timeout}
+
+	// When allowed domains are specified, validate redirect targets
+	if len(allowed_domains) > 0 {
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if url_is_cloud_metadata(req.URL.String()) {
+				return fmt.Errorf("redirect to cloud metadata service is blocked")
+			}
+			redirect_host := strings.ToLower(req.URL.Hostname())
+			matched := false
+			for _, domain := range allowed_domains {
+				if domain_matches(domain, redirect_host) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("redirect to %s not allowed by granted url permissions", redirect_host)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		}
+	}
+
 	return c.Do(r)
 }
 
@@ -404,7 +430,7 @@ func valid(s string, match string) bool {
 	case "entity":
 		match = "^[\\w]{49,51}$"
 	case "filename":
-		match = "^[0-9a-zA-Z -_~()][0-9a-zA-Z -_~().]{0,254}$"
+		match = "^[0-9a-zA-Z _~()-][0-9a-zA-Z _~().-]{0,254}$"
 	case "filepath":
 		// Allow alphanumeric and underscore at start (not . to prevent hidden files/traversal)
 		// Allow common filename chars but not consecutive dots (..)
@@ -417,7 +443,7 @@ func valid(s string, match string) bool {
 	case "function":
 		match = "^[0-9a-zA-Z_]{1,100}$"
 	case "id":
-		match = "^[0-9a-z]{32}"
+		match = "^[0-9a-z]{32}$"
 	case "integer":
 		match = "^(-)?\\d{1,12}$"
 	case "numeric":

@@ -518,7 +518,7 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 
 	src_path, ok := sl.AsString(args[2])
-	if !ok || src_path == "" {
+	if !ok || src_path == "" || !valid(src_path, "filepath") {
 		return sl_error(fn, "invalid path")
 	}
 
@@ -549,6 +549,9 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	provided_id := ""
 	if len(args) > 7 {
 		provided_id, _ = sl.AsString(args[7])
+		if provided_id != "" && !valid(provided_id, "id") {
+			return sl_error(fn, "invalid id")
+		}
 	}
 
 	app := t.Local("app").(*App)
@@ -573,11 +576,15 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 	db.attachments_setup()
 
-	// Resolve source path (relative to app data dir)
-	full_src_path := api_file_path(owner, app, src_path)
+	// Open source file using os.Root for traversal protection
+	src_base := api_file_base(owner, app)
+	src_root, err := os.OpenRoot(src_base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer src_root.Close()
 
-	// Get file size
-	fi, err := os.Stat(full_src_path)
+	fi, err := src_root.Stat(src_path)
 	if err != nil {
 		return sl_error(fn, "unable to read file: %v", err)
 	}
@@ -600,8 +607,12 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		id = uid()
 	}
 
-	// Move file to attachment location
-	dest_path := filepath.Join(data_dir, attachment_path(owner.ID, app.id, id, name))
+	// Move file to attachment location using os.Root for traversal protection
+	full_src_path := api_file_path(owner, app, src_path)
+	dest_base := attachment_files_base(owner.ID, app.id)
+	file_mkdir(dest_base)
+	dest_filename := attachment_filename(id, name)
+	dest_path := filepath.Join(dest_base, dest_filename)
 	file_move(full_src_path, dest_path)
 
 	// Create record using shared helper

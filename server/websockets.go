@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"net/url"
 	"nhooyr.io/websocket"
 	"strings"
 	"sync"
@@ -42,7 +43,16 @@ func websocket_connection(c *gin.Context) {
 		}
 	}
 
-	ws, err := websocket.Accept(c.Writer, c.Request, nil)
+	// Validate origin matches request host to prevent cross-origin WebSocket hijacking
+	origin := c.GetHeader("Origin")
+	if origin != "" {
+		if parsed, err := url.Parse(origin); err != nil || parsed.Host != c.Request.Host {
+			c.Status(403)
+			return
+		}
+	}
+
+	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}

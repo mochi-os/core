@@ -481,6 +481,22 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
+	// Collect all granted url: domains for redirect validation
+	var url_domains []string
+	if app != nil {
+		user, _ := t.Local("user").(*User)
+		if user != nil && !app_is_internal(app) {
+			db := db_user(user, "user")
+			db.permissions_setup()
+			rows, _ := db.rows("select object from permissions where app=? and permission='url' and granted=1", app.id)
+			for _, row := range rows {
+				if obj, ok := row["object"].(string); ok {
+					url_domains = append(url_domains, obj)
+				}
+			}
+		}
+	}
+
 	var options map[string]string
 	if len(args) > 1 {
 		options = sl_decode_strings(args[1])
@@ -497,7 +513,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	parts := strings.Split(fn.Name(), ".")
-	r, err := url_request(parts[len(parts)-1], url, options, headers, body)
+	r, err := url_request(parts[len(parts)-1], url, options, headers, body, url_domains...)
 	if err != nil {
 		return sl_encode(map[string]any{"status": 0, "headers": map[string]string{}, "body": ""}), nil
 	}

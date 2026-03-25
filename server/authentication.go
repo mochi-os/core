@@ -266,6 +266,9 @@ func jwt_verify(token_string string) (int, string, error) {
 	secret := []byte(s.Secret)
 	var claims mochi_claims
 	tkn, err := jwt.ParseWithClaims(token_string, &claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return secret, nil
 	})
 	if err != nil {

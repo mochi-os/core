@@ -319,6 +319,20 @@ func TestValid(t *testing.T) {
 		{"name with angle brackets", "User<script>", "name", false},
 		{"name with parens", "John (Jr)", "name", true},
 
+		// id pattern (exactly 32 lowercase hex chars)
+		{"id valid", "abcdef01234567890abcdef012345678", "id", true},
+		{"id too short", "abcdef0123456789", "id", false},
+		{"id with trailing content", "abcdef01234567890abcdef012345678../../etc", "id", false},
+		{"id uppercase", "ABCDEF01234567890ABCDEF012345678", "id", false},
+
+		// filename pattern (no angle brackets or backslash)
+		{"filename valid", "hello-world.txt", "filename", true},
+		{"filename with spaces", "my file (1).txt", "filename", true},
+		{"filename with tilde", "~backup.txt", "filename", true},
+		{"filename angle brackets", "file<script>.txt", "filename", false},
+		{"filename backslash", "file\\path.txt", "filename", false},
+		{"filename caret", "file^name.txt", "filename", false},
+
 		// Control characters should fail all patterns
 		{"control chars", "hello\x00world", "constant", false},
 		{"control chars name", "hello\x01world", "name", false},

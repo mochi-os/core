@@ -524,9 +524,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	// Determine which user's database to use based on authentication and routing context.
 	// - Not logged in + entity: owner's database (viewing public content)
 	// - Not logged in + no entity: error (can't determine owner)
-	// - Logged in + domain routing + entity: owner's database (accessing via custom domain)
-	// - Logged in + domain routing + no entity: error (can't determine owner)
-	// - Logged in + not domain routing: user's database (user's own actions)
+	// - Logged in + entity owned by other user: owner's database (viewing/editing their content)
+	// - Logged in + domain routing: owner's database (accessing via custom domain)
+	// - Logged in + own content: user's database (user's own actions)
 	owner := t.Local("owner").(*User)
 	user := t.Local("user").(*User)
 
@@ -547,6 +547,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		} else {
 			return sl_error(fn, "no user context available")
 		}
+	} else if owner != nil && owner.ID != user.ID {
+		// Logged in but accessing another user's entity - use owner's database
+		db_user = owner
 	} else if domain_routing {
 		// Logged in with domain routing
 		if owner != nil {

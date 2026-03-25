@@ -135,7 +135,7 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	page := shell_html
 
 	// Inject values
-	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(c.Request.URL.Path), 1)
+	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(c.Request.URL.RequestURI()), 1)
 	page = strings.Replace(page, "{{APP_ID}}", escape_attr(app_id), 1)
 	page = strings.Replace(page, "{{USER_NAME}}", escape_attr(name), 1)
 	page = strings.Replace(page, "{{MENU_TOKEN}}", menu_token, 1)

@@ -411,6 +411,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		s.set("host", c.Request.Host)
 		s.set("user", user)
 		s.set("owner", owner)
+		if e != nil {
+			s.set("route_entity", e.ID)
+		}
 
 		result, err := s.call(aa.Function, sl.Tuple{&action})
 		if err != nil {
@@ -1406,7 +1409,16 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		}
 	}
 
-	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", att.Name))
+	// Only allow inline display for safe content types; force download for everything else
+	// to prevent stored XSS via uploaded HTML/SVG files
+	ct := attachment_content_type(att.Name)
+	disposition := "attachment"
+	if (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") ||
+		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
+		ct == "application/pdf" {
+		disposition = "inline"
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, att.Name))
 	c.File(path)
 	return true
 }

@@ -267,6 +267,11 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "database error: %v", err)
 	}
 	if !from_valid {
+		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+			from_valid = true
+		}
+	}
+	if !from_valid {
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -328,6 +333,11 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
+	}
+	if !from_valid {
+		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+			from_valid = true
+		}
 	}
 	if !from_valid {
 		return sl_error(fn, "invalid from header")

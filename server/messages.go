@@ -280,6 +280,11 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "database error: %v", err)
 	}
 	if !from_valid {
+		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+			from_valid = true
+		}
+	}
+	if !from_valid {
 		info("message.send: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
 		return sl_error(fn, "invalid from header")
 	}
@@ -359,6 +364,11 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "database error: %v", err)
 	}
 	if !from_valid {
+		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+			from_valid = true
+		}
+	}
+	if !from_valid {
 		info("message.send.peer: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
 		return sl_error(fn, "invalid from header")
 	}
@@ -432,6 +442,11 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
 		if err != nil {
 			return sl_error(fn, "database error: %v", err)
+		}
+		if !from_valid {
+			if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+				from_valid = true
+			}
 		}
 		if !from_valid {
 			return sl_error(fn, "invalid from header")

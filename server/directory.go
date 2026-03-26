@@ -206,7 +206,16 @@ func directory_manager() {
 // Publish a directory entry to the entire network
 func directory_publish(e *Entity, allow_queue bool) {
 	m := message(e.ID, "", "directory", "publish")
-	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data)
+
+	// Include created timestamp so bootstrap peers can propagate it
+	created := now()
+	db := db_open("db/directory.db")
+	var d Directory
+	if db.scan(&d, "select created from directory where id=?", e.ID) {
+		created = d.Created
+	}
+
+	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data, "created", i64toa(created))
 	m.publish(allow_queue)
 }
 
@@ -245,7 +254,8 @@ func directory_publish_event(e *Event) {
 		return
 	}
 
-	created := now
+	db := db_open("db/directory.db")
+	var created int64
 
 	if e.from == "" {
 		if !peer_is_bootstrap(e.peer) {
@@ -253,11 +263,24 @@ func directory_publish_event(e *Event) {
 			return
 		}
 
-		created = atoi(e.get("created", ""), created)
+		// Trust created from bootstrap peer
+		created = atoi(e.get("created", ""), now)
 
 	} else if e.from != id {
 		info("Directory dropping event from incorrect sender: %q!=%q", id, e.from)
 		return
+	} else {
+		// Non-bootstrap peer: preserve created unless name changed or entry is new
+		var existing Directory
+		if db.scan(&existing, "select created, name from directory where id=?", id) {
+			if name != existing.Name {
+				created = now
+			} else {
+				created = existing.Created
+			}
+		} else {
+			created = now
+		}
 	}
 
 	// Don't let remote peers override location for local entities
@@ -267,7 +290,6 @@ func directory_publish_event(e *Event) {
 		location = "p2p/" + p2p_id
 	}
 
-	db := db_open("db/directory.db")
 	db.exec("replace into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
 
 	go queue_check_entity(id)

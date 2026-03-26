@@ -37,6 +37,7 @@ var (
 		"exists":  sl.NewBuiltin("mochi.db.exists", api_db_query),
 		"row":     sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":    sl.NewBuiltin("mochi.db.rows", api_db_query),
+		"table":   sl.NewBuiltin("mochi.db.table", api_db_table),
 	})
 )
 
@@ -613,4 +614,66 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	return sl_error(fn, "invalid database query %q", fn.Name())
+}
+
+// mochi.db.table(name) -> list: Return column info for a table via PRAGMA table_info
+func api_db_table(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: mochi.db.table(name)")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok || len(name) == 0 {
+		return sl_error(fn, "table name must be a non-empty string")
+	}
+	// Validate table name: alphanumeric and underscores only
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return sl_error(fn, "invalid table name %q", name)
+		}
+	}
+
+	owner := t.Local("owner").(*User)
+	user := t.Local("user").(*User)
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "unknown app")
+	}
+
+	var db_user *User
+	var domain_routing bool
+
+	if action := t.Local("action"); action != nil {
+		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
+			domain_routing = a.domain.route.context != ""
+		}
+	}
+
+	if user == nil {
+		if owner != nil {
+			db_user = owner
+		} else {
+			return sl_error(fn, "no user context available")
+		}
+	} else if owner != nil && owner.ID != user.ID {
+		db_user = owner
+	} else if domain_routing {
+		if owner != nil {
+			db_user = owner
+		} else {
+			return sl_error(fn, "no owner context for domain routing")
+		}
+	} else {
+		db_user = user
+	}
+
+	db := db_app(db_user, app)
+	if db == nil {
+		return sl_error(fn, "app has no database configured")
+	}
+
+	rows, err := db.rows("PRAGMA table_info(" + name + ")")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	return sl_encode(rows), nil
 }

@@ -160,7 +160,6 @@ func directory_download_event(e *Event) {
 		warn("Database error loading directory updates: %v", err)
 		return
 	}
-	debug("Directory found %d updates to send", len(results))
 	for _, d := range results {
 		debug("Directory sending %s %q", d.ID, d.Name)
 		err = e.stream.write(d)

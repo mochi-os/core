@@ -109,7 +109,7 @@ func p2p_pubsubs() {
 				debug("P2P pubsub rate limited peer %q", peer)
 				continue
 			}
-			debug("P2P received pubsub event from peer %q", peer)
+			//debug("P2P received pubsub event from peer %q", peer)
 			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
 			peer_discovered(peer)
 			peer_connect(peer)

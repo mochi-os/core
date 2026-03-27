@@ -474,7 +474,7 @@ func valid(s string, match string) bool {
 	case "privacy":
 		match = "^(public|private)$"
 	case "text":
-		if len(s) > 10000 {
+		if len(s) > 1000000 {
 			return false
 		}
 		return true

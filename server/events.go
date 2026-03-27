@@ -65,7 +65,7 @@ func (e *Event) route() error {
 	if e.to != "" {
 		e.user = user_owning_entity(e.to)
 		if e.user == nil {
-			debug("Event dropping to unknown user %q", e.to)
+			//debug("Event dropping to unknown user %q", e.to)
 			return fmt.Errorf("unknown user %q", e.to)
 		}
 	}

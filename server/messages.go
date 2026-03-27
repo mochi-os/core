@@ -164,7 +164,7 @@ func (m *Message) send_work() {
 	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 
 	if peer == "" {
-		debug("Message unable to determine peer, will retry from queue")
+		//debug("Message unable to determine peer, will retry from queue")
 		return
 	}
 
@@ -173,7 +173,7 @@ func (m *Message) send_work() {
 
 	s := peer_stream(peer)
 	if s == nil {
-		debug("Unable to open stream to peer, will retry from queue")
+		//debug("Unable to open stream to peer, will retry from queue")
 		queue_fail(m.ID, "unable to open stream")
 		return
 	}

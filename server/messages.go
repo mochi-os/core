@@ -226,7 +226,7 @@ func (m *Message) send_work() {
 	}
 
 	if h.msg_type() == "ack" && h.AckID == m.ID {
-		debug("Message %q received ACK", m.ID)
+		//debug("Message %q received ACK", m.ID)
 		queue_ack(m.ID)
 		return
 	}

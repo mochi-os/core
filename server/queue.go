@@ -101,7 +101,7 @@ func queue_fail(id string, err string) {
 		// Schedule retry
 		next := queue_next_retry(attempts)
 		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?", attempts, next, err, id)
-		debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
+		//debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
 	}
 }
 

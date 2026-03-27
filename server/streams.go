@@ -213,7 +213,7 @@ func stream_receive(s *Stream, version int, peer string) {
 			info("Stream %d ACK failed signature verification", s.id)
 			return
 		}
-		// debug("Stream %d received ACK for ID %q", s.id, h.AckID)
+		//debug("Stream %d received ACK for ID %q", s.id, h.AckID)
 		queue_ack(h.AckID)
 		return
 	}

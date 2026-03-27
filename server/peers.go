@@ -149,7 +149,7 @@ func peer_by_id(id string) *Peer {
 		return nil
 	}
 	if len(ps) == 0 {
-		debug("Peer %q not found in database", id)
+		//debug("Peer %q not found in database", id)
 		return nil
 	}
 	for _, a := range ps {

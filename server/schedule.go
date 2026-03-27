@@ -292,6 +292,7 @@ func schedule_run_event(se *ScheduledEvent) {
 		se:     se,
 		data:   data,
 		source: "schedule",
+		user:   user,
 	}
 
 	// Run the handler
@@ -309,10 +310,11 @@ type ScheduledEventWrapper struct {
 	se     *ScheduledEvent
 	data   map[string]any
 	source string
+	user   *User
 }
 
 func (e *ScheduledEventWrapper) AttrNames() []string {
-	return []string{"content", "created", "data", "due", "from", "header", "headers", "source"}
+	return []string{"content", "created", "data", "due", "from", "header", "headers", "source", "user"}
 }
 
 func (e *ScheduledEventWrapper) Attr(name string) (sl.Value, error) {
@@ -333,6 +335,11 @@ func (e *ScheduledEventWrapper) Attr(name string) (sl.Value, error) {
 		return sl.None, nil
 	case "source":
 		return sl.String(e.source), nil
+	case "user":
+		if e.user != nil {
+			return e.user, nil
+		}
+		return sl.None, nil
 	default:
 		return nil, nil
 	}

@@ -148,10 +148,8 @@ func directory_download_event(e *Event) {
 	if e.stream != nil {
 		remote = e.stream.remote
 	}
-	debug("Directory received download request from peer %q at %q, version %q", e.peer, remote, version)
-
 	start := atoi(e.get("start", ""), 0)
-	debug("Directory sending updates since %d", start)
+	debug("Directory received download request from peer %q at %q, version %q, since %s", e.peer, remote, version, time_local(nil, start))
 
 	var results []Directory
 	db := db_open("db/directory.db")
@@ -161,15 +159,13 @@ func directory_download_event(e *Event) {
 		return
 	}
 	for _, d := range results {
-		debug("Directory sending %s %q", d.ID, d.Name)
+		debug("Directory sending %q %q", d.ID, d.Name)
 		err = e.stream.write(d)
 		if err != nil {
-			warn("Directory write error for %s: %v", d.ID, err)
+			warn("Directory write error for %q: %v", d.ID, err)
 			return
 		}
 	}
-
-	debug("Directory finished sending updates")
 }
 
 // Manage the directory

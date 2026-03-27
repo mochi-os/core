@@ -131,6 +131,19 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		menu_token = auth_create_app_token(user.ID, session, menu.id)
 	}
 
+	// Domain routing context — pass to iframe so apps can detect entity context
+	domain_method := c.GetString("domain_method")
+	domain_entity := ""
+	domain_fingerprint := ""
+	domain_class := ""
+	if domain_method == "entity" {
+		if e := entity_by_any(c.GetString("domain_target")); e != nil {
+			domain_entity = e.ID
+			domain_fingerprint = e.Fingerprint
+			domain_class = e.Class
+		}
+	}
+
 	// Build the shell page from template
 	page := shell_html
 
@@ -139,6 +152,10 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	page = strings.Replace(page, "{{APP_ID}}", escape_attr(app_id), 1)
 	page = strings.Replace(page, "{{USER_NAME}}", escape_attr(name), 1)
 	page = strings.Replace(page, "{{MENU_TOKEN}}", menu_token, 1)
+	page = strings.Replace(page, "{{DOMAIN_METHOD}}", escape_attr(domain_method), 1)
+	page = strings.Replace(page, "{{DOMAIN_ENTITY}}", escape_attr(domain_entity), 1)
+	page = strings.Replace(page, "{{DOMAIN_FINGERPRINT}}", escape_attr(domain_fingerprint), 1)
+	page = strings.Replace(page, "{{DOMAIN_CLASS}}", escape_attr(domain_class), 1)
 	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
 
 	// Menu app assets

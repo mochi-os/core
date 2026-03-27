@@ -271,6 +271,12 @@
                 navigating = false;
                 var appName = getAppNameFromPath(window.location.pathname);
                 var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+                var domain = config.domainMethod ? {
+                    method: config.domainMethod,
+                    entity: config.domainEntity,
+                    fingerprint: config.domainFingerprint,
+                    class: config.domainClass
+                } : null;
                 fetchToken(appName).then(function(token) {
                     postToIframe({
                         type: 'init',
@@ -278,7 +284,8 @@
                         theme: theme,
                         user: { name: config.userName },
                         inShell: true,
-                        sidebarOpen: sidebarOpen
+                        sidebarOpen: sidebarOpen,
+                        domain: domain
                     });
                     scheduleTokenRefresh(appName);
                 }).catch(function() {
@@ -288,7 +295,8 @@
                         theme: theme,
                         user: { name: config.userName },
                         inShell: true,
-                        sidebarOpen: sidebarOpen
+                        sidebarOpen: sidebarOpen,
+                        domain: domain
                     });
                 });
                 break;

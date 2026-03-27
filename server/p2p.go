@@ -51,7 +51,7 @@ func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 
 // Connect to a peer
 func p2p_connect(peer string, addresses []string) bool {
-	debug("P2P connecting to peer %q at %v", peer, addresses)
+	//debug("P2P connecting to peer %q at %v", peer, addresses)
 	var err error
 
 	var ai p2p_peer.AddrInfo
@@ -84,11 +84,11 @@ func p2p_connect(peer string, addresses []string) bool {
 
 	err = p2p_me.Connect(p2p_context, ai)
 	if err != nil {
-		info("P2P error connecting to %q: %v", peer, err)
+		//debug("P2P error connecting to %q: %s", peer, err)
 		return false
 	}
 
-	debug("P2P connected to peer %q", peer)
+	//debug("P2P connected to peer %q", peer)
 	return true
 }
 

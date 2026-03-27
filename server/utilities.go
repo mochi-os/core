@@ -13,6 +13,8 @@ import (
 	"github.com/btcsuite/btcutil/base58"
 	cbor "github.com/fxamacker/cbor/v2"
 	md "github.com/gomarkdown/markdown"
+	md_html "github.com/gomarkdown/markdown/html"
+	md_parser "github.com/gomarkdown/markdown/parser"
 	"github.com/google/uuid"
 	"github.com/microcosm-cc/bluemonday"
 	"io"
@@ -166,10 +168,17 @@ func like_escape(s string) string {
 	return s
 }
 
-var markdown_policy = bluemonday.UGCPolicy()
+var markdown_policy = func() *bluemonday.Policy {
+	p := bluemonday.UGCPolicy()
+	p.AllowAttrs("target").Matching(regexp.MustCompile(`^_blank$`)).OnElements("a")
+	return p
+}()
 
 func markdown(in []byte) []byte {
-	return markdown_policy.SanitizeBytes(md.ToHTML(in, nil, nil))
+	extensions := md_parser.CommonExtensions | md_parser.NoEmptyLineBeforeBlock
+	p := md_parser.NewWithExtensions(extensions)
+	r := md_html.NewRenderer(md_html.RendererOptions{Flags: md_html.CommonFlags | md_html.HrefTargetBlank})
+	return markdown_policy.SanitizeBytes(md.ToHTML(in, p, r))
 }
 
 func must[T any](v T, errors ...error) T {

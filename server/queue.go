@@ -217,9 +217,9 @@ func queue_process() {
 	if err != nil {
 		info("Queue process scan error: %v", err)
 	}
-	if len(entries) > 0 {
-		info("Queue processing %d entries", len(entries))
-	}
+	//if len(entries) > 0 {
+	//	info("Queue processing %d entries", len(entries))
+	//}
 
 	udb := db_open("db/users.db")
 	for _, q := range entries {

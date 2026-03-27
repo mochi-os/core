@@ -580,7 +580,10 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	}
 
 	// Set up database connection if needed
-	if av.Database.File != "" && owner != nil {
+	if av.Database.File != "" {
+		if owner == nil {
+			return false
+		}
 		owner.db = db_app(owner, a)
 		if owner.db != nil {
 			defer owner.db.close()

@@ -253,7 +253,7 @@ func peer_disconnected(id string) {
 	if _, scheduled := peer_reconnects[id]; !scheduled {
 		delay := int64(10) + rand.Int64N(5) // 10-14 seconds initial delay with jitter
 		peer_reconnects[id] = PeerReconnect{NextRetry: now() + delay, Attempts: 0}
-		debug("Peer %q scheduled for reconnection in %ds", id, delay)
+		//debug("Peer %q scheduled for reconnection in %ds", id, delay)
 	}
 	peer_reconnect_lock.Unlock()
 }
@@ -415,7 +415,7 @@ func peer_reconnect_manager() {
 			r.NextRetry = now() + delay
 			peer_reconnects[id] = r
 			peer_reconnect_lock.Unlock()
-			debug("Peer %q reconnect attempt %d failed, next retry in %ds", id, r.Attempts, delay)
+			//debug("Peer %q reconnect attempt %d failed, next retry in %ds", id, r.Attempts, delay)
 		}
 	}
 }
@@ -475,7 +475,7 @@ func peer_stream(id string) *Stream {
 	p := peer_by_id(id)
 	if p == nil {
 		// In a future version, rate limit this
-		debug("Peer %q unknown, sending pubsub request for it", id)
+		//debug("Peer %q unknown, sending pubsub request for it", id)
 		message("", "", "peers", "request").set("id", id).publish(false)
 		return nil
 	}

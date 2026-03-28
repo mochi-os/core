@@ -216,9 +216,6 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err != nil || n < 1 {
 		return sl_error(fn, "invalid count")
 	}
-	if n > 100 {
-		n = 100
-	}
 
 	user, _ := t.Local("user").(*User)
 	if user == nil {
@@ -250,9 +247,6 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	n, err := sl.AsInt32(args[0])
 	if err != nil || n < 1 {
 		return sl_error(fn, "invalid count")
-	}
-	if n > 100 {
-		n = 100
 	}
 
 	user, _ := t.Local("user").(*User)

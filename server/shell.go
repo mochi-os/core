@@ -147,8 +147,16 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	// Build the shell page from template
 	page := shell_html
 
-	// Inject values
-	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(c.Request.URL.RequestURI()), 1)
+	// Inject values — mark iframe src so the server can distinguish shell iframe
+	// requests from cross-site top-level navigations (e.g., links from Reddit).
+	// Both send Sec-Fetch-Site: cross-site, but only the iframe has _shell=1.
+	iframe_src := c.Request.URL.RequestURI()
+	if strings.Contains(iframe_src, "?") {
+		iframe_src += "&_shell=1"
+	} else {
+		iframe_src += "?_shell=1"
+	}
+	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(iframe_src), 1)
 	page = strings.Replace(page, "{{APP_ID}}", escape_attr(app_id), 1)
 	page = strings.Replace(page, "{{USER_NAME}}", escape_attr(name), 1)
 	page = strings.Replace(page, "{{MENU_TOKEN}}", menu_token, 1)
@@ -257,15 +265,17 @@ func web_shell_token(c *gin.Context) {
 // web_is_iframe_request returns true if the request is from a sandboxed iframe.
 // Detects two cases:
 //  1. Shell sets iframe.src → browser sends Sec-Fetch-Dest: iframe
-//  2. User clicks a link inside the iframe → browser sends Sec-Fetch-Dest: document
-//     with Sec-Fetch-Site: cross-site (opaque origin ≠ server origin)
+//  2. Navigation within the shell iframe → URL contains _shell=1 query parameter
+//     (added by web_serve_shell to the iframe src)
+//
+// Previously, case 2 used Sec-Fetch-Site: cross-site, but this also matches
+// cross-site top-level navigations (e.g., links from Reddit), causing the
+// login/landing page to be skipped for external visitors.
 func web_is_iframe_request(c *gin.Context) bool {
-	dest := c.GetHeader("Sec-Fetch-Dest")
-	if dest == "iframe" {
+	if c.GetHeader("Sec-Fetch-Dest") == "iframe" {
 		return true
 	}
-	// Navigation from within a sandboxed iframe (opaque origin → cross-site)
-	if dest == "document" && c.GetHeader("Sec-Fetch-Site") == "cross-site" {
+	if c.Query("_shell") == "1" {
 		return true
 	}
 	return false

@@ -95,25 +95,34 @@ func TestIsIframeRequest(t *testing.T) {
 		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe")
 	}
 
-	// Case 2: link click inside sandboxed iframe → document + cross-site
+	// Case 2: navigation within shell iframe → _shell=1 query parameter
+	c.Request = httptest.NewRequest("GET", "/feeds/?_shell=1", nil)
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
-	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
 	if !web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return true for document + cross-site (sandboxed iframe navigation)")
+		t.Error("web_is_iframe_request should return true for _shell=1 query parameter")
 	}
 
-	// Case 3: normal top-level navigation → document + same-origin
+	// Case 3: cross-site top-level navigation (e.g., link from Reddit) → NOT iframe
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
+	if web_is_iframe_request(c) {
+		t.Error("web_is_iframe_request should return false for cross-site top-level navigation")
+	}
+
+	// Case 4: normal top-level navigation → document + same-origin
+	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	c.Request.Header.Set("Sec-Fetch-Site", "same-origin")
 	if web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return false for document + same-origin")
 	}
 
-	// Case 4: document without Sec-Fetch-Site
+	// Case 5: document without Sec-Fetch-Site or _shell
+	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
-	c.Request.Header.Del("Sec-Fetch-Site")
 	if web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return false for document without Sec-Fetch-Site")
+		t.Error("web_is_iframe_request should return false for document without Sec-Fetch-Site or _shell")
 	}
 }
 

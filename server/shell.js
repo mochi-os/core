@@ -28,6 +28,34 @@
     // Set initial state
     setSidebarState(sidebarOpen);
 
+    var progressInterval = null;
+    var progressWidth = 0;
+
+    function showProgress() {
+        if (!progressBar) return;
+        clearInterval(progressInterval);
+        progressWidth = 0;
+        progressBar.style.transition = 'none';
+        progressBar.style.width = '0%';
+        progressBar.style.opacity = '1';
+        void progressBar.offsetHeight;
+        progressBar.style.transition = 'width 0.3s ease-out';
+        progressInterval = setInterval(function() {
+            var remaining = 95 - progressWidth;
+            progressWidth = Math.min(95, progressWidth + Math.max(0.5, remaining * 0.1));
+            progressBar.style.width = progressWidth + '%';
+        }, 100);
+    }
+
+    function hideProgress() {
+        if (!progressBar) return;
+        clearInterval(progressInterval);
+        progressInterval = null;
+        progressBar.style.transition = 'width 0.2s ease-out, opacity 0.3s ease 0.2s';
+        progressBar.style.width = '100%';
+        progressBar.style.opacity = '0';
+    }
+
     // Replace the iframe with a new one, keeping the old visible until the new
     // one sends its ready message. This avoids both history pollution (creating
     // a new element instead of setting .src) and white flashes during transitions.
@@ -38,9 +66,6 @@
         if (staleIframe && staleIframe.parentNode) {
             staleIframe.parentNode.removeChild(staleIframe);
         }
-
-        // Show loading indicator
-        if (progressBar) progressBar.style.display = '';
 
         // Dim and disable the current iframe while the new one loads
         staleIframe = iframe;
@@ -61,7 +86,7 @@
 
     // Called when the new iframe sends ready — complete the visual transition
     function completeTransition() {
-        if (progressBar) progressBar.style.display = 'none';
+        hideProgress();
         iframe.style.visibility = '';
         if (staleIframe && staleIframe.parentNode) {
             staleIframe.parentNode.removeChild(staleIframe);
@@ -208,6 +233,11 @@
             document.title = 'Mochi';
             history.pushState(null, '', data.url);
 
+            // Show progress bar and dim current iframe immediately (before token fetch)
+            showProgress();
+            iframe.style.opacity = '0.6';
+            iframe.style.pointerEvents = 'none';
+
             fetchToken(newApp).then(function(token) {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
@@ -238,6 +268,12 @@
             currentAppPath = newApp;
             updateFavicon(newApp);
             document.title = 'Mochi';
+
+            // Show progress bar and dim current iframe immediately (before token fetch)
+            showProgress();
+            iframe.style.opacity = '0.6';
+            iframe.style.pointerEvents = 'none';
+
             fetchToken(newApp).then(function() {
                 currentAppId = newApp;
                 storagePrefix = 'app:' + currentAppId + ':';
@@ -251,6 +287,7 @@
         } else {
             // Same app — reload iframe at the new path
             // (pushState/replaceState don't work in sandboxed iframes with opaque origins)
+            showProgress();
             swapIframe(path);
         }
     });
@@ -266,8 +303,8 @@
 
         switch (data.type) {
             case 'ready':
-                // App is ready — complete transition and send init with token
-                completeTransition();
+                // App is ready — fetch token and send init before completing
+                // the transition, so the app can render immediately when shown.
                 navigating = false;
                 var appName = getAppNameFromPath(window.location.pathname);
                 var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
@@ -288,6 +325,7 @@
                         domain: domain
                     });
                     scheduleTokenRefresh(appName);
+                    completeTransition();
                 }).catch(function() {
                     postToIframe({
                         type: 'init',
@@ -298,6 +336,7 @@
                         sidebarOpen: sidebarOpen,
                         domain: domain
                     });
+                    completeTransition();
                 });
                 break;
 
@@ -346,6 +385,9 @@
         });
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+    // --- Initial load progress ---
+    showProgress();
 
     // --- Service worker registration ---
     if ('serviceWorker' in navigator) {

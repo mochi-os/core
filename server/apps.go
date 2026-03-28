@@ -2012,8 +2012,6 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if len(args) > 3 {
 		peer, _ = sl.AsString(args[3])
 	}
-	debug("api_app_install() check only '%v' peer '%v'", check_only, peer)
-
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

@@ -85,25 +85,29 @@ func TestShellRequiresAuth(t *testing.T) {
 func TestIsIframeRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// Case 1: shell sets iframe.src → Sec-Fetch-Dest: iframe
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/feeds/", nil)
-	c.Request.Header.Set("Sec-Fetch-Dest", "iframe")
+	newCtx := func(url string) *gin.Context {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", url, nil)
+		return c
+	}
 
+	// Case 1: shell sets iframe.src → Sec-Fetch-Dest: iframe
+	c := newCtx("/feeds/")
+	c.Request.Header.Set("Sec-Fetch-Dest", "iframe")
 	if !web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe")
 	}
 
 	// Case 2: navigation within shell iframe → _shell=1 query parameter
-	c.Request = httptest.NewRequest("GET", "/feeds/?_shell=1", nil)
+	c = newCtx("/feeds/?_shell=1")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	if !web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return true for _shell=1 query parameter")
 	}
 
 	// Case 3: cross-site top-level navigation (e.g., link from Reddit) → NOT iframe
-	c.Request = httptest.NewRequest("GET", "/", nil)
+	c = newCtx("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
 	if web_is_iframe_request(c) {
@@ -111,7 +115,7 @@ func TestIsIframeRequest(t *testing.T) {
 	}
 
 	// Case 4: normal top-level navigation → document + same-origin
-	c.Request = httptest.NewRequest("GET", "/", nil)
+	c = newCtx("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	c.Request.Header.Set("Sec-Fetch-Site", "same-origin")
 	if web_is_iframe_request(c) {
@@ -119,7 +123,7 @@ func TestIsIframeRequest(t *testing.T) {
 	}
 
 	// Case 5: document without Sec-Fetch-Site or _shell
-	c.Request = httptest.NewRequest("GET", "/", nil)
+	c = newCtx("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	if web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return false for document without Sec-Fetch-Site or _shell")

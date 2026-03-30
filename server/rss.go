@@ -171,10 +171,6 @@ func api_rss_image(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.String(""), nil
 	}
 
-	if err := require_permission_url(t, fn, rawurl); err != nil {
-		return sl.String(""), nil
-	}
-
 	r, err := url_request("GET", rawurl, map[string]string{"timeout": "10"}, map[string]string{"User-Agent": "Mochi/1.0"}, nil)
 	if err != nil {
 		return sl.String(""), nil

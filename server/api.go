@@ -478,7 +478,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
 	if app != nil && !rate_limit_url.allow(app.id) {
-		return sl_error(fn, "rate limit exceeded (100 requests per minute)")
+		return sl_encode(map[string]any{"status": 429, "headers": map[string]string{}, "body": ""}), nil
 	}
 
 	url, ok := sl.AsString(args[0])
@@ -488,7 +488,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	// Check url permission for external URLs
 	if err := require_permission_url(t, fn, url); err != nil {
-		return sl_error(fn, "%v", err)
+		return sl_encode(map[string]any{"status": 403, "headers": map[string]string{}, "body": ""}), nil
 	}
 
 	// Collect all granted url: domains for redirect validation

@@ -41,7 +41,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	if err := require_permission(t, fn, "accounts/ai"); err != nil {
-		return sl_error(fn, "%v", err)
+		return sl_encode(map[string]any{"status": 403, "text": ""}), nil
 	}
 
 	prompt, ok := sl.AsString(args[0])

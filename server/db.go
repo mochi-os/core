@@ -53,6 +53,7 @@ func init() {
 				}
 				return 0 // SQLITE_OK
 			})
+			conn.Exec("PRAGMA foreign_keys = ON", nil)
 			return nil
 		},
 	})

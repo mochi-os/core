@@ -550,7 +550,7 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	var v any
 	err := s.read(&v)
 	if err != nil {
-		return sl_error(fn, err)
+		return sl.None, nil
 	}
 	return sl_encode(v), nil
 }
@@ -640,10 +640,10 @@ func (s *Stream) sl_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	for _, a := range args {
 		err := s.write(sl_decode(a))
 		if err != nil {
-			return sl_error(fn, err)
+			return sl.False, nil
 		}
 	}
-	return sl.None, nil
+	return sl.True, nil
 }
 
 // s.write_raw(data) -> None: Send raw bytes without CBOR encoding

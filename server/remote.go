@@ -270,7 +270,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	err = s.write(sl_decode(payload))
 	if err != nil {
 		s.close()
-		return sl_error(fn, "failed to send: %v", err)
+		return sl.None, nil
 	}
 
 	// Register stream for cleanup when script returns

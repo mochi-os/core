@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1254,7 +1255,18 @@ func web_start() {
 	if !ini_bool("web", "debug", false) {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	r := gin.Default()
+	gin.DefaultWriter = log.Writer()
+	r := gin.New()
+	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		return fmt.Sprintf("Web %s %s %q %d %v\n",
+			param.ClientIP,
+			param.Method,
+			param.Path,
+			param.StatusCode,
+			param.Latency,
+		)
+	}))
+	r.Use(gin.Recovery())
 	r.Use(web_security_headers)
 	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)

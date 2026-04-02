@@ -56,7 +56,7 @@ func audit_write(facility string, msg string) {
 	defer audit_mutex.Unlock()
 
 	if audit_logger != nil {
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		timestamp := time.Now().Format("2006-01-02 15:04:05.000000")
 		audit_logger.Printf("%s [%s] %s", timestamp, facility, msg)
 	}
 }

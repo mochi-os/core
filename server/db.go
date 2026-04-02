@@ -54,7 +54,6 @@ func init() {
 				}
 				return 0 // SQLITE_OK
 			})
-			conn.Exec("PRAGMA foreign_keys = ON", nil)
 			return nil
 		},
 	})
@@ -393,6 +392,7 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	databases_lock.Unlock()
 
 	db.exec("PRAGMA journal_mode=WAL")
+	db.exec("PRAGMA foreign_keys=ON")
 	return db, created, false
 }
 

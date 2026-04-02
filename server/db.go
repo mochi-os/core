@@ -18,6 +18,7 @@ import (
 )
 
 type DB struct {
+	key    string
 	path   string
 	handle *sqlx.DB
 	user   *User
@@ -227,7 +228,8 @@ func db_app(u *User, app *App) *DB {
 	}
 
 	path := fmt.Sprintf("users/%d/%s/db/%s", u.ID, app.id, av.Database.File)
-	db, _, reused := db_open_work(path)
+	key := fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
+	db, _, reused := db_open_work(path, key)
 	db.user = u
 
 	// Limit database size to prevent misbehaving apps from filling storage
@@ -337,7 +339,7 @@ func db_manager() {
 		for _, db := range databases {
 			if db.closed > 0 && db.closed < now-60 {
 				closers = append(closers, db.handle)
-				delete(databases, db.path)
+				delete(databases, db.key)
 			}
 		}
 		databases_lock.Unlock()
@@ -353,11 +355,15 @@ func db_open(file string) *DB {
 	return db
 }
 
-func db_open_work(file string) (*DB, bool, bool) {
+func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	path := filepath.Join(data_dir, file)
+	key := path
+	if len(cacheKeys) > 0 && cacheKeys[0] != "" {
+		key = cacheKeys[0]
+	}
 
 	databases_lock.Lock()
-	db, found := databases[path]
+	db, found := databases[key]
 	databases_lock.Unlock()
 	if found {
 		//debug("Database reusing already open %q", path)
@@ -374,16 +380,16 @@ func db_open_work(file string) (*DB, bool, bool) {
 
 	//debug("Database opening %q", path)
 	h := must(sqlx.Open("sqlite3_noattach", path))
-	db = &DB{path: path, handle: h, closed: 0}
+	db = &DB{key: key, path: path, handle: h, closed: 0}
 
 	databases_lock.Lock()
-	if existing, found := databases[path]; found {
+	if existing, found := databases[key]; found {
 		databases_lock.Unlock()
 		h.Close()
 		existing.closed = 0
 		return existing, false, true
 	}
-	databases[path] = db
+	databases[key] = db
 	databases_lock.Unlock()
 
 	db.exec("PRAGMA journal_mode=WAL")

@@ -1019,6 +1019,9 @@ func web_logout(c *gin.Context) {
 		}
 	}
 	web_cookie_unset(c, "session")
+	// Clear stale theme cookie (no longer used, but may exist from older versions)
+	secure := web_https && !web_is_localhost(c)
+	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -1295,6 +1298,7 @@ func web_start() {
 	r.GET("/sitemap.xml", web_sitemap)
 	r.GET("/_/websocket", websocket_connection)
 	r.POST("/_/token", web_shell_token)
+	r.POST("/_/shell", web_shell_init)
 
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)

@@ -6,6 +6,7 @@ package main
 import (
 	_ "embed"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -110,69 +111,40 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		return
 	}
 
-	// Resolve app path to entity ID so config.appId is canonical from the start
-	// (avoids race where subscribe-notifications uses path name before fetchToken completes)
-	if a := app_for_path(user, app_id); a != nil {
-		app_id = a.id
-	}
-
 	// Get menu app to resolve its asset paths
 	menu := shell_menu_app(user)
 
-	// Get user profile info
-	name := ""
-	if ident := user.identity(); ident != nil {
-		name = ident.Name
-	}
-
-	// Generate menu app token so it can call its own backend actions
-	menu_token := ""
-	if menu != nil {
-		menu_token = auth_create_app_token(user.ID, session, menu.id)
-	}
-
-	// Domain routing context — pass to iframe so apps can detect entity context
-	domain_method := c.GetString("domain_method")
-	domain_entity := ""
-	domain_fingerprint := ""
-	domain_class := ""
-	if domain_method == "entity" {
-		if e := entity_by_any(c.GetString("domain_target")); e != nil {
-			domain_entity = e.ID
-			domain_fingerprint = e.Fingerprint
-			domain_class = e.Class
-		}
-	}
-
-	// Build the shell page from template
+	// Build the shell page from template.
+	// Only static, server-controlled values are injected — no user data.
 	page := shell_html
 
-	// Inject values — mark iframe src so the server can distinguish shell iframe
-	// requests from cross-site top-level navigations (e.g., links from Reddit).
-	// Both send Sec-Fetch-Site: cross-site, but only the iframe has _shell=1.
-	iframe_src := c.Request.URL.RequestURI()
-	if strings.Contains(iframe_src, "?") {
-		iframe_src += "&_shell=1"
-	} else {
-		iframe_src += "?_shell=1"
+	// Appearance: set dark class or auto-detect script (controlled values, not user text)
+	appearance := user_preference_get(user, "appearance", "auto")
+	html_class := ""
+	appearance_script := ""
+	switch appearance {
+	case "dark":
+		html_class = `class="dark"`
+	case "auto":
+		appearance_script = `<script>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
 	}
-	page = strings.Replace(page, "{{IFRAME_SRC}}", escape_attr(iframe_src), 1)
-	page = strings.Replace(page, "{{APP_ID}}", escape_attr(app_id), 1)
-	page = strings.Replace(page, "{{USER_NAME}}", escape_attr(name), 1)
-	page = strings.Replace(page, "{{MENU_TOKEN}}", menu_token, 1)
-	page = strings.Replace(page, "{{DOMAIN_METHOD}}", escape_attr(domain_method), 1)
-	page = strings.Replace(page, "{{DOMAIN_ENTITY}}", escape_attr(domain_entity), 1)
-	page = strings.Replace(page, "{{DOMAIN_FINGERPRINT}}", escape_attr(domain_fingerprint), 1)
-	page = strings.Replace(page, "{{DOMAIN_CLASS}}", escape_attr(domain_class), 1)
+	page = strings.Replace(page, "{{HTML_CLASS}}", html_class, 1)
+	page = strings.Replace(page, "{{APPEARANCE_SCRIPT}}", appearance_script, 1)
+
+	// Embedded shell JS (from Go embed, not user input)
 	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
 
-	// Menu app assets
+	// Menu app assets (filesystem paths, not user input)
 	menu_js, menu_css := "", ""
 	if menu != nil {
 		menu_js, menu_css = shell_menu_assets(menu, user)
 	}
 	page = strings.Replace(page, "{{MENU_JS}}", menu_js, 1)
 	page = strings.Replace(page, "{{MENU_CSS}}", menu_css, 1)
+
+	// Clear stale mochi-theme cookie (no longer used)
+	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
 
 	// Security headers: shell cannot be framed
 	c.Header("X-Frame-Options", "DENY")
@@ -260,6 +232,46 @@ func web_shell_token(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "app": a.id})
+}
+
+// web_shell_init handles POST /_/shell — returns shell bootstrap config.
+// Called once by the shell page on load. Protected by session cookie
+// (sandboxed iframe apps cannot call this).
+func web_shell_init(c *gin.Context) {
+	user := web_auth(c)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	session := web_cookie_get(c, "session", "")
+
+	// Menu app token
+	menu_token := ""
+	if menu := shell_menu_app(user); menu != nil {
+		menu_token = auth_create_app_token(user.ID, session, menu.id)
+	}
+
+	// Domain routing context — resolve from Referer since /_/ paths
+	// skip the domain routing middleware.
+	result := gin.H{"menuToken": menu_token}
+	if referer := c.GetHeader("Referer"); referer != "" {
+		if u, err := url.Parse(referer); err == nil {
+			if match := domain_match(u.Hostname(), u.Path); match != nil {
+				domain := gin.H{"method": match.route.Method}
+				if match.route.Method == "entity" {
+					if e := entity_by_any(match.route.Target); e != nil {
+						domain["entity"] = e.ID
+						domain["fingerprint"] = e.Fingerprint
+						domain["class"] = e.Class
+					}
+				}
+				result["domain"] = domain
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 // web_is_iframe_request returns true if the request is from a sandboxed iframe.

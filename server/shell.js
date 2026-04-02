@@ -4,12 +4,21 @@
 (function() {
     'use strict';
 
-    var iframe = document.getElementById('app-frame');
     var staleIframe = null; // old iframe kept visible during transition
     var menuEl = document.getElementById('menu');
-    var config = window.__mochi_shell || {};
-    var currentAppId = config.appId || '';
+    var shellConfig = null; // populated by /_/shell fetch
     var currentAppPath = getAppNameFromPath(window.location.pathname);
+    var currentAppId = currentAppPath;
+
+    // Create the initial iframe — derive src from current URL
+    var initialSrc = window.location.pathname + window.location.search + window.location.hash;
+    initialSrc += (initialSrc.indexOf('?') >= 0 ? '&' : '?') + '_shell=1';
+    var container = document.getElementById('app-container');
+    var iframe = document.createElement('iframe');
+    iframe.id = 'app-frame';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads');
+    iframe.src = initialSrc;
+    container.appendChild(iframe);
     var tokenRefreshTimer = null;
     var navigating = false; // true during cross-app navigation (blocks storage requests)
     var progressBar = document.getElementById('shell-progress');
@@ -108,6 +117,26 @@
     // Set initial favicon
     updateFavicon(currentAppPath);
 
+    // --- Shell config (menuToken, domain) — fetched once on load ---
+
+    var shellConfigReady = fetch('/_/shell', {
+        method: 'POST',
+        credentials: 'same-origin'
+    }).then(function(r) {
+        if (!r.ok) return {};
+        return r.json();
+    }).then(function(data) {
+        shellConfig = data || {};
+        return shellConfig;
+    }).catch(function() {
+        shellConfig = {};
+    });
+
+    // Expose promise for menu app (runs in shell page, needs menuToken before rendering)
+    window.__mochi_shell_ready = shellConfigReady.then(function() {
+        return { menuToken: (shellConfig && shellConfig.menuToken) || '' };
+    });
+
     // --- Token management ---
 
     function fetchToken(appName) {
@@ -122,9 +151,10 @@
         }).then(function(data) {
             if (data.app) {
                 currentAppId = data.app;
-                config.appId = data.app;
+                // Expose for menu app (e.g. subscribe-notifications needs entity ID)
+                if (window.__mochi_shell) window.__mochi_shell.appId = data.app;
             }
-            return data.token || '';
+            return data;
         });
     }
 
@@ -133,8 +163,8 @@
         // Refresh 10 minutes before expiry. JWT tokens are long-lived (1 year),
         // but we refresh periodically to handle session invalidation gracefully.
         tokenRefreshTimer = setTimeout(function() {
-            fetchToken(appName).then(function(token) {
-                postToIframe({ type: 'token-refresh', token: token });
+            fetchToken(appName).then(function(data) {
+                postToIframe({ type: 'token-refresh', token: data.token || '' });
                 scheduleTokenRefresh(appName);
             }).catch(function() {
                 // Token refresh failed — session may be expired
@@ -303,38 +333,32 @@
 
         switch (data.type) {
             case 'ready':
-                // App is ready — fetch token and send init before completing
-                // the transition, so the app can render immediately when shown.
+                // App is ready — fetch token and shell config, then send init.
                 navigating = false;
                 var appName = getAppNameFromPath(window.location.pathname);
-                var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-                var domain = config.domainMethod ? {
-                    method: config.domainMethod,
-                    entity: config.domainEntity,
-                    fingerprint: config.domainFingerprint,
-                    class: config.domainClass
-                } : null;
-                fetchToken(appName).then(function(token) {
+                Promise.all([fetchToken(appName), shellConfigReady]).then(function(results) {
+                    var tokenData = results[0];
+                    var sc = shellConfig || {};
+                    var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                     postToIframe({
                         type: 'init',
-                        token: token,
+                        token: tokenData.token || '',
                         theme: theme,
-                        user: { name: config.userName },
                         inShell: true,
                         sidebarOpen: sidebarOpen,
-                        domain: domain
+                        domain: sc.domain || null
                     });
                     scheduleTokenRefresh(appName);
                     completeTransition();
                 }).catch(function() {
+                    var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                     postToIframe({
                         type: 'init',
                         token: '',
                         theme: theme,
-                        user: { name: config.userName },
                         inShell: true,
                         sidebarOpen: sidebarOpen,
-                        domain: domain
+                        domain: null
                     });
                     completeTransition();
                 });
@@ -370,6 +394,19 @@
 
             case 'sidebar-state':
                 setSidebarState(!!data.open);
+                break;
+
+            case 'theme-set':
+                // App changed theme — update shell class (preference persisted server-side by the app)
+                var newTheme = data.theme;
+                if (newTheme === 'dark' || newTheme === 'light' || newTheme === 'auto' || newTheme === 'system') {
+                    var resolved = newTheme;
+                    if (newTheme === 'auto' || newTheme === 'system') {
+                        resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+                    }
+                    document.documentElement.classList.remove('light', 'dark');
+                    document.documentElement.classList.add(resolved);
+                }
                 break;
         }
     });

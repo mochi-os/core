@@ -1,19 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" {{HTML_CLASS}}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="mochi:shell" content="true">
-    <script>(function() {
-  var theme = document.cookie.match(/mochi-theme=([^;]+)/);
-  theme = theme ? theme[1] : 'light';
-  if (theme === 'system') {
-    theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  if (theme === 'dark') {
-    document.documentElement.classList.add('dark');
-  }
-})();</script>
+    {{APPEARANCE_SCRIPT}}
     <title>Mochi</title>
     <link rel="icon" type="image/svg+xml" href="/images/logo-header.svg">
     {{MENU_CSS}}
@@ -28,26 +19,9 @@
 <body>
     <div id="shell-progress"></div>
     <div id="menu"></div>
-    <div id="app-container">
-        <iframe
-            id="app-frame"
-            sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
-            src="{{IFRAME_SRC}}"
-        ></iframe>
-    </div>
+    <div id="app-container"></div>
 
     <script>
-    // Shell configuration injected by server
-    window.__mochi_shell = {
-        appId: "{{APP_ID}}",
-        userName: "{{USER_NAME}}",
-        menuToken: "{{MENU_TOKEN}}",
-        domainMethod: "{{DOMAIN_METHOD}}",
-        domainEntity: "{{DOMAIN_ENTITY}}",
-        domainFingerprint: "{{DOMAIN_FINGERPRINT}}",
-        domainClass: "{{DOMAIN_CLASS}}"
-    };
-
     {{SHELL_JS}}
     </script>
     {{MENU_JS}}

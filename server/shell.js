@@ -152,7 +152,8 @@
             if (data.app) {
                 currentAppId = data.app;
                 // Expose for menu app (e.g. subscribe-notifications needs entity ID)
-                if (window.__mochi_shell) window.__mochi_shell.appId = data.app;
+                if (!window.__mochi_shell) window.__mochi_shell = {};
+                window.__mochi_shell.appId = data.app;
             }
             return data;
         });

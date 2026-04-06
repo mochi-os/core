@@ -233,10 +233,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Skip for static file serving (HTML, JS, CSS) — these don't expose user data.
 	if user != nil && api_token == nil && !aa.Public && !shell_static {
 		if !has_bearer {
+			debug("403 app token required: app=%s action=%s method=%s has_bearer=%v", a.id, name, c.Request.Method, has_bearer)
 			c.JSON(http.StatusForbidden, gin.H{"error": "app token required"})
 			return true
 		}
 		if jwt_app != "" && jwt_app != a.id {
+			debug("403 app token mismatch: jwt_app=%s a.id=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
 			c.JSON(http.StatusForbidden, gin.H{"error": "app token mismatch"})
 			return true
 		}
@@ -244,6 +246,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Check app-level requirements (skip for static files in shell mode)
 	if !shell_static && !av.user_allowed(user) {
+		debug("403 access denied: app=%s action=%s user=%v", a.id, name, user != nil)
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return true
 	}

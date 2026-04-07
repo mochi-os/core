@@ -25,6 +25,7 @@ var (
 
 func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
+	token_auth := false
 	if u == nil {
 		// Check Authorization header (Bearer token)
 		auth_header := c.GetHeader("Authorization")
@@ -34,6 +35,20 @@ func websocket_connection(c *gin.Context) {
 			if err == nil && user_id > 0 {
 				if user := user_by_id(user_id); user != nil {
 					u = user
+					token_auth = true
+				}
+			}
+		}
+
+		// Check token query parameter (for WebSocket from iframes that can't set headers)
+		if u == nil {
+			if token := c.Query("token"); token != "" {
+				user_id, _, err := jwt_verify(token)
+				if err == nil && user_id > 0 {
+					if user := user_by_id(user_id); user != nil {
+						u = user
+						token_auth = true
+					}
 				}
 			}
 		}
@@ -43,12 +58,16 @@ func websocket_connection(c *gin.Context) {
 		}
 	}
 
-	// Validate origin matches request host to prevent cross-origin WebSocket hijacking
-	origin := c.GetHeader("Origin")
-	if origin != "" {
-		if parsed, err := url.Parse(origin); err != nil || parsed.Host != c.Request.Host {
-			c.Status(403)
-			return
+	// Validate origin matches request host to prevent cross-origin WebSocket hijacking.
+	// Skip origin check for token-authenticated connections (JWT proves authorization,
+	// and sandboxed iframes send "null" origin).
+	if !token_auth {
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			if parsed, err := url.Parse(origin); err != nil || parsed.Host != c.Request.Host {
+				c.Status(403)
+				return
+			}
 		}
 	}
 

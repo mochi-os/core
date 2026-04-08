@@ -657,6 +657,11 @@ func (a *Action) sl_write_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	// Get the raw reader (includes any buffered bytes from CBOR decoder)
 	reader := stream.raw_reader()
 
+	// Set status 200 on first write (matches a.print() pattern)
+	if !a.web.Writer.Written() {
+		a.web.Status(200)
+	}
+
 	// Copy stream data directly to HTTP response
 	n, err := io.Copy(a.web.Writer, reader)
 	if err != nil {

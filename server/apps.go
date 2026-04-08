@@ -69,6 +69,7 @@ type AppTheme struct {
 	IconMask       string            `json:"icon_mask"`
 	IconBackground string            `json:"icon_background"`
 	Background     string            `json:"background"`
+	BackgroundDark string            `json:"background_dark"`
 	Overrides      map[string]string `json:"overrides"`
 	Icons          map[string]string `json:"icons"`
 }
@@ -2229,6 +2230,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			}
 			if theme.Background != "" {
 				result["background"] = theme.Background
+			}
+			if theme.BackgroundDark != "" {
+				result["background_dark"] = theme.BackgroundDark
 			}
 			if len(theme.Overrides) > 0 {
 				result["overrides"] = theme.Overrides

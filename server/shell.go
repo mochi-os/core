@@ -149,8 +149,14 @@ func web_serve_shell(c *gin.Context, app_id string) {
 						apps_lock.Unlock()
 						if a != nil {
 							av := a.active(user)
-							if av != nil && len(av.Paths) > 0 && !strings.ContainsAny(t.Background, `<>"`) {
-								theme_style += fmt.Sprintf("; --background-image: url(/%s/backgrounds/%s)", av.Paths[0], t.Background)
+							if av != nil && len(av.Paths) > 0 {
+								base := av.Paths[0]
+								if !strings.ContainsAny(t.Background, `<>"`) {
+									theme_style += fmt.Sprintf("; --background-image: url(/%s/backgrounds/%s)", base, t.Background)
+								}
+								if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
+									theme_style += fmt.Sprintf("; --background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark)
+								}
 							}
 						}
 					}

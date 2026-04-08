@@ -1900,10 +1900,11 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	return sl.None, nil
 }
 
-// mochi.app.icons() -> list: Get available icons for home screen
+// mochi.app.icons() -> dict: Get available icons for home screen
+// Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
-	var results []map[string]string
+	var icons []map[string]string
 
 	// Resolve the user's active theme for icon overrides
 	theme_pref := user_preference_get(user, "theme", "")
@@ -1960,16 +1961,25 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 				}
 			}
 
-			results = append(results, map[string]string{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file})
+			icons = append(icons, map[string]string{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path})
 		}
 	}
 	apps_lock.Unlock()
 
-	sort.Slice(results, func(i, j int) bool {
-		return strings.ToLower(results[i]["name"]) < strings.ToLower(results[j]["name"])
+	sort.Slice(icons, func(i, j int) bool {
+		return strings.ToLower(icons[i]["name"]) < strings.ToLower(icons[j]["name"])
 	})
 
-	return sl_encode(results), nil
+	result := map[string]any{"icons": icons}
+	if active_theme != nil {
+		if active_theme.IconMask != "" {
+			result["icon_mask"] = active_theme.IconMask
+		}
+		if active_theme.IconBackground != "" {
+			result["icon_background"] = active_theme.IconBackground
+		}
+	}
+	return sl_encode(result), nil
 }
 
 // mochi.app.package.get(file) -> dict: Read app info from a .zip file without installing

@@ -5,14 +5,18 @@ package main
 
 import (
 	"fmt"
+	"github.com/mattn/go-isatty"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"log"
+	"os"
 	"time"
 )
 
 type logWriter struct {
 }
+
+var log_color = isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
 
 var (
 	api_log = sls.FromStringDict(sl.String("mochi.log"), sl.StringDict{

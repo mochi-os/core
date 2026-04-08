@@ -319,7 +319,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			file := av.base + "/" + aa.Files + "/" + aa.filepath
 			//debug("Serving file from directory for app %q: %q", a.id, file)
 			web_cache_static(c, file, aa.Cache)
-			c.File(file)
+			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
+				web_serve_svg(c, file)
+			} else {
+				c.File(file)
+			}
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
 		}
@@ -463,6 +467,16 @@ func web_auth(c *gin.Context) *User {
 }
 
 // Ask browser to cache static files
+// web_serve_svg reads an SVG file, sanitizes it, and serves the result.
+func web_serve_svg(c *gin.Context, path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.Data(http.StatusOK, "image/svg+xml", svg_sanitize(data))
+}
+
 func web_cache_static(c *gin.Context, path string, cache string) {
 	if !web_cache {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1264,11 +1278,15 @@ func web_start() {
 	gin.DefaultWriter = log.Writer()
 	r := gin.New()
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		return fmt.Sprintf("Web %s %s %q %d %v\n",
+		status := fmt.Sprintf("%d", param.StatusCode)
+		if log_color && param.StatusCode >= 400 {
+			status = "\033[31m" + status + "\033[0m"
+		}
+		return fmt.Sprintf("Web %s %s %s %q %v\n",
+			status,
 			param.ClientIP,
 			param.Method,
 			param.Path,
-			param.StatusCode,
 			param.Latency,
 		)
 	}))

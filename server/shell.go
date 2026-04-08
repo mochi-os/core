@@ -5,6 +5,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -130,6 +131,40 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	}
 	page = strings.Replace(page, "{{HTML_CLASS}}", html_class, 1)
 	page = strings.Replace(page, "{{APPEARANCE_SCRIPT}}", appearance_script, 1)
+
+	// Theme: apply color theme as inline CSS variables
+	theme_style := ""
+	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
+		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
+			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
+				theme_style = fmt.Sprintf(`style="--hue: %g; --hue-chroma: %g; --hue-bg: %g`, t.Hue, t.Chroma, t.HueBG)
+				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
+					theme_style += fmt.Sprintf("; --radius: %s", t.BorderRadius)
+				}
+				if t.Background != "" {
+					// Resolve background URL from theme app's path
+					if app_id := parts[0]; app_id != "" {
+						apps_lock.Lock()
+						a := apps[app_id]
+						apps_lock.Unlock()
+						if a != nil {
+							av := a.active(user)
+							if av != nil && len(av.Paths) > 0 && !strings.ContainsAny(t.Background, `<>"`) {
+								theme_style += fmt.Sprintf("; --background-image: url(/%s/backgrounds/%s)", av.Paths[0], t.Background)
+							}
+						}
+					}
+				}
+				for key, val := range t.Overrides {
+					if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
+						theme_style += fmt.Sprintf("; %s: %s", key, val)
+					}
+				}
+				theme_style += `"`
+			}
+		}
+	}
+	page = strings.Replace(page, "{{THEME_STYLE}}", theme_style, 1)
 
 	// Embedded shell JS (from Go embed, not user input)
 	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)

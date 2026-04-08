@@ -58,6 +58,21 @@ type AppFunction struct {
 	Permission string `json:"permission,omitempty"`
 }
 
+type AppTheme struct {
+	ID             string            `json:"id"`
+	Label          string            `json:"label"`
+	Hue            float64           `json:"hue"`
+	Chroma         float64           `json:"chroma"`
+	HueBG          float64           `json:"hue_bg"`
+	Preview        string            `json:"preview"`
+	BorderRadius   string            `json:"border_radius"`
+	IconMask       string            `json:"icon_mask"`
+	IconBackground string            `json:"icon_background"`
+	Background     string            `json:"background"`
+	Overrides      map[string]string `json:"overrides"`
+	Icons          map[string]string `json:"icons"`
+}
+
 type AppVersion struct {
 	Version  string   `json:"version"`
 	Label    string   `json:"label"`
@@ -90,12 +105,15 @@ type AppVersion struct {
 		} `json:"downgrade"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
-	Icon      string                 `json:"icon"`
-	Icons     []Icon                 `json:"icons"`
-	Actions   map[string]AppAction   `json:"actions"`
-	Events    map[string]AppEvent    `json:"events"`
-	Functions map[string]AppFunction `json:"functions"`
-	Publisher struct {
+	Icon         string                 `json:"icon"`
+	IconSymbolic string                 `json:"icon_symbolic"`
+	Icons        []Icon                 `json:"icons"`
+	Actions      map[string]AppAction   `json:"actions"`
+	Events       map[string]AppEvent    `json:"events"`
+	Functions    map[string]AppFunction `json:"functions"`
+	Themes       []AppTheme             `json:"themes"`
+	ThemeIcons   map[string]string      `json:"theme_icons"`
+	Publisher    struct {
 		Peer string `json:"peer,omitempty"`
 	} `json:"publisher,omitempty"`
 
@@ -354,6 +372,7 @@ var (
 			{"interests/read", ""},
 			{"interests/write", ""},
 		}},
+		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
 		{"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy", "Words", nil},
 	}
@@ -415,6 +434,7 @@ var (
 		"package":  api_app_package,
 		"path":     api_app_path,
 		"service":  api_app_service,
+		"themes":   sl.NewBuiltin("mochi.app.themes", api_app_themes),
 		"track":    api_app_track,
 		"tracks":   sl.NewBuiltin("mochi.app.tracks", api_app_tracks),
 		"version":  api_app_version,
@@ -1836,6 +1856,9 @@ func (av *AppVersion) reload() {
 	av.Classes = fresh.Classes
 	av.Architecture = fresh.Architecture
 	av.Execute = fresh.Execute
+	av.Themes = fresh.Themes
+	av.ThemeIcons = fresh.ThemeIcons
+	av.IconSymbolic = fresh.IconSymbolic
 	av.labels = labels
 	apps_lock.Unlock()
 }
@@ -1882,6 +1905,23 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	user := t.Local("user").(*User)
 	var results []map[string]string
 
+	// Resolve the user's active theme for icon overrides
+	theme_pref := user_preference_get(user, "theme", "")
+	var active_theme *AppTheme
+	var active_theme_id string
+	var active_theme_app *App
+	if theme_pref != "" {
+		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
+			active_theme = app_theme_get(user, parts[0], parts[1])
+			active_theme_id = theme_pref
+			if active_theme != nil {
+				apps_lock.Lock()
+				active_theme_app = apps[parts[0]]
+				apps_lock.Unlock()
+			}
+		}
+	}
+
 	apps_lock.Lock()
 	for _, a := range apps {
 		av := a.active_locked(user)
@@ -1893,10 +1933,34 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 			if len(av.Paths) > 0 {
 				path = av.Paths[0]
 			}
+
+			icon_file := i.File
+			icon_path := path
 			if i.Action != "" {
-				path = path + "/" + i.Action
+				icon_path = path + "/" + i.Action
 			}
-			results = append(results, map[string]string{"id": a.id, "path": path, "name": a.label(user, av, i.Label), "file": i.File})
+
+			// Icon resolution priority:
+			// 1. Theme's icon for this app
+			// 2. App's icon for this theme
+			// 3. App's default icon
+			if active_theme != nil && active_theme.Icons != nil {
+				if override, ok := active_theme.Icons[path]; ok && active_theme_app != nil {
+					theme_av := active_theme_app.active_locked(user)
+					if theme_av != nil && len(theme_av.Paths) > 0 {
+						icon_path = theme_av.Paths[0] + "/icons"
+						icon_file = override
+					}
+				}
+			}
+			if icon_file == i.File && active_theme_id != "" && av.ThemeIcons != nil {
+				if override, ok := av.ThemeIcons[active_theme_id]; ok {
+					icon_path = path + "/images"
+					icon_file = filepath.Base(override)
+				}
+			}
+
+			results = append(results, map[string]string{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file})
 		}
 	}
 	apps_lock.Unlock()
@@ -2063,7 +2127,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if a.latest != nil {
 			latest = a.latest.Version
 		}
-		results = append(results, map[string]any{
+		result := map[string]any{
 			"id":       a.id,
 			"name":     a.label(user, av, av.Label),
 			"active":   av.Version,
@@ -2073,12 +2137,99 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			"classes":  av.Classes,
 			"services": av.Services,
 			"paths":    av.Paths,
-		})
+		}
+		if len(av.Themes) > 0 {
+			themes := make([]map[string]any, len(av.Themes))
+			for i, t := range av.Themes {
+				themes[i] = map[string]any{
+					"id":      t.ID,
+					"label":   a.label(user, av, t.Label),
+					"hue":     t.Hue,
+					"chroma":  t.Chroma,
+					"hue_bg":  t.HueBG,
+					"preview": t.Preview,
+				}
+			}
+			result["themes"] = themes
+		}
+		results = append(results, result)
 	}
 	apps_lock.Unlock()
 
 	sort.Slice(results, func(i, j int) bool {
 		return strings.ToLower(results[i]["name"].(string)) < strings.ToLower(results[j]["name"].(string))
+	})
+
+	return sl_encode(results), nil
+}
+
+// app_theme_get returns a theme definition from a specific app, or nil if not found
+func app_theme_get(user *User, app_id, theme_id string) *AppTheme {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	a := apps[app_id]
+	if a == nil {
+		return nil
+	}
+	av := a.active_locked(user)
+	if av == nil {
+		return nil
+	}
+	for i := range av.Themes {
+		if av.Themes[i].ID == theme_id {
+			return &av.Themes[i]
+		}
+	}
+	return nil
+}
+
+// mochi.app.themes() -> list: Get flat list of all themes from all installed apps
+func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := t.Local("user").(*User)
+	var results []map[string]any
+
+	apps_lock.Lock()
+	for _, a := range apps {
+		av := a.active_locked(user)
+		if av == nil || !av.user_allowed(user) {
+			continue
+		}
+		for _, theme := range av.Themes {
+			label := a.label(user, av, theme.Label)
+			if label == "" {
+				label = theme.Label
+			}
+			result := map[string]any{
+				"id":      a.id + ":" + theme.ID,
+				"app":     a.id,
+				"label":   label,
+				"hue":     theme.Hue,
+				"chroma":  theme.Chroma,
+				"hue_bg":  theme.HueBG,
+				"preview": theme.Preview,
+			}
+			if theme.BorderRadius != "" {
+				result["border_radius"] = theme.BorderRadius
+			}
+			if theme.IconMask != "" {
+				result["icon_mask"] = theme.IconMask
+			}
+			if theme.IconBackground != "" {
+				result["icon_background"] = theme.IconBackground
+			}
+			if theme.Background != "" {
+				result["background"] = theme.Background
+			}
+			if len(theme.Overrides) > 0 {
+				result["overrides"] = theme.Overrides
+			}
+			results = append(results, result)
+		}
+	}
+	apps_lock.Unlock()
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i]["label"].(string) < results[j]["label"].(string)
 	})
 
 	return sl_encode(results), nil

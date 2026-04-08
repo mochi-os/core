@@ -25,7 +25,17 @@ cp %{_sourcedir}/mochi-server.service %{buildroot}/usr/lib/systemd/system/
 %dir /var/lib/mochi
 /usr/lib/systemd/system/mochi-server.service
 
+%pre
+if ! getent group mochi >/dev/null; then
+    groupadd --system mochi
+fi
+if ! getent passwd mochi >/dev/null; then
+    useradd --system --no-create-home --home-dir /var/lib/mochi --shell /usr/sbin/nologin --gid mochi --comment "Mochi server" mochi
+fi
+
 %post
+chown -R mochi:mochi /var/lib/mochi
+chown -R mochi:mochi /var/cache/mochi
 systemctl daemon-reload
 
 %preun

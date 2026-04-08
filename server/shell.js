@@ -23,6 +23,60 @@
     var navigating = false; // true during cross-app navigation (blocks storage requests)
     var progressBar = document.getElementById('shell-progress');
 
+    // --- Color theme state ---
+    // Read initial color theme from server-injected inline style on <html>
+    var currentColorTheme = null;
+    (function() {
+        var root = document.documentElement;
+        var hue = root.style.getPropertyValue('--hue');
+        if (hue) {
+            currentColorTheme = {
+                hue: hue.trim(),
+                chroma: (root.style.getPropertyValue('--hue-chroma') || '').trim(),
+                hueBg: (root.style.getPropertyValue('--hue-bg') || '').trim()
+            };
+            // Collect any overrides (non-anchor CSS variables)
+            var overrides = {};
+            for (var i = 0; i < root.style.length; i++) {
+                var prop = root.style[i];
+                if (prop.startsWith('--') && prop !== '--hue' && prop !== '--hue-chroma' && prop !== '--hue-bg') {
+                    overrides[prop] = root.style.getPropertyValue(prop).trim();
+                }
+            }
+            if (Object.keys(overrides).length > 0) {
+                currentColorTheme.overrides = overrides;
+            }
+        }
+    })();
+
+    function applyThemeVars(theme) {
+        clearThemeVars();
+        if (!theme) { currentColorTheme = null; return; }
+        var root = document.documentElement;
+        root.style.setProperty('--hue', theme.hue);
+        root.style.setProperty('--hue-chroma', theme.chroma);
+        root.style.setProperty('--hue-bg', theme.hueBg);
+        if (theme.overrides) {
+            for (var key in theme.overrides) {
+                root.style.setProperty(key, theme.overrides[key]);
+            }
+        }
+        currentColorTheme = theme;
+    }
+
+    function clearThemeVars() {
+        var root = document.documentElement;
+        // Remove all inline CSS custom properties
+        var props = [];
+        for (var i = 0; i < root.style.length; i++) {
+            if (root.style[i].startsWith('--')) props.push(root.style[i]);
+        }
+        for (var j = 0; j < props.length; j++) {
+            root.style.removeProperty(props[j]);
+        }
+        currentColorTheme = null;
+    }
+
     // --- Sidebar state ---
     // Persisted across app switches so the sidebar stays collapsed/expanded.
     var sidebarOpen = localStorage.getItem('sidebar_state') !== 'false';
@@ -341,26 +395,30 @@
                     var tokenData = results[0];
                     var sc = shellConfig || {};
                     var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-                    postToIframe({
+                    var initMsg = {
                         type: 'init',
                         token: tokenData.token || '',
                         theme: theme,
                         inShell: true,
                         sidebarOpen: sidebarOpen,
                         domain: sc.domain || null
-                    });
+                    };
+                    if (currentColorTheme) initMsg.colorTheme = currentColorTheme;
+                    postToIframe(initMsg);
                     scheduleTokenRefresh(appName);
                     completeTransition();
                 }).catch(function() {
                     var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-                    postToIframe({
+                    var initMsg = {
                         type: 'init',
                         token: '',
                         theme: theme,
                         inShell: true,
                         sidebarOpen: sidebarOpen,
                         domain: null
-                    });
+                    };
+                    if (currentColorTheme) initMsg.colorTheme = currentColorTheme;
+                    postToIframe(initMsg);
                     completeTransition();
                 });
                 break;
@@ -371,6 +429,10 @@
 
             case 'navigate-external':
                 handleNavigateExternal(data);
+                break;
+
+            case 'navigate-top':
+                if (data.url) window.location.href = data.url;
                 break;
 
             case 'title':
@@ -398,7 +460,7 @@
                 break;
 
             case 'theme-set':
-                // App changed theme — update shell class (preference persisted server-side by the app)
+                // App changed appearance — update shell class (preference persisted server-side by the app)
                 var newTheme = data.theme;
                 if (newTheme === 'dark' || newTheme === 'light' || newTheme === 'auto' || newTheme === 'system') {
                     var resolved = newTheme;
@@ -408,6 +470,16 @@
                     document.documentElement.classList.remove('light', 'dark');
                     document.documentElement.classList.add(resolved);
                 }
+                break;
+
+            case 'color-theme-set':
+                // App changed color theme — apply and sync to iframe
+                if (data.colorTheme) {
+                    applyThemeVars(data.colorTheme);
+                } else {
+                    clearThemeVars();
+                }
+                postToIframe({ type: 'color-theme-change', colorTheme: data.colorTheme || null });
                 break;
         }
     });
@@ -420,9 +492,12 @@
                 var isDark = document.documentElement.classList.contains('dark');
                 postToIframe({ type: 'theme-change', theme: isDark ? 'dark' : 'light' });
             }
+            if (mutation.attributeName === 'style') {
+                postToIframe({ type: 'color-theme-change', colorTheme: currentColorTheme });
+            }
         });
     });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
 
     // --- Initial load progress ---
     showProgress();

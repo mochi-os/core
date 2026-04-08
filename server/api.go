@@ -256,7 +256,10 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "headers not specified or invalid")
 	}
 
-	user := t.Local("user").(*User)
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		user, _ = t.Local("owner").(*User)
+	}
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -324,7 +327,10 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "headers not specified or invalid")
 	}
 
-	user := t.Local("user").(*User)
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		user, _ = t.Local("owner").(*User)
+	}
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

@@ -772,7 +772,7 @@ func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/domains.db")
-	rows, _ := db.rows("select * from routes where domain=? order by priority desc, length(path) desc", domain_name)
+	rows, _ := db.rows("select * from routes where domain=? order by path asc, priority desc", domain_name)
 	return sl_encode(rows), nil
 }
 

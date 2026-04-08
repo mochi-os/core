@@ -87,6 +87,14 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 		Public:       true,
 	},
+	"default_theme": {
+		Name:         "default_theme",
+		Pattern:      "line",
+		Default:      "12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno:blue",
+		Description:  "Default color theme for new users (entity:theme)",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
 	"domains_verification": {
 		Name:         "domains_verification",
 		Pattern:      "^(true|false)$",

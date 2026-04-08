@@ -2219,6 +2219,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			}
 			if theme.Background != "" {
 				result["background"] = theme.Background
+				if len(av.Paths) > 0 && !strings.ContainsAny(theme.Background, `<>"`) {
+					result["background_url"] = "/" + av.Paths[0] + "/backgrounds/" + theme.Background
+				}
 			}
 			if len(theme.Overrides) > 0 {
 				result["overrides"] = theme.Overrides

@@ -223,6 +223,10 @@ func web_apply_user_document_theme(content string, user *User) string {
 	return content
 }
 
+// web_add_html_attr injects a class="..." or style="..." attribute into the
+// first <html> tag. If the tag already carries the same attribute name the
+// values are merged (space-joined for class, semicolon-joined for style)
+// instead of creating an invalid duplicate attribute.
 func web_add_html_attr(content, attr string) string {
 	if attr == "" {
 		return content
@@ -237,7 +241,45 @@ func web_add_html_attr(content, attr string) string {
 		return content
 	}
 	end += start
-	return content[:end] + " " + attr + content[end:]
+	tag := content[start:end]
+
+	// Extract the attribute name and value from the incoming attr (e.g. class="dark")
+	eq := strings.Index(attr, "=")
+	if eq == -1 {
+		// Plain attribute without value — just append
+		return content[:end] + " " + attr + content[end:]
+	}
+	name := attr[:eq]                                    // "class" or "style"
+	val := strings.Trim(attr[eq+1:], `"`)                // the value without quotes
+
+	// Check if the <html> tag already has this attribute
+	needle := name + `="`
+	pos := strings.Index(tag, needle)
+	if pos == -1 {
+		// Attribute doesn't exist yet — append it
+		return content[:end] + " " + attr + content[end:]
+	}
+
+	// Find the closing quote of the existing attribute value
+	val_start := start + pos + len(needle)
+	val_end := strings.Index(content[val_start:], `"`)
+	if val_end == -1 {
+		return content[:end] + " " + attr + content[end:]
+	}
+	val_end += val_start
+
+	// Merge: space for class, semicolon for style
+	sep := " "
+	if name == "style" {
+		sep = "; "
+	}
+	existing := content[val_start:val_end]
+	if existing == "" {
+		existing = val
+	} else {
+		existing = existing + sep + val
+	}
+	return content[:val_start] + existing + content[val_end:]
 }
 
 // shell_menu_app returns the menu app for the given user

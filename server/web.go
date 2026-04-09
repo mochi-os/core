@@ -776,7 +776,10 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		// js-cookie, etc.) doesn't throw.
 		content = strings.Replace(content, "<head>", "<head><script>"+shell_iframe_shim+"</script>", 1)
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		web_cache_static(c, file, aa.Cache)
+		// User-specific theme is baked in — prevent shared caches from
+		// serving one user's appearance to another.
+		c.Header("Cache-Control", "private, no-cache")
+		c.Header("Vary", "Cookie")
 		c.String(http.StatusOK, content)
 		return
 	}
@@ -798,7 +801,10 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 	content = web_apply_user_document_theme(content, web_auth(c))
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	web_cache_static(c, file, aa.Cache)
+	// User-specific theme is baked in — prevent shared caches from
+	// serving one user's appearance to another.
+	c.Header("Cache-Control", "private, no-cache")
+	c.Header("Vary", "Cookie")
 	c.String(http.StatusOK, content)
 }
 

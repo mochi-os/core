@@ -769,6 +769,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		if app := c.GetString("mochi_app_path"); app != "" {
 			content = strings.Replace(content, "<head>", `<head><base href="/`+escape_attr(app)+`/">`, 1)
 		}
+		content = web_apply_user_document_theme(content, web_auth(c))
 		// Inject a shim script before everything else. Sandboxed iframes without
 		// allow-same-origin cannot access cookies, localStorage, or sessionStorage.
 		// This shim provides in-memory fallbacks so third-party code (TanStack Router,
@@ -794,6 +795,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		return
 	}
 	content := web_inject_meta_tags(c, e, string(html))
+	content = web_apply_user_document_theme(content, web_auth(c))
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	web_cache_static(c, file, aa.Cache)

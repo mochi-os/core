@@ -120,24 +120,59 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	page := shell_html
 
 	// Appearance: set dark class or auto-detect script (controlled values, not user text)
-	appearance := user_preference_get(user, "appearance", "auto")
-	html_class := ""
-	appearance_script := ""
-	switch appearance {
-	case "dark":
-		html_class = `class="dark"`
-	case "auto":
-		appearance_script = `<script>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
-	}
+	html_class, appearance_script := web_user_appearance_attrs(user)
 	page = strings.Replace(page, "{{HTML_CLASS}}", html_class, 1)
 	page = strings.Replace(page, "{{APPEARANCE_SCRIPT}}", appearance_script, 1)
 
 	// Theme: apply color theme as inline CSS variables
-	theme_style := ""
+	page = strings.Replace(page, "{{THEME_STYLE}}", web_user_theme_style(user), 1)
+
+	// Embedded shell JS (from Go embed, not user input)
+	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
+
+	// Menu app assets (filesystem paths, not user input)
+	menu_js, menu_css := "", ""
+	if menu != nil {
+		menu_js, menu_css = shell_menu_assets(menu, user)
+	}
+	page = strings.Replace(page, "{{MENU_JS}}", menu_js, 1)
+	page = strings.Replace(page, "{{MENU_CSS}}", menu_css, 1)
+
+	// Clear stale mochi-theme cookie (no longer used)
+	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
+
+	// Security headers: shell cannot be framed
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Cross-Origin-Opener-Policy", "same-origin")
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	c.String(http.StatusOK, page)
+}
+
+func web_user_appearance_attrs(user *User) (string, string) {
+	appearance := user_preference_get(user, "appearance", "auto")
+	switch appearance {
+	case "light":
+		return `class="light"`, ""
+	case "dark":
+		return `class="dark"`, ""
+	case "auto":
+		return "", `<script>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
+	default:
+		return "", ""
+	}
+}
+
+func web_user_theme_style(user *User) string {
+	if user == nil {
+		return ""
+	}
+
 	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
 			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
-				theme_style = fmt.Sprintf(`style="--hue: %g; --hue-chroma: %g; --hue-bg: %g`, t.Hue, t.Chroma, t.HueBG)
+				theme_style := fmt.Sprintf(`style="--hue: %g; --hue-chroma: %g; --hue-bg: %g`, t.Hue, t.Chroma, t.HueBG)
 				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
 					theme_style += fmt.Sprintf("; --radius: %s", t.BorderRadius)
 				}
@@ -167,32 +202,42 @@ func web_serve_shell(c *gin.Context, app_id string) {
 					}
 				}
 				theme_style += `"`
+				return theme_style
 			}
 		}
 	}
-	page = strings.Replace(page, "{{THEME_STYLE}}", theme_style, 1)
+	return ""
+}
 
-	// Embedded shell JS (from Go embed, not user input)
-	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
-
-	// Menu app assets (filesystem paths, not user input)
-	menu_js, menu_css := "", ""
-	if menu != nil {
-		menu_js, menu_css = shell_menu_assets(menu, user)
+func web_apply_user_document_theme(content string, user *User) string {
+	if user == nil {
+		return content
 	}
-	page = strings.Replace(page, "{{MENU_JS}}", menu_js, 1)
-	page = strings.Replace(page, "{{MENU_CSS}}", menu_css, 1)
 
-	// Clear stale mochi-theme cookie (no longer used)
-	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
-	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
+	html_class, appearance_script := web_user_appearance_attrs(user)
+	content = web_add_html_attr(content, html_class)
+	content = web_add_html_attr(content, web_user_theme_style(user))
+	if appearance_script != "" {
+		content = strings.Replace(content, "<head>", "<head>"+appearance_script, 1)
+	}
+	return content
+}
 
-	// Security headers: shell cannot be framed
-	c.Header("X-Frame-Options", "DENY")
-	c.Header("Cross-Origin-Opener-Policy", "same-origin")
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.String(http.StatusOK, page)
+func web_add_html_attr(content, attr string) string {
+	if attr == "" {
+		return content
+	}
+
+	start := strings.Index(content, "<html")
+	if start == -1 {
+		return content
+	}
+	end := strings.Index(content[start:], ">")
+	if end == -1 {
+		return content
+	}
+	end += start
+	return content[:end] + " " + attr + content[end:]
 }
 
 // shell_menu_app returns the menu app for the given user

@@ -23,6 +23,9 @@
     var navigating = false; // true during cross-app navigation (blocks storage requests)
     var progressBar = document.getElementById('shell-progress');
 
+    // --- Locale state ---
+    var currentLocale = null;
+
     // --- Color theme state ---
     // Read initial color theme from server-injected inline style on <html>
     var currentColorTheme = null;
@@ -394,6 +397,7 @@
                 Promise.all([fetchToken(appName), shellConfigReady]).then(function(results) {
                     var tokenData = results[0];
                     var sc = shellConfig || {};
+                    if (!currentLocale && sc.locale) currentLocale = sc.locale;
                     var theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
                     var initMsg = {
                         type: 'init',
@@ -401,7 +405,8 @@
                         theme: theme,
                         inShell: true,
                         sidebarOpen: sidebarOpen,
-                        domain: sc.domain || null
+                        domain: sc.domain || null,
+                        locale: currentLocale || null
                     };
                     if (currentColorTheme) initMsg.colorTheme = currentColorTheme;
                     postToIframe(initMsg);
@@ -415,7 +420,8 @@
                         theme: theme,
                         inShell: true,
                         sidebarOpen: sidebarOpen,
-                        domain: null
+                        domain: null,
+                        locale: currentLocale || null
                     };
                     if (currentColorTheme) initMsg.colorTheme = currentColorTheme;
                     postToIframe(initMsg);
@@ -480,6 +486,12 @@
                     clearThemeVars();
                 }
                 postToIframe({ type: 'color-theme-change', colorTheme: data.colorTheme || null });
+                break;
+
+            case 'locale-set':
+                // App changed locale prefs — store and forward to iframe
+                if (data.locale) currentLocale = data.locale;
+                postToIframe({ type: 'locale-change', locale: data.locale || null });
                 break;
         }
     });

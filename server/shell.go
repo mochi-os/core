@@ -312,6 +312,17 @@ func web_shell_init(c *gin.Context) {
 		}
 	}
 
+	// Locale preferences for formatting
+	locale := gin.H{}
+	for _, key := range []string{"date_format", "time_format", "timestamp_display", "week_start", "number_format", "units", "timezone"} {
+		if v, ok := user.Preferences[key]; ok {
+			locale[key] = v
+		} else {
+			locale[key] = "auto"
+		}
+	}
+	result["locale"] = locale
+
 	c.JSON(http.StatusOK, result)
 }
 

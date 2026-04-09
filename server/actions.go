@@ -654,8 +654,16 @@ func (a *Action) sl_write_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "argument must be a Stream")
 	}
 
+	// Mark as file serving so the timeout handler waits for I/O to complete
+	t.SetLocal("file_serving", true)
+
 	// Get the raw reader (includes any buffered bytes from CBOR decoder)
 	reader := stream.raw_reader()
+
+	// Set Content-Type to octet-stream if not already set (avoids JSON interpretation)
+	if a.web.Writer.Header().Get("Content-Type") == "" {
+		a.web.Header("Content-Type", "application/octet-stream")
+	}
 
 	// Set status 200 on first write (matches a.print() pattern)
 	if !a.web.Writer.Written() {

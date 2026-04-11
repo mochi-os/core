@@ -511,7 +511,36 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now(), now())
 
 	rate_limit_login.reset(rate_limit_client_ip(c))
+
+	// Seed the mochi_me cookie with the provider's name and email so the
+	// /login/identity form can prefill the name input. The cookie is read by
+	// the frontend (lib/profile-cookie.ts), so it must NOT be HttpOnly.
+	oauth_set_profile_cookie(c, p)
+
 	auth_redirect_login(c, user, "/login/identity")
+}
+
+// oauth_set_profile_cookie writes the mochi_me JSON cookie that the login
+// app's identity form reads on mount. Mirrors the frontend writer in
+// apps/login/web/src/lib/profile-cookie.ts.
+func oauth_set_profile_cookie(c *gin.Context, p *oauth_profile) {
+	profile := map[string]string{}
+	if p.Name != "" {
+		profile["name"] = p.Name
+	}
+	if p.Email != "" {
+		profile["email"] = p.Email
+	}
+	if len(profile) == 0 {
+		return
+	}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return
+	}
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie("mochi_me", string(data), 7*86400, "/", "", secure, false)
 }
 
 // ============================================================================

@@ -58,6 +58,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"last_login": sl.NewBuiltin("mochi.user.last_login", api_user_last_login),
 	"list":       sl.NewBuiltin("mochi.user.list", api_user_list),
 	"methods":    api_user_methods,
+	"oauth":      api_user_oauth,
 	"passkey":    api_user_passkey,
 	"recovery":   api_user_recovery,
 	"search":     sl.NewBuiltin("mochi.user.search", api_user_search),
@@ -228,21 +229,33 @@ func user_from_code(code string) (*User, string) {
 		return nil, "signup_disabled"
 	}
 
+	return user_create(c.Username)
+}
+
+// user_create inserts a new user with the given username (email), applies the
+// first-user-becomes-administrator rule, and sends the admin notification. Used
+// by both email-code signup and OAuth signup paths. Returns the created user
+// and an error reason ("" on success, "invalid" if the row could not be read
+// back).
+func user_create(username string) (*User, string) {
+	db := db_open("db/users.db")
+
 	role := "user"
 	has_users, _ := db.exists("select id from users limit 1")
 	if !has_users {
 		role = "administrator"
 	}
 
-	db.exec("replace into users (username, role) values (?, ?)", c.Username, role)
+	db.exec("replace into users (username, role) values (?, ?)", username, role)
 
 	// Remove once we have hooks
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		email_send(admin, "Mochi new user", "New user: "+c.Username)
+		email_send(admin, "Mochi new user", "New user: "+username)
 	}
 
-	if db.scan(&u, "select id, username, role, methods, status from users where username=?", c.Username) {
+	var u User
+	if db.scan(&u, "select id, username, role, methods, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)
 		return &u, ""
 	}

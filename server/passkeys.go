@@ -157,7 +157,7 @@ func web_passkey_login_begin(c *gin.Context) {
 		return
 	}
 
-	if setting_get("auth_passkey_enabled", "true") != "true" {
+	if !auth_method_allowed("passkey") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "passkey_disabled"})
 		return
 	}
@@ -189,7 +189,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
-	if setting_get("auth_passkey_enabled", "true") != "true" {
+	if !auth_method_allowed("passkey") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "passkey_disabled"})
 		return
 	}
@@ -363,7 +363,7 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl_error(fn, "webauthn not configured")
 	}
 
-	if setting_get("auth_passkey_enabled", "true") != "true" {
+	if !auth_method_allowed("passkey") {
 		return sl_error(fn, "passkey disabled")
 	}
 
@@ -401,7 +401,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "webauthn not configured")
 	}
 
-	if setting_get("auth_passkey_enabled", "true") != "true" {
+	if !auth_method_allowed("passkey") {
 		return sl_error(fn, "passkey disabled")
 	}
 

@@ -93,6 +93,43 @@ func web_login_verify(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
+// auth_method_state returns the configured state of a login method: one of
+// "required", "allowed", or "disabled". Reads the per-method setting (e.g.
+// auth_email, auth_passkey) with the appropriate default.
+func auth_method_state(method string) string {
+	return setting_get("auth_"+method, "allowed")
+}
+
+// auth_method_allowed reports whether a login method is usable at all — i.e.
+// its state is not "disabled".
+func auth_method_allowed(method string) bool {
+	return auth_method_state(method) != "disabled"
+}
+
+// auth_methods_required_list returns the list of methods every user must have
+// configured. Recovery is excluded even if somehow set to "required" because
+// its setting is allowed|disabled only.
+func auth_methods_required_list() []string {
+	var required []string
+	for _, m := range []string{"email", "passkey", "totp", "oauth"} {
+		if auth_method_state(m) == "required" {
+			required = append(required, m)
+		}
+	}
+	return required
+}
+
+// auth_methods_allowed_list returns the list of methods that are not disabled.
+func auth_methods_allowed_list() []string {
+	var allowed []string
+	for _, m := range []string{"email", "passkey", "totp", "recovery", "oauth"} {
+		if auth_method_allowed(m) {
+			allowed = append(allowed, m)
+		}
+	}
+	return allowed
+}
+
 // auth_remaining_methods returns methods still required after completing the given method
 func auth_remaining_methods(user *User, completed string) []string {
 	if user.Methods == "" || user.Methods == completed {
@@ -110,21 +147,30 @@ func auth_remaining_methods(user *User, completed string) []string {
 	return remaining
 }
 
-// auth_complete_login creates a full session and returns session info to client
-func auth_complete_login(c *gin.Context, user *User) {
-	// Ensure identity is loaded so login responses can include name when available.
+// auth_remaining_oauth returns methods still required after OAuth login.
+// OAuth is treated as equivalent to email (both prove ownership of a verified
+// email), so any "email" entry in the user's methods is considered satisfied.
+func auth_remaining_oauth(user *User) []string {
+	return auth_remaining_methods(user, "email")
+}
+
+// auth_establish_session does the shared work of creating a login session: load
+// identity if missing, create per-device session with its JWT secret, set the
+// browser cookie, and audit the success. Used by both JSON and redirect finish
+// paths.
+func auth_establish_session(c *gin.Context, user *User) {
 	if user != nil && user.Identity == nil {
 		user.Identity = user.identity()
 	}
-
-	// Create session entry (per-device) which stores a per-session secret
 	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
-
-	// Set session cookie for web browser authentication
 	web_cookie_set(c, "session", session)
-
-	// Audit log successful login
 	audit_login(user.Username, rate_limit_client_ip(c))
+}
+
+// auth_complete_login creates a full session and returns session info as JSON.
+// Used by XHR-based login endpoints (email code, passkey, TOTP, MFA).
+func auth_complete_login(c *gin.Context, user *User) {
+	auth_establish_session(c, user)
 
 	response := gin.H{
 		"has_identity": user.Identity != nil && user.Identity.Name != "",
@@ -135,6 +181,21 @@ func auth_complete_login(c *gin.Context, user *User) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// auth_redirect_login creates a full session and redirects the browser to the
+// given target. Used by OAuth callback flows where the response is a browser
+// redirect rather than an XHR JSON body.
+func auth_redirect_login(c *gin.Context, user *User, target string) {
+	auth_establish_session(c, user)
+	if target == "" {
+		if user.Identity == nil || user.Identity.Name == "" {
+			target = "/login/identity"
+		} else {
+			target = "/"
+		}
+	}
+	c.Redirect(http.StatusFound, target)
 }
 
 // auth_create_app_token creates an app-scoped JWT for a session
@@ -169,10 +230,17 @@ func auth_create_app_token(user_id int, login string, app string) string {
 // GET /_/auth/methods - Get enabled auth methods for the system
 func web_auth_methods(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"email":    setting_get("auth_email_enabled", "true") == "true",
-		"passkey":  setting_get("auth_passkey_enabled", "true") == "true",
-		"recovery": setting_get("auth_recovery_enabled", "true") == "true",
+		"email":    auth_method_allowed("email"),
+		"passkey":  auth_method_allowed("passkey"),
+		"recovery": auth_method_allowed("recovery"),
 		"signup":   setting_signup_enabled(),
+		"oauth": gin.H{
+			"google":    oauth_enabled("google"),
+			"github":    oauth_enabled("github"),
+			"microsoft": oauth_enabled("microsoft"),
+			"facebook":  oauth_enabled("facebook"),
+			"x":         oauth_enabled("x"),
+		},
 	})
 }
 
@@ -496,7 +564,7 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Validate against allowed methods
-	allowed := strings.Split(setting_get("auth_methods_allowed", "email,passkey,totp,recovery"), ",")
+	allowed := auth_methods_allowed_list()
 	for _, m := range methods {
 		valid := false
 		for _, a := range allowed {
@@ -511,23 +579,16 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Check required methods are included
-	required := setting_get("auth_methods_required", "")
-	if required != "" {
-		for _, r := range strings.Split(required, ",") {
-			r = strings.TrimSpace(r)
-			if r == "" {
-				continue
+	for _, r := range auth_methods_required_list() {
+		found := false
+		for _, m := range methods {
+			if m == r {
+				found = true
+				break
 			}
-			found := false
-			for _, m := range methods {
-				if m == r {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return sl_error(fn, "method required: %s", r)
-			}
+		}
+		if !found {
+			return sl_error(fn, "method required: %s", r)
 		}
 	}
 
@@ -727,7 +788,7 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // POST /_/auth/recovery - Login with recovery code
 func web_recovery_login(c *gin.Context) {
-	if setting_get("auth_recovery_enabled", "true") != "true" {
+	if !auth_method_allowed("recovery") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "recovery_disabled"})
 		return
 	}
@@ -794,7 +855,7 @@ func web_recovery_login(c *gin.Context) {
 
 // mochi.user.recovery.generate() -> list: Generate new recovery codes (replaces existing)
 func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if setting_get("auth_recovery_enabled", "true") != "true" {
+	if !auth_method_allowed("recovery") {
 		return sl_error(fn, "recovery disabled")
 	}
 

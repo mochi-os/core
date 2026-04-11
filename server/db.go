@@ -26,7 +26,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 42
+	schema_version = 43
 )
 
 var (
@@ -82,6 +82,10 @@ func db_create() {
 
 	// TOTP secrets
 	users.exec("create table totp (user integer primary key references users(id) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+
+	// OAuth identities (Google, GitHub, Microsoft, Facebook, X)
+	users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, used integer not null default 0, unique(provider, subject))")
+	users.exec("create index oauth_user on oauth(user)")
 
 	// API tokens (app-scoped)
 	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, used integer not null default 0, expires integer not null default 0)")
@@ -410,8 +414,31 @@ func db_start() bool {
 
 func db_upgrade() {
 	schema := atoi(setting_get("schema", ""), 1)
-	if schema < schema_version {
-		panic(fmt.Sprintf("Database schema version %d is too old. Minimum supported version is %d.", schema, schema_version))
+
+	if schema > schema_version {
+		panic(fmt.Sprintf("Database schema version %d is newer than this server supports (version %d). Downgrade is not supported.", schema, schema_version))
+	}
+
+	for schema < schema_version {
+		next := schema + 1
+		info("Upgrading database schema from version %d to %d", schema, next)
+		switch next {
+		case 43:
+			db_upgrade_43()
+		default:
+			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
+		}
+		setting_set("schema", fmt.Sprintf("%d", next))
+		schema = next
+	}
+}
+
+// db_upgrade_43 adds the oauth table for third-party login identities.
+func db_upgrade_43() {
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='oauth'"); !exists {
+		users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, used integer not null default 0, unique(provider, subject))")
+		users.exec("create index oauth_user on oauth(user)")
 	}
 }
 

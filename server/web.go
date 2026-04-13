@@ -777,8 +777,13 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		content = strings.Replace(content, "<head>", "<head><script>"+shell_iframe_shim+"</script>", 1)
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		// User-specific theme is baked in — prevent shared caches from
-		// serving one user's appearance to another.
-		c.Header("Cache-Control", "private, no-cache")
+		// serving one user's appearance to another. Short private
+		// max-age covers rapid app switching without a server round-trip.
+		if web_cache {
+			c.Header("Cache-Control", "private, max-age=60")
+		} else {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
 		c.Header("Vary", "Cookie")
 		c.String(http.StatusOK, content)
 		return
@@ -802,8 +807,13 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	// User-specific theme is baked in — prevent shared caches from
-	// serving one user's appearance to another.
-	c.Header("Cache-Control", "private, no-cache")
+	// serving one user's appearance to another. Short private
+	// max-age covers rapid app switching without a server round-trip.
+	if web_cache {
+		c.Header("Cache-Control", "private, max-age=60")
+	} else {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	}
 	c.Header("Vary", "Cookie")
 	c.String(http.StatusOK, content)
 }

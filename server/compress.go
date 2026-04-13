@@ -37,19 +37,27 @@ type gzip_writer struct {
 	compress bool
 }
 
+// decide sets up compression headers based on Content-Type. Called from
+// both WriteHeader (so HEAD responses get correct headers) and Write
+// (so Gin render flows, which set Content-Type after c.Status, work).
+// No-op if Content-Type is not yet set — caller will retry.
+// The gzip.Writer itself is created lazily on first Write so HEAD
+// responses don't emit the empty-stream 20-byte envelope.
 func (w *gzip_writer) decide() {
+	if w.decided {
+		return
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct == "" {
+		return
+	}
 	w.decided = true
 	if w.Header().Get("Content-Encoding") != "" {
 		return
 	}
-	if !gzip_compressible(w.Header().Get("Content-Type")) {
+	if !gzip_compressible(ct) {
 		return
 	}
-	gz, err := gzip.NewWriterLevel(w.ResponseWriter, w.level)
-	if err != nil {
-		gz = gzip.NewWriter(w.ResponseWriter)
-	}
-	w.gz = gz
 	w.compress = true
 	w.Header().Set("Content-Encoding", "gzip")
 	w.Header().Add("Vary", "Accept-Encoding")
@@ -57,14 +65,27 @@ func (w *gzip_writer) decide() {
 	w.Header().Del("Content-Length")
 }
 
+func (w *gzip_writer) WriteHeader(code int) {
+	w.decide()
+	w.ResponseWriter.WriteHeader(code)
+}
+
 func (w *gzip_writer) Write(p []byte) (int, error) {
+	w.decide()
 	if !w.decided {
-		w.decide()
+		w.decided = true
 	}
-	if w.compress {
-		return w.gz.Write(p)
+	if !w.compress {
+		return w.ResponseWriter.Write(p)
 	}
-	return w.ResponseWriter.Write(p)
+	if w.gz == nil {
+		gz, err := gzip.NewWriterLevel(w.ResponseWriter, w.level)
+		if err != nil {
+			gz = gzip.NewWriter(w.ResponseWriter)
+		}
+		w.gz = gz
+	}
+	return w.gz.Write(p)
 }
 
 func (w *gzip_writer) WriteString(s string) (int, error) {

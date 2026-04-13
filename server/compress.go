@@ -23,6 +23,15 @@ func web_compress_middleware(c *gin.Context) {
 		return
 	}
 
+	// Range requests are satisfied over raw bytes by gin's static handler. If
+	// we also gzip the body, the Content-Range header (pointing at raw-byte
+	// offsets) becomes inconsistent with the compressed body and browsers
+	// reject the response. Bail out.
+	if c.GetHeader("Range") != "" {
+		c.Next()
+		return
+	}
+
 	w := &gzip_writer{ResponseWriter: c.Writer, level: web_gzip_level}
 	c.Writer = w
 	c.Next()

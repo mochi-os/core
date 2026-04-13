@@ -1166,7 +1166,11 @@ func web_path(c *gin.Context) {
 		// 301 redirect /login -> / for unauthenticated users (bookmarks, password managers)
 		if first == "login" && len(segments) == 1 && user == nil &&
 			strings.Contains(c.GetHeader("Accept"), "text/html") {
-			c.Redirect(http.StatusMovedPermanently, "/")
+			target := "/"
+			if c.Request.URL.RawQuery != "" {
+				target += "?" + c.Request.URL.RawQuery
+			}
+			c.Redirect(http.StatusMovedPermanently, target)
 			return
 		}
 

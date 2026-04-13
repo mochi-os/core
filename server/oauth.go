@@ -239,10 +239,21 @@ func web_oauth_begin(c *gin.Context) {
 	c.ShouldBindJSON(&body)
 
 	// Linking requires an authenticated session; the user is stored in the
-	// ceremony row so the callback knows to take the link branch.
+	// ceremony row so the callback knows to take the link branch. The
+	// settings app runs sandboxed — cookies aren't sent, so fall back to the
+	// Bearer token in the Authorization header (same pattern as websockets).
 	var link_user int
 	if body.Link {
 		user := web_auth(c)
+		if user == nil {
+			auth_header := c.GetHeader("Authorization")
+			if strings.HasPrefix(auth_header, "Bearer ") {
+				token := strings.TrimPrefix(auth_header, "Bearer ")
+				if uid, _, err := jwt_verify(token); err == nil && uid > 0 {
+					user = user_by_id(uid)
+				}
+			}
+		}
 		if user == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "not_authenticated"})
 			return
@@ -401,6 +412,14 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, 
 			owner = int(v)
 		}
 	}
+	if target == "" {
+		target = "/login/settings/oauth"
+	}
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+
 	switch {
 	case owner == 0:
 		db.exec("insert into oauth (user, provider, subject, email, verified, name, created, used) values (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -409,17 +428,12 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, 
 		db.exec("update oauth set used=?, email=?, name=?, verified=? where provider=? and subject=?",
 			now(), p.Email, p.Name, boolint(p.Verified), provider, p.Subject)
 	default:
-		oauth_error_redirect(c, "already_linked", nil)
+		// Linking failures redirect back to the target (user is authenticated)
+		// rather than /login/, which would log them out of the UI's view.
+		c.Redirect(http.StatusFound, target+sep+"oauth_error=already_linked")
 		return
 	}
 
-	if target == "" {
-		target = "/login/settings/oauth"
-	}
-	sep := "?"
-	if strings.Contains(target, "?") {
-		sep = "&"
-	}
 	c.Redirect(http.StatusFound, target+sep+"oauth_linked="+provider)
 }
 

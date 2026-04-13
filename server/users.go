@@ -770,46 +770,48 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "cannot delete self")
 	}
 
+	target, err := user_delete(int(id))
+	if err != nil {
+		return sl_error(fn, err.Error())
+	}
+
+	audit_user_deleted(user.Username, target)
+	return sl.True, nil
+}
+
+// user_delete removes a user and all associated rows (entities, sessions,
+// passkeys, totp, recovery, oauth) plus the on-disk data directory. Returns
+// the deleted username for audit purposes.
+func user_delete(id int) (string, error) {
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where id=?", id)
 	if !exists {
-		return sl_error(fn, "user not found")
+		return "", fmt.Errorf("user not found")
 	}
 
-	// Delete user's entities (broadcasts deletion, removes from directory and entities table)
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
 		e.delete()
 	}
 
-	// Delete from sessions.db
 	sdb := db_open("db/sessions.db")
 	sdb.exec("delete from sessions where user=?", id)
 	sdb.exec("delete from ceremonies where user=?", id)
 	sdb.exec("delete from partial where user=?", id)
 
-	// Delete passkey credentials
 	db.exec("delete from credentials where user=?", id)
-
-	// Delete TOTP secrets
 	db.exec("delete from totp where user=?", id)
-
-	// Delete recovery codes
 	db.exec("delete from recovery where user=?", id)
+	db.exec("delete from oauth where user=?", id)
 
-	// Get username before deletion for audit
 	var target User
 	db.scan(&target, "select username from users where id=?", id)
 
-	// Delete user
 	db.exec("delete from users where id=?", id)
-
-	// Delete user's data directory
 	os.RemoveAll(fmt.Sprintf("%s/users/%d", data_dir, id))
 
-	audit_user_deleted(user.Username, target.Username)
-	return sl.True, nil
+	return target.Username, nil
 }
 
 // mochi.user.suspend(id) -> bool: Suspend a user (admin only)

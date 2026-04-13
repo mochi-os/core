@@ -6,6 +6,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -444,6 +445,29 @@ func db_upgrade_43() {
 
 func (db *DB) close() {
 	db.closed = now()
+}
+
+// db_purge_prefix closes and evicts every cached DB whose on-disk path lives
+// under the given directory. Use this before removing a directory (e.g. a
+// user's data dir) so that stale handles can't be reused for I/O against
+// files that no longer exist.
+func db_purge_prefix(dir string) {
+	prefix := filepath.Join(data_dir, dir)
+	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+	var closers []*sqlx.DB
+	databases_lock.Lock()
+	for key, db := range databases {
+		if strings.HasPrefix(db.path, prefix) {
+			closers = append(closers, db.handle)
+			delete(databases, key)
+		}
+	}
+	databases_lock.Unlock()
+	for _, h := range closers {
+		h.Close()
+	}
 }
 
 func (db *DB) exec(query string, values ...any) {

@@ -809,6 +809,7 @@ func user_delete(id int) (string, error) {
 	db.scan(&target, "select username from users where id=?", id)
 
 	db.exec("delete from users where id=?", id)
+	db_purge_prefix(fmt.Sprintf("users/%d", id))
 	os.RemoveAll(fmt.Sprintf("%s/users/%d", data_dir, id))
 
 	return target.Username, nil

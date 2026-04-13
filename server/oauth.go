@@ -553,8 +553,24 @@ func oauth_set_profile_cookie(c *gin.Context, p *oauth_profile) {
 		return
 	}
 	secure := web_https && !web_is_localhost(c)
-	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie("mochi_me", string(data), 7*86400, "/", "", secure, false)
+	// Lax (not Strict) because the callback redirects to /login/identity via a
+	// chain initiated by the upstream provider (github.com etc.). Strict holds
+	// the cookie back on that top-level cross-site navigation, so the identity
+	// form sees no prefill.
+	// Use http.SetCookie directly, not Gin's helper: Gin url.QueryEscape's the
+	// value and encodes spaces as '+' (application/x-www-form-urlencoded), which
+	// decodeURIComponent on the client does NOT turn back into a space. That
+	// produces names like "Alistair+Cunningham" in the prefill. url.PathEscape
+	// encodes spaces as %20 which decodes cleanly.
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     "mochi_me",
+		Value:    url.PathEscape(string(data)),
+		MaxAge:   7 * 86400,
+		Path:     "/",
+		Secure:   secure,
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // ============================================================================
@@ -592,6 +608,30 @@ func oauth_oidc_profile(ctx context.Context, provider *oidc.Provider, client_id 
 	if claims.EmailVerified != nil && *claims.EmailVerified {
 		verified = true
 	}
+
+	// Fall back to the /userinfo endpoint when the ID token omits name or email
+	// (e.g. Google returns minimal claims on prompt=none refreshes). UserInfo
+	// is the OIDC-standard place for profile data.
+	if claims.Name == "" || claims.Email == "" {
+		ts := oauth2.StaticTokenSource(token)
+		if ui, err := provider.UserInfo(ctx, ts); err == nil {
+			var extra struct {
+				Name          string `json:"name"`
+				EmailVerified *bool  `json:"email_verified"`
+			}
+			_ = ui.Claims(&extra)
+			if claims.Name == "" {
+				claims.Name = extra.Name
+			}
+			if claims.Email == "" {
+				claims.Email = ui.Email
+			}
+			if !verified && ((extra.EmailVerified != nil && *extra.EmailVerified) || ui.EmailVerified) {
+				verified = true
+			}
+		}
+	}
+
 	return &oauth_profile{
 		Subject:  claims.Sub,
 		Email:    claims.Email,

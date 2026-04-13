@@ -1032,6 +1032,38 @@ func web_login_identity(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// Abandon a half-finished signup: delete the user (only allowed if no
+// identity has been created yet) and clear the session. Used by the
+// /login/identity page to let the user back out of a signup started via
+// OAuth or email-code when they reached the identity form by mistake.
+func web_abandon(c *gin.Context) {
+	u := web_auth(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	if u.identity() != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account already set up"})
+		return
+	}
+
+	session := web_cookie_get(c, "session", "")
+	if session != "" {
+		login_delete(session)
+	}
+	web_cookie_unset(c, "session")
+
+	target, err := user_delete(u.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit_user_deleted(target, target)
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 // Log the user out
 func web_logout(c *gin.Context) {
 	session := web_cookie_get(c, "session", "")
@@ -1306,6 +1338,9 @@ func web_start() {
 	r.Use(web_security_headers)
 	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)
+	if web_compress == "gzip" {
+		r.Use(web_compress_middleware)
+	}
 	r.Use(domains_middleware())
 	r.RedirectTrailingSlash = false
 
@@ -1326,6 +1361,7 @@ func web_start() {
 	r.GET("/_/identity", web_identity_get)
 	r.POST("/_/identity", web_login_identity)
 	r.POST("/_/logout", web_logout)
+	r.POST("/_/abandon", web_abandon)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)

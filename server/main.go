@@ -15,14 +15,16 @@ import (
 type Map map[string]any
 
 var (
-	build_version string
-	cache_dir     string
-	data_dir      string
-	dev_apps_dir  string
-	dev_reload    bool
-	web_cache     bool
-	email_host    string
-	email_port    int
+	build_version  string
+	cache_dir      string
+	data_dir       string
+	dev_apps_dir   string
+	dev_reload     bool
+	web_cache      bool
+	web_compress   string
+	web_gzip_level int
+	email_host     string
+	email_port     int
 )
 
 func main() {
@@ -66,6 +68,18 @@ func main() {
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	web_cache = ini_bool("web", "cache", true)
+	web_compress = ini_string("web", "compress", "gzip")
+	web_gzip_level = ini_int("web", "gzip", 6)
+	switch web_compress {
+	case "none", "gzip":
+	default:
+		warn("Invalid web.compress value %q; disabling compression", web_compress)
+		web_compress = "none"
+	}
+	if web_gzip_level < 1 || web_gzip_level > 9 {
+		warn("Invalid web.gzip level %d; using default (6)", web_gzip_level)
+		web_gzip_level = 6
+	}
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
 

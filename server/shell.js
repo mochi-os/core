@@ -32,23 +32,25 @@
     (function() {
         var root = document.documentElement;
         var hue = root.style.getPropertyValue('--hue');
+        // Collect any overrides (non-anchor CSS variables like --radius)
+        var overrides = {};
+        for (var i = 0; i < root.style.length; i++) {
+            var prop = root.style[i];
+            if (prop.startsWith('--') && prop !== '--hue' && prop !== '--hue-chroma' && prop !== '--hue-bg') {
+                overrides[prop] = root.style.getPropertyValue(prop).trim();
+            }
+        }
+        var hasOverrides = Object.keys(overrides).length > 0;
         if (hue) {
             currentColorTheme = {
                 hue: hue.trim(),
                 chroma: (root.style.getPropertyValue('--hue-chroma') || '').trim(),
                 hueBg: (root.style.getPropertyValue('--hue-bg') || '').trim()
             };
-            // Collect any overrides (non-anchor CSS variables)
-            var overrides = {};
-            for (var i = 0; i < root.style.length; i++) {
-                var prop = root.style[i];
-                if (prop.startsWith('--') && prop !== '--hue' && prop !== '--hue-chroma' && prop !== '--hue-bg') {
-                    overrides[prop] = root.style.getPropertyValue(prop).trim();
-                }
-            }
-            if (Object.keys(overrides).length > 0) {
-                currentColorTheme.overrides = overrides;
-            }
+            if (hasOverrides) currentColorTheme.overrides = overrides;
+        } else if (hasOverrides) {
+            // No color theme, but has CSS var overrides (e.g. border_radius pref) — use empty hue
+            currentColorTheme = { hue: '', chroma: '', hueBg: '', overrides: overrides };
         }
     })();
 
@@ -56,9 +58,11 @@
         clearThemeVars();
         if (!theme) { currentColorTheme = null; return; }
         var root = document.documentElement;
-        root.style.setProperty('--hue', theme.hue);
-        root.style.setProperty('--hue-chroma', theme.chroma);
-        root.style.setProperty('--hue-bg', theme.hueBg);
+        if (theme.hue) {
+            root.style.setProperty('--hue', theme.hue);
+            root.style.setProperty('--hue-chroma', theme.chroma);
+            root.style.setProperty('--hue-bg', theme.hueBg);
+        }
         if (theme.overrides) {
             for (var key in theme.overrides) {
                 root.style.setProperty(key, theme.overrides[key]);

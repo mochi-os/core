@@ -164,17 +164,70 @@ func web_user_appearance_attrs(user *User) (string, string) {
 	}
 }
 
+func appendRadiusVarsFromBase(styleParts *[]string, baseRadius string) {
+	*styleParts = append(*styleParts,
+		fmt.Sprintf("--radius: %s", baseRadius),
+		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
+		fmt.Sprintf("--radius-md: calc(%s - 2px)", baseRadius),
+		fmt.Sprintf("--radius-lg: %s", baseRadius),
+		fmt.Sprintf("--radius-xl: calc(%s + 4px)", baseRadius),
+	)
+}
+
+func appendRadiusPreset(styleParts *[]string, preset string) {
+	switch preset {
+	case "none":
+		*styleParts = append(*styleParts,
+			"--radius: 0rem",
+			"--radius-sm: 0rem",
+			"--radius-md: 0rem",
+			"--radius-lg: 0rem",
+			"--radius-xl: 0rem",
+		)
+	case "small":
+		*styleParts = append(*styleParts,
+			"--radius: 0.375rem",
+			"--radius-sm: 0.125rem",
+			"--radius-md: 0.25rem",
+			"--radius-lg: 0.375rem",
+			"--radius-xl: 0.625rem",
+		)
+	case "medium":
+		*styleParts = append(*styleParts,
+			"--radius: 0.75rem",
+			"--radius-sm: 0.5rem",
+			"--radius-md: 0.625rem",
+			"--radius-lg: 0.75rem",
+			"--radius-xl: 1rem",
+		)
+	case "large":
+		*styleParts = append(*styleParts,
+			"--radius: 1.75rem",
+			"--radius-sm: 1.5rem",
+			"--radius-md: 1.625rem",
+			"--radius-lg: 1.75rem",
+			"--radius-xl: 2rem",
+		)
+	}
+}
+
 func web_user_theme_style(user *User) string {
 	if user == nil {
 		return ""
 	}
 
+	styleParts := []string{}
+
 	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
 			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
-				theme_style := fmt.Sprintf(`style="--hue: %g; --hue-chroma: %g; --hue-bg: %g`, t.Hue, t.Chroma, t.HueBG)
+				styleParts = append(styleParts,
+					fmt.Sprintf("--hue: %g", t.Hue),
+					fmt.Sprintf("--hue-chroma: %g", t.Chroma),
+					fmt.Sprintf("--hue-bg: %g", t.HueBG),
+				)
 				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
-					theme_style += fmt.Sprintf("; --radius: %s", t.BorderRadius)
+					appendRadiusVarsFromBase(&styleParts, t.BorderRadius)
 				}
 				if t.Background != "" {
 					// Resolve background URL from theme app's path
@@ -187,10 +240,10 @@ func web_user_theme_style(user *User) string {
 							if av != nil && len(av.Paths) > 0 {
 								base := av.Paths[0]
 								if !strings.ContainsAny(t.Background, `<>"`) {
-									theme_style += fmt.Sprintf("; --background-image: url(/%s/backgrounds/%s)", base, t.Background)
+									styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
 								}
 								if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-									theme_style += fmt.Sprintf("; --background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark)
+									styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
 								}
 							}
 						}
@@ -198,15 +251,20 @@ func web_user_theme_style(user *User) string {
 				}
 				for key, val := range t.Overrides {
 					if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
-						theme_style += fmt.Sprintf("; %s: %s", key, val)
+						styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
 					}
 				}
-				theme_style += `"`
-				return theme_style
 			}
 		}
 	}
-	return ""
+
+	// User border-radius preference takes precedence over theme radius.
+	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))
+
+	if len(styleParts) == 0 {
+		return ""
+	}
+	return `style="` + strings.Join(styleParts, "; ") + `"`
 }
 
 func web_apply_user_document_theme(content string, user *User) string {
@@ -249,8 +307,8 @@ func web_add_html_attr(content, attr string) string {
 		// Plain attribute without value — just append
 		return content[:end] + " " + attr + content[end:]
 	}
-	name := attr[:eq]                                    // "class" or "style"
-	val := strings.Trim(attr[eq+1:], `"`)                // the value without quotes
+	name := attr[:eq]                     // "class" or "style"
+	val := strings.Trim(attr[eq+1:], `"`) // the value without quotes
 
 	// Check if the <html> tag already has this attribute
 	needle := name + `="`

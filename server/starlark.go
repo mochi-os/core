@@ -344,10 +344,14 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 }
 
 // Call a Starlark function
-func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
+func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
 		return nil, fmt.Errorf("Starlark app function %q not found", function)
+	}
+	var kw []sl.Tuple
+	if len(kwargs) > 0 {
+		kw = kwargs[0]
 	}
 
 	// Acquire semaphore to limit concurrency
@@ -369,7 +373,7 @@ func (s *Starlark) call(function string, args sl.Tuple) (sl.Value, error) {
 	var call_err error
 
 	go func() {
-		result, call_err = sl.Call(s.thread, f, args, nil)
+		result, call_err = sl.Call(s.thread, f, args, kw)
 		close(done)
 	}()
 

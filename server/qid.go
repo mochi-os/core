@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,29 +23,46 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
+const (
+	qid_search_ttl       = 7 * 24 * time.Hour
+	qid_search_empty_ttl = time.Hour
+	qid_backoff_base     = 60 * time.Second
+	qid_backoff_max      = 30 * time.Minute
+)
+
 var api_qid = sls.FromStringDict(sl.String("mochi.qid"), sl.StringDict{
 	"lookup": sl.NewBuiltin("mochi.qid.lookup", api_qid_lookup),
 	"search": sl.NewBuiltin("mochi.qid.search", api_qid_search),
 })
 
 var (
-	qid_db_once   sync.Once
-	qid_regex     = regexp.MustCompile(`^Q[0-9]+$`)
-	qid_rate_lock sync.Mutex
-	qid_rate_last time.Time
+	qid_db_once       sync.Once
+	qid_regex         = regexp.MustCompile(`^Q[0-9]+$`)
+	qid_rate_lock     sync.Mutex
+	qid_rate_last     time.Time
+	qid_backoff_lock  sync.Mutex
+	qid_backoff_until time.Time
+	qid_backoff_cur   = qid_backoff_base
 )
 
-// qid_db opens external.db and creates the qids table on first use
+// qid_db opens external.db and creates the qids and qid_searches tables on first use
 func qid_db() *DB {
 	qid_db_once.Do(func() {
 		db := db_open("db/external.db")
 		db.exec("create table if not exists qids (qid text not null, lang text not null, label text not null, fetched integer not null, primary key (qid, lang))")
+		db.exec("create table if not exists qid_searches (query text not null, lang text not null, results text not null, fetched integer not null, primary key (query, lang))")
 	})
 	return db_open("db/external.db")
 }
 
-// qid_rate_wait enforces 1 request per second to Wikidata
+// qid_rate_wait enforces 1 request per second to Wikidata plus any active 429 backoff
 func qid_rate_wait() {
+	qid_backoff_lock.Lock()
+	wait := time.Until(qid_backoff_until)
+	qid_backoff_lock.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 	qid_rate_lock.Lock()
 	defer qid_rate_lock.Unlock()
 	elapsed := time.Since(qid_rate_last)
@@ -52,6 +70,32 @@ func qid_rate_wait() {
 		time.Sleep(time.Second - elapsed)
 	}
 	qid_rate_last = time.Now()
+}
+
+// qid_handle_429 records a 429 response and sets an exponential backoff window.
+// Respects the Retry-After header if present.
+func qid_handle_429(resp *http.Response, context string) {
+	qid_backoff_lock.Lock()
+	defer qid_backoff_lock.Unlock()
+	wait := qid_backoff_cur
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(ra)); err == nil && secs > 0 {
+			wait = time.Duration(secs) * time.Second
+		}
+	}
+	qid_backoff_until = time.Now().Add(wait)
+	qid_backoff_cur *= 2
+	if qid_backoff_cur > qid_backoff_max {
+		qid_backoff_cur = qid_backoff_max
+	}
+	info("mochi.qid: Wikidata 429 on %s, backing off for %v", context, wait)
+}
+
+// qid_request_ok is called after a successful Wikidata response to decay backoff
+func qid_request_ok() {
+	qid_backoff_lock.Lock()
+	qid_backoff_cur = qid_backoff_base
+	qid_backoff_lock.Unlock()
 }
 
 // mochi.qid.lookup(qid, lang) -> string|dict: Look up Wikidata QID labels with caching
@@ -207,9 +251,15 @@ func qid_fetch_labels(qids []string, lang string) map[string]string {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode != 200 {
+		if resp.StatusCode == 429 {
+			qid_handle_429(resp, "wbgetentities")
 			continue
 		}
+		if resp.StatusCode != 200 {
+			info("mochi.qid: wbgetentities returned %d", resp.StatusCode)
+			continue
+		}
+		qid_request_ok()
 
 		var data map[string]any
 		if json.Unmarshal(body, &data) != nil {
@@ -272,6 +322,31 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid language")
 	}
 
+	db := qid_db()
+	nowTime := time.Now()
+	cutoffFull := nowTime.Add(-qid_search_ttl).Unix()
+	cutoffEmpty := nowTime.Add(-qid_search_empty_ttl).Unix()
+
+	// Serve from cache if fresh. Empty results use a shorter TTL so a transient
+	// Wikidata glitch doesn't lock out a term that really does have a match.
+	if row, err := db.row("select results, fetched from qid_searches where query=? and lang=?", query, lang); err == nil && row != nil {
+		fetched, _ := row["fetched"].(int64)
+		resultsJSON, _ := row["results"].(string)
+		var cached []map[string]any
+		if resultsJSON != "" && json.Unmarshal([]byte(resultsJSON), &cached) == nil {
+			if cached == nil {
+				cached = []map[string]any{}
+			}
+			cutoff := cutoffFull
+			if len(cached) == 0 {
+				cutoff = cutoffEmpty
+			}
+			if fetched >= cutoff {
+				return sl_encode(cached), nil
+			}
+		}
+	}
+
 	qid_rate_wait()
 
 	u := fmt.Sprintf("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%s&language=%s&limit=10&format=json",
@@ -286,15 +361,23 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		info("mochi.qid: wbsearchentities request failed: %v", err)
 		return sl_encode([]map[string]any{}), nil
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode == 429 {
+		qid_handle_429(resp, "wbsearchentities")
+		// Do not cache: return empty but allow retry next call
 		return sl_encode([]map[string]any{}), nil
 	}
+	if resp.StatusCode != 200 {
+		info("mochi.qid: wbsearchentities returned %d for %q", resp.StatusCode, query)
+		return sl_encode([]map[string]any{}), nil
+	}
+	qid_request_ok()
 
 	var data map[string]any
 	if json.Unmarshal(body, &data) != nil {
@@ -306,9 +389,8 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_encode([]map[string]any{}), nil
 	}
 
-	db := qid_db()
 	now := time.Now().Unix()
-	var results []map[string]any
+	results := []map[string]any{}
 
 	for _, item := range search {
 		entry, ok := item.(map[string]any)
@@ -336,8 +418,10 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		}
 	}
 
-	if results == nil {
-		results = []map[string]any{}
+	// Cache the result set. Empty results use a short TTL on read so transient
+	// Wikidata issues clear quickly, while genuine "no match" terms don't re-query constantly.
+	if resultsJSON, err := json.Marshal(results); err == nil {
+		db.exec("replace into qid_searches (query, lang, results, fetched) values (?, ?, ?, ?)", query, lang, string(resultsJSON), now)
 	}
 
 	return sl_encode(results), nil

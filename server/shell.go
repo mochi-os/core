@@ -211,6 +211,127 @@ func appendRadiusPreset(styleParts *[]string, preset string) {
 	}
 }
 
+func appendDensityPreset(styleParts *[]string, preset string) {
+	switch preset {
+	case "compact":
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.5rem",
+			"--control-height-sm: 1.75rem",
+			"--control-height-md: 2rem",
+			"--control-height-lg: 2.25rem",
+			"--input-h: 2rem",
+			"--card-px: 1.25rem",
+			"--card-py: 0.875rem",
+		)
+	case "spacious":
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.875rem",
+			"--control-height-sm: 2.125rem",
+			"--control-height-md: 2.5rem",
+			"--control-height-lg: 2.75rem",
+			"--input-h: 2.5rem",
+			"--card-px: 1.75rem",
+			"--card-py: 1.25rem",
+		)
+	default:
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.75rem",
+			"--control-height-sm: 2rem",
+			"--control-height-md: 2.25rem",
+			"--control-height-lg: 2.5rem",
+			"--input-h: 2.25rem",
+			"--card-px: 1.5rem",
+			"--card-py: 1rem",
+		)
+	}
+}
+
+func appendStylePreset(styleParts *[]string, preset string) {
+	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, baseRadius, borderWidth string) {
+		*styleParts = append(*styleParts,
+			fmt.Sprintf("--spacing-base: %s", spacingBase),
+			fmt.Sprintf("--spacing: %s", spacingBase),
+			fmt.Sprintf("--font-sans: %s", fontSans),
+			fmt.Sprintf("--font-mono: %s", fontMono),
+			fmt.Sprintf("--border-width: %s", borderWidth),
+			fmt.Sprintf("--shadow-color: %s", shadowColor),
+			fmt.Sprintf("--shadow-2xs: 0 1px 2px %s", shadowColor),
+			fmt.Sprintf("--shadow-xs: 0 1px 3px %s", shadowColor),
+			fmt.Sprintf("--shadow-sm: 0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow: 0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-md: 0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-lg: 0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-xl: 0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-2xl: 0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
+		)
+		appendRadiusVarsFromBase(styleParts, baseRadius)
+		appendDensityPreset(styleParts, density)
+	}
+
+	switch preset {
+	case "default", "maia":
+		appendPreset(
+			"0.265rem",
+			"'Nunito Sans', 'Inter', sans-serif",
+			"'Fira Code', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.13)",
+			"spacious",
+			"1.25rem",
+			"1px",
+		)
+	case "vega":
+		appendPreset(
+			"0.25rem",
+			"'Inter', 'Geist', sans-serif",
+			"'JetBrains Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.15)",
+			"comfortable",
+			"0.75rem",
+			"1px",
+		)
+	case "nova":
+		appendPreset(
+			"0.235rem",
+			"'Inter Tight', 'Geist', sans-serif",
+			"'IBM Plex Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.2)",
+			"compact",
+			"0.75rem",
+			"1px",
+		)
+	case "lyra":
+		appendPreset(
+			"0.26rem",
+			"'Poppins', 'Inter', sans-serif",
+			"'JetBrains Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.16)",
+			"spacious",
+			"0.375rem",
+			"1.5px",
+		)
+	case "mira":
+		appendPreset(
+			"0.24rem",
+			"'DM Sans', 'Inter', sans-serif",
+			"'Space Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.14)",
+			"compact",
+			"0.25rem",
+			"1.5px",
+		)
+	case "luma":
+		appendPreset(
+			"0.255rem",
+			"'Public Sans', 'Inter', sans-serif",
+			"'IBM Plex Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.12)",
+			"comfortable",
+			"1rem",
+			"1px",
+		)
+	}
+}
+
 func web_user_theme_style(user *User) string {
 	if user == nil {
 		return ""
@@ -257,6 +378,9 @@ func web_user_theme_style(user *User) string {
 			}
 		}
 	}
+
+	// User style preset overrides base spacing/font/shadow/density tokens.
+	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "maia"))
 
 	// User border-radius preference takes precedence over theme radius.
 	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))

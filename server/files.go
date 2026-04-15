@@ -380,8 +380,13 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	data, ok := sl.AsString(args[1])
-	if !ok {
+	var data string
+	switch v := args[1].(type) {
+	case sl.String:
+		data = string(v)
+	case sl.Bytes:
+		data = string(v)
+	default:
 		return sl_error(fn, "invalid file data")
 	}
 

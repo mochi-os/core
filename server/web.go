@@ -1348,7 +1348,7 @@ func web_start() {
 	r.Use(web_security_headers)
 	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)
-	if web_compress == "gzip" {
+	if web_compress != "none" {
 		r.Use(web_compress_middleware)
 	}
 	r.Use(domains_middleware())

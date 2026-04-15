@@ -21,8 +21,9 @@ var (
 	dev_apps_dir   string
 	dev_reload     bool
 	web_cache      bool
-	web_compress   string
-	web_gzip_level int
+	web_compress     string
+	web_gzip_level   int
+	web_brotli_level int
 	email_host     string
 	email_port     int
 )
@@ -68,10 +69,11 @@ func main() {
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	web_cache = ini_bool("web", "cache", true)
-	web_compress = ini_string("web", "compress", "gzip")
+	web_compress = ini_string("web", "compress", "auto")
 	web_gzip_level = ini_int("web", "gzip", 6)
+	web_brotli_level = ini_int("web", "brotli", 4)
 	switch web_compress {
-	case "none", "gzip":
+	case "none", "gzip", "br", "auto":
 	default:
 		warn("Invalid web.compress value %q; disabling compression", web_compress)
 		web_compress = "none"
@@ -79,6 +81,10 @@ func main() {
 	if web_gzip_level < 1 || web_gzip_level > 9 {
 		warn("Invalid web.gzip level %d; using default (6)", web_gzip_level)
 		web_gzip_level = 6
+	}
+	if web_brotli_level < 0 || web_brotli_level > 11 {
+		warn("Invalid web.brotli level %d; using default (4)", web_brotli_level)
+		web_brotli_level = 4
 	}
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)

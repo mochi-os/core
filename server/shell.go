@@ -271,62 +271,62 @@ func appendStylePreset(styleParts *[]string, preset string) {
 	switch preset {
 	case "default", "maia":
 		appendPreset(
-			"0.265rem",
+			"0.3rem",
 			"'Nunito Sans', 'Inter', sans-serif",
 			"'Fira Code', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.13)",
+			"rgba(0, 0, 0, 0.12)",
 			"spacious",
-			"1.25rem",
+			"1.35rem",
 			"1px",
 		)
 	case "vega":
 		appendPreset(
-			"0.25rem",
-			"'Inter', 'Geist', sans-serif",
-			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.15)",
-			"comfortable",
-			"0.75rem",
+			"0.215rem",
+			"'Public Sans', 'Inter', sans-serif",
+			"'IBM Plex Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.17)",
+			"compact",
+			"0.35rem",
 			"1px",
 		)
 	case "nova":
 		appendPreset(
-			"0.235rem",
-			"'Inter Tight', 'Geist', sans-serif",
-			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.2)",
-			"compact",
-			"0.75rem",
-			"1px",
+			"0.255rem",
+			"'Poppins', 'Inter', sans-serif",
+			"'JetBrains Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.18)",
+			"comfortable",
+			"0.95rem",
+			"1.25px",
 		)
 	case "lyra":
 		appendPreset(
-			"0.26rem",
-			"'Poppins', 'Inter', sans-serif",
+			"0.235rem",
+			"'Inter Tight', 'Inter', sans-serif",
 			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.16)",
-			"spacious",
-			"0.375rem",
+			"rgba(0, 0, 0, 0.22)",
+			"compact",
+			"0.2rem",
 			"1.5px",
 		)
 	case "mira":
 		appendPreset(
-			"0.24rem",
+			"0.285rem",
 			"'DM Sans', 'Inter', sans-serif",
 			"'Space Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.14)",
-			"compact",
-			"0.25rem",
-			"1.5px",
+			"spacious",
+			"1.6rem",
+			"1.25px",
 		)
 	case "luma":
 		appendPreset(
-			"0.255rem",
-			"'Public Sans', 'Inter', sans-serif",
+			"0.27rem",
+			"'Manrope', 'Inter', sans-serif",
 			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.12)",
+			"rgba(0, 0, 0, 0.1)",
 			"comfortable",
-			"1rem",
+			"1.35rem",
 			"1px",
 		)
 	}
@@ -380,7 +380,7 @@ func web_user_theme_style(user *User) string {
 	}
 
 	// User style preset overrides base spacing/font/shadow/density tokens.
-	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "maia"))
+	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "luma"))
 
 	// User border-radius preference takes precedence over theme radius.
 	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))

@@ -207,7 +207,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	var result sl.Value
 	var err error
-	result, err = s.call(f.Function, call_args)
+	result, err = s.call(f.Function, call_args, kwargs)
 	if err != nil {
 		info("mochi.service.call() error: %v", err)
 	}

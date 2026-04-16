@@ -317,8 +317,9 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "setting %q is read-only", name)
 	}
 
-	// Validate the value
-	if !valid(value, def.Pattern) {
+	// Validate the value. The default is always accepted so clearable
+	// settings (e.g. empty-default OAuth credentials) can be reset.
+	if value != def.Default && !valid(value, def.Pattern) {
 		return sl_error(fn, "invalid value for setting %q", name)
 	}
 

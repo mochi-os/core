@@ -164,17 +164,191 @@ func web_user_appearance_attrs(user *User) (string, string) {
 	}
 }
 
+func appendRadiusVarsFromBase(styleParts *[]string, baseRadius string) {
+	*styleParts = append(*styleParts,
+		fmt.Sprintf("--radius: %s", baseRadius),
+		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
+		fmt.Sprintf("--radius-md: calc(%s - 2px)", baseRadius),
+		fmt.Sprintf("--radius-lg: %s", baseRadius),
+		fmt.Sprintf("--radius-xl: calc(%s + 4px)", baseRadius),
+	)
+}
+
+func appendRadiusPreset(styleParts *[]string, preset string) {
+	switch preset {
+	case "none":
+		*styleParts = append(*styleParts,
+			"--radius: 0rem",
+			"--radius-sm: 0rem",
+			"--radius-md: 0rem",
+			"--radius-lg: 0rem",
+			"--radius-xl: 0rem",
+		)
+	case "small":
+		*styleParts = append(*styleParts,
+			"--radius: 0.375rem",
+			"--radius-sm: 0.125rem",
+			"--radius-md: 0.25rem",
+			"--radius-lg: 0.375rem",
+			"--radius-xl: 0.625rem",
+		)
+	case "medium":
+		*styleParts = append(*styleParts,
+			"--radius: 0.75rem",
+			"--radius-sm: 0.5rem",
+			"--radius-md: 0.625rem",
+			"--radius-lg: 0.75rem",
+			"--radius-xl: 1rem",
+		)
+	case "large":
+		*styleParts = append(*styleParts,
+			"--radius: 1.75rem",
+			"--radius-sm: 1.5rem",
+			"--radius-md: 1.625rem",
+			"--radius-lg: 1.75rem",
+			"--radius-xl: 2rem",
+		)
+	}
+}
+
+func appendDensityPreset(styleParts *[]string, preset string) {
+	switch preset {
+	case "compact":
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.5rem",
+			"--control-height-sm: 1.75rem",
+			"--control-height-md: 2rem",
+			"--control-height-lg: 2.25rem",
+			"--input-h: 2rem",
+			"--card-px: 1.25rem",
+			"--card-py: 0.875rem",
+		)
+	case "spacious":
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.875rem",
+			"--control-height-sm: 2.125rem",
+			"--control-height-md: 2.5rem",
+			"--control-height-lg: 2.75rem",
+			"--input-h: 2.5rem",
+			"--card-px: 1.75rem",
+			"--card-py: 1.25rem",
+		)
+	default:
+		*styleParts = append(*styleParts,
+			"--control-height-xs: 1.75rem",
+			"--control-height-sm: 2rem",
+			"--control-height-md: 2.25rem",
+			"--control-height-lg: 2.5rem",
+			"--input-h: 2.25rem",
+			"--card-px: 1.5rem",
+			"--card-py: 1rem",
+		)
+	}
+}
+
+func appendStylePreset(styleParts *[]string, preset string) {
+	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, baseRadius, borderWidth string) {
+		*styleParts = append(*styleParts,
+			fmt.Sprintf("--spacing-base: %s", spacingBase),
+			fmt.Sprintf("--spacing: %s", spacingBase),
+			fmt.Sprintf("--font-sans: %s", fontSans),
+			fmt.Sprintf("--font-mono: %s", fontMono),
+			fmt.Sprintf("--border-width: %s", borderWidth),
+			fmt.Sprintf("--shadow-color: %s", shadowColor),
+			fmt.Sprintf("--shadow-2xs: 0 1px 2px %s", shadowColor),
+			fmt.Sprintf("--shadow-xs: 0 1px 3px %s", shadowColor),
+			fmt.Sprintf("--shadow-sm: 0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow: 0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-md: 0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-lg: 0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-xl: 0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
+			fmt.Sprintf("--shadow-2xl: 0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
+		)
+		appendRadiusVarsFromBase(styleParts, baseRadius)
+		appendDensityPreset(styleParts, density)
+	}
+
+	switch preset {
+	case "default", "maia":
+		appendPreset(
+			"0.3rem",
+			"'Nunito Sans', 'Inter', sans-serif",
+			"'Fira Code', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.12)",
+			"spacious",
+			"1.35rem",
+			"1px",
+		)
+	case "vega":
+		appendPreset(
+			"0.215rem",
+			"'Public Sans', 'Inter', sans-serif",
+			"'IBM Plex Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.17)",
+			"compact",
+			"0.35rem",
+			"1px",
+		)
+	case "nova":
+		appendPreset(
+			"0.255rem",
+			"'Poppins', 'Inter', sans-serif",
+			"'JetBrains Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.18)",
+			"comfortable",
+			"0.95rem",
+			"1.25px",
+		)
+	case "lyra":
+		appendPreset(
+			"0.235rem",
+			"'Inter Tight', 'Inter', sans-serif",
+			"'JetBrains Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.22)",
+			"compact",
+			"0.2rem",
+			"1.5px",
+		)
+	case "mira":
+		appendPreset(
+			"0.285rem",
+			"'DM Sans', 'Inter', sans-serif",
+			"'Space Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.14)",
+			"spacious",
+			"1.6rem",
+			"1.25px",
+		)
+	case "luma":
+		appendPreset(
+			"0.27rem",
+			"'Manrope', 'Inter', sans-serif",
+			"'IBM Plex Mono', 'Geist Mono', monospace",
+			"rgba(0, 0, 0, 0.1)",
+			"comfortable",
+			"1.35rem",
+			"1px",
+		)
+	}
+}
+
 func web_user_theme_style(user *User) string {
 	if user == nil {
 		return ""
 	}
 
+	styleParts := []string{}
+
 	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
 			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
-				theme_style := fmt.Sprintf(`style="--hue: %g; --hue-chroma: %g; --hue-bg: %g`, t.Hue, t.Chroma, t.HueBG)
+				styleParts = append(styleParts,
+					fmt.Sprintf("--hue: %g", t.Hue),
+					fmt.Sprintf("--hue-chroma: %g", t.Chroma),
+					fmt.Sprintf("--hue-bg: %g", t.HueBG),
+				)
 				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
-					theme_style += fmt.Sprintf("; --radius: %s", t.BorderRadius)
+					appendRadiusVarsFromBase(&styleParts, t.BorderRadius)
 				}
 				if t.Background != "" {
 					// Resolve background URL from theme app's path
@@ -187,10 +361,10 @@ func web_user_theme_style(user *User) string {
 							if av != nil && len(av.Paths) > 0 {
 								base := av.Paths[0]
 								if !strings.ContainsAny(t.Background, `<>"`) {
-									theme_style += fmt.Sprintf("; --background-image: url(/%s/backgrounds/%s)", base, t.Background)
+									styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
 								}
 								if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-									theme_style += fmt.Sprintf("; --background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark)
+									styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
 								}
 							}
 						}
@@ -198,15 +372,23 @@ func web_user_theme_style(user *User) string {
 				}
 				for key, val := range t.Overrides {
 					if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
-						theme_style += fmt.Sprintf("; %s: %s", key, val)
+						styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
 					}
 				}
-				theme_style += `"`
-				return theme_style
 			}
 		}
 	}
-	return ""
+
+	// User style preset overrides base spacing/font/shadow/density tokens.
+	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "luma"))
+
+	// User border-radius preference takes precedence over theme radius.
+	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))
+
+	if len(styleParts) == 0 {
+		return ""
+	}
+	return `style="` + strings.Join(styleParts, "; ") + `"`
 }
 
 func web_apply_user_document_theme(content string, user *User) string {
@@ -249,8 +431,8 @@ func web_add_html_attr(content, attr string) string {
 		// Plain attribute without value — just append
 		return content[:end] + " " + attr + content[end:]
 	}
-	name := attr[:eq]                                    // "class" or "style"
-	val := strings.Trim(attr[eq+1:], `"`)                // the value without quotes
+	name := attr[:eq]                     // "class" or "style"
+	val := strings.Trim(attr[eq+1:], `"`) // the value without quotes
 
 	// Check if the <html> tag already has this attribute
 	needle := name + `="`

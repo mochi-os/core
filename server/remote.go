@@ -235,15 +235,9 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		peer, _ = sl.AsString(args[4])
 	}
 
-	// Get user and app from context
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	if user.Identity == nil {
-		return sl_error(fn, "user has no identity")
-	}
+	// Get user and app from context. Anonymous (user==nil) is permitted —
+	// the receiving event handler decides whether to honour anonymous calls.
+	user, _ := t.Local("user").(*User)
 
 	app, _ := t.Local("app").(*App)
 	from_app := ""
@@ -259,8 +253,11 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl.None, nil
 	}
 
-	// Create stream
-	from := user.Identity.ID
+	// Create stream — empty "from" identity for anonymous callers
+	from := ""
+	if user != nil && user.Identity != nil {
+		from = user.Identity.ID
+	}
 	s, err := stream_to_peer(peer, from, entity_id, service, event, from_app, services)
 	if err != nil {
 		return sl.None, nil

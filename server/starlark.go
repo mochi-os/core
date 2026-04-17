@@ -225,6 +225,9 @@ func sl_encode(v any) sl.Value {
 		return sl.Bool(x)
 
 	case map[any]any:
+		if x == nil {
+			return sl.None
+		}
 		d := sl.NewDict(len(x))
 		for i, v := range x {
 			d.SetKey(sl_encode(i), sl_encode(v))
@@ -232,6 +235,9 @@ func sl_encode(v any) sl.Value {
 		return d
 
 	case map[string]any:
+		if x == nil {
+			return sl.None
+		}
 		d := sl.NewDict(len(x))
 		for i, v := range x {
 			d.SetKey(sl_encode(i), sl_encode(v))
@@ -239,6 +245,9 @@ func sl_encode(v any) sl.Value {
 		return d
 
 	case map[string]string:
+		if x == nil {
+			return sl.None
+		}
 		d := sl.NewDict(len(x))
 		for i, v := range x {
 			d.SetKey(sl_encode(i), sl_encode(v))

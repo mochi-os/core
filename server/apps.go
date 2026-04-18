@@ -686,13 +686,13 @@ func app_download_version(id, version string) bool {
 
 	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
 	if !file_write_from_reader(zip, s.reader) {
-		file_delete(zip)
+		_ = os.Remove(zip)
 		return false
 	}
 
 	av, err := app_install(id, version, zip, false)
 	if err != nil {
-		file_delete(zip)
+		_ = os.Remove(zip)
 		return false
 	}
 
@@ -1052,30 +1052,32 @@ func app_install(id string, version string, file string, check_only bool, peer .
 	} else {
 		debug("App %q installing version %q from %q", id, version, file)
 	}
-	file_mkdir(filepath.Join(data_dir, "tmp"))
+	if err := os.MkdirAll(filepath.Join(data_dir, "tmp"), 0755); err != nil {
+		return nil, fmt.Errorf("unable to create tmp dir: %w", err)
+	}
 	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_install_%s_%s", id, random_alphanumeric(8)))
 	err := unzip(file, tmp)
 	if err != nil {
 		info("App unzip failed: %v", err)
-		file_delete_all(tmp)
+		_ = os.RemoveAll(tmp)
 		return nil, err
 	}
 
 	av, err := app_read(id, tmp)
 	if err != nil {
 		info("App read failed: %v", err)
-		file_delete_all(tmp)
+		_ = os.RemoveAll(tmp)
 		return nil, err
 	}
 
 	if version != "" && version != av.Version {
-		file_delete_all(tmp)
+		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("Specified version does not match file version")
 	}
 
 	if check_only {
 		debug("App %q not installing", id)
-		file_delete_all(tmp)
+		_ = os.RemoveAll(tmp)
 		return av, nil
 	}
 
@@ -1096,9 +1098,19 @@ func app_install(id string, version string, file string, check_only bool, peer .
 	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
 	if file_exists(av.base) {
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
-		file_delete_all(av.base)
+		if err := os.RemoveAll(av.base); err != nil {
+			_ = os.RemoveAll(tmp)
+			return nil, fmt.Errorf("removing existing install at %s: %w", av.base, err)
+		}
 	}
-	file_move(tmp, av.base)
+	if err := os.MkdirAll(filepath.Dir(av.base), 0755); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("creating parent dir for install at %s: %w", av.base, err)
+	}
+	if err := os.Rename(tmp, av.base); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("moving install from %s to %s: %w", tmp, av.base, err)
+	}
 
 	// Audit log installation or upgrade
 	if !installed {
@@ -1114,8 +1126,9 @@ func app_install(id string, version string, file string, check_only bool, peer .
 // Write publisher info to app.json, preserving existing content
 func app_write_publisher(base string, peer string) {
 	path := base + "/app.json"
-	data := file_read(path)
-	if data == nil {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		info("Failed to read app.json: %v", err)
 		return
 	}
 
@@ -1143,7 +1156,10 @@ func app_write_publisher(base string, peer string) {
 		return
 	}
 
-	file_write(path, output)
+	if err := file_write(path, output); err != nil {
+		info("Failed to write app.json: %v", err)
+		return
+	}
 	debug("Wrote publisher peer %q to %s", peer, path)
 }
 
@@ -1152,7 +1168,8 @@ func apps_manager() {
 	time.Sleep(time.Second)
 
 	// If we already have apps installed, skip the setup wait
-	if len(file_list(filepath.Join(data_dir, "apps"))) >= 2 {
+	apps_root := filepath.Join(data_dir, "apps")
+	if existing, err := file_list(apps_root); err == nil && len(existing) >= 2 {
 		apps_bootstrap_ready = true
 		debug("Apps already installed, skipping setup wait")
 	}
@@ -1173,7 +1190,11 @@ func apps_manager() {
 		}
 
 		// Check any other installed apps
-		for _, id := range file_list(filepath.Join(data_dir, "apps")) {
+		ids, err := file_list(apps_root)
+		if err != nil {
+			warn("Unable to list installed apps: %v", err)
+		}
+		for _, id := range ids {
 			if !todo[id] {
 				todo[id] = true
 				app_check_install(id)
@@ -1194,7 +1215,11 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	var av AppVersion
-	data, err := hujson.Standardize(file_read(base + "/app.json"))
+	raw, err := os.ReadFile(base + "/app.json")
+	if err != nil {
+		return nil, fmt.Errorf("App unable to read '%s/app.json': %v", base, err)
+	}
+	data, err := hujson.Standardize(raw)
 	if err != nil {
 		return nil, fmt.Errorf("App bad app.json '%s/app.json': %v", base, err)
 	}
@@ -1415,7 +1440,12 @@ func app_resolve_paths(av *AppVersion, id string) {
 
 // Load development apps from dev_apps_dir (unversioned)
 func apps_load_dev() {
-	for _, id := range file_list(dev_apps_dir) {
+	ids, err := file_list(dev_apps_dir)
+	if err != nil {
+		debug("Dev apps directory unavailable: %v", err)
+		return
+	}
+	for _, id := range ids {
 		if strings.HasPrefix(id, ".") {
 			continue
 		}
@@ -1448,7 +1478,12 @@ func apps_load_dev() {
 // Load published apps from data_dir/apps (versioned)
 func apps_load_published() {
 	apps_dir := filepath.Join(data_dir, "apps")
-	for _, id := range file_list(apps_dir) {
+	ids, err := file_list(apps_dir)
+	if err != nil {
+		debug("Published apps directory unavailable: %v", err)
+		return
+	}
+	for _, id := range ids {
 		if strings.HasPrefix(id, ".") {
 			continue
 		}
@@ -1470,7 +1505,11 @@ func apps_load_published() {
 		}
 
 		app_dir := filepath.Join(apps_dir, id)
-		versions := file_list(app_dir)
+		versions, err := file_list(app_dir)
+		if err != nil {
+			debug("App %q: unable to list versions: %v", id, err)
+			continue
+		}
 		if len(versions) == 0 {
 			continue
 		}
@@ -1553,7 +1592,11 @@ func (a *App) load_version(av *AppVersion) {
 	}
 
 	av.labels = make(map[string]map[string]string)
-	for _, file := range file_list(av.base + "/labels") {
+	label_files, err := file_list(av.base + "/labels")
+	if err != nil {
+		debug("App %q has no labels dir", av.base)
+	}
+	for _, file := range label_files {
 		language := strings.TrimSuffix(file, ".conf")
 		if !valid(language, "constant") {
 			continue
@@ -1801,9 +1844,14 @@ func (av *AppVersion) reload() {
 		return
 	}
 	path := av.base + "/app.json"
-	data, err := hujson.Standardize(file_read(path))
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		info("App reload failed to read %q: %v", path, err)
+		return
+	}
+	data, err := hujson.Standardize(raw)
+	if err != nil {
+		info("App reload failed to standardize %q: %v", path, err)
 		return
 	}
 
@@ -1815,7 +1863,11 @@ func (av *AppVersion) reload() {
 
 	// Reload labels
 	labels := make(map[string]map[string]string)
-	for _, file := range file_list(av.base + "/labels") {
+	label_files, err := file_list(av.base + "/labels")
+	if err != nil {
+		debug("App %q has no labels dir", av.base)
+	}
+	for _, file := range label_files {
 		language := strings.TrimSuffix(file, ".conf")
 		if !valid(language, "constant") {
 			continue
@@ -2005,14 +2057,16 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Unzip to temp directory
-	file_mkdir(filepath.Join(data_dir, "tmp"))
+	if err := os.MkdirAll(filepath.Join(data_dir, "tmp"), 0755); err != nil {
+		return sl_error(fn, "unable to create tmp dir: %v", err)
+	}
 	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_info_%s", random_alphanumeric(8)))
 	err := unzip(api_file_path(user, a, file), tmp)
 	if err != nil {
-		file_delete_all(tmp)
+		_ = os.RemoveAll(tmp)
 		return sl_error(fn, "failed to unzip: %v", err)
 	}
-	defer file_delete_all(tmp)
+	defer os.RemoveAll(tmp)
 
 	// Read app.json
 	if !file_exists(filepath.Join(tmp, "app.json")) {
@@ -2020,7 +2074,11 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	var av AppVersion
-	data, err := hujson.Standardize(file_read(filepath.Join(tmp, "app.json")))
+	raw, err := os.ReadFile(filepath.Join(tmp, "app.json"))
+	if err != nil {
+		return sl_error(fn, "unable to read app.json: %v", err)
+	}
+	data, err := hujson.Standardize(raw)
 	if err != nil {
 		return sl_error(fn, "bad app.json: %v", err)
 	}
@@ -2650,8 +2708,12 @@ func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// For published apps (entity IDs), scan the disk for installed versions
 	if valid(app_id, "entity") {
 		dir := fmt.Sprintf("%s/apps/%s", data_dir, app_id)
+		entries, err := file_list(dir)
+		if err != nil {
+			return sl_encode([]string{}), nil
+		}
 		var versions []string
-		for _, v := range file_list(dir) {
+		for _, v := range entries {
 			if valid(v, "version") {
 				versions = append(versions, v)
 			}
@@ -2882,7 +2944,11 @@ func api_app_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_encode([]string{}), nil
 	}
 
-	return sl_encode(file_list(full)), nil
+	entries, err := file_list(full)
+	if err != nil {
+		return sl_error(fn, "unable to list directory: %v", err)
+	}
+	return sl_encode(entries), nil
 }
 
 // mochi.app.file.read(path) -> bytes: Read a file from the app's directory
@@ -2916,5 +2982,9 @@ func api_app_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "file not found")
 	}
 
-	return sl.Bytes(file_read(full)), nil
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return sl_error(fn, "unable to read file: %v", err)
+	}
+	return sl.Bytes(data), nil
 }

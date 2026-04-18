@@ -583,7 +583,11 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	// Check storage limit and calculate remaining space
-	current := dir_size(user_storage_dir(user))
+	current, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		s.close_read()
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	remaining := file_max_storage - current
 	if remaining <= 0 {
 		s.close_read()
@@ -592,7 +596,10 @@ func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 	// Ensure base directory exists and open root for traversal protection
 	base := api_file_base(user, app)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		s.close_read()
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		s.close_read()

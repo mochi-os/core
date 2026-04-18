@@ -280,7 +280,9 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Open root once for all files (traversal protection)
 	base := attachment_files_base(owner.ID, app.id)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return sl_error(fn, "unable to access files directory")
@@ -295,7 +297,10 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 
 		// Check storage limit (10GB per user across all apps)
-		current := dir_size(user_storage_dir(owner))
+		current, err := dir_size(user_storage_dir(owner))
+		if err != nil {
+			return sl_error(fn, "unable to measure storage: %v", err)
+		}
 		if current+fh.Size > file_max_storage {
 			return sl_error(fn, "storage limit exceeded")
 		}
@@ -444,7 +449,10 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Check storage limit (10GB per user across all apps)
-	current := dir_size(user_storage_dir(owner))
+	current, err := dir_size(user_storage_dir(owner))
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	if current+int64(len(bytes)) > file_max_storage {
 		return sl_error(fn, "storage limit exceeded")
 	}
@@ -469,7 +477,9 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Save file using os.Root for traversal protection
 	base := attachment_files_base(owner.ID, app.id)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return sl_error(fn, "unable to access files directory")
@@ -596,7 +606,10 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 
 	// Check storage limit (10GB per user across all apps)
-	current := dir_size(user_storage_dir(owner))
+	current, err := dir_size(user_storage_dir(owner))
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	if current+size > file_max_storage {
 		return sl_error(fn, "storage limit exceeded")
 	}
@@ -610,10 +623,14 @@ func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	// Move file to attachment location using os.Root for traversal protection
 	full_src_path := api_file_path(owner, app, src_path)
 	dest_base := attachment_files_base(owner.ID, app.id)
-	file_mkdir(dest_base)
+	if err := os.MkdirAll(dest_base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	dest_filename := attachment_filename(id, name)
 	dest_path := filepath.Join(dest_base, dest_filename)
-	file_move(full_src_path, dest_path)
+	if err := os.Rename(full_src_path, dest_path); err != nil {
+		return sl_error(fn, "failed to move attachment: %v", err)
+	}
 
 	// Create record using shared helper
 	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description, notify)
@@ -694,7 +711,11 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	db.attachments_setup()
 
 	// Check storage limit and calculate remaining space
-	current := dir_size(user_storage_dir(owner))
+	current, err := dir_size(user_storage_dir(owner))
+	if err != nil {
+		stream.close_read()
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	remaining := file_max_storage - current
 	if remaining <= 0 {
 		stream.close_read()
@@ -709,7 +730,9 @@ func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 
 	// Use os.Root for traversal protection
 	base := attachment_files_base(owner.ID, app.id)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		stream.close_read()
@@ -838,7 +861,10 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Check storage limit (10GB per user across all apps)
-	current := dir_size(user_storage_dir(owner))
+	current, err := dir_size(user_storage_dir(owner))
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	if current+int64(len(bytes)) > file_max_storage {
 		return sl_error(fn, "storage limit exceeded")
 	}
@@ -865,7 +891,9 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Save file using os.Root for traversal protection
 	base := attachment_files_base(owner.ID, app.id)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return sl_error(fn, "unable to access files directory")
@@ -1312,7 +1340,11 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 		path := attachment_fetch_remote(app, from, att.Entity, id)
 		if path != "" {
-			return sl_encode(file_read(path)), nil
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return sl_error(fn, "unable to read attachment: %v", err)
+			}
+			return sl_encode(data), nil
 		}
 		return sl.None, nil
 	}
@@ -1623,7 +1655,10 @@ func attachment_fetch_remote(app *App, from string, entity string, id string, th
 	}
 
 	// Stream directly to cache file (use raw_reader to include any buffered data from CBOR decoder)
-	file_mkdir(filepath.Dir(cache_path))
+	if err := os.MkdirAll(filepath.Dir(cache_path), 0755); err != nil {
+		warn("attachment_fetch_remote: failed to create cache dir: %v", err)
+		return ""
+	}
 	if !file_write_from_reader(cache_path, s.raw_reader()) {
 		//debug("attachment_fetch_remote: failed to write cache file")
 		return ""
@@ -1865,7 +1900,7 @@ func (e *Event) attachment_event_delete() {
 
 		// Delete cached file if exists
 		cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, source, e.app.id, id)
-		file_delete(cache_path)
+		_ = os.Remove(cache_path)
 	}
 }
 
@@ -1894,7 +1929,7 @@ func (e *Event) attachment_event_clear() {
 
 	for _, att := range attachments {
 		cache_path := fmt.Sprintf("%s/attachments/%s/%s", cache_dir, source, att.ID)
-		file_delete(cache_path)
+		_ = os.Remove(cache_path)
 	}
 
 	e.db.exec("delete from attachments where object = ? and entity = ?", object, source)
@@ -1948,8 +1983,16 @@ func (e *Event) attachment_event_data() {
 				return
 			}
 			// Store locally so future requests don't need the uploader online
-			file_mkdir(base)
-			file_copy(cached, path)
+			if err := os.MkdirAll(base, 0755); err != nil {
+				warn("Unable to create attachment base dir: %v", err)
+				e.stream.write(map[string]string{"status": "500"})
+				return
+			}
+			if err := file_copy(cached, path); err != nil {
+				warn("Unable to cache attachment locally: %v", err)
+				e.stream.write(map[string]string{"status": "500"})
+				return
+			}
 			e.db.exec("update attachments set entity = '' where id = ?", id)
 			info("Attachment %s fetched from uploader and stored locally", id)
 		}

@@ -27,7 +27,10 @@ func audit_init() {
 
 	// Create audit log in data directory
 	log_path := filepath.Join(data_dir, "audit.log")
-	file_mkdir(filepath.Dir(log_path))
+	if err := os.MkdirAll(filepath.Dir(log_path), 0755); err != nil {
+		warn("Failed to create audit log directory: %v", err)
+		return
+	}
 
 	var err error
 	audit_file, err = os.OpenFile(log_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

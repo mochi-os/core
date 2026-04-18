@@ -378,7 +378,16 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	created := false
 	if !file_exists(path) {
 		//debug("Database creating %q", path)
-		file_create(path)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			warn("Database unable to create directory for %q: %v", path, err)
+			return db, false, false
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			warn("Database unable to create %q: %v", path, err)
+			return db, false, false
+		}
+		f.Close()
 		created = true
 	}
 

@@ -144,7 +144,11 @@ func p2p_start() {
 	p2p_dir := filepath.Join(data_dir, "p2p")
 	key_path := filepath.Join(p2p_dir, "private.key")
 	if file_exists(key_path) {
-		private = must(p2p_crypto.UnmarshalPrivateKey(file_read(key_path)))
+		key_bytes, err := os.ReadFile(key_path)
+		if err != nil {
+			panic(fmt.Sprintf("P2P failed to read private key: %v", err))
+		}
+		private = must(p2p_crypto.UnmarshalPrivateKey(key_bytes))
 	} else {
 		private, _, err := p2p_crypto.GenerateKeyPairWithReader(p2p_crypto.Ed25519, 256, rand.Reader)
 		if err != nil {
@@ -154,7 +158,9 @@ func p2p_start() {
 		if err != nil {
 			panic(fmt.Sprintf("P2P failed to marshal private key: %v", err))
 		}
-		file_mkdir(p2p_dir)
+		if err := os.MkdirAll(p2p_dir, 0755); err != nil {
+			panic(fmt.Sprintf("P2P failed to create directory: %v", err))
+		}
 		if err := os.WriteFile(key_path, p, 0600); err != nil {
 			panic(fmt.Sprintf("P2P failed to write private key: %v", err))
 		}

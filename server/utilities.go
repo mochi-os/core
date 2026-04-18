@@ -288,7 +288,9 @@ func unzip(file string, destination string) error {
 	defer r.Close()
 
 	// Create destination if it doesn't exist
-	file_mkdir(destination)
+	if err := os.MkdirAll(destination, 0755); err != nil {
+		return fmt.Errorf("unable to create destination: %v", err)
+	}
 
 	// Use os.Root for traversal-resistant file extraction
 	root, err := os.OpenRoot(destination)

@@ -29,20 +29,6 @@ var (
 	})
 )
 
-func file_create(path string) {
-	file_mkdir_for_file(path)
-	f := must(os.Create(path))
-	f.Close()
-}
-
-func file_delete(path string) {
-	os.Remove(path)
-}
-
-func file_delete_all(path string) {
-	os.RemoveAll(path)
-}
-
 func file_exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -65,27 +51,17 @@ func file_is_symlink(path string) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-func file_list(path string) []string {
+func file_list(path string) ([]string, error) {
+	found, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
 	var files []string
-	found, _ := os.ReadDir(path)
 	for _, f := range found {
 		files = append(files, f.Name())
 	}
 	sort.Strings(files)
-	return files
-}
-
-func file_mkdir(path string) {
-	must(os.MkdirAll(path, 0755))
-}
-
-func file_mkdir_for_file(path string) {
-	file_mkdir(filepath.Dir(path))
-}
-
-func file_move(old string, new string) {
-	file_mkdir_for_file(new)
-	must(os.Rename(old, new))
+	return files, nil
 }
 
 func file_name_type(name string) string {
@@ -121,35 +97,37 @@ func file_name_type(name string) string {
 	return "application/octet-stream"
 }
 
-func file_read(path string) []byte {
-	return must(os.ReadFile(path))
-}
-
 // file_copy copies a file by streaming, without loading into memory
-func file_copy(src, dst string) {
-	file_mkdir_for_file(dst)
+func file_copy(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
 	s, err := os.Open(src)
 	if err != nil {
-		warn("Unable to open file %q for copying: %v", src, err)
-		return
+		return err
 	}
 	defer s.Close()
 	d, err := os.Create(dst)
 	if err != nil {
-		warn("Unable to create file %q for copying: %v", dst, err)
-		return
+		return err
 	}
 	defer d.Close()
-	io.Copy(d, s)
+	_, err = io.Copy(d, s)
+	return err
 }
 
-func file_write(path string, data []byte) {
-	file_mkdir_for_file(path)
-	must(os.WriteFile(path, data, 0644))
+func file_write(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 func file_write_from_reader(path string, r io.Reader) bool {
-	file_mkdir_for_file(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		warn("Unable to create directory for %q: %v", path, err)
+		return false
+	}
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -192,15 +170,18 @@ func user_storage_dir(u *User) string {
 }
 
 // Calculate total size of files in a directory
-func dir_size(path string) int64 {
+func dir_size(path string) (int64, error) {
 	var size int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, _ error) error {
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
 		if info != nil && !info.IsDir() {
 			size += info.Size()
 		}
 		return nil
 	})
-	return size
+	return size, err
 }
 
 // mochi.file.delete(file) -> None: Delete a file
@@ -401,14 +382,19 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	// Check storage limit (10GB per user across all apps)
-	current := dir_size(user_storage_dir(user))
+	current, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
 	if current+int64(len(data)) > file_max_storage {
 		return sl_error(fn, "storage limit exceeded")
 	}
 
 	// Ensure base directory exists before opening root
 	base := api_file_base(user, app)
-	file_mkdir(base)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
 
 	root, err := os.OpenRoot(base)
 	if err != nil {

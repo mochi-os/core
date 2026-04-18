@@ -1481,7 +1481,11 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 				return true
 			}
-			file_copy(cached, path)
+			if err := file_copy(cached, path); err != nil {
+				warn("Unable to cache attachment locally: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to cache file"})
+				return true
+			}
 			// Clear entity so future requests serve from local storage
 			db.exec(`update attachments set entity = '' where id = ?`, id)
 			info("Attachment %s fetched and stored locally on demand", id)

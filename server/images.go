@@ -86,7 +86,10 @@ func thumbnail_create(path string) (string, error) {
 
 	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
 
-	file_mkdir_for_file(thumb)
+	if err := os.MkdirAll(filepath.Dir(thumb), 0755); err != nil {
+		warn("Unable to create thumbnail directory %q: %v", filepath.Dir(thumb), err)
+		return "", err
+	}
 
 	o, err := os.Create(tmp)
 	if err != nil {

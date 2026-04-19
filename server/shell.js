@@ -87,16 +87,25 @@
     // --- Sidebar state ---
     // Persisted across app switches so the sidebar stays collapsed/expanded.
     var sidebarOpen = localStorage.getItem('sidebar_state') !== 'false';
+    // Whether the currently-loaded app has a sidebar at all. Apps without one
+    // (e.g. home) still want the menu rendered horizontally even when the
+    // persisted collapse state is "collapsed".
+    var sidebarPresent = false;
 
     function setSidebarState(open) {
         sidebarOpen = open;
         try { localStorage.setItem('sidebar_state', String(open)); } catch(e) {}
-        // Update menu element so the menu app can observe changes
         if (menuEl) menuEl.setAttribute('data-sidebar', open ? 'expanded' : 'collapsed');
+    }
+
+    function setSidebarPresent(present) {
+        sidebarPresent = !!present;
+        if (menuEl) menuEl.setAttribute('data-sidebar-present', sidebarPresent ? 'true' : 'false');
     }
 
     // Set initial state
     setSidebarState(sidebarOpen);
+    setSidebarPresent(false);
 
     var progressInterval = null;
     var progressWidth = 0;
@@ -131,6 +140,11 @@
     // a new element instead of setting .src) and white flashes during transitions.
     function swapIframe(newSrc) {
         var container = iframe.parentNode;
+
+        // Reset sidebar presence — the new app will re-announce whether it
+        // has a sidebar via postMessage. Without this, switching from a
+        // sidebar-app to a sidebar-less app would leave the menu collapsed.
+        setSidebarPresent(false);
 
         // Clean up any previous stale iframe
         if (staleIframe && staleIframe.parentNode) {
@@ -467,6 +481,10 @@
 
             case 'sidebar-state':
                 setSidebarState(!!data.open);
+                break;
+
+            case 'sidebar-present':
+                setSidebarPresent(!!data.present);
                 break;
 
             case 'theme-set':

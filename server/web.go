@@ -716,13 +716,29 @@ func is_entity_segment(s string) bool {
 func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	var tags []string
 
+	app := c.GetString("mochi_app_path")
+	dm := c.GetString("domain_method")
+
+	// For domain routing, use the matched route path so SPAs on subpath
+	// routes (e.g. acunningham.org/feed → feed entity) resolve assets and
+	// client-side routes under that subpath rather than the domain root.
+	routePath := "/"
+	if dm == "entity" || dm == "app" {
+		if r, ok := c.Get("domain_route"); ok {
+			if rt, ok := r.(*route); ok && rt.Path != "" {
+				routePath = rt.Path
+				if !strings.HasSuffix(routePath, "/") {
+					routePath += "/"
+				}
+			}
+		}
+	}
+
 	// Compute base href for correct relative URL resolution on deep routes.
 	// Must be a static tag (not JS-generated) so the browser's preload scanner
 	// resolves ./assets/... correctly before any scripts execute.
-	app := c.GetString("mochi_app_path")
-	dm := c.GetString("domain_method")
 	if dm == "entity" || dm == "app" {
-		tags = append(tags, `<base href="/">`)
+		tags = append(tags, `<base href="`+escape_attr(routePath)+`">`)
 	} else if e != nil && app != "" {
 		tags = append(tags, `<base href="/`+escape_attr(app)+`/`+escape_attr(e.Fingerprint)+`/">`)
 	} else if e != nil {
@@ -742,7 +758,8 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(seg)+`">`)
 	}
 	if dm == "entity" || dm == "app" {
-		tags = append(tags, `<meta name="mochi:domain">`)
+		// content carries the matched route path so SPAs can derive their basepath
+		tags = append(tags, `<meta name="mochi:domain" content="`+escape_attr(routePath)+`">`)
 	}
 	if len(tags) > 0 {
 		injection := "\n    " + strings.Join(tags, "\n    ")

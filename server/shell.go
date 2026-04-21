@@ -247,7 +247,7 @@ func appendDensityPreset(styleParts *[]string, preset string) {
 }
 
 func appendStylePreset(styleParts *[]string, preset string) {
-	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, baseRadius, borderWidth string) {
+	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, borderWidth string) {
 		*styleParts = append(*styleParts,
 			fmt.Sprintf("--spacing-base: %s", spacingBase),
 			fmt.Sprintf("--spacing: %s", spacingBase),
@@ -264,7 +264,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			fmt.Sprintf("--shadow-xl: 0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
 			fmt.Sprintf("--shadow-2xl: 0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
 		)
-		appendRadiusVarsFromBase(styleParts, baseRadius)
 		appendDensityPreset(styleParts, density)
 	}
 
@@ -276,7 +275,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'Fira Code', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.12)",
 			"spacious",
-			"1.35rem",
 			"1px",
 		)
 	case "vega":
@@ -286,7 +284,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'IBM Plex Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.17)",
 			"compact",
-			"0.35rem",
 			"1px",
 		)
 	case "nova":
@@ -296,7 +293,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'JetBrains Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.18)",
 			"comfortable",
-			"0.95rem",
 			"1.25px",
 		)
 	case "lyra":
@@ -306,7 +302,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'JetBrains Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.22)",
 			"compact",
-			"0.2rem",
 			"1.5px",
 		)
 	case "mira":
@@ -316,7 +311,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'Space Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.14)",
 			"spacious",
-			"1.6rem",
 			"1.25px",
 		)
 	case "luma":
@@ -326,7 +320,6 @@ func appendStylePreset(styleParts *[]string, preset string) {
 			"'IBM Plex Mono', 'Geist Mono', monospace",
 			"rgba(0, 0, 0, 0.1)",
 			"comfortable",
-			"1.35rem",
 			"1px",
 		)
 	}

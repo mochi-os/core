@@ -1650,7 +1650,7 @@ func attachment_fetch_remote(app *App, from string, entity string, id string, th
 	status, err := s.read_content()
 	//debug("attachment_fetch_remote: received status=%v err=%v", status, err)
 	if err != nil || status["status"] != "200" {
-		warn("attachment_fetch_remote: bad status: %v", status)
+		debug("attachment_fetch_remote: bad status: %v", status)
 		return ""
 	}
 
@@ -1956,7 +1956,7 @@ func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
 	if !e.db.scan(&att, "select * from attachments where id = ?", id) {
-		warn("attachment_event_data: attachment not found in db, returning 404")
+		debug("attachment_event_data: attachment not found in db, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}

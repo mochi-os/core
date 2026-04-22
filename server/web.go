@@ -1538,6 +1538,11 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
 		ct == "application/pdf" {
 		disposition = "inline"
+		// Chrome's built-in PDF viewer renders the PDF inside an extension-origin
+		// frame; X-Frame-Options: SAMEORIGIN blocks that and surfaces as "This
+		// page has been blocked by Chrome". Inline media isn't clickjackable, so
+		// clear the middleware's header for these responses.
+		c.Header("X-Frame-Options", "")
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, att.Name))
 	c.File(path)

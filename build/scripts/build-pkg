@@ -1,7 +1,8 @@
 #!/bin/bash
-# Build a macOS .pkg installer from Linux
+# Build a macOS .pkg installer from Linux or macOS
 # Usage: build-pkg <binary> <version> <arch> <output.pkg>
-# Requires: mkbom (bomutils), xar
+# Requires on Linux: mkbom/ls4mkbom (bomutils), xar
+# Requires on macOS: xcrun (Xcode command line tools), xar
 
 set -e
 
@@ -37,9 +38,13 @@ cp -a "$SCRIPT_DIR/../pkg/scripts" "$SCRIPTS_DIR"
 # Build the component package
 mkdir -p "$COMP_DIR"
 
-# Build BOM
-ls4mkbom -u 0 -g 0 "$ROOT_DIR" > "$BUILD_DIR/bom.list"
-mkbom -i "$BUILD_DIR/bom.list" "$COMP_DIR/Bom"
+# Build BOM: use Apple's mkbom natively on Darwin, bomutils on Linux
+if [ "$(uname -s)" = "Darwin" ]; then
+	xcrun mkbom "$ROOT_DIR" "$COMP_DIR/Bom"
+else
+	ls4mkbom -u 0 -g 0 "$ROOT_DIR" > "$BUILD_DIR/bom.list"
+	mkbom -i "$BUILD_DIR/bom.list" "$COMP_DIR/Bom"
+fi
 
 # Build Payload (gzipped cpio)
 (cd "$ROOT_DIR" && find . | cpio -o --format newc 2>/dev/null | gzip -c) > "$COMP_DIR/Payload"

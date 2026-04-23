@@ -1053,7 +1053,7 @@ func web_login_identity(c *gin.Context) {
 	// Simple notification hook
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+input.Name)
+		email_send(admin, "Mochi new user", "New user: "+u.Username+"\nUsername: "+input.Name)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

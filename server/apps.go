@@ -65,6 +65,7 @@ type AppTheme struct {
 	Chroma         float64           `json:"chroma"`
 	HueBG          float64           `json:"hue_bg"`
 	Preview        string            `json:"preview"`
+	PreviewDark    string            `json:"preview_dark"`
 	BorderRadius   string            `json:"border_radius"`
 	IconMask       string            `json:"icon_mask"`
 	IconBackground string            `json:"icon_background"`
@@ -2218,6 +2219,9 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 					"hue_bg":  t.HueBG,
 					"preview": t.Preview,
 				}
+				if t.PreviewDark != "" {
+					themes[i]["preview_dark"] = t.PreviewDark
+				}
 			}
 			result["themes"] = themes
 		}
@@ -2257,6 +2261,21 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	user := t.Local("user").(*User)
 	var results []map[string]any
 
+	if dev_reload {
+		apps_lock.Lock()
+		app_list := make([]*App, 0, len(apps))
+		for _, a := range apps {
+			app_list = append(app_list, a)
+		}
+		apps_lock.Unlock()
+
+		for _, a := range app_list {
+			if av := a.active(user); av != nil {
+				av.reload()
+			}
+		}
+	}
+
 	apps_lock.Lock()
 	for _, a := range apps {
 		av := a.active_locked(user)
@@ -2276,6 +2295,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 				"chroma":  theme.Chroma,
 				"hue_bg":  theme.HueBG,
 				"preview": theme.Preview,
+			}
+			if theme.PreviewDark != "" {
+				result["preview_dark"] = theme.PreviewDark
 			}
 			if theme.BorderRadius != "" {
 				result["border_radius"] = theme.BorderRadius

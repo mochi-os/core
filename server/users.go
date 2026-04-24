@@ -248,12 +248,6 @@ func user_create(username string) (*User, string) {
 
 	db.exec("replace into users (username, role) values (?, ?)", username, role)
 
-	// Remove once we have hooks
-	admin := ini_string("email", "admin", "")
-	if admin != "" {
-		email_send(admin, "Mochi new user", "New user: "+username)
-	}
-
 	var u User
 	if db.scan(&u, "select id, username, role, methods, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)

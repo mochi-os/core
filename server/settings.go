@@ -91,7 +91,7 @@ var system_settings = map[string]SystemSetting{
 		Name:         "default_theme",
 		Pattern:      "line",
 		Default:      "12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno:blue",
-		Description:  "Default color theme for new users (entity:theme)",
+		Description:  "Default theme for new users (entity:theme)",
 		UserReadable: true,
 		ReadOnly:     false,
 	},

@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2025
 
-version = 0.4.25
+version = 0.4.29
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -160,13 +160,15 @@ msi: $(msi)
 
 windows: mochi-server.exe
 
-# macOS executables (cross-compile from Linux)
-# Note: CGO cross-compilation for macOS requires osxcross toolchain
+# macOS executables
+# Native Mac host: cgo on (real SQLite). Linux cross-compile: cgo off (pure-Go SQLite) unless osxcross is installed.
+darwin_cgo = $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1 || echo 0)
+
 mochi-server-darwin-amd64: $(shell find server -name '*.go')
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-amd64 ./server
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-amd64 ./server
 
 mochi-server-darwin-arm64: $(shell find server -name '*.go')
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-arm64 ./server
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-arm64 ./server
 
 # macOS .pkg installers
 # Requires: bomutils (/opt/bomutils), xar

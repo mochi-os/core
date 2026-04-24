@@ -10,6 +10,21 @@
     var currentAppPath = getAppNameFromPath(window.location.pathname);
     var currentAppId = currentAppPath;
 
+    // Title = "(N) baseTitle" where baseTitle comes from the current app
+    // (via postMessage) and N comes from the menu app (via custom event).
+    var baseTitle = 'Mochi';
+    var notificationCount = 0;
+    function updateTitle() {
+        document.title = notificationCount > 0
+            ? '(' + notificationCount + ') ' + baseTitle
+            : baseTitle;
+    }
+    window.addEventListener('mochi-notification-count', function(e) {
+        var n = parseInt(e.detail, 10);
+        notificationCount = isNaN(n) || n < 0 ? 0 : n;
+        updateTitle();
+    });
+
     // Create the initial iframe — derive src from current URL
     var initialSrc = window.location.pathname + window.location.search + window.location.hash;
     initialSrc += (initialSrc.indexOf('?') >= 0 ? '&' : '?') + '_shell=1';
@@ -336,7 +351,8 @@
             navigating = true;
             currentAppPath = newApp;
             updateFavicon(newApp);
-            document.title = 'Mochi';
+            baseTitle = 'Mochi';
+            updateTitle();
             history.pushState(null, '', data.url);
 
             // Show progress bar and dim current iframe immediately (before token fetch)
@@ -373,7 +389,8 @@
             navigating = true;
             currentAppPath = newApp;
             updateFavicon(newApp);
-            document.title = 'Mochi';
+            baseTitle = 'Mochi';
+            updateTitle();
 
             // Show progress bar and dim current iframe immediately (before token fetch)
             showProgress();
@@ -460,7 +477,10 @@
                 break;
 
             case 'title':
-                if (data.title) document.title = data.title;
+                if (data.title) {
+                    baseTitle = data.title;
+                    updateTitle();
+                }
                 break;
 
             case 'storage.get':

@@ -2598,7 +2598,7 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no user")
 	}
 	if !user.administrator() && setting_get("apps_install_user", "") != "true" {
-		return sl_error(fn, "not authorized to install apps")
+		return sl_error(fn, "not allowed to install apps")
 	}
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <app_id: string>, <version: string>")

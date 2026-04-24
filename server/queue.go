@@ -169,7 +169,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	}
 
 	if h.msg_type() == "ack" && h.AckID == q.ID {
-		debug("Queue direct %q received ACK", q.ID)
+		//debug("Queue direct %q received ACK", q.ID)
 		return true
 	}
 
@@ -249,7 +249,7 @@ func queue_process() {
 		if ok {
 			// Message sent and ACK received (or broadcast sent), remove from queue
 			db.exec("delete from queue where id = ?", q.ID)
-			debug("Queue %s %q completed", q.Type, q.ID)
+			//debug("Queue %s %q completed", q.Type, q.ID)
 		} else {
 			queue_fail(q.ID, "send failed")
 		}

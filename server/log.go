@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/mattn/go-isatty"
 	sl "go.starlark.net/starlark"
@@ -91,6 +92,9 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 	return sl.None, nil
 }
 
-func (writer logWriter) Write(bytes []byte) (int, error) {
-	return fmt.Print(time.Now().Format("2006-01-02 15:04:05.000000") + " " + string(bytes))
+func (writer logWriter) Write(b []byte) (int, error) {
+	if bytes.HasPrefix(b, []byte("http: TLS handshake error from ")) {
+		return len(b), nil
+	}
+	return fmt.Print(time.Now().Format("2006-01-02 15:04:05.000000") + " " + string(b))
 }

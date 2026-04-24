@@ -1053,7 +1053,7 @@ func web_login_identity(c *gin.Context) {
 	// Simple notification hook
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		email_send(admin, "Mochi new user identity", "New user: "+u.Username+"\nUsername: "+input.Name)
+		email_send(admin, "Mochi new user", "New user: "+u.Username+"\nUsername: "+input.Name)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -1538,6 +1538,11 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
 		ct == "application/pdf" {
 		disposition = "inline"
+		// Chrome's built-in PDF viewer renders the PDF inside an extension-origin
+		// frame; X-Frame-Options: SAMEORIGIN blocks that and surfaces as "This
+		// page has been blocked by Chrome". Inline media isn't clickjackable, so
+		// clear the middleware's header for these responses.
+		c.Header("X-Frame-Options", "")
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, att.Name))
 	c.File(path)

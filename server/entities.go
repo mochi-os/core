@@ -320,7 +320,7 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "entity not found")
 	}
 	if e.User != user.ID {
-		return sl_error(fn, "not authorized to delete this entity")
+		return sl_error(fn, "not allowed to delete this entity")
 	}
 
 	// Verify the calling app declares the entity's class
@@ -516,7 +516,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "entity not found")
 	}
 	if e.User != user.ID {
-		return sl_error(fn, "not authorized to update this entity")
+		return sl_error(fn, "not allowed to update this entity")
 	}
 
 	// Verify the calling app declares the entity's class

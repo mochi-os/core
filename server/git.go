@@ -2199,6 +2199,20 @@ func git_archive_write_zip(w io.Writer, tree *object.Tree, prefix string, mtime 
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 
+	// Always include the prefix directory entry — extracting an empty repo's
+	// archive should still yield <prefix>/ rather than a pile of nothing.
+	if prefix != "" {
+		dir := &zip.FileHeader{
+			Name:     prefix,
+			Method:   zip.Store,
+			Modified: mtime,
+		}
+		dir.SetMode(os.ModeDir | 0755)
+		if _, err := zw.CreateHeader(dir); err != nil {
+			return err
+		}
+	}
+
 	files := tree.Files()
 	defer files.Close()
 
@@ -2257,6 +2271,19 @@ func git_archive_write_tarbz2(w io.Writer, tree *object.Tree, prefix string, mti
 func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime time.Time) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
+
+	// Always include the prefix directory entry — extracting an empty repo's
+	// archive should still yield <prefix>/ rather than a pile of nothing.
+	if prefix != "" {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     prefix,
+			Typeflag: tar.TypeDir,
+			Mode:     0755,
+			ModTime:  mtime,
+		}); err != nil {
+			return err
+		}
+	}
 
 	files := tree.Files()
 	defer files.Close()

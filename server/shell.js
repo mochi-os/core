@@ -150,6 +150,13 @@
         progressBar.style.opacity = '0';
     }
 
+    // Tag an iframe URL with _shell=1 so the server can identify it as an
+    // iframe load even when the browser doesn't send Sec-Fetch-Dest.
+    function shellSrc(url) {
+        if (url.indexOf('_shell=1') >= 0) return url;
+        return url + (url.indexOf('?') >= 0 ? '&' : '?') + '_shell=1';
+    }
+
     // Replace the iframe with a new one, keeping the old visible until the new
     // one sends its ready message. This avoids both history pollution (creating
     // a new element instead of setting .src) and white flashes during transitions.
@@ -177,7 +184,7 @@
         next.id = 'app-frame';
         next.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads');
         next.style.visibility = 'hidden';
-        next.src = newSrc;
+        next.src = shellSrc(newSrc);
         container.insertBefore(next, staleIframe);
 
         iframe = next;

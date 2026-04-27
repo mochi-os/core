@@ -444,8 +444,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return true
 		}
-		if result != sl.None && !c.Writer.Written() {
-			c.JSON(http.StatusOK, sl_decode(result))
+		if !c.Writer.Written() {
+			if result != sl.None {
+				c.JSON(http.StatusOK, sl_decode(result))
+			} else {
+				// NoRoute pre-sets status to 404 — override when action succeeded
+				// without writing a response (e.g. fire-and-forget POSTs).
+				c.Status(http.StatusOK)
+			}
 		}
 
 	default:
@@ -565,6 +571,10 @@ func web_security_headers(c *gin.Context) {
 	// so all requests are cross-origin. ES module scripts and crossorigin CSS
 	// require CORS headers. Static assets are public, so this is safe.
 	c.Header("Access-Control-Allow-Origin", "*")
+	// Allow JS in sandboxed iframes (null origin) to read Content-Disposition so
+	// downloads can use the server-supplied filename instead of falling back to
+	// the URL or a hardcoded default.
+	c.Header("Access-Control-Expose-Headers", "Content-Disposition")
 	// Handle CORS preflight requests from sandboxed iframes.
 	// When the iframe sends requests with Authorization header,
 	// browsers send an OPTIONS preflight first.

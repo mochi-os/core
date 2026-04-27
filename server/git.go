@@ -4,6 +4,8 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsnet/compress/bzip2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
@@ -40,6 +43,7 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 	"branches": sl.NewBuiltin("mochi.git.branches", api_git_branches),
 	"tags":     sl.NewBuiltin("mochi.git.tags", api_git_tags),
 	"tree":     sl.NewBuiltin("mochi.git.tree", api_git_tree),
+	"archive":  sl.NewBuiltin("mochi.git.archive", api_git_archive),
 	"branch": sls.FromStringDict(sl.String("mochi.git.branch"), sl.StringDict{
 		"create": sl.NewBuiltin("mochi.git.branch.create", api_git_branch_create),
 		"delete": sl.NewBuiltin("mochi.git.branch.delete", api_git_branch_delete),
@@ -2082,6 +2086,255 @@ func git_store_tree(repo *git.Repository, node *git_dir_node) (plumbing.Hash, er
 	return hash, nil
 }
 
+// mochi.git.archive(entity_id, ref, format, [prefix], [stream]) -> int: Stream a tree archive to the action's HTTP response (default) or to a Stream
+func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 3 || len(args) > 5 {
+		return sl_error(fn, "syntax: <entity_id: string>, <ref: string>, <format: string>, [prefix: string], [stream: Stream]")
+	}
+
+	entity_id, ok := sl.AsString(args[0])
+	if !ok || entity_id == "" {
+		return sl_error(fn, "invalid entity_id")
+	}
+
+	ref, ok := sl.AsString(args[1])
+	if !ok || ref == "" {
+		return sl_error(fn, "invalid ref")
+	}
+
+	format, ok := sl.AsString(args[2])
+	if !ok || (format != "zip" && format != "tar.gz" && format != "tar.bz2") {
+		return sl_error(fn, "format must be 'zip', 'tar.gz', or 'tar.bz2'")
+	}
+
+	prefix := ""
+	var stream *Stream
+	for i := 3; i < len(args); i++ {
+		if args[i] == sl.None {
+			continue
+		}
+		if s, ok := args[i].(*Stream); ok {
+			stream = s
+		} else if str, ok := sl.AsString(args[i]); ok {
+			prefix = str
+		}
+	}
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	owner := t.Local("owner").(*User)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	repo, err := git_open(owner, entity_id)
+	if err != nil {
+		return sl_error(fn, "failed to open repository: %v", err)
+	}
+
+	hash, err := git_resolve_ref(repo, ref)
+	if err != nil {
+		return sl_error(fn, "ref not found: %v", err)
+	}
+
+	commit, err := repo.CommitObject(*hash)
+	if err != nil {
+		return sl_error(fn, "commit not found: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return sl_error(fn, "tree not found: %v", err)
+	}
+
+	var dest io.Writer
+	if stream != nil {
+		defer stream.close_write()
+		dest = stream.writer
+	} else {
+		action, ok := t.Local("action").(*Action)
+		if !ok || action == nil {
+			return sl_error(fn, "called from non-action and no stream provided")
+		}
+		t.SetLocal("file_serving", true)
+		if !action.web.Writer.Written() {
+			action.web.Status(http.StatusOK)
+		}
+		dest = action.web.Writer
+	}
+
+	mtime := commit.Author.When
+	w := &git_archive_counter{w: dest}
+
+	switch format {
+	case "zip":
+		err = git_archive_write_zip(w, tree, prefix, mtime)
+	case "tar.gz":
+		err = git_archive_write_targz(w, tree, prefix, mtime)
+	case "tar.bz2":
+		err = git_archive_write_tarbz2(w, tree, prefix, mtime)
+	}
+	if err != nil {
+		return sl_error(fn, "failed to write archive: %v", err)
+	}
+
+	return sl.MakeInt64(w.n), nil
+}
+
+// git_archive_counter wraps an io.Writer and counts bytes written
+type git_archive_counter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *git_archive_counter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// git_archive_write_zip walks the tree and writes a zip archive
+func git_archive_write_zip(w io.Writer, tree *object.Tree, prefix string, mtime time.Time) error {
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	// Always include the prefix directory entry — extracting an empty repo's
+	// archive should still yield <prefix>/ rather than a pile of nothing.
+	if prefix != "" {
+		dir := &zip.FileHeader{
+			Name:     prefix,
+			Method:   zip.Store,
+			Modified: mtime,
+		}
+		dir.SetMode(os.ModeDir | 0755)
+		if _, err := zw.CreateHeader(dir); err != nil {
+			return err
+		}
+	}
+
+	files := tree.Files()
+	defer files.Close()
+
+	return files.ForEach(func(f *object.File) error {
+		if f.Mode == filemode.Submodule {
+			return nil
+		}
+
+		hdr := &zip.FileHeader{
+			Name:     prefix + f.Name,
+			Method:   zip.Deflate,
+			Modified: mtime,
+		}
+		if f.Mode == filemode.Executable {
+			hdr.SetMode(0755)
+		} else if f.Mode == filemode.Symlink {
+			hdr.SetMode(os.ModeSymlink | 0777)
+		} else {
+			hdr.SetMode(0644)
+		}
+
+		entry, err := zw.CreateHeader(hdr)
+		if err != nil {
+			return err
+		}
+
+		reader, err := f.Reader()
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+
+		_, err = io.Copy(entry, reader)
+		return err
+	})
+}
+
+// git_archive_write_targz walks the tree and writes a gzipped tar archive
+func git_archive_write_targz(w io.Writer, tree *object.Tree, prefix string, mtime time.Time) error {
+	gz := gzip.NewWriter(w)
+	defer gz.Close()
+	return git_archive_write_tar(gz, tree, prefix, mtime)
+}
+
+// git_archive_write_tarbz2 walks the tree and writes a bzip2-compressed tar archive
+func git_archive_write_tarbz2(w io.Writer, tree *object.Tree, prefix string, mtime time.Time) error {
+	bz, err := bzip2.NewWriter(w, &bzip2.WriterConfig{Level: bzip2.DefaultCompression})
+	if err != nil {
+		return err
+	}
+	defer bz.Close()
+	return git_archive_write_tar(bz, tree, prefix, mtime)
+}
+
+// git_archive_write_tar walks the tree and writes a tar archive to w
+func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime time.Time) error {
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	// Always include the prefix directory entry — extracting an empty repo's
+	// archive should still yield <prefix>/ rather than a pile of nothing.
+	if prefix != "" {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     prefix,
+			Typeflag: tar.TypeDir,
+			Mode:     0755,
+			ModTime:  mtime,
+		}); err != nil {
+			return err
+		}
+	}
+
+	files := tree.Files()
+	defer files.Close()
+
+	return files.ForEach(func(f *object.File) error {
+		if f.Mode == filemode.Submodule {
+			return nil
+		}
+
+		hdr := &tar.Header{
+			Name:    prefix + f.Name,
+			Size:    f.Size,
+			ModTime: mtime,
+		}
+		switch f.Mode {
+		case filemode.Executable:
+			hdr.Typeflag = tar.TypeReg
+			hdr.Mode = 0755
+		case filemode.Symlink:
+			hdr.Typeflag = tar.TypeSymlink
+			hdr.Mode = 0777
+			target, err := f.Contents()
+			if err != nil {
+				return err
+			}
+			hdr.Linkname = target
+			hdr.Size = 0
+		default:
+			hdr.Typeflag = tar.TypeReg
+			hdr.Mode = 0644
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		if hdr.Typeflag == tar.TypeSymlink {
+			return nil
+		}
+
+		reader, err := f.Reader()
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+
+		_, err = io.Copy(tw, reader)
+		return err
+	})
+}
+
 // git_http_handler handles the Smart HTTP protocol for git clone/push/fetch
 // Path format: /info/refs, /git-upload-pack, /git-receive-pack
 func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo string, path string) bool {
@@ -2144,7 +2397,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		if is_write {
 			op = "write"
 		}
-		if !app_db.access_check(owner, identity_id, role, "repo/"+id, op) {
+		if !app_db.access_check(owner, identity_id, role, "repository/"+id, op) {
 			if user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")
@@ -2216,7 +2469,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		if is_write {
 			op = "write"
 		}
-		if !app_db.access_check(owner, identity_id, role, "repo/"+e.ID, op) {
+		if !app_db.access_check(owner, identity_id, role, "repository/"+e.ID, op) {
 			if user == nil {
 				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
 				c.String(http.StatusUnauthorized, "Authentication required")

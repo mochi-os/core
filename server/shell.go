@@ -67,14 +67,29 @@ var shell_js string
 // web_should_serve_shell returns true when the request should get the shell page
 // instead of the app HTML directly
 func web_should_serve_shell(c *gin.Context) bool {
-	// Only intercept top-level document navigations
+	// Sec-Fetch-Dest classifies the request: "document" for top-level navigations,
+	// "iframe" for iframe loads, "script"/"style"/"image"/etc for assets, and
+	// "empty" for fetch/XHR. Modern browsers always send it, but older browsers,
+	// privacy-strict browsers, and some reverse proxies may strip it. Treat
+	// "document" or missing as a possible top-level navigation; reject any
+	// explicit non-document value.
 	dest := c.GetHeader("Sec-Fetch-Dest")
-	if dest != "document" {
+	if dest != "" && dest != "document" {
+		return false
+	}
+
+	// Only GET is a top-level page navigation
+	if c.Request.Method != http.MethodGet {
 		return false
 	}
 
 	// Must accept HTML
 	if !strings.Contains(c.GetHeader("Accept"), "text/html") {
+		return false
+	}
+
+	// Iframe loads (within the shell) carry _shell=1 — never wrap them in another shell
+	if c.Query("_shell") == "1" {
 		return false
 	}
 

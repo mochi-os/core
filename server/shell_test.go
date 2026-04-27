@@ -13,20 +13,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Test web_should_serve_shell requires Sec-Fetch-Dest: document
-func TestShellRequiresDocumentDest(t *testing.T) {
+// Test web_should_serve_shell rejects explicit non-document Sec-Fetch-Dest values.
+// Missing Sec-Fetch-Dest is allowed (older browsers, privacy-strict browsers,
+// reverse proxies that strip the header) — see other tests for the auth gate.
+func TestShellRejectsNonDocumentDest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/feeds/", nil)
 	c.Request.Header.Set("Accept", "text/html")
 
-	// No Sec-Fetch-Dest header
-	if web_should_serve_shell(c) {
-		t.Error("web_should_serve_shell should return false without Sec-Fetch-Dest: document")
-	}
-
-	// Wrong Sec-Fetch-Dest
 	c.Request.Header.Set("Sec-Fetch-Dest", "iframe")
 	if web_should_serve_shell(c) {
 		t.Error("web_should_serve_shell should return false for Sec-Fetch-Dest: iframe")
@@ -35,6 +31,44 @@ func TestShellRequiresDocumentDest(t *testing.T) {
 	c.Request.Header.Set("Sec-Fetch-Dest", "script")
 	if web_should_serve_shell(c) {
 		t.Error("web_should_serve_shell should return false for Sec-Fetch-Dest: script")
+	}
+
+	c.Request.Header.Set("Sec-Fetch-Dest", "image")
+	if web_should_serve_shell(c) {
+		t.Error("web_should_serve_shell should return false for Sec-Fetch-Dest: image")
+	}
+
+	c.Request.Header.Set("Sec-Fetch-Dest", "empty")
+	if web_should_serve_shell(c) {
+		t.Error("web_should_serve_shell should return false for Sec-Fetch-Dest: empty (fetch/XHR)")
+	}
+}
+
+// Test web_should_serve_shell rejects iframe loads (carry _shell=1)
+func TestShellRejectsIframeLoads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/feeds/?_shell=1", nil)
+	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Set("Accept", "text/html")
+
+	if web_should_serve_shell(c) {
+		t.Error("web_should_serve_shell should return false when _shell=1 marks an iframe load")
+	}
+}
+
+// Test web_should_serve_shell rejects non-GET methods (top-level navigations are GET)
+func TestShellRejectsNonGet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/feeds/", nil)
+	c.Request.Header.Set("Sec-Fetch-Dest", "document")
+	c.Request.Header.Set("Accept", "text/html")
+
+	if web_should_serve_shell(c) {
+		t.Error("web_should_serve_shell should return false for POST")
 	}
 }
 
@@ -224,11 +258,10 @@ func TestShellTokenRequiresApp(t *testing.T) {
 // Test shell HTML template has expected placeholders
 func TestShellHtmlTemplate(t *testing.T) {
 	required_placeholders := []string{
-		"{{IFRAME_SRC}}",
-		"{{APP_ID}}",
-		"{{USER_NAME}}",
+		"{{HTML_CLASS}}",
+		"{{THEME_STYLE}}",
+		"{{APPEARANCE_SCRIPT}}",
 		"{{SHELL_JS}}",
-		"{{MENU_TOKEN}}",
 		"{{MENU_JS}}",
 		"{{MENU_CSS}}",
 	}
@@ -240,22 +273,22 @@ func TestShellHtmlTemplate(t *testing.T) {
 	}
 }
 
-// Test shell HTML has sandboxed iframe with correct attributes
+// Test shell JS creates sandboxed iframes with correct attributes
 func TestShellHtmlSandboxedIframe(t *testing.T) {
-	if !strings.Contains(shell_html, `sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"`) {
-		t.Error("shell_html should contain sandboxed iframe with allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads")
+	if !strings.Contains(shell_js, `'sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads'`) {
+		t.Error("shell_js should set iframe sandbox to allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads")
 	}
 
 	// Must NOT contain allow-same-origin (that would defeat the purpose)
-	if strings.Contains(shell_html, "allow-same-origin") {
-		t.Error("shell_html MUST NOT contain allow-same-origin (defeats iframe isolation)")
+	if strings.Contains(shell_js, "allow-same-origin") {
+		t.Error("shell_js MUST NOT contain allow-same-origin (defeats iframe isolation)")
 	}
 }
 
 // Test shell HTML does not allow top navigation
 func TestShellHtmlNoTopNavigation(t *testing.T) {
-	if strings.Contains(shell_html, "allow-top-navigation") {
-		t.Error("shell_html MUST NOT contain allow-top-navigation (iframe could escape)")
+	if strings.Contains(shell_html, "allow-top-navigation") || strings.Contains(shell_js, "allow-top-navigation") {
+		t.Error("shell MUST NOT contain allow-top-navigation (iframe could escape)")
 	}
 }
 

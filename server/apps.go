@@ -124,6 +124,7 @@ type AppVersion struct {
 	labels           map[string]map[string]string `json:"-"`
 	starlark_once    sync.Once                    `json:"-"`
 	starlark_globals sl.StringDict                `json:"-"`
+	app_json_mtime   time.Time                    `json:"-"`
 }
 
 type Icon struct {
@@ -1839,12 +1840,26 @@ func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error
 	return err
 }
 
-// Reload app.json and labels from disk (for development)
+// Reload app.json and labels from disk (for development).
+// Gated on app.json mtime: a stat check skips the parse when the file
+// is unchanged, so callers on hot paths can invoke reload() cheaply.
 func (av *AppVersion) reload() {
 	if av.base == "" {
 		return
 	}
 	path := av.base + "/app.json"
+	st, err := os.Stat(path)
+	if err != nil {
+		info("App reload failed to stat %q: %v", path, err)
+		return
+	}
+	mtime := st.ModTime()
+	apps_lock.Lock()
+	cached := av.app_json_mtime
+	apps_lock.Unlock()
+	if !cached.IsZero() && !mtime.After(cached) {
+		return
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		info("App reload failed to read %q: %v", path, err)
@@ -1914,6 +1929,7 @@ func (av *AppVersion) reload() {
 	av.ThemeIcons = fresh.ThemeIcons
 	av.IconSymbolic = fresh.IconSymbolic
 	av.labels = labels
+	av.app_json_mtime = mtime
 	apps_lock.Unlock()
 }
 
@@ -2261,18 +2277,20 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	user := t.Local("user").(*User)
 	var results []map[string]any
 
+	// In dev, pick up theme edits in any app's app.json without needing the
+	// user to first hit that app's web route. reload() is mtime-gated, so
+	// when nothing changed this is a stat per app and nothing else.
 	if dev_reload {
 		apps_lock.Lock()
-		app_list := make([]*App, 0, len(apps))
+		var to_reload []*AppVersion
 		for _, a := range apps {
-			app_list = append(app_list, a)
+			if a.latest != nil {
+				to_reload = append(to_reload, a.latest)
+			}
 		}
 		apps_lock.Unlock()
-
-		for _, a := range app_list {
-			if av := a.active(user); av != nil {
-				av.reload()
-			}
+		for _, av := range to_reload {
+			av.reload()
 		}
 	}
 

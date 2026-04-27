@@ -118,24 +118,6 @@
         if (menuEl) menuEl.setAttribute('data-sidebar-present', sidebarPresent ? 'true' : 'false');
     }
 
-    var menuModalOverlay = null;
-
-    function setMenuModalOverlay(open) {
-        if (!menuEl) return;
-        if (open) {
-            if (!menuModalOverlay) {
-                menuModalOverlay = document.createElement('div');
-                menuModalOverlay.style.cssText = 'position:absolute;inset:0;background:rgba(0,0,0,0.5);z-index:10;pointer-events:auto;transition:opacity 0.3s';
-                menuEl.appendChild(menuModalOverlay);
-            }
-        } else {
-            if (menuModalOverlay) {
-                menuModalOverlay.remove();
-                menuModalOverlay = null;
-            }
-        }
-    }
-
     // Set initial state
     setSidebarState(sidebarOpen);
     setSidebarPresent(false);
@@ -185,9 +167,6 @@
         // has a sidebar via postMessage. Without this, switching from a
         // sidebar-app to a sidebar-less app would leave the menu collapsed.
         setSidebarPresent(false);
-        // Reset modal overlay — new app starts without any open modals.
-        setMenuModalOverlay(false);
-
         // Clean up any previous stale iframe
         if (staleIframe && staleIframe.parentNode) {
             staleIframe.parentNode.removeChild(staleIframe);
@@ -534,9 +513,6 @@
                 setSidebarPresent(!!data.present);
                 break;
 
-            case 'modal-open':
-                setMenuModalOverlay(!!data.open);
-                break;
 
             case 'theme-set':
                 // App changed appearance — update shell class (preference persisted server-side by the app)

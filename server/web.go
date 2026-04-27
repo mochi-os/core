@@ -4,9 +4,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -384,13 +387,25 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		action.inputs[e.Class] = e.ID
 	}
 
-	// Parse JSON body and convert to strings for a.input()
-	if strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
-		var data map[string]any
-		err := c.ShouldBindJSON(&data)
+	// Capture the raw request body so a.body can return it for signature
+	// verification (Stripe webhooks etc.) and parse JSON from the captured
+	// bytes. Restore Request.Body so downstream code (multipart upload,
+	// form parsing) can still read it — io.ReadAll otherwise leaves the
+	// body at EOF and breaks every non-JSON action.
+	contentType := c.Request.Header.Get("Content-Type")
+	if c.Request.Body != nil && (strings.HasPrefix(contentType, "application/json") || strings.HasPrefix(contentType, "text/")) {
+		raw, err := io.ReadAll(c.Request.Body)
 		if err == nil {
-			for key, value := range data {
-				action.inputs[key] = any_to_string(value)
+			action.body = string(raw)
+			c.Request.Body.Close()
+			c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+			if strings.HasPrefix(contentType, "application/json") {
+				var data map[string]any
+				if jerr := json.Unmarshal(raw, &data); jerr == nil {
+					for key, value := range data {
+						action.inputs[key] = any_to_string(value)
+					}
+				}
 			}
 		}
 	}

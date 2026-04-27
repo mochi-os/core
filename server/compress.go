@@ -74,6 +74,16 @@ type compress_writer struct {
 	w        io.WriteCloser
 	decided  bool
 	compress bool
+	written  bool
+}
+
+// Written reports whether any payload has been handed to this writer, even
+// when compression has buffered it inside the encoder and not yet flushed to
+// the underlying gin.ResponseWriter. Without this override, action handlers
+// (e.g. web.go's "if !c.Writer.Written()" check) treat a buffered a.error()
+// response as "nothing written" and overwrite its status with 200.
+func (w *compress_writer) Written() bool {
+	return w.written || w.ResponseWriter.Written()
 }
 
 // decide sets up compression headers based on Content-Type. Called from
@@ -114,6 +124,7 @@ func (w *compress_writer) Write(p []byte) (int, error) {
 	if !w.decided {
 		w.decided = true
 	}
+	w.written = true
 	if !w.compress {
 		return w.ResponseWriter.Write(p)
 	}

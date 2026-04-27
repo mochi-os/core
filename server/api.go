@@ -4,6 +4,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +34,9 @@ func init() {
 			"ai":         api_ai,
 			"app":        api_app,
 			"attachment": api_attachment,
+			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
+				"hmac_sha256": sl.NewBuiltin("mochi.crypto.hmac_sha256", api_crypto_hmac_sha256),
+			}),
 			"db":         api_db,
 			"directory":  api_directory,
 			"domain":     api_domain,
@@ -87,6 +93,24 @@ func init() {
 			"websocket": api_websocket,
 		}),
 	}
+}
+
+// mochi.crypto.hmac_sha256(key, message) -> string: Hex-encoded HMAC-SHA256 digest
+func api_crypto_hmac_sha256(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <key: string>, <message: string>")
+	}
+	key, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "key must be a string")
+	}
+	message, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "message must be a string")
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(message))
+	return sl.String(hex.EncodeToString(mac.Sum(nil))), nil
 }
 
 // mochi.markdown.render(markdown) -> string: Render markdown to HTML

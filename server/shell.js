@@ -517,6 +517,11 @@
                 setSidebarPresent(!!data.present);
                 break;
 
+            case 'overlay': {
+                var menuEl = document.getElementById('menu');
+                if (menuEl) menuEl.classList.toggle('shell-overlay-active', !!data.open);
+                break;
+            }
 
             case 'theme-set':
                 // App changed appearance — update shell class (preference persisted server-side by the app)

@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -35,7 +36,10 @@ func init() {
 			"app":        api_app,
 			"attachment": api_attachment,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
-				"hmac_sha256": sl.NewBuiltin("mochi.crypto.hmac_sha256", api_crypto_hmac_sha256),
+				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
+				"hmac": sls.FromStringDict(sl.String("mochi.crypto.hmac"), sl.StringDict{
+					"sha256": sl.NewBuiltin("mochi.crypto.hmac.sha256", api_crypto_hmac_sha256),
+				}),
 			}),
 			"db":         api_db,
 			"directory":  api_directory,
@@ -95,7 +99,7 @@ func init() {
 	}
 }
 
-// mochi.crypto.hmac_sha256(key, message) -> string: Hex-encoded HMAC-SHA256 digest
+// mochi.crypto.hmac.sha256(key, message) -> string: Hex-encoded HMAC-SHA256 digest
 func api_crypto_hmac_sha256(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <key: string>, <message: string>")
@@ -111,6 +115,27 @@ func api_crypto_hmac_sha256(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(message))
 	return sl.String(hex.EncodeToString(mac.Sum(nil))), nil
+}
+
+// mochi.crypto.equal(a, b) -> bool: Constant-time string equality, suitable for
+// comparing HMAC digests, tokens, and other secret-derived values without leaking
+// timing information byte by byte.
+func api_crypto_equal(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <a: string>, <b: string>")
+	}
+	a, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "a must be a string")
+	}
+	b, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "b must be a string")
+	}
+	if subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 {
+		return sl.True, nil
+	}
+	return sl.False, nil
 }
 
 // mochi.markdown.render(markdown) -> string: Render markdown to HTML

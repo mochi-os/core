@@ -277,6 +277,10 @@
         }
     }
 
+    window.addEventListener('mochi-sidebar-toggle', function() {
+        postToIframe({ type: 'sidebar-toggle' });
+    });
+
     // --- localStorage proxy (namespaced by app ID) ---
 
     var storagePrefix = 'app:' + currentAppId + ':';

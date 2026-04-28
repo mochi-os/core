@@ -1212,12 +1212,17 @@ func app_read(id string, base string) (*AppVersion, error) {
 	debug("App loading %q", base)
 
 	// Load app manifest from app.json
-	if !file_exists(base + "/app.json") {
+	path := base + "/app.json"
+	st, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("App %q in %q has no app.json file; ignoring", id, base)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("App unable to stat '%s/app.json': %v", base, err)
 	}
 
 	var av AppVersion
-	raw, err := os.ReadFile(base + "/app.json")
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("App unable to read '%s/app.json': %v", base, err)
 	}
@@ -1231,6 +1236,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	av.base = base
+	av.app_json_mtime = st.ModTime()
 
 	// Validate manifest
 	if !valid(av.Version, "version") {
@@ -1841,8 +1847,7 @@ func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error
 }
 
 // Reload app.json and labels from disk (for development).
-// Gated on app.json mtime: a stat check skips the parse when the file
-// is unchanged, so callers on hot paths can invoke reload() cheaply.
+// Gated on app.json mtime so normal dev reload callers skip unchanged manifests.
 func (av *AppVersion) reload() {
 	if av.base == "" {
 		return
@@ -2277,12 +2282,12 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	user := t.Local("user").(*User)
 	var results []map[string]any
 
-	// In dev, pick up theme edits in any app's app.json without needing the
-	// user to first hit that app's web route. reload() is mtime-gated, so
-	// when nothing changed this is a stat per app and nothing else.
+	// In dev, pick up theme edits in any app's app.json without requiring
+	// the user to first hit that app's web route. reload() is mtime-gated,
+	// so on an unchanged manifest this is one stat per app and nothing else.
 	if dev_reload {
 		apps_lock.Lock()
-		var to_reload []*AppVersion
+		to_reload := make([]*AppVersion, 0, len(apps))
 		for _, a := range apps {
 			if a.latest != nil {
 				to_reload = append(to_reload, a.latest)

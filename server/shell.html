@@ -9,11 +9,31 @@
     <link rel="icon" type="image/svg+xml" href="/images/logo-header.svg">
     {{MENU_CSS}}
     <style>
+        :root { --shell-mobile-topbar-height: 3rem; }
         html, body { height: 100%; margin: 0; overflow: hidden; }
         #menu { position: fixed; top: 0; left: 0; z-index: 50; }
+        #menu::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: rgba(126,126,126,0.5);
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.15s ease;
+        }
+        #menu.shell-overlay-active::after {
+            opacity: 1;
+            pointer-events: auto;
+        }
         #app-container { position: relative; width: 100%; height: 100%; }
         #app-container > iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; transition: opacity 0.15s ease; }
         #shell-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; pointer-events: none; background: hsl(220, 60%, 35%); width: 0%; transition: width 0.3s ease-out; opacity: 1; }
+        @media (max-width: 1023.98px) {
+            #menu { right: 0; width: 100%; min-height: var(--shell-mobile-topbar-height); background: var(--background); }
+            #menu::after { background: transparent; }
+            #app-container > iframe { top: var(--shell-mobile-topbar-height); height: calc(100% - var(--shell-mobile-topbar-height)); }
+        }
     </style>
 </head>
 <body>

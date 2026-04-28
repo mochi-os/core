@@ -432,7 +432,17 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		s.set("action", &action)
 		s.set("app", a)
 		s.set("host", c.Request.Host)
-		s.set("user", user)
+		// For `public: true` actions invoked anonymously (webhooks, OAuth
+		// callbacks, public APIs), there is no Mochi-authenticated caller —
+		// the manifest's `public: true` is itself the explicit declaration
+		// that anonymous invocation is the design. Run such requests as the
+		// app's owner, the same way every CGI/FastCGI/PHP-FPM system runs
+		// scripts as a fixed user. Authenticated requests are unaffected.
+		effective := user
+		if effective == nil && aa.Public {
+			effective = owner
+		}
+		s.set("user", effective)
 		s.set("owner", owner)
 		if e != nil {
 			s.set("route_entity", e.ID)

@@ -25,6 +25,7 @@ type Action struct {
 	token  *Token
 	web    *gin.Context
 	inputs map[string]string
+	body   string
 }
 
 // ActionInput provides input methods (callable as a.input(), with a.input.has())
@@ -183,13 +184,15 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
+	return []string{"access_require", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "access_require":
 		return sl.NewBuiltin("access_require", a.sl_access_require), nil
+	case "body":
+		return sl.String(a.body), nil
 	case "cookie":
 		return &ActionCookie{action: a}, nil
 	case "domain":

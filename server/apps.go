@@ -1439,7 +1439,7 @@ func app_resolve_paths(av *AppVersion, id string) {
 	for _, path := range av.Paths {
 		if app_path_taken(path, id) {
 			fp := fingerprint(id)
-			debug("Published app %s path %q conflicts, using fingerprint %s", id, path, fp)
+			// debug("Published app %s path %q conflicts, using fingerprint %s", id, path, fp)
 			av.Paths = []string{fp}
 			return
 		}

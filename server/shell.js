@@ -167,7 +167,6 @@
         // has a sidebar via postMessage. Without this, switching from a
         // sidebar-app to a sidebar-less app would leave the menu collapsed.
         setSidebarPresent(false);
-
         // Clean up any previous stale iframe
         if (staleIframe && staleIframe.parentNode) {
             staleIframe.parentNode.removeChild(staleIframe);
@@ -513,6 +512,7 @@
             case 'sidebar-present':
                 setSidebarPresent(!!data.present);
                 break;
+
 
             case 'theme-set':
                 // App changed appearance — update shell class (preference persisted server-side by the app)

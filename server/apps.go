@@ -65,6 +65,7 @@ type AppTheme struct {
 	Chroma         float64           `json:"chroma"`
 	HueBG          float64           `json:"hue_bg"`
 	Preview        string            `json:"preview"`
+	PreviewDark    string            `json:"preview_dark"`
 	BorderRadius   string            `json:"border_radius"`
 	IconMask       string            `json:"icon_mask"`
 	IconBackground string            `json:"icon_background"`
@@ -123,6 +124,7 @@ type AppVersion struct {
 	labels           map[string]map[string]string `json:"-"`
 	starlark_once    sync.Once                    `json:"-"`
 	starlark_globals sl.StringDict                `json:"-"`
+	app_json_mtime   time.Time                    `json:"-"`
 }
 
 type Icon struct {
@@ -1210,12 +1212,17 @@ func app_read(id string, base string) (*AppVersion, error) {
 	debug("App loading %q", base)
 
 	// Load app manifest from app.json
-	if !file_exists(base + "/app.json") {
+	path := base + "/app.json"
+	st, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("App %q in %q has no app.json file; ignoring", id, base)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("App unable to stat '%s/app.json': %v", base, err)
 	}
 
 	var av AppVersion
-	raw, err := os.ReadFile(base + "/app.json")
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("App unable to read '%s/app.json': %v", base, err)
 	}
@@ -1229,6 +1236,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 	}
 
 	av.base = base
+	av.app_json_mtime = st.ModTime()
 
 	// Validate manifest
 	if !valid(av.Version, "version") {
@@ -1838,12 +1846,25 @@ func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error
 	return err
 }
 
-// Reload app.json and labels from disk (for development)
+// Reload app.json and labels from disk (for development).
+// Gated on app.json mtime so normal dev reload callers skip unchanged manifests.
 func (av *AppVersion) reload() {
 	if av.base == "" {
 		return
 	}
 	path := av.base + "/app.json"
+	st, err := os.Stat(path)
+	if err != nil {
+		info("App reload failed to stat %q: %v", path, err)
+		return
+	}
+	mtime := st.ModTime()
+	apps_lock.Lock()
+	cached := av.app_json_mtime
+	apps_lock.Unlock()
+	if !cached.IsZero() && !mtime.After(cached) {
+		return
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		info("App reload failed to read %q: %v", path, err)
@@ -1913,6 +1934,7 @@ func (av *AppVersion) reload() {
 	av.ThemeIcons = fresh.ThemeIcons
 	av.IconSymbolic = fresh.IconSymbolic
 	av.labels = labels
+	av.app_json_mtime = mtime
 	apps_lock.Unlock()
 }
 
@@ -2218,6 +2240,9 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 					"hue_bg":  t.HueBG,
 					"preview": t.Preview,
 				}
+				if t.PreviewDark != "" {
+					themes[i]["preview_dark"] = t.PreviewDark
+				}
 			}
 			result["themes"] = themes
 		}
@@ -2257,6 +2282,23 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	user := t.Local("user").(*User)
 	var results []map[string]any
 
+	// In dev, pick up theme edits in any app's app.json without requiring
+	// the user to first hit that app's web route. reload() is mtime-gated,
+	// so on an unchanged manifest this is one stat per app and nothing else.
+	if dev_reload {
+		apps_lock.Lock()
+		to_reload := make([]*AppVersion, 0, len(apps))
+		for _, a := range apps {
+			if a.latest != nil {
+				to_reload = append(to_reload, a.latest)
+			}
+		}
+		apps_lock.Unlock()
+		for _, av := range to_reload {
+			av.reload()
+		}
+	}
+
 	apps_lock.Lock()
 	for _, a := range apps {
 		av := a.active_locked(user)
@@ -2276,6 +2318,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 				"chroma":  theme.Chroma,
 				"hue_bg":  theme.HueBG,
 				"preview": theme.Preview,
+			}
+			if theme.PreviewDark != "" {
+				result["preview_dark"] = theme.PreviewDark
 			}
 			if theme.BorderRadius != "" {
 				result["border_radius"] = theme.BorderRadius

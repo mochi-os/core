@@ -118,9 +118,14 @@
         if (menuEl) menuEl.setAttribute('data-sidebar-present', sidebarPresent ? 'true' : 'false');
     }
 
+    function setCurrentApp(appPath) {
+        if (menuEl) menuEl.setAttribute('data-app', appPath);
+    }
+
     // Set initial state
     setSidebarState(sidebarOpen);
     setSidebarPresent(false);
+    setCurrentApp(currentAppPath);
 
     var progressInterval = null;
     var progressWidth = 0;
@@ -360,6 +365,7 @@
             // Cross-app navigation: update URL, fetch new token, swap iframe
             navigating = true;
             currentAppPath = newApp;
+            setCurrentApp(newApp);
             updateFavicon(newApp);
             baseTitle = 'Mochi';
             updateTitle();
@@ -398,6 +404,7 @@
             // Different app — swap iframe and fetch new token
             navigating = true;
             currentAppPath = newApp;
+            setCurrentApp(newApp);
             updateFavicon(newApp);
             baseTitle = 'Mochi';
             updateTitle();

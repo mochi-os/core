@@ -73,6 +73,7 @@ func email_send_html(to string, subject string, html string) {
 // email_login_code sends a styled HTML email with a login code.
 func email_login_code(to string, code string) {
 	subject := "Mochi login code"
+	text := "Your Mochi login code is: " + code + "\n\nEnter this code in your browser to sign in. The code expires in 1 hour.\n\nIf you didn't request this code, you can safely ignore this email.\n"
 	html := `<!DOCTYPE html>
 <html>
 <head>
@@ -109,7 +110,7 @@ func email_login_code(to string, code string) {
   </table>
 </body>
 </html>`
-	email_send_html(to, subject, html)
+	email_send_multipart(to, subject, text, html)
 }
 
 // email_send_multipart sends an email with both plain text and HTML parts.

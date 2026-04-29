@@ -22,6 +22,9 @@
             pointer-events: none;
             transition: opacity 0.15s ease;
         }
+        html.dark #menu::after {
+            background: rgb(0 0 0 / 50%);
+        }
         #menu.shell-overlay-active::after {
             opacity: 1;
             pointer-events: auto;

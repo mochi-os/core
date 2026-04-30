@@ -362,6 +362,11 @@ func web_shell_init(c *gin.Context) {
 	}
 	result["locale"] = locale
 
+	// Active i18n language for the user (BCP 47). Logged-in users use their
+	// `language` preference; falls through to Accept-Language for the brief
+	// anonymous-public window before login completes.
+	result["language"] = request_language(c, user)
+
 	c.JSON(http.StatusOK, result)
 }
 

@@ -1570,31 +1570,20 @@ func (a *App) event_anonymous(event string, f func(*Event)) {
 	a.internal.Events[event] = AppEvent{internal_function: f, Anonymous: true}
 }
 
-// Resolve an app label
-func (a *App) label(u *User, av *AppVersion, key string, values ...any) string {
+// Resolve an app label using the BCP 47 fallback chain and ICU MessageFormat.
+// Optional args map contains named placeholders (e.g. {"count": 3, "name": "Alice"}).
+// Existing call sites that pass no args resolve the raw label format unchanged.
+func (a *App) label(u *User, av *AppVersion, key string, args ...map[string]any) string {
 	language := "en"
 	if u != nil {
 		language = user_preference_get(u, "language", "en")
 	}
 
-	labels := av.labels
-	if labels == nil {
-		labels = map[string]map[string]string{}
+	var kwargs map[string]any
+	if len(args) > 0 {
+		kwargs = args[0]
 	}
-
-	format := ""
-	if labels[language] != nil {
-		format = labels[language][key]
-	}
-	if format == "" && labels["en"] != nil {
-		format = labels["en"][key]
-	}
-	if format == "" {
-		info("App label %q in language %q not set", key, language)
-		return key
-	}
-
-	return fmt.Sprintf(format, values...)
+	return resolve_label(av, language, key, kwargs)
 }
 
 // Loads a new version into the versions map, updating a.latest if this is the highest version
@@ -1617,7 +1606,7 @@ func (a *App) load_version(av *AppVersion) {
 	}
 	for _, file := range label_files {
 		language := strings.TrimSuffix(file, ".conf")
-		if !valid(language, "constant") {
+		if !valid(language, "locale") {
 			continue
 		}
 		av.labels[language] = make(map[string]string)
@@ -1901,7 +1890,7 @@ func (av *AppVersion) reload() {
 	}
 	for _, file := range label_files {
 		language := strings.TrimSuffix(file, ".conf")
-		if !valid(language, "constant") {
+		if !valid(language, "locale") {
 			continue
 		}
 		labels[language] = make(map[string]string)
@@ -1986,10 +1975,13 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	return sl.None, nil
 }
 
-// mochi.app.label(key) -> string: Resolve a label key from the calling app's labels/<lang>.conf, falling back to English. Empty string if not found.
+// mochi.app.label(key, **kwargs) -> string: Resolve a label key from the calling
+// app's labels/<lang>.conf using the BCP 47 fallback chain (variant -> parent -> en).
+// kwargs are passed to ICU MessageFormat substitution (e.g. count=3, name="Alice").
+// Returns the literal key if nothing resolves (developer bug).
 func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <key: string>")
+		return sl_error(fn, "syntax: <key: string>, **kwargs")
 	}
 	key, ok := sl.AsString(args[0])
 	if !ok || key == "" {
@@ -2011,17 +2003,46 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	if user != nil {
 		language = user_preference_get(user, "language", "en")
 	}
-	if labels := av.labels[language]; labels != nil {
-		if v := labels[key]; v != "" {
-			return sl.String(v), nil
+
+	margs, err := starlark_kwargs_to_map(kwargs)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	return sl.String(resolve_label(av, language, key, margs)), nil
+}
+
+// starlark_kwargs_to_map converts a Starlark kwargs tuple into a Go map[string]any
+// suitable for ICU MessageFormat substitution. Numeric values become int64 or
+// float64; strings become string; everything else is rendered via String().
+func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
+	if len(kwargs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]any, len(kwargs))
+	for _, kv := range kwargs {
+		k, ok := sl.AsString(kv[0])
+		if !ok {
+			continue
+		}
+		switch v := kv[1].(type) {
+		case sl.String:
+			out[k] = string(v)
+		case sl.Int:
+			if i, ok := v.Int64(); ok {
+				out[k] = i
+			} else {
+				out[k] = v.String()
+			}
+		case sl.Float:
+			out[k] = float64(v)
+		case sl.Bool:
+			out[k] = bool(v)
+		default:
+			out[k] = v.String()
 		}
 	}
-	if labels := av.labels["en"]; labels != nil {
-		if v := labels[key]; v != "" {
-			return sl.String(v), nil
-		}
-	}
-	return sl.String(""), nil
+	return out, nil
 }
 
 // mochi.app.icons() -> dict: Get available icons for home screen

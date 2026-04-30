@@ -336,6 +336,22 @@ func TestValid(t *testing.T) {
 		// Control characters should fail all patterns
 		{"control chars", "hello\x00world", "constant", false},
 		{"control chars name", "hello\x01world", "name", false},
+
+		// locale pattern (BCP 47, lowercase canonical form on disk)
+		{"locale 2-letter", "en", "locale", true},
+		{"locale 3-letter", "cmn", "locale", true},
+		{"locale lang-region", "en-gb", "locale", true},
+		{"locale lang-script", "zh-hant", "locale", true},
+		{"locale lang-script-region", "zh-hant-hk", "locale", true},
+		{"locale lang-numeric-region", "es-419", "locale", true},
+		{"locale private-use pseudo", "en-x-pseudo", "locale", true},
+		{"locale private-use multi", "en-x-pseudo-rtl", "locale", true},
+		{"locale uppercase region rejected", "en-GB", "locale", false},
+		{"locale uppercase script rejected", "zh-Hant", "locale", false},
+		{"locale underscore rejected", "en_GB", "locale", false},
+		{"locale 1-letter rejected", "e", "locale", false},
+		{"locale empty rejected", "", "locale", false},
+		{"locale subtag too long rejected", "en-toolongsubtag", "locale", false},
 	}
 
 	for _, tt := range tests {

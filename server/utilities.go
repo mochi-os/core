@@ -463,6 +463,12 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z{}:\"]{1,1000}$"
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
+	case "locale":
+		// BCP 47 language tag, lowercase form (canonical-case normalised in memory).
+		// Accepts: en, en-gb, zh-hant, zh-hant-hk, pt-br, pt-419, en-x-pseudo, en-x-pseudo-rtl.
+		// Rejects: uppercase variants, underscores, irregular grandfathered tags.
+		// Standard subtags are 2-8 chars; the private-use "-x-" extension allows 1-8 char subtags.
+		match = "^[a-z]{2,3}(-[a-z0-9]{2,8})*(-x(-[a-z0-9]{1,8})+)?$"
 	case "name":
 		match = "^[^<>\r\n]{1,1000}$"
 	case "natural":

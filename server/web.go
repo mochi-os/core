@@ -821,12 +821,15 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		if app := c.GetString("mochi_app_path"); app != "" {
 			content = strings.Replace(content, "<head>", `<head><base href="/`+escape_attr(app)+`/">`, 1)
 		}
-		content = web_apply_user_document_theme(content, web_auth(c))
-		// Inject a shim script before everything else. Sandboxed iframes without
-		// allow-same-origin cannot access cookies, localStorage, or sessionStorage.
-		// This shim provides in-memory fallbacks so third-party code (TanStack Router,
-		// js-cookie, etc.) doesn't throw.
-		content = strings.Replace(content, "<head>", "<head><script>"+shell_iframe_shim+"</script>", 1)
+		user := web_auth(c)
+		content = web_apply_user_document_theme(content, user)
+		// Inject the iframe shim before everything else. Loaded from the
+		// menu app's dist (apps/menu/web/public/iframe-shim.js) so it
+		// hot-reloads on rebuild. Empty string means menu unavailable —
+		// skip injection rather than break iframe serving.
+		if shim := shell_iframe_shim_load(user); shim != "" {
+			content = strings.Replace(content, "<head>", "<head><script>"+shim+"</script>", 1)
+		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		// User-specific theme is baked in — prevent shared caches from
 		// serving one user's appearance to another. Short private

@@ -4,65 +4,71 @@
 package main
 
 import (
-	_ "embed"
-	"fmt"
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// shell_iframe_shim is injected into app HTML served inside sandboxed iframes.
-// It provides in-memory fallbacks for APIs forbidden by the sandbox:
-// - document.cookie (getter/setter)
-// - window.localStorage
-// - window.sessionStorage
-// This runs before any app code so third-party libraries don't throw.
-const shell_iframe_shim = `(function(){
-var s={},p=function(){
-this._d={};
-};
-p.prototype={
-getItem:function(k){return this._d.hasOwnProperty(k)?this._d[k]:null;},
-setItem:function(k,v){this._d[k]=String(v);},
-removeItem:function(k){delete this._d[k];},
-clear:function(){this._d={};},
-key:function(i){return Object.keys(this._d)[i]||null;},
-get length(){return Object.keys(this._d).length;}
-};
-try{window.localStorage}catch(e){Object.defineProperty(window,'localStorage',{value:new p(),configurable:true});}
-try{window.sessionStorage}catch(e){Object.defineProperty(window,'sessionStorage',{value:new p(),configurable:true});}
-try{document.cookie}catch(e){
-var c='';
-Object.defineProperty(document,'cookie',{
-get:function(){return c;},
-set:function(v){
-var parts=String(v).split(';');
-var kv=parts[0].split('=');
-if(kv.length>=2){
-var key=kv[0].trim();
-var val=kv.slice(1).join('=').trim();
-var pairs=c?c.split('; '):[];
-var found=false;
-for(var i=0;i<pairs.length;i++){
-if(pairs[i].split('=')[0]===key){pairs[i]=key+'='+val;found=true;break;}
+// shell_nonce returns a fresh 128-bit random value, base64-url-encoded,
+// suitable for use as a Content-Security-Policy script nonce.
+func shell_nonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Should never happen; fall back to time-derived value rather
+		// than serving without a nonce (which would block all scripts).
+		return base64.RawURLEncoding.EncodeToString([]byte(time.Now().Format("20060102150405.000000000")))
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:])
 }
-if(!found)pairs.push(key+'='+val);
-c=pairs.join('; ');
-}
-},
-configurable:true
-});
-}
-})();`
 
-//go:embed shell.html
-var shell_html string
+// Shell template files (shell.html, shell.js, iframe-shim.js) live in
+// the menu app's build output (apps/menu/web/dist/) so that frontend
+// rebuilds pick them up without restarting the server. shell_file_load
+// reads and caches them by mtime — re-reads from disk only when the
+// file has changed.
 
-//go:embed shell.js
-var shell_js string
+type shell_file_entry struct {
+	mtime   time.Time
+	content string
+}
+
+var (
+	shell_files_mu    sync.RWMutex
+	shell_files_cache = map[string]shell_file_entry{}
+)
+
+func shell_file_load(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	mtime := info.ModTime()
+
+	shell_files_mu.RLock()
+	cached, ok := shell_files_cache[path]
+	shell_files_mu.RUnlock()
+	if ok && cached.mtime.Equal(mtime) {
+		return cached.content, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+
+	shell_files_mu.Lock()
+	shell_files_cache[path] = shell_file_entry{mtime: mtime, content: content}
+	shell_files_mu.Unlock()
+	return content, nil
+}
 
 // web_should_serve_shell returns true when the request should get the shell page
 // instead of the app HTML directly
@@ -88,7 +94,13 @@ func web_should_serve_shell(c *gin.Context) bool {
 		return false
 	}
 
-	// Iframe loads (within the shell) carry _shell=1 — never wrap them in another shell
+	// Iframe loads (within the shell) carry _shell=1 — never wrap them in another shell.
+	//
+	// Trust boundary: _shell=1 is a UX hint, NOT a security boundary. A user
+	// can append it to any URL and bypass the shell wrapper for themselves —
+	// they only ever see their own raw app HTML, which is what they'd see in
+	// the iframe anyway. Don't rely on shell-vs-no-shell for any access
+	// control decision; auth and per-app permissions are enforced separately.
 	if c.Query("_shell") == "1" {
 		return false
 	}
@@ -127,354 +139,104 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		return
 	}
 
-	// Get menu app to resolve its asset paths
+	// Get menu app to resolve its asset paths.
+	// shell.html and shell.js live in the menu's dist; if the menu is
+	// missing or unbuilt, the shell can't be assembled.
 	menu := shell_menu_app(user)
+	if menu == nil {
+		info("shell: menu app not installed")
+		c.String(http.StatusInternalServerError, "Shell unavailable")
+		return
+	}
+	av := menu.active(user)
+	if av == nil {
+		info("shell: menu app has no active version")
+		c.String(http.StatusInternalServerError, "Shell unavailable")
+		return
+	}
+
+	shell_html, err := shell_file_load(av.base + "/web/dist/shell.html")
+	if err != nil {
+		info("shell: failed to load shell.html: %v", err)
+		c.String(http.StatusInternalServerError, "Shell unavailable")
+		return
+	}
+	shell_js, err := shell_file_load(av.base + "/web/dist/shell.js")
+	if err != nil {
+		info("shell: failed to load shell.js: %v", err)
+		c.String(http.StatusInternalServerError, "Shell unavailable")
+		return
+	}
+
+	// Per-request nonce — gates all inline scripts via Content-Security-Policy.
+	nonce := shell_nonce()
 
 	// Build the shell page from template.
 	// Only static, server-controlled values are injected — no user data.
-	page := shell_html
-
-	// Appearance: set dark class or auto-detect script (controlled values, not user text)
-	html_class, appearance_script := web_user_appearance_attrs(user)
-	page = strings.Replace(page, "{{HTML_CLASS}}", html_class, 1)
-	page = strings.Replace(page, "{{APPEARANCE_SCRIPT}}", appearance_script, 1)
-
-	// Theme: apply color theme as inline CSS variables
-	page = strings.Replace(page, "{{THEME_STYLE}}", web_user_theme_style(user), 1)
-
-	// Embedded shell JS (from Go embed, not user input)
-	page = strings.Replace(page, "{{SHELL_JS}}", shell_js, 1)
-
-	// Menu app assets (filesystem paths, not user input)
-	menu_js, menu_css := "", ""
-	if menu != nil {
-		menu_js, menu_css = shell_menu_assets(menu, user)
-	}
-	page = strings.Replace(page, "{{MENU_JS}}", menu_js, 1)
-	page = strings.Replace(page, "{{MENU_CSS}}", menu_css, 1)
+	html_class, appearance_script := web_user_appearance_attrs(user, nonce)
+	// Menu JS is an external <script src="..."> from same origin, so 'self'
+	// in script-src admits it without needing the nonce.
+	menu_js, menu_css := shell_menu_assets(menu, user)
+	page := strings.NewReplacer(
+		"{{HTML_CLASS}}", html_class,
+		"{{APPEARANCE_SCRIPT}}", appearance_script,
+		"{{THEME_STYLE}}", web_user_theme_style(user),
+		"{{NONCE}}", nonce,
+		"{{SHELL_JS}}", shell_js,
+		"{{MENU_JS}}", menu_js,
+		"{{MENU_CSS}}", menu_css,
+	).Replace(shell_html)
 
 	// Clear stale mochi-theme cookie (no longer used)
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
 	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
 
-	// Security headers: shell cannot be framed
+	// Security headers
 	c.Header("X-Frame-Options", "DENY")
 	c.Header("Cross-Origin-Opener-Policy", "same-origin")
+	// Strict CSP: scripts only via nonce or same-origin (covers menu's
+	// hashed bundle under /menu/assets/). Styles allow 'unsafe-inline'
+	// for the inline <style> block in shell.html and the server-injected
+	// style="..." attribute on <html>. Iframes load same-origin app pages.
+	c.Header("Content-Security-Policy",
+		"default-src 'self'; "+
+			"script-src 'self' 'nonce-"+nonce+"'; "+
+			"style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data: blob:; "+
+			"font-src 'self' data:; "+
+			"connect-src 'self'; "+
+			"frame-src 'self'; "+
+			"base-uri 'none'; "+
+			"form-action 'self'")
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.String(http.StatusOK, page)
 }
 
-func web_user_appearance_attrs(user *User) (string, string) {
-	appearance := user_preference_get(user, "appearance", "auto")
-	switch appearance {
-	case "light":
-		return `class="light"`, ""
-	case "dark":
-		return `class="dark"`, ""
-	case "auto":
-		return "", `<script>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
-	default:
-		return "", ""
-	}
-}
-
-func appendRadiusVarsFromBase(styleParts *[]string, baseRadius string) {
-	*styleParts = append(*styleParts,
-		fmt.Sprintf("--radius: %s", baseRadius),
-		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
-		fmt.Sprintf("--radius-md: calc(%s - 2px)", baseRadius),
-		fmt.Sprintf("--radius-lg: %s", baseRadius),
-		fmt.Sprintf("--radius-xl: calc(%s + 4px)", baseRadius),
-	)
-}
-
-func appendRadiusPreset(styleParts *[]string, preset string) {
-	switch preset {
-	case "none":
-		*styleParts = append(*styleParts,
-			"--radius: 0rem",
-			"--radius-sm: 0rem",
-			"--radius-md: 0rem",
-			"--radius-lg: 0rem",
-			"--radius-xl: 0rem",
-		)
-	case "small":
-		*styleParts = append(*styleParts,
-			"--radius: 0.375rem",
-			"--radius-sm: 0.125rem",
-			"--radius-md: 0.25rem",
-			"--radius-lg: 0.375rem",
-			"--radius-xl: 0.625rem",
-		)
-	case "medium":
-		*styleParts = append(*styleParts,
-			"--radius: 0.75rem",
-			"--radius-sm: 0.5rem",
-			"--radius-md: 0.625rem",
-			"--radius-lg: 0.75rem",
-			"--radius-xl: 1rem",
-		)
-	case "large":
-		*styleParts = append(*styleParts,
-			"--radius: 1.75rem",
-			"--radius-sm: 1.5rem",
-			"--radius-md: 1.625rem",
-			"--radius-lg: 1.75rem",
-			"--radius-xl: 2rem",
-		)
-	}
-}
-
-func appendDensityPreset(styleParts *[]string, preset string) {
-	switch preset {
-	case "compact":
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.5rem",
-			"--control-height-sm: 1.75rem",
-			"--control-height-md: 2rem",
-			"--control-height-lg: 2.25rem",
-			"--input-h: 2rem",
-			"--card-px: 1.25rem",
-			"--card-py: 0.875rem",
-		)
-	case "spacious":
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.875rem",
-			"--control-height-sm: 2.125rem",
-			"--control-height-md: 2.5rem",
-			"--control-height-lg: 2.75rem",
-			"--input-h: 2.5rem",
-			"--card-px: 1.75rem",
-			"--card-py: 1.25rem",
-		)
-	default:
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.75rem",
-			"--control-height-sm: 2rem",
-			"--control-height-md: 2.25rem",
-			"--control-height-lg: 2.5rem",
-			"--input-h: 2.25rem",
-			"--card-px: 1.5rem",
-			"--card-py: 1rem",
-		)
-	}
-}
-
-func appendStylePreset(styleParts *[]string, preset string) {
-	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, borderWidth string) {
-		*styleParts = append(*styleParts,
-			fmt.Sprintf("--spacing-base: %s", spacingBase),
-			fmt.Sprintf("--spacing: %s", spacingBase),
-			fmt.Sprintf("--font-sans: %s", fontSans),
-			fmt.Sprintf("--font-mono: %s", fontMono),
-			fmt.Sprintf("--border-width: %s", borderWidth),
-			fmt.Sprintf("--shadow-color: %s", shadowColor),
-			fmt.Sprintf("--shadow-2xs: 0 1px 2px %s", shadowColor),
-			fmt.Sprintf("--shadow-xs: 0 1px 3px %s", shadowColor),
-			fmt.Sprintf("--shadow-sm: 0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow: 0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-md: 0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-lg: 0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-xl: 0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-2xl: 0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
-		)
-		appendDensityPreset(styleParts, density)
-	}
-
-	switch preset {
-	case "default", "maia":
-		appendPreset(
-			"0.3rem",
-			"'Nunito Sans', 'Inter', sans-serif",
-			"'Fira Code', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.12)",
-			"spacious",
-			"1px",
-		)
-	case "vega":
-		appendPreset(
-			"0.215rem",
-			"'Public Sans', 'Inter', sans-serif",
-			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.17)",
-			"compact",
-			"1px",
-		)
-	case "nova":
-		appendPreset(
-			"0.255rem",
-			"'Poppins', 'Inter', sans-serif",
-			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.18)",
-			"comfortable",
-			"1.25px",
-		)
-	case "lyra":
-		appendPreset(
-			"0.235rem",
-			"'Inter Tight', 'Inter', sans-serif",
-			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.22)",
-			"compact",
-			"1.5px",
-		)
-	case "mira":
-		appendPreset(
-			"0.285rem",
-			"'DM Sans', 'Inter', sans-serif",
-			"'Space Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.14)",
-			"spacious",
-			"1.25px",
-		)
-	case "luma":
-		appendPreset(
-			"0.27rem",
-			"'Manrope', 'Inter', sans-serif",
-			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.1)",
-			"comfortable",
-			"1px",
-		)
-	}
-}
-
-func web_user_theme_style(user *User) string {
-	if user == nil {
-		return ""
-	}
-
-	styleParts := []string{}
-
-	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
-		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
-			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
-				styleParts = append(styleParts,
-					fmt.Sprintf("--hue: %g", t.Hue),
-					fmt.Sprintf("--hue-chroma: %g", t.Chroma),
-					fmt.Sprintf("--hue-bg: %g", t.HueBG),
-				)
-				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
-					appendRadiusVarsFromBase(&styleParts, t.BorderRadius)
-				}
-				if t.Background != "" {
-					// Resolve background URL from theme app's path
-					if app_id := parts[0]; app_id != "" {
-						apps_lock.Lock()
-						a := apps[app_id]
-						apps_lock.Unlock()
-						if a != nil {
-							av := a.active(user)
-							if av != nil && len(av.Paths) > 0 {
-								base := av.Paths[0]
-								if !strings.ContainsAny(t.Background, `<>"`) {
-									styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
-								}
-								if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-									styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
-								}
-							}
-						}
-					}
-				}
-				for key, val := range t.Overrides {
-					if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
-						styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
-					}
-				}
-			}
-		}
-	}
-
-	// User style preset overrides base spacing/font/shadow/density tokens.
-	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "luma"))
-
-	// User border-radius preference takes precedence over theme radius.
-	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))
-
-	if len(styleParts) == 0 {
-		return ""
-	}
-	return `style="` + strings.Join(styleParts, "; ") + `"`
-}
-
-func web_apply_user_document_theme(content string, user *User) string {
-	if user == nil {
-		return content
-	}
-
-	html_class, appearance_script := web_user_appearance_attrs(user)
-	content = web_add_html_attr(content, html_class)
-	content = web_add_html_attr(content, web_user_theme_style(user))
-	if appearance_script != "" {
-		content = strings.Replace(content, "<head>", "<head>"+appearance_script, 1)
-	}
-	return content
-}
-
-// web_add_html_attr injects a class="..." or style="..." attribute into the
-// first <html> tag. If the tag already carries the same attribute name the
-// values are merged (space-joined for class, semicolon-joined for style)
-// instead of creating an invalid duplicate attribute.
-func web_add_html_attr(content, attr string) string {
-	if attr == "" {
-		return content
-	}
-
-	start := strings.Index(content, "<html")
-	if start == -1 {
-		return content
-	}
-	end := strings.Index(content[start:], ">")
-	if end == -1 {
-		return content
-	}
-	end += start
-	tag := content[start:end]
-
-	// Extract the attribute name and value from the incoming attr (e.g. class="dark")
-	eq := strings.Index(attr, "=")
-	if eq == -1 {
-		// Plain attribute without value — just append
-		return content[:end] + " " + attr + content[end:]
-	}
-	name := attr[:eq]                     // "class" or "style"
-	val := strings.Trim(attr[eq+1:], `"`) // the value without quotes
-
-	// Check if the <html> tag already has this attribute
-	needle := name + `="`
-	pos := strings.Index(tag, needle)
-	if pos == -1 {
-		// Attribute doesn't exist yet — append it
-		return content[:end] + " " + attr + content[end:]
-	}
-
-	// Find the closing quote of the existing attribute value
-	val_start := start + pos + len(needle)
-	val_end := strings.Index(content[val_start:], `"`)
-	if val_end == -1 {
-		return content[:end] + " " + attr + content[end:]
-	}
-	val_end += val_start
-
-	// Merge: space for class, semicolon for style
-	sep := " "
-	if name == "style" {
-		sep = "; "
-	}
-	existing := content[val_start:val_end]
-	if existing == "" {
-		existing = val
-	} else {
-		existing = existing + sep + val
-	}
-	return content[:val_start] + existing + content[val_end:]
-}
-
-// shell_menu_app returns the menu app for the given user
 func shell_menu_app(user *User) *App {
 	return app_for_path(user, "menu")
+}
+
+// shell_iframe_shim_load returns the JS shim injected into iframe-served
+// app HTML — provides in-memory fallbacks for cookies, localStorage, and
+// sessionStorage which are unavailable in sandboxed iframes without
+// allow-same-origin. Returns empty string if the menu app or its build
+// is missing; callers should skip injection in that case.
+func shell_iframe_shim_load(user *User) string {
+	menu := shell_menu_app(user)
+	if menu == nil {
+		return ""
+	}
+	av := menu.active(user)
+	if av == nil {
+		return ""
+	}
+	content, err := shell_file_load(av.base + "/web/dist/iframe-shim.js")
+	if err != nil {
+		info("shell: failed to load iframe-shim.js: %v", err)
+		return ""
+	}
+	return content
 }
 
 // shell_menu_assets returns the JS and CSS paths for the menu app's built assets

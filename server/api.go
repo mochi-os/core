@@ -56,11 +56,6 @@ func init() {
 			"message":    api_message,
 			"permission": api_permission,
 			"qid":        api_qid,
-			"peer": sls.FromStringDict(sl.String("mochi.peer"), sl.StringDict{
-				"connect": sls.FromStringDict(sl.String("mochi.peer.connect"), sl.StringDict{
-					"url": sl.NewBuiltin("mochi.peer.connect.url", api_peer_connect_url),
-				}),
-			}),
 			"remote": api_remote,
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),

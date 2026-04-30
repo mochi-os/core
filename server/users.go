@@ -657,33 +657,21 @@ func users_sort(rows []map[string]any, sort string, order string) {
 }
 
 // users_attach_last sets a "last" key on each row to the user's most recent
-// login timestamp (0 if they have never logged in). The authoritative source
-// is sessions.db's logins table, but it was added recently so most existing
-// users have no row there — fall back to the most recent session.created for
-// those users so the column isn't uniformly "Never".
+// login timestamp (0 if they have never logged in). Source is sessions.db's
+// logins table — kept separate from users.db so logins don't write to the
+// cold reference store.
 func users_attach_last(rows []map[string]any) {
 	if len(rows) == 0 {
 		return
 	}
 
 	last := map[int64]int64{}
-	sessions := db_open("db/sessions.db")
-	logins, err := sessions.rows("select user, last from logins")
+	logins, err := db_open("db/sessions.db").rows("select user, last from logins")
 	if err == nil {
 		for _, r := range logins {
 			id, _ := r["user"].(int64)
 			t, _ := r["last"].(int64)
 			last[id] = t
-		}
-	}
-	created, err := sessions.rows("select user, max(created) as created from sessions group by user")
-	if err == nil {
-		for _, r := range created {
-			id, _ := r["user"].(int64)
-			t, _ := r["created"].(int64)
-			if t > last[id] {
-				last[id] = t
-			}
 		}
 	}
 

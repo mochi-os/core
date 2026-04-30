@@ -7,11 +7,36 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+// shell.html and shell.js live in the menu app's source tree
+// (apps/menu/web/public/) and are copied to web/dist/ at build time.
+// Production loads them via shell_file_load from the active menu's dist
+// directory; tests load them straight from public/ since there's no
+// installed menu app in the test environment.
+var (
+	shell_html string
+	shell_js   string
+)
+
+func TestMain(m *testing.M) {
+	html_bytes, err := os.ReadFile("../../apps/menu/web/public/shell.html")
+	if err != nil {
+		panic("shell_test: cannot read shell.html: " + err.Error())
+	}
+	js_bytes, err := os.ReadFile("../../apps/menu/web/public/shell.js")
+	if err != nil {
+		panic("shell_test: cannot read shell.js: " + err.Error())
+	}
+	shell_html = string(html_bytes)
+	shell_js = string(js_bytes)
+	os.Exit(m.Run())
+}
 
 // Test web_should_serve_shell rejects explicit non-document Sec-Fetch-Dest values.
 // Missing Sec-Fetch-Dest is allowed (older browsers, privacy-strict browsers,
@@ -261,6 +286,7 @@ func TestShellHtmlTemplate(t *testing.T) {
 		"{{HTML_CLASS}}",
 		"{{THEME_STYLE}}",
 		"{{APPEARANCE_SCRIPT}}",
+		"{{NONCE}}",
 		"{{SHELL_JS}}",
 		"{{MENU_JS}}",
 		"{{MENU_CSS}}",

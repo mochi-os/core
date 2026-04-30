@@ -48,6 +48,11 @@ var permissions = []Permission{
 	{"groups/manage", false, false},
 	{"interests/read", false, false},
 	{"interests/write", false, false},
+	{"user/authentication/read", false, false},
+	{"user/authentication/write", false, false},
+	{"user/identity/write", false, false},
+	{"user/sessions/read", false, false},
+	{"user/sessions/write", false, false},
 
 	// Restricted permissions
 	{"accounts/notify", true, false},

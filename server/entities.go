@@ -134,6 +134,55 @@ func entities_manager() {
 	}
 }
 
+// entity_privacy_set updates an entity's privacy and synchronises the
+// directory: removing and broadcasting deletion when going to private,
+// republishing when staying or becoming public.
+func entity_privacy_set(e *Entity, privacy string) error {
+	if privacy != "public" && privacy != "private" {
+		return fmt.Errorf("privacy must be 'public' or 'private'")
+	}
+	if privacy == e.Privacy {
+		return nil
+	}
+
+	db_open("db/users.db").exec("update entities set privacy=? where id=?", privacy, e.ID)
+	e.Privacy = privacy
+
+	if privacy == "private" {
+		db_open("db/directory.db").exec("delete from directory where id=?", e.ID)
+		m := message(e.ID, "", "directory", "delete")
+		m.set("entity", e.ID)
+		go m.publish(false)
+	} else {
+		directory_create(e)
+		directory_publish(e, true)
+	}
+	return nil
+}
+
+// entity_name_set updates an entity's name and republishes the directory
+// entry when public. The directory's created timestamp is reset on rename
+// to prevent impersonation: an attacker can't squat a name early and then
+// later rename to it to appear first in search results.
+func entity_name_set(e *Entity, name string) error {
+	if !valid(name, "name") {
+		return fmt.Errorf("invalid name")
+	}
+	if name == e.Name {
+		return nil
+	}
+
+	db_open("db/users.db").exec("update entities set name=? where id=?", name, e.ID)
+	e.Name = name
+
+	if e.Privacy == "public" {
+		directory_create(e)
+		db_open("db/directory.db").exec("update directory set created=? where id=?", now(), e.ID)
+		directory_publish(e, true)
+	}
+	return nil
+}
+
 // Delete an entity: broadcast deletion to network, remove from directory and entities table
 func (e *Entity) delete() {
 	// Get user for audit logging
@@ -214,7 +263,7 @@ func entity_sign(entity string, s string) string {
 
 // Starlark methods
 func (e *Entity) AttrNames() []string {
-	return []string{"id", "name"}
+	return []string{"id", "name", "privacy"}
 }
 
 func (e *Entity) Attr(name string) (sl.Value, error) {
@@ -223,6 +272,8 @@ func (e *Entity) Attr(name string) (sl.Value, error) {
 		return sl.String(e.ID), nil
 	case "name":
 		return sl.String(e.Name), nil
+	case "privacy":
+		return sl.String(e.Privacy), nil
 	default:
 		return nil, nil
 	}

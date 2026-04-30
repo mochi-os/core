@@ -2175,7 +2175,7 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	case "tar.bz2":
 		err = git_archive_write_tarbz2(w, tree, prefix, mtime)
 	}
-	if err != nil {
+	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "failed to write archive: %v", err)
 	}
 

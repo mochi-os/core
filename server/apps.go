@@ -324,7 +324,10 @@ type DefaultApp struct {
 var (
 	// Default apps to install. Login, Menu, and Home must be first three (bootstrap depends on it), then alphabetical.
 	apps_default = []DefaultApp{
-		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", nil},
+		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", []struct{ Permission, Object string }{
+			{"user/authentication/read", ""},
+			{"user/authentication/write", ""},
+		}},
 		{"121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN", "Menu", []struct{ Permission, Object string }{
 			{"notifications/send", ""},
 			{"permissions/manage", ""},
@@ -354,6 +357,7 @@ var (
 			{"interests/write", ""},
 		}},
 		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", nil},
+		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},
 			{"accounts/read", ""},
@@ -362,6 +366,7 @@ var (
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
+			{"user/identity/write", ""},
 			{"users/read", ""},
 		}},
 		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", nil},
@@ -374,6 +379,11 @@ var (
 			{"accounts/manage", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
+			{"user/authentication/read", ""},
+			{"user/authentication/write", ""},
+			{"user/identity/write", ""},
+			{"user/sessions/read", ""},
+			{"user/sessions/write", ""},
 		}},
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
@@ -433,6 +443,7 @@ var (
 		"file":     api_app_file,
 		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
 		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"label":    sl.NewBuiltin("mochi.app.label", api_app_label),
 		"list":     sl.NewBuiltin("mochi.app.list", api_app_list),
 		"package":  api_app_package,
 		"path":     api_app_path,
@@ -1973,6 +1984,44 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	}
 
 	return sl.None, nil
+}
+
+// mochi.app.label(key) -> string: Resolve a label key from the calling app's labels/<lang>.conf, falling back to English. Empty string if not found.
+func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <key: string>")
+	}
+	key, ok := sl.AsString(args[0])
+	if !ok || key == "" {
+		return sl_error(fn, "invalid key")
+	}
+
+	a, ok := t.Local("app").(*App)
+	if !ok || a == nil {
+		return sl.String(""), nil
+	}
+
+	user, _ := t.Local("user").(*User)
+	av := a.active(user)
+	if av == nil || av.labels == nil {
+		return sl.String(""), nil
+	}
+
+	language := "en"
+	if user != nil {
+		language = user_preference_get(user, "language", "en")
+	}
+	if labels := av.labels[language]; labels != nil {
+		if v := labels[key]; v != "" {
+			return sl.String(v), nil
+		}
+	}
+	if labels := av.labels["en"]; labels != nil {
+		if v := labels[key]; v != "" {
+			return sl.String(v), nil
+		}
+	}
+	return sl.String(""), nil
 }
 
 // mochi.app.icons() -> dict: Get available icons for home screen

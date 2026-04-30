@@ -4,8 +4,12 @@
 package main
 
 import (
+	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gotnospirit/messageformat"
 )
 
@@ -143,6 +147,98 @@ func normalize_args(args map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// parse_accept_language parses an HTTP Accept-Language header into a list of
+// BCP 47 language tags ordered by preference (highest q first). Tags are
+// lowercased; the wildcard "*" is dropped. Returns nil for an empty header.
+func parse_accept_language(header string) []string {
+	if header == "" {
+		return nil
+	}
+	type entry struct {
+		tag string
+		q   float64
+	}
+	var entries []entry
+	for _, raw := range strings.Split(header, ",") {
+		parts := strings.SplitN(strings.TrimSpace(raw), ";", 2)
+		tag := strings.ToLower(strings.TrimSpace(parts[0]))
+		if tag == "" || tag == "*" {
+			continue
+		}
+		q := 1.0
+		if len(parts) > 1 {
+			qstr := strings.TrimSpace(parts[1])
+			if strings.HasPrefix(qstr, "q=") {
+				if v, err := strconv.ParseFloat(qstr[2:], 64); err == nil {
+					q = v
+				}
+			}
+		}
+		entries = append(entries, entry{tag, q})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].q > entries[j].q
+	})
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.tag
+	}
+	return out
+}
+
+// request_language resolves the language for a request: the user's preference
+// if logged in, else the best-priority Accept-Language tag, else "en". The
+// returned tag flows into the label resolver where the fallback chain handles
+// catalog-not-installed cases automatically.
+func request_language(c *gin.Context, u *User) string {
+	if u != nil {
+		if lang := user_preference_get(u, "language", ""); lang != "" {
+			return strings.ToLower(lang)
+		}
+	}
+	if c != nil {
+		tags := parse_accept_language(c.GetHeader("Accept-Language"))
+		if len(tags) > 0 {
+			return tags[0]
+		}
+	}
+	return "en"
+}
+
+// web_serve_labels handles the built-in /<app>/-/labels and
+// /<app>/-/labels/<tag> endpoints. With no tag, returns a sorted list of
+// installed language tags for the app. With a tag, returns the {key: format}
+// map for that catalog. Used by tooling (Translate Mochi, dev introspection)
+// rather than the web SPA.
+func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
+	if av == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "labels not loaded"})
+		return true
+	}
+	suffix = strings.TrimPrefix(suffix, "/")
+	if suffix == "" {
+		out := make([]string, 0, len(av.labels))
+		for tag := range av.labels {
+			out = append(out, tag)
+		}
+		sort.Strings(out)
+		c.JSON(http.StatusOK, gin.H{"languages": out})
+		return true
+	}
+	tag := strings.ToLower(suffix)
+	if !valid(tag, "locale") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid language tag"})
+		return true
+	}
+	labels := av.labels[tag]
+	if labels == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "language not installed"})
+		return true
+	}
+	c.JSON(http.StatusOK, labels)
+	return true
 }
 
 // resolve_label walks the fallback chain and returns the first matching label,

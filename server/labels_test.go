@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+func TestParseAcceptLanguage(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{"empty", "", nil},
+		{"single tag", "en", []string{"en"}},
+		{"single tag with region", "en-GB", []string{"en-gb"}},
+		{"multiple tags ordered", "fr,en;q=0.5", []string{"fr", "en"}},
+		{"explicit quality", "en;q=0.9,fr;q=1.0", []string{"fr", "en"}},
+		{"complex priority", "en-GB,en;q=0.9,fr;q=0.5,de;q=0.7", []string{"en-gb", "en", "de", "fr"}},
+		{"wildcard dropped", "*,en;q=0.5", []string{"en"}},
+		{"whitespace tolerated", " fr , en ; q=0.8 ", []string{"fr", "en"}},
+		{"malformed q ignored treated as 1", "fr;q=invalid,en;q=0.5", []string{"fr", "en"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parse_accept_language(tt.input)
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("parse_accept_language(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestLanguageFallbacks(t *testing.T) {
 	tests := []struct {
 		input    string

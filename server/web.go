@@ -123,6 +123,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Run first-time setup for this user and app (grants default permissions)
 	app_user_setup(user, a.id)
 
+	// Built-in catalog endpoint: /<app>/-/labels and /<app>/-/labels/<tag>.
+	// Public — used by tooling (Translate Mochi app, dev introspection).
+	// The web SPA bundles its own Lingui catalogs and does not call this.
+	if name == "-/labels" || strings.HasPrefix(name, "-/labels/") {
+		return web_serve_labels(c, av, strings.TrimPrefix(name, "-/labels"))
+	}
+
 	// When entity is provided via domain routing, try entity-prefixed actions.
 	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
 	// Also skip when action is the entity's fingerprint itself (viewing entity root).
@@ -444,6 +451,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 		s.set("user", effective)
 		s.set("owner", owner)
+		s.set("language", request_language(c, user))
 		if e != nil {
 			s.set("route_entity", e.ID)
 		}
@@ -648,6 +656,10 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	s.set("app", a)
 	s.set("user", owner) // Use owner for database access
 	s.set("owner", owner)
+	// OpenGraph rendering is primarily for external viewers (crawlers, link
+	// previews). Use Accept-Language to drive the meta-tag language; a
+	// logged-in viewer's specific preference can be wired in later if needed.
+	s.set("language", request_language(c, nil))
 
 	// Build parameters dict for the function
 	params := sl.NewDict(len(aa.parameters))

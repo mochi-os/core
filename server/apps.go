@@ -1999,9 +1999,16 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.String(""), nil
 	}
 
+	// Language priority: user preference (logged in) > thread-local from
+	// request handler (anonymous Accept-Language) > "en". The handler in
+	// web.go calls request_language(c, user) and stashes the result via
+	// s.set("language", ...) so anonymous public-action calls still get a
+	// translated label set.
 	language := "en"
 	if user != nil {
 		language = user_preference_get(user, "language", "en")
+	} else if l, ok := t.Local("language").(string); ok && l != "" {
+		language = l
 	}
 
 	margs, err := starlark_kwargs_to_map(kwargs)

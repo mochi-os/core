@@ -164,6 +164,7 @@ func auth_establish_session(c *gin.Context, user *User) {
 	}
 	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 	web_cookie_set(c, "session", session)
+	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
 	audit_login(user.Username, rate_limit_client_ip(c))
 }
 
@@ -522,6 +523,10 @@ func web_auth_mfa(c *gin.Context) {
 
 // mochi.user.methods.get() -> list: Get user's required authentication methods
 func api_user_methods_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -537,6 +542,10 @@ func api_user_methods_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.user.methods.set(methods) -> bool: Set user's required authentication methods
 func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -616,6 +625,10 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.user.methods.reset(user) -> bool: Admin: reset user to email only
 func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	admin := t.Local("user").(*User)
 	if admin == nil {
 		return sl_error(fn, "no user")
@@ -684,6 +697,10 @@ func totp_verify(user int, code string) bool {
 
 // mochi.user.totp.setup() -> dict: Generate TOTP secret for user
 func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -718,6 +735,10 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.user.totp.verify(code) -> bool: Verify TOTP code and mark as verified
 func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -751,6 +772,10 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.user.totp.enabled() -> bool: Check if TOTP is enabled and verified
 func api_user_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -766,6 +791,10 @@ func api_user_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.user.totp.disable() -> bool: Remove TOTP from user account
 func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -855,6 +884,10 @@ func web_recovery_login(c *gin.Context) {
 
 // mochi.user.recovery.generate() -> list: Generate new recovery codes (replaces existing)
 func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if !auth_method_allowed("recovery") {
 		return sl_error(fn, "recovery disabled")
 	}
@@ -889,6 +922,10 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 // mochi.user.recovery.count() -> int: Get remaining recovery code count
 func api_user_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

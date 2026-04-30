@@ -4,16 +4,35 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
+
+// is_client_disconnect reports whether err looks like the client closed the
+// connection mid-write (EPIPE / connection reset / cancelled context). These
+// are normal in HTTP serving — the browser navigated away, scrolled past, or
+// cancelled the request — and should not be surfaced as server errors.
+func is_client_disconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "broken pipe") || strings.Contains(s, "connection reset")
+}
 
 type Action struct {
 	id     int64
@@ -105,6 +124,11 @@ type ActionCookie struct {
 	action *Action
 }
 
+// ActionAccess provides access-control methods for actions
+type ActionAccess struct {
+	action *Action
+}
+
 var (
 	actions_lock       = &sync.Mutex{}
 	action_next  int64 = 1
@@ -184,13 +208,13 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access_require", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
+	return []string{"access", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
 	switch name {
-	case "access_require":
-		return sl.NewBuiltin("access_require", a.sl_access_require), nil
+	case "access":
+		return &ActionAccess{action: a}, nil
 	case "body":
 		return sl.String(a.body), nil
 	case "cookie":
@@ -265,8 +289,29 @@ func (a *Action) Type() string {
 	return "Action"
 }
 
-// a.access_require(resource, operation) -> None: Require access or raise error
-func (a *Action) sl_access_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// ActionAccess Starlark interface
+func (aa *ActionAccess) AttrNames() []string {
+	return []string{"require"}
+}
+
+func (aa *ActionAccess) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "require":
+		return sl.NewBuiltin("require", aa.sl_require), nil
+	default:
+		return nil, nil
+	}
+}
+
+func (aa *ActionAccess) Freeze()               {}
+func (aa *ActionAccess) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: ActionAccess") }
+func (aa *ActionAccess) String() string        { return "ActionAccess" }
+func (aa *ActionAccess) Truth() sl.Bool        { return sl.True }
+func (aa *ActionAccess) Type() string          { return "ActionAccess" }
+
+// a.access.require(resource, operation) -> None: Require access or raise error
+func (aa *ActionAccess) sl_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	a := aa.action
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <resource: string>, <operation: string>")
 	}
@@ -328,11 +373,24 @@ func (a *Action) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.None, nil
 }
 
-// a.error(code?, messages...) -> None: Display an error page
+// a.error(code?, messages..., log=True) -> None: Display an error page.
+// Pass log=False for expected 4xx outcomes (e.g. proxying a 404 from another
+// service) where logging every occurrence would just be noise.
 func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		a.error(500, "No error message provided")
 		return sl.None, nil
+	}
+
+	log_it := true
+	for _, kv := range kwargs {
+		key, ok := sl.AsString(kv[0])
+		if !ok || key != "log" {
+			continue
+		}
+		if b, ok := kv[1].(sl.Bool); ok {
+			log_it = bool(b)
+		}
 	}
 
 	code := 500
@@ -352,7 +410,9 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		message = parts[0]
 	}
 
-	debug("sl_error() %d %s", code, message)
+	if log_it {
+		debug("sl_error() %d %s", code, message)
+	}
 	a.error(code, "%s", message)
 
 	return sl.None, nil
@@ -465,7 +525,7 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		err = tmpl.Execute(a.web.Writer, Map{})
 	}
 
-	if err != nil {
+	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -678,7 +738,7 @@ func (a *Action) sl_write_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 
 	// Copy stream data directly to HTTP response
 	n, err := io.Copy(a.web.Writer, reader)
-	if err != nil {
+	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "stream copy error: %v", err)
 	}
 

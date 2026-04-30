@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,13 +56,15 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
 		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
 	}),
-	"last_login": sl.NewBuiltin("mochi.user.last_login", api_user_last_login),
-	"list":       sl.NewBuiltin("mochi.user.list", api_user_list),
-	"methods":    api_user_methods,
-	"oauth":      api_user_oauth,
-	"passkey":    api_user_passkey,
-	"recovery":   api_user_recovery,
-	"search":     sl.NewBuiltin("mochi.user.search", api_user_search),
+	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
+		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
+	}),
+	"list":     sl.NewBuiltin("mochi.user.list", api_user_list),
+	"methods":  api_user_methods,
+	"oauth":    api_user_oauth,
+	"passkey":  api_user_passkey,
+	"recovery": api_user_recovery,
+	"search":   sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
 		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
 		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
@@ -526,7 +529,9 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
-// mochi.user.list(limit, offset) -> list: List all users (admin only)
+// mochi.user.list(limit, offset, sort, order) -> list: List all users (admin only).
+// sort is one of "username" (default, case-insensitive), "id", "status", "last".
+// order is "asc" (default) or "desc". Username is the secondary sort for stability.
 func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {
@@ -543,6 +548,8 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	limit := 1000000
 	offset := 0
+	sort := "username"
+	order := "asc"
 	if len(args) > 0 {
 		l, err := sl.AsInt32(args[0])
 		if err != nil || l < 1 || l > 1000000 {
@@ -557,14 +564,133 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 		offset = int(o)
 	}
+	if len(args) > 2 {
+		s, ok := sl.AsString(args[2])
+		if !ok || (s != "id" && s != "username" && s != "status" && s != "last") {
+			return sl_error(fn, "invalid sort")
+		}
+		sort = s
+	}
+	if len(args) > 3 {
+		o, ok := sl.AsString(args[3])
+		if !ok || (o != "asc" && o != "desc") {
+			return sl_error(fn, "invalid order")
+		}
+		order = o
+	}
 
+	// Fetch all users, attach last-login from sessions.db, sort and paginate
+	// in memory. ATTACH is blocked at the driver level so we can't join across
+	// DBs, and admin user counts are small enough that in-memory is fine.
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role, methods, status from users order by id limit ? offset ?", limit, offset)
+	rows, err := db.rows("select id, username, role, methods, status from users")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
+	users_attach_last(rows)
+	users_sort(rows, sort, order)
 
-	return sl_encode(rows), nil
+	if offset >= len(rows) {
+		return sl_encode([]map[string]any{}), nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return sl_encode(rows[offset:end]), nil
+}
+
+// users_sort orders user rows by the named column. Username comparison is
+// case-insensitive; username is also the secondary key so ordering is stable
+// when the primary key has duplicates. Sort by "status" matches what the
+// admin UI shows in that column (role badge + suspension): active admins,
+// active users, suspended admins, suspended users.
+func users_sort(rows []map[string]any, sort string, order string) {
+	asc := order != "desc"
+	username := func(r map[string]any) string {
+		s, _ := r["username"].(string)
+		return strings.ToLower(s)
+	}
+	// status_rank composes suspension + role into a single ordering key:
+	// 0=active admin, 1=active user, 2=suspended admin, 3=suspended user.
+	status_rank := func(r map[string]any) int {
+		rank := 0
+		if r["status"] == "suspended" {
+			rank += 2
+		}
+		if r["role"] != "administrator" {
+			rank += 1
+		}
+		return rank
+	}
+	cmp := func(a, b map[string]any) int {
+		var c int
+		switch sort {
+		case "id":
+			ai, _ := a["id"].(int64)
+			bi, _ := b["id"].(int64)
+			if ai < bi {
+				c = -1
+			} else if ai > bi {
+				c = 1
+			}
+		case "status":
+			c = status_rank(a) - status_rank(b)
+		case "last":
+			al, _ := a["last"].(int64)
+			bl, _ := b["last"].(int64)
+			if al < bl {
+				c = -1
+			} else if al > bl {
+				c = 1
+			}
+		}
+		if c == 0 {
+			c = strings.Compare(username(a), username(b))
+		}
+		if !asc {
+			c = -c
+		}
+		return c
+	}
+	slices.SortFunc(rows, cmp)
+}
+
+// users_attach_last sets a "last" key on each row to the user's most recent
+// login timestamp (0 if they have never logged in). The authoritative source
+// is sessions.db's logins table, but it was added recently so most existing
+// users have no row there — fall back to the most recent session.created for
+// those users so the column isn't uniformly "Never".
+func users_attach_last(rows []map[string]any) {
+	if len(rows) == 0 {
+		return
+	}
+
+	last := map[int64]int64{}
+	sessions := db_open("db/sessions.db")
+	logins, err := sessions.rows("select user, last from logins")
+	if err == nil {
+		for _, r := range logins {
+			id, _ := r["user"].(int64)
+			t, _ := r["last"].(int64)
+			last[id] = t
+		}
+	}
+	created, err := sessions.rows("select user, max(created) as created from sessions group by user")
+	if err == nil {
+		for _, r := range created {
+			id, _ := r["user"].(int64)
+			t, _ := r["created"].(int64)
+			if t > last[id] {
+				last[id] = t
+			}
+		}
+	}
+
+	for _, r := range rows {
+		id, _ := r["id"].(int64)
+		r["last"] = last[id]
+	}
 }
 
 // mochi.user.count() -> int: Count all users (admin only)
@@ -625,11 +751,12 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username, role, methods, status from users where username like ? order by username limit ?", "%"+query+"%", limit)
+	rows, err := db.rows("select id, username, role, methods, status from users where username like ? order by username collate nocase limit ?", "%"+query+"%", limit)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
 
+	users_attach_last(rows)
 	return sl_encode(rows), nil
 }
 
@@ -741,6 +868,50 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
+// mochi.user.identity.update(name=..., privacy=...) -> bool: Update the current user's identity entity
+func api_user_identity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/identity/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if user.Identity == nil {
+		return sl_error(fn, "no identity")
+	}
+	if len(args) != 0 {
+		return sl_error(fn, "syntax: [name=string], [privacy=string]")
+	}
+
+	for _, kv := range kwargs {
+		key := string(kv[0].(sl.String))
+		switch key {
+		case "name":
+			name, ok := sl.AsString(kv[1])
+			if !ok {
+				return sl_error(fn, "invalid name")
+			}
+			if err := entity_name_set(user.Identity, name); err != nil {
+				return sl_error(fn, err.Error())
+			}
+		case "privacy":
+			privacy, ok := sl.AsString(kv[1])
+			if !ok {
+				return sl_error(fn, "invalid privacy")
+			}
+			if err := entity_privacy_set(user.Identity, privacy); err != nil {
+				return sl_error(fn, err.Error())
+			}
+		default:
+			return sl_error(fn, "unknown parameter %q", key)
+		}
+	}
+
+	return sl.True, nil
+}
+
 // mochi.user.delete(id) -> bool: Delete a user and all associated data (admin only)
 func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -793,6 +964,10 @@ func user_delete(id int) (string, error) {
 	sdb.exec("delete from sessions where user=?", id)
 	sdb.exec("delete from ceremonies where user=?", id)
 	sdb.exec("delete from partial where user=?", id)
+	sdb.exec("delete from logins where user=?", id)
+	sdb.exec("delete from accesses where user=?", id)
+	sdb.exec("delete from passkeys where user=?", id)
+	sdb.exec("delete from verifications where user=?", id)
 
 	db.exec("delete from credentials where user=?", id)
 	db.exec("delete from totp where user=?", id)
@@ -871,40 +1046,12 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.True, nil
 }
 
-// mochi.user.last_login(id) -> int | None: Get last login timestamp for a user (admin only)
-func api_user_last_login(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-	if !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <id: int>")
-	}
-
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
-	}
-
-	db := db_open("db/sessions.db")
-	row, err := db.row("select max(accessed) as last from sessions where user=?", id)
-	if err != nil || row == nil || row["last"] == nil {
-		return sl.None, nil
-	}
-
-	last, ok := row["last"].(int64)
-	if !ok {
-		return sl.None, nil
-	}
-	return sl.MakeInt64(last), nil
-}
-
 // mochi.user.session.list(user?) -> list: List active sessions for current user or specified user (admin)
 func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/sessions/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -944,6 +1091,10 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // If code is provided, revokes that specific session. If omitted, revokes ALL sessions.
 // Returns number of sessions revoked.
 func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/sessions/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

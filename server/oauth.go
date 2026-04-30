@@ -19,9 +19,9 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/oauth2"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"golang.org/x/oauth2"
 )
 
 // oauth_provider holds the static configuration for one provider. OIDC
@@ -29,15 +29,15 @@ import (
 // endpoints; plain OAuth2 providers (GitHub, Facebook, X) fill auth/token URLs
 // directly and implement a profile fetcher.
 type oauth_provider struct {
-	name        string
-	display     string
-	oidc        bool
-	discovery   func() string // OIDC only; may depend on tenant setting
-	auth_url    string        // non-OIDC
-	token_url   string        // non-OIDC
-	scopes      []string
-	fetch       func(ctx context.Context, token string) (*oauth_profile, error)
-	extra_auth  []oauth2.AuthCodeOption
+	name       string
+	display    string
+	oidc       bool
+	discovery  func() string // OIDC only; may depend on tenant setting
+	auth_url   string        // non-OIDC
+	token_url  string        // non-OIDC
+	scopes     []string
+	fetch      func(ctx context.Context, token string) (*oauth_profile, error)
+	extra_auth []oauth2.AuthCodeOption
 }
 
 // oauth_profile is the minimal identity we extract from any provider.
@@ -65,9 +65,9 @@ var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.String
 // Cached go-oidc providers keyed by discovery URL. Discovery is a network call
 // and we only want to do it once per process.
 var (
-	oidc_providers     = map[string]*oidc.Provider{}
-	oidc_providers_mu  sync.Mutex
-	oauth_http_client  = &http.Client{Timeout: 15 * time.Second}
+	oidc_providers    = map[string]*oidc.Provider{}
+	oidc_providers_mu sync.Mutex
+	oauth_http_client = &http.Client{Timeout: 15 * time.Second}
 )
 
 // oauth_providers returns the registry of all providers we know about. Call
@@ -422,11 +422,12 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, 
 
 	switch {
 	case owner == 0:
-		db.exec("insert into oauth (user, provider, subject, email, verified, name, created, used) values (?, ?, ?, ?, ?, ?, ?, ?)",
-			user_id, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now(), now())
+		db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
+			user_id, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
+		oauth_verification_record(db, provider, p.Subject, user_id)
 	case owner == user_id:
-		db.exec("update oauth set used=?, email=?, name=?, verified=? where provider=? and subject=?",
-			now(), p.Email, p.Name, boolint(p.Verified), provider, p.Subject)
+		oauth_update_profile(db, provider, p)
+		oauth_verification_record(db, provider, p.Subject, user_id)
 	default:
 		// Linking failures redirect back to the target (user is authenticated)
 		// rather than /login/, which would log them out of the UI's view.
@@ -468,8 +469,8 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 			return
 		}
 
-		db.exec("update oauth set used=?, email=?, name=?, verified=? where provider=? and subject=?",
-			now(), p.Email, p.Name, boolint(p.Verified), provider, p.Subject)
+		oauth_update_profile(db, provider, p)
+		oauth_verification_record(db, provider, p.Subject, user.ID)
 
 		rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -521,8 +522,9 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 		return
 	}
 
-	db.exec("insert into oauth (user, provider, subject, email, verified, name, created, used) values (?, ?, ?, ?, ?, ?, ?, ?)",
-		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now(), now())
+	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
+		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
+	oauth_verification_record(db, provider, p.Subject, user.ID)
 
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -769,20 +771,79 @@ func oauth_get_json(ctx context.Context, url, token string, github bool, out any
 
 // mochi.user.oauth.list() -> list: Identities linked to the current user
 func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
 	db := db_open("db/users.db")
-	rows, err := db.rows("select provider, email, name, created, used from oauth where user=? order by created asc", user.ID)
+	rows, err := db.rows("select id, provider, email, name, created from oauth where user=? order by created asc", user.ID)
 	if err != nil {
 		return sl_error(fn, "database error")
+	}
+
+	lasts := oauth_verification_lasts(user.ID)
+	for _, r := range rows {
+		id, _ := r["id"].(int64)
+		r["used"] = lasts[id]
+		delete(r, "id")
 	}
 	return sl_encode(rows), nil
 }
 
+// oauth_update_profile refreshes the email/name/verified fields for an
+// existing (provider, subject) link. The WHERE clause matches only when at
+// least one value differs, so unchanged logins (the common case — providers
+// rarely change a user's claims between logins) skip the write entirely and
+// keep users.db cold.
+func oauth_update_profile(db *DB, provider string, p *oauth_profile) {
+	verified := boolint(p.Verified)
+	db.exec(`update oauth set email=?, name=?, verified=?
+	         where provider=? and subject=?
+	         and (email!=? or name!=? or verified!=?)`,
+		p.Email, p.Name, verified,
+		provider, p.Subject,
+		p.Email, p.Name, verified)
+}
+
+// oauth_verification_record upserts the last-used timestamp for a (provider,
+// subject) pair. Looks up oauth.id from users.db then writes to sessions.db.
+// Idempotent: insert-or-replace by oauth id (the verifications PK).
+func oauth_verification_record(db *DB, provider, subject string, user_id int) {
+	row, _ := db.row("select id from oauth where provider=? and subject=?", provider, subject)
+	if row == nil {
+		return
+	}
+	oauth_id, _ := row["id"].(int64)
+	db_open("db/sessions.db").exec("replace into verifications (oauth, user, last) values (?, ?, ?)",
+		oauth_id, user_id, now())
+}
+
+// oauth_verification_lasts returns last-login by oauth.id for every linked
+// identity belonging to a user. Unknown identities map to 0.
+func oauth_verification_lasts(user_id int) map[int64]int64 {
+	out := map[int64]int64{}
+	rows, err := db_open("db/sessions.db").rows("select oauth, last from verifications where user=?", user_id)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		oauth_id, _ := r["oauth"].(int64)
+		last, _ := r["last"].(int64)
+		out[oauth_id] = last
+	}
+	return out
+}
+
 // mochi.user.oauth.unlink(provider) -> bool: Remove an OAuth link
 func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -806,7 +867,13 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "cannot unlink last login method")
 	}
 
+	row, _ := db.row("select id from oauth where user=? and provider=?", user.ID, provider)
 	db.exec("delete from oauth where user=? and provider=?", user.ID, provider)
+	if row != nil {
+		if oauth_id, ok := row["id"].(int64); ok {
+			db_open("db/sessions.db").exec("delete from verifications where oauth=?", oauth_id)
+		}
+	}
 	audit_password_changed(user.Username, "oauth_unlinked_"+provider)
 	return sl.True, nil
 }

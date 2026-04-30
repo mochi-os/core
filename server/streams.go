@@ -503,7 +503,7 @@ func (s *Stream) write_raw(data []byte) error {
 
 // Starlark methods
 func (s *Stream) AttrNames() []string {
-	return []string{"read", "read_to_file", "write", "write_raw", "write_from_file", "write_from_app", "close"}
+	return []string{"read", "read_to_file", "write", "write_from_file", "write_from_app", "close"}
 }
 
 func (s *Stream) Attr(name string) (sl.Value, error) {
@@ -513,9 +513,7 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 	case "read_to_file":
 		return sl.NewBuiltin("read_to_file", s.sl_read_to_file), nil
 	case "write":
-		return sl.NewBuiltin("write", s.sl_write), nil
-	case "write_raw":
-		return sl.NewBuiltin("write_raw", s.sl_write_raw), nil
+		return &StreamWrite{stream: s}, nil
 	case "write_from_file":
 		return sl.NewBuiltin("write_from_file", s.sl_write_from_file), nil
 	case "write_from_app":
@@ -525,6 +523,36 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// StreamWrite is callable as s.write(values...) and exposes s.write.raw(data).
+// Same dual-role pattern as ActionInput.
+type StreamWrite struct {
+	stream *Stream
+}
+
+func (sw *StreamWrite) String() string        { return "stream.write" }
+func (sw *StreamWrite) Type() string          { return "stream.write" }
+func (sw *StreamWrite) Freeze()               {}
+func (sw *StreamWrite) Truth() sl.Bool        { return true }
+func (sw *StreamWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: stream.write") }
+func (sw *StreamWrite) Name() string          { return "write" }
+
+// Callable: s.write(values...) -> bool: Write one or more encoded segments
+func (sw *StreamWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sw.stream.sl_write(t, nil, args, kwargs)
+}
+
+func (sw *StreamWrite) AttrNames() []string {
+	return []string{"raw"}
+}
+
+func (sw *StreamWrite) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "raw":
+		return sl.NewBuiltin("write.raw", sw.stream.sl_write_raw), nil
+	}
+	return nil, nil
 }
 
 func (s *Stream) Hash() (uint32, error) {

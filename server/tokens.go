@@ -61,24 +61,26 @@ func token_create(user int, app string, name string, scopes []string, expires in
 	hash := token_hash(token)
 	scopes_json, _ := json.Marshal(scopes)
 
-	db := db_open("db/users.db")
-	db.exec("insert into tokens (hash, user, app, name, scopes, created, used, expires) values (?, ?, ?, ?, ?, ?, 0, ?)",
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, created, expires) values (?, ?, ?, ?, ?, ?, ?)",
 		hash, user, app, name, string(scopes_json), now(), expires)
+	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, 0)", hash, user)
 
 	return token
 }
 
 // Delete a token by its hash
 func token_delete(hash string) bool {
-	db := db_open("db/users.db")
-	db.exec("delete from tokens where hash = ?", hash)
+	db_open("db/users.db").exec("delete from tokens where hash = ?", hash)
+	db_open("db/sessions.db").exec("delete from accesses where hash = ?", hash)
 	return true
 }
 
 // Return all tokens for a user and app (without the actual token values)
 func token_list(user int, app string) []map[string]any {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select hash, name, scopes, created, used, expires from tokens where user = ? and app = ?", user, app)
+	rows, _ := db.rows("select hash, name, scopes, created, expires from tokens where user = ? and app = ?", user, app)
+
+	useds := token_useds(user)
 
 	var results []map[string]any
 	for _, row := range rows {
@@ -86,16 +88,33 @@ func token_list(user int, app string) []map[string]any {
 		var scopes []string
 		json.Unmarshal([]byte(scopes_json), &scopes)
 
+		hash, _ := row["hash"].(string)
 		results = append(results, map[string]any{
 			"hash":    row["hash"],
 			"name":    row["name"],
 			"scopes":  scopes,
 			"created": row["created"],
-			"used":    row["used"],
+			"used":    useds[hash],
 			"expires": row["expires"],
 		})
 	}
 	return results
+}
+
+// token_useds returns the last-used timestamp by hash for every token belonging
+// to a user. Unknown hashes map to 0.
+func token_useds(user int) map[string]int64 {
+	out := map[string]int64{}
+	rows, err := db_open("db/sessions.db").rows("select hash, used from accesses where user=?", user)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		hash, _ := r["hash"].(string)
+		used, _ := r["used"].(int64)
+		out[hash] = used
+	}
+	return out
 }
 
 // Validate a token and return its info, or nil if invalid
@@ -108,7 +127,7 @@ func token_validate(token string) *Token {
 	db := db_open("db/users.db")
 
 	var t Token
-	if !db.scan(&t, "select hash, user, app, name, scopes, created, used, expires from tokens where hash = ?", hash) {
+	if !db.scan(&t, "select hash, user, app, name, scopes, created, expires from tokens where hash = ?", hash) {
 		return nil
 	}
 
@@ -120,8 +139,11 @@ func token_validate(token string) *Token {
 	// Parse scopes
 	json.Unmarshal([]byte(t.ScopesDB), &t.Scopes)
 
-	// Update used timestamp
-	db.exec("update tokens set used = ? where hash = ?", now(), hash)
+	// Update used timestamp in sessions.db (cold reference store stays cold).
+	// Self-healing: if the accesses row was lost (sessions.db wiped), upsert
+	// recreates it so the token keeps tracking.
+	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?) on conflict(hash) do update set used=excluded.used",
+		hash, t.User, now())
 
 	return &t
 }

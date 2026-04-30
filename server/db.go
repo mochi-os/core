@@ -27,7 +27,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 43
+	schema_version = 48
 )
 
 var (
@@ -73,8 +73,10 @@ func db_create() {
 	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
 
-	// Passkey credentials
-	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null, last_used integer not null default 0)")
+	// Passkey credential definitions and sign count. Sign count is WebAuthn
+	// replay-prevention state and lives here so it survives sessions.db
+	// corruption. Only the cosmetic last-used timestamp lives in sessions.db.
+	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
 	users.exec("create index credentials_user on credentials(user)")
 
 	// Recovery codes
@@ -84,12 +86,16 @@ func db_create() {
 	// TOTP secrets
 	users.exec("create table totp (user integer primary key references users(id) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
 
-	// OAuth identities (Google, GitHub, Microsoft, Facebook, X)
-	users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, used integer not null default 0, unique(provider, subject))")
+	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
+	// Last-used timestamp lives in sessions.db.verifications so this cold
+	// reference store doesn't take a write on every OAuth login.
+	users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
 	users.exec("create index oauth_user on oauth(user)")
 
-	// API tokens (app-scoped)
-	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, used integer not null default 0, expires integer not null default 0)")
+	// API token definitions. Hot per-request "used" timestamp lives in
+	// sessions.db.accesses; here we keep just the definition so token loss
+	// doesn't follow sessions.db corruption.
+	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
 	users.exec("create index tokens_user on tokens(user)")
 	users.exec("create index tokens_app on tokens(app)")
 
@@ -119,6 +125,29 @@ func db_create() {
 	// Partial authentication sessions (for MFA)
 	sessions.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
 	sessions.exec("create index partial_expires on partial(expires)")
+
+	// Last-login timestamps (kept here, not in users.db, so the cold reference
+	// store doesn't take a write on every login)
+	sessions.exec("create table logins (user integer primary key, last integer not null)")
+
+	// Per-request token access timestamps. Split out of users.db.tokens so the
+	// every-request "used" write doesn't land on the cold reference store, but
+	// the token definitions themselves stay in users.db so token loss doesn't
+	// follow sessions.db corruption. `user` duplicated here for cascade.
+	sessions.exec("create table accesses (hash text primary key not null, user integer not null, used integer not null default 0)")
+	sessions.exec("create index accesses_user on accesses(user)")
+
+	// Cosmetic last-used timestamp per passkey. Sign count (replay-prevention
+	// state) stays in users.db.credentials; only the cosmetic stat lives here.
+	sessions.exec("create table passkeys (credential blob primary key, user integer not null, last integer not null default 0)")
+	sessions.exec("create index passkeys_user on passkeys(user)")
+
+	// OAuth verification state (last time each linked identity was used to log
+	// in). Split from users.db.oauth so per-login writes don't land on the cold
+	// reference store. `oauth` references users.db.oauth(id); `user` duplicated
+	// here for cascade.
+	sessions.exec("create table verifications (oauth integer primary key, user integer not null, last integer not null default 0)")
+	sessions.exec("create index verifications_user on verifications(user)")
 
 	// Directory
 	directory := db_open("db/directory.db")
@@ -435,6 +464,16 @@ func db_upgrade() {
 		switch next {
 		case 43:
 			db_upgrade_43()
+		case 44:
+			db_upgrade_44()
+		case 45:
+			db_upgrade_45()
+		case 46:
+			db_upgrade_46()
+		case 47:
+			db_upgrade_47()
+		case 48:
+			db_upgrade_48()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -449,6 +488,130 @@ func db_upgrade_43() {
 	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='oauth'"); !exists {
 		users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, used integer not null default 0, unique(provider, subject))")
 		users.exec("create index oauth_user on oauth(user)")
+	}
+}
+
+// db_upgrade_44 adds the logins table to sessions.db for last-login
+// timestamps that survive logout (the previous lookup via sessions.accessed
+// lost the value when login_delete removed the row).
+func db_upgrade_44() {
+	sessions := db_open("db/sessions.db")
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='logins'"); !exists {
+		sessions.exec("create table logins (user integer primary key, last integer not null)")
+	}
+}
+
+// db_upgrade_45 moves the tokens table from users.db to sessions.db so the
+// per-request "used" write doesn't land on the cold reference store. Copies
+// existing rows then drops the source. Cross-DB FK cascade is lost; user_delete
+// now removes tokens explicitly.
+func db_upgrade_45() {
+	sessions := db_open("db/sessions.db")
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='tokens'"); !exists {
+		sessions.exec("create table tokens (hash text primary key not null, user integer not null, app text not null, name text not null default '', scopes text not null default '', created integer not null, used integer not null default 0, expires integer not null default 0)")
+		sessions.exec("create index tokens_user on tokens(user)")
+		sessions.exec("create index tokens_app on tokens(app)")
+	}
+
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='tokens'"); exists {
+		rows, _ := users.rows("select hash, user, app, name, scopes, created, used, expires from tokens")
+		for _, r := range rows {
+			sessions.exec("insert or ignore into tokens (hash, user, app, name, scopes, created, used, expires) values (?, ?, ?, ?, ?, ?, ?, ?)",
+				r["hash"], r["user"], r["app"], r["name"], r["scopes"], r["created"], r["used"], r["expires"])
+		}
+		users.exec("drop table tokens")
+	}
+}
+
+// db_upgrade_46 splits passkey activity (sign count + last used) out of
+// users.db.credentials into sessions.db.passkeys, so per-assertion writes
+// don't land on the cold reference store. Copies existing values then drops
+// the columns from credentials.
+func db_upgrade_46() {
+	sessions := db_open("db/sessions.db")
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='passkeys'"); !exists {
+		sessions.exec("create table passkeys (credential blob primary key, user integer not null, count integer not null default 0, last integer not null default 0)")
+		sessions.exec("create index passkeys_user on passkeys(user)")
+	}
+
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from pragma_table_info('credentials') where name='sign_count'"); exists {
+		rows, _ := users.rows("select id, user, sign_count, last_used from credentials")
+		for _, r := range rows {
+			sessions.exec("insert or ignore into passkeys (credential, user, count, last) values (?, ?, ?, ?)",
+				r["id"], r["user"], r["sign_count"], r["last_used"])
+		}
+		users.exec("alter table credentials drop column sign_count")
+		users.exec("alter table credentials drop column last_used")
+	}
+}
+
+// db_upgrade_47 splits the OAuth used timestamp out of users.db.oauth into
+// sessions.db.verifications, so per-login writes don't land on the cold
+// reference store. Copies existing values then drops the column.
+func db_upgrade_47() {
+	sessions := db_open("db/sessions.db")
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='verifications'"); !exists {
+		sessions.exec("create table verifications (oauth integer primary key, user integer not null, last integer not null default 0)")
+		sessions.exec("create index verifications_user on verifications(user)")
+	}
+
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from pragma_table_info('oauth') where name='used'"); exists {
+		rows, _ := users.rows("select id, user, used from oauth")
+		for _, r := range rows {
+			sessions.exec("insert or ignore into verifications (oauth, user, last) values (?, ?, ?)",
+				r["id"], r["user"], r["used"])
+		}
+		users.exec("alter table oauth drop column used")
+	}
+}
+
+// db_upgrade_48 corrects two earlier moves. Tokens (whole table moved to
+// sessions.db at v45) get split: definition goes back to users.db, only the
+// per-request `used` timestamp stays in sessions.db (in a new `accesses`
+// table). Passkey sign_count (moved to sessions.db.passkeys at v46) goes back
+// to users.db.credentials so WebAuthn replay protection survives sessions.db
+// corruption; only the cosmetic `last` stays in sessions.db.passkeys.
+func db_upgrade_48() {
+	sessions := db_open("db/sessions.db")
+	users := db_open("db/users.db")
+
+	// Tokens: recreate definition table in users.db
+	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='tokens'"); !exists {
+		users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+		users.exec("create index tokens_user on tokens(user)")
+		users.exec("create index tokens_app on tokens(app)")
+	}
+	// Tokens: create new per-request access timestamp table in sessions.db
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='accesses'"); !exists {
+		sessions.exec("create table accesses (hash text primary key not null, user integer not null, used integer not null default 0)")
+		sessions.exec("create index accesses_user on accesses(user)")
+	}
+	// Tokens: split sessions.db.tokens → users.db.tokens (definition) + sessions.db.accesses (used)
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='tokens'"); exists {
+		rows, _ := sessions.rows("select hash, user, app, name, scopes, created, used, expires from tokens")
+		for _, r := range rows {
+			users.exec("insert or ignore into tokens (hash, user, app, name, scopes, created, expires) values (?, ?, ?, ?, ?, ?, ?)",
+				r["hash"], r["user"], r["app"], r["name"], r["scopes"], r["created"], r["expires"])
+			sessions.exec("insert or ignore into accesses (hash, user, used) values (?, ?, ?)",
+				r["hash"], r["user"], r["used"])
+		}
+		sessions.exec("drop table tokens")
+	}
+
+	// Passkeys: add sign_count back to users.db.credentials
+	if exists, _ := users.exists("select 1 from pragma_table_info('credentials') where name='sign_count'"); !exists {
+		users.exec("alter table credentials add column sign_count integer not null default 0")
+	}
+	// Passkeys: copy count back to users.db.credentials.sign_count, drop count from passkeys
+	if exists, _ := sessions.exists("select 1 from pragma_table_info('passkeys') where name='count'"); exists {
+		rows, _ := sessions.rows("select credential, count from passkeys")
+		for _, r := range rows {
+			users.exec("update credentials set sign_count=? where id=?", r["count"], r["credential"])
+		}
+		sessions.exec("alter table passkeys drop column count")
 	}
 }
 

@@ -145,6 +145,28 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 	return creds
 }
 
+// passkey_lasts returns last-used by credential id (as string of bytes) for
+// every passkey registered to this user. Unknown credentials map to 0.
+func passkey_lasts(user_id int) map[string]int64 {
+	out := map[string]int64{}
+	rows, err := db_open("db/sessions.db").rows("select credential, last from passkeys where user=?", user_id)
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		var key []byte
+		switch v := r["credential"].(type) {
+		case []byte:
+			key = v
+		case string:
+			key = []byte(v)
+		}
+		last, _ := r["last"].(int64)
+		out[string(key)] = last
+	}
+	return out
+}
+
 // ============================================================================
 // System Endpoints (unauthenticated login flows)
 // ============================================================================
@@ -249,12 +271,9 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
-	// Update credential usage
+	// Find user from credential first (we need the user id for the passkeys
+	// upsert below, and an unknown credential should short-circuit anyway).
 	users := db_open("db/users.db")
-	users.exec("update credentials set sign_count=?, last_used=? where id=?",
-		credential.Authenticator.SignCount, now(), credential.ID)
-
-	// Find user from credential
 	row, _ = users.row("select user from credentials where id=?", credential.ID)
 	if row == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "credential_not_found"})
@@ -265,6 +284,15 @@ func web_passkey_login_finish(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
 		return
 	}
+
+	// Update credential usage. Sign count (replay-prevention state) goes to
+	// users.db so it survives sessions.db corruption; cosmetic last-used to
+	// sessions.db so per-assertion stat writes don't touch the cold store.
+	// Upsert so the row self-heals if sessions.db was wiped.
+	users.exec("update credentials set sign_count=? where id=?",
+		credential.Authenticator.SignCount, credential.ID)
+	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
+		credential.ID, user.ID, now())
 	if user.Status == "suspended" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
 		return
@@ -306,34 +334,40 @@ func web_passkey_login_finish(c *gin.Context) {
 
 // mochi.user.passkey.list() -> list: List user's passkeys
 func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, name, transports, created, last_used from credentials where user=? order by created desc", user.ID)
+	rows, err := db.rows("select id, name, transports, created from credentials where user=? order by created desc", user.ID)
 	if err != nil {
 		return sl_error(fn, "database error")
 	}
+
+	lasts := passkey_lasts(user.ID)
 
 	// Convert blob IDs to base64 for Starlark
 	credentials := make([]map[string]any, len(rows))
 	for i, row := range rows {
 		// Handle ID as either []byte or string (SQLite driver may return either)
-		var idBase64 string
+		var idBytes []byte
 		switch id := row["id"].(type) {
 		case []byte:
-			idBase64 = base64.URLEncoding.EncodeToString(id)
+			idBytes = id
 		case string:
-			idBase64 = base64.URLEncoding.EncodeToString([]byte(id))
+			idBytes = []byte(id)
 		}
 		credentials[i] = map[string]any{
-			"id":         idBase64,
+			"id":         base64.URLEncoding.EncodeToString(idBytes),
 			"name":       row["name"],
 			"transports": row["transports"],
 			"created":    row["created"],
-			"last_used":  row["last_used"],
+			"last_used":  lasts[string(idBytes)],
 		}
 	}
 
@@ -342,6 +376,10 @@ func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.user.passkey.count() -> int: Count user's passkeys
 func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -357,6 +395,10 @@ func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 // mochi.user.passkey.register.begin() -> dict: Start passkey registration
 func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	host, _ := t.Local("host").(string)
 	wa := webauthn_for_host(host)
 	if wa == nil {
@@ -395,6 +437,10 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 
 // mochi.user.passkey.register.finish(ceremony, credential, name?) -> dict: Complete registration
 func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	host, _ := t.Local("host").(string)
 	wa := webauthn_for_host(host)
 	if wa == nil {
@@ -479,13 +525,17 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		name = "Passkey"
 	}
 
-	// Store credential
+	// Store credential + sign count (replay-prevention state) in users.db so
+	// it survives sessions.db corruption. The cosmetic last-used row goes to
+	// sessions.db, populated lazily on first assertion.
 	users := db_open("db/users.db")
-	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created, last_used)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
+             values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		credential.ID, user.ID, credential.PublicKey,
 		credential.Authenticator.SignCount, name, transports,
-		credential.Flags.BackupEligible, credential.Flags.BackupState, now(), 0)
+		credential.Flags.BackupEligible, credential.Flags.BackupState, now())
+	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, 0)",
+		credential.ID, user.ID)
 
 	audit_password_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
@@ -493,6 +543,10 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 
 // mochi.user.passkey.rename(id, name) -> bool: Rename a passkey
 func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -529,6 +583,10 @@ func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // mochi.user.passkey.delete(id) -> bool: Delete a passkey
 func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -564,6 +622,7 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db.exec("delete from credentials where id=? and user=?", id, user.ID)
+	db_open("db/sessions.db").exec("delete from passkeys where credential=?", id)
 	audit_password_changed(user.Username, "passkey_deleted")
 	return sl.True, nil
 }

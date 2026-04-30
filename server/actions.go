@@ -208,7 +208,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
+	return []string{"access", "body", "cookie", "domain", "dump", "error", "error_label", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -225,6 +225,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
 		return sl.NewBuiltin("error", a.sl_error), nil
+	case "error_label":
+		return sl.NewBuiltin("error_label", a.sl_error_label), nil
 	case "file":
 		return sl.NewBuiltin("file", a.sl_file), nil
 	case "header":
@@ -415,6 +417,62 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	a.error(code, "%s", message)
 
+	return sl.None, nil
+}
+
+// a.error_label(status, key, **kwargs) -> None: Resolve a label key from the
+// calling app's labels/<lang>.conf and return it as the HTTP error message.
+// kwargs become ICU MessageFormat substitutions. Language is the caller's
+// preference (logged in) or Accept-Language (anonymous), via the same
+// request_language() machinery the resolver uses. Pass log=False to suppress
+// the diagnostic log line, as with a.error().
+func (a *Action) sl_error_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 2 {
+		return sl_error(fn, "syntax: <status: int>, <key: string>, **kwargs")
+	}
+	code, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "status must be an integer")
+	}
+	key, ok := sl.AsString(args[1])
+	if !ok || key == "" {
+		return sl_error(fn, "key must be a non-empty string")
+	}
+
+	// Filter `log` out of the substitution kwargs (matches sl_error's API).
+	log_it := true
+	var sub_kwargs []sl.Tuple
+	for _, kv := range kwargs {
+		k, _ := sl.AsString(kv[0])
+		if k == "log" {
+			if b, ok := kv[1].(sl.Bool); ok {
+				log_it = bool(b)
+			}
+			continue
+		}
+		sub_kwargs = append(sub_kwargs, kv)
+	}
+	margs, err := starlark_kwargs_to_map(sub_kwargs)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	app_local, _ := t.Local("app").(*App)
+	user, _ := t.Local("user").(*User)
+	language := request_language(a.web, user)
+	var av *AppVersion
+	if app_local != nil {
+		av = app_local.active(user)
+	}
+
+	msg := key
+	if av != nil {
+		msg = resolve_label(av, language, key, margs)
+	}
+	if log_it {
+		debug("sl_error_label() %d %s -> %s", int(code), key, msg)
+	}
+	a.error(int(code), "%s", msg)
 	return sl.None, nil
 }
 

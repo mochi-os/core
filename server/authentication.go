@@ -49,11 +49,11 @@ func web_login_verify(c *gin.Context) {
 		Code string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 	if body.Code == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing code"})
+		respond_error(c, http.StatusBadRequest, "missing_code", "errors.missing_code", nil)
 		return
 	}
 	user, reason := user_from_code(body.Code)
@@ -61,11 +61,11 @@ func web_login_verify(c *gin.Context) {
 		audit_login_failed("", rate_limit_client_ip(c), reason)
 		switch reason {
 		case "signup_disabled":
-			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+			respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
 		case "suspended":
-			c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+			respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		default:
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
+			respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		}
 		return
 	}
@@ -253,26 +253,26 @@ func web_auth_totp(c *gin.Context) {
 		Code  string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" || input.Code == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
 	user := user_by_username(input.Email)
 	if user == nil {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "user_not_found")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
+		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
 	if user.Status == "suspended" {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "suspended")
-		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 
 	// Verify TOTP code
 	if !totp_verify(user.ID, input.Code) {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		return
 	}
 
@@ -370,7 +370,7 @@ func web_auth_mfa(c *gin.Context) {
 		Methods   []string `json:"methods,omitempty"` // Multiple methods for atomic validation
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
@@ -378,17 +378,17 @@ func web_auth_mfa(c *gin.Context) {
 	db := db_open("db/sessions.db")
 	row, _ := db.row("select * from partial where id=? and expires>?", input.Partial, now())
 	if row == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_expired"})
+		respond_error(c, http.StatusBadRequest, "session_expired", "errors.session_expired", nil)
 		return
 	}
 
 	user := user_by_id(int(row["user"].(int64)))
 	if user == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_not_found"})
+		respond_error(c, http.StatusBadRequest, "user_not_found", "errors.user_not_found", nil)
 		return
 	}
 	if user.Status == "suspended" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 
@@ -412,7 +412,7 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	if len(methods) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no_methods"})
+		respond_error(c, http.StatusBadRequest, "no_methods", "errors.no_methods", nil)
 		return
 	}
 
@@ -426,7 +426,7 @@ func web_auth_mfa(c *gin.Context) {
 			}
 		}
 		if !found {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_method"})
+			respond_error(c, http.StatusBadRequest, "invalid_method", "errors.invalid_method", nil)
 			return
 		}
 	}
@@ -456,16 +456,16 @@ func web_auth_mfa(c *gin.Context) {
 		switch method {
 		case "email":
 			if !email_code_check(user.Username, code) {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
 		case "totp":
 			if !totp_verify(user.ID, code) {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_code"})
+				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported_method"})
+			respond_error(c, http.StatusBadRequest, "unsupported_method", "errors.unsupported_method", nil)
 			return
 		}
 	}
@@ -818,7 +818,7 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // POST /_/auth/recovery - Login with recovery code
 func web_recovery_login(c *gin.Context) {
 	if !auth_method_allowed("recovery") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "recovery_disabled"})
+		respond_error(c, http.StatusForbidden, "recovery_disabled", "errors.recovery_disabled", nil)
 		return
 	}
 
@@ -827,7 +827,7 @@ func web_recovery_login(c *gin.Context) {
 		Code     string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
@@ -840,7 +840,7 @@ func web_recovery_login(c *gin.Context) {
 		// Timing-safe: always do bcrypt comparison even if user not found
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), []byte(code))
 		audit_login_failed(input.Username, rate_limit_client_ip(c), "user_not_found")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
+		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
 	user_id := int(row["id"].(int64))
@@ -857,18 +857,18 @@ func web_recovery_login(c *gin.Context) {
 
 	if matched < 0 {
 		audit_login_failed(input.Username, rate_limit_client_ip(c), "invalid_recovery_code")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
+		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
 
 	// Load user with identity
 	user := user_by_id(user_id)
 	if user == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "user_error"})
+		respond_error(c, http.StatusInternalServerError, "user_error", "errors.user_error", nil)
 		return
 	}
 	if user.Status == "suspended" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 

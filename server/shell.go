@@ -285,7 +285,7 @@ func shell_menu_assets(a *App, user *User) (string, string) {
 func web_shell_token(c *gin.Context) {
 	user := web_auth(c)
 	if user == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 		return
 	}
 
@@ -293,21 +293,21 @@ func web_shell_token(c *gin.Context) {
 		App string `json:"app"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "app required"})
+		respond_error(c, http.StatusBadRequest, "app_required", "errors.app_required", nil)
 		return
 	}
 
 	// Resolve the app path to an app
 	a := app_for_path(user, input.App)
 	if a == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
+		respond_error(c, http.StatusNotFound, "app_not_found", "errors.app_not_found", nil)
 		return
 	}
 
 	session := web_cookie_get(c, "session", "")
 	token := auth_create_app_token(user.ID, session, a.id)
 	if token == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create token"})
+		respond_error(c, http.StatusInternalServerError, "failed_to_create_token", "errors.failed_to_create_token", nil)
 		return
 	}
 
@@ -320,7 +320,7 @@ func web_shell_token(c *gin.Context) {
 func web_shell_init(c *gin.Context) {
 	user := web_auth(c)
 	if user == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 		return
 	}
 

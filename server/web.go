@@ -116,7 +116,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// API tokens are restricted to their app
 	if api_token != nil && api_token.App != a.id {
-		c.JSON(http.StatusForbidden, gin.H{"error": "token not valid for this app"})
+		respond_error(c, http.StatusForbidden, "token_not_valid_for_this_app", "errors.app_token_invalid", nil)
 		return true
 	}
 
@@ -222,7 +222,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			return true
 		}
 		if !shell_static {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 			return true
 		}
 	}
@@ -234,7 +234,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.Redirect(http.StatusFound, "/login/identity")
 				return true
 			}
-			c.JSON(http.StatusForbidden, gin.H{"error": "Identity required"})
+			respond_error(c, http.StatusForbidden, "identity_required", "errors.identity_required", nil)
 			return true
 		}
 	}
@@ -244,12 +244,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if user != nil && api_token == nil && !aa.Public && !shell_static {
 		if !has_bearer {
 			debug("403 app token required: app=%s action=%s method=%s has_bearer=%v", a.id, name, c.Request.Method, has_bearer)
-			c.JSON(http.StatusForbidden, gin.H{"error": "app token required"})
+			respond_error(c, http.StatusForbidden, "app_token_required", "errors.app_token_required", nil)
 			return true
 		}
 		if jwt_app != "" && jwt_app != a.id {
 			debug("403 app token mismatch: jwt_app=%s a.id=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
-			c.JSON(http.StatusForbidden, gin.H{"error": "app token mismatch"})
+			respond_error(c, http.StatusForbidden, "app_token_mismatch", "errors.app_token_mismatch", nil)
 			return true
 		}
 	}
@@ -257,7 +257,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// Check app-level requirements (skip for static files in shell mode)
 	if !shell_static && !av.user_allowed(user) {
 		debug("403 access denied: app=%s action=%s user=%v", a.id, name, user != nil)
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		respond_error(c, http.StatusForbidden, "access_denied", "errors.access_denied", nil)
 		return true
 	}
 
@@ -323,7 +323,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if aa.Files != "" {
 		if aa.filepath != "" {
 			if !valid(aa.filepath, "filepath") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file"})
+				respond_error(c, http.StatusBadRequest, "invalid_file", "errors.invalid_file", nil)
 				return true
 			}
 			file := av.base + "/" + aa.Files + "/" + aa.filepath
@@ -335,14 +335,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				c.File(file)
 			}
 		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "No file specified"})
+			respond_error(c, http.StatusBadRequest, "no_file_specified", "errors.no_file_specified", nil)
 		}
 		return true
 	}
 
 	// Require authentication for database-backed apps (unless action is public)
 	if av.Database.File != "" && user == nil && owner == nil && !aa.Public {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for database access"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required_for_database_access", "errors.auth_required_db", nil)
 		return true
 	}
 
@@ -351,7 +351,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		if user != nil {
 			user.db = db_app(user, a)
 			if user.db == nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				respond_error(c, http.StatusInternalServerError, "database_error", "errors.database_error", nil)
 				return true
 			}
 			defer user.db.close()
@@ -360,7 +360,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		if owner != nil && (user == nil || owner.ID != user.ID) {
 			owner.db = db_app(owner, a)
 			if owner.db == nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				respond_error(c, http.StatusInternalServerError, "database_error", "errors.database_error", nil)
 				return true
 			}
 			defer owner.db.close()
@@ -421,7 +421,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	switch av.Architecture.Engine {
 	case "": // Internal app
 		if aa.internal_function == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+			respond_error(c, http.StatusInternalServerError, "action_has_no_function", "errors.action_has_no_function", nil)
 			return true
 		}
 
@@ -430,7 +430,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	case "starlark":
 		if aa.Function == "" {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Action has no function"})
+			respond_error(c, http.StatusInternalServerError, "action_has_no_function", "errors.action_has_no_function", nil)
 			return true
 		}
 
@@ -927,12 +927,12 @@ func web_login_begin(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
 	if !email_valid(input.Email) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_email"})
+		respond_error(c, http.StatusBadRequest, "invalid_email", "errors.invalid_email", nil)
 		return
 	}
 
@@ -943,7 +943,7 @@ func web_login_begin(c *gin.Context) {
 	if user == nil {
 		// User doesn't exist - check if signup is enabled
 		if !setting_signup_enabled() {
-			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+			respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
 			return
 		}
 		// New user - default to email method
@@ -1013,7 +1013,7 @@ func web_identity_get(c *gin.Context) {
 	}
 
 	if u == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 		return
 	}
 
@@ -1043,7 +1043,7 @@ func web_login_code(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
@@ -1051,9 +1051,9 @@ func web_login_code(c *gin.Context) {
 	if reason != "" {
 		switch reason {
 		case "signup_disabled":
-			c.JSON(http.StatusForbidden, gin.H{"error": "signup_disabled", "message": "New user signup is disabled."})
+			respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to send login email"})
+			respond_error(c, http.StatusBadRequest, "unable_to_send_login_email", "errors.unable_to_send_login_email", nil)
 		}
 		return
 	}
@@ -1080,7 +1080,7 @@ func web_login_identity(c *gin.Context) {
 	}
 
 	if u == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 		return
 	}
 
@@ -1089,14 +1089,14 @@ func web_login_identity(c *gin.Context) {
 		Privacy string `json:"privacy"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
 	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
 	if err != nil {
 		info("Identity creation error for user %d: %v", u.ID, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Unable to create identity"})
+		respond_error(c, http.StatusBadRequest, "unable_to_create_identity", "errors.unable_to_create_identity", nil)
 		return
 	}
 
@@ -1116,12 +1116,12 @@ func web_login_identity(c *gin.Context) {
 func web_abandon(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
 		return
 	}
 
 	if u.identity() != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Account already set up"})
+		respond_error(c, http.StatusForbidden, "account_already_set_up", "errors.account_already_set_up", nil)
 		return
 	}
 
@@ -1205,7 +1205,7 @@ func web_path(c *gin.Context) {
 		case "app":
 			a := app_by_any(user, target)
 			if a == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
+				respond_error(c, http.StatusNotFound, "app_not_found", "errors.app_not_found", nil)
 				return
 			}
 			// Redirect to add trailing slash for correct relative path resolution
@@ -1223,14 +1223,14 @@ func web_path(c *gin.Context) {
 		case "entity":
 			e := entity_by_any(target)
 			if e == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+				respond_error(c, http.StatusNotFound, "entity_not_found", "errors.entity_not_found", nil)
 				return
 			}
 			// Use entity owner's preferences for class routing
 			owner := user_owning_entity(e.ID)
 			a := class_app_for(owner, e.Class)
 			if a == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity"})
+				respond_error(c, http.StatusNotFound, "no_app_for_entity", "errors.no_app_for_entity", nil)
 				return
 			}
 			// Redirect to add trailing slash for correct relative path resolution
@@ -1242,7 +1242,7 @@ func web_path(c *gin.Context) {
 			return
 
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unknown route method"})
+			respond_error(c, http.StatusInternalServerError, "unknown_route_method", "errors.unknown_route_method", nil)
 			return
 		}
 	}
@@ -1262,7 +1262,7 @@ func web_path(c *gin.Context) {
 			web_action(c, a, "", nil)
 			return
 		}
-		c.JSON(http.StatusNotFound, gin.H{"error": "No root app configured"})
+		respond_error(c, http.StatusNotFound, "no_root_app_configured", "errors.no_root_app", nil)
 		return
 	}
 
@@ -1327,7 +1327,7 @@ func web_path(c *gin.Context) {
 		owner := user_owning_entity(e.ID)
 		a := class_app_for(owner, e.Class)
 		if a == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "No app for entity class"})
+			respond_error(c, http.StatusNotFound, "no_app_for_entity_class", "errors.no_app_for_class", nil)
 			return
 		}
 
@@ -1345,7 +1345,7 @@ func web_path(c *gin.Context) {
 		web_action(c, a, raw, nil)
 		return
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+	respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 }
 
 // Return P2P connection info for this server
@@ -1500,14 +1500,14 @@ func web_start() {
 // Serve an attachment or thumbnail
 func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id string, thumbnail bool) bool {
 	if !valid(id, "id") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attachment ID"})
+		respond_error(c, http.StatusBadRequest, "invalid_attachment_id", "errors.invalid_attachment_id", nil)
 		return true
 	}
 
 	// If no local owner, try to fetch from remote entity (e.g., bookmarked wikis)
 	if user == nil {
 		if entity == "" || (!valid(entity, "entity") && !valid(entity, "fingerprint")) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+			respond_error(c, http.StatusNotFound, "entity_not_found", "errors.entity_not_found", nil)
 			return true
 		}
 		return web_serve_attachment_remote(c, app, nil, entity, id, thumbnail)
@@ -1515,7 +1515,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 
 	db := db_app_system(user, app)
 	if db == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		respond_error(c, http.StatusInternalServerError, "database_error", "errors.database_error", nil)
 		return true
 	}
 
@@ -1526,7 +1526,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		if entity != "" && (valid(entity, "entity") || valid(entity, "fingerprint")) {
 			return web_serve_attachment_remote(c, app, user, entity, id, thumbnail)
 		}
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
 		return true
 	}
 
@@ -1546,19 +1546,19 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 			}
 			cached := attachment_fetch_remote(app, from, fetch_entity, id)
 			if cached == "" {
-				c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+				respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
 				return true
 			}
 			if err := file_copy(cached, path); err != nil {
 				warn("Unable to cache attachment locally: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to cache file"})
+				respond_error(c, http.StatusInternalServerError, "unable_to_cache_file", "errors.unable_to_cache_file", nil)
 				return true
 			}
 			// Clear entity so future requests serve from local storage
 			db.exec(`update attachments set entity = '' where id = ?`, id)
 			info("Attachment %s fetched and stored locally on demand", id)
 		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+			respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
 			return true
 		}
 	}
@@ -1609,7 +1609,7 @@ func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, i
 	// Fetch from remote (thumbnail generated on remote side if requested)
 	path := attachment_fetch_remote(app, from, entity, id, thumbnail)
 	if path == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
 		return true
 	}
 

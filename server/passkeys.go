@@ -175,18 +175,18 @@ func passkey_lasts(user_id int) map[string]int64 {
 func web_passkey_login_begin(c *gin.Context) {
 	wa := webauthn_for_host(c.Request.Host)
 	if wa == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_not_configured"})
+		respond_error(c, http.StatusInternalServerError, "webauthn_not_configured", "errors.webauthn_not_configured", nil)
 		return
 	}
 
 	if !auth_method_allowed("passkey") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "passkey_disabled"})
+		respond_error(c, http.StatusForbidden, "passkey_disabled", "errors.passkey_disabled", nil)
 		return
 	}
 
 	options, session, err := wa.BeginDiscoverableLogin()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_error"})
+		respond_error(c, http.StatusInternalServerError, "webauthn_error", "errors.webauthn_error", nil)
 		return
 	}
 
@@ -207,19 +207,19 @@ func web_passkey_login_begin(c *gin.Context) {
 func web_passkey_login_finish(c *gin.Context) {
 	wa := webauthn_for_host(c.Request.Host)
 	if wa == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "webauthn_not_configured"})
+		respond_error(c, http.StatusInternalServerError, "webauthn_not_configured", "errors.webauthn_not_configured", nil)
 		return
 	}
 
 	if !auth_method_allowed("passkey") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "passkey_disabled"})
+		respond_error(c, http.StatusForbidden, "passkey_disabled", "errors.passkey_disabled", nil)
 		return
 	}
 
 	// Read raw body first since we need to parse it twice
 	body, err := c.GetRawData()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
@@ -228,7 +228,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		Ceremony string `json:"ceremony"`
 	}
 	if err := json.Unmarshal(body, &input); err != nil || input.Ceremony == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
 
@@ -237,7 +237,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	row, _ := db.row("select data from ceremonies where id=? and type='login' and expires>?",
 		input.Ceremony, now())
 	if row == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ceremony_expired"})
+		respond_error(c, http.StatusBadRequest, "ceremony_expired", "errors.ceremony_expired", nil)
 		return
 	}
 
@@ -250,7 +250,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	// Parse the credential response from the request body
 	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(body)))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_credential"})
+		respond_error(c, http.StatusBadRequest, "invalid_credential", "errors.invalid_credential", nil)
 		return
 	}
 
@@ -267,7 +267,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	credential, err := wa.ValidateDiscoverableLogin(handler, session, parsed)
 	if err != nil {
 		info("Passkey login failed: %v", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication_failed"})
+		respond_error(c, http.StatusUnauthorized, "authentication_failed", "errors.authentication_failed", nil)
 		return
 	}
 
@@ -276,12 +276,12 @@ func web_passkey_login_finish(c *gin.Context) {
 	users := db_open("db/users.db")
 	row, _ = users.row("select user from credentials where id=?", credential.ID)
 	if row == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "credential_not_found"})
+		respond_error(c, http.StatusUnauthorized, "credential_not_found", "errors.credential_not_found", nil)
 		return
 	}
 	user := user_by_id(int(row["user"].(int64)))
 	if user == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user_not_found"})
+		respond_error(c, http.StatusUnauthorized, "user_not_found", "errors.user_not_found", nil)
 		return
 	}
 
@@ -294,7 +294,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
 		credential.ID, user.ID, now())
 	if user.Status == "suspended" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "suspended", "message": "Your account has been suspended."})
+		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 

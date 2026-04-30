@@ -228,7 +228,7 @@ func web_oauth_begin(c *gin.Context) {
 	reg := oauth_providers()
 	provider, ok := reg[name]
 	if !ok || !oauth_enabled(name) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "unknown_provider"})
+		respond_error(c, http.StatusNotFound, "unknown_provider", "errors.unknown_provider", nil)
 		return
 	}
 
@@ -255,7 +255,7 @@ func web_oauth_begin(c *gin.Context) {
 			}
 		}
 		if user == nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "not_authenticated"})
+			respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
 			return
 		}
 		link_user = user.ID
@@ -269,7 +269,7 @@ func web_oauth_begin(c *gin.Context) {
 	cfg, _, err := oauth_client_config(provider, redirect)
 	if err != nil {
 		warn("OAuth begin: provider config error (%s): %v", name, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "provider_unavailable"})
+		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
 		return
 	}
 
@@ -281,7 +281,7 @@ func web_oauth_begin(c *gin.Context) {
 		Redirect: redirect,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
 		return
 	}
 

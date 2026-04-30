@@ -134,7 +134,7 @@ func rate_limit_api_middleware(c *gin.Context) {
 
 	if !rate_limit_api.allow(ip) {
 		audit_rate_limit(ip, "api")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Rate limit exceeded. Please try again later."})
+		respond_error(c, http.StatusTooManyRequests, "rate_limit_exceeded_please_try_again_later", "errors.rate_limit_exceeded", nil)
 		c.Abort()
 		return
 	}
@@ -149,7 +149,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 	if !rate_limit_login.allow(ip) {
 		audit_rate_limit(ip, "login")
 		audit_repeated_failures(ip, rate_limit_login.limit, "login")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts. Please try again later."})
+		respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
 		c.Abort()
 		return
 	}

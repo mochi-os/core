@@ -4,6 +4,8 @@
 package main
 
 import (
+	"embed"
+	"io/fs"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,7 +13,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gotnospirit/messageformat"
+	"gopkg.in/ini.v1"
 )
+
+// core_labels_fs embeds core server's own translatable strings. Compiled
+// into the binary so the labels travel with the executable.
+//
+//go:embed labels/*.conf
+var core_labels_fs embed.FS
+
+// core_labels holds core server's own translatable strings, keyed by
+// BCP 47 tag. Loaded once at startup from the embedded labels FS. Used by
+// respond_error() for HTTP error responses returned by core itself.
+var core_labels = map[string]map[string]string{}
 
 // English variants that don't follow the default `<lang> -> en` fallback.
 // Most Commonwealth English speakers (en-gb, en-au, en-nz, en-ie, en-za, en-in,
@@ -244,7 +258,7 @@ func web_languages(c *gin.Context) {
 // rather than the web SPA.
 func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
 	if av == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "labels not loaded"})
+		respond_error(c, http.StatusNotFound, "labels_not_loaded", "errors.labels_not_loaded", nil)
 		return true
 	}
 	suffix = strings.TrimPrefix(suffix, "/")
@@ -259,12 +273,12 @@ func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
 	}
 	tag := strings.ToLower(suffix)
 	if !valid(tag, "locale") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid language tag"})
+		respond_error(c, http.StatusBadRequest, "invalid_language_tag", "errors.invalid_language_tag", nil)
 		return true
 	}
 	labels := av.labels[tag]
 	if labels == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "language not installed"})
+		respond_error(c, http.StatusNotFound, "language_not_installed", "errors.language_not_installed", nil)
 		return true
 	}
 	c.JSON(http.StatusOK, labels)
@@ -293,4 +307,77 @@ func resolve_label(av *AppVersion, language, key string, args map[string]any) st
 
 	info("App label %q in language %q not set", key, language)
 	return key
+}
+
+// resolve_core_label walks the fallback chain across core_labels and returns
+// the first matching label, substituted with args. Returns the literal key
+// if nothing resolves.
+func resolve_core_label(language, key string, args map[string]any) string {
+	for _, tag := range language_fallbacks(language) {
+		labels := core_labels[tag]
+		if labels == nil {
+			continue
+		}
+		format := labels[key]
+		if format == "" {
+			continue
+		}
+		return format_message(format, tag, args)
+	}
+	info("Core label %q in language %q not set", key, language)
+	return key
+}
+
+// load_core_labels populates the core_labels map from the embedded labels FS.
+// Called once at startup.
+func load_core_labels() {
+	entries, err := fs.ReadDir(core_labels_fs, "labels")
+	if err != nil {
+		// No labels embedded — core falls back to literal keys.
+		return
+	}
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".conf") {
+			continue
+		}
+		tag := strings.ToLower(strings.TrimSuffix(ent.Name(), ".conf"))
+		if !valid(tag, "locale") {
+			info("Core labels: skipping %q (invalid locale tag)", ent.Name())
+			continue
+		}
+		data, err := fs.ReadFile(core_labels_fs, "labels/"+ent.Name())
+		if err != nil {
+			info("Core labels: cannot read %q: %v", ent.Name(), err)
+			continue
+		}
+		cfg, err := ini.Load(data)
+		if err != nil {
+			info("Core labels: cannot parse %q: %v", ent.Name(), err)
+			continue
+		}
+		section := cfg.Section("labels")
+		if section == nil {
+			continue
+		}
+		entry := map[string]string{}
+		for _, key := range section.KeyStrings() {
+			entry[key] = section.Key(key).Value()
+		}
+		core_labels[tag] = entry
+	}
+}
+
+// respond_error sends an HTTP error response with a translated `message` field
+// and a stable machine-readable `code` field. The label key resolves through
+// the user's language preference (or Accept-Language for anonymous requests),
+// with the standard fallback chain.
+//
+//	respond_error(c, 404, "not_found", "errors.not_found", nil)
+//	respond_error(c, 400, "invalid_email", "errors.invalid_email",
+//	    map[string]any{"email": email})
+func respond_error(c *gin.Context, status int, code, key string, args map[string]any) {
+	lang := request_language(c, nil)
+	msg := resolve_core_label(lang, key, args)
+	c.JSON(status, gin.H{"error": code, "message": msg})
+	c.Abort()
 }

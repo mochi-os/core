@@ -1447,6 +1447,7 @@ func web_start() {
 	r.GET("/_/websocket", websocket_connection)
 	r.POST("/_/token", web_shell_token)
 	r.POST("/_/shell", web_shell_init)
+	r.GET("/_/languages", web_languages)
 
 	// All other paths are handled by web_path()
 	r.NoRoute(web_path)

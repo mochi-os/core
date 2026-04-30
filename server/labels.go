@@ -207,6 +207,36 @@ func request_language(c *gin.Context, u *User) string {
 	return "en"
 }
 
+// installed_languages returns the union of BCP 47 tags across every loaded
+// app version's labels map. Used by the picker UI to populate the language
+// list. Locked-down read of apps_lock; callers tolerate transient stale
+// results during hot-reload.
+func installed_languages() []string {
+	seen := map[string]struct{}{}
+	apps_lock.Lock()
+	for _, a := range apps {
+		for _, av := range a.versions {
+			for tag := range av.labels {
+				seen[tag] = struct{}{}
+			}
+		}
+	}
+	apps_lock.Unlock()
+	out := make([]string, 0, len(seen))
+	for tag := range seen {
+		out = append(out, tag)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// web_languages handles GET /_/languages — returns the union of installed
+// language tags across all apps. Public; no auth required so anonymous and
+// pre-login pages can populate their pickers.
+func web_languages(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"languages": installed_languages()})
+}
+
 // web_serve_labels handles the built-in /<app>/-/labels and
 // /<app>/-/labels/<tag> endpoints. With no tag, returns a sorted list of
 // installed language tags for the app. With a tag, returns the {key: format}

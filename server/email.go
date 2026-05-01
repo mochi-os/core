@@ -70,11 +70,19 @@ func email_send_html(to string, subject string, html string) {
 	}
 }
 
-// email_login_code sends a styled HTML email with a login code.
-func email_login_code(to string, code string) {
-	subject := "Mochi login code"
-	text := "Your Mochi login code is: " + code + "\n\nEnter this code in your browser to sign in. The code expires in 1 hour.\n\nIf you didn't request this code, you can safely ignore this email.\n"
-	html := `<!DOCTYPE html>
+// email_login_code sends a styled HTML email with a login code, localised to
+// the given language (BCP 47 tag) via the core label resolver's fallback chain.
+func email_login_code(to string, code string, language string) {
+	subject := resolve_core_label(language, "email.login_code.subject", nil)
+	heading := resolve_core_label(language, "email.login_code.heading", nil)
+	tagline := resolve_core_label(language, "email.login_code.tagline", nil)
+	expiry := resolve_core_label(language, "email.login_code.expiry", nil)
+	ignore := resolve_core_label(language, "email.login_code.ignore", nil)
+	textIntro := resolve_core_label(language, "email.login_code.text_intro", map[string]any{"code": code})
+	textBody := resolve_core_label(language, "email.login_code.text_body", nil)
+
+	text := textIntro + "\n\n" + textBody + "\n\n" + ignore + "\n"
+	htmlBody := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -87,8 +95,8 @@ func email_login_code(to string, code string) {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 40px 40px 32px 40px; text-align: center;">
-              <h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #18181b;">Login Code</h1>
-              <p style="margin: 0; font-size: 15px; color: #71717a;">Enter this code in your browser to sign in</p>
+              <h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
+              <p style="margin: 0; font-size: 15px; color: #71717a;">` + html.EscapeString(tagline) + `</p>
             </td>
           </tr>
           <tr>
@@ -100,17 +108,17 @@ func email_login_code(to string, code string) {
           </tr>
           <tr>
             <td style="padding: 32px 40px 40px 40px; text-align: center;">
-              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">This code expires in 1 hour</p>
+              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">` + html.EscapeString(expiry) + `</p>
             </td>
           </tr>
         </table>
-        <p style="margin: 24px 0 0 0; font-size: 13px; color: #a1a1aa;">If you didn't request this code, you can safely ignore this email.</p>
+        <p style="margin: 24px 0 0 0; font-size: 13px; color: #a1a1aa;">` + html.EscapeString(ignore) + `</p>
       </td>
     </tr>
   </table>
 </body>
 </html>`
-	email_send_multipart(to, subject, text, html)
+	email_send_multipart(to, subject, text, htmlBody)
 }
 
 // email_send_multipart sends an email with both plain text and HTML parts.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -75,8 +76,11 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 })
 
 // code_send sends a login code to the given email address. Returns empty string
-// on success, or an error reason: "invalid_email" or "signup_disabled".
-func code_send(email string) string {
+// on success, or an error reason: "invalid_email" or "signup_disabled". The
+// gin.Context is used to resolve the email language: the recipient's stored
+// preference if they're an existing user, otherwise Accept-Language from the
+// request that triggered the send.
+func code_send(email string, c *gin.Context) string {
 	if !email_valid(email) {
 		return "invalid_email"
 	}
@@ -92,7 +96,7 @@ func code_send(email string) string {
 	code := random_unambiguous(10)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
-	email_login_code(email, code)
+	email_login_code(email, code, request_language(c, user_by_username(email)))
 	return ""
 }
 

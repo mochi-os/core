@@ -307,7 +307,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		// If email is required, send the code now
 		for _, method := range remaining {
 			if method == "email" {
-				code_send(user.Username)
+				code_send(user.Username, c)
 				break
 			}
 		}

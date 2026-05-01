@@ -1047,7 +1047,7 @@ func web_login_code(c *gin.Context) {
 		return
 	}
 
-	reason := code_send(input.Email)
+	reason := code_send(input.Email, c)
 	if reason != "" {
 		switch reason {
 		case "signup_disabled":

@@ -222,13 +222,17 @@ func request_language(c *gin.Context, u *User) string {
 }
 
 // installed_languages returns the union of BCP 47 tags across every loaded
-// app version's labels map, plus en and en-us which are always offered.
-// Used by the picker UI to populate the language list. Locked-down read of
-// apps_lock; callers tolerate transient stale results during hot-reload.
+// catalog — core_labels (this server's own error strings) and every app
+// version's labels map. Used by the picker UI to populate the language
+// list. The set of supported languages is therefore data-driven: drop a
+// labels/<lang>.conf file into core/server/labels/ or apps/<app>/labels/
+// and the language appears in the picker on next load. The server itself
+// holds no list of language tags. Locked-down read of apps_lock; callers
+// tolerate transient stale results during hot-reload.
 func installed_languages() []string {
-	seen := map[string]struct{}{
-		"en":    {},
-		"en-us": {},
+	seen := map[string]struct{}{}
+	for tag := range core_labels {
+		seen[tag] = struct{}{}
 	}
 	apps_lock.Lock()
 	for _, a := range apps {

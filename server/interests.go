@@ -314,6 +314,9 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // interests_generate_summary builds a summary of the user's interests
+// in the user's preferred language. The QID labels and the AI summary are
+// both fetched in that language; the non-AI fallback uses translatable
+// label keys (`interests.summary.liked`, `interests.summary.disliked`).
 func interests_generate_summary(user *User, db *DB) string {
 	rows, err := db.rows("select qid from interests where weight > 0 order by weight desc limit 30")
 	if err != nil || len(rows) == 0 {
@@ -345,17 +348,18 @@ func interests_generate_summary(user *User, db *DB) string {
 		return ""
 	}
 
-	// Resolve QID labels for both positive and negative
+	// Resolve QID labels and the AI summary in the user's preferred language.
+	language := user_preference_get(user, "language", "en")
 	allQids := append(posQids, negQids...)
-	labels := qid_fetch_labels(allQids, "en")
+	labels := qid_fetch_labels(allQids, qid_lang_for_fetch(language))
 
 	// Try AI summary first
-	summary := interests_ai_summary(user, db, posQids, negQids, labels)
+	summary := interests_ai_summary(user, db, posQids, negQids, labels, language)
 	if summary != "" {
 		return summary
 	}
 
-	// Fallback: simple label list
+	// Fallback: simple label list, with translatable lead-in.
 	var posParts []string
 	for _, qid := range posQids {
 		label := labels[qid]
@@ -375,19 +379,35 @@ func interests_generate_summary(user *User, db *DB) string {
 	}
 	var result string
 	if len(posParts) > 0 {
-		result = "Interested in: " + strings.Join(posParts, ", ")
+		result = resolve_core_label(language, "interests.summary.liked",
+			map[string]any{"list": strings.Join(posParts, ", ")})
 	}
 	if len(negParts) > 0 {
 		if result != "" {
 			result += ". "
 		}
-		result += "Dislikes: " + strings.Join(negParts, ", ")
+		result += resolve_core_label(language, "interests.summary.disliked",
+			map[string]any{"list": strings.Join(negParts, ", ")})
 	}
 	return result
 }
 
-// interests_ai_summary attempts to generate an AI-powered summary
-func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string, labels map[string]string) string {
+// qid_lang_for_fetch normalises a BCP 47 tag for Wikidata's label fetch,
+// which keys on language code only (not region). Variants like en-us, pt-br,
+// zh-hant fall back to the bare language code.
+func qid_lang_for_fetch(lang string) string {
+	if lang == "" {
+		return "en"
+	}
+	if i := strings.Index(lang, "-"); i > 0 {
+		return lang[:i]
+	}
+	return lang
+}
+
+// interests_ai_summary attempts to generate an AI-powered summary in the
+// user's preferred language.
+func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string, labels map[string]string, language string) string {
 	// Find first enabled AI account
 	rows, err := db.rows("select id, type, data, enabled from accounts order by id")
 	if err != nil {
@@ -446,7 +466,15 @@ func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string
 		sections = append(sections, "Disliked topics:\n"+strings.Join(negLines, "\n"))
 	}
 
-	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in, and what they dislike if applicable.\n\n%s", strings.Join(sections, "\n\n"))
+	// Localise the response. The QIDs are protocol identifiers in any language;
+	// the LLM should produce the prose in the user's preferred language. Using
+	// the BCP 47 tag in the prompt is enough — modern LLMs understand standard
+	// language tags directly without needing a native-language name.
+	lang := language
+	if lang == "" {
+		lang = "en"
+	}
+	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences in BCP 47 language %q. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in, and what they dislike if applicable. Respond only with the summary text, in language %q.\n\n%s", lang, lang, strings.Join(sections, "\n\n"))
 
 	var result aiResult
 	switch ptype {

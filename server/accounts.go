@@ -135,7 +135,6 @@ const verificationCharset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuv
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
-	"deliver":   sl.NewBuiltin("mochi.account.deliver", api_account_deliver),
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
@@ -744,102 +743,6 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.True, nil
 }
 
-// mochi.account.notify(title, body, link, tag) -> int: Send push notification to all browser accounts
-func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "accounts/notify"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	user := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	var title, body, link, tag string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
-		"title", &title,
-		"body", &body,
-		"link?", &link,
-		"tag?", &tag,
-	); err != nil {
-		return nil, err
-	}
-
-	webpush_ensure()
-	if webpush_public == "" || webpush_private == "" {
-		return sl.MakeInt(0), nil
-	}
-
-	db := db_user(user, "user")
-
-	// Get all browser accounts with their secrets
-	rows, err := db.rows("select id, identifier, data from accounts where type='browser' and verified > 0")
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-
-	// Build notification payload
-	payload, _ := json.Marshal(map[string]string{
-		"title": title,
-		"body":  body,
-		"link":  link,
-		"tag":   tag,
-	})
-
-	sent := 0
-	for _, row := range rows {
-		id := row["id"]
-		raw, _ := row["data"].(string)
-		if raw == "" {
-			continue
-		}
-
-		var data map[string]any
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
-			continue
-		}
-
-		endpoint, _ := data["endpoint"].(string)
-		auth, _ := data["auth"].(string)
-		p256dh, _ := data["p256dh"].(string)
-
-		if endpoint == "" || auth == "" || p256dh == "" {
-			continue
-		}
-
-		sub := webpush.Subscription{
-			Endpoint: endpoint,
-			Keys: webpush.Keys{
-				Auth:   auth,
-				P256dh: p256dh,
-			},
-		}
-
-		resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
-			Subscriber:      "mailto:webpush@localhost",
-			VAPIDPublicKey:  webpush_public,
-			VAPIDPrivateKey: webpush_private,
-			TTL:             86400,
-		})
-
-		if err != nil {
-			// Send failed, remove subscription
-			db.exec("delete from accounts where id=?", id)
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == 201 {
-			sent++
-		} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
-			// Subscription expired, remove it
-			db.exec("delete from accounts where id=?", id)
-		}
-	}
-
-	return sl.MakeInt(sent), nil
-}
-
 // account_send_verification_email sends a styled HTML email with a verification code
 func account_send_verification_email(to string, code string) {
 	subject := "Verify your email address"
@@ -1295,8 +1198,16 @@ func account_test_url(url, secret string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
 }
 
-// mochi.account.deliver(app, category, object, title, body, link, urgency?, account?) -> dict: Deliver notification to accounts
-func api_account_deliver(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.account.notify(app, category, object, title, body, link, urgency?, account?) -> dict:
+// Notify the user across one or all of their verified notification accounts. Iterates
+// accounts with the "notify" capability and dispatches via the matching provider driver
+// (browser push, email, pushbullet, ntfy, external URL). Returns {sent, failed} counts.
+//
+// Dispatch runs in core because account secrets (push subscriptions, API tokens, HMAC
+// signing keys) are never exposed to apps. For policy-aware notification routing
+// (topics, categories, per-user destinations), call the notifications app's service
+// instead: mochi.service.call("notifications", "send", ...).
+func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "accounts/notify"); err != nil {
 		return sl_error(fn, "%v", err)
 	}

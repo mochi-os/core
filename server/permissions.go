@@ -64,7 +64,6 @@ var permissions = []Permission{
 
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{
 	"administrator": sl.NewBuiltin("mochi.permission.administrator", api_permission_administrator),
-	"apps":          sl.NewBuiltin("mochi.permission.apps", api_permission_apps),
 	"check":         sl.NewBuiltin("mochi.permission.check", api_permission_check),
 	"grant":         sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
 	"list":          sl.NewBuiltin("mochi.permission.list", api_permission_list),
@@ -236,28 +235,6 @@ func permission_revoke(u *User, app_id string, permission string) {
 	db := db_user(u, "user")
 	db.permissions_setup()
 	db.exec("delete from permissions where app=? and permission=? and object=?", app_id, name, object)
-}
-
-// permissions_apps returns all app IDs that have permissions for a user
-func permissions_apps(u *User) []string {
-	if u == nil {
-		return nil
-	}
-
-	db := db_user(u, "user")
-	db.permissions_setup()
-	rows, err := db.rows("select distinct app from permissions where granted=1")
-	if err != nil {
-		return nil
-	}
-
-	var result []string
-	for _, row := range rows {
-		if app, ok := row["app"].(string); ok {
-			result = append(result, app)
-		}
-	}
-	return result
 }
 
 // permissions_list returns all permissions for an app for a user
@@ -488,17 +465,6 @@ func api_permission_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	permission_revoke(user, app_id, permission)
 	return sl.None, nil
-}
-
-// mochi.permission.apps() -> list: List app IDs that have permissions
-func api_permission_apps(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user, _ := t.Local("user").(*User)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	apps := permissions_apps(user)
-	return sl_encode(apps), nil
 }
 
 // mochi.permission.list(app) -> list: List permissions for an app.

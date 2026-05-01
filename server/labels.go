@@ -202,17 +202,33 @@ func parse_accept_language(header string) []string {
 	return out
 }
 
-// request_language resolves the language for a request: the user's preference
-// if logged in, else the best-priority Accept-Language tag, else "en". The
-// returned tag flows into the label resolver where the fallback chain handles
-// catalog-not-installed cases automatically.
+// request_language resolves the language for a request. Priority:
+//  1. The user's stored `language` preference (logged-in users only).
+//  2. The `mochi_language` cookie set by the anonymous LanguagePicker — keeps
+//     the pre-login pick honoured through and after sign-in until the user
+//     sets an explicit preference.
+//  3. The best-priority Accept-Language tag from the browser.
+//  4. "en".
+//
+// The returned tag flows into the label resolver where the fallback chain
+// handles catalog-not-installed cases automatically.
 func request_language(c *gin.Context, u *User) string {
 	if u != nil {
-		if lang := user_preference_get(u, "language", ""); lang != "" {
-			return strings.ToLower(lang)
+		// "auto" is the explicit "detect from browser" option in the settings
+		// picker — treated as if no preference were set, falling through to
+		// the cookie / Accept-Language chain below.
+		lang := strings.ToLower(user_preference_get(u, "language", ""))
+		if lang != "" && lang != "auto" {
+			return lang
 		}
 	}
 	if c != nil {
+		if cookie, err := c.Cookie("mochi_language"); err == nil && cookie != "" {
+			tag := strings.ToLower(cookie)
+			if valid(tag, "locale") {
+				return tag
+			}
+		}
 		tags := parse_accept_language(c.GetHeader("Accept-Language"))
 		if len(tags) > 0 {
 			return tags[0]

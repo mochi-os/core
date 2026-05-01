@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	gotime "time"
@@ -18,6 +20,7 @@ import (
 	sl "go.starlark.net/starlark"
 	"go.starlark.net/starlarkjson"
 	sls "go.starlark.net/starlarkstruct"
+	"golang.org/x/net/html"
 )
 
 const url_max_response_size = 100 * 1024 * 1024 // 100 MB
@@ -56,7 +59,6 @@ func init() {
 			"remote":     api_remote,
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
-				"image": sl.NewBuiltin("mochi.rss.image", api_rss_image),
 			}),
 			"schedule": api_schedule,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
@@ -79,11 +81,12 @@ func init() {
 			}),
 			"uid": sl.NewBuiltin("mochi.uid", api_uid),
 			"url": sls.FromStringDict(sl.String("mochi.url"), sl.StringDict{
-				"delete": sl.NewBuiltin("mochi.url.delete", api_url_request),
-				"get":    sl.NewBuiltin("mochi.url.get", api_url_request),
-				"patch":  sl.NewBuiltin("mochi.url.patch", api_url_request),
-				"post":   sl.NewBuiltin("mochi.url.post", api_url_request),
-				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
+				"delete":  sl.NewBuiltin("mochi.url.delete", api_url_request),
+				"get":     sl.NewBuiltin("mochi.url.get", api_url_request),
+				"patch":   sl.NewBuiltin("mochi.url.patch", api_url_request),
+				"post":    sl.NewBuiltin("mochi.url.post", api_url_request),
+				"preview": sl.NewBuiltin("mochi.url.preview", api_url_preview),
+				"put":     sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
 			"webpush":   api_webpush,
 			"websocket": api_websocket,
@@ -564,4 +567,114 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
 	return sl_encode(map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}), nil
+}
+
+// mochi.url.preview(url) -> string: Fetch a web page and return the URL of a
+// preview image suitable for link cards. Reads the page's <meta property="og:image">
+// (Open Graph) and falls back to <meta name="twitter:image">. Relative URLs in
+// the meta tag are resolved against the page URL. Returns "" on any failure.
+func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <url: string>")
+	}
+
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_url.allow(app.id) {
+		return sl.String(""), nil
+	}
+
+	rawurl, ok := sl.AsString(args[0])
+	if !ok || rawurl == "" {
+		return sl.String(""), nil
+	}
+
+	r, err := url_request("GET", rawurl, map[string]string{"timeout": "10"}, map[string]string{"User-Agent": "Mochi/1.0"}, nil)
+	if err != nil {
+		return sl.String(""), nil
+	}
+	defer r.Body.Close()
+
+	if r.StatusCode < 200 || r.StatusCode >= 300 {
+		return sl.String(""), nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		return sl.String(""), nil
+	}
+
+	return sl.String(url_extract_preview(body, rawurl)), nil
+}
+
+// url_extract_preview finds the og:image or twitter:image meta tag in HTML
+// and resolves relative URLs against the page URL. Returns "" if neither tag
+// is present or the head ends without one.
+func url_extract_preview(body []byte, pageURL string) string {
+	tokenizer := html.NewTokenizer(bytes.NewReader(body))
+	var ogImage, twitterImage string
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+			tn, hasAttr := tokenizer.TagName()
+			tagName := string(tn)
+
+			if tagName == "body" {
+				break
+			}
+
+			if tagName == "meta" && hasAttr {
+				var property, name, content string
+				for {
+					key, val, more := tokenizer.TagAttr()
+					k := string(key)
+					v := string(val)
+					switch k {
+					case "property":
+						property = v
+					case "name":
+						name = v
+					case "content":
+						content = v
+					}
+					if !more {
+						break
+					}
+				}
+				if property == "og:image" && content != "" {
+					ogImage = content
+				} else if twitterImage == "" && name == "twitter:image" && content != "" {
+					twitterImage = content
+				}
+			}
+		}
+		if tt == html.EndTagToken {
+			tn, _ := tokenizer.TagName()
+			if string(tn) == "head" {
+				break
+			}
+		}
+	}
+
+	result := ogImage
+	if result == "" {
+		result = twitterImage
+	}
+	if result == "" {
+		return ""
+	}
+
+	// Resolve relative URLs
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return result
+	}
+	ref, err := url.Parse(result)
+	if err != nil {
+		return result
+	}
+	return base.ResolveReference(ref).String()
 }

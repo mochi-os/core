@@ -222,11 +222,14 @@ func request_language(c *gin.Context, u *User) string {
 }
 
 // installed_languages returns the union of BCP 47 tags across every loaded
-// app version's labels map. Used by the picker UI to populate the language
-// list. Locked-down read of apps_lock; callers tolerate transient stale
-// results during hot-reload.
+// app version's labels map, plus en and en-us which are always offered.
+// Used by the picker UI to populate the language list. Locked-down read of
+// apps_lock; callers tolerate transient stale results during hot-reload.
 func installed_languages() []string {
-	seen := map[string]struct{}{}
+	seen := map[string]struct{}{
+		"en":    {},
+		"en-us": {},
+	}
 	apps_lock.Lock()
 	for _, a := range apps {
 		for _, av := range a.versions {

@@ -40,7 +40,6 @@ type Attachment struct {
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
 	"save":               sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
 	"create":             sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
-	"create_from_file":   sl.NewBuiltin("mochi.attachment.create_from_file", api_attachment_create_from_file),
 	"create_from_stream": sl.NewBuiltin("mochi.attachment.create_from_stream", api_attachment_create_from_stream),
 	"insert":             sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
 	"update":             sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
@@ -120,8 +119,8 @@ func (db *DB) attachment_shift_down(object string, from_rank int) {
 	db.exec("update attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
 }
 
-// Create attachment record for file already at final path
-// This is the shared logic used by create_from_file and create_from_stream
+// Create attachment record for file already at final path.
+// Shared logic used by create_from_stream.
 func attachment_create_record(db *DB, app *App, owner *User, object, name, id string, size int64, content_type, creator, caption, description string, notify []string) map[string]any {
 	rank := db.attachment_next_rank(object)
 
@@ -508,132 +507,6 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
 	}
 
-	return sl_encode(result), nil
-}
-
-// mochi.attachment.create_from_file(object, name, path, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment from a file
-func api_attachment_create_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 3 || len(args) > 8 {
-		return sl_error(fn, "syntax: <object: string>, <name: string>, <path: string>, [content_type: string], [caption: string], [description: string], [notify: array], [id: string]")
-	}
-
-	object, ok := sl.AsString(args[0])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object")
-	}
-
-	name, ok := sl.AsString(args[1])
-	if !ok || name == "" {
-		return sl_error(fn, "invalid name")
-	}
-
-	src_path, ok := sl.AsString(args[2])
-	if !ok || src_path == "" || !valid(src_path, "filepath") {
-		return sl_error(fn, "invalid path")
-	}
-
-	content_type := ""
-	if len(args) > 3 {
-		content_type, _ = sl.AsString(args[3])
-	}
-	if content_type == "" {
-		content_type = attachment_content_type(name)
-	}
-
-	caption := ""
-	if len(args) > 4 {
-		caption, _ = sl.AsString(args[4])
-	}
-
-	description := ""
-	if len(args) > 5 {
-		description, _ = sl.AsString(args[5])
-	}
-
-	var notify []string
-	if len(args) > 6 {
-		notify = sl_decode_string_list(args[6])
-	}
-
-	// Optional attachment ID (use existing ID for federation sync)
-	provided_id := ""
-	if len(args) > 7 {
-		provided_id, _ = sl.AsString(args[7])
-		if provided_id != "" && !valid(provided_id, "id") {
-			return sl_error(fn, "invalid id")
-		}
-	}
-
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
-	owner := t.Local("owner").(*User)
-	if owner == nil {
-		return sl_error(fn, "no owner")
-	}
-
-	user := t.Local("user").(*User)
-	creator := ""
-	if user != nil && user.Identity != nil {
-		creator = user.Identity.ID
-	}
-
-	db := db_app_system(owner, app)
-	if db == nil {
-		return sl_error(fn, "no database")
-	}
-	db.attachments_setup()
-
-	// Open source file using os.Root for traversal protection
-	src_base := api_file_base(owner, app)
-	src_root, err := os.OpenRoot(src_base)
-	if err != nil {
-		return sl_error(fn, "unable to access files directory")
-	}
-	defer src_root.Close()
-
-	fi, err := src_root.Stat(src_path)
-	if err != nil {
-		return sl_error(fn, "unable to read file: %v", err)
-	}
-	size := fi.Size()
-
-	// Check size
-	if size > attachment_max_size_default {
-		return sl_error(fn, "file too large: %d bytes", size)
-	}
-
-	// Check storage limit (10GB per user across all apps)
-	current, err := dir_size(user_storage_dir(owner))
-	if err != nil {
-		return sl_error(fn, "unable to measure storage: %v", err)
-	}
-	if current+size > file_max_storage {
-		return sl_error(fn, "storage limit exceeded")
-	}
-
-	// Generate attachment ID
-	id := provided_id
-	if id == "" {
-		id = uid()
-	}
-
-	// Move file to attachment location using os.Root for traversal protection
-	full_src_path := api_file_path(owner, app, src_path)
-	dest_base := attachment_files_base(owner.ID, app.id)
-	if err := os.MkdirAll(dest_base, 0755); err != nil {
-		return sl_error(fn, "unable to create files directory: %v", err)
-	}
-	dest_filename := attachment_filename(id, name)
-	dest_path := filepath.Join(dest_base, dest_filename)
-	if err := os.Rename(full_src_path, dest_path); err != nil {
-		return sl_error(fn, "failed to move attachment: %v", err)
-	}
-
-	// Create record using shared helper
-	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description, notify)
 	return sl_encode(result), nil
 }
 

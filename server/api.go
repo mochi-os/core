@@ -50,13 +50,10 @@ func init() {
 			"group":      api_group,
 			"interests":  api_interests,
 			"log":        api_log,
-			"markdown": sls.FromStringDict(sl.String("mochi.markdown"), sl.StringDict{
-				"render": sl.NewBuiltin("mochi.markdown.render", api_markdown_render),
-			}),
 			"message":    api_message,
 			"permission": api_permission,
 			"qid":        api_qid,
-			"remote": api_remote,
+			"remote":     api_remote,
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
 				"image": sl.NewBuiltin("mochi.rss.image", api_rss_image),
@@ -73,6 +70,7 @@ func init() {
 			}),
 			"setting": api_setting,
 			"stream":  &streamModule{},
+			"text":    api_text,
 			"token":   api_token,
 			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
@@ -87,7 +85,6 @@ func init() {
 				"post":   sl.NewBuiltin("mochi.url.post", api_url_request),
 				"put":    sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
-			"valid":     sl.NewBuiltin("mochi.valid", api_valid),
 			"webpush":   api_webpush,
 			"websocket": api_websocket,
 		}),
@@ -131,20 +128,6 @@ func api_crypto_equal(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl.True, nil
 	}
 	return sl.False, nil
-}
-
-// mochi.markdown.render(markdown) -> string: Render markdown to HTML
-func api_markdown_render(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <markdown: string>")
-	}
-
-	in, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid markdown")
-	}
-
-	return sl_encode(string(markdown([]byte(in)))), nil
 }
 
 // mochi.random.alphanumeric(length) -> string: Generate a random alphanumeric string
@@ -581,26 +564,4 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
 	return sl_encode(map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}), nil
-}
-
-// mochi.valid(string, pattern) -> bool: Check if a string matches a validation pattern
-func api_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <string to check: string>, <pattern to match: string>")
-	}
-
-	if args[0] == sl.None {
-		return sl.False, nil
-	}
-	s, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid string to check %q", s)
-	}
-
-	match, ok := sl.AsString(args[1])
-	if !ok {
-		return sl_error(fn, "invalid match pattern %q", match)
-	}
-
-	return sl_encode(valid(s, match)), nil
 }

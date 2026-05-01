@@ -426,9 +426,8 @@ var (
 	})
 
 	api_app_track = sls.FromStringDict(sl.String("mochi.app.track"), sl.StringDict{
-		"get":  sl.NewBuiltin("mochi.app.track.get", api_app_track_get),
-		"set":  sl.NewBuiltin("mochi.app.track.set", api_app_track_set),
 		"list": sl.NewBuiltin("mochi.app.track.list", api_app_track_list),
+		"set":  sl.NewBuiltin("mochi.app.track.set", api_app_track_set),
 	})
 
 	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
@@ -450,7 +449,6 @@ var (
 		"service":  api_app_service,
 		"themes":   sl.NewBuiltin("mochi.app.themes", api_app_themes),
 		"track":    api_app_track,
-		"tracks":   sl.NewBuiltin("mochi.app.tracks", api_app_tracks),
 		"version":  api_app_version,
 		"versions": sl.NewBuiltin("mochi.app.versions", api_app_versions),
 	})
@@ -2724,34 +2722,6 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl.True, nil
 }
 
-// mochi.app.track.get(app_id, track) -> string | None: Get the version for a track (admin only)
-func api_app_track_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <app_id: string>, <track: string>")
-	}
-	app_id, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid app_id")
-	}
-	track, ok := sl.AsString(args[1])
-	if !ok {
-		return sl_error(fn, "invalid track")
-	}
-	a := app_by_id(app_id)
-	if a == nil {
-		return sl.None, nil
-	}
-	version := a.track(track)
-	if version == "" {
-		return sl.None, nil
-	}
-	return sl.String(version), nil
-}
-
 // mochi.app.track.set(app_id, track, version) -> bool: Set the version for a track (admin only)
 func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
@@ -2781,28 +2751,8 @@ func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.True, nil
 }
 
-// mochi.app.track.list(app_id) -> dict: List all tracks for an app (admin only)
+// mochi.app.track.list(app_id) -> dict: List all tracks for an app
 func api_app_track_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
-	if user == nil || !user.administrator() {
-		return sl_error(fn, "not administrator")
-	}
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <app_id: string>")
-	}
-	app_id, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid app_id")
-	}
-	a := app_by_id(app_id)
-	if a == nil {
-		return sl_encode(map[string]string{}), nil
-	}
-	return sl_encode(a.tracks()), nil
-}
-
-// mochi.app.tracks(app_id) -> dict: List all tracks for an app
-func api_app_tracks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}

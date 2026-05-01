@@ -63,12 +63,11 @@ var permissions = []Permission{
 }
 
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{
-	"administrator": sl.NewBuiltin("mochi.permission.administrator", api_permission_administrator),
-	"check":         sl.NewBuiltin("mochi.permission.check", api_permission_check),
-	"grant":         sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
-	"list":          sl.NewBuiltin("mochi.permission.list", api_permission_list),
-	"restricted":    sl.NewBuiltin("mochi.permission.restricted", api_permission_restricted),
-	"revoke":        sl.NewBuiltin("mochi.permission.revoke", api_permission_revoke),
+	"check":  sl.NewBuiltin("mochi.permission.check", api_permission_check),
+	"grant":  sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
+	"level":  sl.NewBuiltin("mochi.permission.level", api_permission_level),
+	"list":   sl.NewBuiltin("mochi.permission.list", api_permission_list),
+	"revoke": sl.NewBuiltin("mochi.permission.revoke", api_permission_revoke),
 })
 
 // permission_restricted returns whether a permission is restricted.
@@ -497,25 +496,12 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(perms), nil
 }
 
-// mochi.permission.restricted(permission) -> bool: Check if permission is restricted
-func api_permission_restricted(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <permission: string>")
-	}
-
-	permission, ok := sl.AsString(args[0])
-	if !ok {
-		return sl_error(fn, "invalid permission")
-	}
-
-	if permission_restricted(permission) {
-		return sl.True, nil
-	}
-	return sl.False, nil
-}
-
-// mochi.permission.administrator(permission) -> bool: Check if permission requires admin
-func api_permission_administrator(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.permission.level(permission) -> string: Returns the permission's security
+// level — one of "standard" (freely grantable by any user), "restricted" (requires
+// the user to enable it from app settings), or "administrator" (requires the admin
+// role to grant). Admin-only is strictly stronger than restricted, so a permission
+// with both flags returns "administrator".
+func api_permission_level(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <permission: string>")
 	}
@@ -526,7 +512,10 @@ func api_permission_administrator(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 
 	if permission_administrator(permission) {
-		return sl.True, nil
+		return sl.String("administrator"), nil
 	}
-	return sl.False, nil
+	if permission_restricted(permission) {
+		return sl.String("restricted"), nil
+	}
+	return sl.String("standard"), nil
 }

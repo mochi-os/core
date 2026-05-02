@@ -50,9 +50,7 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"exists": sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
 	"data":   sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
 	"path":   sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
-	"thumbnail": sls.FromStringDict(sl.String("mochi.attachment.thumbnail"), sl.StringDict{
-		"path": sl.NewBuiltin("mochi.attachment.thumbnail.path", api_attachment_thumbnail_path),
-	}),
+	"thumbnail": sl.NewBuiltin("mochi.attachment.thumbnail", api_attachment_thumbnail),
 	"store": sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
 	"sync":  sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch": sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
@@ -1317,9 +1315,12 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(fmt.Sprintf("%s_%s", att.ID, safe_name)), nil
 }
 
-// mochi.attachment.thumbnail.path(id) -> string or None: Get thumbnail path, creating thumbnail if needed
-// Returns the thumbnail filename relative to the app's files directory
-func api_attachment_thumbnail_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.attachment.thumbnail(id) -> string or None: Get the thumbnail path for an
+// attachment, creating the thumbnail on demand if it doesn't exist yet. The
+// returned path is relative to the app's files directory. Returns None for
+// non-image attachments, remote attachments (served by the web layer instead),
+// or on errors.
+func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}

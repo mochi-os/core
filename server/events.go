@@ -293,7 +293,7 @@ func (e *Event) segment(v any) bool {
 
 // Starlark methods
 func (e *Event) AttrNames() []string {
-	return []string{"content", "dump", "header", "read", "read_to_file", "stream", "user", "write", "write_from_file", "write_from_app"}
+	return []string{"content", "dump", "header", "read", "stream", "user", "write"}
 }
 
 func (e *Event) Attr(name string) (sl.Value, error) {
@@ -305,22 +305,76 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 	case "header":
 		return sl.NewBuiltin("header", e.sl_header), nil
 	case "read":
-		return sl.NewBuiltin("read", e.stream.sl_read), nil
-	case "read_to_file":
-		return sl.NewBuiltin("read_to_file", e.stream.sl_read_file), nil
+		return &EventRead{event: e}, nil
 	case "stream":
 		return e.stream, nil
 	case "user":
 		return e.user, nil
 	case "write":
-		return sl.NewBuiltin("write", e.stream.sl_write), nil
-	case "write_from_file":
-		return sl.NewBuiltin("write_from_file", e.stream.sl_write_file), nil
-	case "write_from_app":
-		return sl.NewBuiltin("write_from_app", e.stream.sl_write_asset), nil
+		return &EventWrite{event: e}, nil
 	default:
 		return nil, nil
 	}
+}
+
+// EventRead is callable as e.read() and exposes e.read.file(path).
+type EventRead struct {
+	event *Event
+}
+
+func (er *EventRead) String() string        { return "event.read" }
+func (er *EventRead) Type() string          { return "event.read" }
+func (er *EventRead) Freeze()               {}
+func (er *EventRead) Truth() sl.Bool        { return true }
+func (er *EventRead) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: event.read") }
+func (er *EventRead) Name() string          { return "read" }
+
+// Callable: e.read() -> dict | None: Read the next decoded segment from the event's stream
+func (er *EventRead) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return er.event.stream.sl_read(t, nil, args, kwargs)
+}
+
+func (er *EventRead) AttrNames() []string {
+	return []string{"file"}
+}
+
+func (er *EventRead) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "file":
+		return sl.NewBuiltin("read.file", er.event.stream.sl_read_file), nil
+	}
+	return nil, nil
+}
+
+// EventWrite is callable as e.write(values...) and exposes e.write.{file, asset}.
+type EventWrite struct {
+	event *Event
+}
+
+func (ew *EventWrite) String() string        { return "event.write" }
+func (ew *EventWrite) Type() string          { return "event.write" }
+func (ew *EventWrite) Freeze()               {}
+func (ew *EventWrite) Truth() sl.Bool        { return true }
+func (ew *EventWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: event.write") }
+func (ew *EventWrite) Name() string          { return "write" }
+
+// Callable: e.write(values...) -> bool: Write encoded segments to the event's stream
+func (ew *EventWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return ew.event.stream.sl_write(t, nil, args, kwargs)
+}
+
+func (ew *EventWrite) AttrNames() []string {
+	return []string{"asset", "file"}
+}
+
+func (ew *EventWrite) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "asset":
+		return sl.NewBuiltin("write.asset", ew.event.stream.sl_write_asset), nil
+	case "file":
+		return sl.NewBuiltin("write.file", ew.event.stream.sl_write_file), nil
+	}
+	return nil, nil
 }
 
 func (e *Event) Freeze() {}

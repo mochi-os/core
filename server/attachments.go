@@ -38,19 +38,18 @@ type Attachment struct {
 }
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-	"save":               sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-	"create":             sl.NewBuiltin("mochi.attachment.create", api_attachment_create),
-	"create_from_stream": sl.NewBuiltin("mochi.attachment.create_from_stream", api_attachment_create_from_stream),
-	"insert":             sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
-	"update":             sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
-	"move":               sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
-	"delete":             sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
-	"clear":              sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
-	"list":               sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
-	"get":                sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-	"exists":             sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
-	"data":               sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
-	"path":               sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"save":   sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
+	"create": &attachmentCreateModule{},
+	"insert": sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
+	"update": sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
+	"move":   sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
+	"delete": sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
+	"clear":  sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
+	"list":   sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
+	"get":    sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
+	"exists": sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
+	"data":   sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
+	"path":   sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
 	"thumbnail": sls.FromStringDict(sl.String("mochi.attachment.thumbnail"), sl.StringDict{
 		"path": sl.NewBuiltin("mochi.attachment.thumbnail.path", api_attachment_thumbnail_path),
 	}),
@@ -58,6 +57,33 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"sync":  sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch": sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
+
+// attachmentCreateModule is a callable module that also has a .stream method.
+// Usage: mochi.attachment.create(object, name, data, ...) or mochi.attachment.create.stream(object, name, stream, ...)
+type attachmentCreateModule struct{}
+
+func (m *attachmentCreateModule) String() string { return "mochi.attachment.create" }
+func (m *attachmentCreateModule) Type() string   { return "module" }
+func (m *attachmentCreateModule) Freeze()        {}
+func (m *attachmentCreateModule) Truth() sl.Bool { return sl.True }
+func (m *attachmentCreateModule) Hash() (uint32, error) {
+	return 0, fmt.Errorf("unhashable type: module")
+}
+
+func (m *attachmentCreateModule) AttrNames() []string { return []string{"stream"} }
+
+func (m *attachmentCreateModule) Attr(name string) (sl.Value, error) {
+	if name == "stream" {
+		return sl.NewBuiltin("mochi.attachment.create.stream", api_attachment_create_stream), nil
+	}
+	return nil, nil
+}
+
+func (m *attachmentCreateModule) Name() string { return "mochi.attachment.create" }
+
+func (m *attachmentCreateModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_attachment_create(thread, nil, args, kwargs)
+}
 
 // Create attachments table in the system database (app.db)
 func (db *DB) attachments_setup() {
@@ -510,9 +536,9 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.create_from_stream(object, name, stream, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment by streaming directly to storage
+// mochi.attachment.create.stream(object, name, stream, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment by streaming directly to storage
 // This avoids the need for a temp file by streaming directly to the final attachment location.
-func api_attachment_create_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 8 {
 		return sl_error(fn, "syntax: <object: string>, <name: string>, <stream: Stream>, [content_type: string], [caption: string], [description: string], [notify: array], [id: string]")
 	}

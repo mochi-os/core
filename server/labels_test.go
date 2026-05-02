@@ -53,7 +53,7 @@ func TestLanguageFallbacks(t *testing.T) {
 		{"en-ca", []string{"en-ca", "en"}},
 		{"en-nz", []string{"en-nz", "en"}},
 
-		// English variant routing table: en-PH goes through en-US
+		// English variant routing table: en-PH goes through en-us
 		{"en-ph", []string{"en-ph", "en-us", "en"}},
 
 		// Generic parent stripping

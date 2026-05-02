@@ -35,11 +35,12 @@ var (
 	databases_lock sync.Mutex
 
 	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
-		"execute": sl.NewBuiltin("mochi.db.execute", api_db_query),
-		"exists":  sl.NewBuiltin("mochi.db.exists", api_db_query),
-		"row":     sl.NewBuiltin("mochi.db.row", api_db_query),
-		"rows":    sl.NewBuiltin("mochi.db.rows", api_db_query),
-		"table":   sl.NewBuiltin("mochi.db.table", api_db_table),
+		"execute":     sl.NewBuiltin("mochi.db.execute", api_db_query),
+		"exists":      sl.NewBuiltin("mochi.db.exists", api_db_query),
+		"row":         sl.NewBuiltin("mochi.db.row", api_db_query),
+		"rows":        sl.NewBuiltin("mochi.db.rows", api_db_query),
+		"table":       sl.NewBuiltin("mochi.db.table", api_db_table),
+		"transaction": sl.NewBuiltin("mochi.db.transaction", api_db_transaction),
 	})
 )
 
@@ -729,6 +730,53 @@ func (db *DB) scans(out any, query string, values ...any) error {
 	return db.handle.Select(out, query, values...)
 }
 
+// db_for_thread resolves the correct per-user database for the current Starlark
+// thread, applying the same authentication-vs-routing rules used by
+// mochi.db.execute and mochi.db.transaction. Returns the DB, or an error
+// describing why the lookup failed.
+func db_for_thread(t *sl.Thread) (*DB, error) {
+	owner, _ := t.Local("owner").(*User)
+	user, _ := t.Local("user").(*User)
+
+	var db_user *User
+	var domain_routing bool
+
+	if action := t.Local("action"); action != nil {
+		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
+			domain_routing = a.domain.route.context != ""
+		}
+	}
+
+	if user == nil {
+		if owner != nil {
+			db_user = owner
+		} else {
+			return nil, fmt.Errorf("no user context available")
+		}
+	} else if owner != nil && owner.ID != user.ID {
+		db_user = owner
+	} else if domain_routing {
+		if owner != nil {
+			db_user = owner
+		} else {
+			return nil, fmt.Errorf("no owner context for domain routing")
+		}
+	} else {
+		db_user = user
+	}
+
+	app, _ := t.Local("app").(*App)
+	if app == nil {
+		return nil, fmt.Errorf("unknown app")
+	}
+
+	db := db_app(db_user, app)
+	if db == nil {
+		return nil, fmt.Errorf("app has no database configured")
+	}
+	return db, nil
+}
+
 // mochi.db.execute/exists/query/row/rows(sql, params...) -> nil/bool/list/dict/list: Execute database query
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
@@ -759,55 +807,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 	as = flat
 
-	// Determine which user's database to use based on authentication and routing context.
-	// - Not logged in + entity: owner's database (viewing public content)
-	// - Not logged in + no entity: error (can't determine owner)
-	// - Logged in + entity owned by other user: owner's database (viewing/editing their content)
-	// - Logged in + domain routing: owner's database (accessing via custom domain)
-	// - Logged in + own content: user's database (user's own actions)
-	owner := t.Local("owner").(*User)
-	user := t.Local("user").(*User)
-
-	var db_user *User
-	var domain_routing bool
-
-	// Check if domain routing is active
-	if action := t.Local("action"); action != nil {
-		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
-			domain_routing = a.domain.route.context != ""
-		}
-	}
-
-	if user == nil {
-		// Not logged in
-		if owner != nil {
-			db_user = owner
-		} else {
-			return sl_error(fn, "no user context available")
-		}
-	} else if owner != nil && owner.ID != user.ID {
-		// Logged in but accessing another user's entity - use owner's database
-		db_user = owner
-	} else if domain_routing {
-		// Logged in with domain routing
-		if owner != nil {
-			db_user = owner
-		} else {
-			return sl_error(fn, "no owner context for domain routing")
-		}
-	} else {
-		// Logged in without domain routing - use authenticated user's database
-		db_user = user
-	}
-
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "unknown app")
-	}
-
-	db := db_app(db_user, app)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
+	db, err := db_for_thread(t)
+	if err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	switch fn.Name() {
@@ -844,6 +846,229 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	return sl_error(fn, "invalid database query %q", fn.Name())
+}
+
+// TransactionHandle is the Starlark value returned by mochi.db.transaction(). It
+// exposes execute/exists/row/rows that route through the underlying SQL
+// transaction, plus commit and rollback. Forgetting to call commit() is safe —
+// the cleanup hook in starlark.go rolls back any uncommitted handles when the
+// Starlark thread tears down (script return, error, or timeout).
+type TransactionHandle struct {
+	tx     *sqlx.Tx
+	closed bool
+}
+
+func (h *TransactionHandle) String() string { return "mochi.db.transaction" }
+func (h *TransactionHandle) Type() string   { return "transaction" }
+func (h *TransactionHandle) Freeze()        {}
+func (h *TransactionHandle) Truth() sl.Bool { return sl.True }
+func (h *TransactionHandle) Hash() (uint32, error) {
+	return 0, fmt.Errorf("unhashable type: transaction")
+}
+
+func (h *TransactionHandle) AttrNames() []string {
+	return []string{"commit", "execute", "exists", "rollback", "row", "rows"}
+}
+
+func (h *TransactionHandle) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "commit":
+		return sl.NewBuiltin("transaction.commit", h.sl_commit), nil
+	case "execute":
+		return sl.NewBuiltin("transaction.execute", h.sl_execute), nil
+	case "exists":
+		return sl.NewBuiltin("transaction.exists", h.sl_exists), nil
+	case "rollback":
+		return sl.NewBuiltin("transaction.rollback", h.sl_rollback), nil
+	case "row":
+		return sl.NewBuiltin("transaction.row", h.sl_row), nil
+	case "rows":
+		return sl.NewBuiltin("transaction.rows", h.sl_rows), nil
+	}
+	return nil, nil
+}
+
+// transaction_close rolls back any uncommitted transactions registered on the
+// thread. Called from the Starlark execution wrapper at script tear-down so
+// callers can't leak open transactions even if they forget to commit or the
+// script errors out.
+func transaction_close(t *sl.Thread) {
+	handles, _ := t.Local("transactions").([]*TransactionHandle)
+	for _, h := range handles {
+		if !h.closed {
+			h.tx.Rollback()
+			h.closed = true
+		}
+	}
+	t.SetLocal("transactions", nil)
+}
+
+// transaction_args validates the SQL argument shape shared by execute/exists/row/rows.
+func transaction_args(fn *sl.Builtin, args sl.Tuple) (string, []any, error) {
+	if len(args) < 1 {
+		return "", nil, fmt.Errorf("syntax: <SQL statement: string>, [parameters: variadic]")
+	}
+	query, ok := sl.AsString(args[0])
+	if !ok {
+		return "", nil, fmt.Errorf("invalid SQL statement %q", query)
+	}
+	trimmed := strings.TrimSpace(query)
+	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "PRAGMA") {
+		return "", nil, fmt.Errorf("PRAGMA statements are not allowed")
+	}
+	as := sl_decode(args[1:]).([]any)
+	flat := make([]any, 0, len(as))
+	for _, a := range as {
+		if list, ok := a.([]any); ok {
+			flat = append(flat, list...)
+		} else {
+			flat = append(flat, a)
+		}
+	}
+	return query, flat, nil
+}
+
+func (h *TransactionHandle) sl_execute(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	query, params, err := transaction_args(fn, args)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if _, err := h.tx.Exec(query, params...); err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	return sl.None, nil
+}
+
+func (h *TransactionHandle) sl_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	query, params, err := transaction_args(fn, args)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	r, err := h.tx.Query(query, params...)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	defer r.Close()
+	return sl.Bool(r.Next()), nil
+}
+
+func (h *TransactionHandle) sl_row(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	query, params, err := transaction_args(fn, args)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	r, err := h.tx.Queryx(query, params...)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	defer r.Close()
+	if !r.Next() {
+		return sl.None, nil
+	}
+	row := make(map[string]any)
+	if err := r.MapScan(row); err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	for k, v := range row {
+		if b, ok := v.([]byte); ok {
+			row[k] = string(b)
+		}
+	}
+	return sl_encode(row), nil
+}
+
+func (h *TransactionHandle) sl_rows(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	query, params, err := transaction_args(fn, args)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	r, err := h.tx.Queryx(query, params...)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	defer r.Close()
+	var results []map[string]any
+	for r.Next() {
+		row := make(map[string]any)
+		if err := r.MapScan(row); err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		for k, v := range row {
+			if b, ok := v.([]byte); ok {
+				row[k] = string(b)
+			}
+		}
+		results = append(results, row)
+	}
+	return sl_encode(results), nil
+}
+
+func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	if err := h.tx.Commit(); err != nil {
+		h.closed = true
+		return sl_error(fn, "commit failed: %v", err)
+	}
+	h.closed = true
+	return sl.None, nil
+}
+
+func (h *TransactionHandle) sl_rollback(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if h.closed {
+		return sl_error(fn, "transaction is closed")
+	}
+	h.tx.Rollback()
+	h.closed = true
+	return sl.None, nil
+}
+
+// mochi.db.transaction() -> transaction: Start a SQL transaction on the calling
+// app's per-user database. Returns a handle whose execute/exists/row/rows methods
+// run inside the transaction. Call .commit() to persist or .rollback() to discard.
+// If the Starlark thread tears down (return, error, timeout) without commit, the
+// transaction is rolled back automatically — forgetting commit is safe.
+// Nested transactions error: SQLite doesn't support real nested transactions,
+// and silent savepoint behaviour would surprise callers.
+func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 0 {
+		return sl_error(fn, "syntax: mochi.db.transaction()")
+	}
+
+	// Block nested transactions
+	existing, _ := t.Local("transactions").([]*TransactionHandle)
+	for _, h := range existing {
+		if !h.closed {
+			return sl_error(fn, "a transaction is already in progress")
+		}
+	}
+
+	db, err := db_for_thread(t)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	tx, err := db.handle.Beginx()
+	if err != nil {
+		return sl_error(fn, "begin failed: %v", err)
+	}
+
+	h := &TransactionHandle{tx: tx}
+	t.SetLocal("transactions", append(existing, h))
+	return h, nil
 }
 
 // mochi.db.table(name) -> list: Return column info for a table via PRAGMA table_info

@@ -405,6 +405,8 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 			}
 			s.thread.SetLocal("streams", nil)
 		}
+		// Roll back any uncommitted database transactions
+		transaction_close(s.thread)
 		return result, call_err
 	case <-time.After(starlark_default_timeout):
 		// If the action is serving a file, Starlark code has finished and
@@ -430,6 +432,8 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 			}
 			s.thread.SetLocal("streams", nil)
 		}
+		// Roll back any uncommitted database transactions
+		transaction_close(s.thread)
 		return nil, call_err
 	}
 }

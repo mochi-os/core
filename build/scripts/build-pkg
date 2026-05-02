@@ -49,11 +49,13 @@ else
 	mkbom -i "$BUILD_DIR/bom.list" "$COMP_DIR/Bom"
 fi
 
-# Build Payload (gzipped cpio)
-(cd "$ROOT_DIR" && find . | cpio -o --format newc 2>/dev/null | gzip -c) > "$COMP_DIR/Payload"
-
-# Build Scripts archive (gzipped cpio of scripts directory)
-(cd "$SCRIPTS_DIR" && find . | cpio -o --format newc 2>/dev/null | gzip -c) > "$COMP_DIR/Scripts"
+# Build Payload and Scripts as gzipped cpio.
+# Use odc (POSIX) format, not newc — macOS BOMCopier (the cpio reader inside
+# installd) rejects GNU cpio's newc output with "cpio read error: bad file format".
+# odc is the format bomutils' canonical example uses and what BOMCopier extracts
+# reliably across macOS versions.
+(cd "$ROOT_DIR" && find . | cpio -o --format odc 2>/dev/null | gzip -c) > "$COMP_DIR/Payload"
+(cd "$SCRIPTS_DIR" && find . | cpio -o --format odc 2>/dev/null | gzip -c) > "$COMP_DIR/Scripts"
 
 # Calculate payload size in KB
 PAYLOAD_SIZE=$(du -sk "$ROOT_DIR" | cut -f1)

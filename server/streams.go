@@ -503,21 +503,15 @@ func (s *Stream) write_raw(data []byte) error {
 
 // Starlark methods
 func (s *Stream) AttrNames() []string {
-	return []string{"read", "read_to_file", "write", "write_from_file", "write_from_app", "close"}
+	return []string{"read", "write", "close"}
 }
 
 func (s *Stream) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "read":
-		return sl.NewBuiltin("read", s.sl_read), nil
-	case "read_to_file":
-		return sl.NewBuiltin("read_to_file", s.sl_read_to_file), nil
+		return &StreamRead{stream: s}, nil
 	case "write":
 		return &StreamWrite{stream: s}, nil
-	case "write_from_file":
-		return sl.NewBuiltin("write_from_file", s.sl_write_from_file), nil
-	case "write_from_app":
-		return sl.NewBuiltin("write_from_app", s.sl_write_from_app), nil
 	case "close":
 		return sl.NewBuiltin("close", s.sl_close), nil
 	default:
@@ -525,8 +519,36 @@ func (s *Stream) Attr(name string) (sl.Value, error) {
 	}
 }
 
-// StreamWrite is callable as s.write(values...) and exposes s.write.raw(data).
-// Same dual-role pattern as ActionInput.
+// StreamRead is callable as s.read() and exposes s.read.file(path).
+type StreamRead struct {
+	stream *Stream
+}
+
+func (sr *StreamRead) String() string        { return "stream.read" }
+func (sr *StreamRead) Type() string          { return "stream.read" }
+func (sr *StreamRead) Freeze()               {}
+func (sr *StreamRead) Truth() sl.Bool        { return true }
+func (sr *StreamRead) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: stream.read") }
+func (sr *StreamRead) Name() string          { return "read" }
+
+// Callable: s.read() -> dict | None: Read the next decoded segment
+func (sr *StreamRead) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sr.stream.sl_read(t, nil, args, kwargs)
+}
+
+func (sr *StreamRead) AttrNames() []string {
+	return []string{"file"}
+}
+
+func (sr *StreamRead) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "file":
+		return sl.NewBuiltin("read.file", sr.stream.sl_read_file), nil
+	}
+	return nil, nil
+}
+
+// StreamWrite is callable as s.write(values...) and exposes s.write.{raw, asset}.
 type StreamWrite struct {
 	stream *Stream
 }
@@ -544,11 +566,13 @@ func (sw *StreamWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tup
 }
 
 func (sw *StreamWrite) AttrNames() []string {
-	return []string{"raw"}
+	return []string{"asset", "raw"}
 }
 
 func (sw *StreamWrite) Attr(name string) (sl.Value, error) {
 	switch name {
+	case "asset":
+		return sl.NewBuiltin("write.asset", sw.stream.sl_write_asset), nil
 	case "raw":
 		return sl.NewBuiltin("write.raw", sw.stream.sl_write_raw), nil
 	}
@@ -583,8 +607,9 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(v), nil
 }
 
-// s.read_to_file(path) -> int: Read raw bytes from stream and write to file, returns bytes read
-func (s *Stream) sl_read_to_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// s.read.file(path) -> int: Read raw bytes from the stream and write them to a
+// per-user data file, returns bytes read. Writes to the same filesystem as mochi.file.*.
+func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// debug("Stream %d reading rest of stream to file", s.id)
 
 	if len(args) != 1 {
@@ -700,9 +725,9 @@ func (s *Stream) sl_write_raw(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl.None, nil
 }
 
-// s.write_from_file(path) -> int: Send file contents as raw bytes, returns bytes written
-func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// debug("Stream %d writing from file", s.id)
+// sl_write_file is the Go-level implementation behind both s.* and e.* file
+// writers. Sends per-user data file contents as raw bytes; returns bytes written.
+func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	defer s.close_write()
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -742,12 +767,12 @@ func (s *Stream) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "unable to send file")
 	}
 
-	// debug("Stream %d wrote %d bytes from file", s.id, n)
 	return sl.MakeInt64(n), nil
 }
 
-// s.write_from_app(path) -> int: Send app file contents as raw bytes, returns bytes written
-func (s *Stream) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// s.write.asset(path) -> int: Send the contents of a bundled app asset as raw
+// bytes, returns bytes written. Reads from the same filesystem as mochi.app.asset.*.
+func (s *Stream) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	defer s.close_write()
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <path: string>")

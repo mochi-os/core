@@ -307,7 +307,7 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 	case "read":
 		return sl.NewBuiltin("read", e.stream.sl_read), nil
 	case "read_to_file":
-		return sl.NewBuiltin("read_to_file", e.stream.sl_read_to_file), nil
+		return sl.NewBuiltin("read_to_file", e.stream.sl_read_file), nil
 	case "stream":
 		return e.stream, nil
 	case "user":
@@ -315,9 +315,9 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 	case "write":
 		return sl.NewBuiltin("write", e.stream.sl_write), nil
 	case "write_from_file":
-		return sl.NewBuiltin("write_from_file", e.stream.sl_write_from_file), nil
+		return sl.NewBuiltin("write_from_file", e.stream.sl_write_file), nil
 	case "write_from_app":
-		return sl.NewBuiltin("write_from_app", e.stream.sl_write_from_app), nil
+		return sl.NewBuiltin("write_from_app", e.stream.sl_write_asset), nil
 	default:
 		return nil, nil
 	}

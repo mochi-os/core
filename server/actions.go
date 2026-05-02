@@ -129,6 +129,35 @@ type ActionAccess struct {
 	action *Action
 }
 
+// ActionError is callable as a.error(status, message) and exposes a.error.label(status, key, ...).
+type ActionError struct {
+	action *Action
+}
+
+func (ae *ActionError) String() string        { return "action.error" }
+func (ae *ActionError) Type() string          { return "action.error" }
+func (ae *ActionError) Freeze()               {}
+func (ae *ActionError) Truth() sl.Bool        { return true }
+func (ae *ActionError) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: action.error") }
+func (ae *ActionError) Name() string          { return "error" }
+
+// Callable: a.error(status, message, log=True) -> None
+func (ae *ActionError) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return ae.action.sl_error(t, nil, args, kwargs)
+}
+
+func (ae *ActionError) AttrNames() []string {
+	return []string{"label"}
+}
+
+func (ae *ActionError) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "label":
+		return sl.NewBuiltin("error.label", ae.action.sl_error_label), nil
+	}
+	return nil, nil
+}
+
 var (
 	actions_lock       = &sync.Mutex{}
 	action_next  int64 = 1
@@ -208,7 +237,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "error", "error_label", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write"}
+	return []string{"access", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -224,9 +253,7 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 	case "dump":
 		return sl.NewBuiltin("dump", a.sl_dump), nil
 	case "error":
-		return sl.NewBuiltin("error", a.sl_error), nil
-	case "error_label":
-		return sl.NewBuiltin("error_label", a.sl_error_label), nil
+		return &ActionError{action: a}, nil
 	case "file":
 		return sl.NewBuiltin("file", a.sl_file), nil
 	case "header":
@@ -440,7 +467,7 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// a.error_label(status, key, **kwargs) -> None: Resolve a label key from the
+// a.error.label(status, key, **kwargs) -> None: Resolve a label key from the
 // calling app's labels/<lang>.conf and return it as the HTTP error message.
 // kwargs become ICU MessageFormat substitutions. Language is the caller's
 // preference (logged in) or Accept-Language (anonymous), via the same

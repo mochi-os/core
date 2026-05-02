@@ -6,11 +6,13 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,6 +65,10 @@ func init() {
 			"schedule": api_schedule,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
+				"bytes":        sl.NewBuiltin("mochi.random.bytes", api_random_bytes),
+				"choice":       sl.NewBuiltin("mochi.random.choice", api_random_choice),
+				"integer":      sl.NewBuiltin("mochi.random.integer", api_random_integer),
+				"unambiguous":  sl.NewBuiltin("mochi.random.unambiguous", api_random_unambiguous),
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
 				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
@@ -133,7 +139,9 @@ func api_crypto_equal(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.False, nil
 }
 
-// mochi.random.alphanumeric(length) -> string: Generate a random alphanumeric string
+// mochi.random.alphanumeric(length) -> string: Generate a cryptographically
+// random string of `length` characters drawn from [0-9A-Za-z]. Length must be
+// in 1..1000.
 func api_random_alphanumeric(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <length: integer>")
@@ -145,6 +153,97 @@ func api_random_alphanumeric(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	return sl_encode(random_alphanumeric(length)), nil
+}
+
+// mochi.random.bytes(length) -> bytes: Generate `length` cryptographically
+// random bytes. Suitable for nonces, signing keys, salts. Length must be in
+// 1..1024.
+func api_random_bytes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <length: integer>")
+	}
+
+	length, err := sl.AsInt32(args[0])
+	if err != nil || length < 1 || length > 1024 {
+		return sl_error(fn, "invalid length")
+	}
+
+	out := make([]byte, length)
+	if _, err := rand.Read(out); err != nil {
+		return sl_error(fn, "random read failed: %v", err)
+	}
+	return sl.Bytes(out), nil
+}
+
+// mochi.random.choice(list) -> any: Pick a uniformly random element from a
+// non-empty list or tuple.
+func api_random_choice(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <list: list|tuple>")
+	}
+
+	indexable, ok := args[0].(sl.Indexable)
+	if !ok {
+		return sl_error(fn, "argument must be a list or tuple")
+	}
+	n := indexable.Len()
+	if n < 1 {
+		return sl_error(fn, "list is empty")
+	}
+
+	idx, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return sl_error(fn, "random read failed: %v", err)
+	}
+	return indexable.Index(int(idx.Int64())), nil
+}
+
+// mochi.random.integer(min, max) -> integer: Random integer in [min, max]
+// inclusive. Errors if min > max.
+func api_random_integer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <min: integer>, <max: integer>")
+	}
+
+	mn, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid min")
+	}
+	mx, err := sl.AsInt32(args[1])
+	if err != nil {
+		return sl_error(fn, "invalid max")
+	}
+	if mn > mx {
+		return sl_error(fn, "min (%d) must be <= max (%d)", mn, mx)
+	}
+	if mn == mx {
+		return sl.MakeInt(mn), nil
+	}
+
+	span := big.NewInt(int64(mx - mn + 1))
+	offset, err := rand.Int(rand.Reader, span)
+	if err != nil {
+		return sl_error(fn, "random read failed: %v", err)
+	}
+	return sl.MakeInt64(int64(mn) + offset.Int64()), nil
+}
+
+// mochi.random.unambiguous(length) -> string: Generate a cryptographically
+// random string of `length` characters drawn from a 54-character alphabet that
+// excludes confusable chars (0/1/O/I/l/i). For one-time codes, recovery codes,
+// short shareable IDs that humans need to read or transcribe. Length must be
+// in 1..1000.
+func api_random_unambiguous(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <length: integer>")
+	}
+
+	length, err := sl.AsInt32(args[0])
+	if err != nil || length < 1 || length > 1000 {
+		return sl_error(fn, "invalid length")
+	}
+
+	return sl_encode(random_unambiguous(length)), nil
 }
 
 // mochi.service.call(service, function, params...) -> any: Call a function in another app

@@ -26,9 +26,12 @@ var (
 	web_brotli_level int
 	email_host     string
 	email_port     int
+
+	server_started_at time.Time
 )
 
 func main() {
+	server_started_at = time.Now()
 	info("Mochi %s starting", build_version)
 
 	// Platform-aware default paths

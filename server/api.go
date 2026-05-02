@@ -74,10 +74,14 @@ func init() {
 				"unambiguous":  sl.NewBuiltin("mochi.random.unambiguous", api_random_unambiguous),
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
+				"id":      sl.NewBuiltin("mochi.server.id", api_server_id),
+				"started": sl.NewBuiltin("mochi.server.started", api_server_started),
+				"uptime":  sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
 				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
 			}),
 			"service": sls.FromStringDict(sl.String("mochi.service"), sl.StringDict{
-				"call": sl.NewBuiltin("mochi.service.call", api_service_call),
+				"call":   sl.NewBuiltin("mochi.service.call", api_service_call),
+				"exists": sl.NewBuiltin("mochi.service.exists", api_service_exists),
 			}),
 			"setting": api_setting,
 			"stream":  &streamModule{},
@@ -271,6 +275,19 @@ func api_random_unambiguous(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	return sl_encode(random_unambiguous(length)), nil
 }
 
+// mochi.service.exists(service) -> bool: Report whether any installed app handles the named service for the current user
+func api_service_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <service: string>")
+	}
+	service, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid service")
+	}
+	user, _ := t.Local("user").(*User)
+	return sl.Bool(app_for_service(user, service) != nil), nil
+}
+
 // mochi.service.call(service, function, params...) -> any: Call a function in another app
 func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
@@ -367,6 +384,21 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	return result, err
+}
+
+// mochi.server.id() -> string: Get the local libp2p peer ID for this server
+func api_server_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.String(p2p_id), nil
+}
+
+// mochi.server.started() -> int: Unix timestamp (seconds) when this server process started
+func api_server_started(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.MakeInt64(server_started_at.Unix()), nil
+}
+
+// mochi.server.uptime() -> int: Seconds since this server process started
+func api_server_uptime(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.MakeInt64(int64(gotime.Since(server_started_at).Seconds())), nil
 }
 
 // mochi.server.version() -> string: Get the server version

@@ -431,16 +431,16 @@ var (
 		"set":  sl.NewBuiltin("mochi.app.track.set", api_app_track_set),
 	})
 
-	api_app_file = sls.FromStringDict(sl.String("mochi.app.file"), sl.StringDict{
-		"exists": sl.NewBuiltin("mochi.app.file.exists", api_app_file_exists),
-		"list":   sl.NewBuiltin("mochi.app.file.list", api_app_file_list),
-		"read":   sl.NewBuiltin("mochi.app.file.read", api_app_file_read),
+	api_app_asset = sls.FromStringDict(sl.String("mochi.app.asset"), sl.StringDict{
+		"exists": sl.NewBuiltin("mochi.app.asset.exists", api_app_asset_exists),
+		"list":   sl.NewBuiltin("mochi.app.asset.list", api_app_asset_list),
+		"read":   sl.NewBuiltin("mochi.app.asset.read", api_app_asset_read),
 	})
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
+		"asset":    api_app_asset,
 		"class":    api_app_class,
 		"cleanup":  sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
-		"file":     api_app_file,
 		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
 		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
 		"label":    sl.NewBuiltin("mochi.app.label", api_app_label),
@@ -2946,8 +2946,8 @@ func version_compare(a, b string) int {
 	return 0
 }
 
-// mochi.app.file.exists(path) -> bool: Check if a file exists in the app's directory
-func api_app_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.asset.exists(path) -> bool: Check if a file exists in the app's directory
+func api_app_asset_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <path: string>")
 	}
@@ -2982,8 +2982,8 @@ func api_app_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.False, nil
 }
 
-// mochi.app.file.list(path) -> list: List files in an app directory
-func api_app_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.asset.list(path) -> list: List files in an app directory
+func api_app_asset_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <path: string>")
 	}
@@ -3023,8 +3023,8 @@ func api_app_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(entries), nil
 }
 
-// mochi.app.file.read(path) -> bytes: Read a file from the app's directory
-func api_app_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.asset.read(path) -> bytes: Read a file from the app's directory
+func api_app_asset_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <path: string>")
 	}

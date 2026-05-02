@@ -25,11 +25,12 @@ type ScheduledEvent struct {
 }
 
 var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict{
-	"at":    sl.NewBuiltin("mochi.schedule.at", api_schedule_at),
-	"after": sl.NewBuiltin("mochi.schedule.after", api_schedule_after),
-	"every": sl.NewBuiltin("mochi.schedule.every", api_schedule_every),
-	"get":   sl.NewBuiltin("mochi.schedule.get", api_schedule_get),
-	"list":  sl.NewBuiltin("mochi.schedule.list", api_schedule_list),
+	"after":  sl.NewBuiltin("mochi.schedule.after", api_schedule_after),
+	"at":     sl.NewBuiltin("mochi.schedule.at", api_schedule_at),
+	"cancel": sl.NewBuiltin("mochi.schedule.cancel", api_schedule_cancel),
+	"every":  sl.NewBuiltin("mochi.schedule.every", api_schedule_every),
+	"get":    sl.NewBuiltin("mochi.schedule.get", api_schedule_get),
+	"list":   sl.NewBuiltin("mochi.schedule.list", api_schedule_list),
 })
 
 // schedule_wake is used to wake up the scheduler when a new event is created
@@ -661,6 +662,41 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	return newSlScheduledEvent(se), nil
+}
+
+// mochi.schedule.cancel(id) -> bool: Cancel a previously scheduled event.
+// Returns True if the event was found and cancelled, False if not found or
+// if it doesn't belong to the calling app and user (silent — same scoping
+// pattern as mochi.schedule.get).
+func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: int>")
+	}
+
+	id, err := sl.AsInt32(args[0])
+	if err != nil {
+		return sl_error(fn, "invalid id")
+	}
+
+	user := t.Local("user").(*User)
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app context")
+	}
+
+	se := schedule_get(int64(id))
+	if se == nil {
+		return sl.False, nil
+	}
+	if se.App != app.id {
+		return sl.False, nil
+	}
+	if user != nil && se.User != int64(user.ID) {
+		return sl.False, nil
+	}
+
+	schedule_delete(int64(id))
+	return sl.True, nil
 }
 
 // mochi.schedule.list() -> list: List scheduled events for current app and user

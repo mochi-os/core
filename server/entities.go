@@ -348,14 +348,15 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(e.ID), nil
 }
 
-// mochi.entity.delete(id) -> bool: Delete an entity owned by the current user
+// mochi.entity.delete(id) -> bool: Delete an entity owned by the current user.
+// Accepts either an entity ID or a 9-character fingerprint.
 func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
 		return sl_error(fn, "invalid id %q", id)
 	}
 
@@ -364,10 +365,11 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
-	// Verify entity exists and is owned by the current user
+	// Verify entity exists and is owned by the current user. Accepts either
+	// an entity ID or a 9-character fingerprint.
 	db := db_open("db/users.db")
 	var e Entity
-	if !db.scan(&e, "select * from entities where id=?", id) {
+	if !db.scan(&e, "select * from entities where id=? or fingerprint=?", id, id) {
 		return sl_error(fn, "entity not found")
 	}
 	if e.User != user.ID {
@@ -458,22 +460,22 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	// Check local entities first
+	// Check local entities first (by id or fingerprint)
 	db := db_open("db/users.db")
-	row, err := db.row("select name from entities where id=?", id)
+	row, err := db.row("select name from entities where id=? or fingerprint=?", id, id)
 	if err == nil && row != nil {
 		if name, ok := row["name"].(string); ok {
 			return sl.String(name), nil
 		}
 	}
 
-	// Check directory
+	// Check directory (by id or fingerprint)
 	db = db_open("db/directory.db")
-	row, err = db.row("select name from directory where id=?", id)
+	row, err = db.row("select name from directory where id=? or fingerprint=?", id, id)
 	if err == nil && row != nil {
 		if name, ok := row["name"].(string); ok {
 			return sl.String(name), nil
@@ -484,7 +486,7 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 }
 
 // mochi.entity.info(id) -> dict or None: Get info for any local entity (no user restriction)
-// Accepts either entity ID or fingerprint.
+// Accepts either an entity ID or a 9-character fingerprint.
 // Returns: id, fingerprint, parent, class, name, privacy, creator (owner's identity ID)
 func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -492,7 +494,7 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
 		return sl_error(fn, "invalid id %q", id)
 	}
 
@@ -548,7 +550,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	id, ok := sl.AsString(args[0])
-	if !ok || !valid(id, "entity") {
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
 		return sl_error(fn, "invalid id %q", id)
 	}
 
@@ -558,12 +560,15 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
-	// Verify entity exists and is owned by the current user
+	// Verify entity exists and is owned by the current user. Accepts either an
+	// entity ID or a 9-character fingerprint as input; normalise to the
+	// canonical entity ID so subsequent SQL works against the right key.
 	db := db_open("db/users.db")
 	var e Entity
-	if !db.scan(&e, "select * from entities where id=?", id) {
+	if !db.scan(&e, "select * from entities where id=? or fingerprint=?", id, id) {
 		return sl_error(fn, "entity not found")
 	}
+	id = e.ID
 	if e.User != user.ID {
 		return sl_error(fn, "not allowed to update this entity")
 	}

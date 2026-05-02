@@ -84,6 +84,7 @@ func init() {
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
+				"parse": sl.NewBuiltin("mochi.time.parse", api_time_parse),
 			}),
 			"uid": sl.NewBuiltin("mochi.uid", api_uid),
 			"url": sls.FromStringDict(sl.String("mochi.url"), sl.StringDict{
@@ -586,6 +587,83 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // mochi.time.now() -> int: Get the current Unix timestamp
 func api_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl_encode(now()), nil
+}
+
+// mochi.time.parse(s, format?) -> int | None: Parse a string into a Unix
+// timestamp. The inverse of mochi.time.local. Default format is "rfc3339" —
+// the format used by virtually every JSON API. Returns None on any parse
+// error so callers can substitute a fallback. Same five named formats as
+// local: datetime, date, time, rfc822, rfc3339. For datetime/date/time
+// (which carry no timezone), the user's timezone preference is assumed —
+// matching local's direction so parse(local(ts)) round-trips.
+func api_time_parse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return sl_error(fn, "syntax: <s: string>, [format: string]")
+	}
+
+	s, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "s must be a string")
+	}
+	if s == "" {
+		return sl.None, nil
+	}
+
+	format := gotime.RFC3339
+	carries_tz := true
+	if len(args) == 2 {
+		f, ok := sl.AsString(args[1])
+		if !ok {
+			return sl_error(fn, "format must be a string")
+		}
+		switch f {
+		case "datetime":
+			format = gotime.DateTime
+			carries_tz = false
+		case "date":
+			format = gotime.DateOnly
+			carries_tz = false
+		case "time":
+			format = gotime.TimeOnly
+			carries_tz = false
+		case "rfc822":
+			format = gotime.RFC1123Z
+			carries_tz = true
+		case "rfc3339":
+			format = gotime.RFC3339
+			carries_tz = true
+		default:
+			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339)", f)
+		}
+	}
+
+	if carries_tz {
+		parsed, err := gotime.Parse(format, s)
+		if err != nil {
+			return sl.None, nil
+		}
+		return sl.MakeInt64(parsed.Unix()), nil
+	}
+
+	// Naive format — assume the user's timezone (mirroring local's direction)
+	user, _ := t.Local("user").(*User)
+	timezone := "UTC"
+	if user != nil {
+		timezone = user_preference_get(user, "timezone", "UTC")
+	}
+	if timezone == "auto" {
+		timezone = "UTC"
+	}
+	loc, err := gotime.LoadLocation(timezone)
+	if err != nil {
+		loc = gotime.UTC
+	}
+
+	parsed, err := gotime.ParseInLocation(format, s, loc)
+	if err != nil {
+		return sl.None, nil
+	}
+	return sl.MakeInt64(parsed.Unix()), nil
 }
 
 // mochi.uid() -> string: Generate a unique ID

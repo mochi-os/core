@@ -208,7 +208,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "error", "error_label", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write_from_file", "write_from_app", "write_from_stream"}
+	return []string{"access", "body", "cookie", "domain", "dump", "error", "error_label", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -262,15 +262,35 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 			return sl.None, nil
 		}
 		return a.user, nil
-	case "write_from_file":
-		return sl.NewBuiltin("write_from_file", a.sl_write_from_file), nil
-	case "write_from_app":
-		return sl.NewBuiltin("write_from_app", a.sl_write_from_app), nil
-	case "write_from_stream":
-		return sl.NewBuiltin("write_from_stream", a.sl_write_from_stream), nil
+	case "write":
+		return &ActionWrite{action: a}, nil
 	default:
 		return nil, nil
 	}
+}
+
+// ActionWrite is the a.write namespace exposing source-typed response writers.
+// Usage: a.write.file(path), a.write.asset(path), a.write.stream(stream).
+type ActionWrite struct {
+	action *Action
+}
+
+func (w *ActionWrite) String() string        { return "Action.write" }
+func (w *ActionWrite) Type() string          { return "module" }
+func (w *ActionWrite) Freeze()               {}
+func (w *ActionWrite) Truth() sl.Bool        { return sl.True }
+func (w *ActionWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (w *ActionWrite) AttrNames() []string   { return []string{"asset", "file", "stream"} }
+func (w *ActionWrite) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "asset":
+		return sl.NewBuiltin("write.asset", w.action.sl_write_asset), nil
+	case "file":
+		return sl.NewBuiltin("write.file", w.action.sl_write_file), nil
+	case "stream":
+		return sl.NewBuiltin("write.stream", w.action.sl_write_stream), nil
+	}
+	return nil, nil
 }
 
 func (a *Action) Freeze() {}
@@ -695,8 +715,8 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.None, nil
 }
 
-// a.write_from_file(path) -> None: Serve file from app's data directory
-func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// a.write.file(path) -> None: Serve file from app's data directory
+func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
 		return nil, err
@@ -721,8 +741,8 @@ func (a *Action) sl_write_from_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	return sl.None, nil
 }
 
-// a.write_from_app(path) -> None: Serve file from app's directory
-func (a *Action) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// a.write.asset(path) -> None: Serve a bundled asset from the installed app directory
+func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
 		return nil, err
@@ -767,8 +787,8 @@ func (a *Action) sl_write_from_app(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	return sl.None, nil
 }
 
-// a.write_from_stream(stream) -> int: Pipe P2P stream content directly to HTTP response, returns bytes written
-func (a *Action) sl_write_from_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// a.write.stream(stream) -> int: Pipe P2P stream content directly to HTTP response, returns bytes written
+func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: write_from_stream(stream)")
 	}

@@ -388,10 +388,12 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.True, nil
 }
 
-// mochi.entity.fingerprint(id, hyphens?) -> string: Get the fingerprint of an entity
+// mochi.entity.fingerprint(id) -> string: Get the 9-character fingerprint of an
+// entity. Returns the bare form. For display, slice and join with hyphens at the
+// call site: fp[:3] + "-" + fp[3:6] + "-" + fp[6:].
 func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <id: string>, [include hyphens: boolean]")
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <id: string>")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -399,11 +401,7 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	if len(args) > 1 && bool(args[1].Truth()) {
-		return sl_encode(fingerprint_hyphens(fingerprint(id))), nil
-	} else {
-		return sl_encode(fingerprint(id)), nil
-	}
+	return sl_encode(fingerprint(id)), nil
 }
 
 // mochi.entity.get(id) -> list: Get an entity owned by the effective user

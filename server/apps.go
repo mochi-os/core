@@ -422,6 +422,7 @@ var (
 	api_app_version = sls.FromStringDict(sl.String("mochi.app.version"), sl.StringDict{
 		"download": sl.NewBuiltin("mochi.app.version.download", api_app_version_download),
 		"get":      sl.NewBuiltin("mochi.app.version.get", api_app_version_get),
+		"list":     sl.NewBuiltin("mochi.app.version.list", api_app_version_list),
 		"set":      sl.NewBuiltin("mochi.app.version.set", api_app_version_set),
 	})
 
@@ -447,10 +448,9 @@ var (
 		"package":  api_app_package,
 		"path":     api_app_path,
 		"service":  api_app_service,
-		"themes":   sl.NewBuiltin("mochi.app.themes", api_app_themes),
-		"track":    api_app_track,
-		"version":  api_app_version,
-		"versions": sl.NewBuiltin("mochi.app.versions", api_app_versions),
+		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
+		"track":   api_app_track,
+		"version": api_app_version,
 	})
 )
 
@@ -2767,8 +2767,8 @@ func api_app_track_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(a.tracks()), nil
 }
 
-// mochi.app.versions(app_id) -> list: List all installed versions of an app
-func api_app_versions(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// mochi.app.version.list(app_id) -> list: List all installed versions of an app
+func api_app_version_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}

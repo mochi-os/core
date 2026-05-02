@@ -398,7 +398,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["expires"] = expires
 
 		// Send verification email
-		account_send_verification_email(address, code)
+		account_send_verification_email(address, code, user_preference_get(user, "language", "en"))
 
 	case "browser":
 		// Browser push - extract endpoint for uniqueness check
@@ -701,12 +701,13 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		existing_code, _ := data["code"].(string)
 		expires, _ := data["expires"].(float64)
 
+		language := user_preference_get(user, "language", "en")
 		if existing_code != "" && int64(expires) > now {
 			// Reuse existing code, extend expiration
 			data["expires"] = now + 3600
 			data_json, _ := json.Marshal(data)
 			db.exec("update accounts set data=? where id=?", string(data_json), id)
-			account_send_verification_email(identifier, existing_code)
+			account_send_verification_email(identifier, existing_code, language)
 		} else {
 			// Generate new code
 			new_code := account_generate_code(10)
@@ -716,7 +717,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			data_json, _ := json.Marshal(data)
 			db.exec("update accounts set data=? where id=?", string(data_json), id)
 
-			account_send_verification_email(identifier, new_code)
+			account_send_verification_email(identifier, new_code, language)
 		}
 		return sl.True, nil
 	}
@@ -743,10 +744,16 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.True, nil
 }
 
-// account_send_verification_email sends a styled HTML email with a verification code
-func account_send_verification_email(to string, code string) {
-	subject := "Verify your email address"
-	html := `<!DOCTYPE html>
+// account_send_verification_email sends a styled HTML email with a verification
+// code, localised to the given language (BCP 47 tag) via the core label
+// resolver's fallback chain.
+func account_send_verification_email(to string, code string, language string) {
+	subject := resolve_core_label(language, "email.verification.subject", nil)
+	heading := resolve_core_label(language, "email.verification.heading", nil)
+	tagline := resolve_core_label(language, "email.verification.tagline", nil)
+	expiry := resolve_core_label(language, "email.verification.expiry", nil)
+	ignore := resolve_core_label(language, "email.verification.ignore", nil)
+	htmlBody := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -759,30 +766,30 @@ func account_send_verification_email(to string, code string) {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 40px 40px 32px 40px; text-align: center;">
-              <h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #18181b;">Verification Code</h1>
-              <p style="margin: 0; font-size: 15px; color: #71717a;">Enter this code to verify your email address</p>
+              <h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
+              <p style="margin: 0; font-size: 15px; color: #71717a;">` + html.EscapeString(tagline) + `</p>
             </td>
           </tr>
           <tr>
             <td style="padding: 0 40px;">
               <div style="background-color: #f4f4f5; border-radius: 8px; padding: 24px; text-align: center;">
-                <span style="font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 32px; font-weight: 600; letter-spacing: 4px; color: #18181b;">` + code + `</span>
+                <span style="font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 32px; font-weight: 600; letter-spacing: 4px; color: #18181b;">` + html.EscapeString(code) + `</span>
               </div>
             </td>
           </tr>
           <tr>
             <td style="padding: 32px 40px 40px 40px; text-align: center;">
-              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">This code expires in 1 hour</p>
+              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">` + html.EscapeString(expiry) + `</p>
             </td>
           </tr>
         </table>
-        <p style="margin: 24px 0 0 0; font-size: 13px; color: #a1a1aa;">If you didn't request this verification, you can safely ignore this email.</p>
+        <p style="margin: 24px 0 0 0; font-size: 13px; color: #a1a1aa;">` + html.EscapeString(ignore) + `</p>
       </td>
     </tr>
   </table>
 </body>
 </html>`
-	email_send_html(to, subject, html)
+	email_send_html(to, subject, htmlBody)
 }
 
 // AccountTestResult represents the result of testing an account
@@ -833,12 +840,13 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	var result AccountTestResult
 
+	language := user_preference_get(user, "language", "en")
 	switch ptype {
 	case "email":
-		result = account_test_email(identifier)
+		result = account_test_email(identifier, language)
 
 	case "browser":
-		result = account_test_browser(data)
+		result = account_test_browser(data, language)
 
 	case "pushbullet":
 		token, _ := data["token"].(string)
@@ -878,10 +886,12 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
-// account_test_email sends a test email
-func account_test_email(address string) AccountTestResult {
-	subject := "Mochi test notification"
-	html := `<!DOCTYPE html>
+// account_test_email sends a test email, localised to the recipient user's
+// language preference via the core label resolver.
+func account_test_email(address string, language string) AccountTestResult {
+	subject := resolve_core_label(language, "email.test.subject", nil)
+	heading := resolve_core_label(language, "email.test.heading", nil)
+	htmlBody := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -894,7 +904,7 @@ func account_test_email(address string) AccountTestResult {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 40px; text-align: center;">
-              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #18181b;">Mochi test notification</h1>
+              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
             </td>
           </tr>
         </table>
@@ -903,12 +913,13 @@ func account_test_email(address string) AccountTestResult {
   </table>
 </body>
 </html>`
-	email_send_html(address, subject, html)
+	email_send_html(address, subject, htmlBody)
 	return AccountTestResult{Success: true, Message: "Test email sent"}
 }
 
-// account_test_browser sends a test browser push notification
-func account_test_browser(data map[string]any) AccountTestResult {
+// account_test_browser sends a test browser push notification, localised to
+// the recipient user's language preference.
+func account_test_browser(data map[string]any, language string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
 		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
@@ -923,7 +934,7 @@ func account_test_browser(data map[string]any) AccountTestResult {
 	}
 
 	payload, _ := json.Marshal(map[string]string{
-		"title": "Mochi test notification",
+		"title": resolve_core_label(language, "push.test.title", nil),
 		"body":  "",
 	})
 

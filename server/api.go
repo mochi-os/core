@@ -42,6 +42,9 @@ func init() {
 			"attachment": api_attachment,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
+				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{
+					"sha256": sl.NewBuiltin("mochi.crypto.hash.sha256", api_crypto_hash_sha256),
+				}),
 				"hmac": sls.FromStringDict(sl.String("mochi.crypto.hmac"), sl.StringDict{
 					"sha256": sl.NewBuiltin("mochi.crypto.hmac.sha256", api_crypto_hmac_sha256),
 				}),
@@ -99,6 +102,27 @@ func init() {
 			"websocket": api_websocket,
 		}),
 	}
+}
+
+// mochi.crypto.hash.sha256(data) -> string: Hex-encoded SHA-256 digest of data.
+// Accepts either a string or bytes — useful for hashing both text content
+// (JSON, headers, ETag inputs) and binary data (file contents, random bytes
+// from mochi.random.bytes).
+func api_crypto_hash_sha256(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <data: string|bytes>")
+	}
+	var data []byte
+	switch v := args[0].(type) {
+	case sl.String:
+		data = []byte(string(v))
+	case sl.Bytes:
+		data = []byte(v)
+	default:
+		return sl_error(fn, "data must be a string or bytes")
+	}
+	sum := sha256.Sum256(data)
+	return sl.String(hex.EncodeToString(sum[:])), nil
 }
 
 // mochi.crypto.hmac.sha256(key, message) -> string: Hex-encoded HMAC-SHA256 digest

@@ -51,12 +51,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
 	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
 	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
-	"get": sls.FromStringDict(sl.String("mochi.user.get"), sl.StringDict{
-		"fingerprint": sl.NewBuiltin("mochi.user.get.fingerprint", api_user_get_fingerprint),
-		"id":          sl.NewBuiltin("mochi.user.get.id", api_user_get_id),
-		"identity":    sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity),
-		"username":    sl.NewBuiltin("mochi.user.get.username", api_user_get_username),
-	}),
+	"get": &userGetModule{},
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
 	}),
@@ -74,6 +69,39 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"totp":    api_user_totp,
 	"update":  sl.NewBuiltin("mochi.user.update", api_user_update),
 })
+
+// userGetModule is a callable module exposing the alternate-key user lookups.
+// Usage: mochi.user.get(id) for the primary-key lookup, or
+// mochi.user.get.{username, identity, fingerprint}(value) for alternate keys.
+type userGetModule struct{}
+
+func (m *userGetModule) String() string        { return "mochi.user.get" }
+func (m *userGetModule) Type() string          { return "module" }
+func (m *userGetModule) Freeze()               {}
+func (m *userGetModule) Truth() sl.Bool        { return sl.True }
+func (m *userGetModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+
+func (m *userGetModule) AttrNames() []string {
+	return []string{"fingerprint", "identity", "username"}
+}
+
+func (m *userGetModule) Attr(name string) (sl.Value, error) {
+	switch name {
+	case "fingerprint":
+		return sl.NewBuiltin("mochi.user.get.fingerprint", api_user_get_fingerprint), nil
+	case "identity":
+		return sl.NewBuiltin("mochi.user.get.identity", api_user_get_identity), nil
+	case "username":
+		return sl.NewBuiltin("mochi.user.get.username", api_user_get_username), nil
+	}
+	return nil, nil
+}
+
+func (m *userGetModule) Name() string { return "mochi.user.get" }
+
+func (m *userGetModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_user_get_id(thread, nil, args, kwargs)
+}
 
 // code_send sends a login code to the given email address. Returns empty string
 // on success, or an error reason: "invalid_email" or "signup_disabled". The
@@ -378,7 +406,9 @@ func (u *User) set_app_version(app, version, track string) {
 	audit_user_version_changed(u.Username, app, version, track)
 }
 
-// mochi.user.get.id(id) -> dict | None: Get a user by ID (admin only)
+// mochi.user.get(id) -> dict | None: Get a user by ID (admin only). The bare
+// callable form is the primary-key lookup; sub-attributes (.username, .identity,
+// .fingerprint) provide alternate-key lookups.
 func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {

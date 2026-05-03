@@ -86,6 +86,40 @@ func api_text_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(valid(s, match)), nil
 }
 
+// mochi.text.slug(s) -> string: Convert s to a URL-friendly slug. Strips
+// accents, lower-cases, replaces runs of non-letter/digit characters with a
+// single dash, and trims leading/trailing dashes. Letters from any script
+// are preserved ("Café Olé" → "cafe-ole", "你好 世界" → "你好-世界"); only
+// punctuation/whitespace is collapsed. Returns "" if nothing slug-worthy
+// remains.
+func api_text_slug(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <s: string>")
+	}
+	s, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "s must be a string")
+	}
+	return sl.String(text_slug(s)), nil
+}
+
+// text_slug is the Go-callable version.
+func text_slug(s string) string {
+	cleaned := text_sortkey(s)
+	var b strings.Builder
+	prev_dash := true // suppress leading dashes
+	for _, r := range cleaned {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			prev_dash = false
+		} else if !prev_dash {
+			b.WriteRune('-')
+			prev_dash = true
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
 // text_sortkey is the Go-callable version. NFD-normalise → strip combining
 // marks → recompose → lower-case. "Café" → "cafe", "Über" → "uber".
 func text_sortkey(s string) string {
@@ -104,6 +138,7 @@ func text_sortkey(s string) string {
 var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
 	"compare":  sl.NewBuiltin("mochi.text.compare", api_text_compare),
 	"markdown": sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
+	"slug":     sl.NewBuiltin("mochi.text.slug", api_text_slug),
 	"sortkey":  sl.NewBuiltin("mochi.text.sortkey", api_text_sortkey),
 	"valid":    sl.NewBuiltin("mochi.text.valid", api_text_valid),
 })

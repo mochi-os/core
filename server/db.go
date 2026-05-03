@@ -39,7 +39,9 @@ var (
 		"exists":      sl.NewBuiltin("mochi.db.exists", api_db_query),
 		"row":         sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":        sl.NewBuiltin("mochi.db.rows", api_db_query),
+		"indexes":     sl.NewBuiltin("mochi.db.indexes", api_db_indexes),
 		"table":       sl.NewBuiltin("mochi.db.table", api_db_table),
+		"tables":      sl.NewBuiltin("mochi.db.tables", api_db_tables),
 		"transaction": sl.NewBuiltin("mochi.db.transaction", api_db_transaction),
 	})
 )
@@ -1077,53 +1079,13 @@ func api_db_table(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "syntax: mochi.db.table(name)")
 	}
 	name, ok := sl.AsString(args[0])
-	if !ok || len(name) == 0 {
-		return sl_error(fn, "table name must be a non-empty string")
-	}
-	// Validate table name: alphanumeric and underscores only
-	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-			return sl_error(fn, "invalid table name %q", name)
-		}
+	if !ok || !valid_sql_identifier(name) {
+		return sl_error(fn, "invalid table name %q", name)
 	}
 
-	owner := t.Local("owner").(*User)
-	user := t.Local("user").(*User)
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "unknown app")
-	}
-
-	var db_user *User
-	var domain_routing bool
-
-	if action := t.Local("action"); action != nil {
-		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
-			domain_routing = a.domain.route.context != ""
-		}
-	}
-
-	if user == nil {
-		if owner != nil {
-			db_user = owner
-		} else {
-			return sl_error(fn, "no user context available")
-		}
-	} else if owner != nil && owner.ID != user.ID {
-		db_user = owner
-	} else if domain_routing {
-		if owner != nil {
-			db_user = owner
-		} else {
-			return sl_error(fn, "no owner context for domain routing")
-		}
-	} else {
-		db_user = user
-	}
-
-	db := db_app(db_user, app)
-	if db == nil {
-		return sl_error(fn, "app has no database configured")
+	db, err := db_for_thread(t)
+	if err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	rows, err := db.rows("PRAGMA table_info(" + name + ")")
@@ -1131,4 +1093,59 @@ func api_db_table(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "database error: %v", err)
 	}
 	return sl_encode(rows), nil
+}
+
+// mochi.db.tables() -> list: List user table names in the calling app's database, sorted
+func api_db_tables(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 0 {
+		return sl_error(fn, "syntax: mochi.db.tables()")
+	}
+	db, err := db_for_thread(t)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	rows, err := db.rows("select name from sqlite_schema where type='table' and name not like 'sqlite_%' and name not like '\\_%' escape '\\' order by name")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	names := make([]any, 0, len(rows))
+	for _, r := range rows {
+		if n, ok := r["name"].(string); ok {
+			names = append(names, n)
+		}
+	}
+	return sl_encode(names), nil
+}
+
+// mochi.db.indexes(table) -> list: Return index info for a table via PRAGMA index_list
+func api_db_indexes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: mochi.db.indexes(table)")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok || !valid_sql_identifier(name) {
+		return sl_error(fn, "invalid table name %q", name)
+	}
+	db, err := db_for_thread(t)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	rows, err := db.rows("PRAGMA index_list(" + name + ")")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	return sl_encode(rows), nil
+}
+
+// valid_sql_identifier returns true if name is alphanumeric/underscore only — safe to splice into a PRAGMA.
+func valid_sql_identifier(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }

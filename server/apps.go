@@ -1542,6 +1542,12 @@ func apps_load_published() {
 				continue
 			}
 
+			// Skip non-directories (stray files like a misplaced app.db
+			// would otherwise reach app_read and fail noisily).
+			if !file_is_directory(filepath.Join(app_dir, version)) {
+				continue
+			}
+
 			av, err := app_read(id, filepath.Join(app_dir, version))
 			if err != nil {
 				info("App load error: %v", err)

@@ -2,10 +2,10 @@
 // Copyright Alistair Cunningham 2026
 //
 // Each subcommand is a function value in the `commands` map (declared in
-// main.go). Commands that talk to the running server use the UDS admin
-// client; `health` is the exception (it hits the public HTTP listener,
-// since the Docker HEALTHCHECK probe and external monitors must work
-// without the UDS).
+// main.go). Every server-talking subcommand uses the UDS admin client —
+// including `health`, which hits /_/admin/health rather than the public
+// /_/health, because TLS-only deploys reject 127.0.0.1 handshakes on SNI
+// mismatch. External monitors keep using the public /_/health endpoint.
 
 //go:build linux
 
@@ -16,19 +16,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"core/common/ini"
 )
 
 func init() {
 	commands = map[string]command{
 		"health": {
-			help: "Check server health (HTTP probe to /_/health)",
+			help: "Check server health (UDS probe to /_/admin/health)",
 			run:  cmd_health,
 		},
 		"status": {
@@ -145,26 +142,14 @@ func post_dump(path string, order ...string) error {
 	return render(body, order...)
 }
 
-// cmd_health hits the public /_/health endpoint over TCP. Used by the Docker
-// HEALTHCHECK directive and external monitors, so it can't depend on the UDS.
-// Picks the first port from [web].ports in mochi.conf.
+// cmd_health probes /_/admin/health over the UDS. Used by Docker HEALTHCHECK
+// (which runs inside the container and has socket access) and by operators
+// running mochictl on the host. Mirrors the field set returned by the public
+// /_/health route so external monitors and HEALTHCHECK see the same shape.
 func cmd_health(args []string) error {
-	ports := ini.Ints("web", "ports")
-	if len(ports) == 0 {
-		// Fall back to a sensible default if [web].ports isn't set.
-		ports = []int{ini.Int("web", "port", 8080)}
-	}
-	port := ports[0]
-	scheme := "http"
-	if port == 443 || port == 8443 {
-		scheme = "https"
-	}
-
-	url := fmt.Sprintf("%s://127.0.0.1:%d/_/health", scheme, port)
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Get(url)
+	resp, err := client().Get("/_/admin/health")
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
+		return err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

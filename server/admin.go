@@ -63,6 +63,14 @@ func admin_config(c *gin.Context) {
 	c.JSON(http.StatusOK, ini.Effective())
 }
 
+// admin_health returns the same liveness body as the public /_/health route.
+// Exposed over the UDS so mochictl can probe a server bound to TLS-only ports
+// (where a 127.0.0.1 HTTPS handshake fails on SNI mismatch).
+func admin_health(c *gin.Context) {
+	body, code := health_status()
+	c.JSON(code, body)
+}
+
 // admin_identity returns the libp2p peer ID that identifies this server
 // to the rest of the Mochi network.
 func admin_identity(c *gin.Context) {

@@ -11,9 +11,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// web_health returns a JSON liveness summary. Public, unauthenticated.
-// Returns HTTP 200 if all subsystems are healthy, 503 with detail otherwise.
-func web_health(c *gin.Context) {
+// health_status assembles the liveness summary returned by both the public
+// /_/health route and the UDS /_/admin/health route. Returns the JSON body
+// and the HTTP status code (200 if healthy, 503 if any subsystem is degraded).
+func health_status() (gin.H, int) {
 	database_status := "ok"
 	network_status := "ok"
 	overall := http.StatusOK
@@ -44,13 +45,17 @@ func web_health(c *gin.Context) {
 		status = "degraded"
 	}
 
-	uptime := int(time.Since(server_started_at).Seconds())
-
-	c.JSON(overall, gin.H{
+	return gin.H{
 		"status":   status,
 		"version":  build_version,
-		"uptime":   uptime,
+		"uptime":   int(time.Since(server_started_at).Seconds()),
 		"database": database_status,
 		"network":  network_status,
-	})
+	}, overall
+}
+
+// web_health returns a JSON liveness summary. Public, unauthenticated.
+func web_health(c *gin.Context) {
+	body, code := health_status()
+	c.JSON(code, body)
 }

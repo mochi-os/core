@@ -93,7 +93,7 @@ func admin_stop(c *gin.Context) {
 	case shutdown_request <- 0:
 		c.JSON(http.StatusOK, gin.H{"status": "stopping"})
 	default:
-		c.JSON(http.StatusConflict, gin.H{"error": "shutdown already in progress"})
+		respond_error(c, http.StatusConflict, "shutdown_in_progress", "errors.shutdown_in_progress", nil)
 	}
 }
 
@@ -105,7 +105,7 @@ func admin_restart(c *gin.Context) {
 	case shutdown_request <- 75:
 		c.JSON(http.StatusOK, gin.H{"status": "restarting"})
 	default:
-		c.JSON(http.StatusConflict, gin.H{"error": "shutdown already in progress"})
+		respond_error(c, http.StatusConflict, "shutdown_in_progress", "errors.shutdown_in_progress", nil)
 	}
 }
 

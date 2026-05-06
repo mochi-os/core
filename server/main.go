@@ -15,17 +15,18 @@ import (
 type Map map[string]any
 
 var (
-	build_version  string
-	cache_dir      string
-	data_dir       string
-	dev_apps_dir   string
-	dev_reload     bool
-	web_cache      bool
+	build_version    string
+	cache_dir        string
+	config_file      string
+	data_dir         string
+	dev_apps_dir     string
+	dev_reload       bool
+	web_cache        bool
 	web_compress     string
 	web_gzip_level   int
 	web_brotli_level int
-	email_host     string
-	email_port     int
+	email_host       string
+	email_port       int
 
 	server_started_at time.Time
 )
@@ -55,20 +56,27 @@ func main() {
 		default_data = filepath.Join(local_app_data, "mochi", "data")
 	}
 
-	var file string
-	flag.StringVar(&file, "f", default_config, "Configuration file")
+	flag.StringVar(&config_file, "f", default_config, "Configuration file")
 	flag.Parse()
-	err := ini_load(file)
+	err := ini_load(config_file)
 	if err != nil {
 		warn("Unable to read configuration file: %v", err)
 		os.Exit(1)
 	}
 
+	cache_dir = ini_string("directories", "cache", default_cache)
+	data_dir = ini_string("directories", "data", default_data)
+	if err := directories_ensure(); err != nil {
+		warn("directories.ensure failed: %v", err)
+		os.Exit(1)
+	}
+	if err := run_dir_create(); err != nil {
+		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
+	}
+
 	audit_init()
 	audit_server_start(build_version)
 
-	cache_dir = ini_string("directories", "cache", default_cache)
-	data_dir = ini_string("directories", "data", default_data)
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	web_cache = ini_bool("web", "cache", true)
@@ -103,6 +111,9 @@ func main() {
 	setting_set("server_started", itoa(int(now())))
 	apps_start()
 	p2p_start()
+	if err := admin_start(); err != nil {
+		warn("admin listener disabled: %v", err)
+	}
 	go cache_manager()
 	go entities_manager()
 	go directory_manager()
@@ -116,12 +127,34 @@ func main() {
 	go apps_manager()
 	go schedule_start()
 
-	// Wait for shutdown signal (os.Interrupt works cross-platform)
+	// Wait for a shutdown trigger. Sources:
+	//   - os.Interrupt (Ctrl-C, cross-platform)
+	//   - SIGTERM (docker stop, systemctl stop)
+	//   - shutdown_request channel (mochictl stop / restart, exit code carried)
+	// SIGHUP is registered too but ignored — config reload was dropped, and
+	// not registering it would let kill -HUP terminate the process via the
+	// default signal action.
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	<-sig
+	signal.Notify(sig, append([]os.Signal{os.Interrupt}, extra_signals()...)...)
 
-	info("Shutdown signal received, stopping gracefully...")
+	exit_code := 0
+loop:
+	for {
+		select {
+		case s := <-sig:
+			if is_ignorable_signal(s) {
+				info("Signal %v received, ignoring (restart for config changes)", s)
+				continue
+			}
+			info("Shutdown signal %v received, stopping gracefully...", s)
+			break loop
+		case code := <-shutdown_request:
+			info("Operator-initiated shutdown (exit code %d)", code)
+			exit_code = code
+			break loop
+		}
+	}
+
 	audit_server_stop()
 
 	// Wait for queue to drain (with timeout)
@@ -137,4 +170,7 @@ func main() {
 
 	audit_close()
 	info("Shutdown complete")
+	if exit_code != 0 {
+		os.Exit(exit_code)
+	}
 }

@@ -1432,6 +1432,7 @@ func web_start() {
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
 	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_oauth_begin)
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
+	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)
 	r.GET("/_/auth/methods", web_auth_methods)
 
 	// Other system endpoints
@@ -1440,6 +1441,7 @@ func web_start() {
 	r.POST("/_/logout", web_logout)
 	r.POST("/_/abandon", web_abandon)
 	r.GET("/_/ping", web_ping)
+	r.GET("/_/health", web_health)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/robots.txt", web_robots)

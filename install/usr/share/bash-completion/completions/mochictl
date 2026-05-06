@@ -1,0 +1,67 @@
+# bash completion for mochictl
+#
+# Stub — Phase 8 will expand to handle subcommand-specific flags and
+# context-aware completions. For now we tab-complete the subcommand name
+# and the global flags. Flags can appear anywhere on the command line, so
+# we offer them at every position rather than only the first.
+
+_mochictl() {
+	local cur="${COMP_WORDS[COMP_CWORD]}"
+	local prev="${COMP_WORDS[COMP_CWORD-1]}"
+	local subcommands="backup config health identity restart restore rsync-filter snapshot start status stop version"
+	local flags="-f -s -j -t -h --help"
+
+	# Global flags expecting a path argument.
+	case "$prev" in
+		-f|-s)
+			COMPREPLY=( $(compgen -f -- "$cur") )
+			return 0
+			;;
+	esac
+
+	# If the user is typing a flag, complete from the flag list at any position.
+	if [[ "$cur" == -* ]]; then
+		COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
+		return 0
+	fi
+
+	# Find the subcommand among the args (skipping flags and their values).
+	local subcommand=""
+	local i=1
+	while [ "$i" -lt "$COMP_CWORD" ]; do
+		case "${COMP_WORDS[i]}" in
+			-f|-s)
+				i=$((i + 2))
+				;;
+			-*)
+				i=$((i + 1))
+				;;
+			*)
+				subcommand="${COMP_WORDS[i]}"
+				break
+				;;
+		esac
+	done
+
+	# No subcommand chosen yet — offer the subcommand list (plus flags).
+	if [ -z "$subcommand" ]; then
+		COMPREPLY=( $(compgen -W "$subcommands $flags" -- "$cur") )
+		return 0
+	fi
+
+	# `config show` second token.
+	if [ "$subcommand" = "config" ]; then
+		COMPREPLY=( $(compgen -W "show" -- "$cur") )
+		return 0
+	fi
+
+	# `restore <dir>` and `backup [path]` complete file paths.
+	if [ "$subcommand" = "restore" ] || [ "$subcommand" = "backup" ]; then
+		COMPREPLY=( $(compgen -f -- "$cur") )
+		return 0
+	fi
+
+	return 0
+}
+
+complete -F _mochictl mochictl

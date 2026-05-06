@@ -14,16 +14,27 @@ mkdir -p %{buildroot}/etc/mochi
 mkdir -p %{buildroot}/var/cache/mochi
 mkdir -p %{buildroot}/var/lib/mochi
 mkdir -p %{buildroot}/usr/lib/systemd/system
+mkdir -p %{buildroot}/usr/share/man/man1
+mkdir -p %{buildroot}/usr/share/bash-completion/completions
+mkdir -p %{buildroot}/usr/share/zsh/site-functions
 cp %{_sourcedir}/mochi-server %{buildroot}/usr/bin/
+cp %{_sourcedir}/mochictl %{buildroot}/usr/bin/
 cp %{_sourcedir}/mochi.conf %{buildroot}/etc/mochi/
 cp %{_sourcedir}/mochi-server.service %{buildroot}/usr/lib/systemd/system/
+cp %{_sourcedir}/mochictl.1 %{buildroot}/usr/share/man/man1/
+cp %{_sourcedir}/mochictl.bash %{buildroot}/usr/share/bash-completion/completions/mochictl
+cp %{_sourcedir}/_mochictl %{buildroot}/usr/share/zsh/site-functions/_mochictl
 
 %files
 %attr(755, root, root) /usr/bin/mochi-server
+%attr(755, root, root) /usr/bin/mochictl
 %config(noreplace) /etc/mochi/mochi.conf
 %dir /var/cache/mochi
 %dir /var/lib/mochi
 /usr/lib/systemd/system/mochi-server.service
+/usr/share/man/man1/mochictl.1*
+/usr/share/bash-completion/completions/mochictl
+/usr/share/zsh/site-functions/_mochictl
 
 %pre
 if ! getent group mochi >/dev/null; then

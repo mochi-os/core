@@ -1,7 +1,11 @@
 # Makefile for Mochi
-# Copyright Alistair Cunningham 2024-2025
+# Copyright Alistair Cunningham 2024-2026
 
 version = 0.4.45
+
+# Build outputs land in ~/mochi/bin/ (one level up from core/), so source
+# directories never collide with binary names.
+bin = ../bin
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -25,53 +29,109 @@ pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
 
-all: mochi-server
+all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
-	rm -f mochi-server mochi-server.exe mochi-server-linux-arm64 mochi-server-linux-arm mochi-server-darwin-amd64 mochi-server-darwin-arm64
+	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
+	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl.1
 
-mochi-server: $(shell find server -name '*.go')
-	go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server ./server
+# Order-only prerequisite: create $(bin) but don't trigger rebuilds when its
+# mtime changes.
+$(bin):
+	mkdir -p $(bin)
+
+# --------------------------------------------------------------------------
+# Native Linux amd64 binaries
+# --------------------------------------------------------------------------
+
+$(bin)/mochi-server: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server ./server
+
+# Phony alias for the historical name.
+mochi-server: $(bin)/mochi-server
+
+# mochictl is pure Go (no cgo): cross-arch builds are just GOOS/GOARCH.
+$(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl ./mochictl
+
+mochictl: $(bin)/mochictl
+
+# Man page: docs/mochictl.1.md -> $(bin)/mochictl.1 via pandoc.
+# Requires: apt install pandoc
+$(bin)/mochictl.1: docs/mochictl.1.md | $(bin)
+	pandoc -s -t man docs/mochictl.1.md -o $(bin)/mochictl.1
+
+mochictl.1: $(bin)/mochictl.1
+
+# --------------------------------------------------------------------------
+# Linux ARM cross-compile binaries
+# --------------------------------------------------------------------------
+
+# Linux ARM64 executable (cross-compile)
+# Requires: apt install gcc-aarch64-linux-gnu
+$(bin)/mochi-server-linux-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-linux-arm64 ./server
+
+mochi-server-linux-arm64: $(bin)/mochi-server-linux-arm64
+
+# Linux ARM 32-bit executable (cross-compile)
+# Requires: apt install gcc-arm-linux-gnueabihf
+$(bin)/mochi-server-linux-arm: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-linux-arm ./server
+
+mochi-server-linux-arm: $(bin)/mochi-server-linux-arm
+
+$(bin)/mochictl-linux-arm64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl-linux-arm64 ./mochictl
+
+mochictl-linux-arm64: $(bin)/mochictl-linux-arm64
+
+$(bin)/mochictl-linux-arm: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl-linux-arm ./mochictl
+
+mochictl-linux-arm: $(bin)/mochictl-linux-arm
+
+linux-arm64: $(bin)/mochi-server-linux-arm64
+
+linux-arm: $(bin)/mochi-server-linux-arm
+
+linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
+
+# --------------------------------------------------------------------------
+# .deb packages
+# --------------------------------------------------------------------------
 
 # AMD64 .deb package
-$(deb_amd64): mochi-server
+$(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
 	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_amd64)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build_linux_amd64)/DEBIAN/control
 	cp -av install/* $(build_linux_amd64)
-	cp -av mochi-server $(build_linux_amd64)/usr/bin
+	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/bin
+	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
 	strip $(build_linux_amd64)/usr/bin/mochi-server
+	strip $(build_linux_amd64)/usr/bin/mochictl
 	upx -qq $(build_linux_amd64)/usr/bin/mochi-server
+	mkdir -p $(build_linux_amd64)/usr/share/man/man1
+	cp $(bin)/mochictl.1 $(build_linux_amd64)/usr/share/man/man1/
 	dpkg-deb --build --root-owner-group $(build_linux_amd64)
 	rm -rf $(build_linux_amd64)
 	ls -l $(deb_amd64)
 
 deb-amd64: $(deb_amd64)
 
-# Linux ARM64 executable (cross-compile)
-# Requires: apt install gcc-aarch64-linux-gnu
-mochi-server-linux-arm64: $(shell find server -name '*.go')
-	CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-linux-arm64 ./server
-
-# Linux ARM 32-bit executable (cross-compile)
-# Requires: apt install gcc-arm-linux-gnueabihf
-mochi-server-linux-arm: $(shell find server -name '*.go')
-	CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-linux-arm ./server
-
-linux-arm64: mochi-server-linux-arm64
-
-linux-arm: mochi-server-linux-arm
-
-linux-arm-all: mochi-server-linux-arm64 mochi-server-linux-arm
-
 # ARM64 .deb package
-$(deb_arm64): mochi-server-linux-arm64
+$(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1
 	mkdir -p -m 0775 $(build_linux_arm64) $(build_linux_arm64)/usr/bin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_arm64)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: arm64/' build/deb/DEBIAN/control > $(build_linux_arm64)/DEBIAN/control
 	cp -av install/* $(build_linux_arm64)
-	cp -av mochi-server-linux-arm64 $(build_linux_arm64)/usr/bin/mochi-server
+	cp -av $(bin)/mochi-server-linux-arm64 $(build_linux_arm64)/usr/bin/mochi-server
+	cp -av $(bin)/mochictl-linux-arm64 $(build_linux_arm64)/usr/bin/mochictl
 	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochi-server
+	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochictl
+	mkdir -p $(build_linux_arm64)/usr/share/man/man1
+	cp $(bin)/mochictl.1 $(build_linux_arm64)/usr/share/man/man1/
 	dpkg-deb --build --root-owner-group $(build_linux_arm64)
 	rm -rf $(build_linux_arm64)
 	ls -l $(deb_arm64)
@@ -79,13 +139,17 @@ $(deb_arm64): mochi-server-linux-arm64
 deb-arm64: $(deb_arm64)
 
 # ARMHF .deb package
-$(deb_armhf): mochi-server-linux-arm
+$(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1
 	mkdir -p -m 0775 $(build_linux_armhf) $(build_linux_armhf)/usr/bin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_armhf)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: armhf/' build/deb/DEBIAN/control > $(build_linux_armhf)/DEBIAN/control
 	cp -av install/* $(build_linux_armhf)
-	cp -av mochi-server-linux-arm $(build_linux_armhf)/usr/bin/mochi-server
+	cp -av $(bin)/mochi-server-linux-arm $(build_linux_armhf)/usr/bin/mochi-server
+	cp -av $(bin)/mochictl-linux-arm $(build_linux_armhf)/usr/bin/mochictl
 	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochi-server
+	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochictl
+	mkdir -p $(build_linux_armhf)/usr/share/man/man1
+	cp $(bin)/mochictl.1 $(build_linux_armhf)/usr/share/man/man1/
 	dpkg-deb --build --root-owner-group $(build_linux_armhf)
 	rm -rf $(build_linux_armhf)
 	ls -l $(deb_armhf)
@@ -94,15 +158,24 @@ deb-armhf: $(deb_armhf)
 
 deb: deb-amd64 deb-arm64 deb-armhf
 
+# --------------------------------------------------------------------------
+# .rpm packages
+# --------------------------------------------------------------------------
+
 # x86_64 .rpm package
 # Requires: apt install rpm
-$(rpm_x86_64): mochi-server
+$(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp mochi-server $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi-server $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochictl $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
 	strip $(rpmbuild_dir)/SOURCES/mochi-server
+	strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
 	rm -rf $(rpmbuild_dir)
@@ -111,13 +184,18 @@ $(rpm_x86_64): mochi-server
 rpm-x86_64: $(rpm_x86_64)
 
 # aarch64 .rpm package
-$(rpm_aarch64): mochi-server-linux-arm64
+$(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
+	cp $(bin)/mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
+	cp $(bin)/mochictl-linux-arm64 $(rpmbuild_dir)/SOURCES/mochictl
+	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
 	aarch64-linux-gnu-strip $(rpmbuild_dir)/SOURCES/mochi-server
+	aarch64-linux-gnu-strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
 	rm -rf $(rpmbuild_dir)
@@ -126,13 +204,18 @@ $(rpm_aarch64): mochi-server-linux-arm64
 rpm-aarch64: $(rpm_aarch64)
 
 # armv7hl .rpm package
-$(rpm_armv7hl): mochi-server-linux-arm
+$(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
+	cp $(bin)/mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
+	cp $(bin)/mochictl-linux-arm $(rpmbuild_dir)/SOURCES/mochictl
+	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
 	arm-linux-gnueabihf-strip $(rpmbuild_dir)/SOURCES/mochi-server
+	arm-linux-gnueabihf-strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
 	rm -rf $(rpmbuild_dir)
@@ -142,15 +225,21 @@ rpm-armv7hl: $(rpm_armv7hl)
 
 rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
 
+# --------------------------------------------------------------------------
+# Windows
+# --------------------------------------------------------------------------
+
 # Windows executable (cross-compile from Linux)
 # Requires: apt install gcc-mingw-w64-x86-64 (for CGO/SQLite support)
-mochi-server.exe: $(shell find server -name '*.go')
-	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server.exe ./server
+$(bin)/mochi-server.exe: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server.exe ./server
+
+mochi-server.exe: $(bin)/mochi-server.exe
 
 # Windows MSI installer (requires wixl from msitools package on Linux, or WiX on Windows)
-$(msi): mochi-server.exe
+$(msi): $(bin)/mochi-server.exe
 	mkdir -p $(build_windows)
-	cp mochi-server.exe $(build_windows)/
+	cp $(bin)/mochi-server.exe $(build_windows)/
 	cp build/msi/mochi.conf $(build_windows)/
 	wixl -v -D Version=$(version) -D SourceDir=$(build_windows) -D WIXL -o $(msi) build/msi/mochi.wxs
 	rm -rf $(build_windows)
@@ -158,25 +247,32 @@ $(msi): mochi-server.exe
 
 msi: $(msi)
 
-windows: mochi-server.exe
+windows: $(bin)/mochi-server.exe
 
-# macOS executables
+# --------------------------------------------------------------------------
+# macOS
+# --------------------------------------------------------------------------
+
 # Native Mac host: cgo on (real SQLite). Linux cross-compile: cgo off (pure-Go SQLite) unless osxcross is installed.
 darwin_cgo = $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1 || echo 0)
 
-mochi-server-darwin-amd64: $(shell find server -name '*.go')
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-amd64 ./server
+$(bin)/mochi-server-darwin-amd64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-darwin-amd64 ./server
 
-mochi-server-darwin-arm64: $(shell find server -name '*.go')
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o mochi-server-darwin-arm64 ./server
+mochi-server-darwin-amd64: $(bin)/mochi-server-darwin-amd64
+
+$(bin)/mochi-server-darwin-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-darwin-arm64 ./server
+
+mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 
 # macOS .pkg installers
 # Requires: bomutils (/opt/bomutils), xar
-$(pkg_amd64): mochi-server-darwin-amd64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64)
+$(pkg_amd64): $(bin)/mochi-server-darwin-amd64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64)
 
-$(pkg_arm64): mochi-server-darwin-arm64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64)
+$(pkg_arm64): $(bin)/mochi-server-darwin-arm64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64)
 
 pkg-amd64: $(pkg_amd64)
 
@@ -184,7 +280,11 @@ pkg-arm64: $(pkg_arm64)
 
 pkg: pkg-amd64 pkg-arm64
 
-macos: mochi-server-darwin-amd64 mochi-server-darwin-arm64
+macos: $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
+
+# --------------------------------------------------------------------------
+# Release
+# --------------------------------------------------------------------------
 
 release: clean deb rpm msi pkg
 	git tag -fa $(version) -m "$(version)"
@@ -204,7 +304,7 @@ release: clean deb rpm msi pkg
 format:
 	go fmt server/*.go
 
-run: mochi-server
-	./mochi-server
+run: $(bin)/mochi-server
+	$(bin)/mochi-server
 
 -include local/Makefile

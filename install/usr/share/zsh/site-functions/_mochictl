@@ -1,0 +1,49 @@
+#compdef mochictl
+# zsh completion for mochictl
+#
+# Stub — Phase 8 will expand to handle subcommand-specific flags and
+# context-aware completions.
+
+_mochictl() {
+	local -a subcommands
+	subcommands=(
+		'backup:Stream a tar.gz backup to stdout or a file path'
+		'config:Show effective config (use: config show)'
+		'health:Check server health (HTTP probe to /_/health)'
+		'identity:Show server peer ID and data dir'
+		'restart:Graceful shutdown with restart-hint exit code'
+		'restore:Walk a directory and rename *.db.snap -> strip .snap'
+		'rsync-filter:Print rsync filter rules for backing up the data dir'
+		'snapshot:Write *.db.snap siblings of every live DB in the data dir'
+		'start:Start the server via systemctl (native installs only)'
+		'status:Show uptime, version, peer count, app count'
+		'stop:Graceful shutdown; supervisor decides whether to restart'
+		'version:Show server and CLI versions'
+	)
+
+	_arguments -C \
+		'-f[mochi.conf path]:config file:_files' \
+		'-s[override admin socket path]:socket path:_files' \
+		'-t[tab-separated key/value output]' \
+		'-j[JSON output]' \
+		'1: :->subcommand' \
+		'*::arg:->args'
+
+	case "$state" in
+		subcommand)
+			_describe 'subcommand' subcommands
+			;;
+		args)
+			case "$words[1]" in
+				config)
+					_values 'config subcommand' 'show[show effective config]'
+					;;
+				restore|backup)
+					_files
+					;;
+			esac
+			;;
+	esac
+}
+
+_mochictl "$@"

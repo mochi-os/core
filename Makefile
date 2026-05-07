@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.49
+version = 0.4.50
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -281,6 +281,29 @@ pkg-arm64: $(pkg_arm64)
 pkg: pkg-amd64 pkg-arm64
 
 macos: $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
+
+# --------------------------------------------------------------------------
+# Docker
+# --------------------------------------------------------------------------
+
+docker_image = ghcr.io/mochi-os/mochi-server
+
+# Build for the host arch only — fast iteration during development. Tags as
+# :dev so it can't be confused with a real release.
+docker-local:
+	docker build --build-arg VERSION=$(version) -t $(docker_image):dev .
+
+# Multi-arch build + push to GHCR. Requires `docker buildx create` to have set
+# up a builder once, and `docker login ghcr.io` credentials in place.
+docker:
+	docker buildx build \
+	    --platform linux/amd64,linux/arm64 \
+	    --build-arg VERSION=$(version) \
+	    --tag $(docker_image):$(version) \
+	    --tag $(docker_image):latest \
+	    --tag $(docker_image):production \
+	    --push \
+	    .
 
 # --------------------------------------------------------------------------
 # Release

@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.md
+build/deb
+build/rpm
+build/msi
+build/pkg
+local
+doc
+docs
+readme.txt

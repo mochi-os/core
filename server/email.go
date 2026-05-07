@@ -10,6 +10,17 @@ import (
 	gm "github.com/wneessen/go-mail"
 )
 
+// email_tls_policy returns the go-mail TLS policy implied by the [email] tls
+// config flag. Default is opportunistic STARTTLS with full verification;
+// `tls = false` switches to plain SMTP, useful when relaying through a
+// loopback / LAN postfix whose cert isn't in any public CA chain.
+func email_tls_policy() gm.TLSPolicy {
+	if email_tls {
+		return gm.TLSOpportunistic
+	}
+	return gm.NoTLS
+}
+
 // email_send sends a plain text email.
 func email_send(to string, subject string, body string) {
 	m := gm.NewMsg()
@@ -17,25 +28,25 @@ func email_send(to string, subject string, body string) {
 	from := setting_get("email_from", "mochi-server@localhost")
 	err := m.From(from)
 	if err != nil {
-		warn("Email failed to set from address %q: %v", from, err)
+		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
 	err = m.To(to)
 	if err != nil {
-		warn("Email failed to set to address %q: %v", to, err)
+		info("Email failed to set to address %q: %v", to, err)
 		return
 	}
 	m.Subject(subject)
 	m.SetBodyString(gm.TypeTextPlain, body)
 
-	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
+	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
 	if err != nil {
-		warn("Email failed to create mail client: %v", err)
+		info("Email failed to create mail client: %v", err)
 		return
 	}
 	err = c.DialAndSend(m)
 	if err != nil {
-		warn("Email failed to send message: %v", err)
+		info("Email failed to send message: %v", err)
 		return
 	}
 }
@@ -47,25 +58,25 @@ func email_send_html(to string, subject string, html string) {
 	from := setting_get("email_from", "mochi-server@localhost")
 	err := m.From(from)
 	if err != nil {
-		warn("Email failed to set from address %q: %v", from, err)
+		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
 	err = m.To(to)
 	if err != nil {
-		warn("Email failed to set to address %q: %v", to, err)
+		info("Email failed to set to address %q: %v", to, err)
 		return
 	}
 	m.Subject(subject)
 	m.SetBodyString(gm.TypeTextHTML, html)
 
-	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
+	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
 	if err != nil {
-		warn("Email failed to create mail client: %v", err)
+		info("Email failed to create mail client: %v", err)
 		return
 	}
 	err = c.DialAndSend(m)
 	if err != nil {
-		warn("Email failed to send message: %v", err)
+		info("Email failed to send message: %v", err)
 		return
 	}
 }
@@ -128,26 +139,26 @@ func email_send_multipart(to string, subject string, text string, html string) {
 	from := setting_get("email_from", "mochi-server@localhost")
 	err := m.From(from)
 	if err != nil {
-		warn("Email failed to set from address %q: %v", from, err)
+		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
 	err = m.To(to)
 	if err != nil {
-		warn("Email failed to set to address %q: %v", to, err)
+		info("Email failed to set to address %q: %v", to, err)
 		return
 	}
 	m.Subject(subject)
 	m.SetBodyString(gm.TypeTextPlain, text)
 	m.AddAlternativeString(gm.TypeTextHTML, html)
 
-	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(gm.TLSOpportunistic))
+	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
 	if err != nil {
-		warn("Email failed to create mail client: %v", err)
+		info("Email failed to create mail client: %v", err)
 		return
 	}
 	err = c.DialAndSend(m)
 	if err != nil {
-		warn("Email failed to send message: %v", err)
+		info("Email failed to send message: %v", err)
 		return
 	}
 }

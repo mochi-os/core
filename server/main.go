@@ -27,6 +27,7 @@ var (
 	web_brotli_level int
 	email_host       string
 	email_port       int
+	email_tls        bool
 
 	server_started_at time.Time
 )
@@ -99,6 +100,7 @@ func main() {
 	}
 	email_host = ini_string("email", "host", "127.0.0.1")
 	email_port = ini_int("email", "port", 25)
+	email_tls = ini_bool("email", "tls", true)
 
 	load_core_labels()
 	starlark_configure()

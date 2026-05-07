@@ -262,8 +262,13 @@ func p2p_start() {
 	// Add peers from database
 	peers_add_from_db(100)
 
-	// Listen via multicast DNS
-	must(mdns.NewMdnsService(p2p_me, "mochi", &mdns_notifee{h: p2p_me}).Start())
+	// Listen via multicast DNS. Best-effort: hosts without a usable IPv4/IPv6
+	// multicast interface (containers under qemu, certain k8s CNI plugins,
+	// firewalled networks) still reach peers via the DHT and bootstrap nodes,
+	// so a startup failure here shouldn't take the server down.
+	if err := mdns.NewMdnsService(p2p_me, "mochi", &mdns_notifee{h: p2p_me}).Start(); err != nil {
+		warn("mDNS peer discovery disabled: %v", err)
+	}
 
 	// Start pubsubs
 	gs := must(p2p_pubsub.NewGossipSub(p2p_context, p2p_me))

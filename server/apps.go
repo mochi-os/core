@@ -1497,7 +1497,11 @@ func apps_load_published() {
 	apps_dir := filepath.Join(data_dir, "apps")
 	ids, err := file_list(apps_dir)
 	if err != nil {
-		debug("Published apps directory unavailable: %v", err)
+		// Missing dir is the normal first-boot state — no apps installed yet.
+		// Only surface the error if it's something else (permissions, IO).
+		if !os.IsNotExist(err) {
+			debug("Published apps directory unavailable: %v", err)
+		}
 		return
 	}
 	for _, id := range ids {

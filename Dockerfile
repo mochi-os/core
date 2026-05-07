@@ -18,10 +18,14 @@ ARG TARGETARCH
 ENV CGO_ENABLED=1 GOOS=linux
 
 # gcc for native, gcc-aarch64-linux-gnu for arm64 cross-compile from amd64.
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+# Cache IDs are per-target-arch so parallel multi-arch builds don't deadlock
+# on the same /var/cache/apt + /var/lib/apt/lists locks.
+RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt \
+    --mount=type=cache,id=apt-lists-${TARGETARCH},target=/var/lib/apt/lists \
     apt-get update && \
-    apt-get install -y --no-install-recommends gcc gcc-aarch64-linux-gnu && \
+    apt-get install -y --no-install-recommends \
+        gcc libc6-dev \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

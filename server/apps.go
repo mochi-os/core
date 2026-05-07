@@ -696,7 +696,7 @@ func app_download_version(id, version string) bool {
 	}
 
 	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
-	if !file_write_from_reader(zip, s.reader) {
+	if !file_write_from_reader(zip, s.raw_reader()) {
 		_ = os.Remove(zip)
 		return false
 	}

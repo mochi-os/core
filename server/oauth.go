@@ -50,11 +50,14 @@ type oauth_profile struct {
 
 // oauth_state is serialised into ceremonies.data during the round trip.
 type oauth_state struct {
-	Provider string `json:"provider"`
-	Verifier string `json:"verifier"`
-	Nonce    string `json:"nonce"`
-	Target   string `json:"target"`
-	Redirect string `json:"redirect"`
+	Provider  string `json:"provider"`
+	Verifier  string `json:"verifier"`
+	Nonce     string `json:"nonce"`
+	Target    string `json:"target"`
+	Redirect  string `json:"redirect"`
+	Mode      string `json:"mode,omitempty"`      // "mobile" for native-app flow
+	Scheme    string `json:"scheme,omitempty"`    // app deep-link scheme (mobile)
+	Challenge string `json:"challenge,omitempty"` // S256(verifier) for app exchange (mobile)
 }
 
 var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.StringDict{
@@ -233,10 +236,27 @@ func web_oauth_begin(c *gin.Context) {
 	}
 
 	var body struct {
-		Target string `json:"target"`
-		Link   bool   `json:"link"`
+		Target    string `json:"target"`
+		Link      bool   `json:"link"`
+		Mode      string `json:"mode"`      // "mobile" for native-app flow
+		Scheme    string `json:"scheme"`    // app deep-link scheme (mobile only)
+		Challenge string `json:"challenge"` // base64url(sha256(app_verifier)) (mobile only)
 	}
 	c.ShouldBindJSON(&body)
+
+	// Mobile flow validation: scheme must look like a custom app scheme
+	// ("mochi-<app>"), and the PKCE challenge is mandatory so we can prove
+	// the exchange came from the same app instance that started the flow.
+	if body.Mode == "mobile" {
+		if !oauth_valid_mobile_scheme(body.Scheme) {
+			respond_error(c, http.StatusBadRequest, "invalid_scheme", "errors.invalid_scheme", nil)
+			return
+		}
+		if len(body.Challenge) < 32 || len(body.Challenge) > 128 {
+			respond_error(c, http.StatusBadRequest, "invalid_challenge", "errors.invalid_challenge", nil)
+			return
+		}
+	}
 
 	// Linking requires an authenticated session; the user is stored in the
 	// ceremony row so the callback knows to take the link branch. The
@@ -274,11 +294,14 @@ func web_oauth_begin(c *gin.Context) {
 	}
 
 	data, err := json.Marshal(oauth_state{
-		Provider: name,
-		Verifier: verifier,
-		Nonce:    nonce,
-		Target:   body.Target,
-		Redirect: redirect,
+		Provider:  name,
+		Verifier:  verifier,
+		Nonce:     nonce,
+		Target:    body.Target,
+		Redirect:  redirect,
+		Mode:      body.Mode,
+		Scheme:    body.Scheme,
+		Challenge: body.Challenge,
 	})
 	if err != nil {
 		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
@@ -394,6 +417,10 @@ func web_oauth_callback(c *gin.Context) {
 
 	if link_user > 0 {
 		oauth_link(c, name, profile, link_user, st.Target)
+		return
+	}
+	if st.Mode == "mobile" {
+		oauth_mobile_login(c, name, profile, &st)
 		return
 	}
 	oauth_login(c, name, profile, st.Target)
@@ -897,6 +924,273 @@ func user_has_other_login(user *User, leaving string) bool {
 		return true
 	}
 	return false
+}
+
+// ============================================================================
+// Mobile (native app) OAuth flow
+// ============================================================================
+//
+// Browsers complete OAuth by setting a session cookie and redirecting back to
+// a web page. Native apps cannot read cookies from a Custom Tabs session, so
+// we substitute a deep-link return: the callback redirects to
+// <scheme>://oauth-return?code=<exchange_code>, and the app then POSTs the
+// exchange code (plus a PKCE verifier) to /_/auth/oauth/exchange to retrieve
+// the actual session token. The exchange row is single-use and short-lived.
+
+// oauth_valid_mobile_scheme rejects schemes that aren't of the expected
+// "mochi-<app>" shape. Callbacks redirect to <scheme>://oauth-return — letting
+// arbitrary schemes through would turn this into an open redirect.
+func oauth_valid_mobile_scheme(s string) bool {
+	if !strings.HasPrefix(s, "mochi-") {
+		return false
+	}
+	rest := s[len("mochi-"):]
+	if rest == "" || len(rest) > 32 {
+		return false
+	}
+	for _, r := range rest {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// oauth_mobile_redirect 302s to the app's deep-link return URL with either an
+// exchange code (success / MFA / identity-needed) or an error code.
+func oauth_mobile_redirect(c *gin.Context, scheme, exchange_code, error_code string, extras map[string]string) {
+	q := url.Values{}
+	if exchange_code != "" {
+		q.Set("code", exchange_code)
+	}
+	if error_code != "" {
+		q.Set("error", error_code)
+	}
+	for k, v := range extras {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	c.Redirect(http.StatusFound, scheme+"://oauth-return?"+q.Encode())
+}
+
+// oauth_mobile_error sends the app a deep-link redirect carrying an error
+// code, mirroring oauth_error_redirect for the web path.
+func oauth_mobile_error(c *gin.Context, st *oauth_state, code string, extras map[string]string) {
+	oauth_mobile_redirect(c, st.Scheme, "", code, extras)
+}
+
+// oauth_mobile_store stashes the result of a callback in the ceremonies table
+// keyed by a fresh exchange code, so the app can retrieve it via /exchange.
+// The PKCE challenge from begin is stored in the challenge column; the
+// exchange handler verifies the verifier matches before releasing the data.
+func oauth_mobile_store(challenge string, data any) (string, error) {
+	exchange_code := random_alphanumeric(32)
+	body, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	db_open("db/sessions.db").exec(
+		"insert into ceremonies (id, type, challenge, data, expires) values (?, 'oauth_exchange', ?, ?, ?)",
+		exchange_code, []byte(challenge), string(body), now()+120,
+	)
+	return exchange_code, nil
+}
+
+// oauth_mobile_login mirrors oauth_login but completes via deep-link redirect
+// instead of cookie + web redirect. The existing-user path runs the same MFA
+// check; if MFA is required, the partial id is delivered through the exchange.
+func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *oauth_state) {
+	db := db_open("db/users.db")
+
+	var user_id int
+	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
+		if v, ok := row["user"].(int64); ok {
+			user_id = int(v)
+		}
+	}
+
+	if user_id > 0 {
+		user := user_by_id(user_id)
+		if user == nil {
+			audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_user_missing")
+			oauth_mobile_error(c, st, "provider_error", nil)
+			return
+		}
+		if user.Status == "suspended" {
+			audit_login_failed(user.Username, rate_limit_client_ip(c), "suspended")
+			oauth_mobile_error(c, st, "suspended", nil)
+			return
+		}
+		if strings.Contains(user.Methods, "passkey") {
+			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disallowed")
+			oauth_mobile_error(c, st, "oauth_disallowed", nil)
+			return
+		}
+
+		oauth_update_profile(db, provider, p)
+		oauth_verification_record(db, provider, p.Subject, user.ID)
+		rate_limit_login.reset(rate_limit_client_ip(c))
+
+		remaining := auth_remaining_oauth(user)
+		if len(remaining) > 0 {
+			partial := random_alphanumeric(32)
+			db_open("db/sessions.db").exec(
+				"insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
+				partial, user.ID, strings.Join(remaining, ","), now()+300,
+			)
+			code, err := oauth_mobile_store(st.Challenge, map[string]any{
+				"mfa":       true,
+				"partial":   partial,
+				"remaining": remaining,
+			})
+			if err != nil {
+				oauth_mobile_error(c, st, "server_error", nil)
+				return
+			}
+			oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+			return
+		}
+
+		// Full login. Create the session now so the exchange just hands it back.
+		session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
+		audit_login(user.Username, rate_limit_client_ip(c))
+		if user.Identity == nil {
+			user.Identity = user.identity()
+		}
+		has_identity := user.Identity != nil && user.Identity.Name != ""
+
+		code, err := oauth_mobile_store(st.Challenge, map[string]any{
+			"session":      session,
+			"has_identity": has_identity,
+			"name":         identity_name_or_empty(user),
+		})
+		if err != nil {
+			oauth_mobile_error(c, st, "server_error", nil)
+			return
+		}
+		oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+		return
+	}
+
+	// New user signup path.
+	if !setting_signup_enabled() {
+		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_signup_disabled")
+		oauth_mobile_error(c, st, "signup_disabled", nil)
+		return
+	}
+	if !p.Verified || p.Email == "" {
+		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_email_unverified")
+		oauth_mobile_error(c, st, "email_unverified", map[string]string{"provider": provider})
+		return
+	}
+	if exists, _ := db.exists("select 1 from users where username=?", p.Email); exists {
+		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_email_exists")
+		oauth_mobile_error(c, st, "email_exists", map[string]string{"provider": provider, "email": p.Email})
+		return
+	}
+
+	user, reason := user_create(p.Email)
+	if user == nil {
+		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_"+reason)
+		oauth_mobile_error(c, st, "provider_error", nil)
+		return
+	}
+
+	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
+		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
+	oauth_verification_record(db, provider, p.Subject, user.ID)
+	rate_limit_login.reset(rate_limit_client_ip(c))
+
+	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
+	audit_login(user.Username, rate_limit_client_ip(c))
+
+	code, err := oauth_mobile_store(st.Challenge, map[string]any{
+		"session":      session,
+		"has_identity": false,
+		"profile":      map[string]string{"name": p.Name, "email": p.Email},
+	})
+	if err != nil {
+		oauth_mobile_error(c, st, "server_error", nil)
+		return
+	}
+	oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+}
+
+// identity_name_or_empty returns the user's identity name or "" if not set.
+func identity_name_or_empty(user *User) string {
+	if user.Identity != nil {
+		return user.Identity.Name
+	}
+	return ""
+}
+
+// POST /_/auth/oauth/exchange
+// Body: {code, verifier}. The app posts the exchange code it received in the
+// deep link, plus the PKCE verifier matching the challenge supplied at /begin.
+// Returns the same JSON shape as /code/verify (session via Set-Cookie + body
+// metadata, or {mfa, partial, remaining} for incomplete logins).
+func web_oauth_exchange(c *gin.Context) {
+	var body struct {
+		Code     string `json:"code"`
+		Verifier string `json:"verifier"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Code == "" || body.Verifier == "" {
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+		return
+	}
+
+	db := db_open("db/sessions.db")
+	row, _ := db.row("select challenge, data from ceremonies where id=? and type='oauth_exchange' and expires>?",
+		body.Code, now())
+	if row == nil {
+		respond_error(c, http.StatusNotFound, "exchange_invalid", "errors.exchange_invalid", nil)
+		return
+	}
+	// Single-use: consume the row whether or not the verifier matches, so a
+	// brute-force search of verifiers can't try multiple times.
+	db.exec("delete from ceremonies where id=?", body.Code)
+
+	// db.row() converts []byte columns to string, so the BLOB challenge column
+	// arrives as a string here, not a []byte. Reading it as a string keeps us
+	// honest with the helper's contract.
+	stored_challenge, _ := row["challenge"].(string)
+	h := sha256.Sum256([]byte(body.Verifier))
+	expected := base64.RawURLEncoding.EncodeToString(h[:])
+	if stored_challenge != expected {
+		respond_error(c, http.StatusUnauthorized, "exchange_verifier_mismatch", "errors.exchange_verifier_mismatch", nil)
+		return
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(row["data"].(string)), &data); err != nil {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+
+	// MFA branch: just relay the partial info; no session exists yet.
+	if mfa, _ := data["mfa"].(bool); mfa {
+		c.JSON(http.StatusOK, data)
+		return
+	}
+
+	// Full session — set the cookie too so a same-device browser opening the
+	// app's webview gets logged in, and return the JSON the app expects.
+	session, _ := data["session"].(string)
+	if session != "" {
+		web_cookie_set(c, "session", session)
+	}
+	has_identity, _ := data["has_identity"].(bool)
+	resp := gin.H{"has_identity": has_identity}
+	if name, ok := data["name"].(string); ok && name != "" {
+		resp["name"] = name
+	}
+	if profile, ok := data["profile"].(map[string]any); ok {
+		resp["profile"] = profile
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // boolint converts a Go bool to the 0/1 integer we use in SQLite.

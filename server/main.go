@@ -75,6 +75,13 @@ func main() {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
 
+	// Load [email] before audit_init so any warn() emitted during early
+	// startup (e.g. audit_init failing on a host with no syslog) can reach
+	// the admin via email_send.
+	email_host = ini_string("email", "host", "127.0.0.1")
+	email_port = ini_int("email", "port", 25)
+	email_tls = ini_bool("email", "tls", true)
+
 	audit_init()
 	audit_server_start(build_version)
 
@@ -98,9 +105,6 @@ func main() {
 		warn("Invalid web.brotli level %d; using default (4)", web_brotli_level)
 		web_brotli_level = 4
 	}
-	email_host = ini_string("email", "host", "127.0.0.1")
-	email_port = ini_int("email", "port", 25)
-	email_tls = ini_bool("email", "tls", true)
 
 	load_core_labels()
 	starlark_configure()

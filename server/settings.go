@@ -378,6 +378,12 @@ func user_preferences_load(u *User) map[string]string {
 			}
 		}
 	}
+	for _, obsolete := range []string{"style_preset", "border_radius"} {
+		if _, exists := prefs[obsolete]; exists {
+			db.exec("delete from preferences where name = ?", obsolete)
+			delete(prefs, obsolete)
+		}
+	}
 	return prefs
 }
 

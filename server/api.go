@@ -51,6 +51,7 @@ func init() {
 			}),
 			"db":         api_db,
 			"directory":  api_directory,
+			"document":   api_document,
 			"domain":     api_domain,
 			"entity":     api_entity,
 			"file":       api_file,

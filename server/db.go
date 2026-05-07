@@ -27,7 +27,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 48
+	schema_version = 49
 )
 
 var (
@@ -70,6 +70,11 @@ func db_create() {
 	settings := db_open("db/settings.db")
 	settings.exec("create table settings ( name text not null primary key, value text not null )")
 	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
+
+	// Documents: operator-customisable Markdown for server rules / terms / privacy.
+	// Bundled defaults live in core/server/documents/ (embedded); this table
+	// holds only operator overrides keyed by (name, language).
+	settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 
 	// Users
 	users := db_open("db/users.db")
@@ -477,6 +482,8 @@ func db_upgrade() {
 			db_upgrade_47()
 		case 48:
 			db_upgrade_48()
+		case 49:
+			db_upgrade_49()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -615,6 +622,17 @@ func db_upgrade_48() {
 			users.exec("update credentials set sign_count=? where id=?", r["count"], r["credential"])
 		}
 		sessions.exec("alter table passkeys drop column count")
+	}
+}
+
+// db_upgrade_49 adds the documents table to settings.db. Holds operator
+// overrides for the bundled server-rules / terms / privacy markdown shipped
+// in core/server/documents/. Bundled defaults are not copied in — empty
+// override means "serve the bundled default".
+func db_upgrade_49() {
+	settings := db_open("db/settings.db")
+	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
+		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 	}
 }
 

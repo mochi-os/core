@@ -16,13 +16,19 @@ mkdir -p %{buildroot}/var/cache/mochi
 mkdir -p %{buildroot}/var/lib/mochi
 mkdir -p %{buildroot}/usr/lib/systemd/system
 mkdir -p %{buildroot}/usr/share/man/man1
+mkdir -p %{buildroot}/usr/share/man/man5
+mkdir -p %{buildroot}/usr/share/man/man7
+mkdir -p %{buildroot}/usr/share/man/man8
 mkdir -p %{buildroot}/usr/share/bash-completion/completions
 mkdir -p %{buildroot}/usr/share/zsh/site-functions
 cp %{_sourcedir}/mochi-server %{buildroot}/usr/sbin/
 cp %{_sourcedir}/mochictl %{buildroot}/usr/bin/
 cp %{_sourcedir}/mochi.conf %{buildroot}/etc/mochi/
 cp %{_sourcedir}/mochi-server.service %{buildroot}/usr/lib/systemd/system/
-cp %{_sourcedir}/mochictl.1 %{buildroot}/usr/share/man/man1/
+cp %{_sourcedir}/mochictl.1     %{buildroot}/usr/share/man/man1/
+cp %{_sourcedir}/mochi.conf.5   %{buildroot}/usr/share/man/man5/
+cp %{_sourcedir}/mochi.7        %{buildroot}/usr/share/man/man7/
+cp %{_sourcedir}/mochi-server.8 %{buildroot}/usr/share/man/man8/
 cp %{_sourcedir}/mochictl.bash %{buildroot}/usr/share/bash-completion/completions/mochictl
 cp %{_sourcedir}/_mochictl %{buildroot}/usr/share/zsh/site-functions/_mochictl
 
@@ -34,6 +40,9 @@ cp %{_sourcedir}/_mochictl %{buildroot}/usr/share/zsh/site-functions/_mochictl
 %dir /var/lib/mochi
 /usr/lib/systemd/system/mochi-server.service
 /usr/share/man/man1/mochictl.1*
+/usr/share/man/man5/mochi.conf.5*
+/usr/share/man/man7/mochi.7*
+/usr/share/man/man8/mochi-server.8*
 /usr/share/bash-completion/completions/mochictl
 /usr/share/zsh/site-functions/_mochictl
 

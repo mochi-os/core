@@ -33,7 +33,7 @@ all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
 	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
-	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl.1
+	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 
 # Order-only prerequisite: create $(bin) but don't trigger rebuilds when its
 # mtime changes.
@@ -60,8 +60,38 @@ mochictl: $(bin)/mochictl
 # Requires: apt install pandoc
 $(bin)/mochictl.1: docs/mochictl.1.md | $(bin)
 	pandoc -s -t man docs/mochictl.1.md -o $(bin)/mochictl.1
+	@mkdir -p $(HOME)/.local/share/man/man1 && \
+	    cp $(bin)/mochictl.1 $(HOME)/.local/share/man/man1/mochictl.1 && \
+	    echo "  installed to $(HOME)/.local/share/man/man1/mochictl.1 (run \`man mochictl\` to view)"
 
 mochictl.1: $(bin)/mochictl.1
+
+# mochi-server(8) man page — same pandoc-to-roff flow, but section 8.
+$(bin)/mochi-server.8: docs/mochi-server.8.md | $(bin)
+	pandoc -s -t man docs/mochi-server.8.md -o $(bin)/mochi-server.8
+	@mkdir -p $(HOME)/.local/share/man/man8 && \
+	    cp $(bin)/mochi-server.8 $(HOME)/.local/share/man/man8/mochi-server.8 && \
+	    echo "  installed to $(HOME)/.local/share/man/man8/mochi-server.8 (run \`man mochi-server\` to view)"
+
+mochi-server.8: $(bin)/mochi-server.8
+
+# mochi.conf(5) — file-format reference for /etc/mochi/mochi.conf.
+$(bin)/mochi.conf.5: docs/mochi.conf.5.md | $(bin)
+	pandoc -s -t man docs/mochi.conf.5.md -o $(bin)/mochi.conf.5
+	@mkdir -p $(HOME)/.local/share/man/man5 && \
+	    cp $(bin)/mochi.conf.5 $(HOME)/.local/share/man/man5/mochi.conf.5 && \
+	    echo "  installed to $(HOME)/.local/share/man/man5/mochi.conf.5 (run \`man mochi.conf\` to view)"
+
+mochi.conf.5: $(bin)/mochi.conf.5
+
+# mochi(7) — high-level overview of the project: peers, entities, apps.
+$(bin)/mochi.7: docs/mochi.7.md | $(bin)
+	pandoc -s -t man docs/mochi.7.md -o $(bin)/mochi.7
+	@mkdir -p $(HOME)/.local/share/man/man7 && \
+	    cp $(bin)/mochi.7 $(HOME)/.local/share/man/man7/mochi.7 && \
+	    echo "  installed to $(HOME)/.local/share/man/man7/mochi.7 (run \`man 7 mochi\` to view)"
+
+mochi.7: $(bin)/mochi.7
 
 # --------------------------------------------------------------------------
 # Linux ARM cross-compile binaries
@@ -102,7 +132,7 @@ linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
 # --------------------------------------------------------------------------
 
 # AMD64 .deb package
-$(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
+$(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_amd64)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build_linux_amd64)/DEBIAN/control
@@ -112,8 +142,11 @@ $(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
 	strip $(build_linux_amd64)/usr/sbin/mochi-server
 	strip $(build_linux_amd64)/usr/bin/mochictl
 	upx -qq $(build_linux_amd64)/usr/sbin/mochi-server
-	mkdir -p $(build_linux_amd64)/usr/share/man/man1
-	cp $(bin)/mochictl.1 $(build_linux_amd64)/usr/share/man/man1/
+	mkdir -p $(build_linux_amd64)/usr/share/man/man1 $(build_linux_amd64)/usr/share/man/man5 $(build_linux_amd64)/usr/share/man/man7 $(build_linux_amd64)/usr/share/man/man8
+	cp $(bin)/mochictl.1     $(build_linux_amd64)/usr/share/man/man1/
+	cp $(bin)/mochi.conf.5   $(build_linux_amd64)/usr/share/man/man5/
+	cp $(bin)/mochi.7        $(build_linux_amd64)/usr/share/man/man7/
+	cp $(bin)/mochi-server.8 $(build_linux_amd64)/usr/share/man/man8/
 	dpkg-deb --build --root-owner-group $(build_linux_amd64)
 	rm -rf $(build_linux_amd64)
 	ls -l $(deb_amd64)
@@ -121,7 +154,7 @@ $(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
 deb-amd64: $(deb_amd64)
 
 # ARM64 .deb package
-$(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1
+$(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	mkdir -p -m 0775 $(build_linux_arm64) $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_arm64)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: arm64/' build/deb/DEBIAN/control > $(build_linux_arm64)/DEBIAN/control
@@ -130,8 +163,11 @@ $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)
 	cp -av $(bin)/mochictl-linux-arm64 $(build_linux_arm64)/usr/bin/mochictl
 	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/sbin/mochi-server
 	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochictl
-	mkdir -p $(build_linux_arm64)/usr/share/man/man1
-	cp $(bin)/mochictl.1 $(build_linux_arm64)/usr/share/man/man1/
+	mkdir -p $(build_linux_arm64)/usr/share/man/man1 $(build_linux_arm64)/usr/share/man/man5 $(build_linux_arm64)/usr/share/man/man7 $(build_linux_arm64)/usr/share/man/man8
+	cp $(bin)/mochictl.1     $(build_linux_arm64)/usr/share/man/man1/
+	cp $(bin)/mochi.conf.5   $(build_linux_arm64)/usr/share/man/man5/
+	cp $(bin)/mochi.7        $(build_linux_arm64)/usr/share/man/man7/
+	cp $(bin)/mochi-server.8 $(build_linux_arm64)/usr/share/man/man8/
 	dpkg-deb --build --root-owner-group $(build_linux_arm64)
 	rm -rf $(build_linux_arm64)
 	ls -l $(deb_arm64)
@@ -139,7 +175,7 @@ $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)
 deb-arm64: $(deb_arm64)
 
 # ARMHF .deb package
-$(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1
+$(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	mkdir -p -m 0775 $(build_linux_armhf) $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_armhf)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: armhf/' build/deb/DEBIAN/control > $(build_linux_armhf)/DEBIAN/control
@@ -148,8 +184,11 @@ $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/moc
 	cp -av $(bin)/mochictl-linux-arm $(build_linux_armhf)/usr/bin/mochictl
 	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/sbin/mochi-server
 	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochictl
-	mkdir -p $(build_linux_armhf)/usr/share/man/man1
-	cp $(bin)/mochictl.1 $(build_linux_armhf)/usr/share/man/man1/
+	mkdir -p $(build_linux_armhf)/usr/share/man/man1 $(build_linux_armhf)/usr/share/man/man5 $(build_linux_armhf)/usr/share/man/man7 $(build_linux_armhf)/usr/share/man/man8
+	cp $(bin)/mochictl.1     $(build_linux_armhf)/usr/share/man/man1/
+	cp $(bin)/mochi.conf.5   $(build_linux_armhf)/usr/share/man/man5/
+	cp $(bin)/mochi.7        $(build_linux_armhf)/usr/share/man/man7/
+	cp $(bin)/mochi-server.8 $(build_linux_armhf)/usr/share/man/man8/
 	dpkg-deb --build --root-owner-group $(build_linux_armhf)
 	rm -rf $(build_linux_armhf)
 	ls -l $(deb_armhf)
@@ -164,12 +203,15 @@ deb: deb-amd64 deb-arm64 deb-armhf
 
 # x86_64 .rpm package
 # Requires: apt install rpm
-$(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
+$(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp $(bin)/mochi-server $(rpmbuild_dir)/SOURCES/
 	cp $(bin)/mochictl $(rpmbuild_dir)/SOURCES/
 	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
@@ -184,12 +226,15 @@ $(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
 rpm-x86_64: $(rpm_x86_64)
 
 # aarch64 .rpm package
-$(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1
+$(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp $(bin)/mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
 	cp $(bin)/mochictl-linux-arm64 $(rpmbuild_dir)/SOURCES/mochictl
 	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
@@ -204,12 +249,15 @@ $(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bi
 rpm-aarch64: $(rpm_aarch64)
 
 # armv7hl .rpm package
-$(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1
+$(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_dir)
 	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
 	cp $(bin)/mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
 	cp $(bin)/mochictl-linux-arm $(rpmbuild_dir)/SOURCES/mochictl
 	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
 	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
@@ -287,19 +335,30 @@ macos: $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
 # --------------------------------------------------------------------------
 
 docker_image = ghcr.io/mochi-os/mochi-server
+docker_minor = $(word 1,$(subst ., ,$(version))).$(word 2,$(subst ., ,$(version)))
 
 # Build for the host arch only — fast iteration during development. Tags as
 # :dev so it can't be confused with a real release.
 docker-local:
 	docker build --build-arg VERSION=$(version) -t $(docker_image):dev .
 
-# Multi-arch build + push to GHCR. Requires `docker buildx create` to have set
-# up a builder once, and `docker login ghcr.io` credentials in place.
+# Multi-arch build + push to GHCR. Tags applied:
+#     X.Y.Z      exact version (matches deb/rpm/pkg)
+#     X.Y        newest patch in this minor line
+#     latest     docker convention for the newest production release
+#     production explicit alias, matches versions.json track names
+# --sbom and --provenance attach a Software Bill of Materials and SLSA
+# build provenance so consumers can audit the image contents.
+# Requires a multi-arch buildx builder (docker buildx create --use
+# --platform linux/amd64,linux/arm64) and docker login ghcr.io with a
+# PAT scoped to write:packages.
 docker:
 	docker buildx build \
 	    --platform linux/amd64,linux/arm64 \
+	    --sbom=true --provenance=true \
 	    --build-arg VERSION=$(version) \
 	    --tag $(docker_image):$(version) \
+	    --tag $(docker_image):$(docker_minor) \
 	    --tag $(docker_image):latest \
 	    --tag $(docker_image):production \
 	    --push \
@@ -309,7 +368,7 @@ docker:
 # Release
 # --------------------------------------------------------------------------
 
-release: clean deb rpm msi pkg
+release: clean deb rpm msi pkg docker
 	git tag -fa $(version) -m "$(version)"
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main

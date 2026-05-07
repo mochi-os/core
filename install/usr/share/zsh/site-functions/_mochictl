@@ -26,6 +26,7 @@ _mochictl() {
 		'-s[override admin socket path]:socket path:_files' \
 		'-t[tab-separated key/value output]' \
 		'-j[JSON output]' \
+		'-v[verbose: show output for normally silent commands]' \
 		'1: :->subcommand' \
 		'*::arg:->args'
 

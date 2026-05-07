@@ -59,7 +59,7 @@ func init() {
 		"snapshot": {
 			help: "Write *.db.snap siblings of every live DB in the data dir",
 			run: func(args []string) error {
-				return post_dump("/_/admin/snapshot")
+				return post_silent("/_/admin/snapshot")
 			},
 		},
 		"rsync-filter": {
@@ -107,10 +107,10 @@ func get_dump(path string, order ...string) error {
 }
 
 // post_action is for lifecycle endpoints (stop/restart) where the JSON
-// response body is just `{"status": "..."}`. In default human mode it
-// prints `human_msg` (e.g. "Stopping server") and discards the body.
-// In -t / -j mode it falls through to post_dump and renders the raw
-// response so scripts can parse it.
+// response body is just `{"status": "..."}`. Silent on success by default;
+// prints `human_msg` (e.g. "Stopping server") only with -v. In -t / -j
+// mode it falls through to post_dump and renders the raw response so
+// scripts can parse it.
 func post_action(path, human_msg string) error {
 	if flag_tabs || flag_json {
 		return post_dump(path)
@@ -124,7 +124,30 @@ func post_action(path, human_msg string) error {
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	fmt.Println(human_msg)
+	if flag_verbose {
+		fmt.Println(human_msg)
+	}
+	return nil
+}
+
+// post_silent POSTs to path and returns the response body verbatim only when
+// the caller has asked for output (-v, -t, or -j); otherwise it succeeds
+// without printing anything. Used for routine maintenance commands like
+// `mochictl snapshot` that are typically run from cron — the operator only
+// cares about the exit code unless they passed -v.
+func post_silent(path string, order ...string) error {
+	if flag_verbose || flag_tabs || flag_json {
+		return post_dump(path, order...)
+	}
+	resp, err := client().Post(path, "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	return nil
 }
 
@@ -208,10 +231,12 @@ func cmd_backup(args []string) error {
 
 	var out io.Writer
 	var path string
+	auto := false
 	switch {
 	case len(args) == 0:
 		// mochi-backup_YYYYMMDD_HHMMSS.tar.gz — sortable, shell-safe.
 		path = fmt.Sprintf("mochi-backup_%s.tar.gz", time.Now().Format("20060102_150405"))
+		auto = true
 	case args[0] == "-":
 		// Stream to stdout — no path, no confirmation message.
 		out = os.Stdout
@@ -231,7 +256,9 @@ func cmd_backup(args []string) error {
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		return err
 	}
-	if path != "" {
+	// Auto-named path: print so the user knows where the file landed.
+	// Explicit path: silent on success unless -v.
+	if path != "" && (auto || flag_verbose) {
 		fmt.Fprintf(os.Stderr, "mochictl: wrote %s\n", path)
 	}
 	return nil

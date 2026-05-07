@@ -9,7 +9,7 @@ _mochictl() {
 	local cur="${COMP_WORDS[COMP_CWORD]}"
 	local prev="${COMP_WORDS[COMP_CWORD-1]}"
 	local subcommands="backup config health identity restart restore rsync-filter snapshot start status stop version"
-	local flags="-f -s -j -t -h --help"
+	local flags="-f -s -j -t -v -h --help"
 
 	# Global flags expecting a path argument.
 	case "$prev" in

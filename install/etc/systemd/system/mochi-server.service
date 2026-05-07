@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=+setcap 'cap_net_bind_service=+ep' /usr/bin/mochi-server
-ExecStart=/usr/bin/mochi-server
+ExecStartPre=+setcap 'cap_net_bind_service=+ep' /usr/sbin/mochi-server
+ExecStart=/usr/sbin/mochi-server
 User=mochi
 Group=mochi
 PIDFile=/run/mochi-server.pid

@@ -31,7 +31,8 @@ var (
 	file         string
 	socket       string
 	flag_json    bool
-	flag_tabs bool
+	flag_tabs    bool
+	flag_verbose bool
 )
 
 // command is one row of the dispatch table.
@@ -120,6 +121,8 @@ func parse_args(args []string) ([]string, error) {
 			flag_json = true
 		case "-t":
 			flag_tabs = true
+		case "-v":
+			flag_verbose = true
 		case "-f":
 			i++
 			if i >= len(args) {
@@ -151,6 +154,7 @@ Global flags:
   -s <path>           override admin socket path
   -t                  tab-separated key/value output (TSV-style)
   -j                  JSON output (pretty-printed)
+  -v                  verbose: show output for normally silent commands
 
 Subcommands:
 `, build_version, default_config)

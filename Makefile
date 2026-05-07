@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.45
+version = 0.4.49
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -103,15 +103,15 @@ linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
 
 # AMD64 .deb package
 $(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1
-	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
+	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_amd64)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build_linux_amd64)/DEBIAN/control
 	cp -av install/* $(build_linux_amd64)
-	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/bin
+	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/sbin
 	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
-	strip $(build_linux_amd64)/usr/bin/mochi-server
+	strip $(build_linux_amd64)/usr/sbin/mochi-server
 	strip $(build_linux_amd64)/usr/bin/mochictl
-	upx -qq $(build_linux_amd64)/usr/bin/mochi-server
+	upx -qq $(build_linux_amd64)/usr/sbin/mochi-server
 	mkdir -p $(build_linux_amd64)/usr/share/man/man1
 	cp $(bin)/mochictl.1 $(build_linux_amd64)/usr/share/man/man1/
 	dpkg-deb --build --root-owner-group $(build_linux_amd64)
@@ -122,13 +122,13 @@ deb-amd64: $(deb_amd64)
 
 # ARM64 .deb package
 $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1
-	mkdir -p -m 0775 $(build_linux_arm64) $(build_linux_arm64)/usr/bin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
+	mkdir -p -m 0775 $(build_linux_arm64) $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_arm64)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: arm64/' build/deb/DEBIAN/control > $(build_linux_arm64)/DEBIAN/control
 	cp -av install/* $(build_linux_arm64)
-	cp -av $(bin)/mochi-server-linux-arm64 $(build_linux_arm64)/usr/bin/mochi-server
+	cp -av $(bin)/mochi-server-linux-arm64 $(build_linux_arm64)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl-linux-arm64 $(build_linux_arm64)/usr/bin/mochictl
-	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochi-server
+	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/sbin/mochi-server
 	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochictl
 	mkdir -p $(build_linux_arm64)/usr/share/man/man1
 	cp $(bin)/mochictl.1 $(build_linux_arm64)/usr/share/man/man1/
@@ -140,13 +140,13 @@ deb-arm64: $(deb_arm64)
 
 # ARMHF .deb package
 $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1
-	mkdir -p -m 0775 $(build_linux_armhf) $(build_linux_armhf)/usr/bin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
+	mkdir -p -m 0775 $(build_linux_armhf) $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_armhf)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: armhf/' build/deb/DEBIAN/control > $(build_linux_armhf)/DEBIAN/control
 	cp -av install/* $(build_linux_armhf)
-	cp -av $(bin)/mochi-server-linux-arm $(build_linux_armhf)/usr/bin/mochi-server
+	cp -av $(bin)/mochi-server-linux-arm $(build_linux_armhf)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl-linux-arm $(build_linux_armhf)/usr/bin/mochictl
-	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochi-server
+	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/sbin/mochi-server
 	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochictl
 	mkdir -p $(build_linux_armhf)/usr/share/man/man1
 	cp $(bin)/mochictl.1 $(build_linux_armhf)/usr/share/man/man1/

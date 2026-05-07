@@ -6,7 +6,7 @@
 	<string>org.mochi-os.server</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/mochi-server</string>
+		<string>/usr/local/sbin/mochi-server</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

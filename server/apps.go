@@ -67,6 +67,7 @@ type AppTheme struct {
 	Preview        string            `json:"preview"`
 	PreviewDark    string            `json:"preview_dark"`
 	BorderRadius   string            `json:"border_radius"`
+	Spacing        string            `json:"spacing"`
 	IconMask       string            `json:"icon_mask"`
 	IconBackground string            `json:"icon_background"`
 	Background     string            `json:"background"`
@@ -2409,6 +2410,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			}
 			if theme.BorderRadius != "" {
 				result["border_radius"] = theme.BorderRadius
+			}
+			if theme.Spacing != "" {
+				result["spacing"] = theme.Spacing
 			}
 			if theme.IconMask != "" {
 				result["icon_mask"] = theme.IconMask

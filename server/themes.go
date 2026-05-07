@@ -239,15 +239,17 @@ func web_user_theme_style(user *User) string {
 						styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
 					}
 				}
+				switch t.Spacing {
+				case "compact":
+					appendStylePreset(&styleParts, "vega")
+				case "spacious":
+					appendStylePreset(&styleParts, "mira")
+				default:
+					appendStylePreset(&styleParts, "luma")
+				}
 			}
 		}
 	}
-
-	// User style preset overrides base spacing/font/shadow/density tokens.
-	appendStylePreset(&styleParts, user_preference_get(user, "style_preset", "luma"))
-
-	// User border-radius preference takes precedence over theme radius.
-	appendRadiusPreset(&styleParts, user_preference_get(user, "border_radius", "default"))
 
 	if len(styleParts) == 0 {
 		return ""

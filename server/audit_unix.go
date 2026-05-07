@@ -8,6 +8,7 @@ package main
 import (
 	"fmt"
 	"log/syslog"
+	"os"
 )
 
 var (
@@ -16,8 +17,22 @@ var (
 	audit_ops    *syslog.Writer // LOG_LOCAL0: application configuration/operations
 )
 
+// audit_syslog_available reports whether a syslog daemon is reachable. On
+// hosts with no /dev/log socket (distroless containers, future macOS) syslog
+// is structurally unavailable, so audit_init shouldn't warn the admin —
+// nothing's broken, the audit-to-syslog path is just inert.
+func audit_syslog_available() bool {
+	_, err := os.Stat("/dev/log")
+	return err == nil
+}
+
 // Initialize audit logging writers
 func audit_init() {
+	if !audit_syslog_available() {
+		info("audit: /dev/log not present; syslog audit trail disabled")
+		return
+	}
+
 	var err error
 
 	audit_auth, err = syslog.New(syslog.LOG_AUTH|syslog.LOG_INFO, "mochi")

@@ -1,0 +1,25 @@
+# Example Docker Compose file for running Mochi server.
+#
+# Usage:
+#   curl -O https://packages.mochi-os.org/docker/docker-compose.yml
+#   docker compose up -d
+#
+# The bind-mounted ./mochi-data directory makes host-side rsync backups
+# straightforward — see https://docs.mochi-os.org/wikis/yuGtwdxVh/backup-restore.
+
+services:
+  mochi:
+    image: ghcr.io/mochi-os/mochi-server:latest
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+      - "1443:1443/tcp"
+      - "1443:1443/udp"
+    volumes:
+      - ./mochi-data:/var/lib/mochi
+    environment:
+      # Uncomment and set the admin email for outbound mail / alerts.
+      # MOCHI_EMAIL_ADMIN: ops@example.com
+      # SMTP relay if you want the server to send mail directly.
+      # MOCHI_EMAIL_HOST: smtp.example.com
+      # MOCHI_EMAIL_PORT: "25"

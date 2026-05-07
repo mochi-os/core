@@ -230,11 +230,36 @@ func request_language(c *gin.Context, u *User) string {
 			}
 		}
 		tags := parse_accept_language(c.GetHeader("Accept-Language"))
-		if len(tags) > 0 {
-			return tags[0]
+		if pick := negotiate_language(tags); pick != "" {
+			return pick
 		}
 	}
 	return "en"
+}
+
+// negotiate_language picks the best installed catalog for a list of
+// q-sorted Accept-Language tags. For each tag it walks language_fallbacks
+// to find a parent that has a catalog on disk, so a browser saying
+// `Accept-Language: pt-br` lands on `pt` if only `pt` is installed, and
+// `Accept-Language: zz, fr;q=0.9` lands on `fr` rather than the unsupported
+// `zz` (which would degrade through "zz" -> "en" and lose the user's
+// genuine fallback preference). Returns "" if no tag resolves.
+func negotiate_language(tags []string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	installed := map[string]struct{}{}
+	for _, tag := range installed_languages() {
+		installed[tag] = struct{}{}
+	}
+	for _, tag := range tags {
+		for _, candidate := range language_fallbacks(tag) {
+			if _, ok := installed[candidate]; ok {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 // installed_languages returns the union of BCP 47 tags across every loaded

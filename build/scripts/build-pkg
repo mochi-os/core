@@ -24,14 +24,14 @@ trap "rm -rf $BUILD_DIR" EXIT
 # /etc and /var are symlinks to /private/etc and /private/var on macOS, so payload
 # entries must use the /private/... path or the installer fails extraction with
 # "An error occurred while extracting files from the package".
-mkdir -p "$ROOT_DIR/usr/local/bin"
+mkdir -p "$ROOT_DIR/usr/local/sbin"
 mkdir -p "$ROOT_DIR/private/etc/mochi"
 mkdir -p "$ROOT_DIR/Library/LaunchDaemons"
 mkdir -p "$ROOT_DIR/private/var/cache/mochi"
 mkdir -p "$ROOT_DIR/private/var/lib/mochi"
 
-cp "$BINARY" "$ROOT_DIR/usr/local/bin/mochi-server"
-chmod 755 "$ROOT_DIR/usr/local/bin/mochi-server"
+cp "$BINARY" "$ROOT_DIR/usr/local/sbin/mochi-server"
+chmod 755 "$ROOT_DIR/usr/local/sbin/mochi-server"
 cp "$SCRIPT_DIR/../pkg/mochi.conf" "$ROOT_DIR/private/etc/mochi/mochi.conf"
 cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemons/"
 

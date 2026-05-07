@@ -23,8 +23,8 @@ var (
 // starlark_configure reads runtime settings from the loaded INI and applies them.
 // Call this after ini_load(...) so configuration from the file takes effect.
 func starlark_configure() {
-	// if ini_file is nil, don't change current settings
-	if ini_file == nil {
+	// if no ini has been loaded, don't change current settings
+	if !ini_loaded() {
 		return
 	}
 

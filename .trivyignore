@@ -1,0 +1,12 @@
+# Trivy ignore list for the mochi-server Docker image.
+#
+# Add a CVE id (one per line) to suppress findings that are accepted —
+# typically because the fix is upstream-blocked and we're waiting on a
+# distribution to ship it. Each entry should carry a comment explaining
+# why and a date to re-evaluate.
+
+# CVE-2026-0861 — glibc memalign integer overflow leading to heap
+# corruption. Distroless cc-debian12 inherits libc6 from Debian 12; no
+# fix available upstream as of 2026-05. Re-evaluate when Debian ships a
+# glibc 2.36 patch.
+CVE-2026-0861

@@ -342,6 +342,24 @@ docker_minor = $(word 1,$(subst ., ,$(version))).$(word 2,$(subst ., ,$(version)
 docker-local:
 	docker build --build-arg VERSION=$(version) -t $(docker_image):dev .
 
+# Run Trivy against the locally-built image. Fails (exit 1) on any HIGH or
+# CRITICAL finding — useful as a manual pre-release check, intentionally NOT
+# wired into make release because Trivy occasionally flags transitive deps
+# that don't affect us in practice. Mounts the host's docker.sock so the
+# trivy container can inspect images without needing its own daemon.
+# First run downloads the ~50 MB vulnerability DB from mirror.gcr.io and
+# may take several minutes; subsequent runs use the cache at ~/.cache/trivy.
+docker-scan: docker-local
+	docker run --rm \
+	    -v /var/run/docker.sock:/var/run/docker.sock \
+	    -v $(HOME)/.cache/trivy:/root/.cache/trivy \
+	    -v $(CURDIR)/.trivyignore:/.trivyignore:ro \
+	    aquasec/trivy:latest image \
+	    --severity HIGH,CRITICAL --exit-code 1 --no-progress \
+	    --timeout 15m \
+	    --ignorefile /.trivyignore \
+	    $(docker_image):dev
+
 # Multi-arch build + push to GHCR. Tags applied:
 #     X.Y.Z      exact version (matches deb/rpm/pkg)
 #     X.Y        newest patch in this minor line
@@ -381,6 +399,8 @@ release: clean deb rpm msi pkg docker
 	cp $(pkg_amd64) ../packages/macos/mochi-server-amd64.pkg
 	cp $(pkg_arm64) ../packages/macos/mochi-server-arm64.pkg
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
+	mkdir -p ../packages/docker
+	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
 	rsync -av --delete ../packages/ root@packages.mochi-os.org:/srv/packages/
 
 format:

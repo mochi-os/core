@@ -46,4 +46,4 @@ If you encounter content or behaviour that breaches these rules, please report i
 
 ## Changes
 
-We may update these rules from time to time. Material changes will be announced on the server or the Mochi Announcements feed before they take effect.
+We may update these terms from time to time. Material changes will be announced before they take effect. Continued use of the service after a change means you accept the updated terms.

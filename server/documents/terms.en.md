@@ -23,6 +23,12 @@ You retain ownership of the content you post. By publishing content through this
 
 You are responsible for the content you post. Do not post content you do not have the right to publish.
 
+## Third-party content
+
+This service exposes content that originates outside {{operator.name}}'s direct control — posts and other material replicated from other Mochi servers via the peer-to-peer network, RSS and other external feeds, content posted by other users on this server, and links to external websites. {{operator.name}} does not produce, endorse, vet, or vouch for the accuracy, legality, or safety of any such third-party content, and is not responsible for it. If you access, rely on, or share third-party content via this server, you do so at your own risk.
+
+We act on credible reports of illegal content reaching this server (see the **Server rules** for how to report), but we cannot guarantee the availability, accuracy, or removal of content stored on servers we do not run. External links are provided for convenience only and are not under our control.
+
 ## Suspension and termination
 
 {{operator.name}} may suspend or close your account, or remove specific content, if you breach these terms or the Server rules, or if doing so is necessary to comply with the law or to protect the service and other users. Where practical we will give you notice and an opportunity to respond, but in clear cases (for example, illegal content, an active attack on the service) we may act immediately.
@@ -45,7 +51,7 @@ These terms are governed by the law of **{{operator.jurisdiction}}**, and any di
 
 ## Changes
 
-We may update these terms from time to time. Material changes will be announced on the server or the Mochi Announcements feed before they take effect. Continued use of the service after a change means you accept the updated terms.
+We may update these terms from time to time. Material changes will be announced before they take effect. Continued use of the service after a change means you accept the updated terms.
 
 ## Contact
 

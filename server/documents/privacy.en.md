@@ -43,10 +43,10 @@ We keep your account data for as long as your account is active, and for a reaso
 
 This service is operated from **{{operator.jurisdiction}}**, and the law of {{operator.jurisdiction}} applies to the processing of your personal data on this server.
 
+## Changes
+
+We may update these terms from time to time. Material changes will be announced before they take effect. Continued use of the service after a change means you accept the updated terms.
+
 ## Contact
 
 For any privacy question or to make a request: **{{operator.email}}**
-
-## Changes
-
-We may update this notice from time to time. Material changes will be announced on the server or the Mochi Announcements feed before they take effect.

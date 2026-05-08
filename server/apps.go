@@ -2386,54 +2386,82 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	apps_lock.Lock()
+
+	// Gather all (app, version, theme) tuples, then drop any whose visual
+	// definition is byte-for-byte identical to one we've already seen. Dev
+	// apps win the dedup so a developer iterating on a manifest doesn't see
+	// their themes shadowed by a published copy of the same app. Diverging
+	// any field — hue, spacing, override, background — produces a distinct
+	// signature and both themes are shown.
+	type entry struct {
+		app   *App
+		av    *AppVersion
+		theme AppTheme
+	}
+	entries := make([]entry, 0)
 	for _, a := range apps {
 		av := a.active_locked(user)
 		if av == nil || !av.user_allowed(user) {
 			continue
 		}
 		for _, theme := range av.Themes {
-			label := a.label(user, av, theme.Label)
-			if label == "" {
-				label = theme.Label
-			}
-			result := map[string]any{
-				"id":      a.id + ":" + theme.ID,
-				"app":     a.id,
-				"label":   label,
-				"hue":     theme.Hue,
-				"chroma":  theme.Chroma,
-				"hue_bg":  theme.HueBG,
-				"preview": theme.Preview,
-			}
-			if theme.PreviewDark != "" {
-				result["preview_dark"] = theme.PreviewDark
-			}
-			if theme.BorderRadius != "" {
-				result["border_radius"] = theme.BorderRadius
-			}
-			if theme.Spacing != "" {
-				result["spacing"] = theme.Spacing
-			}
-			if theme.IconMask != "" {
-				result["icon_mask"] = theme.IconMask
-			}
-			if theme.IconBackground != "" {
-				result["icon_background"] = theme.IconBackground
-			}
-			if theme.Background != "" {
-				result["background"] = theme.Background
-				if len(av.Paths) > 0 && !strings.ContainsAny(theme.Background, `<>"`) {
-					result["background_url"] = "/" + av.Paths[0] + "/backgrounds/" + theme.Background
-				}
-			}
-			if theme.BackgroundDark != "" {
-				result["background_dark"] = theme.BackgroundDark
-			}
-			if len(theme.Overrides) > 0 {
-				result["overrides"] = theme.Overrides
-			}
-			results = append(results, result)
+			entries = append(entries, entry{app: a, av: av, theme: theme})
 		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return !is_entity_id(entries[i].app.id) && is_entity_id(entries[j].app.id)
+	})
+
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		sig, _ := json.Marshal(e.theme)
+		if seen[string(sig)] {
+			continue
+		}
+		seen[string(sig)] = true
+
+		a, av, theme := e.app, e.av, e.theme
+		label := a.label(user, av, theme.Label)
+		if label == "" {
+			label = theme.Label
+		}
+		result := map[string]any{
+			"id":      a.id + ":" + theme.ID,
+			"app":     a.id,
+			"label":   label,
+			"hue":     theme.Hue,
+			"chroma":  theme.Chroma,
+			"hue_bg":  theme.HueBG,
+			"preview": theme.Preview,
+		}
+		if theme.PreviewDark != "" {
+			result["preview_dark"] = theme.PreviewDark
+		}
+		if theme.BorderRadius != "" {
+			result["border_radius"] = theme.BorderRadius
+		}
+		if theme.Spacing != "" {
+			result["spacing"] = theme.Spacing
+		}
+		if theme.IconMask != "" {
+			result["icon_mask"] = theme.IconMask
+		}
+		if theme.IconBackground != "" {
+			result["icon_background"] = theme.IconBackground
+		}
+		if theme.Background != "" {
+			result["background"] = theme.Background
+			if len(av.Paths) > 0 && !strings.ContainsAny(theme.Background, `<>"`) {
+				result["background_url"] = "/" + av.Paths[0] + "/backgrounds/" + theme.Background
+			}
+		}
+		if theme.BackgroundDark != "" {
+			result["background_dark"] = theme.BackgroundDark
+		}
+		if len(theme.Overrides) > 0 {
+			result["overrides"] = theme.Overrides
+		}
+		results = append(results, result)
 	}
 	apps_lock.Unlock()
 

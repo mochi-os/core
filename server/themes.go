@@ -195,60 +195,104 @@ func appendStylePreset(styleParts *[]string, preset string) {
 
 // web_user_theme_style returns an inline style="..." attribute carrying
 // the user's resolved theme as CSS custom properties (hue, radius, fonts,
-// shadows, density). Returns empty string when no theme is configured.
+// shadows, density). Honours per-axis user overrides — density, radius,
+// background, font_size — each defaulting to "theme" (inherit from the
+// active theme). Returns empty string when nothing is configured.
 func web_user_theme_style(user *User) string {
 	if user == nil {
 		return ""
 	}
 
-	styleParts := []string{}
+	user_density := user_preference_get(user, "density", "theme")
+	user_radius := user_preference_get(user, "radius", "theme")
+	user_background := user_preference_get(user, "background", "theme")
+	user_font_size := user_preference_get(user, "font_size", "theme")
 
+	var t *AppTheme
+	var theme_app_id string
 	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", "")); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
-			if t := app_theme_get(user, parts[0], parts[1]); t != nil {
-				styleParts = append(styleParts,
-					fmt.Sprintf("--hue: %g", t.Hue),
-					fmt.Sprintf("--hue-chroma: %g", t.Chroma),
-					fmt.Sprintf("--hue-bg: %g", t.HueBG),
-				)
-				if t.BorderRadius != "" && !strings.ContainsAny(t.BorderRadius, `;<>"`) {
-					appendRadiusVarsFromBase(&styleParts, t.BorderRadius)
+			t = app_theme_get(user, parts[0], parts[1])
+			theme_app_id = parts[0]
+		}
+	}
+
+	styleParts := []string{}
+
+	if t != nil {
+		styleParts = append(styleParts,
+			fmt.Sprintf("--hue: %g", t.Hue),
+			fmt.Sprintf("--hue-chroma: %g", t.Chroma),
+			fmt.Sprintf("--hue-bg: %g", t.HueBG),
+		)
+	}
+
+	// Effective radius: user override wins, else theme's value.
+	radius := ""
+	if user_radius != "theme" {
+		radius = user_radius
+	} else if t != nil {
+		radius = t.BorderRadius
+	}
+	if radius != "" && !strings.ContainsAny(radius, `;<>"`) {
+		appendRadiusVarsFromBase(&styleParts, radius)
+	}
+
+	// Background image, suppressed when the user opts out.
+	if t != nil && user_background != "off" && t.Background != "" && theme_app_id != "" {
+		apps_lock.Lock()
+		a := apps[theme_app_id]
+		apps_lock.Unlock()
+		if a != nil {
+			av := a.active(user)
+			if av != nil && len(av.Paths) > 0 {
+				base := av.Paths[0]
+				if !strings.ContainsAny(t.Background, `<>"`) {
+					styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
 				}
-				if t.Background != "" {
-					// Resolve background URL from theme app's path
-					if app_id := parts[0]; app_id != "" {
-						apps_lock.Lock()
-						a := apps[app_id]
-						apps_lock.Unlock()
-						if a != nil {
-							av := a.active(user)
-							if av != nil && len(av.Paths) > 0 {
-								base := av.Paths[0]
-								if !strings.ContainsAny(t.Background, `<>"`) {
-									styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
-								}
-								if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-									styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
-								}
-							}
-						}
-					}
-				}
-				for key, val := range t.Overrides {
-					if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
-						styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
-					}
-				}
-				switch t.Spacing {
-				case "compact":
-					appendStylePreset(&styleParts, "vega")
-				case "spacious":
-					appendStylePreset(&styleParts, "mira")
-				default:
-					appendStylePreset(&styleParts, "luma")
+				if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
+					styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
 				}
 			}
 		}
+	}
+
+	if t != nil {
+		for key, val := range t.Overrides {
+			if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
+				styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
+			}
+		}
+	}
+
+	// Effective density: user override wins, else theme's spacing.
+	density := ""
+	if user_density != "theme" {
+		density = user_density
+	} else if t != nil {
+		density = t.Spacing
+	}
+	if density != "" {
+		switch density {
+		case "compact":
+			appendStylePreset(&styleParts, "vega")
+		case "spacious":
+			appendStylePreset(&styleParts, "mira")
+		default:
+			appendStylePreset(&styleParts, "luma")
+		}
+	}
+
+	// Font size scales the html root, so all rem-based sizing follows.
+	switch user_font_size {
+	case "small":
+		styleParts = append(styleParts, "font-size: 87.5%")
+	case "normal":
+		styleParts = append(styleParts, "font-size: 100%")
+	case "large":
+		styleParts = append(styleParts, "font-size: 112.5%")
+	case "extra-large":
+		styleParts = append(styleParts, "font-size: 125%")
 	}
 
 	if len(styleParts) == 0 {

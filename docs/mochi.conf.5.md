@@ -144,6 +144,20 @@ output, so the effective configuration is safe to copy into bug reports.
 :   When **true**, dev apps reload on file change without a server
     restart. Defaults to **false**.
 
+## [update]
+
+**check** = **true** | **false**
+:   When **true** (default), the server polls
+    *https://packages.mochi-os.org/<platform>/versions.json* once every
+    24 hours and notifies all administrator users when a newer release
+    is published on the production track. Set to **false** to disable
+    the daily poll entirely.
+
+    Released builds (`make release` from the Mochi source tree) include
+    a build-time `build_platform` tag for *linux*, *windows*, *macos*
+    or *docker*; the daily check only runs when both that tag and a
+    `build_version` are present, so source builds stay quiet.
+
 # ENVIRONMENT OVERRIDES
 
 Every key has an environment-variable counterpart of the form

@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         arm64) export GOARCH=arm64 CC=aarch64-linux-gnu-gcc ;; \
         *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac && \
-    go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION}" \
+    go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION} -X main.build_platform=docker" \
         -o /out/mochi-server ./server && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION}" \
         -o /out/mochictl ./mochictl

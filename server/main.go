@@ -16,6 +16,7 @@ type Map map[string]any
 
 var (
 	build_version    string
+	build_platform   string
 	cache_dir        string
 	config_file      string
 	data_dir         string
@@ -34,7 +35,30 @@ var (
 
 func main() {
 	server_started_at = time.Now()
-	info("Mochi %s starting", build_version)
+	if windows_service_run() {
+		// Ran as a Windows service via the SCM. service_windows.go drove
+		// main_serve() to completion already.
+		return
+	}
+	code := main_serve(nil)
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// main_serve runs the full server lifecycle: parse flags, load config, start
+// managers, wait for a shutdown trigger, drain, exit. Returns the exit code.
+//
+// The optional ready callback is invoked once initialisation is complete and
+// the server has started serving requests — used by the Windows service
+// handler to transition from StartPending to Running at the right moment.
+// Pass nil in interactive mode.
+func main_serve(ready func()) int {
+	if build_platform != "" {
+		info("Mochi %s starting on %s", build_version, build_platform)
+	} else {
+		info("Mochi %s starting", build_version)
+	}
 
 	// Platform-aware default paths
 	default_config := "/etc/mochi/mochi.conf"
@@ -48,13 +72,26 @@ func main() {
 		default_cache = filepath.Join(home, "Library", "Caches", "Mochi")
 		default_data = app_support
 	case "windows":
-		local_app_data := os.Getenv("LOCALAPPDATA")
-		if local_app_data == "" {
-			local_app_data = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		// %ProgramData%\Mochi is shared across users and accessible to the
+		// LocalSystem account that the Windows service runs under. Falls
+		// back to %LocalAppData%\mochi if ProgramData isn't set (rare).
+		program_data := os.Getenv("ProgramData")
+		if program_data == "" {
+			program_data = os.Getenv("ALLUSERSPROFILE")
 		}
-		default_config = filepath.Join(local_app_data, "mochi", "mochi.conf")
-		default_cache = filepath.Join(local_app_data, "mochi", "cache")
-		default_data = filepath.Join(local_app_data, "mochi", "data")
+		if program_data != "" {
+			default_config = filepath.Join(program_data, "Mochi", "mochi.conf")
+			default_cache = filepath.Join(program_data, "Mochi", "cache")
+			default_data = filepath.Join(program_data, "Mochi", "data")
+		} else {
+			local_app_data := os.Getenv("LOCALAPPDATA")
+			if local_app_data == "" {
+				local_app_data = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+			}
+			default_config = filepath.Join(local_app_data, "mochi", "mochi.conf")
+			default_cache = filepath.Join(local_app_data, "mochi", "cache")
+			default_data = filepath.Join(local_app_data, "mochi", "data")
+		}
 	}
 
 	flag.StringVar(&config_file, "f", default_config, "Configuration file")
@@ -62,18 +99,23 @@ func main() {
 	err := ini_load(config_file)
 	if err != nil {
 		warn("Unable to read configuration file: %v", err)
-		os.Exit(1)
+		return 1
 	}
 
 	cache_dir = ini_string("directories", "cache", default_cache)
 	data_dir = ini_string("directories", "data", default_data)
 	if err := directories_ensure(); err != nil {
 		warn("directories.ensure failed: %v", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := run_dir_create(); err != nil {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
+
+	// Redirect stdout/stderr to a file when running as a Windows service —
+	// the SCM doesn't expose a console, so log.Print would otherwise vanish.
+	// No-op on other platforms and in interactive mode.
+	windows_service_redirect_logs()
 
 	// Load [email] before audit_init so any warn() emitted during early
 	// startup (e.g. audit_init failing on a host with no syslog) can reach
@@ -129,14 +171,20 @@ func main() {
 	go queue_manager()
 	go ratelimit_manager()
 	go sessions_manager()
+	go update_manager()
 	go web_start()
 	go apps_manager()
 	go schedule_start()
 
+	if ready != nil {
+		ready()
+	}
+
 	// Wait for a shutdown trigger. Sources:
 	//   - os.Interrupt (Ctrl-C, cross-platform)
 	//   - SIGTERM (docker stop, systemctl stop)
-	//   - shutdown_request channel (mochictl stop / restart, exit code carried)
+	//   - shutdown_request channel (mochictl stop / restart, exit code carried;
+	//     also driven by the Windows service handler when the SCM sends Stop)
 	// SIGHUP is registered too but ignored — config reload was dropped, and
 	// not registering it would let kill -HUP terminate the process via the
 	// default signal action.
@@ -176,7 +224,5 @@ loop:
 
 	audit_close()
 	info("Shutdown complete")
-	if exit_code != 0 {
-		os.Exit(exit_code)
-	}
+	return exit_code
 }

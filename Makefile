@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.51
+version = 0.4.54
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -29,6 +29,14 @@ pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
 
+# Build flags. build_platform tags release builds so the daily update_manager
+# can poll the right packages.mochi-os.org/<path>/versions.json. Empty for
+# `make` from source — those binaries don't poll.
+ldflags_linux   = -X main.build_version=$(version) -X main.build_platform=linux
+ldflags_windows = -X main.build_version=$(version) -X main.build_platform=windows
+ldflags_macos   = -X main.build_version=$(version) -X main.build_platform=macos
+ldflags_mochictl = -X main.build_version=$(version)
+
 all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
@@ -45,14 +53,14 @@ $(bin):
 # --------------------------------------------------------------------------
 
 $(bin)/mochi-server: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server ./server
+	go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server ./server
 
 # Phony alias for the historical name.
 mochi-server: $(bin)/mochi-server
 
 # mochictl is pure Go (no cgo): cross-arch builds are just GOOS/GOARCH.
 $(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl ./mochictl
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
 
 mochictl: $(bin)/mochictl
 
@@ -100,24 +108,24 @@ mochi.7: $(bin)/mochi.7
 # Linux ARM64 executable (cross-compile)
 # Requires: apt install gcc-aarch64-linux-gnu
 $(bin)/mochi-server-linux-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-linux-arm64 ./server
+	CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm64 ./server
 
 mochi-server-linux-arm64: $(bin)/mochi-server-linux-arm64
 
 # Linux ARM 32-bit executable (cross-compile)
 # Requires: apt install gcc-arm-linux-gnueabihf
 $(bin)/mochi-server-linux-arm: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-linux-arm ./server
+	CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm ./server
 
 mochi-server-linux-arm: $(bin)/mochi-server-linux-arm
 
 $(bin)/mochictl-linux-arm64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl-linux-arm64 ./mochictl
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-linux-arm64 ./mochictl
 
 mochictl-linux-arm64: $(bin)/mochictl-linux-arm64
 
 $(bin)/mochictl-linux-arm: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochictl-linux-arm ./mochictl
+	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-linux-arm ./mochictl
 
 mochictl-linux-arm: $(bin)/mochictl-linux-arm
 
@@ -280,7 +288,7 @@ rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
 # Windows executable (cross-compile from Linux)
 # Requires: apt install gcc-mingw-w64-x86-64 (for CGO/SQLite support)
 $(bin)/mochi-server.exe: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server.exe ./server
+	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -v -ldflags "$(ldflags_windows)" -o $(bin)/mochi-server.exe ./server
 
 mochi-server.exe: $(bin)/mochi-server.exe
 
@@ -305,12 +313,12 @@ windows: $(bin)/mochi-server.exe
 darwin_cgo = $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1 || echo 0)
 
 $(bin)/mochi-server-darwin-amd64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-darwin-amd64 ./server
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-amd64 ./server
 
 mochi-server-darwin-amd64: $(bin)/mochi-server-darwin-amd64
 
 $(bin)/mochi-server-darwin-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "-X main.build_version=$(version)" -o $(bin)/mochi-server-darwin-arm64 ./server
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-arm64 ./server
 
 mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 
@@ -391,9 +399,11 @@ release: clean deb rpm msi pkg docker
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
 	./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
+	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
 	./build/scripts/rpm-repository-update ../packages/rpm
+	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
 	cp $(msi) ../packages/windows/mochi-server.msi
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/windows/versions.json
 	cp $(pkg_amd64) ../packages/macos/mochi-server-amd64.pkg

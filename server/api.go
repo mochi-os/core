@@ -79,6 +79,10 @@ func init() {
 				"started": sl.NewBuiltin("mochi.server.started", api_server_started),
 				"uptime":  sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
 				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
+				"update": sls.FromStringDict(sl.String("mochi.server.update"), sl.StringDict{
+					"info":    sl.NewBuiltin("mochi.server.update.info", api_server_update_info),
+					"install": sl.NewBuiltin("mochi.server.update.install", api_server_update_install),
+				}),
 			}),
 			"service": sls.FromStringDict(sl.String("mochi.service"), sl.StringDict{
 				"call":   sl.NewBuiltin("mochi.service.call", api_service_call),
@@ -387,6 +391,64 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return result, err
 }
 
+// service_call_as_server invokes a service function from the running Mochi
+// server itself rather than from a calling app. The handler sees app="" in
+// its v3+ context dict; the notifications app treats that as the reserved
+// "Mochi Server" sender id (see apps/notifications/notifications.star).
+//
+// target_user is the user whose app context the call runs in — for instance
+// the admin whose notifications.db should receive the row. Suspended users
+// or users without an identity are skipped silently and a nil error is
+// returned.
+//
+// args is encoded as kwargs onto the Starlark function call; positional
+// parameters after the prepended context dict are not used.
+func service_call_as_server(target_user_id int64, service string, function string, args Map) error {
+	user := user_by_id(int(target_user_id))
+	if user == nil {
+		return nil
+	}
+	a := app_for_service(user, service)
+	if a == nil {
+		return fmt.Errorf("no app for service %q", service)
+	}
+	av := a.active(user)
+	if av == nil {
+		return fmt.Errorf("app %q has no active version", a.id)
+	}
+	f, found := av.Functions[function]
+	if !found {
+		f, found = av.Functions[""]
+	}
+	if !found {
+		return fmt.Errorf("unknown function %q for service %q", function, service)
+	}
+
+	app_user_setup(user, a.id)
+
+	s := av.starlark()
+	s.set("app", a)
+	s.set("user", user)
+	s.set("owner", user)
+	s.set("depth", 1)
+
+	var call_args sl.Tuple
+	if av.Architecture.Version >= 3 {
+		ctx := sl.NewDict(2)
+		ctx.SetKey(sl.String("app"), sl.String(""))
+		ctx.SetKey(sl.String("_server"), sl.Bool(true))
+		call_args = sl.Tuple{ctx}
+	}
+
+	kwargs := make([]sl.Tuple, 0, len(args))
+	for k, v := range args {
+		kwargs = append(kwargs, sl.Tuple{sl.String(k), sl_encode(v)})
+	}
+
+	_, err := s.call(f.Function, call_args, kwargs)
+	return err
+}
+
 // mochi.server.id() -> string: Get the local libp2p peer ID for this server
 func api_server_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.String(p2p_id), nil
@@ -405,6 +467,55 @@ func api_server_uptime(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // mochi.server.version() -> string: Get the server version
 func api_server_version(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.String(build_version), nil
+}
+
+// mochi.server.update.info() -> dict: Information about available server upgrades.
+// Returns {available, current, latest, platform, track, checked, pending}:
+//
+//	available  bool   — true if a newer version is available on the configured track
+//	current    string — running version
+//	latest     string — latest version observed in the daily check ("" if never run)
+//	platform   string — packaging tag: "linux-deb", "linux-rpm", "macos-arm64",
+//	                    "macos-amd64", "windows", "docker", or "" (dev / unknown)
+//	track      string — currently always "production"
+//	checked    int    — Unix timestamp of the last successful check (0 if never)
+//	pending    string — version currently being installed ("" if none)
+func api_server_update_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	latest := setting_get("update_notified", "")
+	checked, _ := strconv.ParseInt(setting_get("update_checked", "0"), 10, 64)
+	pending := setting_get("update_pending", "")
+	platform := update_platform_full()
+	available := latest != "" && version_compare(latest, build_version) > 0
+	return sl_encode(map[string]any{
+		"available": available,
+		"current":   build_version,
+		"latest":    latest,
+		"platform":  platform,
+		"track":     update_track,
+		"checked":   checked,
+		"pending":   pending,
+	}), nil
+}
+
+// mochi.server.update.install([version]) -> dict: Trigger an unattended
+// self-install of the latest known upgrade (or the given version) on
+// Windows. Returns {pending: <version>} on success. Errors on platforms
+// that don't support self-install (currently anything except Windows).
+//
+// Caller is responsible for admin-gating; the settings app's action
+// wrapper does this via require_admin.
+func api_server_update_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var version string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "version?", &version); err != nil {
+		return nil, err
+	}
+	if version == "" {
+		version = setting_get("update_notified", "")
+	}
+	if err := update_install_start(version); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(map[string]any{"pending": version}), nil
 }
 
 // streamModule is a callable module that also has a .peer method

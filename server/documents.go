@@ -36,7 +36,7 @@ func document_get(name, language string) string {
 	if body == "" {
 		return ""
 	}
-	return document_render(body)
+	return document_render(body, language)
 }
 
 // document_name_valid checks whether name is one of the allowlisted documents.
@@ -98,18 +98,19 @@ func document_bundled(name, language string) string {
 // document_render performs literal placeholder substitution. Recognised
 // placeholders are {{operator.name}}, {{operator.email}}, and
 // {{operator.jurisdiction}}, all from system settings. Empty operator
-// settings render as "[not configured]" so it is visually obvious they
-// have not been filled in. We use literal string replacement rather than
-// text/template so the placeholder syntax in the markdown files is exactly
-// what operators see and edit.
-func document_render(body string) string {
+// settings render as the localised `document.not_configured` core label
+// (e.g. "[not configured]" in en, "[non configuré]" in fr) so it is
+// visually obvious they have not been filled in. We use literal string
+// replacement rather than text/template so the placeholder syntax in the
+// markdown files is exactly what operators see and edit.
+func document_render(body, language string) string {
 	replacements := []struct {
 		placeholder string
 		value       string
 	}{
-		{"{{operator.name}}", document_setting("operator_name")},
-		{"{{operator.email}}", document_setting("operator_email")},
-		{"{{operator.jurisdiction}}", document_setting("operator_jurisdiction")},
+		{"{{operator.name}}", document_setting("operator_name", language)},
+		{"{{operator.email}}", document_setting("operator_email", language)},
+		{"{{operator.jurisdiction}}", document_setting("operator_jurisdiction", language)},
 	}
 	for _, r := range replacements {
 		body = strings.ReplaceAll(body, r.placeholder, r.value)
@@ -117,12 +118,12 @@ func document_render(body string) string {
 	return body
 }
 
-// document_setting reads an operator-info setting and returns the placeholder
-// "[not configured]" if empty.
-func document_setting(name string) string {
+// document_setting reads an operator-info setting and returns the
+// localised "not configured" sentinel if empty.
+func document_setting(name, language string) string {
 	v := setting_get(name, "")
 	if v == "" {
-		return "[not configured]"
+		return resolve_core_label(language, "document.not_configured", nil)
 	}
 	return v
 }

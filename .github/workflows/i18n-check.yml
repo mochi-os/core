@@ -1,0 +1,51 @@
+name: i18n Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  i18n:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check hardcoded English in user-facing server responses
+        run: |
+          # Flags Go `c.JSON(..., "error|message": "literal")` and Starlark
+          # `a.error(status, "literal")` — the label-aware forms are
+          # `respond_error(c, status, code, key, args)` and
+          # `a.error.label(status, key, ...)`. Allowlist intentional cases
+          # with a `# i18n-ok: <reason>` trailing comment.
+          python3 - <<'PY'
+          import re, sys
+          from pathlib import Path
+          STAR_ERR = re.compile(r'\ba\.error\s*\(\s*\d+\s*,\s*("[^"]+"|\'[^\']+\')')
+          GO_ERR = re.compile(r'c\.JSON\s*\([^)]*"error"\s*:\s*("[^"]+")')
+          GO_MSG = re.compile(r'c\.JSON\s*\([^)]*"message"\s*:\s*("[^"]+")')
+          ALLOW = re.compile(r'#\s*i18n-ok\b|//\s*i18n-ok\b')
+          SKIP = {'node_modules','vendor','.git','test','tests'}
+          violations = 0
+          for f in list(Path('.').rglob('*.star')) + list(Path('.').rglob('*.go')):
+              if any(p in f.parts for p in SKIP):
+                  continue
+              for n, line in enumerate(f.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                  if ALLOW.search(line):
+                      continue
+                  if f.suffix == '.star':
+                      if STAR_ERR.search(line):
+                          print(f"::error file={f},line={n}::a.error() with literal — use a.error.label(status, key, ...)")
+                          violations += 1
+                  else:
+                      if GO_ERR.search(line) or GO_MSG.search(line):
+                          print(f"::error file={f},line={n}::c.JSON literal error/message — use respond_error(c, status, code, key, args)")
+                          violations += 1
+          if violations:
+              print(f"\n{violations} server-side i18n violations", file=sys.stderr)
+              sys.exit(1)
+          print("Server i18n check passed.")
+          PY

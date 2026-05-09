@@ -2426,13 +2426,14 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			label = theme.Label
 		}
 		result := map[string]any{
-			"id":      a.id + ":" + theme.ID,
-			"app":     a.id,
-			"label":   label,
-			"hue":     theme.Hue,
-			"chroma":  theme.Chroma,
-			"hue_bg":  theme.HueBG,
-			"preview": theme.Preview,
+			"id":          a.id + ":" + theme.ID,
+			"app":         a.id,
+			"label":       label,
+			"hue":         theme.Hue,
+			"chroma":      theme.Chroma,
+			"hue_bg":      theme.HueBG,
+			"preview":     theme.Preview,
+			"development": !is_entity_id(a.id),
 		}
 		if theme.PreviewDark != "" {
 			result["preview_dark"] = theme.PreviewDark

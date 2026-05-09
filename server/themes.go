@@ -107,7 +107,7 @@ func font_stacks(pref string) (sans, mono string) {
 // platform-wide defaults so changing density doesn't ripple into
 // typography or visual depth. Single source of truth for both
 // server-rendered inline styles (web_user_theme_style) and the
-// mochi.app.theme_presets() API the client consumes for live updates
+// mochi.app.presets() API the client consumes for live updates
 // and theme previews.
 func style_preset_vars(density string) map[string]string {
 	const (

@@ -343,7 +343,7 @@ func update_notify_admins(latest string) {
 		if user == nil {
 			continue
 		}
-		lang := user_preference_get(user, "language", "en")
+		lang := user_language(user)
 		title := resolve_core_label(lang, "update.notification.title", map[string]any{"version": latest})
 		body := resolve_core_label(lang, "update.notification.body", map[string]any{"current": build_version})
 		topic_label := resolve_core_label(lang, "update.notification.topic", nil)

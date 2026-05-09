@@ -459,14 +459,14 @@ var (
 		"get":           sl.NewBuiltin("mochi.app.get", api_app_get),
 		"icons":         sl.NewBuiltin("mochi.app.icons", api_app_icons),
 		"label":         sl.NewBuiltin("mochi.app.label", api_app_label),
-		"list":          sl.NewBuiltin("mochi.app.list", api_app_list),
-		"package":       api_app_package,
-		"path":          api_app_path,
-		"service":       api_app_service,
-		"themes":        sl.NewBuiltin("mochi.app.themes", api_app_themes),
-		"theme_presets": sl.NewBuiltin("mochi.app.theme_presets", api_app_theme_presets),
-		"track":         api_app_track,
-		"version":       api_app_version,
+		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
+		"package": api_app_package,
+		"path":    api_app_path,
+		"presets": sl.NewBuiltin("mochi.app.presets", api_app_presets),
+		"service": api_app_service,
+		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
+		"track":   api_app_track,
+		"version": api_app_version,
 	})
 )
 
@@ -2497,12 +2497,12 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(results), nil
 }
 
-// mochi.app.theme_presets() -> dict: Get the per-density CSS-var bundles
+// mochi.app.presets() -> dict: Get the per-density CSS-var bundles
 // referenced by a theme's spacing or the user's density override. The
 // result has one entry per density ("compact", "comfortable", "spacious")
 // mapping every CSS custom property the preset emits to its value. Lets
 // the client apply density changes without duplicating the table.
-func api_app_theme_presets(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_app_presets(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	result := map[string]any{}
 	for _, density := range []string{"compact", "comfortable", "spacious"} {
 		vars := style_preset_vars(density)

@@ -349,7 +349,7 @@ func interests_generate_summary(user *User, db *DB) string {
 	}
 
 	// Resolve QID labels and the AI summary in the user's preferred language.
-	language := user_preference_get(user, "language", "en")
+	language := user_language(user)
 	allQids := append(posQids, negQids...)
 	labels := qid_fetch_labels(allQids, qid_lang_for_fetch(language))
 

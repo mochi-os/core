@@ -212,27 +212,65 @@ func parse_accept_language(header string) []string {
 //
 // The returned tag flows into the label resolver where the fallback chain
 // handles catalog-not-installed cases automatically.
+//
+// As a side effect, when an authenticated user's resolved language came from
+// fallback (cookie / Accept-Language — i.e. their explicit pref is empty or
+// "auto"), the resolved tag is persisted as `last_language`. Async paths
+// (email and push notifications composed outside a request, queued jobs)
+// have no `c`, but they still need a sensible language for label lookup —
+// they read this preference via user_language(u).
 func request_language(c *gin.Context, u *User) string {
+	pref := ""
 	if u != nil {
 		// "auto" is the explicit "detect from browser" option in the settings
 		// picker — treated as if no preference were set, falling through to
 		// the cookie / Accept-Language chain below.
-		lang := strings.ToLower(user_preference_get(u, "language", ""))
-		if lang != "" && lang != "auto" {
-			return lang
+		pref = strings.ToLower(user_preference_get(u, "language", ""))
+		if pref != "" && pref != "auto" {
+			return pref
 		}
 	}
+	resolved := "en"
 	if c != nil {
 		if cookie, err := c.Cookie("mochi_language"); err == nil && cookie != "" {
 			tag := strings.ToLower(cookie)
 			if valid(tag, "locale") {
-				return tag
+				resolved = tag
 			}
 		}
-		tags := parse_accept_language(c.GetHeader("Accept-Language"))
-		if pick := negotiate_language(tags); pick != "" {
-			return pick
+		if resolved == "en" {
+			tags := parse_accept_language(c.GetHeader("Accept-Language"))
+			if pick := negotiate_language(tags); pick != "" {
+				resolved = pick
+			}
 		}
+	}
+	// Persist last_language for async senders. Only writes when the value
+	// actually changes — `user_preference_set` is a per-user-DB write, not
+	// free, so don't pay it on every request.
+	if u != nil {
+		if last := strings.ToLower(user_preference_get(u, "last_language", "")); last != resolved {
+			user_preference_set(u, "last_language", resolved)
+		}
+	}
+	return resolved
+}
+
+// user_language resolves a language for an async caller that has no
+// gin.Context — email/push notification composers, queued jobs. Priority:
+//  1. The user's stored `language` preference (skips the "auto" sentinel).
+//  2. The `last_language` preference, populated by request_language on each
+//     authenticated request that fell through to cookie / Accept-Language.
+//  3. "en".
+func user_language(u *User) string {
+	if u == nil {
+		return "en"
+	}
+	if lang := strings.ToLower(user_preference_get(u, "language", "")); lang != "" && lang != "auto" {
+		return lang
+	}
+	if last := strings.ToLower(user_preference_get(u, "last_language", "")); last != "" {
+		return last
 	}
 	return "en"
 }

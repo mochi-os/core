@@ -398,7 +398,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["expires"] = expires
 
 		// Send verification email
-		account_send_verification_email(address, code, user_preference_get(user, "language", "en"))
+		account_send_verification_email(address, code, user_language(user))
 
 	case "browser":
 		// Browser push - extract endpoint for uniqueness check
@@ -701,7 +701,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		existing_code, _ := data["code"].(string)
 		expires, _ := data["expires"].(float64)
 
-		language := user_preference_get(user, "language", "en")
+		language := user_language(user)
 		if existing_code != "" && int64(expires) > now {
 			// Reuse existing code, extend expiration
 			data["expires"] = now + 3600
@@ -840,7 +840,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	var result AccountTestResult
 
-	language := user_preference_get(user, "language", "en")
+	language := user_language(user)
 	switch ptype {
 	case "email":
 		result = account_test_email(identifier, language)

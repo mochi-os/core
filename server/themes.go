@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -79,117 +80,109 @@ func appendRadiusPreset(styleParts *[]string, preset string) {
 	}
 }
 
-func appendDensityPreset(styleParts *[]string, preset string) {
-	switch preset {
-	case "compact":
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.5rem",
-			"--control-height-sm: 1.75rem",
-			"--control-height-md: 2rem",
-			"--control-height-lg: 2.25rem",
-			"--input-h: 2rem",
-			"--card-px: 1.25rem",
-			"--card-py: 0.875rem",
-		)
-	case "spacious":
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.875rem",
-			"--control-height-sm: 2.125rem",
-			"--control-height-md: 2.5rem",
-			"--control-height-lg: 2.75rem",
-			"--input-h: 2.5rem",
-			"--card-px: 1.75rem",
-			"--card-py: 1.25rem",
-		)
-	default:
-		*styleParts = append(*styleParts,
-			"--control-height-xs: 1.75rem",
-			"--control-height-sm: 2rem",
-			"--control-height-md: 2.25rem",
-			"--control-height-lg: 2.5rem",
-			"--input-h: 2.25rem",
-			"--card-px: 1.5rem",
-			"--card-py: 1rem",
-		)
+// font_stacks returns the (sans, mono) CSS font-family strings for a
+// user's font preference. Empty strings mean "no override" — the density
+// preset (or theme's font_sans/font_mono) keeps its value.
+func font_stacks(pref string) (sans, mono string) {
+	switch pref {
+	case "system":
+		return `-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif`,
+			`ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`
+	case "serif":
+		return `Georgia, "Times New Roman", Cambria, "Source Serif Pro", serif`, ""
+	case "dyslexia":
+		// Atkinson Hyperlegible is loaded as a web font in lib/web's
+		// theme.css so this stack actually takes effect. OpenDyslexic
+		// (preferred by some readers) isn't on Google Fonts and would
+		// have to be self-hosted; Comic Sans is a last-resort local
+		// fallback some dyslexic readers find legible.
+		return `"Atkinson Hyperlegible", "OpenDyslexic", "Comic Sans MS", sans-serif`, ""
 	}
+	return "", ""
 }
 
-func appendStylePreset(styleParts *[]string, preset string) {
-	appendPreset := func(spacingBase, fontSans, fontMono, shadowColor, density, borderWidth string) {
-		*styleParts = append(*styleParts,
-			fmt.Sprintf("--spacing-base: %s", spacingBase),
-			fmt.Sprintf("--spacing: %s", spacingBase),
-			fmt.Sprintf("--font-sans: %s", fontSans),
-			fmt.Sprintf("--font-mono: %s", fontMono),
-			fmt.Sprintf("--border-width: %s", borderWidth),
-			fmt.Sprintf("--shadow-color: %s", shadowColor),
-			fmt.Sprintf("--shadow-2xs: 0 1px 2px %s", shadowColor),
-			fmt.Sprintf("--shadow-xs: 0 1px 3px %s", shadowColor),
-			fmt.Sprintf("--shadow-sm: 0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow: 0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-md: 0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-lg: 0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-xl: 0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
-			fmt.Sprintf("--shadow-2xl: 0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
-		)
-		appendDensityPreset(styleParts, density)
+// style_preset_vars returns every CSS custom property a given density
+// preset emits. Density only drives ergonomics (control heights, card
+// padding, spacing base) — fonts, shadows, and border width are
+// platform-wide defaults so changing density doesn't ripple into
+// typography or visual depth. Single source of truth for both
+// server-rendered inline styles (web_user_theme_style) and the
+// mochi.app.theme_presets() API the client consumes for live updates
+// and theme previews.
+func style_preset_vars(density string) map[string]string {
+	const (
+		fontSans    = `-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif`
+		fontMono    = "'IBM Plex Mono', 'Geist Mono', monospace"
+		shadowColor = "rgba(0, 0, 0, 0.1)"
+		borderWidth = "1px"
+	)
+
+	var spacingBase string
+	switch density {
+	case "compact":
+		spacingBase = "0.215rem"
+	case "spacious":
+		spacingBase = "0.285rem"
+	default: // comfortable
+		spacingBase = "0.27rem"
 	}
 
-	switch preset {
-	case "default", "maia":
-		appendPreset(
-			"0.3rem",
-			"'Nunito Sans', 'Inter', sans-serif",
-			"'Fira Code', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.12)",
-			"spacious",
-			"1px",
-		)
-	case "vega":
-		appendPreset(
-			"0.215rem",
-			"'Public Sans', 'Inter', sans-serif",
-			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.17)",
-			"compact",
-			"1px",
-		)
-	case "nova":
-		appendPreset(
-			"0.255rem",
-			"'Poppins', 'Inter', sans-serif",
-			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.18)",
-			"comfortable",
-			"1.25px",
-		)
-	case "lyra":
-		appendPreset(
-			"0.235rem",
-			"'Inter Tight', 'Inter', sans-serif",
-			"'JetBrains Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.22)",
-			"compact",
-			"1.5px",
-		)
-	case "mira":
-		appendPreset(
-			"0.285rem",
-			"'DM Sans', 'Inter', sans-serif",
-			"'Space Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.14)",
-			"spacious",
-			"1.25px",
-		)
-	case "luma":
-		appendPreset(
-			"0.27rem",
-			"'Manrope', 'Inter', sans-serif",
-			"'IBM Plex Mono', 'Geist Mono', monospace",
-			"rgba(0, 0, 0, 0.1)",
-			"comfortable",
-			"1px",
-		)
+	vars := map[string]string{
+		"--spacing-base":  spacingBase,
+		"--spacing":       spacingBase,
+		"--font-sans":     fontSans,
+		"--font-mono":     fontMono,
+		"--border-width":  borderWidth,
+		"--shadow-color":  shadowColor,
+		"--shadow-2xs":    fmt.Sprintf("0 1px 2px %s", shadowColor),
+		"--shadow-xs":     fmt.Sprintf("0 1px 3px %s", shadowColor),
+		"--shadow-sm":     fmt.Sprintf("0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
+		"--shadow":        fmt.Sprintf("0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
+		"--shadow-md":     fmt.Sprintf("0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
+		"--shadow-lg":     fmt.Sprintf("0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
+		"--shadow-xl":     fmt.Sprintf("0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
+		"--shadow-2xl":    fmt.Sprintf("0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
+	}
+
+	switch density {
+	case "compact":
+		vars["--control-height-xs"] = "1.5rem"
+		vars["--control-height-sm"] = "1.75rem"
+		vars["--control-height-md"] = "2rem"
+		vars["--control-height-lg"] = "2.25rem"
+		vars["--input-h"] = "2rem"
+		vars["--card-px"] = "1.25rem"
+		vars["--card-py"] = "0.875rem"
+	case "spacious":
+		vars["--control-height-xs"] = "1.875rem"
+		vars["--control-height-sm"] = "2.125rem"
+		vars["--control-height-md"] = "2.5rem"
+		vars["--control-height-lg"] = "2.75rem"
+		vars["--input-h"] = "2.5rem"
+		vars["--card-px"] = "1.75rem"
+		vars["--card-py"] = "1.25rem"
+	default: // comfortable
+		vars["--control-height-xs"] = "1.75rem"
+		vars["--control-height-sm"] = "2rem"
+		vars["--control-height-md"] = "2.25rem"
+		vars["--control-height-lg"] = "2.5rem"
+		vars["--input-h"] = "2.25rem"
+		vars["--card-px"] = "1.5rem"
+		vars["--card-py"] = "1rem"
+	}
+
+	return vars
+}
+
+func appendStylePreset(styleParts *[]string, density string) {
+	vars := style_preset_vars(density)
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		*styleParts = append(*styleParts, fmt.Sprintf("%s: %s", k, vars[k]))
 	}
 }
 
@@ -197,16 +190,16 @@ func appendStylePreset(styleParts *[]string, preset string) {
 // the user's resolved theme as CSS custom properties (hue, radius, fonts,
 // shadows, density). Honours per-axis user overrides — density, radius,
 // background, font_size — each defaulting to "theme" (inherit from the
-// active theme). Returns empty string when nothing is configured.
+// active theme). For anonymous requests (user == nil) the per-user
+// overrides resolve to "theme" via user_preference_get's nil-guard, and
+// the active theme falls through to the system-wide default_theme so
+// login / landing / public-anon pages render branded.
 func web_user_theme_style(user *User) string {
-	if user == nil {
-		return ""
-	}
-
 	user_density := user_preference_get(user, "density", "theme")
 	user_radius := user_preference_get(user, "radius", "theme")
 	user_background := user_preference_get(user, "background", "theme")
 	user_font_size := user_preference_get(user, "font_size", "theme")
+	user_font := user_preference_get(user, "font", "theme")
 
 	var t *AppTheme
 	var theme_app_id string
@@ -273,13 +266,25 @@ func web_user_theme_style(user *User) string {
 		density = t.Spacing
 	}
 	if density != "" {
-		switch density {
-		case "compact":
-			appendStylePreset(&styleParts, "vega")
-		case "spacious":
-			appendStylePreset(&styleParts, "mira")
-		default:
-			appendStylePreset(&styleParts, "luma")
+		appendStylePreset(&styleParts, density)
+	}
+
+	// Font family overrides: theme's font_sans/font_mono override the
+	// density preset's choice, then the user's font preference (if any)
+	// overrides both. Density preset goes first so font specifications
+	// here win.
+	if t != nil {
+		if t.FontSans != "" && !strings.ContainsAny(t.FontSans, `;<>"`) {
+			styleParts = append(styleParts, fmt.Sprintf("--font-sans: %s", t.FontSans))
+		}
+		if t.FontMono != "" && !strings.ContainsAny(t.FontMono, `;<>"`) {
+			styleParts = append(styleParts, fmt.Sprintf("--font-mono: %s", t.FontMono))
+		}
+	}
+	if font_sans, font_mono := font_stacks(user_font); font_sans != "" {
+		styleParts = append(styleParts, fmt.Sprintf("--font-sans: %s", font_sans))
+		if font_mono != "" {
+			styleParts = append(styleParts, fmt.Sprintf("--font-mono: %s", font_mono))
 		}
 	}
 
@@ -303,11 +308,10 @@ func web_user_theme_style(user *User) string {
 
 // web_apply_user_document_theme injects user appearance/theme into a full
 // HTML document — used when serving raw app HTML directly (no shell wrapper).
+// Anonymous (user == nil) requests fall through to the system default_theme
+// and "auto" appearance, so login / landing / public-anon pages render
+// branded.
 func web_apply_user_document_theme(content string, user *User) string {
-	if user == nil {
-		return content
-	}
-
 	html_class, appearance_script := web_user_appearance_attrs(user, "")
 	content = web_add_html_attr(content, html_class)
 	content = web_add_html_attr(content, web_user_theme_style(user))

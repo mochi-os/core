@@ -416,6 +416,9 @@ func user_preferences_load(u *User) map[string]string {
 
 // user_preference_get returns a user preference or default
 func user_preference_get(u *User, name, def string) string {
+	if u == nil {
+		return def
+	}
 	if v, ok := u.Preferences[name]; ok {
 		return v
 	}

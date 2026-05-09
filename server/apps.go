@@ -58,6 +58,15 @@ type AppFunction struct {
 	Permission string `json:"permission,omitempty"`
 }
 
+// AppTheme is one theme entry in an app's `themes` array. The bundled
+// themes live in apps/themes/app.json but any installed app may ship its
+// own. IconMask, IconBackground, and Icons drive future icon-pack
+// support (apps.go:2110): a theme can ship a CSS mask + tile background
+// applied to every home-screen icon, and an Icons map that points to
+// alternative icon files (served from the theme app's /icons/ folder)
+// keyed by the target app's path. No installed theme exercises these
+// fields yet; the resolution code path is in place so a "Brutalist" or
+// "Material" theme can plug in without a server change.
 type AppTheme struct {
 	ID             string            `json:"id"`
 	Label          string            `json:"label"`
@@ -68,6 +77,8 @@ type AppTheme struct {
 	PreviewDark    string            `json:"preview_dark"`
 	BorderRadius   string            `json:"border_radius"`
 	Spacing        string            `json:"spacing"`
+	FontSans       string            `json:"font_sans"`
+	FontMono       string            `json:"font_mono"`
 	IconMask       string            `json:"icon_mask"`
 	IconBackground string            `json:"icon_background"`
 	Background     string            `json:"background"`
@@ -115,8 +126,11 @@ type AppVersion struct {
 	Events       map[string]AppEvent    `json:"events"`
 	Functions    map[string]AppFunction `json:"functions"`
 	Themes       []AppTheme             `json:"themes"`
-	ThemeIcons   map[string]string      `json:"theme_icons"`
-	Publisher    struct {
+	// ThemeIcons lets an app declare per-theme icon variants of itself,
+	// keyed by namespaced theme id ("<app_id>:<theme_id>"). Counterpart
+	// to AppTheme.Icons — see apps.go:2110 for the resolution priority.
+	ThemeIcons map[string]string `json:"theme_icons"`
+	Publisher  struct {
 		Peer string `json:"peer,omitempty"`
 	} `json:"publisher,omitempty"`
 
@@ -439,19 +453,20 @@ var (
 	})
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"asset":    api_app_asset,
-		"class":    api_app_class,
-		"cleanup":  sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
-		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"label":    sl.NewBuiltin("mochi.app.label", api_app_label),
-		"list":     sl.NewBuiltin("mochi.app.list", api_app_list),
-		"package":  api_app_package,
-		"path":     api_app_path,
-		"service":  api_app_service,
-		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
-		"track":   api_app_track,
-		"version": api_app_version,
+		"asset":         api_app_asset,
+		"class":         api_app_class,
+		"cleanup":       sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
+		"get":           sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":         sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"label":         sl.NewBuiltin("mochi.app.label", api_app_label),
+		"list":          sl.NewBuiltin("mochi.app.list", api_app_list),
+		"package":       api_app_package,
+		"path":          api_app_path,
+		"service":       api_app_service,
+		"themes":        sl.NewBuiltin("mochi.app.themes", api_app_themes),
+		"theme_presets": sl.NewBuiltin("mochi.app.theme_presets", api_app_theme_presets),
+		"track":         api_app_track,
+		"version":       api_app_version,
 	})
 )
 
@@ -1585,7 +1600,7 @@ func (a *App) event_anonymous(event string, f func(*Event)) {
 func (a *App) label(u *User, av *AppVersion, key string, args ...map[string]any) string {
 	language := "en"
 	if u != nil {
-		language = user_preference_get(u, "language", "en")
+		language = user_language(u)
 	}
 
 	var kwargs map[string]any
@@ -2008,14 +2023,17 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.String(""), nil
 	}
 
-	// Language priority: user preference (logged in) > thread-local from
-	// request handler (anonymous Accept-Language) > "en". The handler in
-	// web.go calls request_language(c, user) and stashes the result via
-	// s.set("language", ...) so anonymous public-action calls still get a
-	// translated label set.
+	// Language priority: user preference (logged in, including last_language
+	// fallback for "auto") > thread-local from request handler (anonymous
+	// Accept-Language) > "en". The handler in web.go calls
+	// request_language(c, user) and stashes the result via s.set("language",
+	// ...) so anonymous public-action calls still get a translated label set.
+	// For composed-then-deferred sends (email/push notifications), the user
+	// is set on the thread but no request context is available; user_language
+	// reads the persisted last_language for those callers.
 	language := "en"
 	if user != nil {
-		language = user_preference_get(user, "language", "en")
+		language = user_language(user)
 	} else if l, ok := t.Local("language").(string); ok && l != "" {
 		language = l
 	}
@@ -2444,6 +2462,12 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		if theme.Spacing != "" {
 			result["spacing"] = theme.Spacing
 		}
+		if theme.FontSans != "" {
+			result["font_sans"] = theme.FontSans
+		}
+		if theme.FontMono != "" {
+			result["font_mono"] = theme.FontMono
+		}
 		if theme.IconMask != "" {
 			result["icon_mask"] = theme.IconMask
 		}
@@ -2471,6 +2495,24 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	})
 
 	return sl_encode(results), nil
+}
+
+// mochi.app.theme_presets() -> dict: Get the per-density CSS-var bundles
+// referenced by a theme's spacing or the user's density override. The
+// result has one entry per density ("compact", "comfortable", "spacious")
+// mapping every CSS custom property the preset emits to its value. Lets
+// the client apply density changes without duplicating the table.
+func api_app_theme_presets(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	result := map[string]any{}
+	for _, density := range []string{"compact", "comfortable", "spacious"} {
+		vars := style_preset_vars(density)
+		bundle := make(map[string]any, len(vars))
+		for k, v := range vars {
+			bundle[k] = v
+		}
+		result[density] = bundle
+	}
+	return sl_encode(result), nil
 }
 
 // mochi.app.class.get(class) -> string | None: Get the app bound to a class (admin only)

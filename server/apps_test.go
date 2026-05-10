@@ -830,17 +830,10 @@ func TestStarlarkAPITrackFunctions(t *testing.T) {
 		t.Fatalf("api_app_track_set failed: %v", err)
 	}
 
-	// Get track
-	result, err := api_app_track_get(thread, nil, sl.Tuple{sl.String("test-app"), sl.String("stable")}, nil)
-	if err != nil {
-		t.Fatalf("api_app_track_get failed: %v", err)
-	}
-	if result != sl.String("1.0") {
-		t.Errorf("api_app_track_get = %v, want '1.0'", result)
-	}
-
-	// List tracks
-	result, err = api_app_track_list(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
+	// List tracks — single-getter (mochi.app.track.get) was removed in
+	// 144fea8 in favour of the listing form, so we verify by reading
+	// the listed track entry.
+	result, err := api_app_track_list(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
 	if err != nil {
 		t.Fatalf("api_app_track_list failed: %v", err)
 	}
@@ -851,34 +844,9 @@ func TestStarlarkAPITrackFunctions(t *testing.T) {
 	}
 }
 
-// Test Starlark API: mochi.app.tracks (for a specific app)
-func TestStarlarkAPIAppTracks(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
-
-	a := &App{id: "test-app", versions: map[string]*AppVersion{}}
-	orig_apps := apps
-	apps = map[string]*App{"test-app": a}
-	defer func() { apps = orig_apps }()
-
-	// Set up tracks
-	a.set_track("stable", "1.0", "")
-	a.set_track("beta", "2.0", "")
-
-	thread := create_test_starlark_thread()
-	result, err := api_app_tracks(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
-	if err != nil {
-		t.Fatalf("api_app_tracks failed: %v", err)
-	}
-
-	dict := result.(*sl.Dict)
-	if dict.Len() != 2 {
-		t.Errorf("tracks count = %d, want 2", dict.Len())
-	}
-}
-
-// Test Starlark API: mochi.app.versions
-func TestStarlarkAPIAppVersions(t *testing.T) {
+// Test Starlark API: mochi.app.version.list — successor to the
+// removed mochi.app.versions (renamed in 7bc1e13).
+func TestStarlarkAPIAppVersionList(t *testing.T) {
 	cleanup := create_test_apps_db(t)
 	defer cleanup()
 
@@ -895,15 +863,15 @@ func TestStarlarkAPIAppVersions(t *testing.T) {
 	defer func() { apps = orig_apps }()
 
 	thread := create_test_starlark_thread()
-	result, err := api_app_versions(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
+	result, err := api_app_version_list(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
 	if err != nil {
-		t.Fatalf("api_app_versions failed: %v", err)
+		t.Fatalf("api_app_version_list failed: %v", err)
 	}
 
 	// sl_encode converts []string to Tuple
 	tuple, ok := result.(sl.Tuple)
 	if !ok {
-		t.Fatalf("api_app_versions returned %T, want Tuple", result)
+		t.Fatalf("api_app_version_list returned %T, want Tuple", result)
 	}
 	if len(tuple) != 3 {
 		t.Errorf("versions count = %d, want 3", len(tuple))

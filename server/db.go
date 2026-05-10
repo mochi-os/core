@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -13,17 +14,25 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/mattn/go-sqlite3"
+	"github.com/ncruces/go-sqlite3"
+	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
 
+// DB carries two connection pools per SQLite file. internal has no
+// authoriser and is used for all server-trusted queries (schema migrations,
+// PRAGMA reads, mochi.db.table/indexes etc). starlark has a strict
+// authoriser that denies ATTACH/DETACH/PRAGMA/triggers/vtables and is used
+// only for SQL strings supplied by Starlark via api_db_query and
+// api_db_transaction.
 type DB struct {
-	key    string
-	path   string
-	handle *sqlx.DB
-	user   *User
-	closed int64
+	key      string
+	path     string
+	internal *sqlx.DB
+	starlark *sqlx.DB
+	user     *User
+	closed   int64
 }
 
 const (
@@ -46,21 +55,69 @@ var (
 	})
 )
 
-func init() {
-	// Register a SQLite driver that blocks ATTACH/DETACH to prevent sandbox escape
-	// Using literal values for cross-compilation compatibility (CGO not available)
-	// SQLITE_OK=0, SQLITE_DENY=1, SQLITE_ATTACH=24, SQLITE_DETACH=25
-	sql.Register("sqlite3_noattach", &sqlite3.SQLiteDriver{
-		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-			conn.RegisterAuthorizer(func(action int, arg1, arg2, arg3 string) int {
-				if action == 24 || action == 25 {
-					return 1 // SQLITE_DENY
-				}
-				return 0 // SQLITE_OK
-			})
-			return nil
-		},
-	})
+// db_setup_conn runs the per-connection PRAGMAs that configure WAL,
+// foreign keys, and the per-DB size cap. It runs on every fresh
+// connection in either pool, before any query.
+func db_setup_conn(c *sqlite3.Conn) error {
+	if err := c.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return err
+	}
+	if err := c.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		return err
+	}
+	return c.Exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
+}
+
+// db_setup_conn_starlark wraps db_setup_conn and additionally installs
+// the Starlark-pool authoriser, which blocks any operation an
+// untrusted app shouldn't perform on its own DB.
+func db_setup_conn_starlark(c *sqlite3.Conn) error {
+	if err := db_setup_conn(c); err != nil {
+		return err
+	}
+	return c.SetAuthorizer(db_authorise_starlark)
+}
+
+// db_authorise_starlark is the authoriser callback for connections that
+// will execute SQL strings supplied by Starlark code. It denies the
+// operations apps must not perform on their per-user DB:
+//
+//   - ATTACH / DETACH: would let an app peek at or write to other DBs
+//     in the same process.
+//   - PRAGMA *with argument*: would let an app override server quotas
+//     (`max_page_count = N`), journal mode, schema version, etc.
+//     Read-only PRAGMA queries (no argument, e.g. `PRAGMA query_only`)
+//     are allowed because ncruces' database/sql connector runs
+//     `PRAGMA query_only` after our ConnectHook to detect read-only
+//     mode, and denying it would break every connection on this pool.
+//     Apps gain a small info leak (they can read pragma values they
+//     wouldn't otherwise see) but cannot change behaviour.
+//   - Triggers (CREATE / DROP, persistent and TEMP): would silently
+//     fire on every write and burn CPU. No current app needs them.
+//   - Virtual tables (CREATE / DROP): wrap arbitrary modules outside
+//     the sandbox model. Built-in pragma_* virtual table reads go via
+//     SQLITE_READ, which is unaffected.
+//
+// VACUUM and ANALYZE have no authoriser action codes and are caught
+// by the string-prefix check in api_db_query / transaction_args
+// instead.
+func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _ string) sqlite3.AuthorizerReturnCode {
+	switch action {
+	case sqlite3.AUTH_ATTACH, sqlite3.AUTH_DETACH,
+		sqlite3.AUTH_CREATE_TRIGGER, sqlite3.AUTH_CREATE_TEMP_TRIGGER,
+		sqlite3.AUTH_DROP_TRIGGER, sqlite3.AUTH_DROP_TEMP_TRIGGER,
+		sqlite3.AUTH_CREATE_VTABLE, sqlite3.AUTH_DROP_VTABLE:
+		return sqlite3.AUTH_DENY
+	case sqlite3.AUTH_PRAGMA:
+		// For PRAGMA, name4th is the pragma's argument (empty string
+		// when no argument — i.e. a read query). Allow reads, deny
+		// writes/calls-with-args. The connector's `PRAGMA query_only`
+		// check has no argument and so survives this rule.
+		if name4th != "" {
+			return sqlite3.AUTH_DENY
+		}
+	}
+	return sqlite3.AUTH_OK
 }
 
 func db_create() {
@@ -271,10 +328,10 @@ func db_app(u *User, app *App) *DB {
 	path := fmt.Sprintf("users/%d/%s/db/%s", u.ID, app.id, av.Database.File)
 	key := fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
 	db, _, reused := db_open_work(path, key)
+	if db == nil {
+		return nil
+	}
 	db.user = u
-
-	// Limit database size to prevent misbehaving apps from filling storage
-	db.exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
 
 	if reused {
 		return db
@@ -343,8 +400,10 @@ func db_app_system(u *User, app *App) *DB {
 
 	path := fmt.Sprintf("users/%d/%s/app.db", u.ID, app.id)
 	db, _, reused := db_open_work(path)
+	if db == nil {
+		return nil
+	}
 	db.user = u
-	db.exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
 
 	if reused {
 		return db
@@ -379,7 +438,7 @@ func db_manager() {
 		databases_lock.Lock()
 		for _, db := range databases {
 			if db.closed > 0 && db.closed < now-60 {
-				closers = append(closers, db.handle)
+				closers = append(closers, db.internal, db.starlark)
 				delete(databases, db.key)
 			}
 		}
@@ -429,21 +488,35 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	}
 
 	//debug("Database opening %q", path)
-	h := must(sqlx.Open("sqlite3_noattach", path))
-	db = &DB{key: key, path: path, handle: h, closed: 0}
+	internal_db, err := sqlitedrv.Open(path, db_setup_conn)
+	if err != nil {
+		warn("Database unable to open %q: %v", path, err)
+		return nil, false, false
+	}
+	starlark_db, err := sqlitedrv.Open(path, db_setup_conn_starlark)
+	if err != nil {
+		internal_db.Close()
+		warn("Database unable to open Starlark pool for %q: %v", path, err)
+		return nil, false, false
+	}
+	db = &DB{
+		key:      key,
+		path:     path,
+		internal: sqlx.NewDb(internal_db, "sqlite3"),
+		starlark: sqlx.NewDb(starlark_db, "sqlite3"),
+	}
 
 	databases_lock.Lock()
 	if existing, found := databases[key]; found {
 		databases_lock.Unlock()
-		h.Close()
+		db.internal.Close()
+		db.starlark.Close()
 		existing.closed = 0
 		return existing, false, true
 	}
 	databases[key] = db
 	databases_lock.Unlock()
 
-	db.exec("PRAGMA journal_mode=WAL")
-	db.exec("PRAGMA foreign_keys=ON")
 	return db, created, false
 }
 
@@ -653,7 +726,7 @@ func db_purge_prefix(dir string) {
 	databases_lock.Lock()
 	for key, db := range databases {
 		if strings.HasPrefix(db.path, prefix) {
-			closers = append(closers, db.handle)
+			closers = append(closers, db.internal, db.starlark)
 			delete(databases, key)
 		}
 	}
@@ -664,11 +737,11 @@ func db_purge_prefix(dir string) {
 }
 
 func (db *DB) exec(query string, values ...any) {
-	must(db.handle.Exec(query, values...))
+	must(db.internal.Exec(query, values...))
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {
-	r, err := db.handle.Query(query, values...)
+	r, err := db.internal.Query(query, values...)
 	if err != nil {
 		return false, err
 	}
@@ -679,7 +752,7 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 // integer returns the first column as an integer, or 0 on error
 func (db *DB) integer(query string, values ...any) int {
 	var result int
-	err := db.handle.QueryRow(query, values...).Scan(&result)
+	err := db.internal.QueryRow(query, values...).Scan(&result)
 	if err != nil {
 		return 0
 	}
@@ -687,7 +760,7 @@ func (db *DB) integer(query string, values ...any) int {
 }
 
 func (db *DB) row(query string, values ...any) (map[string]any, error) {
-	r, err := db.handle.Queryx(query, values...)
+	r, err := db.internal.Queryx(query, values...)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +786,7 @@ func (db *DB) row(query string, values ...any) (map[string]any, error) {
 func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 	var results []map[string]any
 
-	r, err := db.handle.Queryx(query, values...)
+	r, err := db.internal.Queryx(query, values...)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +808,7 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 }
 
 func (db *DB) scan(out any, query string, values ...any) bool {
-	err := db.handle.QueryRowx(query, values...).StructScan(out)
+	err := db.internal.QueryRowx(query, values...).StructScan(out)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false
@@ -747,7 +820,7 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 }
 
 func (db *DB) scans(out any, query string, values ...any) error {
-	return db.handle.Select(out, query, values...)
+	return db.internal.Select(out, query, values...)
 }
 
 // db_for_thread resolves the correct per-user database for the current Starlark
@@ -808,10 +881,8 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid SQL statement %q", query)
 	}
 
-	// Block PRAGMA statements from Starlark to prevent overriding server-set limits
-	trimmed := strings.TrimSpace(query)
-	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "PRAGMA") {
-		return sl_error(fn, "PRAGMA statements are not allowed")
+	if reason := db_starlark_sql_blocked(query); reason != "" {
+		return sl_error(fn, "%s", reason)
 	}
 
 	as := sl_decode(args[1:]).([]any)
@@ -832,40 +903,120 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "%v", err)
 	}
 
+	// Check out a dedicated connection so a failed multi-statement
+	// query (e.g. `BEGIN; bad-sql; COMMIT;` where bad-sql is denied by
+	// the authoriser at prepare) can't return a half-open transaction
+	// to the shared pool. On error we issue a defensive ROLLBACK on
+	// the same connection before releasing it.
+	ctx := context.Background()
+	conn, err := db.starlark.Connx(ctx)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	defer conn.Close()
+
 	switch fn.Name() {
 	case "mochi.db.execute":
-		_, err := db.handle.Exec(query, as...)
+		_, err := conn.ExecContext(ctx, query, as...)
 		if err != nil {
+			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
 		return sl.None, nil
 
 	case "mochi.db.exists":
-		exists, err := db.exists(query, as...)
+		r, err := conn.QueryContext(ctx, query, as...)
 		if err != nil {
+			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
-		if exists {
+		defer r.Close()
+		if r.Next() {
 			return sl.True, nil
 		}
 		return sl.False, nil
 
 	case "mochi.db.row":
-		row, err := db.row(query, as...)
+		r, err := conn.QueryxContext(ctx, query, as...)
 		if err != nil {
+			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
+		}
+		defer r.Close()
+		if !r.Next() {
+			return sl.None, nil
+		}
+		row := make(map[string]any)
+		if err := r.MapScan(row); err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		for k, v := range row {
+			if b, ok := v.([]byte); ok {
+				row[k] = string(b)
+			}
 		}
 		return sl_encode(row), nil
 
 	case "mochi.db.rows":
-		rows, err := db.rows(query, as...)
+		r, err := conn.QueryxContext(ctx, query, as...)
 		if err != nil {
+			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
-		return sl_encode(rows), nil
+		defer r.Close()
+		var results []map[string]any
+		for r.Next() {
+			row := make(map[string]any)
+			if err := r.MapScan(row); err != nil {
+				return sl_error(fn, "database error: %v", err)
+			}
+			for k, v := range row {
+				if b, ok := v.([]byte); ok {
+					row[k] = string(b)
+				}
+			}
+			results = append(results, row)
+		}
+		return sl_encode(results), nil
 	}
 
 	return sl_error(fn, "invalid database query %q", fn.Name())
+}
+
+// db_starlark_rollback issues a best-effort ROLLBACK on the given
+// connection. Used to clear any half-open transaction left behind by a
+// multi-statement Exec whose middle statement was denied by the
+// authoriser (e.g. `BEGIN; PRAGMA …; COMMIT;` — BEGIN runs, PRAGMA is
+// denied at prepare, COMMIT never executes). On a connection without
+// an active transaction the ROLLBACK errors and is silently dropped —
+// that's expected and safe.
+func db_starlark_rollback(conn *sqlx.Conn) {
+	_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+}
+
+// db_starlark_sql_blocked returns a non-empty error message if the query
+// starts with a keyword that's blocked from Starlark. Belt-and-braces on
+// top of the per-connection authoriser: the authoriser is the
+// load-bearing layer (it sees parsed multi-statement input and can't
+// be bypassed by `BEGIN; PRAGMA …; COMMIT;`), but a clean string-level
+// rejection gives apps a friendlier error than an opaque authoriser
+// denial. Also catches VACUUM and ANALYZE, which have no authoriser
+// action codes.
+func db_starlark_sql_blocked(query string) string {
+	trimmed := strings.TrimSpace(query)
+	first := trimmed
+	if i := strings.IndexAny(trimmed, " \t\r\n;("); i >= 0 {
+		first = trimmed[:i]
+	}
+	switch strings.ToUpper(first) {
+	case "PRAGMA":
+		return "PRAGMA statements are not allowed"
+	case "VACUUM":
+		return "VACUUM is not allowed"
+	case "ANALYZE":
+		return "ANALYZE is not allowed"
+	}
+	return ""
 }
 
 // TransactionHandle is the Starlark value returned by mochi.db.transaction(). It
@@ -932,9 +1083,8 @@ func transaction_args(fn *sl.Builtin, args sl.Tuple) (string, []any, error) {
 	if !ok {
 		return "", nil, fmt.Errorf("invalid SQL statement %q", query)
 	}
-	trimmed := strings.TrimSpace(query)
-	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "PRAGMA") {
-		return "", nil, fmt.Errorf("PRAGMA statements are not allowed")
+	if reason := db_starlark_sql_blocked(query); reason != "" {
+		return "", nil, fmt.Errorf("%s", reason)
 	}
 	as := sl_decode(args[1:]).([]any)
 	flat := make([]any, 0, len(as))
@@ -1081,7 +1231,7 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "%v", err)
 	}
 
-	tx, err := db.handle.Beginx()
+	tx, err := db.starlark.Beginx()
 	if err != nil {
 		return sl_error(fn, "begin failed: %v", err)
 	}

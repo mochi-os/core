@@ -311,7 +311,7 @@ func TestValid(t *testing.T) {
 		// text pattern (length check)
 		{"text normal", "Hello, world!", "text", true},
 		{"text empty", "", "text", true},
-		{"text too long", strings.Repeat("a", 10001), "text", false},
+		{"text too long", strings.Repeat("a", 1000001), "text", false},
 
 		// name pattern (excludes < > \r \n)
 		{"name valid", "John Doe", "name", true},

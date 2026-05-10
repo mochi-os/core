@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage Dockerfile for the Mochi server.
 #
-# Builder: golang:bookworm with gcc.
-# Runtime: gcr.io/distroless/cc-debian12 — glibc only; mattn/go-sqlite3
-# embeds the SQLite C source so no libsqlite3 dependency at runtime.
-# mochi-server is a cgo binary (linked against glibc); mochictl is pure-Go.
+# Builder: golang:bookworm. No cgo or cross-toolchains: SQLite is bundled
+# via github.com/ncruces/go-sqlite3 (pure-Go WASM via wazero), so every
+# target arch is a plain GOOS/GOARCH build.
+# Runtime: gcr.io/distroless/static-debian12 — fully static binary, no libc
+# dependency at runtime.
 
 ARG VERSION=dev
 ARG GO_VERSION=1.25
@@ -15,18 +16,7 @@ ARG DEBIAN_RELEASE=bookworm
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-${DEBIAN_RELEASE} AS builder
 ARG VERSION
 ARG TARGETARCH
-ENV CGO_ENABLED=1 GOOS=linux
-
-# gcc for native, gcc-aarch64-linux-gnu for arm64 cross-compile from amd64.
-# Cache IDs are per-target-arch so parallel multi-arch builds don't deadlock
-# on the same /var/cache/apt + /var/lib/apt/lists locks.
-RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt \
-    --mount=type=cache,id=apt-lists-${TARGETARCH},target=/var/lib/apt/lists \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        gcc libc6-dev \
-        gcc-aarch64-linux-gnu libc6-dev-arm64-cross && \
-    rm -rf /var/lib/apt/lists/*
+ENV CGO_ENABLED=0 GOOS=linux
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -37,18 +27,18 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     case "$TARGETARCH" in \
-        amd64) export GOARCH=amd64 CC=gcc ;; \
-        arm64) export GOARCH=arm64 CC=aarch64-linux-gnu-gcc ;; \
+        amd64) export GOARCH=amd64 ;; \
+        arm64) export GOARCH=arm64 ;; \
         *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac && \
     go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION} -X main.build_platform=docker" \
         -o /out/mochi-server ./server && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION}" \
+    go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION}" \
         -o /out/mochictl ./mochictl
 
 # ---------- Runtime ---------------------------------------------------------
 
-FROM gcr.io/distroless/cc-debian12:latest AS runtime
+FROM gcr.io/distroless/static-debian12:latest AS runtime
 
 COPY --from=builder /out/mochi-server /usr/sbin/mochi-server
 COPY --from=builder /out/mochictl    /usr/bin/mochictl

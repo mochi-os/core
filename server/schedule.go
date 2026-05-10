@@ -44,7 +44,7 @@ func schedule_db() *DB {
 // schedule_create inserts a new scheduled event and returns its ID
 func schedule_create(user int64, app string, due int64, event string, data string, interval int64) int64 {
 	db := schedule_db()
-	result := must(db.handle.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+	result := must(db.internal.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user, app, due, event, data, interval, now()))
 	id, _ := result.LastInsertId()
 	if id == 0 {
@@ -201,13 +201,13 @@ func schedule_claim(id int64, interval int64) bool {
 	if interval > 0 {
 		// Recurring: update due time to next interval
 		// Use the current due time + interval to avoid drift
-		res, e := db.handle.Exec("update schedule set due = due + ? where id = ? and due <= ?", interval, id, now())
+		res, e := db.internal.Exec("update schedule set due = due + ? where id = ? and due <= ?", interval, id, now())
 		if e == nil {
 			result, err = res.RowsAffected()
 		}
 	} else {
 		// One-shot: delete the event
-		res, e := db.handle.Exec("delete from schedule where id = ? and due <= ?", id, now())
+		res, e := db.internal.Exec("delete from schedule where id = ? and due <= ?", id, now())
 		if e == nil {
 			result, err = res.RowsAffected()
 		}

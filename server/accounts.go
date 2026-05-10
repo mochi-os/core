@@ -486,7 +486,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Insert account
-	result, err := db.handle.Exec(
+	result, err := db.internal.Exec(
 		"insert into accounts (type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?)",
 		ptype, label, identifier, data_json, now, verified,
 	)

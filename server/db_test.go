@@ -4,9 +4,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -437,34 +441,186 @@ func BenchmarkDBRows(b *testing.B) {
 	}
 }
 
-// Test that ATTACH is blocked by authorizer (security test)
-func TestAttachBlocked(t *testing.T) {
+// TestStarlarkAuthoriserPolicy exercises the per-action authoriser policy
+// on the Starlark connection pool. The internal pool has no authoriser by
+// design and is not tested here; the starlark pool is what untrusted app
+// code sees via api_db_query.
+//
+// Cases marked deny=true must produce an error from db.starlark.Exec.
+// Cases marked deny=false must succeed. Each case runs in its own
+// sub-test so failures point at a specific row.
+func TestStarlarkAuthoriserPolicy(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
 
-	// Create a table to verify normal operations work
-	db.exec("CREATE TABLE test (id TEXT)")
+	// Seed the database with a table and a row that the allow-cases
+	// can read/write. Run on the internal pool so this setup is
+	// itself unaffected by the authoriser under test.
+	db.exec("CREATE TABLE base (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+	db.exec("CREATE INDEX base_name ON base(name)")
+	db.exec("CREATE VIEW base_view AS SELECT id, name FROM base")
+	db.exec("INSERT INTO base (id, name) VALUES (1, 'seed')")
 
-	// Attempt ATTACH - should be blocked by authorizer
-	// Note: We use db.handle.Exec directly to get the error
-	_, err := db.handle.Exec("ATTACH DATABASE ':memory:' AS mem")
-	if err == nil {
-		t.Fatal("ATTACH should have been blocked but was allowed - SECURITY VULNERABILITY")
+	cases := []struct {
+		name string
+		sql  string
+		deny bool // true = authoriser/string-check must reject
+	}{
+		// ---- denied: sandbox-escape ----
+		{"ATTACH", "ATTACH DATABASE ':memory:' AS mem", true},
+		{"DETACH", "DETACH DATABASE main", true},
+
+		// ---- denied: PRAGMA writes (with arg) ----
+		{"PRAGMA write =", "PRAGMA max_page_count = 999999999", true},
+		{"PRAGMA write space-eq", "PRAGMA journal_mode = OFF", true},
+		{"PRAGMA write parens", "PRAGMA user_version(999)", true},
+		{"PRAGMA multistmt", "BEGIN; PRAGMA max_page_count = 999999999; COMMIT", true},
+
+		// ---- allowed: PRAGMA reads (no arg) ----
+		// ncruces' connector relies on `PRAGMA query_only` after the
+		// ConnectHook; denying it would break every connection.
+		{"PRAGMA read query_only", "PRAGMA query_only", false},
+		{"PRAGMA read journal_mode", "PRAGMA journal_mode", false},
+		{"PRAGMA read user_version", "PRAGMA user_version", false},
+
+		// ---- denied: triggers ----
+		// CREATE_TRIGGER / DROP_TRIGGER are caught at prepare time
+		// regardless of whether the target table or trigger exists.
+		{"CREATE TRIGGER", "CREATE TRIGGER t1 AFTER INSERT ON base BEGIN UPDATE base SET name='x'; END", true},
+		{"CREATE TEMP TRIGGER", "CREATE TEMP TRIGGER t2 AFTER INSERT ON base BEGIN UPDATE base SET name='x'; END", true},
+		// (We can't set up a trigger via internal then drop via starlark
+		// without crossing a connection boundary in WAL mode, but the
+		// SQLITE_DROP_TRIGGER action is in the deny list and exercised
+		// in spirit by CREATE_TRIGGER's denial.)
+
+		// ---- denied: virtual tables ----
+		{"CREATE VIRTUAL TABLE", "CREATE VIRTUAL TABLE v USING fts5(content)", true},
+		// DROP_VTABLE: only fires when the target is an actual virtual
+		// table. We can't create one in this pool to drop, and DROP TABLE
+		// against a non-vtable goes through SQLITE_DROP_TABLE (allowed),
+		// so we exercise the rule via the policy inspection only.
+
+		// ---- denied: VACUUM / ANALYZE (string-prefix check) ----
+		// SQLite has no authoriser action codes for VACUUM/ANALYZE, so
+		// these come through the api-layer string check rather than the
+		// driver authoriser. They cannot be reached via db.starlark.Exec
+		// directly — the string check is in api_db_query — so we
+		// assert via db_starlark_sql_blocked() instead. See
+		// TestStarlarkSQLPrefixBlocked below.
+
+		// ---- allowed: ordinary CRUD ----
+		{"SELECT", "SELECT id, name FROM base WHERE id = 1", false},
+		{"INSERT", "INSERT INTO base (name) VALUES ('alice')", false},
+		{"UPDATE", "UPDATE base SET name = 'bob' WHERE id = 1", false},
+		{"DELETE", "DELETE FROM base WHERE id = 1", false},
+
+		// ---- allowed: schema (apps need these in database_create / database_upgrade) ----
+		{"CREATE TABLE", "CREATE TABLE extra (id INTEGER PRIMARY KEY, payload TEXT)", false},
+		{"ALTER TABLE", "ALTER TABLE extra ADD COLUMN created INTEGER NOT NULL DEFAULT 0", false},
+		{"CREATE INDEX", "CREATE INDEX extra_payload ON extra(payload)", false},
+		{"DROP INDEX", "DROP INDEX extra_payload", false},
+		{"CREATE VIEW", "CREATE VIEW extra_view AS SELECT id FROM extra", false},
+		{"DROP VIEW", "DROP VIEW extra_view", false},
+		{"DROP TABLE", "DROP TABLE extra", false},
 	}
-	t.Logf("ATTACH correctly blocked with error: %v", err)
 
-	// Verify DETACH is also blocked
-	_, err = db.handle.Exec("DETACH DATABASE main")
-	if err == nil {
-		t.Fatal("DETACH should have been blocked but was allowed - SECURITY VULNERABILITY")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := db.starlark.Exec(c.sql)
+			switch {
+			case c.deny && err == nil:
+				t.Fatalf("expected denial for %q but it succeeded", c.sql)
+			case !c.deny && err != nil:
+				t.Fatalf("expected %q to succeed but got error: %v", c.sql, err)
+			}
+		})
 	}
-	t.Logf("DETACH correctly blocked with error: %v", err)
+}
 
-	// Verify normal operations still work
-	db.exec("INSERT INTO test VALUES ('hello')")
-	exists, _ := db.exists("SELECT 1 FROM test WHERE id = 'hello'")
-	if !exists {
-		t.Error("Normal INSERT/SELECT should work")
+// TestStarlarkPoolTransaction exercises the Starlark pool's transaction
+// path — the same path api_db_transaction uses via db.starlark.Beginx().
+// Confirms that tx INSERT/UPDATE/SELECT all work and that the authoriser
+// doesn't break SAVEPOINT / RELEASE inside a transaction.
+func TestStarlarkPoolTransaction(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	db.exec("CREATE TABLE tx (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+
+	tx, err := db.starlark.Beginx()
+	if err != nil {
+		t.Fatalf("Beginx: %v", err)
+	}
+
+	if _, err := tx.Exec("INSERT INTO tx (name) VALUES (?)", "a"); err != nil {
+		t.Fatalf("tx INSERT: %v", err)
+	}
+	if _, err := tx.Exec("UPDATE tx SET name=? WHERE id=1", "b"); err != nil {
+		t.Fatalf("tx UPDATE: %v", err)
+	}
+
+	var name string
+	if err := tx.QueryRow("SELECT name FROM tx WHERE id=1").Scan(&name); err != nil {
+		t.Fatalf("tx SELECT: %v", err)
+	}
+	if name != "b" {
+		t.Fatalf("tx SELECT got %q, want %q", name, "b")
+	}
+
+	if _, err := tx.Exec("SAVEPOINT sp"); err != nil {
+		t.Fatalf("SAVEPOINT inside tx: %v", err)
+	}
+	if _, err := tx.Exec("RELEASE SAVEPOINT sp"); err != nil {
+		t.Fatalf("RELEASE inside tx: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Confirm the row landed.
+	var count int
+	if err := db.starlark.Get(&count, "SELECT count(*) FROM tx WHERE name='b'"); err != nil {
+		t.Fatalf("post-commit SELECT: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 row after commit, got %d", count)
+	}
+}
+
+// TestStarlarkSQLPrefixBlocked covers the api-layer string-prefix gate
+// (db_starlark_sql_blocked), which catches VACUUM and ANALYZE because
+// SQLite has no authoriser action codes for them, and also gives apps
+// a clean error for PRAGMA before it reaches the driver.
+func TestStarlarkSQLPrefixBlocked(t *testing.T) {
+	cases := []struct {
+		name    string
+		sql     string
+		blocked bool
+	}{
+		{"PRAGMA", "PRAGMA journal_mode = OFF", true},
+		{"PRAGMA lowercase", "pragma user_version = 1", true},
+		{"PRAGMA leading space", "  PRAGMA user_version = 1", true},
+		{"VACUUM", "VACUUM", true},
+		{"VACUUM lowercase", "vacuum into 'foo.db'", true},
+		{"ANALYZE", "ANALYZE base", true},
+		{"ANALYZE lowercase", "analyze", true},
+		{"SELECT", "SELECT * FROM users", false},
+		{"INSERT", "INSERT INTO users VALUES (1)", false},
+		{"UPDATE", "UPDATE users SET x=1", false},
+		{"DELETE", "DELETE FROM users", false},
+		{"CREATE TABLE", "CREATE TABLE x(y INT)", false},
+		{"BEGIN", "BEGIN", false}, // multistmt bypass is the authoriser's job, not this layer's
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			reason := db_starlark_sql_blocked(c.sql)
+			blocked := reason != ""
+			if blocked != c.blocked {
+				t.Fatalf("db_starlark_sql_blocked(%q) blocked=%v want %v (reason=%q)", c.sql, blocked, c.blocked, reason)
+			}
+		})
 	}
 }
 
@@ -565,7 +721,8 @@ func TestDBUserCreatesAccountsWithDefault(t *testing.T) {
 	databases_lock.Lock()
 	delete(databases, path)
 	databases_lock.Unlock()
-	db.handle.Close()
+	db.internal.Close()
+	db.starlark.Close()
 }
 
 // Test db_app_schema_get returns 0 for new database
@@ -660,5 +817,245 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 	exists, _ = db.exists("select name from sqlite_master where type='table' and name='attachments'")
 	if !exists {
 		t.Error("app.db should have an attachments table")
+	}
+}
+
+// BenchmarkStarlarkPoolExec measures the round-trip cost of the
+// per-call Connx + ExecContext + Close pattern that api_db_query uses.
+// Useful as a floor — if this regresses materially, the change is
+// worth looking at.
+func BenchmarkStarlarkPoolExec(b *testing.B) {
+	db, cleanup := create_test_db_b(b)
+	defer cleanup()
+
+	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		conn, err := db.starlark.Connx(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, err = conn.ExecContext(ctx, "INSERT INTO bench (n) VALUES (?)", i)
+		conn.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkStarlarkPoolQuery is the read-side analogue.
+func BenchmarkStarlarkPoolQuery(b *testing.B) {
+	db, cleanup := create_test_db_b(b)
+	defer cleanup()
+
+	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
+	for i := 0; i < 1000; i++ {
+		db.exec("INSERT INTO bench (n) VALUES (?)", i)
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		conn, err := db.starlark.Connx(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		var n int
+		err = conn.GetContext(ctx, &n, "SELECT n FROM bench WHERE id = ?", (i%1000)+1)
+		conn.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkInternalPoolExec is the same but on the no-authoriser
+// internal pool — the difference between the two benchmarks is the
+// per-statement authoriser callback overhead.
+func BenchmarkInternalPoolExec(b *testing.B) {
+	db, cleanup := create_test_db_b(b)
+	defer cleanup()
+
+	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		conn, err := db.internal.Connx(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, err = conn.ExecContext(ctx, "INSERT INTO bench (n) VALUES (?)", i)
+		conn.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// create_test_db_b is the bench-flavoured create_test_db. Same body —
+// testing.TB lets benchmarks share the helper without retyping it.
+func create_test_db_b(b *testing.B) (*DB, func()) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_db_bench")
+	if err != nil {
+		b.Fatalf("Failed to create temp dir: %v", err)
+	}
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	db := db_open("bench.db")
+	cleanup := func() {
+		db.close()
+		data_dir = orig_data_dir
+		os.RemoveAll(tmp_dir)
+	}
+	return db, cleanup
+}
+
+// TestStarlarkPoolConcurrent stresses the Starlark connection pool by
+// running many goroutines simultaneously through the same paths
+// api_db_query takes (Connx + Exec/Query, plus the defensive ROLLBACK
+// path). Catches conn leaks (would deadlock or starve), data races
+// under -race, and the multistmt-bypass-then-poison scenario where one
+// goroutine's failed BEGIN/PRAGMA/COMMIT must not break another's
+// independent transaction.
+//
+// The test alternates four kinds of work across 8 goroutines × 200
+// iterations:
+//
+//   - simple INSERT
+//   - SELECT with parameter
+//   - full Beginx/Commit transaction
+//   - multistmt with denied PRAGMA inside (poisons the conn if the
+//     defensive ROLLBACK in api_db_query weren't there — but here we
+//     exercise the same pattern via raw db.starlark.Exec to confirm
+//     the pool itself, not just the api_db_query wrapper, recovers)
+func TestStarlarkPoolConcurrent(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	db.exec("CREATE TABLE conc (id INTEGER PRIMARY KEY, who TEXT NOT NULL, n INTEGER NOT NULL)")
+
+	const goroutines = 8
+	const iterations = 200
+
+	var (
+		ctx     = context.Background()
+		wg      sync.WaitGroup
+		errCh   = make(chan error, goroutines*iterations)
+		inserts atomic.Int64
+		selects atomic.Int64
+		txs     atomic.Int64
+		denials atomic.Int64
+	)
+
+	worker := func(id int) {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			switch i % 4 {
+			case 0: // simple insert via per-call Connx (mirrors api_db_query)
+				conn, err := db.starlark.Connx(ctx)
+				if err != nil {
+					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					return
+				}
+				_, err = conn.ExecContext(ctx, "INSERT INTO conc (who, n) VALUES (?, ?)", fmt.Sprintf("g%d", id), i)
+				conn.Close()
+				if err != nil {
+					errCh <- fmt.Errorf("g%d i%d INSERT: %w", id, i, err)
+					return
+				}
+				inserts.Add(1)
+			case 1: // SELECT
+				conn, err := db.starlark.Connx(ctx)
+				if err != nil {
+					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					return
+				}
+				rows, err := conn.QueryxContext(ctx, "SELECT id FROM conc WHERE who = ?", fmt.Sprintf("g%d", id))
+				if err != nil {
+					conn.Close()
+					errCh <- fmt.Errorf("g%d i%d SELECT: %w", id, i, err)
+					return
+				}
+				for rows.Next() {
+				}
+				rows.Close()
+				conn.Close()
+				selects.Add(1)
+			case 2: // full transaction via the same path api_db_transaction takes
+				tx, err := db.starlark.Beginx()
+				if err != nil {
+					errCh <- fmt.Errorf("g%d i%d Beginx: %w", id, i, err)
+					return
+				}
+				if _, err := tx.Exec("INSERT INTO conc (who, n) VALUES (?, ?)", fmt.Sprintf("g%d-tx", id), i); err != nil {
+					tx.Rollback()
+					errCh <- fmt.Errorf("g%d i%d tx INSERT: %w", id, i, err)
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					errCh <- fmt.Errorf("g%d i%d Commit: %w", id, i, err)
+					return
+				}
+				txs.Add(1)
+			case 3: // multistmt with denied PRAGMA inside — must NOT poison the pool
+				// Use a per-call conn with defensive ROLLBACK, mirroring
+				// what api_db_query does. If we drop the rollback, the
+				// next iteration's Beginx on the same conn fails with
+				// "cannot start a transaction within a transaction".
+				conn, err := db.starlark.Connx(ctx)
+				if err != nil {
+					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					return
+				}
+				_, err = conn.ExecContext(ctx, "BEGIN; PRAGMA max_page_count = 999999999; COMMIT")
+				if err == nil {
+					conn.Close()
+					errCh <- fmt.Errorf("g%d i%d expected denial for multistmt PRAGMA write", id, i)
+					return
+				}
+				// The defensive rollback that api_db_query does:
+				_, _ = conn.ExecContext(ctx, "ROLLBACK")
+				conn.Close()
+				denials.Add(1)
+			}
+		}
+	}
+
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go worker(g)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("%v", err)
+	}
+
+	// Sanity-check totals: each goroutine ran iterations/4 of each kind.
+	want := int64(goroutines * iterations / 4)
+	if inserts.Load() != want {
+		t.Errorf("inserts = %d, want %d", inserts.Load(), want)
+	}
+	if selects.Load() != want {
+		t.Errorf("selects = %d, want %d", selects.Load(), want)
+	}
+	if txs.Load() != want {
+		t.Errorf("transactions = %d, want %d", txs.Load(), want)
+	}
+	if denials.Load() != want {
+		t.Errorf("denials = %d, want %d", denials.Load(), want)
+	}
+
+	// Final row count: inserts + tx-inserts.
+	var n int
+	if err := db.starlark.Get(&n, "SELECT count(*) FROM conc"); err != nil {
+		t.Fatalf("final count: %v", err)
+	}
+	if want := int(inserts.Load() + txs.Load()); n != want {
+		t.Errorf("final count = %d, want %d", n, want)
 	}
 }

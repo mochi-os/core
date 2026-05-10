@@ -729,30 +729,34 @@ func TestMenuAppCannotGrantRestrictedPermission(t *testing.T) {
 	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
 	menuApp := createExternalApp(menuAppID)
 	thread := createTestThread(user, menuApp)
-	fn := sl.NewBuiltin("mochi.permission.restricted", nil)
+	fn := sl.NewBuiltin("mochi.permission.level", nil)
 
-	// Verify that restricted permissions are correctly identified
-	// (the Starlark menu.star checks this before calling grant)
+	// Verify that restricted/admin permissions are correctly identified
+	// — the Starlark menu.star checks `mochi.permission.level(perm)`
+	// before calling grant. Both "restricted" and "administrator"
+	// levels should block grants from the menu app.
 	restrictedPerms := []string{"users/read", "settings/write", "url:*"}
 	for _, perm := range restrictedPerms {
-		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
+		result, err := api_permission_level(thread, fn, sl.Tuple{sl.String(perm)}, nil)
 		if err != nil {
-			t.Fatalf("api_permission_restricted(%q) error: %v", perm, err)
+			t.Fatalf("api_permission_level(%q) error: %v", perm, err)
 		}
-		if result != sl.True {
-			t.Errorf("api_permission_restricted(%q) = %v, want True", perm, result)
+		level := string(result.(sl.String))
+		if level == "standard" {
+			t.Errorf("api_permission_level(%q) = %q, want restricted or administrator", perm, level)
 		}
 	}
 
-	// Standard permissions should not be restricted
+	// Standard permissions should report "standard"
 	standardPerms := []string{"accounts/read", "groups/manage", "url:example.com"}
 	for _, perm := range standardPerms {
-		result, err := api_permission_restricted(thread, fn, sl.Tuple{sl.String(perm)}, nil)
+		result, err := api_permission_level(thread, fn, sl.Tuple{sl.String(perm)}, nil)
 		if err != nil {
-			t.Fatalf("api_permission_restricted(%q) error: %v", perm, err)
+			t.Fatalf("api_permission_level(%q) error: %v", perm, err)
 		}
-		if result != sl.False {
-			t.Errorf("api_permission_restricted(%q) = %v, want False", perm, result)
+		level := string(result.(sl.String))
+		if level != "standard" {
+			t.Errorf("api_permission_level(%q) = %q, want standard", perm, level)
 		}
 	}
 }
@@ -827,58 +831,44 @@ func TestAPIPermissionCheckInternalApp(t *testing.T) {
 	}
 }
 
-func TestAPIPermissionRestricted(t *testing.T) {
-	thread := &sl.Thread{Name: "test"}
-
-	tests := []struct {
-		permission     string
-		wantRestricted bool
-	}{
-		{"groups/manage", false},
-		{"webpush/send", true},
-		{"url:example.com", false},
-		{"url:*", true},
-	}
-
-	for _, tt := range tests {
-		result, err := api_permission_restricted(thread, sl.NewBuiltin("test", nil),
-			sl.Tuple{sl.String(tt.permission)}, nil)
-		if err != nil {
-			t.Errorf("api_permission_restricted(%q) returned error: %v", tt.permission, err)
-			continue
-		}
-
-		got := result == sl.True
-		if got != tt.wantRestricted {
-			t.Errorf("api_permission_restricted(%q) = %v, want %v", tt.permission, got, tt.wantRestricted)
-		}
-	}
-}
-
-func TestAPIPermissionAdministrator(t *testing.T) {
+// TestAPIPermissionLevel exercises the unified mochi.permission.level
+// API that replaced mochi.permission.restricted and
+// mochi.permission.administrator (commit 8fb4466). Returns one of
+// "standard" / "restricted" / "administrator", with administrator
+// strictly stronger than restricted (admin-only permissions report
+// "administrator" even though they're also restricted internally).
+func TestAPIPermissionLevel(t *testing.T) {
 	thread := &sl.Thread{Name: "test"}
 
 	tests := []struct {
 		permission string
-		wantAdmin  bool
+		wantLevel  string
 	}{
-		{"users/read", true},
-		{"settings/write", true},
-		{"groups/manage", false},
-		{"url:example.com", false},
+		// standard: any user can grant
+		{"groups/manage", "standard"},
+		{"url:example.com", "standard"},
+		// restricted: requires user to enable from app settings
+		{"webpush/send", "restricted"},
+		{"url:*", "restricted"},
+		// administrator: admin role required to grant
+		{"users/read", "administrator"},
+		{"settings/write", "administrator"},
 	}
 
 	for _, tt := range tests {
-		result, err := api_permission_administrator(thread, sl.NewBuiltin("test", nil),
+		result, err := api_permission_level(thread, sl.NewBuiltin("test", nil),
 			sl.Tuple{sl.String(tt.permission)}, nil)
 		if err != nil {
-			t.Errorf("api_permission_administrator(%q) returned error: %v", tt.permission, err)
+			t.Errorf("api_permission_level(%q) returned error: %v", tt.permission, err)
 			continue
 		}
-
-		got := result == sl.True
-		if got != tt.wantAdmin {
-			t.Errorf("api_permission_administrator(%q) = %v, want %v", tt.permission, got, tt.wantAdmin)
+		level, ok := result.(sl.String)
+		if !ok {
+			t.Errorf("api_permission_level(%q) returned %T, want sl.String", tt.permission, result)
+			continue
+		}
+		if string(level) != tt.wantLevel {
+			t.Errorf("api_permission_level(%q) = %q, want %q", tt.permission, level, tt.wantLevel)
 		}
 	}
 }
@@ -1270,14 +1260,14 @@ func TestAPIPermissionListWrongArgs(t *testing.T) {
 	}
 }
 
-func TestAPIPermissionRestrictedWrongArgs(t *testing.T) {
+func TestAPIPermissionLevelWrongArgs(t *testing.T) {
 	thread := &sl.Thread{Name: "test"}
 	fn := sl.NewBuiltin("test", nil)
 
 	// No arguments
-	_, err := api_permission_restricted(thread, fn, sl.Tuple{}, nil)
+	_, err := api_permission_level(thread, fn, sl.Tuple{}, nil)
 	if err == nil {
-		t.Error("api_permission_restricted with no args should return error")
+		t.Error("api_permission_level with no args should return error")
 	}
 }
 
@@ -1407,6 +1397,9 @@ func assertAPIRequiresPermission(t *testing.T, name string, permission string, a
 }
 
 func containsPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
 	errStr := err.Error()
 	return contains(errStr, "permission") && (contains(errStr, "denied") || contains(errStr, "required") || contains(errStr, "not granted"))
 }
@@ -1678,6 +1671,37 @@ func TestAPIWebPushSendRequiresPermission(t *testing.T) {
 }
 
 // --- URL Request Permission Tests ---
+//
+// api_url_request returns a {status, headers, body} response value
+// even on permission failure (status 403, no Go-level error). Tests
+// inspect the response status, not err.
+
+// expectURLStatus asserts that the response from api_url_request has the
+// given status. Returns true if the status matched.
+func expectURLStatus(t *testing.T, result sl.Value, want int64) bool {
+	t.Helper()
+	d, ok := result.(*sl.Dict)
+	if !ok {
+		t.Errorf("api_url_request returned %T, want *sl.Dict", result)
+		return false
+	}
+	v, found, _ := d.Get(sl.String("status"))
+	if !found {
+		t.Error("api_url_request response missing 'status' key")
+		return false
+	}
+	got, ok := v.(sl.Int)
+	if !ok {
+		t.Errorf("api_url_request response 'status' is %T, want sl.Int", v)
+		return false
+	}
+	gotInt, _ := got.Int64()
+	if gotInt != want {
+		t.Errorf("api_url_request response status = %d, want %d", gotInt, want)
+		return false
+	}
+	return true
+}
 
 func TestAPIURLRequestRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
@@ -1688,27 +1712,23 @@ func TestAPIURLRequestRequiresPermission(t *testing.T) {
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.url.request", nil)
 
-	// Without permission
-	_, err := api_url_request(thread, fn, sl.Tuple{sl.String("https://example.com/api")}, nil)
-	if err == nil {
-		t.Error("api_url_request should require url:example.com permission")
+	// Without permission — response status should be 403.
+	result, err := api_url_request(thread, fn, sl.Tuple{sl.String("https://example.com/api")}, nil)
+	if err != nil {
+		t.Fatalf("api_url_request returned unexpected error: %v", err)
 	}
-	if !containsPermissionError(err) {
-		t.Errorf("api_url_request error should mention permission: %v", err)
-	}
+	expectURLStatus(t, result, 403)
 
-	// With permission for example.com - should pass permission check
-	// (may still fail for network reasons, but that's okay)
+	// With permission for example.com - permission check passes (may still
+	// fail for network reasons, but no longer 403).
 	permission_grant(user, app.id, "url:example.com")
 
-	// Should still fail for different domain without permission
-	_, err = api_url_request(thread, fn, sl.Tuple{sl.String("https://other-domain.com/api")}, nil)
-	if err == nil || !containsPermissionError(err) {
-		// Either no error (unexpected) or error but not permission-related (also unexpected)
-		if err == nil {
-			t.Error("api_url_request should require permission for other-domain.com")
-		}
+	// Should still 403 for different domain without permission.
+	result, err = api_url_request(thread, fn, sl.Tuple{sl.String("https://other-domain.com/api")}, nil)
+	if err != nil {
+		t.Fatalf("api_url_request returned unexpected error: %v", err)
 	}
+	expectURLStatus(t, result, 403)
 }
 
 func TestAPIURLRequestSubdomainPermission(t *testing.T) {
@@ -1720,14 +1740,12 @@ func TestAPIURLRequestSubdomainPermission(t *testing.T) {
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.url.request", nil)
 
-	// Without permission for parent domain - subdomain should also fail
-	_, err := api_url_request(thread, fn, sl.Tuple{sl.String("https://api.github.com/users")}, nil)
-	if err == nil {
-		t.Error("api_url_request should require permission for api.github.com")
+	// Without permission for parent domain - subdomain should 403.
+	result, err := api_url_request(thread, fn, sl.Tuple{sl.String("https://api.github.com/users")}, nil)
+	if err != nil {
+		t.Fatalf("api_url_request returned unexpected error: %v", err)
 	}
-	if !containsPermissionError(err) {
-		t.Errorf("api_url_request error should mention permission: %v", err)
-	}
+	expectURLStatus(t, result, 403)
 
 	// Grant permission for github.com - subdomain should now pass permission check
 	permission_grant(user, app.id, "url:github.com")

@@ -32,10 +32,14 @@ msi = $(build_windows).msi
 # Build flags. build_platform tags release builds so the daily update_manager
 # can poll the right packages.mochi-os.org/<path>/versions.json. Empty for
 # `make` from source — those binaries don't poll.
-ldflags_linux   = -X main.build_version=$(version) -X main.build_platform=linux
-ldflags_windows = -X main.build_version=$(version) -X main.build_platform=windows
-ldflags_macos   = -X main.build_version=$(version) -X main.build_platform=macos
-ldflags_mochictl = -X main.build_version=$(version)
+#
+# -s -w drops the Go symbol table and DWARF debug info: smaller binary
+# without needing the cross-arch `*-strip` binutils. Pure-Go means
+# CGO_ENABLED=0 everywhere.
+ldflags_linux   = -s -w -X main.build_version=$(version) -X main.build_platform=linux
+ldflags_windows = -s -w -X main.build_version=$(version) -X main.build_platform=windows
+ldflags_macos   = -s -w -X main.build_version=$(version) -X main.build_platform=macos
+ldflags_mochictl = -s -w -X main.build_version=$(version)
 
 all: $(bin)/mochi-server $(bin)/mochictl
 
@@ -50,15 +54,18 @@ $(bin):
 
 # --------------------------------------------------------------------------
 # Native Linux amd64 binaries
+#
+# SQLite is bundled via github.com/ncruces/go-sqlite3 (pure-Go, WASM via
+# wazero). cgo is no longer required at all, so every target below is a
+# plain GOOS/GOARCH build with CGO_ENABLED=0 — no cross-toolchains.
 # --------------------------------------------------------------------------
 
 $(bin)/mochi-server: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server ./server
+	CGO_ENABLED=0 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server ./server
 
 # Phony alias for the historical name.
 mochi-server: $(bin)/mochi-server
 
-# mochictl is pure Go (no cgo): cross-arch builds are just GOOS/GOARCH.
 $(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
 
@@ -105,17 +112,13 @@ mochi.7: $(bin)/mochi.7
 # Linux ARM cross-compile binaries
 # --------------------------------------------------------------------------
 
-# Linux ARM64 executable (cross-compile)
-# Requires: apt install gcc-aarch64-linux-gnu
 $(bin)/mochi-server-linux-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm64 ./server
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm64 ./server
 
 mochi-server-linux-arm64: $(bin)/mochi-server-linux-arm64
 
-# Linux ARM 32-bit executable (cross-compile)
-# Requires: apt install gcc-arm-linux-gnueabihf
 $(bin)/mochi-server-linux-arm: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm ./server
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm ./server
 
 mochi-server-linux-arm: $(bin)/mochi-server-linux-arm
 
@@ -147,8 +150,6 @@ $(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi
 	cp -av install/* $(build_linux_amd64)
 	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/sbin
 	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
-	strip $(build_linux_amd64)/usr/sbin/mochi-server
-	strip $(build_linux_amd64)/usr/bin/mochictl
 	upx -qq $(build_linux_amd64)/usr/sbin/mochi-server
 	mkdir -p $(build_linux_amd64)/usr/share/man/man1 $(build_linux_amd64)/usr/share/man/man5 $(build_linux_amd64)/usr/share/man/man7 $(build_linux_amd64)/usr/share/man/man8
 	cp $(bin)/mochictl.1     $(build_linux_amd64)/usr/share/man/man1/
@@ -169,8 +170,6 @@ $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)
 	cp -av install/* $(build_linux_arm64)
 	cp -av $(bin)/mochi-server-linux-arm64 $(build_linux_arm64)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl-linux-arm64 $(build_linux_arm64)/usr/bin/mochictl
-	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/sbin/mochi-server
-	aarch64-linux-gnu-strip $(build_linux_arm64)/usr/bin/mochictl
 	mkdir -p $(build_linux_arm64)/usr/share/man/man1 $(build_linux_arm64)/usr/share/man/man5 $(build_linux_arm64)/usr/share/man/man7 $(build_linux_arm64)/usr/share/man/man8
 	cp $(bin)/mochictl.1     $(build_linux_arm64)/usr/share/man/man1/
 	cp $(bin)/mochi.conf.5   $(build_linux_arm64)/usr/share/man/man5/
@@ -190,8 +189,6 @@ $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/moc
 	cp -av install/* $(build_linux_armhf)
 	cp -av $(bin)/mochi-server-linux-arm $(build_linux_armhf)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl-linux-arm $(build_linux_armhf)/usr/bin/mochictl
-	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/sbin/mochi-server
-	arm-linux-gnueabihf-strip $(build_linux_armhf)/usr/bin/mochictl
 	mkdir -p $(build_linux_armhf)/usr/share/man/man1 $(build_linux_armhf)/usr/share/man/man5 $(build_linux_armhf)/usr/share/man/man7 $(build_linux_armhf)/usr/share/man/man8
 	cp $(bin)/mochictl.1     $(build_linux_armhf)/usr/share/man/man1/
 	cp $(bin)/mochi.conf.5   $(build_linux_armhf)/usr/share/man/man5/
@@ -224,8 +221,6 @@ $(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/moch
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	strip $(rpmbuild_dir)/SOURCES/mochi-server
-	strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
 	rm -rf $(rpmbuild_dir)
@@ -247,8 +242,6 @@ $(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bi
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	aarch64-linux-gnu-strip $(rpmbuild_dir)/SOURCES/mochi-server
-	aarch64-linux-gnu-strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
 	rm -rf $(rpmbuild_dir)
@@ -270,8 +263,6 @@ $(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/m
 	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
 	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
 	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	arm-linux-gnueabihf-strip $(rpmbuild_dir)/SOURCES/mochi-server
-	arm-linux-gnueabihf-strip $(rpmbuild_dir)/SOURCES/mochictl
 	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
 	cp $(rpmbuild_dir)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
 	rm -rf $(rpmbuild_dir)
@@ -286,9 +277,8 @@ rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
 # --------------------------------------------------------------------------
 
 # Windows executable (cross-compile from Linux)
-# Requires: apt install gcc-mingw-w64-x86-64 (for CGO/SQLite support)
 $(bin)/mochi-server.exe: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -v -ldflags "$(ldflags_windows)" -o $(bin)/mochi-server.exe ./server
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -v -ldflags "$(ldflags_windows)" -o $(bin)/mochi-server.exe ./server
 
 mochi-server.exe: $(bin)/mochi-server.exe
 
@@ -309,16 +299,13 @@ windows: $(bin)/mochi-server.exe
 # macOS
 # --------------------------------------------------------------------------
 
-# Native Mac host: cgo on (real SQLite). Linux cross-compile: cgo off (pure-Go SQLite) unless osxcross is installed.
-darwin_cgo = $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1 || echo 0)
-
 $(bin)/mochi-server-darwin-amd64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-amd64 ./server
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-amd64 ./server
 
 mochi-server-darwin-amd64: $(bin)/mochi-server-darwin-amd64
 
 $(bin)/mochi-server-darwin-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(darwin_cgo) go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-arm64 ./server
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-arm64 ./server
 
 mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 

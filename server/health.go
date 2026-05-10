@@ -26,10 +26,10 @@ func health_status() (gin.H, int) {
 	databases_lock.Lock()
 	db, ok := databases[users_key]
 	databases_lock.Unlock()
-	if !ok || db == nil || db.handle == nil {
+	if !ok || db == nil || db.internal == nil {
 		database_status = "not started"
 		overall = http.StatusServiceUnavailable
-	} else if err := db.handle.Ping(); err != nil {
+	} else if err := db.internal.Ping(); err != nil {
 		database_status = "error: " + err.Error()
 		overall = http.StatusServiceUnavailable
 	}

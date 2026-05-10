@@ -39,8 +39,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mattn/go-sqlite3"
+	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 	"golang.org/x/sys/unix"
+
+	// Side-effect import: registers a pure-Go "sqlite3" database/sql
+	// driver. Used here to open the read-only source connection for
+	// snapshot_copy_db; the main app/core DB pools live in db.go and
+	// open via sqlitedrv.Open with their own ConnectHooks.
+	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
 // -- Listener + peer credentials -------------------------------------------
@@ -352,18 +358,13 @@ func snapshot_walk_snaps(root string) ([]string, error) {
 // API. Page-copying preserves byte offsets across snapshots, so rsync delta
 // stays tight.
 func snapshot_copy_db(srcPath, dstPath string) (int64, error) {
-	src, err := sql.Open("sqlite3", "file:"+srcPath+"?mode=ro&_busy_timeout=5000")
+	src, err := sql.Open("sqlite3", "file:"+srcPath+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return 0, fmt.Errorf("open source %s: %w", srcPath, err)
 	}
 	defer src.Close()
 
 	_ = os.Remove(dstPath)
-	dst, err := sql.Open("sqlite3", dstPath)
-	if err != nil {
-		return 0, fmt.Errorf("open dest %s: %w", dstPath, err)
-	}
-	defer dst.Close()
 
 	ctx := context.Background()
 	srcConn, err := src.Conn(ctx)
@@ -371,35 +372,13 @@ func snapshot_copy_db(srcPath, dstPath string) (int64, error) {
 		return 0, fmt.Errorf("source conn: %w", err)
 	}
 	defer srcConn.Close()
-	dstConn, err := dst.Conn(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("dest conn: %w", err)
-	}
-	defer dstConn.Close()
 
-	rawErr := dstConn.Raw(func(dc any) error {
-		return srcConn.Raw(func(sc any) error {
-			ds, ok1 := dc.(*sqlite3.SQLiteConn)
-			ss, ok2 := sc.(*sqlite3.SQLiteConn)
-			if !ok1 || !ok2 {
-				return fmt.Errorf("not a *sqlite3.SQLiteConn")
-			}
-			backup, err := ds.Backup("main", ss, "main")
-			if err != nil {
-				return err
-			}
-			for {
-				done, err := backup.Step(-1)
-				if err != nil {
-					_ = backup.Finish()
-					return err
-				}
-				if done {
-					break
-				}
-			}
-			return backup.Finish()
-		})
+	rawErr := srcConn.Raw(func(driverConn any) error {
+		dc, ok := driverConn.(sqlitedrv.Conn)
+		if !ok {
+			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
+		}
+		return dc.Raw().Backup("main", dstPath)
 	})
 	if rawErr != nil {
 		return 0, fmt.Errorf("backup: %w", rawErr)

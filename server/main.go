@@ -111,6 +111,25 @@ func main_serve(ready func()) int {
 	if err := run_dir_create(); err != nil {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
+	// Confirm the data directory is writable. On Windows, the MSI
+	// installer creates %ProgramData%\Mochi\data owned by SYSTEM with
+	// restrictive ACLs so the auto-installed mochi-server service
+	// (running as LocalSystem) can write to it. Running
+	// mochi-server.exe interactively from a non-admin shell hits a
+	// permission wall that previously surfaced as a panic from deep
+	// inside setting_set; bail early with a clear message instead.
+	if err := data_dir_writable_check(); err != nil {
+		warn("Data directory %q is not writable: %v.", data_dir, err)
+		switch runtime.GOOS {
+		case "windows":
+			warn("On Windows, either let the auto-installed mochi-server service handle it (Services.msc → 'Mochi Server') or run mochi-server.exe from an elevated (Run as administrator) command prompt.")
+		case "darwin":
+			warn("On macOS, run mochi-server with sudo or adjust ownership of the data directory.")
+		default:
+			warn("Run mochi-server as a user with write permission on the data directory, or adjust the directory's ownership.")
+		}
+		return 1
+	}
 
 	// Redirect stdout/stderr to a file when running as a Windows service —
 	// the SCM doesn't expose a console, so log.Print would otherwise vanish.

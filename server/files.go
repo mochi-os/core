@@ -34,6 +34,25 @@ func file_exists(path string) bool {
 	return err == nil
 }
 
+// data_dir_writable_check tries to create and remove a small file inside
+// the configured data_dir. Returns nil if the calling process can write
+// there, or the underlying error otherwise. Used by main_serve to fail
+// early with an actionable message instead of panicking deep inside a
+// later DB write.
+func data_dir_writable_check() error {
+	if err := os.MkdirAll(data_dir, 0755); err != nil {
+		return err
+	}
+	probe := filepath.Join(data_dir, ".mochi_write_check")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	os.Remove(probe)
+	return nil
+}
+
 func file_is_directory(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {

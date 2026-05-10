@@ -18,6 +18,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -115,6 +116,13 @@ var providers = []Provider{
 			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
+	},
+	{
+		Type:         "unifiedpush",
+		Capabilities: []string{"notify"},
+		Flow:         "browser",
+		Fields:       nil,
+		Verify:       false,
 	},
 	{
 		Type:         "url",
@@ -471,6 +479,44 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if secret != "" {
 			data["secret"] = secret
 		}
+
+	case "unifiedpush":
+		// UnifiedPush subscription. endpoint may be either an absolute
+		// URL (third-party distributor like ntfy.sh — used verbatim at
+		// delivery time as RFC 8030 Web Push) OR a path-only string
+		// like "/menu/-/push/inbound/<sub>" synthesised by
+		// function_push_register for the local-distributor case (where
+		// the deliver fast-path forwards via in-process WebSocket
+		// instead of a self-HTTP-call). Either way, we store it
+		// verbatim along with the auth + p256dh keys.
+		endpoint, _ := fields["endpoint"].(string)
+		auth, _ := fields["auth"].(string)
+		p256dh, _ := fields["p256dh"].(string)
+
+		// Re-registration is idempotent: each Android app re-runs
+		// MochiPushClient.register at every launch, so the App side
+		// hits /menu/-/push/register with the same endpoint each
+		// time. If we kept inserting we'd accumulate duplicate
+		// account rows + destinations forever. Mirror the browser
+		// case: update the existing row in place when a row with the
+		// same endpoint already exists.
+		if endpoint != "" {
+			existing, _ := db.row("select id from accounts where type='unifiedpush' and identifier=?", endpoint)
+			if existing != nil {
+				data["endpoint"] = endpoint
+				data["auth"] = auth
+				data["p256dh"] = p256dh
+				data_json, _ := json.Marshal(data)
+				db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
+				row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
+				return sl_encode(account_redact(row)), nil
+			}
+		}
+
+		identifier = endpoint
+		data["endpoint"] = endpoint
+		data["auth"] = auth
+		data["p256dh"] = p256dh
 	}
 
 	// Serialize data to JSON
@@ -591,6 +637,26 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				} else {
 					db.exec("update accounts set data=? where id=?", string(j), id)
 				}
+			}
+
+		case "endpoint":
+			// Used by function_push_register's local-distributor branch
+			// to write back the canonical path-only endpoint that
+			// embeds the just-allocated account id.
+			endpoint, _ := sl.AsString(kv[1])
+			row, err := db.row("select data from accounts where id=?", id)
+			if err == nil && row != nil {
+				raw, _ := row["data"].(string)
+				var d map[string]any
+				if raw != "" {
+					json.Unmarshal([]byte(raw), &d)
+				}
+				if d == nil {
+					d = make(map[string]any)
+				}
+				d["endpoint"] = endpoint
+				j, _ := json.Marshal(d)
+				db.exec("update accounts set data=?, identifier=? where id=?", string(j), endpoint, id)
 			}
 		}
 	}
@@ -848,6 +914,9 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	case "browser":
 		result = account_test_browser(data, language)
 
+	case "unifiedpush":
+		result = account_test_unifiedpush(data, language)
+
 	case "pushbullet":
 		token, _ := data["token"].(string)
 		result = account_test_pushbullet(token)
@@ -920,6 +989,58 @@ func account_test_email(address string, language string) AccountTestResult {
 // account_test_browser sends a test browser push notification, localised to
 // the recipient user's language preference.
 func account_test_browser(data map[string]any, language string) AccountTestResult {
+	webpush_ensure()
+	if webpush_public == "" || webpush_private == "" {
+		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
+	}
+
+	endpoint, _ := data["endpoint"].(string)
+	auth, _ := data["auth"].(string)
+	p256dh, _ := data["p256dh"].(string)
+
+	if endpoint == "" || auth == "" || p256dh == "" {
+		return AccountTestResult{Success: false, Message: "Invalid subscription data"}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"title": resolve_core_label(language, "push.test.title", nil),
+		"body":  "",
+	})
+
+	sub := webpush.Subscription{
+		Endpoint: endpoint,
+		Keys: webpush.Keys{
+			Auth:   auth,
+			P256dh: p256dh,
+		},
+	}
+
+	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		Subscriber:      "mailto:webpush@localhost",
+		VAPIDPublicKey:  webpush_public,
+		VAPIDPrivateKey: webpush_private,
+		TTL:             60,
+	})
+
+	if err != nil {
+		return AccountTestResult{Success: false, Message: "Push notification failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 201 {
+		return AccountTestResult{Success: true, Message: "Test notification sent"}
+	} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		return AccountTestResult{Success: false, Message: "Subscription expired"}
+	}
+
+	return AccountTestResult{Success: false, Message: "Push notification failed"}
+}
+
+// account_test_unifiedpush sends a test push notification via UnifiedPush.
+// Uses RFC 8030 Web Push to whatever endpoint URL the distributor allocated;
+// works for our own distributor and for third-party distributors (ntfy etc.)
+// alike — endpoint is opaque.
+func account_test_unifiedpush(data map[string]any, language string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
 		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
@@ -1245,6 +1366,19 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	db := db_user(user, "user")
 
+	// Opportunistic TTL: drop unifiedpush rows that haven't been delivered
+	// to in 366 days. We only support local distributors, so a "dead"
+	// subscription costs nothing per attempt (websockets_send is a no-op
+	// when no client subscribes), but the rows accumulate forever without
+	// this. 366 days absorbs leap-year drift — a user pushing exactly once
+	// a year on the same calendar date never trips the cleanup. The
+	// last_delivered > 0 guard skips freshly-registered subscriptions
+	// that haven't received their first push yet.
+	db.exec(
+		"delete from accounts where type='unifiedpush' and last_delivered > 0 and last_delivered < ?",
+		time.Now().Unix()-366*86400,
+	)
+
 	// Get verified accounts with notify capability (optionally filtered by account ID)
 	var rows []map[string]any
 	var err error
@@ -1291,6 +1425,8 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			topic, _ := data["topic"].(string)
 			token, _ := data["token"].(string)
 			success = account_deliver_ntfy(server, topic, token, title, body, link)
+		case "unifiedpush":
+			success = account_deliver_unifiedpush(user, data, title, body, link, app+"-"+category+"-"+object)
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
@@ -1300,9 +1436,16 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 		if success {
 			sent++
+			// Update last_delivered for TTL sweep
+			db.exec("update accounts set last_delivered=? where id=?", time.Now().Unix(), account)
 		} else {
 			failed++
-			// Remove expired browser subscriptions
+			// Remove expired browser subscriptions on any failure (longstanding
+			// behaviour). For unifiedpush, only the deliver function knows
+			// whether the failure was permanent (404/410 → drop) or transient
+			// (timeout, 5xx, network → keep) — until that signal is plumbed,
+			// keep the row so we don't tear down phones that just temporarily
+			// lost reachability. The TTL sweep handles long-term orphans.
 			if ptype == "browser" {
 				db.exec("delete from accounts where id=?", account)
 			}
@@ -1357,6 +1500,82 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 	}
 	resp.Body.Close()
 
+	return resp.StatusCode == 201
+}
+
+// account_deliver_unifiedpush sends a notification to a UnifiedPush distributor.
+// The endpoint URL belongs to whichever distributor the user picked: it may be
+// on this Mochi server (when the user picked our distributor) or on a
+// third-party push server like ntfy.sh.
+//
+// Two paths:
+//   - **Local fast-path**: when the endpoint is path-only (starts with "/"),
+//     it was synthesised by function_push_register for the Mochi-distributor
+//     case. Skip the RFC 8030 wrap entirely and forward the cleartext payload
+//     to the device via the existing per-user WebSocket (the Mochi distributor
+//     subscribes to the well-known key "unifiedpush"). One in-process hop
+//     instead of HTTP self-call + Web Push round-trip.
+//   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
+//     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
+func account_deliver_unifiedpush(user *User, data map[string]any, title, body, link, tag string) bool {
+	endpoint, _ := data["endpoint"].(string)
+	if endpoint == "" {
+		return false
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"title": title,
+		"body":  body,
+		"link":  link,
+		"tag":   tag,
+	})
+
+	// Local fast-path: path-only endpoint synthesised by our own register
+	// flow. Forward to the Mochi distributor over the existing user WebSocket.
+	if strings.HasPrefix(endpoint, "/") {
+		subId := endpoint
+		if i := strings.LastIndex(endpoint, "/"); i >= 0 {
+			subId = endpoint[i+1:]
+		}
+		websockets_send(user, "unifiedpush", map[string]any{
+			"subId":   subId,
+			"payload": string(payload),
+		})
+		return true
+	}
+
+	webpush_ensure()
+	if webpush_public == "" || webpush_private == "" {
+		return false
+	}
+
+	auth, _ := data["auth"].(string)
+	p256dh, _ := data["p256dh"].(string)
+	if auth == "" || p256dh == "" {
+		return false
+	}
+
+	sub := webpush.Subscription{
+		Endpoint: endpoint,
+		Keys: webpush.Keys{
+			Auth:   auth,
+			P256dh: p256dh,
+		},
+	}
+
+	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		Subscriber:      "mailto:webpush@localhost",
+		VAPIDPublicKey:  webpush_public,
+		VAPIDPrivateKey: webpush_private,
+		TTL:             86400,
+	})
+
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+
+	// 201 Created = success. 404/410 = subscription dead (caller drops the row).
 	return resp.StatusCode == 201
 }
 

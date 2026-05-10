@@ -293,8 +293,11 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 
 		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '')")
+		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0)")
 		db.exec("create index if not exists accounts_type on accounts(type)")
+		if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='last_delivered'"); !exists {
+			db.exec("alter table accounts add column last_delivered integer not null default 0")
+		}
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")

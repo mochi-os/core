@@ -356,6 +356,7 @@ var (
 		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", nil},
 		{"test", "Test", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
+			{"notifications/send", ""},
 			{"settings/write", ""},
 			{"users/read", ""},
 		}},

@@ -48,11 +48,11 @@ func update_manager() {
 	update_install_clear_on_match()
 
 	if build_version == "" || build_platform == "" {
-		debug("update: skipped (build_version=%q build_platform=%q)", build_version, build_platform)
+		debug("Server update: skipped (build_version=%q build_platform=%q)", build_version, build_platform)
 		return
 	}
 	if !ini_bool("update", "check", true) {
-		info("update: daily check disabled by config")
+		info("Server update: daily check disabled by config")
 		return
 	}
 
@@ -84,7 +84,7 @@ func update_install_clear_on_match() {
 func update_check() {
 	path := update_url_path()
 	if path == "" {
-		warn("update: no URL path for build_platform=%q", build_platform)
+		warn("Server update: no URL path for build_platform=%q", build_platform)
 		return
 	}
 
@@ -95,53 +95,53 @@ func update_check() {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		warn("update: build request: %v", err)
+		warn("Server update: build request: %v", err)
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		info("update: fetch %s: %v", url, err)
+		info("Server update: fetch %s: %v", url, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		info("update: fetch %s: status %d", url, resp.StatusCode)
+		info("Server update: fetch %s: status %d", url, resp.StatusCode)
 		return
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		info("update: read body: %v", err)
+		info("Server update: read body: %v", err)
 		return
 	}
 
 	var v update_versions
 	if err := json.Unmarshal(body, &v); err != nil {
-		info("update: parse %s: %v", url, err)
+		info("Server update: parse %s: %v", url, err)
 		return
 	}
 
 	latest, ok := v.Tracks[update_track]
 	if !ok || latest == "" {
-		info("update: no %q track in %s", update_track, url)
+		info("Server update: no %q track in %s", update_track, url)
 		return
 	}
 
 	setting_set("update_checked", strconv.FormatInt(time.Now().Unix(), 10))
 
 	if version_compare(latest, build_version) <= 0 {
-		debug("update: running %s, latest %s, nothing to do", build_version, latest)
+		debug("Server update: running %s, latest %s, nothing to do", build_version, latest)
 		return
 	}
 
 	notified := setting_get("update_notified", "")
 	if notified != "" && version_compare(latest, notified) <= 0 {
-		debug("update: already notified about %s (running %s)", notified, build_version)
+		debug("Server update: already notified about %s (running %s)", notified, build_version)
 		return
 	}
 
-	info("update: new version %s available (running %s)", latest, build_version)
+	info("Server update: new version %s available (running %s)", latest, build_version)
 	update_notify_admins(latest)
 	setting_set("update_notified", latest)
 }
@@ -225,7 +225,7 @@ func update_install_start(version string) error {
 	go func() {
 		defer update_install_lock.Unlock()
 		if err := update_install_run(version); err != nil {
-			warn("update: install %s failed: %v", version, err)
+			warn("Server update: install %s failed: %v", version, err)
 			setting_set("update_pending", "")
 		}
 	}()
@@ -249,12 +249,12 @@ func update_install_run(version string) error {
 	}
 	path := filepath.Join(dir, "mochi-server-"+version+".msi")
 
-	info("update: downloading %s to %s", url, path)
+	info("Server update: downloading %s to %s", url, path)
 	if err := update_install_download(url, path); err != nil {
 		return fmt.Errorf("download: %v", err)
 	}
 
-	info("update: launching msiexec for %s", path)
+	info("Server update: launching msiexec for %s", path)
 	cmd := exec.Command(
 		"cmd", "/c",
 		"ping -n "+strconv.Itoa(update_install_pre_wait+1)+" 127.0.0.1 > NUL & "+
@@ -268,10 +268,10 @@ func update_install_run(version string) error {
 	}
 	// Detach so the service-process exit doesn't kill it.
 	if err := cmd.Process.Release(); err != nil {
-		warn("update: cmd.Process.Release: %v", err)
+		warn("Server update: cmd.Process.Release: %v", err)
 	}
 
-	info("update: shutting down for self-install")
+	info("Server update: shutting down for self-install")
 	select {
 	case shutdown_request <- 0:
 	default:
@@ -324,11 +324,11 @@ func update_notify_admins(latest string) {
 	db := db_open("db/users.db")
 	rows, err := db.rows("select id, username from users where role = ?", "administrator")
 	if err != nil {
-		warn("update: list admins: %v", err)
+		warn("Server update: list admins: %v", err)
 		return
 	}
 	if len(rows) == 0 {
-		info("update: no administrators to notify")
+		info("Server update: no administrators to notify")
 		return
 	}
 
@@ -358,7 +358,7 @@ func update_notify_admins(latest string) {
 			"count":  int64(1),
 		}
 		if err := service_call_as_server(id, "notifications", "send", args); err != nil {
-			info("update: notify user %d: %v", id, err)
+			info("Server update: notify user %d: %v", id, err)
 		}
 	}
 }

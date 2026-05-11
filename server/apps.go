@@ -373,6 +373,7 @@ var (
 			{"interests/write", ""},
 		}},
 		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", nil},
+		{"17Qx3vcsBJ6RcMhshTKfVSBPigPZUAaA52KkpCi4ZYFaekSgrY", "Help", nil},
 		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"webpush/send", ""},

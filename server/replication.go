@@ -966,16 +966,6 @@ func replication_emit(user string, op *ReplicationOp) {
 		return
 	}
 
-	op.Sequence = replication_sequence_next(user, op.Scope)
-
-	// Auto-fill the fence when the caller declared a leader scope/key
-	// but didn't supply the fence explicitly. Receivers compare against
-	// their fence_witness for (LeaderScope, LeaderKey) and drop ops
-	// whose fence is strictly less than the highest seen.
-	if op.LeaderScope != "" && op.LeaderKey != "" && op.Fence == 0 {
-		op.Fence = replication_leader_fence(op.LeaderScope, op.LeaderKey)
-	}
-
 	if op.Scope != repl_scope_app {
 		// TODO: core-scope signing needs a parallel message type that
 		// signs with p2p_private (server_sign) rather than entity_sign.
@@ -986,7 +976,9 @@ func replication_emit(user string, op *ReplicationOp) {
 
 	// Pick any owned identity for this user as the signing entity. The
 	// join is by user_uid (task #4), which the v51 trigger keeps in sync
-	// with users.uid on insert / FK update.
+	// with users.uid on insert / FK update. Resolve the signer up front
+	// so we don't burn a sequence number on an op we can't actually
+	// send.
 	udb := db_open("db/users.db")
 	row, err := udb.row("select id from entities where user_uid=? order by id limit 1", user)
 	if err != nil || row == nil {
@@ -996,6 +988,16 @@ func replication_emit(user string, op *ReplicationOp) {
 	from, _ := row["id"].(string)
 	if from == "" {
 		return
+	}
+
+	op.Sequence = replication_sequence_next(user, op.Scope)
+
+	// Auto-fill the fence when the caller declared a leader scope/key
+	// but didn't supply the fence explicitly. Receivers compare against
+	// their fence_witness for (LeaderScope, LeaderKey) and drop ops
+	// whose fence is strictly less than the highest seen.
+	if op.LeaderScope != "" && op.LeaderKey != "" && op.Fence == 0 {
+		op.Fence = replication_leader_fence(op.LeaderScope, op.LeaderKey)
 	}
 
 	for _, peer := range peers {

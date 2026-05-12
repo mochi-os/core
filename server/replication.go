@@ -119,19 +119,24 @@ func replication_membership_change_event(e *Event) {
 		info("Replication membership-change dropping: cannot decode payload")
 		return
 	}
+	replication_membership_apply(e.peer, &mc)
+}
 
+// replication_membership_apply is the pure-DB half of the membership-change
+// path, separated out for testing. Dedup on (peer, scope="membership", user,
+// sequence); replace local hosts if the incoming sequence is the newest
+// we've seen for the user. Older membership changes still go into `seen` so
+// a slow peer's stale announcement doesn't keep re-applying after a newer
+// state has landed.
+func replication_membership_apply(originPeer string, mc *MembershipChange) {
 	db := db_open("db/replication.db")
 
 	if applied, _ := db.exists(
 		"select 1 from seen where peer=? and scope='membership' and user=? and sequence=?",
-		e.peer, mc.User, mc.Sequence); applied {
+		originPeer, mc.User, mc.Sequence); applied {
 		return
 	}
 
-	// Find the highest membership sequence already applied for this user
-	// (from any peer). A lower-sequenced change is stale — record as seen
-	// so the sender's queue can drop it, but don't overwrite the newer
-	// host set.
 	var latest int64
 	if row, err := db.row("select max(sequence) as seq from seen where scope='membership' and user=?", mc.User); err == nil && row != nil {
 		if v, ok := row["seq"].(int64); ok {
@@ -152,14 +157,14 @@ func replication_membership_change_event(e *Event) {
 
 	db.exec(
 		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, 'membership', ?, ?, ?)",
-		e.peer, mc.User, mc.Sequence, now())
+		originPeer, mc.User, mc.Sequence, now())
 
 	if stale {
 		debug("Replication membership-change stale: user=%q seq=%d < latest=%d (from peer %q)",
-			mc.User, mc.Sequence, latest, e.peer)
+			mc.User, mc.Sequence, latest, originPeer)
 	} else {
 		debug("Replication membership-change applied: user=%q seq=%d hosts=%v (from peer %q)",
-			mc.User, mc.Sequence, mc.Hosts, e.peer)
+			mc.User, mc.Sequence, mc.Hosts, originPeer)
 	}
 }
 

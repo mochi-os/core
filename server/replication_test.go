@@ -1724,6 +1724,60 @@ func TestReplicationHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1 claims the lease for (scope, key) — fence=1.
+	switchTo("h1")
+	if !replication_leader_claim("user:u", "tick") {
+		t.Fatal("h1 lease claim failed")
+	}
+	h1_fence := replication_leader_fence("user:u", "tick")
+	if h1_fence != 1 {
+		t.Fatalf("h1 fence after first claim: expected 1, got %d", h1_fence)
+	}
+
+	// Host 2 sees an op from h1 stamped with fence=1 — accepts and
+	// records the witness.
+	switchTo("h2")
+	if !replication_fence_observe("user:u", "tick", "peer1", h1_fence) {
+		t.Fatal("h2 must accept the fresh fence-1 op from peer1")
+	}
+	witnessed, peer := replication_fence_current("user:u", "tick")
+	if witnessed != 1 || peer != "peer1" {
+		t.Errorf("h2 witness after first observe: expected (1, peer1), got (%d, %q)", witnessed, peer)
+	}
+
+	// Unstamped ops still pass (non-leader patterns like LWW / counter).
+	if !replication_fence_observe("user:u", "tick", "peer3", 0) {
+		t.Errorf("h2 must accept fence=0 (unstamped op)")
+	}
+
+	// Host 3 takes over (hypothetically; cross-host claim coordination
+	// isn't built in V1 so we just simulate by observing a higher fence
+	// from another peer). h2 observes peer3's fence=2 — wins.
+	if !replication_fence_observe("user:u", "tick", "peer3", 2) {
+		t.Fatal("h2 must accept newer fence=2 from peer3")
+	}
+	witnessed, peer = replication_fence_current("user:u", "tick")
+	if witnessed != 2 || peer != "peer3" {
+		t.Errorf("h2 witness after takeover observe: expected (2, peer3), got (%d, %q)", witnessed, peer)
+	}
+
+	// h2 receives a delayed op from peer1 still stamped with fence=1 —
+	// rejected because the witness has moved on to 2.
+	if replication_fence_observe("user:u", "tick", "peer1", 1) {
+		t.Error("h2 must reject stale fence=1 after the witness moved to 2")
+	}
+
+	// peer3 emitting again with the same fence=2 is fine (renewal /
+	// retry of the same lease, not a regression).
+	if !replication_fence_observe("user:u", "tick", "peer3", 2) {
+		t.Errorf("h2 must accept fence=2 retry from the same peer")
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

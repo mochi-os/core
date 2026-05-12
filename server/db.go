@@ -314,6 +314,7 @@ func db_create() {
 	replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
 	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index leadership_expires on leadership(expires)")
+	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
 	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', primary key (scope, peer))")
 	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 }

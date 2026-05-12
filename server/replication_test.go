@@ -1575,6 +1575,88 @@ func TestEmailDedupTTLExpires(t *testing.T) {
 	}
 }
 
+func TestFenceObserveFreshAccepts(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	if !replication_fence_observe("credential:abc", "fence", "peerA", 1) {
+		t.Errorf("first observation should be accepted")
+	}
+	fence, peer := replication_fence_current("credential:abc", "fence")
+	if fence != 1 || peer != "peerA" {
+		t.Errorf("current after first observe: expected (1, peerA), got (%d, %q)", fence, peer)
+	}
+}
+
+func TestFenceObserveStaleRejects(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	replication_fence_observe("credential:x", "fence", "peerA", 5)
+	// Stale fence from another peer — must be rejected.
+	if replication_fence_observe("credential:x", "fence", "peerB", 3) {
+		t.Errorf("stale fence (3 < 5) must be rejected")
+	}
+	// Witness must not have been overwritten.
+	fence, peer := replication_fence_current("credential:x", "fence")
+	if fence != 5 || peer != "peerA" {
+		t.Errorf("rejected stale must not overwrite witness: got (%d, %q)", fence, peer)
+	}
+}
+
+func TestFenceObserveNewerWins(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	replication_fence_observe("scope", "key", "peerA", 3)
+	if !replication_fence_observe("scope", "key", "peerB", 7) {
+		t.Errorf("newer fence (7 > 3) must be accepted")
+	}
+	fence, peer := replication_fence_current("scope", "key")
+	if fence != 7 || peer != "peerB" {
+		t.Errorf("after newer observe: expected (7, peerB), got (%d, %q)", fence, peer)
+	}
+}
+
+func TestFenceObserveEqualAccepts(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	replication_fence_observe("scope", "key", "peerA", 5)
+	// Equal fence from the same peer (e.g. retry of the same op) is accepted.
+	if !replication_fence_observe("scope", "key", "peerA", 5) {
+		t.Errorf("equal fence retry from same peer must be accepted")
+	}
+}
+
+func TestFenceObserveNoOpForUnstamped(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Empty scope/key or fence<=0 means "no leader info", which passes
+	// through unconditionally so non-leader ops aren't blocked.
+	if !replication_fence_observe("", "", "peerA", 5) {
+		t.Errorf("unstamped op (empty scope) must pass")
+	}
+	if !replication_fence_observe("s", "k", "peerA", 0) {
+		t.Errorf("unstamped op (fence=0) must pass")
+	}
+	if !replication_fence_observe("s", "k", "peerA", -1) {
+		t.Errorf("unstamped op (fence<0) must pass")
+	}
+}
+
+func TestFenceCurrentEmptyState(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// No observations yet — current returns (0, "").
+	fence, peer := replication_fence_current("nope", "nada")
+	if fence != 0 || peer != "" {
+		t.Errorf("empty state: expected (0, \"\"), got (%d, %q)", fence, peer)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

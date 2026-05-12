@@ -102,3 +102,57 @@ func replication_leader_release(scope, key string) {
 	db := db_open("db/replication.db")
 	db.exec("delete from leadership where scope=? and key=? and peer=?", scope, key, p2p_id)
 }
+
+// replication_fence_observe records a leader-stamped op's fence for
+// (scope, key) and returns whether the op should be accepted. Returns
+// false when `fence` is strictly less than the highest fence already
+// observed locally — a sign that the emitter has been superseded by a
+// newer leader, and any state it's emitting is stale. Equal-or-greater
+// fences are accepted; the witness is upserted atomically (a stale
+// concurrent observation can't roll back a newer one because of the
+// WHERE clause on the UPSERT).
+//
+// Callers pass scope="" or fence<=0 for ops that aren't leader-gated;
+// those return true unconditionally so non-leader ops pass through.
+func replication_fence_observe(scope, key, peer string, fence int64) bool {
+	if scope == "" || key == "" || fence <= 0 {
+		return true
+	}
+
+	db := db_open("db/replication.db")
+	db.exec("create table if not exists fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
+
+	// Upsert only when the incoming fence beats what's stored. The WHERE
+	// on the ON CONFLICT clause makes the comparison atomic with the
+	// write so two concurrent observations race deterministically: the
+	// higher fence wins regardless of order.
+	db.exec(`insert into fence_witness (scope, key, fence, peer, seen) values (?, ?, ?, ?, ?)
+		on conflict(scope, key) do update set fence=excluded.fence, peer=excluded.peer, seen=excluded.seen
+		where excluded.fence > fence_witness.fence`,
+		scope, key, fence, peer, now())
+
+	row, _ := db.row("select fence from fence_witness where scope=? and key=?", scope, key)
+	if row == nil {
+		return true
+	}
+	current, _ := row["fence"].(int64)
+	return fence >= current
+}
+
+// replication_fence_current returns the highest fence observed for
+// (scope, key) and the peer that emitted it. Returns (0, "") when
+// nothing has been observed yet or the witness table doesn't exist.
+func replication_fence_current(scope, key string) (int64, string) {
+	db := db_open("db/replication.db")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='fence_witness'")
+	if !exists {
+		return 0, ""
+	}
+	row, _ := db.row("select fence, peer from fence_witness where scope=? and key=?", scope, key)
+	if row == nil {
+		return 0, ""
+	}
+	fence, _ := row["fence"].(int64)
+	peer, _ := row["peer"].(string)
+	return fence, peer
+}

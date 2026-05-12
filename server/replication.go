@@ -819,6 +819,14 @@ func replication_emit(user string, op *ReplicationOp) {
 
 	op.Sequence = replication_sequence_next(user, op.Scope)
 
+	// Auto-fill the fence when the caller declared a leader scope/key
+	// but didn't supply the fence explicitly. Receivers compare against
+	// their fence_witness for (LeaderScope, LeaderKey) and drop ops
+	// whose fence is strictly less than the highest seen.
+	if op.LeaderScope != "" && op.LeaderKey != "" && op.Fence == 0 {
+		op.Fence = replication_leader_fence(op.LeaderScope, op.LeaderKey)
+	}
+
 	if op.Scope != repl_scope_app {
 		// TODO: core-scope signing needs a parallel message type that
 		// signs with p2p_private (server_sign) rather than entity_sign.

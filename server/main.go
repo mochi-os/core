@@ -66,11 +66,20 @@ func main_serve(ready func()) int {
 	default_data := "/var/lib/mochi"
 	switch runtime.GOOS {
 	case "darwin":
-		home := os.Getenv("HOME")
-		app_support := filepath.Join(home, "Library", "Application Support", "Mochi")
-		default_config = filepath.Join(app_support, "mochi.conf")
-		default_cache = filepath.Join(home, "Library", "Caches", "Mochi")
-		default_data = app_support
+		// Prefer the .pkg-installed system layout when /etc/mochi/mochi.conf
+		// exists. Otherwise fall back to macOS-native per-user paths so
+		// running from source without `sudo make install` Just Works.
+		if file_exists("/etc/mochi/mochi.conf") {
+			default_config = "/etc/mochi/mochi.conf"
+			default_cache = "/var/cache/mochi"
+			default_data = "/var/lib/mochi"
+		} else {
+			home := os.Getenv("HOME")
+			app_support := filepath.Join(home, "Library", "Application Support", "Mochi")
+			default_config = filepath.Join(app_support, "mochi.conf")
+			default_cache = filepath.Join(home, "Library", "Caches", "Mochi")
+			default_data = app_support
+		}
 	case "windows":
 		// %ProgramData%\Mochi is shared across users and accessible to the
 		// LocalSystem account that the Windows service runs under. Falls

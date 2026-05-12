@@ -125,7 +125,8 @@ func code_send(email string, c *gin.Context) string {
 	code := random_unambiguous(10)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
-	email_login_code(email, code, request_language(c, user_by_username(email)))
+	u := user_by_username(email)
+	email_login_code(u, email, code, request_language(c, u))
 	return ""
 }
 

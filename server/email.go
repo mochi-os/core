@@ -131,8 +131,17 @@ func email_send_html(to string, subject string, html string) {
 }
 
 // email_login_code sends a styled HTML email with a login code, localised to
-// the given language (BCP 47 tag) via the core label resolver's fallback chain.
-func email_login_code(to string, code string, language string) {
+// the given language (BCP 47 tag) via the core label resolver's fallback
+// chain. When `user` is non-nil, the send is deduped per (address, code)
+// so two replicas independently generating the same login round don't
+// produce two emails for the same browser session. Each issued code is
+// distinct so the dedup never blocks a legitimate later code.
+func email_login_code(user *User, to string, code string, language string) {
+	if user != nil && email_already_delivered(user, to, "login:"+code) {
+		debug("email_login_code dedup: address=%q code=%q already delivered", to, code)
+		return
+	}
+
 	subject := resolve_core_label(language, "email.login_code.subject", nil)
 	heading := resolve_core_label(language, "email.login_code.heading", nil)
 	tagline := resolve_core_label(language, "email.login_code.tagline", nil)
@@ -179,6 +188,9 @@ func email_login_code(to string, code string, language string) {
 </body>
 </html>`
 	email_send_multipart(to, subject, text, htmlBody)
+	if user != nil {
+		email_mark_delivered(user, to, "login:"+code)
+	}
 }
 
 // email_send_multipart sends an email with both plain text and HTML parts.

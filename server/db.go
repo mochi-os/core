@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 51
+	schema_version = 52
 )
 
 var (
@@ -245,15 +245,21 @@ func db_create() {
 	sessions.exec("create table verifications (oauth integer primary key, user integer not null, last integer not null default 0)")
 	sessions.exec("create index verifications_user on verifications(user)")
 
-	// Directory
+	// Directory. `entities` holds per-entity metadata (one row); `locations`
+	// holds per-(entity, peer) location claims so receivers know every host
+	// that has announced itself as a replica. The legacy `location` column
+	// on entities is kept one release for rollback safety.
 	directory := db_open("db/directory.db")
-	directory.exec("create table directory ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null )")
-	directory.exec("create index directory_name on directory( name )")
-	directory.exec("create index directory_class on directory( class )")
-	directory.exec("create index directory_location on directory( location )")
-	directory.exec("create index directory_fingerprint on directory( fingerprint )")
-	directory.exec("create index directory_created on directory( created )")
-	directory.exec("create index directory_updated on directory( updated )")
+	directory.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null )")
+	directory.exec("create index entities_name on entities( name )")
+	directory.exec("create index entities_class on entities( class )")
+	directory.exec("create index entities_location on entities( location )")
+	directory.exec("create index entities_fingerprint on entities( fingerprint )")
+	directory.exec("create index entities_created on entities( created )")
+	directory.exec("create index entities_updated on entities( updated )")
+	directory.exec("create table locations ( entity text not null, peer text not null, seen integer not null, primary key ( entity, peer ) )")
+	directory.exec("create index locations_peer on locations( peer )")
+	directory.exec("create index locations_seen on locations( seen )")
 
 	// Peers
 	peers := db_open("db/peers.db")
@@ -612,6 +618,8 @@ func db_upgrade() {
 			db_upgrade_50()
 		case 51:
 			db_upgrade_51()
+		case 52:
+			db_upgrade_52()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -761,6 +769,33 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_52 reshapes directory.db for multi-location entities. The
+// existing single-row-per-entity table (`directory.directory`) is renamed
+// to `directory.entities`; a new `directory.locations(entity, peer, seen)`
+// table holds per-peer location claims so a replicated entity can announce
+// itself from every host independently and receivers track the active set.
+// The legacy `location` column on entities is left for one release for
+// rollback safety. See claude/plans/replication.md.
+func db_upgrade_52() {
+	db := db_open("db/directory.db")
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='directory'"); exists {
+		db.exec("alter table directory rename to entities")
+		for _, suffix := range []string{"name", "class", "location", "fingerprint", "created", "updated"} {
+			db.exec("drop index if exists directory_" + suffix)
+			db.exec("create index if not exists entities_" + suffix + " on entities(" + suffix + ")")
+		}
+	}
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='locations'"); !exists {
+		db.exec("create table locations (entity text not null, peer text not null, seen integer not null, primary key (entity, peer))")
+		db.exec("create index locations_peer on locations(peer)")
+		db.exec("create index locations_seen on locations(seen)")
+		// Backfill from the legacy location column on entities. Each
+		// pre-existing row becomes one locations row keyed on the peer
+		// it had claimed.
+		db.exec("insert or ignore into locations (entity, peer, seen) select id, replace(location, 'p2p/', ''), updated from entities where location != ''")
 	}
 }
 

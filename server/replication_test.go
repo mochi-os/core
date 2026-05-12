@@ -672,6 +672,118 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	}
 }
 
+func TestDirectoryMigrationRenameAndBackfill(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_dir_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Simulate a pre-v52 directory.db: the old single 'directory' table.
+	db := db_open("db/directory.db")
+	db.exec("create table directory ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null )")
+	db.exec("create index directory_location on directory(location)")
+	db.exec("insert into directory (id, name, class, location, fingerprint, created, updated) values ('ent1', 'Alice', 'person', 'p2p/peerA', 'fp1', 100, 100)")
+	db.exec("insert into directory (id, name, class, location, fingerprint, created, updated) values ('ent2', 'Bob', 'person', '', 'fp2', 200, 200)")
+
+	db_upgrade_52()
+
+	// Table was renamed.
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='entities'"); !exists {
+		t.Fatalf("v52 must rename directory to entities")
+	}
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='directory'"); exists {
+		t.Errorf("the old directory table should no longer exist")
+	}
+
+	// locations table exists.
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='locations'"); !exists {
+		t.Fatalf("v52 must create locations table")
+	}
+
+	// Backfill: ent1 had a location, ent2 didn't. Only ent1 should land in locations.
+	count := db.integer("select count(*) from locations")
+	if count != 1 {
+		t.Errorf("expected 1 backfilled location (ent1 only); got %d", count)
+	}
+	if row, _ := db.row("select peer from locations where entity='ent1'"); row == nil {
+		t.Errorf("ent1 location missing from backfill")
+	} else if p, _ := row["peer"].(string); p != "peerA" {
+		t.Errorf("backfilled peer should strip the p2p/ prefix; got %q", p)
+	}
+
+	// Re-running the migration is idempotent.
+	db_upgrade_52()
+	count = db.integer("select count(*) from locations")
+	if count != 1 {
+		t.Errorf("idempotent migration changed locations count: now %d", count)
+	}
+}
+
+func TestDirectoryEntityPeersMultiHost(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_peers_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+	orig_p2p := p2p_id
+	p2p_id = "selfpeer"
+	defer func() { p2p_id = orig_p2p }()
+
+	// Set up the v52 directory schema.
+	db_create_directory := func() {
+		db := db_open("db/directory.db")
+		db.exec("create table entities (id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null)")
+		db.exec("create table locations (entity text not null, peer text not null, seen integer not null, primary key (entity, peer))")
+		db.exec("create index locations_seen on locations(seen)")
+	}
+	db_create_directory()
+	// Also need a users.db entities table so entity_peers can do its local check.
+	udb := db_open("db/users.db")
+	udb.exec("create table entities (id text primary key, user integer, user_uid text default '')")
+
+	dir := db_open("db/directory.db")
+	now_ts := now()
+	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerA', ?)", now_ts-100)
+	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerB', ?)", now_ts-50)
+	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerC', ?)", now_ts) // most recent
+
+	peers := entity_peers("e1")
+	if len(peers) != 3 {
+		t.Fatalf("expected 3 peers, got %d: %v", len(peers), peers)
+	}
+	// Most-recent-first ordering.
+	if peers[0] != "peerC" {
+		t.Errorf("expected peerC first (most recent); got %q", peers[0])
+	}
+
+	// entity_peer returns the most recent.
+	if p := entity_peer("e1"); p != "peerC" {
+		t.Errorf("entity_peer should return most recent peer; got %q", p)
+	}
+
+	// Local entity short-circuits.
+	udb.exec("insert into entities (id, user) values ('local-e', 1)")
+	if p := entity_peer("local-e"); p != "selfpeer" {
+		t.Errorf("local entity must resolve to self; got %q", p)
+	}
+	if ps := entity_peers("local-e"); len(ps) != 1 || ps[0] != "selfpeer" {
+		t.Errorf("local entity must resolve to [self]; got %v", ps)
+	}
+
+	// Aged-out peers (older than 30 days) are not returned.
+	dir.exec("insert into locations (entity, peer, seen) values ('e2', 'oldpeer', ?)", now_ts-31*86400)
+	if ps := entity_peers("e2"); len(ps) != 0 {
+		t.Errorf("aged-out peers must not be returned; got %v", ps)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

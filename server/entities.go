@@ -7,7 +7,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
-	"strings"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -228,16 +227,35 @@ func entity_peer(id string) string {
 		return p2p_id
 	}
 
-	// Check in directory
-	var d Directory
-	if db_open("db/directory.db").scan(&d, "select location from directory where id=?", id) {
-		d.Location, _ = strings.CutPrefix(d.Location, "p2p/")
-		return d.Location
+	// Check the directory's locations table for an active peer claim.
+	// `seen` ages out via the 30-day cleanup in directory_manager.
+	row, _ := db_open("db/directory.db").row("select peer from locations where entity=? and seen > ? order by seen desc limit 1", id, now()-30*86400)
+	if row != nil {
+		if peer, ok := row["peer"].(string); ok && peer != "" {
+			return peer
+		}
 	}
 
 	// Not found. Send a directory request and return failure.
 	message("", id, "directory", "request").publish(false)
 	return ""
+}
+
+// entity_peers returns every active peer hosting `id`, ordered most-recent
+// first. Empty for local entities or unknown ones (the caller should fall
+// back to a broadcast directory request).
+func entity_peers(id string) []string {
+	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+		return []string{p2p_id}
+	}
+	rows, _ := db_open("db/directory.db").rows("select peer from locations where entity=? and seen > ? order by seen desc", id, now()-30*86400)
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if peer, ok := r["peer"].(string); ok && peer != "" {
+			out = append(out, peer)
+		}
+	}
+	return out
 }
 
 // Sign a string using an entity's private key

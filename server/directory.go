@@ -52,9 +52,9 @@ func directory_delete_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	db.exec("delete from directory where id=?", id)
+	db.exec("delete from entities where id=?", id)
 
-	debug("Removed entity %s from directory (deletion announcement)", id)
+	debug("Removed entity %s from entities (deletion announcement)", id)
 }
 
 // Create or update a directory entry for a local entity.
@@ -65,12 +65,13 @@ func directory_create(e *Entity) {
 
 	fp := fingerprint(e.ID)
 	db := db_open("db/directory.db")
-	exists, _ := db.exists("select 1 from directory where id=?", e.ID)
+	exists, _ := db.exists("select 1 from entities where id=?", e.ID)
 	if exists {
-		db.exec("update directory set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, e.ID)
+		db.exec("update entities set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, e.ID)
 	} else {
-		db.exec("insert into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, now)
+		db.exec("insert into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, now)
 	}
+	db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", e.ID, p2p_id, now)
 }
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory
@@ -109,7 +110,7 @@ func directory_download_from_peer(peer string) bool {
 	start := int64(0)
 	var u Directory
 	db := db_open("db/directory.db")
-	if db.scan(&u, "select updated from directory order by updated desc limit 1") {
+	if db.scan(&u, "select updated from entities order by updated desc limit 1") {
 		start = u.Updated
 	}
 	debug("Directory downloading updates since %s from peer %q", time_local(nil, start), peer)
@@ -136,7 +137,7 @@ func directory_download_from_peer(peer string) bool {
 		if fp == "" {
 			fp = fingerprint(d.ID)
 		}
-		db.exec("replace into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated)
+		db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated)
 		go queue_check_entity(d.ID)
 	}
 }
@@ -153,7 +154,7 @@ func directory_download_event(e *Event) {
 
 	var results []Directory
 	db := db_open("db/directory.db")
-	err := db.scans(&results, "select * from directory where updated>=? order by created, id", start)
+	err := db.scans(&results, "select * from entities where updated>=? order by created, id", start)
 	if err != nil {
 		warn("Database error loading directory updates: %v", err)
 		return
@@ -180,18 +181,20 @@ func directory_manager() {
 			cleanup = now()
 			debug("Directory deleting stale entries")
 			db := db_open("db/directory.db")
-			db.exec("delete from directory where updated<?", now()-30*86400)
+			db.exec("delete from entities where updated<?", now()-30*86400)
+			db.exec("delete from locations where seen<?", now()-30*86400)
 
 			// Clean up local directory entries for deleted entities
 			location := "p2p/" + p2p_id
 			users := db_open("db/users.db")
-			rows, _ := db.rows("select id from directory where location=?", location)
+			rows, _ := db.rows("select id from entities where location=?", location)
 			for _, row := range rows {
 				id := row["id"].(string)
 				exists, _ := users.exists("select 1 from entities where id=?", id)
 				if !exists {
 					debug("Directory removing orphaned local entry %q", id)
-					db.exec("delete from directory where id=?", id)
+					db.exec("delete from entities where id=?", id)
+					db.exec("delete from locations where entity=? and peer=?", id, p2p_id)
 				}
 			}
 		}
@@ -206,7 +209,7 @@ func directory_publish(e *Entity, allow_queue bool) {
 	created := now()
 	db := db_open("db/directory.db")
 	var d Directory
-	if db.scan(&d, "select created from directory where id=?", e.ID) {
+	if db.scan(&d, "select created from entities where id=?", e.ID) {
 		created = d.Created
 	}
 
@@ -267,7 +270,7 @@ func directory_publish_event(e *Event) {
 	} else {
 		// Non-bootstrap peer: preserve created unless name changed or entry is new
 		var existing Directory
-		if db.scan(&existing, "select created, name from directory where id=?", id) {
+		if db.scan(&existing, "select created, name from entities where id=?", id) {
 			if name != existing.Name {
 				created = now
 			} else {
@@ -285,9 +288,25 @@ func directory_publish_event(e *Event) {
 		location = "p2p/" + p2p_id
 	}
 
-	db.exec("replace into directory (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
+	db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
+
+	// Record the location claim in the per-peer table. The `location` field
+	// carries "p2p/<peer-id>" so we strip the prefix; refuse to record an
+	// empty peer or our own self-claim.
+	if peer := strings_trim_prefix(location, "p2p/"); peer != "" && peer != p2p_id {
+		db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", id, peer, now)
+	}
 
 	go queue_check_entity(id)
+}
+
+// strings_trim_prefix is a tiny helper that avoids importing the strings
+// package solely for TrimPrefix.
+func strings_trim_prefix(s, prefix string) string {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):]
+	}
+	return s
 }
 
 // Reply to a directory request if we have the requested public entity
@@ -313,7 +332,7 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_open("db/directory.db")
-	d, err := db.row("select * from directory where id=?", id)
+	d, err := db.row("select * from entities where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -363,9 +382,9 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	var ds []map[string]any
 	var err error
 	if fp_search != "" {
-		ds, err = db.rows("select * from directory where class=? and fingerprint=? order by name, created", class, fp_search)
+		ds, err = db.rows("select * from entities where class=? and fingerprint=? order by name, created", class, fp_search)
 	} else {
-		ds, err = db.rows("select * from directory where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
+		ds, err = db.rows("select * from entities where class=? and name like ? escape '\\' order by name, created", class, "%"+like_escape(search)+"%")
 	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)

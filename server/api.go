@@ -19,6 +19,7 @@ import (
 	"strings"
 	gotime "time"
 
+	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
 	"go.starlark.net/starlarkjson"
 	sls "go.starlark.net/starlarkstruct"
@@ -910,19 +911,31 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// source event UID so a replayed call (server restart, host failover,
 	// queue retry) doesn't produce a duplicate side-effect at the remote
 	// API. Stripe and other modern APIs honour the Idempotency-Key header
-	// natively; APIs that don't honour it benefit from the same header
-	// being a no-op while their caller layers their own dedup on top.
-	// A per-app response cache wrapping APIs that don't accept the header
-	// natively is a follow-up.
+	// natively; for APIs that don't, the per-app _idempotent_calls cache
+	// (below) suppresses the duplicate request before it leaves.
+	var idempotency_key string
 	for _, kw := range kwargs {
 		k, _ := sl.AsString(kw[0])
 		if k == "idempotency_key" {
 			if v, ok := sl.AsString(kw[1]); ok && v != "" {
+				idempotency_key = v
 				if headers == nil {
 					headers = map[string]string{}
 				}
 				headers["Idempotency-Key"] = v
 			}
+		}
+	}
+
+	// Response cache: when idempotency_key is set and we have a user+app
+	// context, check the per-(user, app) cache for a recent response with
+	// the same key. A hit returns the cached response without making
+	// another HTTP request — the safety net for APIs that ignore the
+	// Idempotency-Key header.
+	user, _ := t.Local("user").(*User)
+	if idempotency_key != "" && app != nil && user != nil {
+		if cached := url_idempotency_lookup(user, app, idempotency_key); cached != nil {
+			return sl_encode(cached), nil
 		}
 	}
 
@@ -934,7 +947,65 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	defer r.Body.Close()
 
 	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
-	return sl_encode(map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}), nil
+	response := map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}
+
+	// Cache the response for future replays with the same key. Only when
+	// the request actually reached the server (StatusCode > 0) — network
+	// errors stay un-cached so the caller can retry.
+	if idempotency_key != "" && app != nil && user != nil && r.StatusCode > 0 {
+		url_idempotency_store(user, app, idempotency_key, r.StatusCode, header_to_map(r.Header), data)
+	}
+
+	return sl_encode(response), nil
+}
+
+const url_idempotency_ttl int64 = 3600 // 1 hour
+
+// url_idempotency_lookup returns a cached response for the given key, or
+// nil when no entry exists or the entry has aged out. Stale rows are
+// purged opportunistically.
+func url_idempotency_lookup(u *User, a *App, key string) map[string]any {
+	sysdb := db_app_system(u, a)
+	if sysdb == nil {
+		return nil
+	}
+	sysdb.exec("create table if not exists _idempotent_calls (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
+	sysdb.exec("delete from _idempotent_calls where ts < ?", now()-url_idempotency_ttl)
+
+	row, _ := sysdb.row("select status, headers, body from _idempotent_calls where key=? and ts > ?", key, now()-url_idempotency_ttl)
+	if row == nil {
+		return nil
+	}
+	status, _ := row["status"].(int64)
+	var headers map[string]string
+	if hb, ok := row["headers"].([]byte); ok {
+		_ = cbor.Unmarshal(hb, &headers)
+	} else if hs, ok := row["headers"].(string); ok {
+		_ = cbor.Unmarshal([]byte(hs), &headers)
+	}
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	var body string
+	switch v := row["body"].(type) {
+	case []byte:
+		body = string(v)
+	case string:
+		body = v
+	}
+	return map[string]any{"status": int(status), "headers": headers, "body": body}
+}
+
+// url_idempotency_store records (key → response) in the per-app cache.
+// Headers are CBOR-encoded for round-trip fidelity (sqlite blob).
+func url_idempotency_store(u *User, a *App, key string, status int, headers map[string]string, body []byte) {
+	sysdb := db_app_system(u, a)
+	if sysdb == nil {
+		return
+	}
+	sysdb.exec("create table if not exists _idempotent_calls (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
+	sysdb.exec("insert or replace into _idempotent_calls (key, status, headers, body, ts) values (?, ?, ?, ?, ?)",
+		key, status, cbor_encode(headers), body, now())
 }
 
 // mochi.url.preview(url) -> string: Fetch a web page and return the URL of a

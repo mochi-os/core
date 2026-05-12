@@ -293,6 +293,17 @@ func web_passkey_login_finish(c *gin.Context) {
 		credential.Authenticator.SignCount, credential.ID)
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
 		credential.ID, user.ID, now())
+
+	// Per-(user, credential) leadership claim. The host that processed
+	// this assertion takes a 60s lease on `("credential", <id>)`; another
+	// host in the user's set that receives a concurrent assertion before
+	// the lease expires would lose its claim and (once the fence-aware
+	// op-rejection path lands) drop the conflicting sign_count update.
+	// For now the claim is informational — the existing sign_count
+	// integer remains authoritative — but the leadership row is in place
+	// so cross-host coordination can be turned on without touching this
+	// site again. See claude/plans/replication.md pattern 1.4.
+	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID))
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return

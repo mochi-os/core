@@ -1100,10 +1100,23 @@ func web_login_identity(c *gin.Context) {
 		return
 	}
 
-	// Simple notification hook
+	// Simple notification hook. Deduped per (admin_address, new_user_uid)
+	// so two replicas processing the same signup don't email the admin
+	// twice. event_id falls back to integer ID when uid isn't populated
+	// (pre-v51 row that somehow slipped the backfill).
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		email_send(admin, "Mochi new user", "User: "+u.Username+"\nName: "+input.Name)
+		event_id := u.UID
+		if event_id == "" {
+			event_id = fmt.Sprintf("user-%d", u.ID)
+		}
+		event_id = "new-user:" + event_id
+		admin_user := user_by_username(admin)
+		if admin_user != nil {
+			email_send_dedup(admin_user, event_id, admin, "Mochi new user", "User: "+u.Username+"\nName: "+input.Name)
+		} else {
+			email_send(admin, "Mochi new user", "User: "+u.Username+"\nName: "+input.Name)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

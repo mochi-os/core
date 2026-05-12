@@ -43,6 +43,37 @@ type MembershipChange struct {
 	Sequence int64    `cbor:"sequence"`
 }
 
+// KeysTransfer carries a user's identity (the users-row fields plus every
+// owned entity, including the private keys) from one host to another.
+// Sent when a user opts in a new host or two servers pair.
+//
+// Username is the stable cross-host handle for the user (the integer
+// users.id is per-host; the eventual UID lands in task #4). The message
+// is signed by the user's identity entity, and the receiver checks that
+// the signer (e.from) is one of the Entities being transferred — that
+// signature is the entire authorisation. Only somebody who already holds
+// the user's private keys can introduce the user to a new host.
+type KeysTransfer struct {
+	Username string       `cbor:"username"`
+	Role     string       `cbor:"role,omitempty"`
+	Methods  string       `cbor:"methods,omitempty"`
+	Status   string       `cbor:"status,omitempty"`
+	Entities []KeysEntity `cbor:"entities"`
+}
+
+// KeysEntity is one entity inside a KeysTransfer payload.
+type KeysEntity struct {
+	ID          string `cbor:"id"`
+	Private     string `cbor:"private"`
+	Fingerprint string `cbor:"fingerprint"`
+	Parent      string `cbor:"parent,omitempty"`
+	Class       string `cbor:"class"`
+	Name        string `cbor:"name"`
+	Privacy     string `cbor:"privacy"`
+	Data        string `cbor:"data,omitempty"`
+	Published   int64  `cbor:"published,omitempty"`
+}
+
 func init() {
 	a := app("replication")
 	a.service("replication")
@@ -50,6 +81,7 @@ func init() {
 	a.event("snapshot-request", replication_snapshot_request_event)
 	a.event("snapshot-chunk", replication_snapshot_chunk_event)
 	a.event("membership-change", replication_membership_change_event)
+	a.event("keys-transfer", replication_keys_transfer_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -166,6 +198,185 @@ func replication_membership_apply(originPeer string, mc *MembershipChange) {
 		debug("Replication membership-change applied: user=%q seq=%d hosts=%v (from peer %q)",
 			mc.User, mc.Sequence, mc.Hosts, originPeer)
 	}
+}
+
+// replication_keys_transfer_event applies an inbound user-identity transfer
+// from another host. The message is signed by one of the user's identity
+// entities (the framework has already verified the signature); we further
+// check that e.from is in the transferred entity set, which proves the
+// sender holds the user's private keys and is authorised to introduce the
+// user to this host. Once that holds, we insert (or reconcile) the
+// users.db.users row and `insert or ignore` every entity.
+//
+// Idempotent: re-running the handler with the same payload is a no-op.
+func replication_keys_transfer_event(e *Event) {
+	var kt KeysTransfer
+	if !e.segment(&kt) {
+		info("Replication keys-transfer dropping: cannot decode payload")
+		return
+	}
+	replication_keys_transfer_apply(e.from, e.peer, &kt)
+}
+
+// replication_keys_transfer_apply is the pure-DB half of the keys-transfer
+// path, separated for testing. `signer` is the entity that signed the
+// outer message (already verified by the framework); it must appear among
+// the transferred entities, which is what authorises the transfer.
+// Returns the number of entities newly inserted (0 on rejection or on a
+// fully-duplicate transfer).
+func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer) int {
+	if kt.Username == "" {
+		info("Replication keys-transfer dropping: empty username")
+		return 0
+	}
+
+	senderOK := false
+	for _, ent := range kt.Entities {
+		if ent.ID == signer {
+			senderOK = true
+			break
+		}
+	}
+	if !senderOK {
+		info("Replication keys-transfer dropping: signer %q not in transferred entities (username=%q peer=%q)",
+			signer, kt.Username, originPeer)
+		return 0
+	}
+
+	udb := db_open("db/users.db")
+
+	var localID int
+	if row, err := udb.row("select id from users where username=?", kt.Username); err == nil && row != nil {
+		if v, ok := row["id"].(int64); ok {
+			localID = int(v)
+		}
+	}
+
+	if localID == 0 {
+		role := kt.Role
+		if role == "" {
+			role = "user"
+		}
+		methods := kt.Methods
+		if methods == "" {
+			methods = "email"
+		}
+		status := kt.Status
+		if status == "" {
+			status = "active"
+		}
+
+		result, err := udb.internal.Exec("insert into users (username, role, methods, status) values (?, ?, ?, ?)",
+			kt.Username, role, methods, status)
+		if err != nil {
+			warn("Replication keys-transfer: failed to insert user %q: %v", kt.Username, err)
+			return 0
+		}
+		id, _ := result.LastInsertId()
+		localID = int(id)
+	}
+
+	inserted := 0
+	for _, ent := range kt.Entities {
+		if !valid(ent.ID, "entity") {
+			continue
+		}
+		exists, _ := udb.exists("select 1 from entities where id=?", ent.ID)
+		if exists {
+			continue
+		}
+		udb.exec(`insert into entities
+			(id, private, fingerprint, user, parent, class, name, privacy, data, published)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ent.ID, ent.Private, ent.Fingerprint, localID, ent.Parent, ent.Class, ent.Name, ent.Privacy, ent.Data, ent.Published)
+		inserted++
+	}
+
+	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d (from peer %q)",
+		kt.Username, len(kt.Entities), inserted, originPeer)
+	return inserted
+}
+
+// replication_transfer_keys is the local side: read a user's row and every
+// owned entity (including private keys) from users.db, package them into a
+// KeysTransfer, and send to the target peer signed by the first entity.
+// Returns true when the message was queued for delivery.
+//
+// The caller is the orchestration layer for per-user opt-in or pair
+// creation — once the peer is in `replication.db.hosts` or
+// `replication.db.pair`, call this to deliver the keys, then start fanning
+// out ordinary replication ops.
+func replication_transfer_keys(userID int, peer string) bool {
+	if peer == "" || peer == p2p_id {
+		return false
+	}
+
+	udb := db_open("db/users.db")
+
+	var u User
+	if !udb.scan(&u, "select id, username, role, methods, status from users where id=?", userID) {
+		warn("Replication transfer-keys: user %d not found", userID)
+		return false
+	}
+
+	rows, err := udb.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", userID)
+	if err != nil {
+		warn("Replication transfer-keys: failed to read entities for user %d: %v", userID, err)
+		return false
+	}
+	if len(rows) == 0 {
+		warn("Replication transfer-keys: no entities for user %d", userID)
+		return false
+	}
+
+	kt := KeysTransfer{
+		Username: u.Username,
+		Role:     u.Role,
+		Methods:  u.Methods,
+		Status:   u.Status,
+	}
+	for _, r := range rows {
+		id, _ := r["id"].(string)
+		if id == "" {
+			continue
+		}
+		ent := KeysEntity{
+			ID:          id,
+			Private:     toString(r["private"]),
+			Fingerprint: toString(r["fingerprint"]),
+			Parent:      toString(r["parent"]),
+			Class:       toString(r["class"]),
+			Name:        toString(r["name"]),
+			Privacy:     toString(r["privacy"]),
+			Data:        toString(r["data"]),
+		}
+		if pub, ok := r["published"].(int64); ok {
+			ent.Published = pub
+		}
+		kt.Entities = append(kt.Entities, ent)
+	}
+	if len(kt.Entities) == 0 {
+		warn("Replication transfer-keys: user %d has no valid entities", userID)
+		return false
+	}
+
+	from := kt.Entities[0].ID
+	m := message(from, "", "replication", "keys-transfer")
+	m.add(&kt)
+	m.send_peer(peer)
+	return true
+}
+
+// toString converts a SQLite map value to a string, handling both []byte
+// and string cases. Returns "" for nil or unconvertible values.
+func toString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	}
+	return ""
 }
 
 // replication_membership_update is the local side: bumps the user's

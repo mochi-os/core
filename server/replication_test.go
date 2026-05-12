@@ -30,6 +30,29 @@ func setup_replication_test(t *testing.T) func() {
 	}
 }
 
+// setup_users_test_schema creates a minimal users.db schema for tests that
+// exercise the keys-transfer apply path. Mirrors the relevant subset of
+// db_create() — only the users and entities tables.
+func setup_users_test_schema() {
+	users := db_open("db/users.db")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create unique index users_username on users (username)")
+	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
+	users.exec("create index entities_user on entities( user )")
+}
+
+// 50-character pseudo-entity-id used in tests where valid("entity") needs
+// to pass (49-51 word chars). The first character varies so different
+// fixtures produce distinct IDs.
+func test_entity_id(prefix byte) string {
+	out := make([]byte, 50)
+	out[0] = prefix
+	for i := 1; i < 50; i++ {
+		out[i] = 'a'
+	}
+	return string(out)
+}
+
 func TestReplicationRecipientsEmpty(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -213,6 +236,128 @@ func TestReplicationMembershipExcludesSelf(t *testing.T) {
 	total := db.integer("select count(*) from hosts where user='user1'")
 	if total != 2 {
 		t.Errorf("expected 2 hosts (peerA, peerB), got %d", total)
+	}
+}
+
+func TestReplicationKeysTransferFresh(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	a := test_entity_id('a')
+	b := test_entity_id('b')
+	kt := &KeysTransfer{
+		Username: "alice@example.com",
+		Role:     "user",
+		Methods:  "email",
+		Status:   "active",
+		Entities: []KeysEntity{
+			{ID: a, Private: "priv-a", Fingerprint: "fp-a", Class: "user", Name: "Alice"},
+			{ID: b, Private: "priv-b", Fingerprint: "fp-b", Class: "device", Name: "phone"},
+		},
+	}
+	n := replication_keys_transfer_apply(a, "origin", kt)
+	if n != 2 {
+		t.Fatalf("expected 2 entities inserted, got %d", n)
+	}
+
+	udb := db_open("db/users.db")
+	count := udb.integer("select count(*) from users where username='alice@example.com'")
+	if count != 1 {
+		t.Errorf("expected user inserted; got %d rows", count)
+	}
+	count = udb.integer("select count(*) from entities where user=(select id from users where username='alice@example.com')")
+	if count != 2 {
+		t.Errorf("expected 2 entities linked to user; got %d", count)
+	}
+}
+
+func TestReplicationKeysTransferIdempotent(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	a := test_entity_id('a')
+	kt := &KeysTransfer{
+		Username: "bob@example.com",
+		Entities: []KeysEntity{{ID: a, Private: "p", Fingerprint: "f", Class: "user", Name: "Bob"}},
+	}
+
+	if n := replication_keys_transfer_apply(a, "origin", kt); n != 1 {
+		t.Errorf("first apply should insert 1, got %d", n)
+	}
+	if n := replication_keys_transfer_apply(a, "origin", kt); n != 0 {
+		t.Errorf("second apply should be a no-op, got %d inserts", n)
+	}
+
+	udb := db_open("db/users.db")
+	count := udb.integer("select count(*) from users where username='bob@example.com'")
+	if count != 1 {
+		t.Errorf("expected exactly 1 user row, got %d", count)
+	}
+}
+
+func TestReplicationKeysTransferRejectsUnauthorisedSigner(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	a := test_entity_id('a')
+	intruder := test_entity_id('z')
+	kt := &KeysTransfer{
+		Username: "charlie@example.com",
+		Entities: []KeysEntity{{ID: a, Private: "p", Fingerprint: "f", Class: "user", Name: "Charlie"}},
+	}
+
+	// signer is not in the transferred set — reject
+	if n := replication_keys_transfer_apply(intruder, "origin", kt); n != 0 {
+		t.Errorf("unauthorised signer must be rejected, got %d inserts", n)
+	}
+
+	udb := db_open("db/users.db")
+	count := udb.integer("select count(*) from users where username='charlie@example.com'")
+	if count != 0 {
+		t.Errorf("unauthorised transfer must not create user; got %d rows", count)
+	}
+}
+
+func TestReplicationKeysTransferEmptyUsername(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	a := test_entity_id('a')
+	kt := &KeysTransfer{
+		Username: "",
+		Entities: []KeysEntity{{ID: a, Private: "p", Fingerprint: "f", Class: "user", Name: "X"}},
+	}
+	if n := replication_keys_transfer_apply(a, "origin", kt); n != 0 {
+		t.Errorf("empty username must be rejected, got %d inserts", n)
+	}
+}
+
+func TestReplicationKeysTransferExistingUser(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	// User already exists locally (e.g. they signed up here before opt-in).
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (username, role, methods, status) values ('dave@example.com', 'user', 'email', 'active')")
+	localID := udb.integer("select id from users where username='dave@example.com'")
+
+	a := test_entity_id('a')
+	kt := &KeysTransfer{
+		Username: "dave@example.com",
+		Entities: []KeysEntity{{ID: a, Private: "p", Fingerprint: "f", Class: "user", Name: "Dave"}},
+	}
+	if n := replication_keys_transfer_apply(a, "origin", kt); n != 1 {
+		t.Errorf("expected 1 entity insert for existing user, got %d", n)
+	}
+
+	owner := udb.integer("select user from entities where id=?", a)
+	if owner != localID {
+		t.Errorf("entity must be linked to existing local user %d, got %d", localID, owner)
 	}
 }
 

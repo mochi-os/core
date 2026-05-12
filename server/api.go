@@ -905,6 +905,26 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		body = sl_decode(args[3])
 	}
 
+	// idempotency_key kwarg: caller-supplied stable key derived from the
+	// source event UID so a replayed call (server restart, host failover,
+	// queue retry) doesn't produce a duplicate side-effect at the remote
+	// API. Stripe and other modern APIs honour the Idempotency-Key header
+	// natively; APIs that don't honour it benefit from the same header
+	// being a no-op while their caller layers their own dedup on top.
+	// A per-app response cache wrapping APIs that don't accept the header
+	// natively is a follow-up.
+	for _, kw := range kwargs {
+		k, _ := sl.AsString(kw[0])
+		if k == "idempotency_key" {
+			if v, ok := sl.AsString(kw[1]); ok && v != "" {
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers["Idempotency-Key"] = v
+			}
+		}
+	}
+
 	parts := strings.Split(fn.Name(), ".")
 	r, err := url_request(parts[len(parts)-1], url, options, headers, body, url_domains...)
 	if err != nil {

@@ -187,6 +187,7 @@ func user_by_username(username string) *User {
 	if !db.scan(&u, "select id, username, role, methods, status from users where username=?", username) {
 		return nil
 	}
+	u.Preferences = user_preferences_load(&u)
 	return &u
 }
 

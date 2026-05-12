@@ -429,6 +429,9 @@ func user_preference_get(u *User, name, def string) string {
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
 	db.exec("replace into preferences (name, value) values (?, ?)", name, value)
+	if u.Preferences == nil {
+		u.Preferences = map[string]string{}
+	}
 	u.Preferences[name] = value
 }
 

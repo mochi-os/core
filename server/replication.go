@@ -88,6 +88,25 @@ type KeysTransfer struct {
 	Entities []KeysEntity `cbor:"entities"`
 }
 
+// WebpushDelivered is the wire payload for replicating a per-user
+// webpush dedup row. Local marks of (endpoint, event_id) fan out to
+// the user's host set so a replica that processes the same event after
+// the local replica already delivered sees the row pre-populated and
+// short-circuits its send. Closes the cross-replica race window left
+// open by the local-only V1 dedup.
+type WebpushDelivered struct {
+	Endpoint string `cbor:"endpoint"`
+	EventID  string `cbor:"event_id"`
+	TS       int64  `cbor:"ts"`
+}
+
+// EmailDelivered mirrors WebpushDelivered for the email layer.
+type EmailDelivered struct {
+	Address string `cbor:"address"`
+	EventID string `cbor:"event_id"`
+	TS      int64  `cbor:"ts"`
+}
+
 // CounterDelta is the wire payload for a PN-counter add op. One delta
 // per replication op, carrying the change made on the origin peer's
 // slot. Receivers add to their per-(name, peer) row using INSERT … ON
@@ -240,6 +259,20 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 			return ApplyInvalid
 		}
 		return replication_lww_apply(op.User, op.Database, &s)
+	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
+		var w WebpushDelivered
+		if err := cbor.Unmarshal(op.Payload, &w); err != nil {
+			info("Replication op webpush_delivered: decode failed: %v", err)
+			return ApplyInvalid
+		}
+		return replication_webpush_delivered_apply(op.User, &w)
+	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "email_delivered":
+		var em EmailDelivered
+		if err := cbor.Unmarshal(op.Payload, &em); err != nil {
+			info("Replication op email_delivered: decode failed: %v", err)
+			return ApplyInvalid
+		}
+		return replication_email_delivered_apply(op.User, &em)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
 		switch op.Kind {
 		case repl_op_insert:
@@ -399,6 +432,105 @@ func replication_pending_drain() {
 			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
 		}
 	}
+}
+
+// replication_webpush_delivered_apply lands a remote webpush_delivered
+// row into the user's local notifications.db. Resolves user_uid to a
+// local users.id; defers when the user isn't yet local. `insert or
+// ignore` makes re-applies idempotent.
+func replication_webpush_delivered_apply(userUID string, w *WebpushDelivered) ApplyResult {
+	if w.Endpoint == "" || w.EventID == "" {
+		return ApplyInvalid
+	}
+
+	udb := db_open("db/users.db")
+	row, _ := udb.row("select id from users where uid=?", userUID)
+	if row == nil {
+		return ApplyDeferred
+	}
+	var localID int
+	if v, ok := row["id"].(int64); ok {
+		localID = int(v)
+	}
+	if localID == 0 {
+		return ApplyDeferred
+	}
+	u := user_by_id(localID)
+	if u == nil {
+		return ApplyDeferred
+	}
+
+	db := webpush_dedup_db(u)
+	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", w.Endpoint, w.EventID, w.TS)
+	debug("Replication webpush_delivered apply: user_uid=%q endpoint=%q event_id=%q", userUID, w.Endpoint, w.EventID)
+	return ApplyApplied
+}
+
+// replication_email_delivered_apply lands a remote email_delivered row.
+// Same shape as webpush.
+func replication_email_delivered_apply(userUID string, em *EmailDelivered) ApplyResult {
+	if em.Address == "" || em.EventID == "" {
+		return ApplyInvalid
+	}
+
+	udb := db_open("db/users.db")
+	row, _ := udb.row("select id from users where uid=?", userUID)
+	if row == nil {
+		return ApplyDeferred
+	}
+	var localID int
+	if v, ok := row["id"].(int64); ok {
+		localID = int(v)
+	}
+	if localID == 0 {
+		return ApplyDeferred
+	}
+	u := user_by_id(localID)
+	if u == nil {
+		return ApplyDeferred
+	}
+
+	db := email_dedup_db(u)
+	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", em.Address, em.EventID, em.TS)
+	debug("Replication email_delivered apply: user_uid=%q address=%q event_id=%q", userUID, em.Address, em.EventID)
+	return ApplyApplied
+}
+
+// replication_emit_webpush_delivered fans out a webpush dedup row to
+// the user's host set. Called from webpush_mark_delivered after the
+// local insert. The op is keyed by (endpoint, event_id) — receivers
+// `insert or ignore` so a concurrent same-replica race results in the
+// row being present on every host rather than divergent state.
+func replication_emit_webpush_delivered(userUID, endpoint, event_id string, ts int64) {
+	if userUID == "" {
+		return
+	}
+	payload := cbor_encode(&WebpushDelivered{Endpoint: endpoint, EventID: event_id, TS: ts})
+	replication_emit(userUID, &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     userUID,
+		Database: "notifications",
+		Table:    "webpush_delivered",
+		Kind:     repl_op_insert,
+		Payload:  payload,
+	})
+}
+
+// replication_emit_email_delivered: same as webpush_delivered but
+// keyed by (address, event_id).
+func replication_emit_email_delivered(userUID, address, event_id string, ts int64) {
+	if userUID == "" {
+		return
+	}
+	payload := cbor_encode(&EmailDelivered{Address: address, EventID: event_id, TS: ts})
+	replication_emit(userUID, &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     userUID,
+		Database: "notifications",
+		Table:    "email_delivered",
+		Kind:     repl_op_insert,
+		Payload:  payload,
+	})
 }
 
 // replication_emit_session_insert fans out a session-insert op to every

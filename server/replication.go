@@ -38,15 +38,24 @@ const (
 // Schema (app-scope) is the sender's app schema version at the time of
 // emit; receivers whose local schema is lower buffer the op in
 // `replication.db.pending` until `database_upgrade` catches up.
+//
+// LeaderScope / LeaderKey / Fence are filled in for leader-gated ops —
+// the emitter holds a lease for ('LeaderScope', 'LeaderKey') with
+// the given fence at emit time. Receivers compare the fence against
+// `replication.db.fence_witness` and drop the op when a higher fence
+// has already been seen (stale-leader output).
 type ReplicationOp struct {
-	Scope    string `cbor:"scope"`
-	User     string `cbor:"user,omitempty"`
-	Database string `cbor:"db"`
-	Table    string `cbor:"table"`
-	Kind     string `cbor:"kind"`
-	Payload  []byte `cbor:"payload"`
-	Sequence int64  `cbor:"sequence"`
-	Schema   int    `cbor:"schema,omitempty"`
+	Scope       string `cbor:"scope"`
+	User        string `cbor:"user,omitempty"`
+	Database    string `cbor:"db"`
+	Table       string `cbor:"table"`
+	Kind        string `cbor:"kind"`
+	Payload     []byte `cbor:"payload"`
+	Sequence    int64  `cbor:"sequence"`
+	Schema      int    `cbor:"schema,omitempty"`
+	LeaderScope string `cbor:"leader_scope,omitempty"`
+	LeaderKey   string `cbor:"leader_key,omitempty"`
+	Fence       int64  `cbor:"fence,omitempty"`
 }
 
 // MembershipChange announces the new host set for a user. Sent by whichever
@@ -169,6 +178,21 @@ func replication_op_event(e *Event) {
 	if seen {
 		debug("Replication op duplicate: peer=%q scope=%q user=%q seq=%d",
 			e.peer, op.Scope, op.User, op.Sequence)
+		return
+	}
+
+	// Fence check before dispatch: if this op carries a leader-stamp
+	// (op.LeaderScope/Key/Fence) and our witness for that lease has
+	// already seen a higher fence, the emitter has been superseded and
+	// we drop the op silently. Stamp-less ops pass through.
+	if !replication_fence_observe(op.LeaderScope, op.LeaderKey, e.peer, op.Fence) {
+		info("Replication op dropped: stale leader fence %d for scope=%q key=%q from peer=%q",
+			op.Fence, op.LeaderScope, op.LeaderKey, e.peer)
+		// Record as seen so the sender's queue drops it; further
+		// retries with the same fence will just hit the same check.
+		db.exec(
+			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
+			e.peer, op.Scope, op.User, op.Sequence, now())
 		return
 	}
 

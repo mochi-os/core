@@ -244,7 +244,8 @@ func web_oauth_begin(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&body)
 
-	// Mobile flow validation: scheme must look like a custom app scheme
+	// Mobile flow validation: scheme must be either the consolidated
+	// Mochi super-app's "mochi" or one of the legacy per-app schemes
 	// ("mochi-<app>"), and the PKCE challenge is mandatory so we can prove
 	// the exchange came from the same app instance that started the flow.
 	if body.Mode == "mobile" {
@@ -937,10 +938,15 @@ func user_has_other_login(user *User, leaving string) bool {
 // exchange code (plus a PKCE verifier) to /_/auth/oauth/exchange to retrieve
 // the actual session token. The exchange row is single-use and short-lived.
 
-// oauth_valid_mobile_scheme rejects schemes that aren't of the expected
-// "mochi-<app>" shape. Callbacks redirect to <scheme>://oauth-return — letting
-// arbitrary schemes through would turn this into an open redirect.
+// oauth_valid_mobile_scheme rejects schemes that aren't the consolidated
+// super-app's "mochi" or one of the legacy "mochi-<app>" forms (kept for the
+// transitional window while users update third-party provider registrations).
+// Callbacks redirect to <scheme>://oauth-return — letting arbitrary schemes
+// through would turn this into an open redirect.
 func oauth_valid_mobile_scheme(s string) bool {
+	if s == "mochi" {
+		return true
+	}
 	if !strings.HasPrefix(s, "mochi-") {
 		return false
 	}

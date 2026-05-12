@@ -85,7 +85,7 @@ func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
 		"endpoint": "/menu/-/push/inbound/abc123",
 	}
 
-	ok := account_deliver_unifiedpush(user, data, "Title", "Body", "", "tag")
+	ok := account_deliver_unifiedpush(user, 42, data, "Title", "Body", "", "tag")
 	if !ok {
 		t.Error("account_deliver_unifiedpush returned false for local fast-path; want true")
 	}
@@ -115,7 +115,7 @@ func TestUnifiedPushDeliverRemote(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	ok := account_deliver_unifiedpush(user, data, "Title", "Body", "", "tag")
+	ok := account_deliver_unifiedpush(user, 42, data, "Title", "Body", "", "tag")
 	if !ok {
 		t.Errorf("account_deliver_unifiedpush returned false for remote endpoint; want true")
 	}
@@ -143,7 +143,7 @@ func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	if account_deliver_unifiedpush(user, data, "T", "B", "", "tag") {
+	if account_deliver_unifiedpush(user, 42, data, "T", "B", "", "tag") {
 		t.Error("delivery should fail when push service returns 410 Gone")
 	}
 }
@@ -168,7 +168,7 @@ func setupVAPID(t *testing.T) {
 func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
 	user := &User{ID: 1}
 	data := map[string]any{} // no endpoint
-	if account_deliver_unifiedpush(user, data, "T", "B", "", "tag") {
+	if account_deliver_unifiedpush(user, 42, data, "T", "B", "", "tag") {
 		t.Error("delivery should fail when endpoint is empty")
 	}
 }
@@ -199,7 +199,7 @@ func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 		"p256dh":   p256dh,
 	}
 
-	if !account_deliver_unifiedpush(user, data, "T", "B", "", "tag") {
+	if !account_deliver_unifiedpush(user, 42, data, "T", "B", "", "tag") {
 		t.Fatal("delivery failed")
 	}
 	if expectedHost == "" {

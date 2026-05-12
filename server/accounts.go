@@ -1426,7 +1426,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			token, _ := data["token"].(string)
 			success = account_deliver_ntfy(server, topic, token, title, body, link)
 		case "unifiedpush":
-			success = account_deliver_unifiedpush(user, data, title, body, link, app+"-"+category+"-"+object)
+			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object)
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
@@ -1517,7 +1517,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 //     instead of HTTP self-call + Web Push round-trip.
 //   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
 //     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
-func account_deliver_unifiedpush(user *User, data map[string]any, title, body, link, tag string) bool {
+func account_deliver_unifiedpush(user *User, accountID int64, data map[string]any, title, body, link, tag string) bool {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
 		return false
@@ -1532,6 +1532,9 @@ func account_deliver_unifiedpush(user *User, data map[string]any, title, body, l
 
 	// Local fast-path: path-only endpoint synthesised by our own register
 	// flow. Forward to the Mochi distributor over the existing user WebSocket.
+	// The envelope carries `account` (the integer accounts.id) so the on-device
+	// distributor can ack the matching push_pending row on receipt — without
+	// it, every live event leaves a stuck row until the 7-day TTL sweep.
 	if strings.HasPrefix(endpoint, "/") {
 		subId := endpoint
 		if i := strings.LastIndex(endpoint, "/"); i >= 0 {
@@ -1540,6 +1543,7 @@ func account_deliver_unifiedpush(user *User, data map[string]any, title, body, l
 		websockets_send(user, "unifiedpush", map[string]any{
 			"subId":   subId,
 			"payload": string(payload),
+			"account": accountID,
 		})
 		return true
 	}

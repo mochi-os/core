@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 49
+	schema_version = 50
 )
 
 var (
@@ -261,6 +261,23 @@ func db_create() {
 	schedule.exec("create table schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 	schedule.exec("create index schedule_due on schedule(due)")
 	schedule.exec("create index schedule_app_event on schedule(app, event)")
+
+	// Replication: per-origin-peer dedup, schema-coordination buffer,
+	// per-user opt-in set, outbound sequence counters, server-pair members,
+	// lease-based leadership with fencing, bulk-bootstrap progress, paired
+	// server compatibility tracking. See claude/plans/replication.md.
+	replication := db_open("db/replication.db")
+	replication.exec("create table seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+	replication.exec("create index seen_applied on seen(applied)")
+	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', sequence integer not null, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+	replication.exec("create index pending_received on pending(received)")
+	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, primary key (user, peer))")
+	replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
+	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
+	replication.exec("create index leadership_expires on leadership(expires)")
+	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', primary key (scope, peer))")
+	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 }
 
 // db_apps opens the apps.db database, creating tables if needed
@@ -560,6 +577,8 @@ func db_upgrade() {
 			db_upgrade_48()
 		case 49:
 			db_upgrade_49()
+		case 50:
+			db_upgrade_50()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -709,6 +728,39 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_50 creates replication.db. Tables idempotent so re-running the
+// migration on a partially-created database is safe.
+func db_upgrade_50() {
+	replication := db_open("db/replication.db")
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='seen'"); !exists {
+		replication.exec("create table seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+		replication.exec("create index seen_applied on seen(applied)")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='pending'"); !exists {
+		replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', sequence integer not null, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+		replication.exec("create index pending_received on pending(received)")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='hosts'"); !exists {
+		replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, primary key (user, peer))")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='sequence'"); !exists {
+		replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='pair'"); !exists {
+		replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='leadership'"); !exists {
+		replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
+		replication.exec("create index leadership_expires on leadership(expires)")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='bootstrap'"); !exists {
+		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', primary key (scope, peer))")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='schemas'"); !exists {
+		replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 	}
 }
 

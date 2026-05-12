@@ -35,6 +35,7 @@ type mdns_notifee struct {
 var (
 	p2p_context  = context.Background()
 	p2p_id       string
+	p2p_private  p2p_crypto.PrivKey
 	p2p_me       p2p_host.Host
 	p2p_pubsub_1 *p2p_pubsub.Topic
 	p2p_pinger   *p2p_ping.PingService
@@ -140,7 +141,6 @@ func p2p_receive_1(s p2p_network.Stream) {
 // Start p2p
 func p2p_start() {
 	// Read or create private/public key pair
-	var private p2p_crypto.PrivKey
 	p2p_dir := filepath.Join(data_dir, "p2p")
 	key_path := filepath.Join(p2p_dir, "private.key")
 	if file_exists(key_path) {
@@ -148,13 +148,14 @@ func p2p_start() {
 		if err != nil {
 			panic(fmt.Sprintf("P2P failed to read private key: %v", err))
 		}
-		private = must(p2p_crypto.UnmarshalPrivateKey(key_bytes))
+		p2p_private = must(p2p_crypto.UnmarshalPrivateKey(key_bytes))
 	} else {
-		private, _, err := p2p_crypto.GenerateKeyPairWithReader(p2p_crypto.Ed25519, 256, rand.Reader)
+		var err error
+		p2p_private, _, err = p2p_crypto.GenerateKeyPairWithReader(p2p_crypto.Ed25519, 256, rand.Reader)
 		if err != nil {
 			panic(fmt.Sprintf("P2P failed to generate key pair: %v", err))
 		}
-		p, err := p2p_crypto.MarshalPrivateKey(private)
+		p, err := p2p_crypto.MarshalPrivateKey(p2p_private)
 		if err != nil {
 			panic(fmt.Sprintf("P2P failed to marshal private key: %v", err))
 		}
@@ -197,7 +198,7 @@ func p2p_start() {
 			fmt.Sprintf("/ip6/::/tcp/%d", port),
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
 			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port)),
-		p2p.Identity(private),
+		p2p.Identity(p2p_private),
 		p2p.ResourceManager(rm),
 		p2p.NATPortMap(),
 		p2p.EnableAutoNATv2(),
@@ -345,4 +346,32 @@ func p2p_ping_peer(id string) {
 	} else {
 		//debug("P2P ping ok for peer %q: %v", id, result.RTT)
 	}
+}
+
+// Sign data with this server's libp2p host key. Used for core-scope replication
+// ops that aren't tied to a user identity (apps.db / settings.db / domains.db).
+// User-scoped ops sign with entity_sign() instead.
+func server_sign(data []byte) []byte {
+	sig, err := p2p_private.Sign(data)
+	if err != nil {
+		warn("server_sign failed: %v", err)
+		return nil
+	}
+	return sig
+}
+
+// Verify data signed by another server's libp2p host key. `peer` is the
+// base58-encoded libp2p peer ID (whose public key is recoverable from it for
+// ed25519 keys, which is what Mochi uses).
+func server_verify(peer string, data, sig []byte) bool {
+	id, err := p2p_peer.Decode(peer)
+	if err != nil {
+		return false
+	}
+	pub, err := id.ExtractPublicKey()
+	if err != nil {
+		return false
+	}
+	ok, err := pub.Verify(data, sig)
+	return err == nil && ok
 }

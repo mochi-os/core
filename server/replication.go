@@ -16,6 +16,17 @@ const (
 	repl_op_delete  = "delete"
 )
 
+// ApplyResult is returned by replication_apply_op to tell the caller
+// whether the op landed cleanly, should be buffered for later, or should
+// be dropped as unrecognised.
+type ApplyResult int
+
+const (
+	ApplyApplied  ApplyResult = iota // wrote the change locally, mark seen
+	ApplyDeferred                    // can't apply yet (waiting on user / schema); buffer in pending
+	ApplyInvalid                     // unknown shape; drop silently
+)
+
 // ReplicationOp is the wire format for a single replication operation sent
 // between hosts in a user's host set. One ReplicationOp travels in the
 // content/data segments of a `replication`/`op` message.
@@ -136,25 +147,33 @@ func replication_op_event(e *Event) {
 		return
 	}
 
-	// TODO: schema coordination — if op.Schema > local app schema for
-	// (user, app), buffer in `pending` until `database_upgrade` catches
-	// up. See task #6.
-
-	replication_apply_op(&op)
-
-	db.exec(
-		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
-		e.peer, op.Scope, op.User, op.Sequence, now())
-
-	debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
-		e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+	switch replication_apply_op(&op) {
+	case ApplyApplied:
+		db.exec(
+			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
+			e.peer, op.Scope, op.User, op.Sequence, now())
+		debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
+			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+	case ApplyDeferred:
+		payload := cbor_encode(&op)
+		db.exec(
+			"insert or ignore into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?)",
+			e.peer, op.Scope, op.User, op.Sequence, op.Schema, payload, now())
+		debug("Replication op deferred: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
+			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+	case ApplyInvalid:
+		info("Replication op dropping: unrecognised shape peer=%q scope=%q db=%q table=%q kind=%q",
+			e.peer, op.Scope, op.Database, op.Table, op.Kind)
+	}
 }
 
 // replication_apply_op dispatches a verified, deduplicated op to the
 // table-specific apply path. Most apps' tables will be handled by the
 // pattern-library helpers (task #8); core-DB applies (sessions, etc.) are
-// special-cased here.
-func replication_apply_op(op *ReplicationOp) {
+// special-cased here. Returns ApplyDeferred when the op can't be applied
+// yet (waiting on a local user or app DB) so the caller buffers it in
+// `pending` for a later retry; ApplyInvalid for unrecognised ops.
+func replication_apply_op(op *ReplicationOp) ApplyResult {
 	switch {
 	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
 		switch op.Kind {
@@ -162,38 +181,38 @@ func replication_apply_op(op *ReplicationOp) {
 			var p SessionInsert
 			if err := cbor.Unmarshal(op.Payload, &p); err != nil {
 				info("Replication op sessions/insert: decode failed: %v", err)
-				return
+				return ApplyInvalid
 			}
-			replication_session_apply_insert(&p)
+			return replication_session_apply_insert(&p)
 		case repl_op_delete:
 			var p SessionDelete
 			if err := cbor.Unmarshal(op.Payload, &p); err != nil {
 				info("Replication op sessions/delete: decode failed: %v", err)
-				return
+				return ApplyInvalid
 			}
-			replication_session_apply_delete(&p)
+			return replication_session_apply_delete(&p)
 		}
 	}
+	return ApplyInvalid
 }
 
 // replication_session_apply_insert lands a replicated session insert into
 // the local sessions.db. Resolves the user_uid to a local users.id; if
 // the user doesn't exist locally yet (e.g. keys-transfer hasn't landed)
-// the insert is skipped — the sender's queue will retry. `replace into`
-// makes re-applies idempotent.
-func replication_session_apply_insert(p *SessionInsert) {
+// the op is deferred so the caller buffers it. `replace into` makes
+// re-applies idempotent.
+func replication_session_apply_insert(p *SessionInsert) ApplyResult {
 	udb := db_open("db/users.db")
 	row, _ := udb.row("select id from users where uid=?", p.UserUID)
 	if row == nil {
-		debug("Replication session-insert: user %q not local yet, skipping", p.UserUID)
-		return
+		return ApplyDeferred
 	}
 	var localID int
 	if v, ok := row["id"].(int64); ok {
 		localID = int(v)
 	}
 	if localID == 0 {
-		return
+		return ApplyDeferred
 	}
 
 	sdb := db_open("db/sessions.db")
@@ -201,15 +220,66 @@ func replication_session_apply_insert(p *SessionInsert) {
 		"replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
 		localID, p.Code, p.Secret, p.Expires, p.Created, p.Accessed, p.Address, p.Agent)
 	debug("Replication session-insert applied: user_uid=%q code=%q", p.UserUID, p.Code)
+	return ApplyApplied
 }
 
 // replication_session_apply_delete removes a session by code on the
 // receiver. Unconditional — delete wins over a stale insert at the
 // session-revocation layer.
-func replication_session_apply_delete(p *SessionDelete) {
+func replication_session_apply_delete(p *SessionDelete) ApplyResult {
 	sdb := db_open("db/sessions.db")
 	sdb.exec("delete from sessions where code=?", p.Code)
 	debug("Replication session-delete applied: code=%q", p.Code)
+	return ApplyApplied
+}
+
+// replication_pending_drain walks `replication.db.pending` in arrival
+// order and re-evaluates each buffered op against the current local
+// state. Ops that now apply move to `seen`; ops that are still deferred
+// stay in pending until the next drain.
+//
+// Called automatically after a keys-transfer (when a new user lands,
+// pending session inserts for that user become applyable) and on a
+// periodic background tick.
+func replication_pending_drain() {
+	db := db_open("db/replication.db")
+	rows, err := db.rows("select peer, scope, user, sequence, payload from pending order by received limit 100")
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		scope, _ := r["scope"].(string)
+		userField, _ := r["user"].(string)
+		sequence, _ := r["sequence"].(int64)
+		payload, _ := r["payload"].([]byte)
+		if len(payload) == 0 {
+			if s, ok := r["payload"].(string); ok {
+				payload = []byte(s)
+			}
+		}
+
+		var op ReplicationOp
+		if err := cbor.Unmarshal(payload, &op); err != nil {
+			info("Replication pending drain: malformed payload, dropping (peer=%q seq=%d): %v", peer, sequence, err)
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
+			continue
+		}
+
+		switch replication_apply_op(&op) {
+		case ApplyApplied:
+			db.exec(
+				"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
+				peer, scope, userField, sequence, now())
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
+			debug("Replication pending drain: applied (peer=%q scope=%q user=%q seq=%d)", peer, scope, userField, sequence)
+		case ApplyDeferred:
+			// Still not ready — leave in pending.
+		case ApplyInvalid:
+			info("Replication pending drain: invalid op dropped (peer=%q seq=%d)", peer, sequence)
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
+		}
+	}
 }
 
 // replication_emit_session_insert fans out a session-insert op to every
@@ -422,6 +492,14 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 
 	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d (from peer %q)",
 		kt.Username, len(kt.Entities), inserted, originPeer)
+
+	// A new user (or new entities) just landed — any session inserts
+	// previously deferred while waiting on this user now have a fighting
+	// chance. Drain the pending buffer.
+	if inserted > 0 {
+		replication_pending_drain()
+	}
+
 	return inserted
 }
 

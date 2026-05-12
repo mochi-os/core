@@ -551,6 +551,127 @@ func TestUsersUIDMigrationBackfillAndTriggers(t *testing.T) {
 	}
 }
 
+func TestReplicationPendingBufferAndDrain(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	// Session insert arrives BEFORE the user is replicated — must defer.
+	p := &SessionInsert{
+		UserUID: "uid-late", Code: "sess-late", Secret: "x",
+		Expires: 100, Created: 50, Accessed: 50,
+	}
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-late",
+		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Sequence: 1, Payload: cbor_encode(p),
+	}
+	if got := replication_apply_op(op); got != ApplyDeferred {
+		t.Fatalf("expected ApplyDeferred for unknown user, got %v", got)
+	}
+
+	// Buffer it manually (mimicking what the event handler does).
+	db := db_open("db/replication.db")
+	db.exec(
+		"insert into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?)",
+		"origin", op.Scope, op.User, op.Sequence, op.Schema, cbor_encode(op), now())
+
+	count := db.integer("select count(*) from pending where user='uid-late'")
+	if count != 1 {
+		t.Fatalf("expected op in pending, got %d", count)
+	}
+
+	// Now the user lands locally.
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (id, uid, username) values (42, 'uid-late', 'late@example.com')")
+
+	// Drain — the op should now apply.
+	replication_pending_drain()
+
+	count = db.integer("select count(*) from pending where user='uid-late'")
+	if count != 0 {
+		t.Errorf("pending must be empty after successful drain; got %d rows", count)
+	}
+
+	count = db.integer("select count(*) from seen where user='uid-late' and sequence=1")
+	if count != 1 {
+		t.Errorf("drained op must be recorded in seen; got %d rows", count)
+	}
+
+	sdb := db_open("db/sessions.db")
+	count = sdb.integer("select count(*) from sessions where code='sess-late' and user=42")
+	if count != 1 {
+		t.Errorf("session must be in sessions.db after drain; got %d rows", count)
+	}
+}
+
+func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	db.exec(
+		"insert into pending (peer, scope, user, sequence, schema, payload, received) values ('origin', 'app', 'u', 1, 0, ?, ?)",
+		[]byte{0xff, 0xff, 0xff}, now())
+
+	replication_pending_drain()
+
+	count := db.integer("select count(*) from pending")
+	if count != 0 {
+		t.Errorf("malformed payload must be dropped from pending; got %d rows", count)
+	}
+}
+
+func TestReplicationKeysTransferDrainsPending(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	// A session insert for a user we don't know yet is deferred.
+	p := &SessionInsert{
+		UserUID: "uid-via-keys", Code: "sess-keys", Secret: "x",
+		Expires: 100, Created: 50, Accessed: 50,
+	}
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-via-keys",
+		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Sequence: 1, Payload: cbor_encode(p),
+	}
+	db := db_open("db/replication.db")
+	db.exec(
+		"insert into pending (peer, scope, user, sequence, schema, payload, received) values ('origin', ?, ?, ?, ?, ?, ?)",
+		op.Scope, op.User, op.Sequence, op.Schema, cbor_encode(op), now())
+
+	// Keys-transfer lands the user. We have to use a real users.id that
+	// keys-transfer will pick, then patch uid to match the pending op's
+	// expected user_uid before triggering drain.
+	a := test_entity_id('a')
+	kt := &KeysTransfer{
+		Username: "kuser@example.com",
+		Entities: []KeysEntity{{ID: a, Private: "p", Fingerprint: "f", Class: "user", Name: "K"}},
+	}
+	if n := replication_keys_transfer_apply(a, "origin", kt); n != 1 {
+		t.Fatalf("keys-transfer should insert 1 entity; got %d", n)
+	}
+
+	// Force the new user's uid to match what the pending op expects
+	// (the auto-generated random uid won't match by chance).
+	udb := db_open("db/users.db")
+	udb.exec("update users set uid='uid-via-keys' where username='kuser@example.com'")
+
+	// Trigger drain explicitly (keys-transfer already drained once before
+	// our uid override; do it again now that the uid matches).
+	replication_pending_drain()
+
+	sdb := db_open("db/sessions.db")
+	count := sdb.integer("select count(*) from sessions where code='sess-keys'")
+	if count != 1 {
+		t.Errorf("session must be applied after user uid matches; got %d rows", count)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

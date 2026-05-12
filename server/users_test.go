@@ -19,10 +19,18 @@ func create_test_users_db(t *testing.T) func() {
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
 
-	// Create users table
+	// Create users table (mirrors db_create — including the uid column
+	// and the trigger that auto-populates uid on insert. The parallel
+	// user_uid columns are added when tests need them.)
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	db.exec("create unique index users_username on users (username)")
+	db.exec("create unique index users_uid on users (uid)")
+	db.exec(`create trigger users_uid_insert after insert on users
+		when new.uid is null or new.uid = ''
+		begin
+			update users set uid = lower(hex(randomblob(16))) where id = new.id;
+		end`)
 
 	cleanup := func() {
 		data_dir = orig_data_dir
@@ -51,8 +59,9 @@ func TestUserByIdFound(t *testing.T) {
 	db := db_open("db/users.db")
 	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
 
-	// Need entities table for user_by_id to work fully
-	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	// Need entities table for user_by_id to work fully (mirrors db_create
+	// including user_uid).
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, user_uid text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
 	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e1', 'priv', 'fp', 1, 'person', 'Test User')")
 
 	// Create preferences table

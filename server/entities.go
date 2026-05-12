@@ -19,6 +19,7 @@ type Entity struct {
 	Private     string `cbor:"-" json:"-"`
 	Fingerprint string `cbor:"-" json:"fingerprint"`
 	User        int    `cbor:"-" json:"-"`
+	UserUID     string `cbor:"-" json:"-" db:"user_uid"`
 	Parent      string `cbor:"-" json:"-"`
 	Class       string `cbor:"class,omitempty" json:"class"`
 	Name        string `cbor:"name,omitempty" json:"name"`

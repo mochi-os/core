@@ -361,6 +361,80 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 	}
 }
 
+func TestUsersUIDMigrationBackfillAndTriggers(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_uid_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Simulate a pre-v51 database: users + entities with no uid columns.
+	users := db_open("db/users.db")
+	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create unique index users_username on users (username)")
+	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create index entities_user on entities( user )")
+	// Pre-existing rows that the migration must backfill.
+	users.exec("insert into users (id, username) values (1, 'alice@example.com')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-alice', 'priv', 'fp1', 1, 'person', 'Alice')")
+	// Tables that v51 also touches but without rows referencing the user.
+	users.exec("create table credentials (id blob primary key, user integer not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table recovery (id integer primary key, user integer not null, hash text not null, created integer not null)")
+	users.exec("create table totp (user integer primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table oauth (id integer primary key, user integer not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	users.exec("create table tokens (hash text primary key not null, user integer not null, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+
+	db_upgrade_51()
+
+	// users.uid backfilled for existing users.
+	aliceUID := ""
+	if row, _ := users.row("select uid from users where id=1"); row != nil {
+		aliceUID, _ = row["uid"].(string)
+	}
+	if aliceUID == "" {
+		t.Fatalf("v51 must backfill users.uid for existing rows")
+	}
+
+	// entities.user_uid backfilled from the join.
+	if row, _ := users.row("select user_uid from entities where id='e-alice'"); row == nil {
+		t.Fatalf("entities.user_uid query failed after v51")
+	} else if v, _ := row["user_uid"].(string); v != aliceUID {
+		t.Errorf("entities.user_uid not backfilled correctly: got %q want %q", v, aliceUID)
+	}
+
+	// New user insert via the auto-uid trigger gets a non-empty uid.
+	users.exec("insert into users (id, username) values (2, 'bob@example.com')")
+	bobUID := ""
+	if row, _ := users.row("select uid from users where id=2"); row != nil {
+		bobUID, _ = row["uid"].(string)
+	}
+	if bobUID == "" {
+		t.Errorf("users_uid_insert trigger must populate uid on new rows")
+	}
+	if bobUID == aliceUID {
+		t.Errorf("trigger-generated uid must be unique per row (got %q for both)", bobUID)
+	}
+
+	// New entity insert via the trigger gets user_uid populated from the join.
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-bob', 'priv2', 'fp2', 2, 'person', 'Bob')")
+	if row, _ := users.row("select user_uid from entities where id='e-bob'"); row == nil {
+		t.Fatalf("entities query failed for new row")
+	} else if v, _ := row["user_uid"].(string); v != bobUID {
+		t.Errorf("entities_user_uid_insert trigger must mirror users.uid: got %q want %q", v, bobUID)
+	}
+
+	// Re-running the migration on a partially-migrated DB is idempotent.
+	db_upgrade_51()
+	if row, _ := users.row("select uid from users where id=1"); row != nil {
+		if v, _ := row["uid"].(string); v != aliceUID {
+			t.Errorf("idempotent migration changed an already-backfilled uid (%q → %q)", aliceUID, v)
+		}
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

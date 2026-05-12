@@ -980,7 +980,7 @@ func web_identity_get(c *gin.Context) {
 	user_by_id_allow_no_identity := func(id int) *User {
 		db := db_open("db/users.db")
 		var user User
-		if !db.scan(&user, "select id, username, role, methods, status from users where id=?", id) {
+		if !db.scan(&user, "select id, uid, username, role, methods, status from users where id=?", id) {
 			return nil
 		}
 		user.Preferences = user_preferences_load(&user)

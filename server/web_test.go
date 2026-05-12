@@ -35,10 +35,16 @@ func create_web_test_env(t *testing.T) func() {
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
 	domains.exec("create index if not exists delegations_owner on delegations(owner)")
 
-	// Create users database for entities
+	// Create users database for entities. uid and user_uid mirror the v51
+	// schema so user_by_id and entity loads don't fail in tests.
 	users := db_open("db/users.db")
-	users.exec("create table if not exists users (id integer primary key, username text unique not null, role text not null default 'user', timezone text not null default 'UTC', created integer not null, updated integer not null)")
-	users.exec("create table if not exists entities (id text primary key, user integer not null, class text not null, name text not null, privacy text not null default 'private', data text not null default '', fingerprint text not null, created integer not null, updated integer not null)")
+	users.exec("create table if not exists users (id integer primary key, uid text not null default '', username text unique not null, role text not null default 'user', timezone text not null default 'UTC', created integer not null, updated integer not null)")
+	users.exec(`create trigger if not exists users_uid_insert after insert on users
+		when new.uid is null or new.uid = ''
+		begin
+			update users set uid = lower(hex(randomblob(16))) where id = new.id;
+		end`)
+	users.exec("create table if not exists entities (id text primary key, user integer not null, user_uid text not null default '', class text not null, name text not null, privacy text not null default 'private', data text not null default '', fingerprint text not null, created integer not null, updated integer not null)")
 
 	cleanup := func() {
 		data_dir = orig_data_dir

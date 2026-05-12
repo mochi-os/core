@@ -454,7 +454,7 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	db_users.exec("alter table users add column status text not null default 'active'")
 	// Recreate entities table without created/updated (Entity struct doesn't have those fields)
 	db_users.exec("drop table entities")
-	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user integer, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user integer, user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	n := now()
 	db_users.exec("insert into users (id, username, role, created, updated) values (1, 'test@example.com', 'user', ?, ?)", n, n)
 	db_users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values ('identity1', 'abcde1234', 1, 'person', 'Test User', 'private')")

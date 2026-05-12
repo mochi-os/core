@@ -314,7 +314,7 @@ func replication_transfer_keys(userID int, peer string) bool {
 	udb := db_open("db/users.db")
 
 	var u User
-	if !udb.scan(&u, "select id, username, role, methods, status from users where id=?", userID) {
+	if !udb.scan(&u, "select id, uid, username, role, methods, status from users where id=?", userID) {
 		warn("Replication transfer-keys: user %d not found", userID)
 		return false
 	}

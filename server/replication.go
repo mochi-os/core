@@ -87,6 +87,18 @@ type CounterDelta struct {
 	Delta int64  `cbor:"delta"`
 }
 
+// LWWSet is the wire payload for a last-write-wins register update.
+// Conflict resolution at the receiver is by (ts, peer): the higher
+// pair wins, with peer-id lex tie-break. See pattern 1.2.
+type LWWSet struct {
+	Tbl   string `cbor:"tbl"`
+	Row   string `cbor:"row"`
+	Field string `cbor:"field"`
+	Value string `cbor:"value"`
+	TS    int64  `cbor:"ts"`
+	Peer  string `cbor:"peer"`
+}
+
 // SessionInsert is the wire payload for a sessions.sessions insert op.
 // Carried as the CBOR-encoded Payload of a ReplicationOp with
 // Database="sessions" Table="sessions" Kind="insert". UserUID is the
@@ -193,6 +205,13 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 			return ApplyInvalid
 		}
 		return replication_counter_apply(op.User, op.Database, &d)
+	case op.Scope == repl_scope_app && op.Table == "_lww":
+		var s LWWSet
+		if err := cbor.Unmarshal(op.Payload, &s); err != nil {
+			info("Replication op _lww/set: decode failed: %v", err)
+			return ApplyInvalid
+		}
+		return replication_lww_apply(op.User, op.Database, &s)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
 		switch op.Kind {
 		case repl_op_insert:

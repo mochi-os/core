@@ -869,6 +869,118 @@ func TestCounterLocalApplyCommutative(t *testing.T) {
 	}
 }
 
+func TestLWWLocalApplyHigherWins(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_lww_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Initial write
+	lww_local_apply(db, "settings", "u1", "theme", "dark", 100, "peerA")
+	row, _ := db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
+	if v, _ := row["value"].(string); v != "dark" {
+		t.Errorf("initial value: expected 'dark', got %q", v)
+	}
+
+	// Earlier timestamp must NOT overwrite.
+	lww_local_apply(db, "settings", "u1", "theme", "light", 50, "peerB")
+	row, _ = db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
+	if v, _ := row["value"].(string); v != "dark" {
+		t.Errorf("older write must not overwrite: got %q", v)
+	}
+
+	// Later timestamp DOES overwrite.
+	lww_local_apply(db, "settings", "u1", "theme", "auto", 200, "peerC")
+	row, _ = db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
+	if v, _ := row["value"].(string); v != "auto" {
+		t.Errorf("newer write must overwrite: got %q", v)
+	}
+}
+
+func TestLWWLocalApplyPeerTiebreak(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_lww_tie")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Same timestamp, different peer: higher peer-id (lex) wins.
+	lww_local_apply(db, "t", "r", "f", "valueA", 100, "peerA")
+	lww_local_apply(db, "t", "r", "f", "valueB", 100, "peerB")
+	row, _ := db.row("select value, peer from _lww where tbl='t' and row='r' and field='f'")
+	if v, _ := row["value"].(string); v != "valueB" {
+		t.Errorf("peer tiebreak: expected 'valueB' (higher peer-id), got %q", v)
+	}
+
+	// peerB already won; peerA at the same ts must NOT overwrite.
+	lww_local_apply(db, "t", "r", "f", "valueA-again", 100, "peerA")
+	row, _ = db.row("select value from _lww where tbl='t' and row='r' and field='f'")
+	if v, _ := row["value"].(string); v != "valueB" {
+		t.Errorf("losing peer at same ts must not overwrite: got %q", v)
+	}
+}
+
+func TestLWWLocalApplyConvergesUnderReorder(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_lww_reorder")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	type op struct {
+		value string
+		ts    int64
+		peer  string
+	}
+	ops := []op{
+		{"a", 100, "p1"},
+		{"b", 200, "p2"},
+		{"c", 150, "p3"},
+		{"d", 200, "p1"}, // same ts as b, lower peer
+		{"e", 300, "p2"},
+	}
+
+	dbForward := db_open("db/forward.db")
+	for _, o := range ops {
+		lww_local_apply(dbForward, "t", "r", "f", o.value, o.ts, o.peer)
+	}
+
+	dbReverse := db_open("db/reverse.db")
+	for i := len(ops) - 1; i >= 0; i-- {
+		o := ops[i]
+		lww_local_apply(dbReverse, "t", "r", "f", o.value, o.ts, o.peer)
+	}
+
+	rowF, _ := dbForward.row("select value from _lww where tbl='t' and row='r' and field='f'")
+	rowR, _ := dbReverse.row("select value from _lww where tbl='t' and row='r' and field='f'")
+	if rowF == nil || rowR == nil {
+		t.Fatal("missing row in one of the DBs")
+	}
+	vF, _ := rowF["value"].(string)
+	vR, _ := rowR["value"].(string)
+	if vF != vR {
+		t.Errorf("non-convergent under reorder: forward=%q reverse=%q", vF, vR)
+	}
+	// Expected winner: ts=300/p2 ("e"). It dominates everything.
+	if vF != "e" {
+		t.Errorf("expected winner 'e' (highest ts), got %q", vF)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

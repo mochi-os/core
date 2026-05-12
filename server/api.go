@@ -60,6 +60,7 @@ func init() {
 			"group":      api_group,
 			"interests":  api_interests,
 			"log":        api_log,
+			"lww":        api_lww,
 			"message":    api_message,
 			"permission": api_permission,
 			"qid":        api_qid,

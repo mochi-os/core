@@ -198,6 +198,7 @@ func main_serve(ready func()) int {
 	go peers_publish()
 	go queue_manager()
 	go ratelimit_manager()
+	go replication_manager()
 	go sessions_manager()
 	go update_manager()
 	go web_start()

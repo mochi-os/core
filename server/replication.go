@@ -4,6 +4,8 @@
 package main
 
 import (
+	"time"
+
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
@@ -269,6 +271,16 @@ func replication_session_apply_delete(p *SessionDelete) ApplyResult {
 	sdb.exec("delete from sessions where code=?", p.Code)
 	debug("Replication session-delete applied: code=%q", p.Code)
 	return ApplyApplied
+}
+
+// replication_manager drives the periodic pending-buffer drain.
+// Deferred ops not unblocked by a keys-transfer (e.g. an app schema
+// upgrade that catches the local version up to a sender's, once the
+// schema-coordination path lands) get retried on every tick.
+func replication_manager() {
+	for range time.Tick(30 * time.Second) {
+		replication_pending_drain()
+	}
 }
 
 // replication_pending_drain walks `replication.db.pending` in arrival

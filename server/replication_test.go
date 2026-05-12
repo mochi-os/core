@@ -1083,6 +1083,138 @@ func TestLeaderFenceAndRelease(t *testing.T) {
 	}
 }
 
+func TestBroadcastNextMonotonic(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	if n := broadcast_next_local(db, "votes", "peerA"); n != 1 {
+		t.Errorf("first allocation: expected 1, got %d", n)
+	}
+	if n := broadcast_next_local(db, "votes", "peerA"); n != 2 {
+		t.Errorf("second allocation: expected 2, got %d", n)
+	}
+	if n := broadcast_next_local(db, "votes", "peerA"); n != 3 {
+		t.Errorf("third allocation: expected 3, got %d", n)
+	}
+}
+
+func TestBroadcastNextSeparateByKeyAndPeer(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_separate")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Different keys have independent counters.
+	if n := broadcast_next_local(db, "key1", "peerA"); n != 1 {
+		t.Errorf("key1/peerA first: got %d", n)
+	}
+	if n := broadcast_next_local(db, "key2", "peerA"); n != 1 {
+		t.Errorf("key2/peerA first (independent of key1): got %d", n)
+	}
+	// Different peers on the same key are also independent.
+	if n := broadcast_next_local(db, "key1", "peerB"); n != 1 {
+		t.Errorf("key1/peerB first (independent of peerA): got %d", n)
+	}
+	if n := broadcast_next_local(db, "key1", "peerA"); n != 2 {
+		t.Errorf("key1/peerA second: got %d", n)
+	}
+}
+
+func TestBroadcastReceivedAndAdvance(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_recv")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Before any messages, received returns 0.
+	if n := broadcast_received_get(db, "senderA", "votes"); n != 0 {
+		t.Errorf("empty state: expected 0, got %d", n)
+	}
+
+	// Advance recorded.
+	broadcast_advance_local(db, "senderA", "votes", 5)
+	if n := broadcast_received_get(db, "senderA", "votes"); n != 5 {
+		t.Errorf("after advance to 5: got %d", n)
+	}
+
+	// Stale (lower) advance does NOT regress.
+	broadcast_advance_local(db, "senderA", "votes", 3)
+	if n := broadcast_received_get(db, "senderA", "votes"); n != 5 {
+		t.Errorf("stale advance must not regress: got %d", n)
+	}
+
+	// Higher advance updates.
+	broadcast_advance_local(db, "senderA", "votes", 10)
+	if n := broadcast_received_get(db, "senderA", "votes"); n != 10 {
+		t.Errorf("after advance to 10: got %d", n)
+	}
+
+	// Independent per (sender, key).
+	if n := broadcast_received_get(db, "senderB", "votes"); n != 0 {
+		t.Errorf("different sender unaffected: got %d", n)
+	}
+	if n := broadcast_received_get(db, "senderA", "comments"); n != 0 {
+		t.Errorf("different key unaffected: got %d", n)
+	}
+}
+
+func TestBroadcastGapDetection(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_gap")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Receive sequence 1, 2 — no gap.
+	broadcast_advance_local(db, "s", "k", 1)
+	broadcast_advance_local(db, "s", "k", 2)
+	last := broadcast_received_get(db, "s", "k")
+	if last != 2 {
+		t.Fatalf("expected last=2, got %d", last)
+	}
+
+	// Sequence 5 arrives — gap of {3, 4} detected (app would request
+	// replay; we just check the math).
+	incoming := 5
+	gap := incoming > last+1
+	if !gap {
+		t.Errorf("gap should be detected when incoming > last+1")
+	}
+
+	// Sequence 3 arrives — no gap.
+	last = broadcast_received_get(db, "s", "k")
+	incoming = 3
+	gap = incoming > last+1
+	if gap {
+		t.Errorf("gap should NOT be detected when incoming == last+1")
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

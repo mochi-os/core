@@ -17,8 +17,7 @@ type Entity struct {
 	ID          string `cbor:"id" json:"id"`
 	Private     string `cbor:"-" json:"-"`
 	Fingerprint string `cbor:"-" json:"fingerprint"`
-	User        int    `cbor:"-" json:"-"`
-	UserUID     string `cbor:"-" json:"-" db:"user_uid"`
+	User        string `cbor:"-" json:"-"`
 	Parent      string `cbor:"-" json:"-"`
 	Class       string `cbor:"class,omitempty" json:"class"`
 	Name        string `cbor:"name,omitempty" json:"name"`
@@ -57,7 +56,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	if !valid(name, "name") {
 		return nil, fmt.Errorf("Invalid name")
 	}
-	user_exists, _ := db.exists("select id from users where id=?", u.ID)
+	user_exists, _ := db.exists("select id from users where uid=?", u.UID)
 	if !user_exists {
 		return nil, fmt.Errorf("User not found")
 	}
@@ -78,9 +77,9 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 		return nil, fmt.Errorf("Unable to find spare entity ID or fingerprint")
 	}
 
-	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.ID, parent, class, name, privacy, data)
+	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.UID, parent, class, name, privacy, data)
 
-	e := Entity{ID: public, Fingerprint: fingerprint, User: u.ID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+	e := Entity{ID: public, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 
 	// Audit log entity/identity creation
 	audit_identity_created(u.Username, public, class)
@@ -204,8 +203,8 @@ func (e *Entity) delete() {
 	queue.exec("delete from queue where to_entity=?", e.ID)
 
 	// Remove from group memberships
-	if e.User > 0 {
-		udb := db_open(fmt.Sprintf("users/%d/user.db", e.User))
+	if e.User != "" {
+		udb := db_open(fmt.Sprintf("users/%s/user.db", e.User))
 		udb.exec("delete from group_members where member=? and type='user'", e.ID)
 	}
 
@@ -391,7 +390,7 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if !db.scan(&e, "select * from entities where id=? or fingerprint=?", id, id) {
 		return sl_error(fn, "entity not found")
 	}
-	if e.User != user.ID {
+	if e.User != user.UID {
 		return sl_error(fn, "not allowed to delete this entity")
 	}
 
@@ -464,7 +463,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_open("db/users.db")
-	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where (id=? or fingerprint=?) and user=?", id, id, effective.ID)
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where (id=? or fingerprint=?) and user=?", id, id, effective.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -532,8 +531,8 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		"privacy":     e.Privacy,
 	}
 
-	// Resolve user ID to their identity (person entity)
-	if e.User > 0 {
+	// Resolve user UID to their identity (person entity)
+	if e.User != "" {
 		db := db_open("db/users.db")
 		identity, err := db.row("select id from entities where user=? and class='person' limit 1", e.User)
 		if err == nil && identity != nil {
@@ -554,7 +553,7 @@ func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_open("db/users.db")
-	entities, err := db.rows("select id, fingerprint, class, name from entities where user=? order by name", user.ID)
+	entities, err := db.rows("select id, fingerprint, class, name from entities where user=? order by name", user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -588,7 +587,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "entity not found")
 	}
 	id = e.ID
-	if e.User != user.ID {
+	if e.User != user.UID {
 		return sl_error(fn, "not allowed to update this entity")
 	}
 

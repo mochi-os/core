@@ -119,7 +119,7 @@ func (m *gitDiffModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 
 // Get the path to a repository for a given owner and entity ID
 func git_repo_path(owner *User, entity_id string) string {
-	return fmt.Sprintf("%s/users/%d/repositories/%s", data_dir, owner.ID, entity_id)
+	return fmt.Sprintf("%s/users/%s/repositories/%s", data_dir, owner.UID, entity_id)
 }
 
 // Open a repository
@@ -2346,7 +2346,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	// Find repository entity by fingerprint for this owner
 	// The repo parameter is the entity fingerprint extracted from the URL
 	db := db_open("db/users.db")
-	row, err := db.row("select id from entities where user = ? and fingerprint = ?", owner.ID, repo)
+	row, err := db.row("select id from entities where user = ? and fingerprint = ?", owner.UID, repo)
 	if err != nil || row == nil {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
@@ -2511,7 +2511,7 @@ func git_authenticate(c *gin.Context, a *App) *User {
 		return nil
 	}
 
-	return user_by_id(token.User)
+	return user_by_uid(token.User)
 }
 
 // git_info_refs handles GET /info/refs?service=git-upload-pack|git-receive-pack

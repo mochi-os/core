@@ -24,7 +24,7 @@ func create_git_test_env(t *testing.T) (*User, string, func()) {
 	origDataDir := data_dir
 	data_dir = tmpDir
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 
 	userDir := filepath.Join(tmpDir, "users", "1", "repositories")
 	if err := os.MkdirAll(userDir, 0755); err != nil {
@@ -127,7 +127,7 @@ func TestGitInitIdempotent(t *testing.T) {
 }
 
 func TestGitRepoPath(t *testing.T) {
-	user := &User{ID: 42}
+	user := &User{UID: "u42"}
 	repoID := "my-repo"
 
 	origDataDir := data_dir
@@ -135,7 +135,7 @@ func TestGitRepoPath(t *testing.T) {
 	defer func() { data_dir = origDataDir }()
 
 	path := git_repo_path(user, repoID)
-	expected := "/var/lib/mochi/users/42/repositories/my-repo"
+	expected := "/var/lib/mochi/users/u42/repositories/my-repo"
 
 	if path != expected {
 		t.Errorf("Expected path %q, got %q", expected, path)
@@ -147,8 +147,8 @@ func TestGitRepoPathDifferentUsers(t *testing.T) {
 	data_dir = "/data"
 	defer func() { data_dir = origDataDir }()
 
-	user1 := &User{ID: 1}
-	user2 := &User{ID: 999}
+	user1 := &User{UID: "u1"}
+	user2 := &User{UID: "u999"}
 
 	path1 := git_repo_path(user1, "repo")
 	path2 := git_repo_path(user2, "repo")
@@ -157,11 +157,11 @@ func TestGitRepoPathDifferentUsers(t *testing.T) {
 		t.Error("Different users should have different repo paths")
 	}
 
-	if !strings.Contains(path1, "/1/") {
-		t.Errorf("Path should contain user ID 1: %s", path1)
+	if !strings.Contains(path1, "/u1/") {
+		t.Errorf("Path should contain user UID u1: %s", path1)
 	}
-	if !strings.Contains(path2, "/999/") {
-		t.Errorf("Path should contain user ID 999: %s", path2)
+	if !strings.Contains(path2, "/u999/") {
+		t.Errorf("Path should contain user UID u999: %s", path2)
 	}
 }
 
@@ -383,8 +383,8 @@ func TestGitMultipleUsers(t *testing.T) {
 	_, tmpDir, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	user1 := &User{ID: 1}
-	user2 := &User{ID: 2}
+	user1 := &User{UID: "u1"}
+	user2 := &User{UID: "u2"}
 
 	// Create directories for user2
 	user2Dir := filepath.Join(tmpDir, "users", "2", "repositories")

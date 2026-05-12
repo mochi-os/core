@@ -650,7 +650,7 @@ func TestAppUserSetup(t *testing.T) {
 	// Create user directory
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 
 	// App Manager app ID with permissions/manage default
 	appsAppID := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
@@ -704,7 +704,7 @@ func TestDBUserCreatesAccountsWithDefault(t *testing.T) {
 	// Create user directory
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	db := db_user(user, "user")
 
 	// Verify accounts table has "default" column
@@ -796,7 +796,7 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1", "testapp"), 0755)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	a := &App{id: "testapp"}
 	db := db_app_system(user, a)
 	if db == nil {

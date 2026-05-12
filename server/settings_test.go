@@ -20,7 +20,7 @@ func create_test_user(t *testing.T) (*User, func()) {
 
 	// Create a test user
 	user := &User{
-		ID:          1,
+		UID:         "u1",
 		Username:    "testuser",
 		Role:        "user",
 		Preferences: map[string]string{},
@@ -240,7 +240,7 @@ func TestUserPreferencesPersistence(t *testing.T) {
 
 	// Simulate reload by creating new user with same ID
 	user2 := &User{
-		ID:       user.ID,
+		UID:      user.UID,
 		Username: user.Username,
 		Role:     user.Role,
 	}

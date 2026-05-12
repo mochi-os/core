@@ -81,9 +81,9 @@ type WebAuthnUser struct {
 	user *User
 }
 
-// WebAuthnID returns the user ID as bytes
+// WebAuthnID returns the user UID as bytes
 func (u *WebAuthnUser) WebAuthnID() []byte {
-	return []byte(fmt.Sprintf("%d", u.user.ID))
+	return []byte(u.user.UID)
 }
 
 // WebAuthnName returns the username (email)
@@ -102,7 +102,7 @@ func (u *WebAuthnUser) WebAuthnDisplayName() string {
 // WebAuthnCredentials returns all credentials for this user
 func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select id, public_key, sign_count, transports, backup_eligible, backup_state from credentials where user=?", u.user.ID)
+	rows, _ := db.rows("select id, public_key, sign_count, transports, backup_eligible, backup_state from credentials where user=?", u.user.UID)
 
 	var creds []webauthn.Credential
 	for _, row := range rows {
@@ -147,7 +147,7 @@ func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 
 // passkey_lasts returns last-used by credential id (as string of bytes) for
 // every passkey registered to this user. Unknown credentials map to 0.
-func passkey_lasts(user_id int) map[string]int64 {
+func passkey_lasts(user_id string) map[string]int64 {
 	out := map[string]int64{}
 	rows, err := db_open("db/sessions.db").rows("select credential, last from passkeys where user=?", user_id)
 	if err != nil {
@@ -256,8 +256,7 @@ func web_passkey_login_finish(c *gin.Context) {
 
 	// Handler to find user from credential
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
-		user_id := int(atoi(string(userHandle), 0))
-		user := user_by_id(user_id)
+		user := user_by_uid(string(userHandle))
 		if user == nil {
 			return nil, errors.New("user not found")
 		}
@@ -279,7 +278,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		respond_error(c, http.StatusUnauthorized, "credential_not_found", "errors.credential_not_found", nil)
 		return
 	}
-	user := user_by_id(int(row["user"].(int64)))
+	user := user_by_uid(row["user"].(string))
 	if user == nil {
 		respond_error(c, http.StatusUnauthorized, "user_not_found", "errors.user_not_found", nil)
 		return
@@ -292,7 +291,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	users.exec("update credentials set sign_count=? where id=?",
 		credential.Authenticator.SignCount, credential.ID)
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
-		credential.ID, user.ID, now())
+		credential.ID, user.UID, now())
 
 	// Per-(user, credential) leadership claim. The host that processed
 	// this assertion takes a 60s lease on `("credential", <id>)`; another
@@ -326,7 +325,7 @@ func web_passkey_login_finish(c *gin.Context) {
 		// Create partial session
 		partial := random_alphanumeric(32)
 		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'passkey', ?, ?)",
-			partial, user.ID, strings.Join(remaining, ","), now()+300)
+			partial, user.UID, strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -355,12 +354,12 @@ func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, name, transports, created from credentials where user=? order by created desc", user.ID)
+	rows, err := db.rows("select id, name, transports, created from credentials where user=? order by created desc", user.UID)
 	if err != nil {
 		return sl_error(fn, "database error")
 	}
 
-	lasts := passkey_lasts(user.ID)
+	lasts := passkey_lasts(user.UID)
 
 	// Convert blob IDs to base64 for Starlark
 	credentials := make([]map[string]any, len(rows))
@@ -397,7 +396,7 @@ func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
+	row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
 	if row == nil {
 		return sl.MakeInt(0), nil
 	}
@@ -438,7 +437,7 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	data, _ := json.Marshal(session)
 	db := db_open("db/sessions.db")
 	db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'register', ?, ?, ?, ?)",
-		ceremony, user.ID, session.Challenge, string(data), now()+300)
+		ceremony, user.UID, session.Challenge, string(data), now()+300)
 
 	return sl_encode(map[string]any{
 		"options":  options.Response,
@@ -499,7 +498,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	// Load ceremony session
 	db := db_open("db/sessions.db")
 	row, _ := db.row("select data from ceremonies where id=? and type='register' and user=? and expires>?",
-		ceremony, user.ID, now())
+		ceremony, user.UID, now())
 	if row == nil {
 		return sl_error(fn, "ceremony expired")
 	}
@@ -542,11 +541,11 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	users := db_open("db/users.db")
 	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
              values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		credential.ID, user.ID, credential.PublicKey,
+		credential.ID, user.UID, credential.PublicKey,
 		credential.Authenticator.SignCount, name, transports,
 		credential.Flags.BackupEligible, credential.Flags.BackupState, now())
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, 0)",
-		credential.ID, user.ID)
+		credential.ID, user.UID)
 
 	audit_password_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
@@ -583,12 +582,12 @@ func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select id from credentials where id=? and user=?", id, user.ID)
+	exists, _ := db.exists("select id from credentials where id=? and user=?", id, user.UID)
 	if !exists {
 		return sl_error(fn, "credential not found")
 	}
 
-	db.exec("update credentials set name=? where id=? and user=?", name, id, user.ID)
+	db.exec("update credentials set name=? where id=? and user=?", name, id, user.UID)
 	return sl.True, nil
 }
 
@@ -621,18 +620,18 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	// Check if this would leave user without passkey when passkey is required
 	if strings.Contains(user.Methods, "passkey") {
-		row, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
+		row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
 		if row != nil && row["count"].(int64) <= 1 {
 			return sl_error(fn, "cannot delete last passkey while passkey authentication is required")
 		}
 	}
 
-	exists, _ := db.exists("select id from credentials where id=? and user=?", id, user.ID)
+	exists, _ := db.exists("select id from credentials where id=? and user=?", id, user.UID)
 	if !exists {
 		return sl_error(fn, "credential not found")
 	}
 
-	db.exec("delete from credentials where id=? and user=?", id, user.ID)
+	db.exec("delete from credentials where id=? and user=?", id, user.UID)
 	db_open("db/sessions.db").exec("delete from passkeys where credential=?", id)
 	audit_password_changed(user.Username, "passkey_deleted")
 	return sl.True, nil

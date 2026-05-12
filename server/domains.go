@@ -41,7 +41,7 @@ type route struct {
 	Method   string `db:"method"`
 	Target   string `db:"target"`
 	Context  string `db:"context"`
-	Owner    int    `db:"owner"`
+	Owner    string `db:"owner"`
 	Priority int    `db:"priority"`
 	Enabled  int    `db:"enabled"`
 	Created  int64  `db:"created"`
@@ -99,7 +99,7 @@ type delegation struct {
 	ID      int    `db:"id"`
 	Domain  string `db:"domain"`
 	Path    string `db:"path"`
-	Owner   int    `db:"owner"`
+	Owner   string `db:"owner"`
 	Created int64  `db:"created"`
 	Updated int64  `db:"updated"`
 }
@@ -372,7 +372,7 @@ func route_get(domain_name, path string) *route {
 }
 
 // route_create creates a new route
-func route_create(domain_name, path, method, target, context string, owner, priority int) (*route, error) {
+func route_create(domain_name, path, method, target, context string, owner string, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -423,7 +423,7 @@ func route_delete(domain_name, path string) error {
 }
 
 // delegation_get retrieves a delegation by domain, path, and owner
-func delegation_get(domain_name, path string, owner int) *delegation {
+func delegation_get(domain_name, path string, owner string) *delegation {
 	db := db_open("db/domains.db")
 	var d delegation
 	if !db.scan(&d, "select * from delegations where domain=? and path=? and owner=?", domain_name, path, owner) {
@@ -433,7 +433,7 @@ func delegation_get(domain_name, path string, owner int) *delegation {
 }
 
 // delegation_create creates a new path delegation, or returns existing if already delegated
-func delegation_create(domain_name, path string, owner int) (*delegation, error) {
+func delegation_create(domain_name, path string, owner string) (*delegation, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
@@ -449,14 +449,14 @@ func delegation_create(domain_name, path string, owner int) (*delegation, error)
 }
 
 // delegation_delete removes a delegation
-func delegation_delete(domain_name, path string, owner int) error {
+func delegation_delete(domain_name, path string, owner string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from delegations where domain=? and path=? and owner=?", domain_name, path, owner)
 	return nil
 }
 
 // delegation_check returns true if the user has a delegation for the given domain and path
-func delegation_check(domain_name, path string, owner int) bool {
+func delegation_check(domain_name, path string, owner string) bool {
 	db := db_open("db/domains.db")
 	var delegations []delegation
 	db.scans(&delegations, "select * from delegations where domain=? and owner=?", domain_name, owner)
@@ -522,7 +522,7 @@ func domain_can_manage(user *User, d *domain) bool {
 		return true
 	}
 	// Check if user has a full domain delegation (path = "")
-	if delegation_check(d.Domain, "", user.ID) {
+	if delegation_check(d.Domain, "", user.UID) {
 		return true
 	}
 	return false
@@ -538,7 +538,7 @@ func domain_can_manage_route(user *User, d *domain, path string) bool {
 		return true
 	}
 	// Check delegations table (empty path delegation means full domain access)
-	if delegation_check(d.Domain, path, user.ID) {
+	if delegation_check(d.Domain, path, user.UID) {
 		return true
 	}
 	return false
@@ -810,15 +810,13 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	context := ""
-	owner_override := 0
+	owner_override := ""
 	for _, kw := range kwargs {
 		key, _ := sl.AsString(kw[0])
 		if key == "context" {
 			context, _ = sl.AsString(kw[1])
 		} else if key == "owner" {
-			if o, err := sl.AsInt32(kw[1]); err == nil {
-				owner_override = int(o)
-			}
+			owner_override, _ = sl.AsString(kw[1])
 		}
 	}
 
@@ -836,9 +834,9 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	// Owner defaults to user's ID; admins can override
-	owner := user.ID
-	if owner_override > 0 && user.administrator() {
+	// Owner defaults to user's UID; admins can override
+	owner := user.UID
+	if owner_override != "" && user.administrator() {
 		owner = owner_override
 	}
 
@@ -964,26 +962,26 @@ func api_domain_route_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl.True, nil
 }
 
-// mochi.domain.delegation.list(domain="", owner=0) -> list: List delegations
+// mochi.domain.delegation.list(domain="", owner="") -> list: List delegations
 func api_domain_delegation_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	domain_name := ""
-	owner := 0
+	owner := ""
 
 	if len(args) > 0 {
 		domain_name, _ = sl.AsString(args[0])
 	}
 	if len(args) > 1 {
-		owner, _ = sl.AsInt32(args[1])
+		owner, _ = sl.AsString(args[1])
 	}
 
 	db := db_open("db/domains.db")
 	var rows []map[string]any
 	var err error
-	if domain_name != "" && owner != 0 {
+	if domain_name != "" && owner != "" {
 		rows, err = db.rows("select * from delegations where domain=? and owner=? order by path", domain_name, owner)
 	} else if domain_name != "" {
 		rows, err = db.rows("select * from delegations where domain=? order by path, owner", domain_name)
-	} else if owner != 0 {
+	} else if owner != "" {
 		rows, err = db.rows("select * from delegations where owner=? order by domain, path", owner)
 	} else {
 		rows, err = db.rows("select * from delegations order by domain, path, owner")
@@ -997,7 +995,7 @@ func api_domain_delegation_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 // mochi.domain.delegation.create(domain, path, owner) -> dict: Create a path delegation
 func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: int>")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: string>")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -1010,8 +1008,8 @@ func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "invalid path")
 	}
 
-	owner, err := sl.AsInt32(args[2])
-	if err != nil {
+	owner, ok := sl.AsString(args[2])
+	if !ok {
 		return sl_error(fn, "invalid owner")
 	}
 
@@ -1025,11 +1023,11 @@ func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 
 	// Verify owner user exists
-	if user_by_id(int(owner)) == nil {
+	if user_by_uid(owner) == nil {
 		return sl_error(fn, "owner user not found")
 	}
 
-	_, err = delegation_create(domain_name, path, int(owner))
+	_, err := delegation_create(domain_name, path, owner)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1042,7 +1040,7 @@ func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 // mochi.domain.delegation.delete(domain, path, owner) -> bool: Delete a delegation
 func api_domain_delegation_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 {
-		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: int>")
+		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: string>")
 	}
 
 	domain_name, ok := sl.AsString(args[0])
@@ -1055,8 +1053,8 @@ func api_domain_delegation_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "invalid path")
 	}
 
-	owner, err := sl.AsInt32(args[2])
-	if err != nil {
+	owner, ok := sl.AsString(args[2])
+	if !ok {
 		return sl_error(fn, "invalid owner")
 	}
 
@@ -1069,7 +1067,7 @@ func api_domain_delegation_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "not administrator")
 	}
 
-	err = delegation_delete(domain_name, path, int(owner))
+	err := delegation_delete(domain_name, path, owner)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

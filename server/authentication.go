@@ -38,7 +38,7 @@ var api_user_totp = sls.FromStringDict(sl.String("mochi.user.totp"), sl.StringDi
 })
 
 type mochi_claims struct {
-	User int    `json:"user"`
+	User string `json:"user"`
 	App  string `json:"app,omitempty"`
 	jwt.RegisteredClaims
 }
@@ -80,7 +80,7 @@ func web_login_verify(c *gin.Context) {
 		partial := random_alphanumeric(32)
 		db := db_open("db/sessions.db")
 		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-			partial, user.ID, strings.Join(remaining, ","), now()+300)
+			partial, user.UID, strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -162,9 +162,9 @@ func auth_establish_session(c *gin.Context, user *User) {
 	if user != nil && user.Identity == nil {
 		user.Identity = user.identity()
 	}
-	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+	session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 	web_cookie_set(c, "session", session)
-	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
+	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 	audit_login(user.Username, rate_limit_client_ip(c))
 }
 
@@ -200,7 +200,7 @@ func auth_redirect_login(c *gin.Context, user *User, target string) {
 }
 
 // auth_create_app_token creates an app-scoped JWT for a session
-func auth_create_app_token(user_id int, login string, app string) string {
+func auth_create_app_token(user_uid string, login string, app string) string {
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
@@ -212,7 +212,7 @@ func auth_create_app_token(user_id int, login string, app string) string {
 	}
 
 	claims := mochi_claims{
-		User: user_id,
+		User: user_uid,
 		App:  app,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
@@ -270,7 +270,7 @@ func web_auth_totp(c *gin.Context) {
 	}
 
 	// Verify TOTP code
-	if !totp_verify(user.ID, input.Code) {
+	if !totp_verify(user.UID, input.Code) {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
 		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		return
@@ -294,7 +294,7 @@ func web_auth_totp(c *gin.Context) {
 		partial := random_alphanumeric(32)
 		db := db_open("db/sessions.db")
 		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'totp', ?, ?)",
-			partial, user.ID, strings.Join(remaining, ","), now()+300)
+			partial, user.UID, strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -312,25 +312,25 @@ func web_auth_totp(c *gin.Context) {
 // Verify a JWT and return the user id and app claim, or -1 if invalid.
 // If the token header contains a "kid" referencing a login code, attempt to verify
 // using that login's secret. Otherwise fall back to the global secret.
-func jwt_verify(token_string string) (int, string, error) {
+func jwt_verify(token_string string) (string, string, error) {
 	// First parse the token without verification to read header/kid
 	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
 	if err != nil {
-		return -1, "", err
+		return "", "", err
 	}
 
 	// Require kid header (login code) to look up per-login secret
 	kid, ok := token.Header["kid"].(string)
 	if !ok || kid == "" {
-		return -1, "", errors.New("token missing kid header referencing login code")
+		return "", "", errors.New("token missing kid header referencing login code")
 	}
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", kid, now()) {
-		return -1, "", errors.New("session not found for kid")
+		return "", "", errors.New("session not found for kid")
 	}
 	if s.Secret == "" {
-		return -1, "", errors.New("session has no secret")
+		return "", "", errors.New("session has no secret")
 	}
 	secret := []byte(s.Secret)
 	var claims mochi_claims
@@ -341,10 +341,10 @@ func jwt_verify(token_string string) (int, string, error) {
 		return secret, nil
 	})
 	if err != nil {
-		return -1, "", err
+		return "", "", err
 	}
 	if !tkn.Valid {
-		return -1, "", errors.New("invalid token")
+		return "", "", errors.New("invalid token")
 	}
 	return claims.User, claims.App, nil
 }
@@ -382,7 +382,7 @@ func web_auth_mfa(c *gin.Context) {
 		return
 	}
 
-	user := user_by_id(int(row["user"].(int64)))
+	user := user_by_uid(row["user"].(string))
 	if user == nil {
 		respond_error(c, http.StatusBadRequest, "user_not_found", "errors.user_not_found", nil)
 		return
@@ -460,7 +460,7 @@ func web_auth_mfa(c *gin.Context) {
 				return
 			}
 		case "totp":
-			if !totp_verify(user.ID, code) {
+			if !totp_verify(user.UID, code) {
 				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
@@ -606,19 +606,19 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	for _, m := range methods {
 		switch m {
 		case "passkey":
-			row, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
+			row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
 			if row == nil || row["count"].(int64) == 0 {
 				return sl_error(fn, "no passkey registered")
 			}
 		case "totp":
-			row, _ := db.row("select verified from totp where user=?", user.ID)
+			row, _ := db.row("select verified from totp where user=?", user.UID)
 			if row == nil || row["verified"].(int64) != 1 {
 				return sl_error(fn, "totp not configured")
 			}
 		}
 	}
 
-	db.exec("update users set methods=? where id=?", strings.Join(methods, ","), user.ID)
+	db.exec("update users set methods=? where uid=?", strings.Join(methods, ","), user.UID)
 	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
@@ -638,26 +638,26 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <user: int>")
+		return sl_error(fn, "syntax: <user: string>")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid user id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid user uid")
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select id from users where id=?", id)
+	exists, _ := db.exists("select uid from users where uid=?", id)
 	if !exists {
 		return sl_error(fn, "user not found")
 	}
 
-	target := user_by_id(int(id))
-	target_name := fmt.Sprintf("%d", id)
+	target := user_by_uid(id)
+	target_name := id
 	if target != nil {
 		target_name = target.Username
 	}
-	db.exec("update users set methods='email' where id=?", id)
+	db.exec("update users set methods='email' where uid=?", id)
 	audit_password_changed(target_name, "admin_reset")
 	return sl.True, nil
 }
@@ -683,7 +683,7 @@ func email_code_consume(code string) {
 }
 
 // totp_verify checks a TOTP code for a user (used by MFA endpoint)
-func totp_verify(user int, code string) bool {
+func totp_verify(user string, code string) bool {
 	db := db_open("db/users.db")
 	row, _ := db.row("select secret, verified from totp where user=?", user)
 	if row == nil {
@@ -722,7 +722,7 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	// Store secret (unverified)
 	db := db_open("db/users.db")
 	db.exec("replace into totp (user, secret, verified, created) values (?, ?, 0, ?)",
-		user.ID, key.Secret(), now())
+		user.UID, key.Secret(), now())
 
 	// Return secret and otpauth URL for QR code
 	return sl_encode(map[string]any{
@@ -754,7 +754,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select secret from totp where user=?", user.ID)
+	row, _ := db.row("select secret from totp where user=?", user.UID)
 	if row == nil {
 		return sl_error(fn, "totp not set up")
 	}
@@ -765,7 +765,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Mark as verified
-	db.exec("update totp set verified=1 where user=?", user.ID)
+	db.exec("update totp set verified=1 where user=?", user.UID)
 	audit_password_changed(user.Username, "totp_enabled")
 	return sl.True, nil
 }
@@ -782,7 +782,7 @@ func api_user_totp_enabled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select verified from totp where user=?", user.ID)
+	row, _ := db.row("select verified from totp where user=?", user.UID)
 	if row == nil {
 		return sl.False, nil
 	}
@@ -806,7 +806,7 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	db.exec("delete from totp where user=?", user.ID)
+	db.exec("delete from totp where user=?", user.UID)
 	audit_password_changed(user.Username, "totp_disabled")
 	return sl.True, nil
 }
@@ -835,7 +835,7 @@ func web_recovery_login(c *gin.Context) {
 	code := strings.ReplaceAll(input.Code, "-", "")
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select id from users where username=?", input.Username)
+	row, _ := db.row("select uid from users where username=?", input.Username)
 	if row == nil {
 		// Timing-safe: always do bcrypt comparison even if user not found
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), []byte(code))
@@ -843,7 +843,7 @@ func web_recovery_login(c *gin.Context) {
 		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
-	user_id := int(row["id"].(int64))
+	user_id, _ := row["uid"].(string)
 
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)
@@ -862,7 +862,7 @@ func web_recovery_login(c *gin.Context) {
 	}
 
 	// Load user with identity
-	user := user_by_id(user_id)
+	user := user_by_uid(user_id)
 	if user == nil {
 		respond_error(c, http.StatusInternalServerError, "user_error", "errors.user_error", nil)
 		return
@@ -901,7 +901,7 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	db := db_open("db/users.db")
 
 	// Delete existing codes
-	db.exec("delete from recovery where user=?", user.ID)
+	db.exec("delete from recovery where user=?", user.UID)
 	audit_password_changed(user.Username, "recovery_regenerated")
 
 	// Generate new codes
@@ -914,7 +914,7 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		// Store bcrypt hash of normalized code (no dashes)
 		hash, _ := bcrypt.GenerateFromPassword([]byte(raw), bcrypt.DefaultCost)
 		db.exec("insert into recovery (user, hash, created) values (?, ?, ?)",
-			user.ID, string(hash), now())
+			user.UID, string(hash), now())
 	}
 
 	return sl_encode(codes), nil
@@ -932,7 +932,7 @@ func api_user_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select count(*) as count from recovery where user=?", user.ID)
+	row, _ := db.row("select count(*) as count from recovery where user=?", user.UID)
 	if row == nil {
 		return sl.MakeInt(0), nil
 	}

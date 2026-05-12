@@ -315,28 +315,17 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 }
 
 // replication_session_apply_insert lands a replicated session insert into
-// the local sessions.db. Resolves the user_uid to a local users.id; if
-// the user doesn't exist locally yet (e.g. keys-transfer hasn't landed)
-// the op is deferred so the caller buffers it. `replace into` makes
-// re-applies idempotent.
+// the local sessions.db. Defers when the user isn't yet local (keys-transfer
+// hasn't landed). `replace into` makes re-applies idempotent.
 func replication_session_apply_insert(p *SessionInsert) ApplyResult {
-	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", p.UserUID)
-	if row == nil {
-		return ApplyDeferred
-	}
-	var localID int
-	if v, ok := row["id"].(int64); ok {
-		localID = int(v)
-	}
-	if localID == 0 {
+	if !user_exists(p.UserUID) {
 		return ApplyDeferred
 	}
 
 	sdb := db_open("db/sessions.db")
 	sdb.exec(
 		"replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
-		localID, p.Code, p.Secret, p.Expires, p.Created, p.Accessed, p.Address, p.Agent)
+		p.UserUID, p.Code, p.Secret, p.Expires, p.Created, p.Accessed, p.Address, p.Agent)
 	debug("Replication session-insert applied: user_uid=%q code=%q", p.UserUID, p.Code)
 	return ApplyApplied
 }
@@ -459,17 +448,16 @@ func replication_pending_drain() {
 // local users.id; defers when the user isn't yet local. `insert or
 // ignore` makes re-applies idempotent. The apply path only needs
 // User.ID for the db_user() path lookup so it skips the full
-// user_by_id (which insists on a non-nil identity entity).
+// user_by_uid (which insists on a non-nil identity entity).
 func replication_webpush_delivered_apply(userUID string, w *WebpushDelivered) ApplyResult {
 	if w.Endpoint == "" || w.EventID == "" {
 		return ApplyInvalid
 	}
 
-	localID := user_local_id(userUID)
-	if localID == 0 {
+	if !user_exists(userUID) {
 		return ApplyDeferred
 	}
-	u := &User{ID: localID, UID: userUID}
+	u := &User{UID: userUID}
 
 	db := webpush_dedup_db(u)
 	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", w.Endpoint, w.EventID, w.TS)
@@ -484,11 +472,10 @@ func replication_email_delivered_apply(userUID string, em *EmailDelivered) Apply
 		return ApplyInvalid
 	}
 
-	localID := user_local_id(userUID)
-	if localID == 0 {
+	if !user_exists(userUID) {
 		return ApplyDeferred
 	}
-	u := &User{ID: localID, UID: userUID}
+	u := &User{UID: userUID}
 
 	db := email_dedup_db(u)
 	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", em.Address, em.EventID, em.TS)
@@ -496,21 +483,16 @@ func replication_email_delivered_apply(userUID string, em *EmailDelivered) Apply
 	return ApplyApplied
 }
 
-// user_local_id translates a user UID to the local integer users.id.
-// Returns 0 when the user isn't on this host (caller treats as deferred).
-func user_local_id(uid string) int {
+// user_exists returns true when the given user UID has a local users.db
+// row. Used by replication apply handlers to decide whether a remote op
+// should be applied now or deferred until a keys-transfer lands.
+func user_exists(uid string) bool {
 	if uid == "" {
-		return 0
+		return false
 	}
 	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", uid)
-	if row == nil {
-		return 0
-	}
-	if v, ok := row["id"].(int64); ok {
-		return int(v)
-	}
-	return 0
+	exists, _ := udb.exists("select 1 from users where uid=?", uid)
+	return exists
 }
 
 // replication_emit_webpush_delivered fans out a webpush dedup row to
@@ -711,14 +693,12 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 
 	udb := db_open("db/users.db")
 
-	var localID int
-	if row, err := udb.row("select id from users where username=?", kt.Username); err == nil && row != nil {
-		if v, ok := row["id"].(int64); ok {
-			localID = int(v)
-		}
+	var userUID string
+	if row, err := udb.row("select uid from users where username=?", kt.Username); err == nil && row != nil {
+		userUID, _ = row["uid"].(string)
 	}
 
-	if localID == 0 {
+	if userUID == "" {
 		role := kt.Role
 		if role == "" {
 			role = "user"
@@ -732,14 +712,12 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 			status = "active"
 		}
 
-		result, err := udb.internal.Exec("insert into users (username, role, methods, status) values (?, ?, ?, ?)",
-			kt.Username, role, methods, status)
-		if err != nil {
+		userUID = uid()
+		if _, err := udb.internal.Exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, ?, ?)",
+			userUID, kt.Username, role, methods, status); err != nil {
 			warn("Replication keys-transfer: failed to insert user %q: %v", kt.Username, err)
 			return 0
 		}
-		id, _ := result.LastInsertId()
-		localID = int(id)
 	}
 
 	inserted := 0
@@ -754,7 +732,7 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 		udb.exec(`insert into entities
 			(id, private, fingerprint, user, parent, class, name, privacy, data, published)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			ent.ID, ent.Private, ent.Fingerprint, localID, ent.Parent, ent.Class, ent.Name, ent.Privacy, ent.Data, ent.Published)
+			ent.ID, ent.Private, ent.Fingerprint, userUID, ent.Parent, ent.Class, ent.Name, ent.Privacy, ent.Data, ent.Published)
 		inserted++
 	}
 
@@ -780,7 +758,7 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 // creation — once the peer is in `replication.db.hosts` or
 // `replication.db.pair`, call this to deliver the keys, then start fanning
 // out ordinary replication ops.
-func replication_transfer_keys(userID int, peer string) bool {
+func replication_transfer_keys(userUID string, peer string) bool {
 	if peer == "" || peer == p2p_id {
 		return false
 	}
@@ -788,18 +766,18 @@ func replication_transfer_keys(userID int, peer string) bool {
 	udb := db_open("db/users.db")
 
 	var u User
-	if !udb.scan(&u, "select id, uid, username, role, methods, status from users where id=?", userID) {
-		warn("Replication transfer-keys: user %d not found", userID)
+	if !udb.scan(&u, "select uid, username, role, methods, status from users where uid=?", userUID) {
+		warn("Replication transfer-keys: user %q not found", userUID)
 		return false
 	}
 
-	rows, err := udb.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", userID)
+	rows, err := udb.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", userUID)
 	if err != nil {
-		warn("Replication transfer-keys: failed to read entities for user %d: %v", userID, err)
+		warn("Replication transfer-keys: failed to read entities for user %q: %v", userUID, err)
 		return false
 	}
 	if len(rows) == 0 {
-		warn("Replication transfer-keys: no entities for user %d", userID)
+		warn("Replication transfer-keys: no entities for user %q", userUID)
 		return false
 	}
 
@@ -830,7 +808,7 @@ func replication_transfer_keys(userID int, peer string) bool {
 		kt.Entities = append(kt.Entities, ent)
 	}
 	if len(kt.Entities) == 0 {
-		warn("Replication transfer-keys: user %d has no valid entities", userID)
+		warn("Replication transfer-keys: user %q has no valid entities", userUID)
 		return false
 	}
 
@@ -975,12 +953,9 @@ func replication_emit(user string, op *ReplicationOp) {
 	}
 
 	// Pick any owned identity for this user as the signing entity. The
-	// join is by user_uid (task #4), which the v51 trigger keeps in sync
-	// with users.uid on insert / FK update. Resolve the signer up front
-	// so we don't burn a sequence number on an op we can't actually
-	// send.
+	// `user` column is now the TEXT uid (v53), so the join is direct.
 	udb := db_open("db/users.db")
-	row, err := udb.row("select id from entities where user_uid=? order by id limit 1", user)
+	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
 	if err != nil || row == nil {
 		warn("Replication emit: no signing entity for user %q: %v", user, err)
 		return

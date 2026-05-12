@@ -2968,10 +2968,10 @@ func apps_cleanup_unused_versions() int {
 
 		// Check all users' version bindings
 		db := db_open("db/users.db")
-		rows, _ := db.rows("select id from users where status = 'active'")
+		rows, _ := db.rows("select uid from users where status = 'active'")
 		for _, row := range rows {
-			user_id := int(row["id"].(int64))
-			u := user_by_id(user_id)
+			user_id, _ := row["uid"].(string)
+			u := user_by_uid(user_id)
 			if u == nil {
 				continue
 			}

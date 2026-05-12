@@ -18,7 +18,7 @@ var (
 	api_websocket = sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
 		"write": sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
 	})
-	websockets        = map[int]map[string]map[string]*websocket.Conn{}
+	websockets        = map[string]map[string]map[string]*websocket.Conn{}
 	websockets_lock   sync.RWMutex
 	websocket_context = context.Background()
 )
@@ -32,8 +32,8 @@ func websocket_connection(c *gin.Context) {
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
 			user_id, _, err := jwt_verify(token)
-			if err == nil && user_id > 0 {
-				if user := user_by_id(user_id); user != nil {
+			if err == nil && user_id != "" {
+				if user := user_by_uid(user_id); user != nil {
 					u = user
 					token_auth = true
 				}
@@ -44,8 +44,8 @@ func websocket_connection(c *gin.Context) {
 		if u == nil {
 			if token := c.Query("token"); token != "" {
 				user_id, _, err := jwt_verify(token)
-				if err == nil && user_id > 0 {
-					if user := user_by_id(user_id); user != nil {
+				if err == nil && user_id != "" {
+					if user := user_by_uid(user_id); user != nil {
 						u = user
 						token_auth = true
 					}
@@ -80,17 +80,17 @@ func websocket_connection(c *gin.Context) {
 	defer websocket_terminate(ws, u, key, id)
 
 	websockets_lock.Lock()
-	_, found := websockets[u.ID]
+	_, found := websockets[u.UID]
 	if !found {
-		websockets[u.ID] = map[string]map[string]*websocket.Conn{}
+		websockets[u.UID] = map[string]map[string]*websocket.Conn{}
 	}
-	_, found = websockets[u.ID][key]
+	_, found = websockets[u.UID][key]
 	if !found {
-		websockets[u.ID][key] = map[string]*websocket.Conn{}
+		websockets[u.UID][key] = map[string]*websocket.Conn{}
 	}
-	websockets[u.ID][key][id] = ws
+	websockets[u.UID][key][id] = ws
 	websockets_lock.Unlock()
-	// debug("Websocket connection user %d, key %q, id %q", u.ID, key, id)
+	// debug("Websocket connection user %d, key %q, id %q", u.UID, key, id)
 
 	for {
 		t, j, err := ws.Read(websocket_context)
@@ -107,12 +107,12 @@ func websocket_connection(c *gin.Context) {
 }
 
 func websockets_send(u *User, key string, content any) {
-	// debug("Websocket sending to user %d, key %q: %+v", u.ID, key, content)
+	// debug("Websocket sending to user %d, key %q: %+v", u.UID, key, content)
 	j := ""
 	var failed []string
 
 	websockets_lock.RLock()
-	for id, ws := range websockets[u.ID][key] {
+	for id, ws := range websockets[u.UID][key] {
 		if j == "" {
 			j = json_encode(content)
 		}
@@ -125,7 +125,7 @@ func websockets_send(u *User, key string, content any) {
 
 	for _, id := range failed {
 		websockets_lock.RLock()
-		ws := websockets[u.ID][key][id]
+		ws := websockets[u.UID][key][id]
 		websockets_lock.RUnlock()
 		websocket_terminate(ws, u, key, id)
 	}
@@ -134,14 +134,14 @@ func websockets_send(u *User, key string, content any) {
 func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	ws.CloseNow()
 	websockets_lock.Lock()
-	delete(websockets[u.ID][key], id)
+	delete(websockets[u.UID][key], id)
 
-	if len(websockets[u.ID][key]) == 0 {
-		delete(websockets[u.ID], key)
+	if len(websockets[u.UID][key]) == 0 {
+		delete(websockets[u.UID], key)
 	}
 
-	if len(websockets[u.ID]) == 0 {
-		delete(websockets, u.ID)
+	if len(websockets[u.UID]) == 0 {
+		delete(websockets, u.UID)
 	}
 	websockets_lock.Unlock()
 }

@@ -24,7 +24,7 @@ type Code struct {
 }
 
 type Session struct {
-	User     int
+	User     string
 	Code     string
 	Name     string
 	Secret   string
@@ -36,8 +36,7 @@ type Session struct {
 }
 
 type User struct {
-	ID          int
-	UID         string
+	UID         string `db:"uid"`
 	Username    string
 	Role        string
 	Methods     string
@@ -130,7 +129,7 @@ func code_send(email string, c *gin.Context) string {
 	return ""
 }
 
-func login_create(user int, address string, agent string) string {
+func login_create(user string, address string, agent string) string {
 	code := random_alphanumeric(20)
 	// Create a per-login secret for signing JWTs for this login/device
 	secret := random_alphanumeric(32)
@@ -141,11 +140,8 @@ func login_create(user int, address string, agent string) string {
 
 	// Replicate the new session to every peer in the user's host set so a
 	// cookie issued here is honoured by every replica.
-	udb := db_open("db/users.db")
-	if row, _ := udb.row("select uid from users where id=?", user); row != nil {
-		if uid, _ := row["uid"].(string); uid != "" {
-			replication_emit_session_insert(uid, code, secret, expires, created, created, address, agent)
-		}
+	if user != "" {
+		replication_emit_session_insert(user, code, secret, expires, created, created, address, agent)
 	}
 
 	return code
@@ -158,12 +154,7 @@ func login_delete(code string) {
 	// replicated revoke. After the delete the join is impossible.
 	var userUID string
 	if row, _ := db.row("select user from sessions where code=?", code); row != nil {
-		if userInt, ok := row["user"].(int64); ok {
-			udb := db_open("db/users.db")
-			if urow, _ := udb.row("select uid from users where id=?", userInt); urow != nil {
-				userUID, _ = urow["uid"].(string)
-			}
-		}
+		userUID, _ = row["user"].(string)
 	}
 
 	db.exec("delete from sessions where code=?", code)
@@ -190,10 +181,13 @@ func sessions_cleanup() {
 	db.exec("delete from partial where expires < ?", t)
 }
 
-func user_by_id(id int) *User {
+func user_by_uid(uid string) *User {
+	if uid == "" {
+		return nil
+	}
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", id) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", uid) {
 		return nil
 	}
 
@@ -215,7 +209,7 @@ func user_by_id(id int) *User {
 func user_by_username(username string) *User {
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
 		return nil
 	}
 	u.Preferences = user_preferences_load(&u)
@@ -230,7 +224,7 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", i.User) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", i.User) {
 		return nil
 	}
 
@@ -255,7 +249,7 @@ func user_by_login(login string) *User {
 
 	users := db_open("db/users.db")
 	var u User
-	if !users.scan(&u, "select id, uid, username, role, methods, status from users where id=?", s.User) {
+	if !users.scan(&u, "select uid, username, role, methods, status from users where uid=?", s.User) {
 		return nil
 	}
 
@@ -282,7 +276,7 @@ func user_from_code(code string) (*User, string) {
 
 	db := db_open("db/users.db")
 	var u User
-	if db.scan(&u, "select id, uid, username, role, methods, status from users where username=?", c.Username) {
+	if db.scan(&u, "select uid, username, role, methods, status from users where username=?", c.Username) {
 		if u.Status == "suspended" {
 			return nil, "suspended"
 		}
@@ -308,15 +302,15 @@ func user_create(username string) (*User, string) {
 	db := db_open("db/users.db")
 
 	role := "user"
-	has_users, _ := db.exists("select id from users limit 1")
+	has_users, _ := db.exists("select uid from users limit 1")
 	if !has_users {
 		role = "administrator"
 	}
 
-	db.exec("replace into users (username, role) values (?, ?)", username, role)
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
 
 	var u User
-	if db.scan(&u, "select id, uid, username, role, methods, status from users where username=?", username) {
+	if db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)
 		return &u, ""
 	}
@@ -337,7 +331,7 @@ func user_owning_entity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", i.User) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", i.User) {
 		return nil
 	}
 
@@ -456,21 +450,21 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <id: int>")
+		return sl_error(fn, "syntax: <uid: string>")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid uid")
 	}
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", id) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
@@ -499,11 +493,11 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
@@ -542,11 +536,11 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", user_id) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
@@ -588,11 +582,11 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where id=?", user_id) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", user_id) {
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.list(limit, offset, sort, order) -> list: List all users (admin only).
@@ -649,7 +643,7 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	// in memory. ATTACH is blocked at the driver level so we can't join across
 	// DBs, and admin user counts are small enough that in-memory is fine.
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, uid, username, role, methods, status from users")
+	rows, err := db.rows("select uid, username, role, methods, status from users")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -693,13 +687,9 @@ func users_sort(rows []map[string]any, sort string, order string) {
 		var c int
 		switch sort {
 		case "id":
-			ai, _ := a["id"].(int64)
-			bi, _ := b["id"].(int64)
-			if ai < bi {
-				c = -1
-			} else if ai > bi {
-				c = 1
-			}
+			ai, _ := a["uid"].(string)
+			bi, _ := b["uid"].(string)
+			c = strings.Compare(ai, bi)
 		case "status":
 			c = status_rank(a) - status_rank(b)
 		case "last":
@@ -731,18 +721,18 @@ func users_attach_last(rows []map[string]any) {
 		return
 	}
 
-	last := map[int64]int64{}
+	last := map[string]int64{}
 	logins, err := db_open("db/sessions.db").rows("select user, last from logins")
 	if err == nil {
 		for _, r := range logins {
-			id, _ := r["user"].(int64)
+			id, _ := r["user"].(string)
 			t, _ := r["last"].(int64)
 			last[id] = t
 		}
 	}
 
 	for _, r := range rows {
-		id, _ := r["id"].(int64)
+		id, _ := r["uid"].(string)
 		r["last"] = last[id]
 	}
 }
@@ -805,7 +795,7 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, uid, username, role, methods, status from users where username like ? order by username collate nocase limit ?", "%"+query+"%", limit)
+	rows, err := db.rows("select uid, username, role, methods, status from users where username like ? order by username collate nocase limit ?", "%"+query+"%", limit)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -847,15 +837,15 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "user already exists")
 	}
 
-	db.exec("insert into users (username, role) values (?, ?)", username, role)
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
 
 	var u User
-	if !db.scan(&u, "select id, uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
 		return sl_error(fn, "failed to create user")
 	}
 
 	audit_user_created(user.Username, username, role)
-	return sl_encode(map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.update(id, username, role) -> bool: Update a user (admin only)
@@ -869,16 +859,16 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	if len(args) < 1 || len(args) > 3 {
-		return sl_error(fn, "syntax: <id: int>, [username: string], [role: string]")
+		return sl_error(fn, "syntax: <uid: string>, [username: string], [role: string]")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid uid")
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from users where id=?", id)
+	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return sl_error(fn, "user not found")
 	}
@@ -889,14 +879,14 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			return sl_error(fn, "invalid username")
 		}
 		// Get old username for audit
-		row, _ := db.row("select username from users where id=?", id)
+		row, _ := db.row("select username from users where uid=?", id)
 		old := ""
 		if row != nil {
 			old = row["username"].(string)
 		}
-		db.exec("update users set username=? where id=?", username, id)
+		db.exec("update users set username=? where uid=?", username, id)
 		if old != username {
-			audit_email_changed(user.Username, fmt.Sprintf("%d", id), old, username)
+			audit_email_changed(user.Username, id, old, username)
 		}
 	}
 
@@ -906,16 +896,16 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			return sl_error(fn, "invalid role")
 		}
 		// Get old role for audit
-		row, _ := db.row("select role from users where id=?", id)
+		row, _ := db.row("select role from users where uid=?", id)
 		old := ""
 		if row != nil {
 			old = row["role"].(string)
 		}
-		db.exec("update users set role=? where id=?", role, id)
+		db.exec("update users set role=? where uid=?", role, id)
 		if old != role && role == "administrator" {
-			audit_admin_escalation(user.Username, fmt.Sprintf("%d", id), "promote")
+			audit_admin_escalation(user.Username, id, "promote")
 		} else if old != role && old == "administrator" {
-			audit_admin_escalation(user.Username, fmt.Sprintf("%d", id), "demote")
+			audit_admin_escalation(user.Username, id, "demote")
 		}
 	}
 
@@ -977,19 +967,19 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <id: int>")
+		return sl_error(fn, "syntax: <uid: string>")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid uid")
 	}
 
-	if int(id) == user.ID {
+	if id == user.UID {
 		return sl_error(fn, "cannot delete self")
 	}
 
-	target, err := user_delete(int(id))
+	target, err := user_delete(id)
 	if err != nil {
 		return sl_error(fn, err.Error())
 	}
@@ -1001,9 +991,9 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // user_delete removes a user and all associated rows (entities, sessions,
 // passkeys, totp, recovery, oauth) plus the on-disk data directory. Returns
 // the deleted username for audit purposes.
-func user_delete(id int) (string, error) {
+func user_delete(id string) (string, error) {
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from users where id=?", id)
+	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return "", fmt.Errorf("user not found")
 	}
@@ -1029,11 +1019,11 @@ func user_delete(id int) (string, error) {
 	db.exec("delete from oauth where user=?", id)
 
 	var target User
-	db.scan(&target, "select username from users where id=?", id)
+	db.scan(&target, "select username from users where uid=?", id)
 
-	db.exec("delete from users where id=?", id)
-	db_purge_prefix(fmt.Sprintf("users/%d", id))
-	os.RemoveAll(fmt.Sprintf("%s/users/%d", data_dir, id))
+	db.exec("delete from users where uid=?", id)
+	db_purge_prefix(fmt.Sprintf("users/%s", id))
+	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
 
 	return target.Username, nil
 }
@@ -1049,29 +1039,29 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <id: int>")
+		return sl_error(fn, "syntax: <uid: string>")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid uid")
 	}
 
-	if int(id) == user.ID {
+	if id == user.UID {
 		return sl_error(fn, "cannot suspend self")
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from users where id=?", id)
+	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return sl_error(fn, "user not found")
 	}
 
-	db.exec("update users set status='suspended' where id=?", id)
+	db.exec("update users set status='suspended' where uid=?", id)
 	return sl.True, nil
 }
 
-// mochi.user.activate(id) -> bool: Activate a suspended user (admin only)
+// mochi.user.activate(uid) -> bool: Activate a suspended user (admin only)
 func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -1082,21 +1072,21 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <id: int>")
+		return sl_error(fn, "syntax: <uid: string>")
 	}
 
-	id, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid id")
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid uid")
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from users where id=?", id)
+	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return sl_error(fn, "user not found")
 	}
 
-	db.exec("update users set status='active' where id=?", id)
+	db.exec("update users set status='active' where uid=?", id)
 	return sl.True, nil
 }
 
@@ -1111,14 +1101,14 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no user")
 	}
 
-	target := user.ID
+	target := user.UID
 	if len(args) == 1 {
-		id, err := sl.AsInt32(args[0])
-		if err != nil {
-			return sl_error(fn, "invalid user id")
+		id, ok := sl.AsString(args[0])
+		if !ok {
+			return sl_error(fn, "invalid user uid")
 		}
-		target = int(id)
-		if target != user.ID && !user.administrator() {
+		target = id
+		if target != user.UID && !user.administrator() {
 			return sl_error(fn, "access denied")
 		}
 	}
@@ -1155,16 +1145,16 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <user_id: int>, [code: string]")
+		return sl_error(fn, "syntax: <user_uid: string>, [code: string]")
 	}
 
-	target, err := sl.AsInt32(args[0])
-	if err != nil {
-		return sl_error(fn, "invalid user id")
+	target, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid user uid")
 	}
 
 	// Only admins can revoke other users' sessions
-	if int(target) != user.ID && !user.administrator() {
+	if target != user.UID && !user.administrator() {
 		return sl_error(fn, "access denied")
 	}
 
@@ -1212,7 +1202,7 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 func (u *User) identity() *Entity {
 	db := db_open("db/users.db")
 	var i Entity
-	if db.scan(&i, "select * from entities where user=? and class='person' order by id limit 1", u.ID) {
+	if db.scan(&i, "select * from entities where user=? and class='person' order by id limit 1", u.UID) {
 		return &i
 	}
 	return nil
@@ -1220,7 +1210,7 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"app", "id", "identity", "methods", "preference", "role", "status", "username"}
+	return []string{"app", "id", "identity", "methods", "preference", "role", "status", "uid", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
@@ -1228,7 +1218,9 @@ func (u *User) Attr(name string) (sl.Value, error) {
 	case "app":
 		return &UserApp{user: u}, nil
 	case "id":
-		return sl.MakeInt(u.ID), nil
+		return sl.String(u.UID), nil
+	case "uid":
+		return sl.String(u.UID), nil
 	case "identity":
 		return u.Identity, nil
 	case "methods":
@@ -1249,11 +1241,11 @@ func (u *User) Attr(name string) (sl.Value, error) {
 func (u *User) Freeze() {}
 
 func (u *User) Hash() (uint32, error) {
-	return sl.String(fmt.Sprintf("%d", u.ID)).Hash()
+	return sl.String(u.UID).Hash()
 }
 
 func (u *User) String() string {
-	return fmt.Sprintf("User %d", u.ID)
+	return fmt.Sprintf("User %s", u.UID)
 }
 
 func (u *User) Truth() sl.Bool {

@@ -16,7 +16,7 @@ import (
 // Token represents an API token
 type Token struct {
 	Hash     string   `db:"hash"`
-	User     int      `db:"user"`
+	User     string   `db:"user"`
 	App      string   `db:"app"`
 	Name     string   `db:"name"`
 	Scopes   []string `db:"-"`
@@ -52,7 +52,7 @@ func token_hash(token string) string {
 }
 
 // Create a new token for a user and return the plaintext token
-func token_create(user int, app string, name string, scopes []string, expires int64) string {
+func token_create(user string, app string, name string, scopes []string, expires int64) string {
 	token := token_generate()
 	if token == "" {
 		return ""
@@ -76,7 +76,7 @@ func token_delete(hash string) bool {
 }
 
 // Return all tokens for a user and app (without the actual token values)
-func token_list(user int, app string) []map[string]any {
+func token_list(user string, app string) []map[string]any {
 	db := db_open("db/users.db")
 	rows, _ := db.rows("select hash, name, scopes, created, expires from tokens where user = ? and app = ?", user, app)
 
@@ -103,7 +103,7 @@ func token_list(user int, app string) []map[string]any {
 
 // token_useds returns the last-used timestamp by hash for every token belonging
 // to a user. Unknown hashes map to 0.
-func token_useds(user int) map[string]int64 {
+func token_useds(user string) map[string]int64 {
 	out := map[string]int64{}
 	rows, err := db_open("db/sessions.db").rows("select hash, used from accesses where user=?", user)
 	if err != nil {
@@ -207,7 +207,7 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		expires, _ = exp.Int64()
 	}
 
-	token := token_create(user.ID, current_app.id, name, scopes, expires)
+	token := token_create(user.UID, current_app.id, name, scopes, expires)
 	if token == "" {
 		return sl_error(fn, "failed to create token")
 	}
@@ -242,7 +242,7 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if row == nil {
 		return sl.False, nil
 	}
-	if int(row["user"].(int64)) != user.ID {
+	if row["user"].(string) != user.UID {
 		return sl_error(fn, "token does not belong to user")
 	}
 	if row["app"].(string) != app.id {
@@ -265,7 +265,7 @@ func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	tokens := token_list(user.ID, app.id)
+	tokens := token_list(user.UID, app.id)
 	return sl_encode(tokens), nil
 }
 
@@ -296,7 +296,7 @@ func api_token_scope(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.False, nil
 }
 
-// mochi.token.user(token) -> int | None: Get the user ID for a valid token
+// mochi.token.user(token) -> string | None: Get the user UID for a valid token
 func api_token_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <token: string>")
@@ -312,7 +312,7 @@ func api_token_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl.None, nil
 	}
 
-	return sl.MakeInt(token.User), nil
+	return sl.String(token.User), nil
 }
 
 // mochi.token.validate(token) -> dict | None: Validate a token and return its info

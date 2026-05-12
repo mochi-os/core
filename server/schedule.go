@@ -15,7 +15,7 @@ import (
 // ScheduledEvent represents a scheduled event in the database
 type ScheduledEvent struct {
 	ID       int64  `db:"id"`
-	User     int64  `db:"user"`
+	User     string `db:"user"`
 	App      string `db:"app"`
 	Due      int64  `db:"due"`
 	Event    string `db:"event"`
@@ -43,7 +43,7 @@ func schedule_db() *DB {
 }
 
 // schedule_create inserts a new scheduled event and returns its ID
-func schedule_create(user int64, app string, due int64, event string, data string, interval int64) int64 {
+func schedule_create(user string, app string, due int64, event string, data string, interval int64) int64 {
 	db := schedule_db()
 	result := must(db.internal.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user, app, due, event, data, interval, now()))
@@ -75,7 +75,7 @@ func schedule_delete(id int64) {
 }
 
 // schedule_list returns all scheduled events for an app and user
-func schedule_list(app string, user int64) []ScheduledEvent {
+func schedule_list(app string, user string) []ScheduledEvent {
 	db := schedule_db()
 	var events []ScheduledEvent
 	db.scans(&events, "select * from schedule where app=? and user=? order by due", app, user)
@@ -102,9 +102,9 @@ func schedule_next() *ScheduledEvent {
 
 // schedule_valid checks if the user and app still exist
 func schedule_valid(se *ScheduledEvent) bool {
-	// Check user exists (0 = system, always valid)
-	if se.User != 0 {
-		if user_by_id(int(se.User)) == nil {
+	// Check user exists ("" = system, always valid)
+	if se.User != "" {
+		if user_by_uid(se.User) == nil {
 			return false
 		}
 	}
@@ -245,10 +245,10 @@ func schedule_run(se ScheduledEvent) {
 func schedule_run_event(se *ScheduledEvent) {
 	// Get the user (nil for system events)
 	var user *User
-	if se.User != 0 {
-		user = user_by_id(int(se.User))
+	if se.User != "" {
+		user = user_by_uid(se.User)
 		if user == nil {
-			warn("schedule: user %d not found for event %s/%s", se.User, se.App, se.Event)
+			warn("schedule: user %q not found for event %s/%s", se.User, se.App, se.Event)
 			return
 		}
 	}
@@ -497,9 +497,9 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no app context")
 	}
 
-	var uid int64
+	var uid string
 	if user != nil {
-		uid = int64(user.ID)
+		uid = user.UID
 	}
 
 	// Serialize data
@@ -548,9 +548,9 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app context")
 	}
 
-	var uid int64
+	var uid string
 	if user != nil {
-		uid = int64(user.ID)
+		uid = user.UID
 	}
 
 	// Serialize data
@@ -607,9 +607,9 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app context")
 	}
 
-	var uid int64
+	var uid string
 	if user != nil {
-		uid = int64(user.ID)
+		uid = user.UID
 	}
 
 	// Serialize data
@@ -658,7 +658,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if se.App != app.id {
 		return sl.None, nil
 	}
-	if user != nil && se.User != int64(user.ID) {
+	if user != nil && se.User != user.UID {
 		return sl.None, nil
 	}
 
@@ -692,7 +692,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if se.App != app.id {
 		return sl.False, nil
 	}
-	if user != nil && se.User != int64(user.ID) {
+	if user != nil && se.User != user.UID {
 		return sl.False, nil
 	}
 
@@ -709,9 +709,9 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app context")
 	}
 
-	var uid int64
+	var uid string
 	if user != nil {
-		uid = int64(user.ID)
+		uid = user.UID
 	}
 
 	events := schedule_list(app.id, uid)

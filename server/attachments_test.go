@@ -219,9 +219,9 @@ func TestAttachmentPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := attachment_path(42, "wiki", tt.id, tt.filename)
+			result := attachment_path("42", "wiki", tt.id, tt.filename)
 			if result != tt.expected {
-				t.Errorf("attachment_path(42, \"wiki\", %q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
+				t.Errorf("attachment_path(\"42\", \"wiki\", %q, %q) = %q, want %q", tt.id, tt.filename, result, tt.expected)
 			}
 		})
 	}
@@ -235,20 +235,20 @@ func TestAttachmentFilesBase(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		user_id  int
+		user_id  string
 		app_id   string
 		expected string
 	}{
-		{"basic", 42, "chat", "/var/lib/mochi/users/42/chat/files"},
-		{"user 1", 1, "forums", "/var/lib/mochi/users/1/forums/files"},
-		{"large user id", 999999, "feeds", "/var/lib/mochi/users/999999/feeds/files"},
+		{"basic", "42", "chat", "/var/lib/mochi/users/42/chat/files"},
+		{"user 1", "1", "forums", "/var/lib/mochi/users/1/forums/files"},
+		{"large user id", "999999", "feeds", "/var/lib/mochi/users/999999/feeds/files"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := attachment_files_base(tt.user_id, tt.app_id)
 			if result != tt.expected {
-				t.Errorf("attachment_files_base(%d, %q) = %q, want %q", tt.user_id, tt.app_id, result, tt.expected)
+				t.Errorf("attachment_files_base(%q, %q) = %q, want %q", tt.user_id, tt.app_id, result, tt.expected)
 			}
 		})
 	}

@@ -305,7 +305,7 @@ func web_shell_token(c *gin.Context) {
 	}
 
 	session := web_cookie_get(c, "session", "")
-	token := auth_create_app_token(user.ID, session, a.id)
+	token := auth_create_app_token(user.UID, session, a.id)
 	if token == "" {
 		respond_error(c, http.StatusInternalServerError, "failed_to_create_token", "errors.failed_to_create_token", nil)
 		return
@@ -329,7 +329,7 @@ func web_shell_init(c *gin.Context) {
 	// Menu app token
 	menu_token := ""
 	if menu := shell_menu_app(user); menu != nil {
-		menu_token = auth_create_app_token(user.ID, session, menu.id)
+		menu_token = auth_create_app_token(user.UID, session, menu.id)
 	}
 
 	// Domain routing context — resolve from Referer since /_/ paths

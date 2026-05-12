@@ -20,12 +20,12 @@ func TestUserAllowedNoRequirements(t *testing.T) {
 		t.Error("user_allowed should return true for nil user when no requirements")
 	}
 
-	user := &User{ID: 1, Username: "user@example.com", Role: "user"}
+	user := &User{UID: "u1", Username: "user@example.com", Role: "user"}
 	if !av.user_allowed(user) {
 		t.Error("user_allowed should return true for regular user when no requirements")
 	}
 
-	admin := &User{ID: 2, Username: "admin@example.com", Role: "administrator"}
+	admin := &User{UID: "u2", Username: "admin@example.com", Role: "administrator"}
 	if !av.user_allowed(admin) {
 		t.Error("user_allowed should return true for admin when no requirements")
 	}
@@ -42,13 +42,13 @@ func TestUserAllowedAdminRequired(t *testing.T) {
 	}
 
 	// Regular user should be denied
-	user := &User{ID: 1, Username: "user@example.com", Role: "user"}
+	user := &User{UID: "u1", Username: "user@example.com", Role: "user"}
 	if av.user_allowed(user) {
 		t.Error("user_allowed should return false for regular user when admin required")
 	}
 
 	// Admin should be allowed
-	admin := &User{ID: 2, Username: "admin@example.com", Role: "administrator"}
+	admin := &User{UID: "u2", Username: "admin@example.com", Role: "administrator"}
 	if !av.user_allowed(admin) {
 		t.Error("user_allowed should return true for admin when admin required")
 	}
@@ -65,13 +65,13 @@ func TestUserAllowedUserRequired(t *testing.T) {
 	}
 
 	// Regular user should be allowed
-	user := &User{ID: 1, Username: "user@example.com", Role: "user"}
+	user := &User{UID: "u1", Username: "user@example.com", Role: "user"}
 	if !av.user_allowed(user) {
 		t.Error("user_allowed should return true for regular user when user role required")
 	}
 
 	// Admin should be denied (exact role match required)
-	admin := &User{ID: 2, Username: "admin@example.com", Role: "administrator"}
+	admin := &User{UID: "u2", Username: "admin@example.com", Role: "administrator"}
 	if av.user_allowed(admin) {
 		t.Error("user_allowed should return false for admin when user role required (exact match)")
 	}
@@ -362,7 +362,7 @@ func TestAppActiveFor(t *testing.T) {
 	// Create users database for user preference tests
 	db := db_open("db/users.db")
 	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
-	db.exec("insert into users (id, username) values (1, 'test@example.com')")
+	db.exec("insert into users (uid, username) values ('u1', 'test@example.com')")
 
 	// Create user directory for user.db
 	os.MkdirAll(data_dir+"/users/1", 0755)
@@ -391,7 +391,7 @@ func TestAppActiveFor(t *testing.T) {
 	}
 
 	// User preference takes priority
-	user := &User{ID: 1, Username: "test@example.com"}
+	user := &User{UID: "u1", Username: "test@example.com"}
 	user.set_app_version("test-app", "1.0", "")
 	av = a.active(user)
 	if av == nil || av.Version != "1.0" {
@@ -583,13 +583,13 @@ func TestCleanupKeepsUserPreferences(t *testing.T) {
 
 	// Create user
 	db := db_open("db/users.db")
-	db.exec("insert into users (id, username, status) values (1, 'test@example.com', 'active')")
-	os.MkdirAll(data_dir+"/users/1", 0755)
-	db_user(&User{ID: 1}, "user")
+	db.exec("insert into users (uid, username, status) values (?, ?, ?)", "u1", "test@example.com", "active")
+	os.MkdirAll(data_dir+"/users/u1", 0755)
+	db_user(&User{UID: "u1"}, "user")
 
-	// Create entities table for user_by_id
-	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
-	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e1', 'priv', 'fp', 1, 'person', 'Test')")
+	// Create entities table for user_by_uid
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, ?, ?, ?, ?, ?)", "e1", "priv", "fp", "u1", "person", "Test")
 	db.exec("create table preferences (name text primary key, value text)")
 
 	a := &App{
@@ -604,7 +604,7 @@ func TestCleanupKeepsUserPreferences(t *testing.T) {
 	apps["test-app"] = a
 
 	// Set user preference for 1.0
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	user.set_app_version("test-app", "1.0", "")
 
 	removed := apps_cleanup_unused_versions()
@@ -624,7 +624,7 @@ func TestCleanupKeepsUserPreferences(t *testing.T) {
 // Helper to create a Starlark thread with admin user context
 func create_test_starlark_thread() *sl.Thread {
 	thread := &sl.Thread{Name: "test"}
-	admin := &User{ID: 1, Username: "admin@example.com", Role: "administrator"}
+	admin := &User{UID: "u1", Username: "admin@example.com", Role: "administrator"}
 	thread.SetLocal("user", admin)
 	return thread
 }
@@ -963,16 +963,16 @@ func create_test_routing_env(t *testing.T) func() {
 	// Create users database
 	db := db_open("db/users.db")
 	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
-	db.exec("insert into users (id, username) values (1, 'user1@example.com')")
-	db.exec("insert into users (id, username) values (2, 'user2@example.com')")
+	db.exec("insert into users (uid, username) values ('u1', 'user1@example.com')")
+	db.exec("insert into users (uid, username) values ('u2', 'user2@example.com')")
 
 	// Create user directories
 	os.MkdirAll(data_dir+"/users/1", 0755)
 	os.MkdirAll(data_dir+"/users/2", 0755)
 
 	// Initialize user databases
-	db_user(&User{ID: 1}, "user")
-	db_user(&User{ID: 2}, "user")
+	db_user(&User{UID: "u1"}, "user")
+	db_user(&User{UID: "u2"}, "user")
 
 	// Save and replace apps map
 	orig_apps := apps
@@ -998,8 +998,8 @@ func TestClassAppForResolution(t *testing.T) {
 	apps["wiki-app-1"] = app1
 	apps["wiki-app-2"] = app2
 
-	user1 := &User{ID: 1, Username: "user1@example.com"}
-	user2 := &User{ID: 2, Username: "user2@example.com"}
+	user1 := &User{UID: "u1", Username: "user1@example.com"}
+	user2 := &User{UID: "u2", Username: "user2@example.com"}
 
 	// No bindings - should return nil (no fallback apps registered properly)
 	result := class_app_for(nil, "wiki")
@@ -1045,7 +1045,7 @@ func TestAppForServiceForResolution(t *testing.T) {
 	apps["notif-app-1"] = app1
 	apps["notif-app-2"] = app2
 
-	user := &User{ID: 1, Username: "user1@example.com"}
+	user := &User{UID: "u1", Username: "user1@example.com"}
 
 	// Set system binding
 	apps_service_set("notifications", "notif-app-1")
@@ -1073,7 +1073,7 @@ func TestAppForPathForResolution(t *testing.T) {
 	apps["forum-app-1"] = app1
 	apps["forum-app-2"] = app2
 
-	user := &User{ID: 1, Username: "user1@example.com"}
+	user := &User{UID: "u1", Username: "user1@example.com"}
 
 	// Set system binding
 	apps_path_set("forums", "forum-app-1")
@@ -1103,7 +1103,7 @@ func TestBindingToNonExistentApp(t *testing.T) {
 	app1 := &App{id: "wiki-app", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"wiki"}}}}
 	apps["wiki-app"] = app1
 
-	user := &User{ID: 1, Username: "user1@example.com"}
+	user := &User{UID: "u1", Username: "user1@example.com"}
 
 	// User binds to non-existent app
 	user.set_class_app("wiki", "deleted-app")
@@ -1153,7 +1153,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 	// Create users database
 	db := db_open("db/users.db")
 	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
-	db.exec("insert into users (id, username) values (1, 'test@example.com')")
+	db.exec("insert into users (uid, username) values ('u1', 'test@example.com')")
 	os.MkdirAll(data_dir+"/users/1", 0755)
 
 	a := &App{
@@ -1169,7 +1169,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 	a.set_default_version("1.0", "", "")
 
 	// User prefers non-existent version
-	user := &User{ID: 1, Username: "test@example.com"}
+	user := &User{UID: "u1", Username: "test@example.com"}
 	user.set_app_version("test-app", "9.9", "")
 
 	// Should fall through to system default
@@ -1389,14 +1389,14 @@ func TestCrossUserRouting(t *testing.T) {
 	apps_class_set("wiki", "wiki-app-1")
 
 	// User 1 prefers app 2
-	user1 := &User{ID: 1, Username: "user1@test.com"}
+	user1 := &User{UID: "u1", Username: "user1@test.com"}
 	user1.set_class_app("wiki", "wiki-app-2")
 
 	// User 2 has no preference (uses system default)
-	user2 := &User{ID: 2, Username: "user2@test.com"}
+	user2 := &User{UID: "u2", Username: "user2@test.com"}
 
 	// User 3 prefers a different app
-	user3 := &User{ID: 3, Username: "user3@test.com"}
+	user3 := &User{UID: "test-uid-3", Username: "user3@test.com"}
 	os.MkdirAll(data_dir+"/users/3", 0755)
 	db_user(user3, "user")
 	user3.set_class_app("wiki", "wiki-app-1") // Explicitly set same as system
@@ -1443,19 +1443,19 @@ func TestCrossUserVersionSelection(t *testing.T) {
 	a.set_default_version("", "stable", "")
 
 	// User 1 follows beta track
-	user1 := &User{ID: 1, Username: "user1@test.com"}
+	user1 := &User{UID: "u1", Username: "user1@test.com"}
 	os.MkdirAll(data_dir+"/users/1", 0755)
 	db_user(user1, "user")
 	user1.set_app_version("test-app", "", "beta")
 
 	// User 2 follows latest track
-	user2 := &User{ID: 2, Username: "user2@test.com"}
+	user2 := &User{UID: "u2", Username: "user2@test.com"}
 	os.MkdirAll(data_dir+"/users/2", 0755)
 	db_user(user2, "user")
 	user2.set_app_version("test-app", "", "latest")
 
 	// User 3 has no preference (uses system = stable)
-	user3 := &User{ID: 3, Username: "user3@test.com"}
+	user3 := &User{UID: "test-uid-3", Username: "user3@test.com"}
 
 	// Check each user gets correct version
 	av1 := a.active(user1)
@@ -1622,7 +1622,7 @@ func TestCombinedRoutingTypes(t *testing.T) {
 	apps_path_set("forums", "forum-app")
 
 	// User overrides wiki class but not service or path
-	user := &User{ID: 1, Username: "test@test.com"}
+	user := &User{UID: "u1", Username: "test@test.com"}
 	user.set_class_app("wiki", "forum-app") // Override class only
 
 	// Class should use user preference
@@ -1713,8 +1713,8 @@ func TestUserPreferencesIndependent(t *testing.T) {
 	apps["app1"] = app1
 	apps["app2"] = app2
 
-	user1 := &User{ID: 1, Username: "user1@test.com"}
-	user2 := &User{ID: 2, Username: "user2@test.com"}
+	user1 := &User{UID: "u1", Username: "user1@test.com"}
+	user2 := &User{UID: "u2", Username: "user2@test.com"}
 	os.MkdirAll(data_dir+"/users/2", 0755)
 	db_user(user2, "user")
 
@@ -1777,7 +1777,7 @@ func TestServiceCallPermissionEnforcement(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	callerApp := createExternalApp("caller-app")
 
 	// The permission check logic:
@@ -1847,7 +1847,7 @@ func TestMenuPermissionsGrantedOnSetup(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	menuID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
 
 	// Before setup, permission should not be granted
@@ -1889,7 +1889,7 @@ func TestUnprivilegedAppPermissionDenied(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	unprivilegedApp := "some-random-app"
 
 	// Ensure no permissions are granted
@@ -1916,7 +1916,7 @@ func TestNotificationsAppSelfCallBypass(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	_ = createTestUser(t, 1)
+	_ = createTestUser(t, "u1")
 	notifAppID := "notifications"
 
 	f := AppFunction{Function: "function_destinations", Permission: "notifications/send"}

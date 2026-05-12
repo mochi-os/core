@@ -166,12 +166,12 @@ func file_write_from_reader(path string, r io.Reader) bool {
 
 // Helper function to get the path of a file
 func api_file_path(u *User, a *App, file string) string {
-	return fmt.Sprintf("%s/users/%d/%s/files/%s", data_dir, u.ID, a.id, file)
+	return fmt.Sprintf("%s/users/%s/%s/files/%s", data_dir, u.UID, a.id, file)
 }
 
 // Helper function to get the base directory for a user's app files (for use with os.Root)
 func api_file_base(u *User, a *App) string {
-	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, u.ID, a.id)
+	return fmt.Sprintf("%s/users/%s/%s/files", data_dir, u.UID, a.id)
 }
 
 // Helper function to get the path of a file in an app's directory
@@ -185,7 +185,7 @@ func app_local_path(a *App, u *User, file string) string {
 
 // Helper function to get the base directory for a user's storage
 func user_storage_dir(u *User) string {
-	return fmt.Sprintf("%s/users/%d", data_dir, u.ID)
+	return fmt.Sprintf("%s/users/%s", data_dir, u.UID)
 }
 
 // Calculate total size of files in a directory

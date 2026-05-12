@@ -14,22 +14,22 @@ import (
 // Test helpers
 
 // createTestUser creates a temporary user for testing
-func createTestUser(t *testing.T, id int) *User {
+func createTestUser(t *testing.T, id string) *User {
 	t.Helper()
 
 	// Ensure user directory exists
-	userDir := filepath.Join(data_dir, "users", string(rune('0'+id)))
+	userDir := filepath.Join(data_dir, "users", id)
 	os.MkdirAll(userDir, 0755)
 
 	return &User{
-		ID:       id,
+		UID:      id,
 		Username: "test@example.com",
 		Role:     "user",
 	}
 }
 
 // createTestAdmin creates a temporary admin user for testing
-func createTestAdmin(t *testing.T, id int) *User {
+func createTestAdmin(t *testing.T, id string) *User {
 	t.Helper()
 	u := createTestUser(t, id)
 	u.Role = "administrator"
@@ -62,9 +62,9 @@ func createInternalApp(id string) *App {
 }
 
 // cleanupTestUser removes test user data
-func cleanupTestUser(t *testing.T, id int) {
+func cleanupTestUser(t *testing.T, id string) {
 	t.Helper()
-	userDir := filepath.Join(data_dir, "users", string(rune('0'+id)))
+	userDir := filepath.Join(data_dir, "users", id)
 	os.RemoveAll(userDir)
 }
 
@@ -305,7 +305,7 @@ func TestInternalAppBypassesPermissions(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	internalApp := createInternalApp("test-internal")
 	thread := createTestThread(user, internalApp)
 	fn := sl.NewBuiltin("test", nil)
@@ -332,7 +332,7 @@ func TestPermissionGrantAndCheck(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Initially permission should not be granted
@@ -353,7 +353,7 @@ func TestPermissionRevoke(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant then revoke
@@ -374,7 +374,7 @@ func TestPermissionsList(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant multiple permissions
@@ -410,7 +410,7 @@ func TestURLPermissionExactMatch(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant permission for github.com
@@ -431,7 +431,7 @@ func TestURLPermissionSubdomainMatch(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant permission for github.com
@@ -451,7 +451,7 @@ func TestURLPermissionWildcard(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant wildcard permission
@@ -498,7 +498,7 @@ func TestRequirePermissionNotGranted(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -514,7 +514,7 @@ func TestRequirePermissionGranted(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -533,7 +533,7 @@ func TestRequirePermissionAdminOnly(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Test with non-admin user
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -548,7 +548,7 @@ func TestRequirePermissionAdminOnly(t *testing.T) {
 	}
 
 	// Test with admin user
-	admin := createTestAdmin(t, 2)
+	admin := createTestAdmin(t, "u2")
 	adminApp := createExternalApp("admin-test-app")
 	adminThread := createTestThread(admin, adminApp)
 
@@ -569,7 +569,7 @@ func TestRequirePermissionURL(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -600,7 +600,7 @@ func TestRequirePermissionURLInvalid(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -620,7 +620,7 @@ func TestDefaultPermissionsLazyGrant(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	// Use a known default app ID (Notifications)
 	notificationsAppID := "12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P"
@@ -653,7 +653,7 @@ func TestDefaultPermissionsSettingsApp(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestAdmin(t, 1) // Settings needs admin for some permissions
+	user := createTestAdmin(t, "u1") // Settings needs admin for some permissions
 
 	// Settings app ID
 	settingsAppID := "1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky"
@@ -672,7 +672,7 @@ func TestDefaultPermissionsMenuApp(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	// Menu app ID
 	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
@@ -695,7 +695,7 @@ func TestMenuAppCanGrantPermissionViaAPI(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	// Menu app with permission/manage
 	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
@@ -724,7 +724,7 @@ func TestMenuAppCannotGrantRestrictedPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	menuAppID := "121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN"
 	menuApp := createExternalApp(menuAppID)
@@ -765,7 +765,7 @@ func TestDefaultPermissionsNonDefaultApp(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "non-default-app-12345"
 
 	// Non-default apps should not get any automatic permissions
@@ -784,7 +784,7 @@ func TestAPIPermissionCheck(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 
@@ -816,7 +816,7 @@ func TestAPIPermissionCheckInternalApp(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createInternalApp("internal-app")
 	thread := createTestThread(user, app)
 
@@ -878,7 +878,7 @@ func TestAPIPermissionGrantRevoke(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Need to use an app with permission/manage permission (settings app)
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	settingsApp := createExternalApp("1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky")
 	thread := createTestThread(user, settingsApp)
 
@@ -916,7 +916,7 @@ func TestAPIPermissionGrantWithoutManagePermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 
@@ -932,7 +932,7 @@ func TestAPIPermissionList(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 
@@ -971,8 +971,8 @@ func TestPermissionsUserIsolation(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user1 := createTestUser(t, 1)
-	user2 := createTestUser(t, 2)
+	user1 := createTestUser(t, "u1")
+	user2 := createTestUser(t, "u2")
 	appID := "test-app-123"
 
 	// Grant permission to user1
@@ -1016,7 +1016,7 @@ func TestPermissionEmptyValues(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	// Empty app ID should still work (no crash)
 	permission_grant(user, "", "groups/manage")
@@ -1037,7 +1037,7 @@ func TestPermissionGrantIdempotent(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Grant the same permission twice - should not error or duplicate
@@ -1066,7 +1066,7 @@ func TestPermissionRevokeNonExistent(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Revoking a permission that was never granted should not panic
@@ -1086,7 +1086,7 @@ func TestInternalAppBypassURLPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	internalApp := createInternalApp("test-internal")
 	thread := createTestThread(user, internalApp)
 	fn := sl.NewBuiltin("test", nil)
@@ -1188,7 +1188,7 @@ func TestAPIPermissionGrantWrongArgs(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	settingsApp := createExternalApp("1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky")
 	thread := createTestThread(user, settingsApp)
 	fn := sl.NewBuiltin("test", nil)
@@ -1212,7 +1212,7 @@ func TestAPIPermissionRevokeWrongArgs(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	settingsApp := createExternalApp("1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky")
 	thread := createTestThread(user, settingsApp)
 	fn := sl.NewBuiltin("test", nil)
@@ -1236,7 +1236,7 @@ func TestAPIPermissionListWrongArgs(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("test", nil)
@@ -1279,7 +1279,7 @@ func TestSettingsAppPermissionsManageProtection(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	settingsAppID := "1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky"
 	settingsApp := createExternalApp(settingsAppID)
 	thread := createTestThread(user, settingsApp)
@@ -1310,7 +1310,7 @@ func TestPermissionSpecialCharacters(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	appID := "test-app-123"
 
 	// Test various special characters in permission strings
@@ -1339,7 +1339,7 @@ func TestMultipleAppsPerUser(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 
 	app1 := "app-one"
 	app2 := "app-two"
@@ -1375,7 +1375,7 @@ func assertAPIRequiresPermission(t *testing.T, name string, permission string, a
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-external-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin(name, nil)
@@ -1414,7 +1414,7 @@ func TestAPIGroupCreateRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.group.create", nil)
@@ -1437,7 +1437,7 @@ func TestAPIGroupDeleteRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.group.delete", nil)
@@ -1460,7 +1460,7 @@ func TestAPIGroupAddRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.group.add", nil)
@@ -1483,7 +1483,7 @@ func TestAPIGroupRemoveRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.group.remove", nil)
@@ -1509,7 +1509,7 @@ func TestAPIUserGetIDRequiresPermission(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use admin user since user/read requires admin
-	user := createTestAdmin(t, 1)
+	user := createTestAdmin(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.user.get.id", nil)
@@ -1529,7 +1529,7 @@ func TestAPIUserListRequiresPermission(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use admin user since user/read requires admin
-	user := createTestAdmin(t, 1)
+	user := createTestAdmin(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.user.list", nil)
@@ -1549,7 +1549,7 @@ func TestAPIUserCountRequiresPermission(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use admin user since user/read requires admin
-	user := createTestAdmin(t, 1)
+	user := createTestAdmin(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.user.count", nil)
@@ -1569,7 +1569,7 @@ func TestAPIUserSearchRequiresPermission(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use admin user since user/read requires admin
-	user := createTestAdmin(t, 1)
+	user := createTestAdmin(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.user.search", nil)
@@ -1591,7 +1591,7 @@ func TestAPIUserReadDeniedForNonAdmin(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use non-admin user
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.user.list", nil)
@@ -1611,7 +1611,7 @@ func TestAPISettingSetRequiresPermission(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use admin user since setting/write requires admin
-	user := createTestAdmin(t, 1)
+	user := createTestAdmin(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.setting.set", nil)
@@ -1631,7 +1631,7 @@ func TestAPISettingSetDeniedForNonAdmin(t *testing.T) {
 	defer cleanupTestDataDir(t)
 
 	// Use non-admin user
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.setting.set", nil)
@@ -1650,7 +1650,7 @@ func TestAPIWebPushSendRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.webpush.send", nil)
@@ -1707,7 +1707,7 @@ func TestAPIURLRequestRequiresPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.url.request", nil)
@@ -1735,7 +1735,7 @@ func TestAPIURLRequestSubdomainPermission(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.url.request", nil)
@@ -1758,7 +1758,7 @@ func TestAPIServiceCallPermissionless(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createExternalApp("test-app")
 	thread := createTestThread(user, app)
 	fn := sl.NewBuiltin("mochi.service.call", nil)
@@ -1782,7 +1782,7 @@ func TestInternalAppBypassesAllAPIPermissions(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)
 
-	user := createTestUser(t, 1)
+	user := createTestUser(t, "u1")
 	app := createInternalApp("internal-app")
 	thread := createTestThread(user, app)
 

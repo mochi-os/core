@@ -161,20 +161,7 @@ func commit_hook_resolve(userUID, appID string) (*User, *App, *AppVersion) {
 		return nil, nil, nil
 	}
 
-	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", userUID)
-	if row == nil {
-		return nil, nil, nil
-	}
-	var localID int
-	if v, ok := row["id"].(int64); ok {
-		localID = int(v)
-	}
-	if localID == 0 {
-		return nil, nil, nil
-	}
-
-	u := user_by_id(localID)
+	u := user_by_uid(userUID)
 	if u == nil {
 		return nil, nil, nil
 	}

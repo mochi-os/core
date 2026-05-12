@@ -230,10 +230,10 @@ func create_repository_git_test_env(t *testing.T) (*DB, *User, string, func()) {
 	origDataDir := data_dir
 	data_dir = tmpDir
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 
 	// Create user directory
-	userDir := filepath.Join(tmpDir, "users", "1", "repositories")
+	userDir := filepath.Join(tmpDir, "users", "u1", "repositories")
 	if err := os.MkdirAll(userDir, 0755); err != nil {
 		t.Fatalf("Failed to create user dir: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestRepositoryWithGitInit(t *testing.T) {
 	}
 
 	// Verify git directory exists
-	gitPath := filepath.Join(tmpDir, "users", "1", "repositories", repoID)
+	gitPath := filepath.Join(tmpDir, "users", "u1", "repositories", repoID)
 	if _, err := os.Stat(gitPath); os.IsNotExist(err) {
 		t.Errorf("Git repository directory not created at %s", gitPath)
 	}
@@ -302,7 +302,7 @@ func TestRepositoryGitDelete(t *testing.T) {
 		repoID, "to-delete-git", now, now)
 	git_init(user, repoID)
 
-	gitPath := filepath.Join(tmpDir, "users", "1", "repositories", repoID)
+	gitPath := filepath.Join(tmpDir, "users", "u1", "repositories", repoID)
 
 	// Verify exists
 	if _, err := os.Stat(gitPath); os.IsNotExist(err) {
@@ -359,20 +359,20 @@ func TestRepositoryPathGeneration(t *testing.T) {
 	defer func() { data_dir = origDataDir }()
 
 	tests := []struct {
-		userID   int
+		userID   string
 		repoID   string
 		expected string
 	}{
-		{1, "repo-abc", "/var/lib/mochi/users/1/repositories/repo-abc"},
-		{42, "my-project", "/var/lib/mochi/users/42/repositories/my-project"},
-		{100, "test", "/var/lib/mochi/users/100/repositories/test"},
+		{"u1", "repo-abc", "/var/lib/mochi/users/u1/repositories/repo-abc"},
+		{"u42", "my-project", "/var/lib/mochi/users/u42/repositories/my-project"},
+		{"u100", "test", "/var/lib/mochi/users/u100/repositories/test"},
 	}
 
 	for _, tc := range tests {
-		user := &User{ID: tc.userID}
+		user := &User{UID: tc.userID}
 		path := git_repo_path(user, tc.repoID)
 		if path != tc.expected {
-			t.Errorf("git_repo_path(user %d, %q) = %q, want %q",
+			t.Errorf("git_repo_path(user %q, %q) = %q, want %q",
 				tc.userID, tc.repoID, path, tc.expected)
 		}
 	}
@@ -383,8 +383,8 @@ func TestRepositoryPathIsolation(t *testing.T) {
 	data_dir = "/var/lib/mochi"
 	defer func() { data_dir = origDataDir }()
 
-	user1 := &User{ID: 1}
-	user2 := &User{ID: 2}
+	user1 := &User{UID: "u1"}
+	user2 := &User{UID: "u2"}
 
 	// Different users should have different paths
 	path1 := git_repo_path(user1, "shared-name")
@@ -394,11 +394,11 @@ func TestRepositoryPathIsolation(t *testing.T) {
 		t.Error("Different users should have different repository paths")
 	}
 
-	if !strings.Contains(path1, "/users/1/") {
-		t.Errorf("User 1 path should contain /users/1/, got: %s", path1)
+	if !strings.Contains(path1, "/users/u1/") {
+		t.Errorf("User u1 path should contain /users/u1/, got: %s", path1)
 	}
-	if !strings.Contains(path2, "/users/2/") {
-		t.Errorf("User 2 path should contain /users/2/, got: %s", path2)
+	if !strings.Contains(path2, "/users/u2/") {
+		t.Errorf("User u2 path should contain /users/u2/, got: %s", path2)
 	}
 }
 
@@ -655,11 +655,11 @@ func TestRepositoryMultipleUsers(t *testing.T) {
 	_, _, cleanup := create_repository_test_db(t)
 	defer cleanup()
 
-	user1 := &User{ID: 1}
-	user2 := &User{ID: 2}
+	user1 := &User{UID: "u1"}
+	user2 := &User{UID: "u2"}
 
 	// Create user directories
-	os.MkdirAll(filepath.Join(data_dir, "users", "1", "repositories"), 0755)
+	os.MkdirAll(filepath.Join(data_dir, "users", "u1", "repositories"), 0755)
 	os.MkdirAll(filepath.Join(data_dir, "users", "2", "repositories"), 0755)
 
 	// Each user creates a repo with the same name

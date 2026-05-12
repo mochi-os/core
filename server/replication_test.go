@@ -37,22 +37,14 @@ func setup_replication_test(t *testing.T) func() {
 }
 
 // setup_users_test_schema creates a minimal users.db schema for tests that
-// exercise the keys-transfer or session-replication apply paths. Includes
-// the uid / user_uid columns from migration v51 so cross-host identifier
-// lookups work.
+// exercise the keys-transfer or session-replication apply paths. Mirrors
+// the v53 schema: uid is the PK on users, FKs reference users(uid).
 func setup_users_test_schema() {
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
-	users.exec("create unique index users_uid on users (uid)")
-	users.exec(`create trigger users_uid_insert after insert on users
-		when new.uid is null or new.uid = ''
-		begin
-			update users set uid = lower(hex(randomblob(16))) where id = new.id;
-		end`)
-	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
-	users.exec("create index entities_user on entities( user )")
-	users.exec("create index entities_user_uid on entities( user_uid )")
+	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create index entities_user on entities(user)")
 }
 
 // 50-character pseudo-entity-id used in tests where valid("entity") needs
@@ -71,7 +63,7 @@ func test_entity_id(prefix byte) string {
 // exercise session-replication apply paths.
 func setup_sessions_test_schema() {
 	sessions := db_open("db/sessions.db")
-	sessions.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	sessions.exec("create unique index sessions_code on sessions(code)")
 }
 
@@ -288,7 +280,7 @@ func TestReplicationKeysTransferFresh(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected user inserted; got %d rows", count)
 	}
-	count = udb.integer("select count(*) from entities where user=(select id from users where username='alice@example.com')")
+	count = udb.integer("select count(*) from entities where user=(select uid from users where username='alice@example.com')")
 	if count != 2 {
 		t.Errorf("expected 2 entities linked to user; got %d", count)
 	}
@@ -365,8 +357,8 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 
 	// User already exists locally (e.g. they signed up here before opt-in).
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (username, role, methods, status) values ('dave@example.com', 'user', 'email', 'active')")
-	localID := udb.integer("select id from users where username='dave@example.com'")
+	udb.exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, ?, ?)", "uid-dave", "dave@example.com", "user", "email", "active")
+	localUID := "uid-dave"
 
 	a := test_entity_id('a')
 	kt := &KeysTransfer{
@@ -377,9 +369,12 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 		t.Errorf("expected 1 entity insert for existing user, got %d", n)
 	}
 
-	owner := udb.integer("select user from entities where id=?", a)
-	if owner != localID {
-		t.Errorf("entity must be linked to existing local user %d, got %d", localID, owner)
+	var owner string
+	if row, _ := udb.row("select user from entities where id=?", a); row != nil {
+		owner, _ = row["user"].(string)
+	}
+	if owner != localUID {
+		t.Errorf("entity must be linked to existing local user %q, got %q", localUID, owner)
 	}
 }
 
@@ -390,7 +385,7 @@ func TestReplicationSessionApplyInsert(t *testing.T) {
 	setup_sessions_test_schema()
 
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 
 	p := &SessionInsert{
 		UserUID: "uid-alice", Code: "sess-1", Secret: "secret-1",
@@ -400,9 +395,9 @@ func TestReplicationSessionApplyInsert(t *testing.T) {
 	replication_session_apply_insert(p)
 
 	sdb := db_open("db/sessions.db")
-	count := sdb.integer("select count(*) from sessions where code='sess-1' and user=1")
+	count := sdb.integer("select count(*) from sessions where code='sess-1' and user='uid-alice'")
 	if count != 1 {
-		t.Errorf("expected session inserted with local user=1; got %d rows", count)
+		t.Errorf("expected session inserted with local user=uid-alice; got %d rows", count)
 	}
 }
 
@@ -433,7 +428,7 @@ func TestReplicationSessionApplyInsertReplaces(t *testing.T) {
 	setup_sessions_test_schema()
 
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 
 	// Pre-existing local row.
 	sdb := db_open("db/sessions.db")
@@ -483,79 +478,11 @@ func TestReplicationSessionApplyDeleteNonExistent(t *testing.T) {
 	replication_session_apply_delete(&SessionDelete{Code: "never-existed"})
 }
 
-func TestUsersUIDMigrationBackfillAndTriggers(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_uid_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	// Simulate a pre-v51 database: users + entities with no uid columns.
-	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
-	users.exec("create unique index users_username on users (username)")
-	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
-	users.exec("create index entities_user on entities( user )")
-	// Pre-existing rows that the migration must backfill.
-	users.exec("insert into users (id, username) values (1, 'alice@example.com')")
-	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-alice', 'priv', 'fp1', 1, 'person', 'Alice')")
-	// Tables that v51 also touches but without rows referencing the user.
-	users.exec("create table credentials (id blob primary key, user integer not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
-	users.exec("create table recovery (id integer primary key, user integer not null, hash text not null, created integer not null)")
-	users.exec("create table totp (user integer primary key, secret text not null, verified integer not null default 0, created integer not null)")
-	users.exec("create table oauth (id integer primary key, user integer not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
-	users.exec("create table tokens (hash text primary key not null, user integer not null, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
-
-	db_upgrade_51()
-
-	// users.uid backfilled for existing users.
-	aliceUID := ""
-	if row, _ := users.row("select uid from users where id=1"); row != nil {
-		aliceUID, _ = row["uid"].(string)
-	}
-	if aliceUID == "" {
-		t.Fatalf("v51 must backfill users.uid for existing rows")
-	}
-
-	// entities.user_uid backfilled from the join.
-	if row, _ := users.row("select user_uid from entities where id='e-alice'"); row == nil {
-		t.Fatalf("entities.user_uid query failed after v51")
-	} else if v, _ := row["user_uid"].(string); v != aliceUID {
-		t.Errorf("entities.user_uid not backfilled correctly: got %q want %q", v, aliceUID)
-	}
-
-	// New user insert via the auto-uid trigger gets a non-empty uid.
-	users.exec("insert into users (id, username) values (2, 'bob@example.com')")
-	bobUID := ""
-	if row, _ := users.row("select uid from users where id=2"); row != nil {
-		bobUID, _ = row["uid"].(string)
-	}
-	if bobUID == "" {
-		t.Errorf("users_uid_insert trigger must populate uid on new rows")
-	}
-	if bobUID == aliceUID {
-		t.Errorf("trigger-generated uid must be unique per row (got %q for both)", bobUID)
-	}
-
-	// New entity insert via the trigger gets user_uid populated from the join.
-	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-bob', 'priv2', 'fp2', 2, 'person', 'Bob')")
-	if row, _ := users.row("select user_uid from entities where id='e-bob'"); row == nil {
-		t.Fatalf("entities query failed for new row")
-	} else if v, _ := row["user_uid"].(string); v != bobUID {
-		t.Errorf("entities_user_uid_insert trigger must mirror users.uid: got %q want %q", v, bobUID)
-	}
-
-	// Re-running the migration on a partially-migrated DB is idempotent.
-	db_upgrade_51()
-	if row, _ := users.row("select uid from users where id=1"); row != nil {
-		if v, _ := row["uid"].(string); v != aliceUID {
-			t.Errorf("idempotent migration changed an already-backfilled uid (%q → %q)", aliceUID, v)
-		}
-	}
-}
+// The v51 dual-write trigger test was removed when v53 rebuilt the users
+// table with uid as the sole identifier. The transitional v51 state is no
+// longer a stable target — v53 immediately drops the parallel user_uid
+// columns and triggers and recreates every FK table with `user` as TEXT
+// referencing `users(uid)`.
 
 func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	cleanup := setup_replication_test(t)
@@ -590,7 +517,7 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 
 	// Now the user lands locally.
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (id, uid, username) values (42, 'uid-late', 'late@example.com')")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-late", "late@example.com")
 
 	// Drain — the op should now apply.
 	replication_pending_drain()
@@ -606,7 +533,7 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	}
 
 	sdb := db_open("db/sessions.db")
-	count = sdb.integer("select count(*) from sessions where code='sess-late' and user=42")
+	count = sdb.integer("select count(*) from sessions where code='sess-late' and user='uid-late'")
 	if count != 1 {
 		t.Errorf("session must be in sessions.db after drain; got %d rows", count)
 	}
@@ -650,9 +577,12 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 		"insert into pending (peer, scope, user, sequence, schema, payload, received) values ('origin', ?, ?, ?, ?, ?, ?)",
 		op.Scope, op.User, op.Sequence, op.Schema, cbor_encode(op), now())
 
-	// Keys-transfer lands the user. We have to use a real users.id that
-	// keys-transfer will pick, then patch uid to match the pending op's
-	// expected user_uid before triggering drain.
+	// Pre-create the user with the uid the pending op references so
+	// keys-transfer finds it and only inserts the entity.
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-via-keys", "kuser@example.com")
+
+	// Keys-transfer arrives — keys are added and pending drain fires.
 	a := test_entity_id('a')
 	kt := &KeysTransfer{
 		Username: "kuser@example.com",
@@ -661,15 +591,6 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	if n := replication_keys_transfer_apply(a, "origin", kt); n != 1 {
 		t.Fatalf("keys-transfer should insert 1 entity; got %d", n)
 	}
-
-	// Force the new user's uid to match what the pending op expects
-	// (the auto-generated random uid won't match by chance).
-	udb := db_open("db/users.db")
-	udb.exec("update users set uid='uid-via-keys' where username='kuser@example.com'")
-
-	// Trigger drain explicitly (keys-transfer already drained once before
-	// our uid override; do it again now that the uid matches).
-	replication_pending_drain()
 
 	sdb := db_open("db/sessions.db")
 	count := sdb.integer("select count(*) from sessions where code='sess-keys'")
@@ -752,7 +673,7 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	db_create_directory()
 	// Also need a users.db entities table so entity_peers can do its local check.
 	udb := db_open("db/users.db")
-	udb.exec("create table entities (id text primary key, user integer, user_uid text default '')")
+	udb.exec("create table entities (id text primary key, user text not null default '')")
 
 	dir := db_open("db/directory.db")
 	now_ts := now()
@@ -775,7 +696,7 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	}
 
 	// Local entity short-circuits.
-	udb.exec("insert into entities (id, user) values ('local-e', 1)")
+	udb.exec("insert into entities (id, user) values ('local-e', 'u1')")
 	if p := entity_peer("local-e"); p != "selfpeer" {
 		t.Errorf("local entity must resolve to self; got %q", p)
 	}
@@ -1231,8 +1152,8 @@ func TestWebpushDedupBasic(t *testing.T) {
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
 
-	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
-	user := &User{ID: 1}
+	os.MkdirAll(filepath.Join(tmp_dir, "users/uid-alice"), 0755)
+	user := &User{UID: "uid-alice"}
 
 	if webpush_already_delivered(user, "https://fcm.example/a", "evt-1") {
 		t.Errorf("fresh state must not be marked delivered")
@@ -1266,8 +1187,8 @@ func TestWebpushDedupTTLExpires(t *testing.T) {
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
 
-	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
-	user := &User{ID: 1}
+	os.MkdirAll(filepath.Join(tmp_dir, "users/uid-alice"), 0755)
+	user := &User{UID: "uid-alice"}
 
 	// Manually insert a row with a stale timestamp.
 	db := webpush_dedup_db(user)
@@ -1434,14 +1355,18 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	setup_users_test_schema()
 	setup_sessions_test_schema()
 	udb1 := db_open("db/users.db")
-	udb1.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	udb1.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 	a := test_entity_id('a')
-	udb1.exec("insert into entities (id, private, fingerprint, user, user_uid, class, name, privacy) values (?, 'priv', 'fp1', 1, 'uid-alice', 'person', 'Alice', 'private')", a)
+	udb1.exec("insert into entities (id, private, fingerprint, user, class, name, privacy) values (?, 'priv', 'fp1', 'uid-alice', 'person', 'Alice', 'private')", a)
 
-	// Host 2: receives keys-transfer for alice (introducing her).
+	// Host 2: pre-seed alice so the keys-transfer falls into the "user
+	// already exists" branch and matches the canonical uid the wire op
+	// expects.
 	switchTo("h2")
 	setup_users_test_schema()
 	setup_sessions_test_schema()
+	udb2 := db_open("db/users.db")
+	udb2.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 	kt := &KeysTransfer{
 		Username: "alice@example.com",
 		Role:     "user",
@@ -1454,11 +1379,6 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	if n := replication_keys_transfer_apply(a, "peer1", kt); n != 1 {
 		t.Fatalf("keys-transfer on h2: expected 1 entity inserted, got %d", n)
 	}
-	// Patch alice's uid on h2 to match the canonical uid so the session
-	// op's user_uid resolves (in production the keys-transfer would
-	// carry the canonical uid too; the wire format doesn't yet).
-	udb2 := db_open("db/users.db")
-	udb2.exec("update users set uid='uid-alice' where username='alice@example.com'")
 
 	// Host 2 receives a session-insert op from Host 1.
 	op := &ReplicationOp{
@@ -1527,8 +1447,8 @@ func TestEmailDedupBasic(t *testing.T) {
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
 
-	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
-	user := &User{ID: 1}
+	os.MkdirAll(filepath.Join(tmp_dir, "users/uid-alice"), 0755)
+	user := &User{UID: "uid-alice"}
 
 	if email_already_delivered(user, "alice@example.com", "evt-1") {
 		t.Errorf("fresh state must not be marked delivered")
@@ -1562,8 +1482,8 @@ func TestEmailDedupTTLExpires(t *testing.T) {
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
 
-	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
-	user := &User{ID: 1}
+	os.MkdirAll(filepath.Join(tmp_dir, "users/uid-alice"), 0755)
+	user := &User{UID: "uid-alice"}
 
 	db := email_dedup_db(user)
 	stale := now() - email_dedup_ttl - 1
@@ -1786,10 +1706,10 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 	switchTo("h1")
 	setup_users_test_schema()
 	udb1 := db_open("db/users.db")
-	udb1.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
-	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+	udb1.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
+	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
-	u1 := &User{ID: 1, UID: "uid-alice", Username: "alice@example.com"}
+	u1 := &User{UID: "uid-alice", Username: "alice@example.com"}
 	webpush_mark_delivered(u1, "https://fcm.example/a", "evt-1")
 	if !webpush_already_delivered(u1, "https://fcm.example/a", "evt-1") {
 		t.Fatal("h1 mark didn't take")
@@ -1800,8 +1720,8 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 	switchTo("h2")
 	setup_users_test_schema()
 	udb2 := db_open("db/users.db")
-	udb2.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
-	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+	udb2.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
+	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
 		Scope:    repl_scope_app,
@@ -1818,7 +1738,7 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
 	}
 
-	u2 := &User{ID: 1, UID: "uid-alice"}
+	u2 := &User{UID: "uid-alice"}
 	if !webpush_already_delivered(u2, "https://fcm.example/a", "evt-1") {
 		t.Error("h2 must see the replicated webpush_delivered row")
 	}
@@ -1836,16 +1756,16 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	switchTo("h1")
 	setup_users_test_schema()
 	udb1 := db_open("db/users.db")
-	udb1.exec("insert into users (id, uid, username) values (1, 'uid-bob', 'bob@example.com')")
-	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
-	u1 := &User{ID: 1, UID: "uid-bob"}
+	udb1.exec("insert into users (uid, username) values (?, ?)", "uid-bob", "bob@example.com")
+	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
+	u1 := &User{UID: "uid-bob"}
 	email_mark_delivered(u1, "bob@example.com", "login:abc")
 
 	switchTo("h2")
 	setup_users_test_schema()
 	udb2 := db_open("db/users.db")
-	udb2.exec("insert into users (id, uid, username) values (1, 'uid-bob', 'bob@example.com')")
-	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+	udb2.exec("insert into users (uid, username) values (?, ?)", "uid-bob", "bob@example.com")
+	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
 		Scope:    repl_scope_app,
@@ -1862,7 +1782,7 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
 	}
 
-	u2 := &User{ID: 1, UID: "uid-bob"}
+	u2 := &User{UID: "uid-bob"}
 	if !email_already_delivered(u2, "bob@example.com", "login:abc") {
 		t.Error("h2 must see the replicated email_delivered row")
 	}
@@ -1874,7 +1794,7 @@ func TestFileSyncApplyWritesFile(t *testing.T) {
 	setup_users_test_schema()
 
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 
 	// Register a test app so app_by_id returns non-nil.
 	apps_lock.Lock()
@@ -1896,7 +1816,7 @@ func TestFileSyncApplyWritesFile(t *testing.T) {
 	}
 
 	// File should now exist on disk.
-	target := filepath.Join(data_dir, "users", "1", "myapp", "files", "avatars", "me.png")
+	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
 	contents, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("file missing after apply: %v", err)
@@ -1970,13 +1890,13 @@ func TestIntegrationFileSyncAcrossHosts(t *testing.T) {
 	switchTo("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
-	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 
 	if got := replication_apply_op(op); got != ApplyApplied {
 		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
 	}
 
-	target := filepath.Join(data_dir, "users", "1", "myapp", "files", "avatars", "me.png")
+	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
 	contents, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("h2 file missing after apply: %v", err)

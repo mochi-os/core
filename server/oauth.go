@@ -263,15 +263,15 @@ func web_oauth_begin(c *gin.Context) {
 	// ceremony row so the callback knows to take the link branch. The
 	// settings app runs sandboxed — cookies aren't sent, so fall back to the
 	// Bearer token in the Authorization header (same pattern as websockets).
-	var link_user int
+	var link_user string
 	if body.Link {
 		user := web_auth(c)
 		if user == nil {
 			auth_header := c.GetHeader("Authorization")
 			if strings.HasPrefix(auth_header, "Bearer ") {
 				token := strings.TrimPrefix(auth_header, "Bearer ")
-				if uid, _, err := jwt_verify(token); err == nil && uid > 0 {
-					user = user_by_id(uid)
+				if uid, _, err := jwt_verify(token); err == nil && uid != "" {
+					user = user_by_uid(uid)
 				}
 			}
 		}
@@ -279,7 +279,7 @@ func web_oauth_begin(c *gin.Context) {
 			respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
 			return
 		}
-		link_user = user.ID
+		link_user = user.UID
 	}
 
 	verifier, challenge := oauth_pkce()
@@ -310,11 +310,11 @@ func web_oauth_begin(c *gin.Context) {
 	}
 
 	db := db_open("db/sessions.db")
-	if link_user > 0 {
+	if link_user != "" {
 		db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', ?, ?, ?, ?)",
 			state, link_user, []byte(state), string(data), now()+600)
 	} else {
-		db.exec("insert into ceremonies (id, type, challenge, data, expires) values (?, 'oauth', ?, ?, ?)",
+		db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', '', ?, ?, ?)",
 			state, []byte(state), string(data), now()+600)
 	}
 
@@ -375,11 +375,9 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
-	var link_user int
+	var link_user string
 	if row["user"] != nil {
-		if v, ok := row["user"].(int64); ok {
-			link_user = int(v)
-		}
+		link_user, _ = row["user"].(string)
 	}
 
 	cfg, oidc_prov, err := oauth_client_config(provider, st.Redirect)
@@ -416,7 +414,7 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
-	if link_user > 0 {
+	if link_user != "" {
 		oauth_link(c, name, profile, link_user, st.Target)
 		return
 	}
@@ -429,16 +427,14 @@ func web_oauth_callback(c *gin.Context) {
 
 // oauth_link attaches an OAuth identity to an already-authenticated user. The
 // callback handler routes here when the ceremony row has a non-null user.
-func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, target string) {
+func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id string, target string) {
 	db := db_open("db/users.db")
 
 	// If this (provider, subject) is already linked, either refuse (wrong
 	// user) or update timestamps (same user).
-	owner := 0
+	owner := ""
 	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
-		if v, ok := row["user"].(int64); ok {
-			owner = int(v)
-		}
+		owner, _ = row["user"].(string)
 	}
 	if target == "" {
 		target = "/login/settings/oauth"
@@ -449,7 +445,7 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, 
 	}
 
 	switch {
-	case owner == 0:
+	case owner == "":
 		db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
 			user_id, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 		oauth_verification_record(db, provider, p.Subject, user_id)
@@ -470,17 +466,15 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id int, 
 func oauth_login(c *gin.Context, provider string, p *oauth_profile, target string) {
 	db := db_open("db/users.db")
 
-	var user_id int
+	var user_id string
 	row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject)
 	if row != nil {
-		if v, ok := row["user"].(int64); ok {
-			user_id = int(v)
-		}
+		user_id, _ = row["user"].(string)
 	}
 
-	if user_id > 0 {
+	if user_id != "" {
 		// Existing linked account.
-		user := user_by_id(user_id)
+		user := user_by_uid(user_id)
 		if user == nil {
 			audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_user_missing")
 			oauth_error_redirect(c, "provider_error", nil)
@@ -498,7 +492,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 		}
 
 		oauth_update_profile(db, provider, p)
-		oauth_verification_record(db, provider, p.Subject, user.ID)
+		oauth_verification_record(db, provider, p.Subject, user.UID)
 
 		rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -509,7 +503,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 			partial := random_alphanumeric(32)
 			sessions := db_open("db/sessions.db")
 			sessions.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-				partial, user.ID, strings.Join(remaining, ","), now()+300)
+				partial, user.UID, strings.Join(remaining, ","), now()+300)
 			web_cookie_set(c, "oauth_partial", partial)
 			c.Redirect(http.StatusFound, "/login/codes")
 			return
@@ -551,8 +545,8 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 	}
 
 	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
-		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
-	oauth_verification_record(db, provider, p.Subject, user.ID)
+		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
+	oauth_verification_record(db, provider, p.Subject, user.UID)
 
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -808,12 +802,12 @@ func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no user")
 	}
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, provider, email, name, created from oauth where user=? order by created asc", user.ID)
+	rows, err := db.rows("select id, provider, email, name, created from oauth where user=? order by created asc", user.UID)
 	if err != nil {
 		return sl_error(fn, "database error")
 	}
 
-	lasts := oauth_verification_lasts(user.ID)
+	lasts := oauth_verification_lasts(user.UID)
 	for _, r := range rows {
 		id, _ := r["id"].(int64)
 		r["used"] = lasts[id]
@@ -840,7 +834,7 @@ func oauth_update_profile(db *DB, provider string, p *oauth_profile) {
 // oauth_verification_record upserts the last-used timestamp for a (provider,
 // subject) pair. Looks up oauth.id from users.db then writes to sessions.db.
 // Idempotent: insert-or-replace by oauth id (the verifications PK).
-func oauth_verification_record(db *DB, provider, subject string, user_id int) {
+func oauth_verification_record(db *DB, provider, subject string, user_id string) {
 	row, _ := db.row("select id from oauth where provider=? and subject=?", provider, subject)
 	if row == nil {
 		return
@@ -852,7 +846,7 @@ func oauth_verification_record(db *DB, provider, subject string, user_id int) {
 
 // oauth_verification_lasts returns last-login by oauth.id for every linked
 // identity belonging to a user. Unknown identities map to 0.
-func oauth_verification_lasts(user_id int) map[int64]int64 {
+func oauth_verification_lasts(user_id string) map[int64]int64 {
 	out := map[int64]int64{}
 	rows, err := db_open("db/sessions.db").rows("select oauth, last from verifications where user=?", user_id)
 	if err != nil {
@@ -885,7 +879,7 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from oauth where user=? and provider=?", user.ID, provider)
+	exists, _ := db.exists("select 1 from oauth where user=? and provider=?", user.UID, provider)
 	if !exists {
 		return sl_error(fn, "provider not linked")
 	}
@@ -895,8 +889,8 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "cannot unlink last login method")
 	}
 
-	row, _ := db.row("select id from oauth where user=? and provider=?", user.ID, provider)
-	db.exec("delete from oauth where user=? and provider=?", user.ID, provider)
+	row, _ := db.row("select id from oauth where user=? and provider=?", user.UID, provider)
+	db.exec("delete from oauth where user=? and provider=?", user.UID, provider)
 	if row != nil {
 		if oauth_id, ok := row["id"].(int64); ok {
 			db_open("db/sessions.db").exec("delete from verifications where oauth=?", oauth_id)
@@ -913,15 +907,15 @@ func user_has_other_login(user *User, leaving string) bool {
 		return true
 	}
 	db := db_open("db/users.db")
-	if exists, _ := db.exists("select 1 from credentials where user=?", user.ID); exists {
+	if exists, _ := db.exists("select 1 from credentials where user=?", user.UID); exists {
 		return true
 	}
-	if row, _ := db.row("select verified from totp where user=?", user.ID); row != nil {
+	if row, _ := db.row("select verified from totp where user=?", user.UID); row != nil {
 		if v, ok := row["verified"].(int64); ok && v == 1 {
 			return true
 		}
 	}
-	if exists, _ := db.exists("select 1 from oauth where user=? and provider!=?", user.ID, leaving); exists {
+	if exists, _ := db.exists("select 1 from oauth where user=? and provider!=?", user.UID, leaving); exists {
 		return true
 	}
 	return false
@@ -934,14 +928,21 @@ func user_has_other_login(user *User, leaving string) bool {
 // Browsers complete OAuth by setting a session cookie and redirecting back to
 // a web page. Native apps cannot read cookies from a Custom Tabs session, so
 // we substitute a deep-link return: the callback redirects to
-// <scheme>://oauth-return?code=<exchange_code>, and the app then POSTs the
+// <scheme>:oauth-return?code=<exchange_code>, and the app then POSTs the
 // exchange code (plus a PKCE verifier) to /_/auth/oauth/exchange to retrieve
 // the actual session token. The exchange row is single-use and short-lived.
+//
+// The URI is opaque (no `//`) per the mochi: URI scheme — see
+// claude/plans/mochi-uri-scheme.md. OAuth providers never see this URI; the
+// pre-registered redirect_uri is the server's `https://<host>/_/auth/oauth/<provider>/callback`,
+// which the server then 302s to the opaque deep-link URI as the final hop to
+// the device. Android (and any other Mochi client) catches the URI via a
+// scheme="mochi" intent filter.
 
 // oauth_valid_mobile_scheme rejects schemes that aren't the consolidated
 // super-app's "mochi" or one of the legacy "mochi-<app>" forms (kept for the
 // transitional window while users update third-party provider registrations).
-// Callbacks redirect to <scheme>://oauth-return — letting arbitrary schemes
+// Callbacks redirect to <scheme>:oauth-return — letting arbitrary schemes
 // through would turn this into an open redirect.
 func oauth_valid_mobile_scheme(s string) bool {
 	if s == "mochi" {
@@ -977,7 +978,7 @@ func oauth_mobile_redirect(c *gin.Context, scheme, exchange_code, error_code str
 			q.Set(k, v)
 		}
 	}
-	c.Redirect(http.StatusFound, scheme+"://oauth-return?"+q.Encode())
+	c.Redirect(http.StatusFound, scheme+":oauth-return?"+q.Encode())
 }
 
 // oauth_mobile_error sends the app a deep-link redirect carrying an error
@@ -1009,15 +1010,13 @@ func oauth_mobile_store(challenge string, data any) (string, error) {
 func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *oauth_state) {
 	db := db_open("db/users.db")
 
-	var user_id int
+	var user_id string
 	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
-		if v, ok := row["user"].(int64); ok {
-			user_id = int(v)
-		}
+		user_id, _ = row["user"].(string)
 	}
 
-	if user_id > 0 {
-		user := user_by_id(user_id)
+	if user_id != "" {
+		user := user_by_uid(user_id)
 		if user == nil {
 			audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_user_missing")
 			oauth_mobile_error(c, st, "provider_error", nil)
@@ -1035,7 +1034,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		}
 
 		oauth_update_profile(db, provider, p)
-		oauth_verification_record(db, provider, p.Subject, user.ID)
+		oauth_verification_record(db, provider, p.Subject, user.UID)
 		rate_limit_login.reset(rate_limit_client_ip(c))
 
 		remaining := auth_remaining_oauth(user)
@@ -1043,7 +1042,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 			partial := random_alphanumeric(32)
 			db_open("db/sessions.db").exec(
 				"insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-				partial, user.ID, strings.Join(remaining, ","), now()+300,
+				partial, user.UID, strings.Join(remaining, ","), now()+300,
 			)
 			code, err := oauth_mobile_store(st.Challenge, map[string]any{
 				"mfa":       true,
@@ -1059,8 +1058,8 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		}
 
 		// Full login. Create the session now so the exchange just hands it back.
-		session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
-		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
+		session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
+		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 		audit_login(user.Username, rate_limit_client_ip(c))
 		if user.Identity == nil {
 			user.Identity = user.identity()
@@ -1105,12 +1104,12 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 	}
 
 	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
-		user.ID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
-	oauth_verification_record(db, provider, p.Subject, user.ID)
+		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
+	oauth_verification_record(db, provider, p.Subject, user.UID)
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
-	session := login_create(user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
-	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.ID, now())
+	session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
+	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 	audit_login(user.Username, rate_limit_client_ip(c))
 
 	code, err := oauth_mobile_store(st.Challenge, map[string]any{

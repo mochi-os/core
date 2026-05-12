@@ -437,11 +437,11 @@ func TestApiFileBase(t *testing.T) {
 	data_dir = "/var/lib/mochi"
 	defer func() { data_dir = origDataDir }()
 
-	user := &User{ID: 42}
+	user := &User{UID: "u42"}
 	app := &App{id: "testapp"}
 
 	result := api_file_base(user, app)
-	expected := "/var/lib/mochi/users/42/testapp/files"
+	expected := "/var/lib/mochi/users/u42/testapp/files"
 
 	if result != expected {
 		t.Errorf("api_file_base() = %q, want %q", result, expected)
@@ -454,11 +454,11 @@ func TestApiFilePath(t *testing.T) {
 	data_dir = "/var/lib/mochi"
 	defer func() { data_dir = origDataDir }()
 
-	user := &User{ID: 42}
+	user := &User{UID: "u42"}
 	app := &App{id: "testapp"}
 
 	result := api_file_path(user, app, "subdir/file.txt")
-	expected := "/var/lib/mochi/users/42/testapp/files/subdir/file.txt"
+	expected := "/var/lib/mochi/users/u42/testapp/files/subdir/file.txt"
 
 	if result != expected {
 		t.Errorf("api_file_path() = %q, want %q", result, expected)

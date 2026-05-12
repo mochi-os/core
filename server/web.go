@@ -45,16 +45,16 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			// API token
 			api_token = token_validate(query_token)
 			if api_token != nil {
-				user = user_by_id(api_token.User)
+				user = user_by_uid(api_token.User)
 				if user == nil {
-					debug("Query token valid but user %d not found", api_token.User)
+					debug("Query token valid but user %q not found", api_token.User)
 					api_token = nil
 				}
 			}
 		} else {
 			// JWT token (used by sandboxed iframes for resource URLs like images)
-			if uid, app, err := jwt_verify(query_token); err == nil && uid > 0 {
-				user = user_by_id(uid)
+			if uid, app, err := jwt_verify(query_token); err == nil && uid != "" {
+				user = user_by_uid(uid)
 				if user != nil {
 					jwt_app = app
 					has_bearer = true // treat as bearer-authenticated
@@ -80,9 +80,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				api_token = token_validate(bearer)
 				if api_token != nil {
 					if user == nil {
-						user = user_by_id(api_token.User)
+						user = user_by_uid(api_token.User)
 						if user == nil {
-							debug("API token valid but user %d not found", api_token.User)
+							debug("API token valid but user %q not found", api_token.User)
 							api_token = nil
 						}
 					}
@@ -90,13 +90,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			}
 		} else {
 			// JWT authentication — extract app claim for authorization
-			if uid, app, err := jwt_verify(bearer); err == nil && uid > 0 {
+			if uid, app, err := jwt_verify(bearer); err == nil && uid != "" {
 				jwt_app = app
 				if user == nil {
-					if u := user_by_id(uid); u != nil {
+					if u := user_by_uid(uid); u != nil {
 						user = u
 					} else {
-						debug("API JWT token valid but user %d not found", uid)
+						debug("API JWT token valid but user %q not found", uid)
 					}
 				}
 			} else if user == nil {
@@ -179,13 +179,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	} else if owner == nil {
 		// Fall back to domain route owner for anonymous requests without entity
 		if routeOwner, ok := c.Get("domain_owner"); ok {
-			if uid, ok := routeOwner.(int); ok && uid > 0 {
-				owner = user_by_id(uid)
+			if uid, ok := routeOwner.(string); ok && uid != "" {
+				owner = user_by_uid(uid)
 			}
 		}
-		// Fall back to primary user for public class-level actions
+		// Fall back to first administrator for public class-level actions
 		if owner == nil && aa.Public {
-			owner = user_by_id(1)
+			udb := db_open("db/users.db")
+			if row, _ := udb.row("select uid from users where role='administrator' order by uid limit 1"); row != nil {
+				if adminUID, _ := row["uid"].(string); adminUID != "" {
+					owner = user_by_uid(adminUID)
+				}
+			}
 		}
 	}
 
@@ -357,7 +362,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 			defer user.db.close()
 		}
 
-		if owner != nil && (user == nil || owner.ID != user.ID) {
+		if owner != nil && (user == nil || owner.UID != user.UID) {
 			owner.db = db_app(owner, a)
 			if owner.db == nil {
 				respond_error(c, http.StatusInternalServerError, "database_error", "errors.database_error", nil)
@@ -965,7 +970,7 @@ func web_login_begin(c *gin.Context) {
 
 	// Check if user has passkey as an alternative login method
 	has_passkey := false
-	count, _ := db.row("select count(*) as count from credentials where user=?", user.ID)
+	count, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
 	if count != nil && count["count"].(int64) > 0 {
 		has_passkey = true
 	}
@@ -977,10 +982,10 @@ func web_login_begin(c *gin.Context) {
 }
 
 func web_identity_get(c *gin.Context) {
-	user_by_id_allow_no_identity := func(id int) *User {
+	user_by_id_allow_no_identity := func(id string) *User {
 		db := db_open("db/users.db")
 		var user User
-		if !db.scan(&user, "select id, uid, username, role, methods, status from users where id=?", id) {
+		if !db.scan(&user, "select uid, username, role, methods, status from users where uid=?", id) {
 			return nil
 		}
 		user.Preferences = user_preferences_load(&user)
@@ -1003,7 +1008,7 @@ func web_identity_get(c *gin.Context) {
 				}
 			} else {
 				// JWT authentication
-				if uid, _, err := jwt_verify(bearer); err == nil && uid > 0 {
+				if uid, _, err := jwt_verify(bearer); err == nil && uid != "" {
 					if user := user_by_id_allow_no_identity(uid); user != nil {
 						u = user
 					}
@@ -1070,10 +1075,10 @@ func web_login_identity(c *gin.Context) {
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
-			if uid, _, err := jwt_verify(token); err == nil && uid > 0 {
-				if user := user_by_id(uid); user != nil {
+			if uid, _, err := jwt_verify(token); err == nil && uid != "" {
+				if user := user_by_uid(uid); user != nil {
 					u = user
-					debug("Identity creation: JWT token accepted for user %d", u.ID)
+					debug("Identity creation: JWT token accepted for user %q", u.UID)
 				}
 			}
 		}
@@ -1095,22 +1100,17 @@ func web_login_identity(c *gin.Context) {
 
 	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
 	if err != nil {
-		info("Identity creation error for user %d: %v", u.ID, err)
+		info("Identity creation error for user %q: %v", u.UID, err)
 		respond_error(c, http.StatusBadRequest, "unable_to_create_identity", "errors.unable_to_create_identity", nil)
 		return
 	}
 
 	// Simple notification hook. Deduped per (admin_address, new_user_uid)
 	// so two replicas processing the same signup don't email the admin
-	// twice. event_id falls back to integer ID when uid isn't populated
-	// (pre-v51 row that somehow slipped the backfill).
+	// twice.
 	admin := ini_string("email", "admin", "")
 	if admin != "" {
-		event_id := u.UID
-		if event_id == "" {
-			event_id = fmt.Sprintf("user-%d", u.ID)
-		}
-		event_id = "new-user:" + event_id
+		event_id := "new-user:" + u.UID
 		admin_user := user_by_username(admin)
 		if admin_user != nil {
 			email_send_dedup(admin_user, event_id, admin, "Mochi new user", "User: "+u.Username+"\nName: "+input.Name)
@@ -1144,7 +1144,7 @@ func web_abandon(c *gin.Context) {
 	}
 	web_cookie_unset(c, "session")
 
-	target, err := user_delete(u.ID)
+	target, err := user_delete(u.UID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1547,7 +1547,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 	}
 
 	// Get file path - always use local storage, fetching from remote if needed
-	path := filepath.Join(data_dir, attachment_path(user.ID, app.id, att.ID, att.Name))
+	path := filepath.Join(data_dir, attachment_path(user.UID, app.id, att.ID, att.Name))
 	if !file_exists(path) {
 		// Prefer route entity (e.g., feed ID from URL) over stored entity (may be post ID)
 		fetch_entity := entity

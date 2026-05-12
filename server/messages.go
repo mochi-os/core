@@ -279,7 +279,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -289,7 +289,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 	if !from_valid {
-		info("message.send: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
+		info("message.send: invalid from header - from=%q user.UID=%d user.Identity=%v", headers["from"], user.UID, user.Identity)
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -366,7 +366,7 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -376,7 +376,7 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 	}
 	if !from_valid {
-		info("message.send.peer: invalid from header - from=%q user.ID=%d user.Identity=%v", headers["from"], user.ID, user.Identity)
+		info("message.send.peer: invalid from header - from=%q user.UID=%d user.Identity=%v", headers["from"], user.UID, user.Identity)
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -449,7 +449,7 @@ func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	// Validate from entity belongs to user
 	if headers["from"] != "" {
 		db := db_open("db/users.db")
-		from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+		from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
 		if err != nil {
 			return sl_error(fn, "database error: %v", err)
 		}

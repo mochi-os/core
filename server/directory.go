@@ -405,7 +405,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	dbu := db_open("db/users.db")
 	var es []Entity
-	err = dbu.scans(&es, "select id from entities where user=?", u.ID)
+	err = dbu.scans(&es, "select id from entities where user=?", u.UID)
 	if err != nil {
 		warn("Database error loading user entities: %v", err)
 		return sl_encode(ds), nil

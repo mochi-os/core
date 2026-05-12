@@ -126,20 +126,7 @@ func replication_lww_apply(userUID, appID string, s *LWWSet) ApplyResult {
 		return ApplyInvalid
 	}
 
-	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", userUID)
-	if row == nil {
-		return ApplyDeferred
-	}
-	var localID int
-	if v, ok := row["id"].(int64); ok {
-		localID = int(v)
-	}
-	if localID == 0 {
-		return ApplyDeferred
-	}
-
-	u := user_by_id(localID)
+	u := user_by_uid(userUID)
 	if u == nil {
 		return ApplyDeferred
 	}

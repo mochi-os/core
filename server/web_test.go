@@ -36,7 +36,7 @@ func create_web_test_env(t *testing.T) func() {
 	domains.exec("create index if not exists delegations_owner on delegations(owner)")
 
 	// Create users database for entities. uid and user_uid mirror the v51
-	// schema so user_by_id and entity loads don't fail in tests.
+	// schema so user_by_uid and entity loads don't fail in tests.
 	users := db_open("db/users.db")
 	users.exec("create table if not exists users (id integer primary key, uid text not null default '', username text unique not null, role text not null default 'user', timezone text not null default 'UTC', created integer not null, updated integer not null)")
 	users.exec(`create trigger if not exists users_uid_insert after insert on users
@@ -44,7 +44,7 @@ func create_web_test_env(t *testing.T) func() {
 		begin
 			update users set uid = lower(hex(randomblob(16))) where id = new.id;
 		end`)
-	users.exec("create table if not exists entities (id text primary key, user integer not null, user_uid text not null default '', class text not null, name text not null, privacy text not null default 'private', data text not null default '', fingerprint text not null, created integer not null, updated integer not null)")
+	users.exec("create table if not exists entities (id text primary key, user text not null, user_uid text not null default '', class text not null, name text not null, privacy text not null default 'private', data text not null default '', fingerprint text not null, created integer not null, updated integer not null)")
 
 	cleanup := func() {
 		data_dir = orig_data_dir
@@ -61,7 +61,7 @@ func TestDomainsMiddleware(t *testing.T) {
 
 	// Set up domain and route
 	domain_register("test.example.com")
-	route_create("test.example.com", "/blog", "app", "myapp", "", 0, 10)
+	route_create("test.example.com", "/blog", "app", "myapp", "", "", 10)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -129,7 +129,7 @@ func TestDomainsMiddlewarePathRoute(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
-	route_create("example.com", "/api", "app", "api", "", 0, 0)
+	route_create("example.com", "/api", "app", "api", "", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -170,12 +170,12 @@ func TestWebPathDomainRouting(t *testing.T) {
 	// Create a test entity
 	db := db_open("db/users.db")
 	n := now()
-	db.exec("insert into users (id, username, role, created, updated) values (1, 'test@example.com', 'user', ?, ?)", n, n)
+	db.exec("insert into users (uid, username, role, created, updated) values ('u1', 'test@example.com', 'user', ?, ?)", n, n)
 	db.exec("insert into entities (id, user, class, name, privacy, fingerprint, created, updated) values ('entity123', 1, 'person', 'Test', 'public', 'abc123', ?, ?)", n, n)
 
 	// Set up domain and route
 	domain_register("blog.example.com")
-	route_create("blog.example.com", "", "entity", "entity123", "", 0, 0)
+	route_create("blog.example.com", "", "entity", "entity123", "", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -240,7 +240,7 @@ func TestWebPathWildcardDomain(t *testing.T) {
 	defer cleanup()
 
 	domain_register("*.example.com")
-	route_create("*.example.com", "", "app", "wildcard", "", 0, 0)
+	route_create("*.example.com", "", "app", "wildcard", "", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -275,7 +275,7 @@ func TestWebPathRemainingPath(t *testing.T) {
 	defer cleanup()
 
 	domain_register("api.example.com")
-	route_create("api.example.com", "/v1", "app", "api", "", 0, 0)
+	route_create("api.example.com", "/v1", "app", "api", "", "", 0)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

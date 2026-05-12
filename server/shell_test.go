@@ -392,12 +392,12 @@ func TestJwtAppClaim(t *testing.T) {
 
 	// Create a session with a secret
 	db := db_open("db/sessions.db")
-	db.exec("create table if not exists sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db.exec("create unique index if not exists sessions_code on sessions(code)")
 	n := now()
-	db.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (1, ?, 'test-secret-1234567890123456', ?, ?, '127.0.0.1', 'test')", "test-session-code", n+86400, n)
+	db.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (?, ?, 'test-secret-1234567890123456', ?, ?, '127.0.0.1', 'test')", "u1", "test-session-code", n+86400, n)
 
-	token := auth_create_app_token(1, "test-session-code", "feeds")
+	token := auth_create_app_token("u1", "test-session-code", "feeds")
 	if token == "" {
 		t.Fatal("auth_create_app_token returned empty token")
 	}
@@ -407,8 +407,8 @@ func TestJwtAppClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jwt_verify failed: %v", err)
 	}
-	if uid != 1 {
-		t.Errorf("jwt_verify user = %d, want 1", uid)
+	if uid != "u1" {
+		t.Errorf("jwt_verify user = %q, want u1", uid)
 	}
 	if app != "feeds" {
 		t.Errorf("jwt_verify app = %q, want %q", app, "feeds")
@@ -421,14 +421,14 @@ func TestJwtAppClaimDifferentApps(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/sessions.db")
-	db.exec("create table if not exists sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db.exec("create unique index if not exists sessions_code on sessions(code)")
 	n := now()
-	db.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (1, ?, 'test-secret-app-claim-diff-1234', ?, ?, '127.0.0.1', 'test')", "session-app-test", n+86400, n)
+	db.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (?, ?, 'test-secret-app-claim-diff-1234', ?, ?, '127.0.0.1', 'test')", "u1", "session-app-test", n+86400, n)
 
 	apps_to_test := []string{"feeds", "wikis", "notifications", "chat", ""}
 	for _, appName := range apps_to_test {
-		token := auth_create_app_token(1, "session-app-test", appName)
+		token := auth_create_app_token("u1", "session-app-test", appName)
 		if token == "" {
 			t.Fatalf("auth_create_app_token returned empty for app %q", appName)
 		}
@@ -454,15 +454,15 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	db_users.exec("alter table users add column status text not null default 'active'")
 	// Recreate entities table without created/updated (Entity struct doesn't have those fields)
 	db_users.exec("drop table entities")
-	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user integer, user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user text not null default '', user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	n := now()
-	db_users.exec("insert into users (id, username, role, created, updated) values (1, 'test@example.com', 'user', ?, ?)", n, n)
-	db_users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values ('identity1', 'abcde1234', 1, 'person', 'Test User', 'private')")
+	db_users.exec("insert into users (uid, username, role, created, updated) values (?, ?, ?, ?, ?)", "u1", "test@example.com", "user", n, n)
+	db_users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, ?, ?, ?, ?)", "identity1", "abcde1234", "u1", "person", "Test User", "private")
 
 	db_sessions := db_open("db/sessions.db")
-	db_sessions.exec("create table if not exists sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db_sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db_sessions.exec("create unique index if not exists sessions_code on sessions(code)")
-	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (1, 'token-test-session', 'secret-for-token-test-12345678', ?, ?, '127.0.0.1', 'test')", n+86400, n)
+	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (?, ?, 'secret-for-token-test-12345678', ?, ?, '127.0.0.1', 'test')", "u1", "token-test-session", n+86400, n)
 
 	// Set up the app with path binding
 	apps_lock.Lock()
@@ -506,8 +506,8 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Returned token failed verification: %v", err)
 	}
-	if uid != 1 {
-		t.Errorf("Token user = %d, want 1", uid)
+	if uid != "u1" {
+		t.Errorf("Token user = %q, want u1", uid)
 	}
 	if app != "feeds" {
 		t.Errorf("Token app = %q, want 'feeds'", app)

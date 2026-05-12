@@ -19,18 +19,10 @@ func create_test_users_db(t *testing.T) func() {
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
 
-	// Create users table (mirrors db_create — including the uid column
-	// and the trigger that auto-populates uid on insert. The parallel
-	// user_uid columns are added when tests need them.)
+	// Create users table (mirrors db_create — uid is the PK, no integer id).
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	db.exec("create unique index users_username on users (username)")
-	db.exec("create unique index users_uid on users (uid)")
-	db.exec(`create trigger users_uid_insert after insert on users
-		when new.uid is null or new.uid = ''
-		begin
-			update users set uid = lower(hex(randomblob(16))) where id = new.id;
-		end`)
 
 	cleanup := func() {
 		data_dir = orig_data_dir
@@ -40,36 +32,35 @@ func create_test_users_db(t *testing.T) func() {
 	return cleanup
 }
 
-// Test user_by_id returns nil for non-existent user
+// Test user_by_uid returns nil for non-existent user
 func TestUserByIdNotFound(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
 
-	u := user_by_id(999)
+	u := user_by_uid("u999")
 	if u != nil {
-		t.Error("user_by_id should return nil for non-existent user")
+		t.Error("user_by_uid should return nil for non-existent user")
 	}
 }
 
-// Test user_by_id returns user for existing user
+// Test user_by_uid returns user for existing user
 func TestUserByIdFound(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
 
-	// Need entities table for user_by_id to work fully (mirrors db_create
-	// including user_uid).
-	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, user_uid text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
-	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e1', 'priv', 'fp', 1, 'person', 'Test User')")
+	// Need entities table for user_by_uid to work fully.
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, ?, ?, ?, ?, ?)", "e1", "priv", "fp", "u1", "person", "Test User")
 
 	// Create preferences table
 	db.exec("create table preferences (name text primary key, value text)")
 
-	u := user_by_id(1)
+	u := user_by_uid("u1")
 	if u == nil {
-		t.Fatal("user_by_id should return user for existing id")
+		t.Fatal("user_by_uid should return user for existing id")
 	}
 	if u.Username != "test@example.com" {
 		t.Errorf("username = %q, want 'test@example.com'", u.Username)
@@ -81,8 +72,8 @@ func TestUserByIdFound(t *testing.T) {
 
 // Test User.administrator() method
 func TestUserAdministrator(t *testing.T) {
-	admin := &User{ID: 1, Username: "admin@example.com", Role: "administrator"}
-	user := &User{ID: 2, Username: "user@example.com", Role: "user"}
+	admin := &User{UID: "u1", Username: "admin@example.com", Role: "administrator"}
+	user := &User{UID: "u2", Username: "user@example.com", Role: "user"}
 
 	if !admin.administrator() {
 		t.Error("administrator() should return true for admin role")
@@ -98,10 +89,10 @@ func TestUserCreate(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (username, role) values (?, ?)", "new@example.com", "user")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "new@example.com", "user")
 
 	var u User
-	if !db.scan(&u, "select id, username, role, methods, status from users where username=?", "new@example.com") {
+	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", "new@example.com") {
 		t.Fatal("user should exist after insert")
 	}
 
@@ -111,8 +102,8 @@ func TestUserCreate(t *testing.T) {
 	if u.Role != "user" {
 		t.Errorf("role = %q, want 'user'", u.Role)
 	}
-	if u.ID == 0 {
-		t.Error("id should be non-zero after insert")
+	if u.UID == "" {
+		t.Error("uid should be non-empty after insert")
 	}
 }
 
@@ -122,16 +113,16 @@ func TestUserUpdate(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (username, role) values (?, ?)", "update@example.com", "user")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "update@example.com", "user")
 
 	var u User
-	db.scan(&u, "select id, username, role, methods, status from users where username=?", "update@example.com")
+	db.scan(&u, "select uid, username, role, methods, status from users where username=?", "update@example.com")
 
 	// Update role
-	db.exec("update users set role=? where id=?", "administrator", u.ID)
+	db.exec("update users set role=? where uid=?", "administrator", u.UID)
 
 	var updated User
-	db.scan(&updated, "select id, username, role, methods, status from users where id=?", u.ID)
+	db.scan(&updated, "select uid, username, role, methods, status from users where uid=?", u.UID)
 
 	if updated.Role != "administrator" {
 		t.Errorf("role after update = %q, want 'administrator'", updated.Role)
@@ -144,15 +135,15 @@ func TestUserDelete(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (username, role) values (?, ?)", "delete@example.com", "user")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "delete@example.com", "user")
 
 	var u User
-	db.scan(&u, "select id, username, role, methods, status from users where username=?", "delete@example.com")
+	db.scan(&u, "select uid, username, role, methods, status from users where username=?", "delete@example.com")
 
 	// Delete user
-	db.exec("delete from users where id=?", u.ID)
+	db.exec("delete from users where uid=?", u.UID)
 
-	exists, _ := db.exists("select 1 from users where id=?", u.ID)
+	exists, _ := db.exists("select 1 from users where uid=?", u.UID)
 	if exists {
 		t.Error("user should not exist after delete")
 	}
@@ -175,9 +166,9 @@ func TestUserCount(t *testing.T) {
 	}
 
 	// Add users
-	db.exec("insert into users (username, role) values (?, ?)", "user1@example.com", "user")
-	db.exec("insert into users (username, role) values (?, ?)", "user2@example.com", "user")
-	db.exec("insert into users (username, role) values (?, ?)", "admin@example.com", "administrator")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "user1@example.com", "user")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u2", "user2@example.com", "user")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u3", "admin@example.com", "administrator")
 
 	row, _ = db.row("select count(*) as count from users")
 	if row["count"].(int64) != 3 {
@@ -194,11 +185,11 @@ func TestUserList(t *testing.T) {
 
 	// Add users
 	for i := 1; i <= 10; i++ {
-		db.exec("insert into users (username, role) values (?, ?)", "user"+itoa(i)+"@example.com", "user")
+		db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u"+itoa(i), "user"+itoa(i)+"@example.com", "user")
 	}
 
 	// Test limit
-	rows, err := db.rows("select id, username, role, methods, status from users order by id limit ? offset ?", 5, 0)
+	rows, err := db.rows("select uid, username, role, methods, status from users order by uid limit ? offset ?", 5, 0)
 	if err != nil {
 		t.Fatalf("list query failed: %v", err)
 	}
@@ -207,13 +198,13 @@ func TestUserList(t *testing.T) {
 	}
 
 	// Test offset
-	rows, _ = db.rows("select id, username, role, methods, status from users order by id limit ? offset ?", 5, 5)
+	rows, _ = db.rows("select uid, username, role, methods, status from users order by uid limit ? offset ?", 5, 5)
 	if len(rows) != 5 {
 		t.Errorf("len(rows) with offset 5 = %d, want 5", len(rows))
 	}
 
 	// Test offset beyond count
-	rows, _ = db.rows("select id, username, role, methods, status from users order by id limit ? offset ?", 5, 20)
+	rows, _ = db.rows("select uid, username, role, methods, status from users order by uid limit ? offset ?", 5, 20)
 	if len(rows) != 0 {
 		t.Errorf("len(rows) with offset 20 = %d, want 0", len(rows))
 	}
@@ -225,19 +216,19 @@ func TestLookupByIdentity(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
 
 	// Create entities table
-	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
-	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('identity123', 'priv', 'abc123def456', 1, 'person', 'Test User')")
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, ?, ?, ?, ?, ?)", "identity123", "priv", "abc123def456", "u1", "person", "Test User")
 
 	// Lookup by identity
 	row, err := db.row("select user from entities where id=? and class='person'", "identity123")
 	if err != nil || row == nil {
 		t.Fatal("should find entity by identity")
 	}
-	if row["user"].(int64) != 1 {
-		t.Errorf("user = %d, want 1", row["user"])
+	if row["user"].(string) != "u1" {
+		t.Errorf("user = %v, want u1", row["user"])
 	}
 
 	// Lookup non-existent identity
@@ -253,19 +244,19 @@ func TestLookupByFingerprint(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/users.db")
-	db.exec("insert into users (id, username, role) values (1, 'test@example.com', 'user')")
+	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
 
 	// Create entities table
-	db.exec("create table entities (id text primary key, private text, fingerprint text, user integer, parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
-	db.exec("insert into entities (id, private, fingerprint, user, class, name) values ('identity123', 'priv', 'abc123def456', 1, 'person', 'Test User')")
+	db.exec("create table entities (id text primary key, private text, fingerprint text, user text not null default '', parent text default '', class text, name text, privacy text default 'public', data text default '', published integer default 0)")
+	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, ?, ?, ?, ?, ?)", "identity123", "priv", "abc123def456", "u1", "person", "Test User")
 
 	// Lookup by fingerprint (without hyphens)
 	row, err := db.row("select user from entities where fingerprint=? and class='person'", "abc123def456")
 	if err != nil || row == nil {
 		t.Fatal("should find entity by fingerprint")
 	}
-	if row["user"].(int64) != 1 {
-		t.Errorf("user = %d, want 1", row["user"])
+	if row["user"].(string) != "u1" {
+		t.Errorf("user = %v, want u1", row["user"])
 	}
 
 	// Lookup non-existent fingerprint
@@ -297,10 +288,10 @@ func create_test_sessions_db(t *testing.T) func() {
 
 	// Create sessions tables
 	db := db_open("db/sessions.db")
-	db.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db.exec("create table codes (code text not null, username text not null, expires integer not null, primary key (code, username))")
-	db.exec("create table ceremonies (id text primary key, type text not null, user integer, challenge blob not null, data text not null default '', expires integer not null)")
-	db.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
+	db.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
+	db.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
 
 	cleanup := func() {
 		data_dir = orig_data_dir

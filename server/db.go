@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 52
+	schema_version = 53
 )
 
 var (
@@ -134,116 +134,88 @@ func db_create() {
 	// holds only operator overrides keyed by (name, language).
 	settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 
-	// Users. `uid` is the globally-stable identifier used for replication
-	// and cross-host data references. The integer `id` is the per-host
-	// disk-path identifier (`users/<int>/`) and stays as the primary key.
+	// Users. `uid` is the globally-stable identifier used everywhere — for
+	// replication, cross-host data references, FK joins, and the on-disk
+	// `users/<uid>/` data directory. Callers supply the uid via the Go
+	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
-	users.exec("create unique index users_uid on users (uid)")
-	users.exec(`create trigger users_uid_insert after insert on users
-		when new.uid is null or new.uid = ''
-		begin
-			update users set uid = lower(hex(randomblob(16))) where id = new.id;
-		end`)
 
 	// Passkey credential definitions and sign count. Sign count is WebAuthn
 	// replay-prevention state and lives here so it survives sessions.db
 	// corruption. Only the cosmetic last-used timestamp lives in sessions.db.
-	users.exec("create table credentials (id blob primary key, user integer not null references users(id) on delete cascade, user_uid text not null default '', public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
 	users.exec("create index credentials_user on credentials(user)")
-	users.exec("create index credentials_user_uid on credentials(user_uid)")
 
 	// Recovery codes
-	users.exec("create table recovery (id integer primary key, user integer not null references users(id) on delete cascade, user_uid text not null default '', hash text not null, created integer not null)")
+	users.exec("create table recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
 	users.exec("create index recovery_user on recovery(user)")
-	users.exec("create index recovery_user_uid on recovery(user_uid)")
 
 	// TOTP secrets
-	users.exec("create table totp (user integer primary key references users(id) on delete cascade, user_uid text not null default '', secret text not null, verified integer not null default 0, created integer not null)")
-	users.exec("create index totp_user_uid on totp(user_uid)")
+	users.exec("create table totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
 
 	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
 	// Last-used timestamp lives in sessions.db.verifications so this cold
 	// reference store doesn't take a write on every OAuth login.
-	users.exec("create table oauth (id integer primary key, user integer not null references users(id) on delete cascade, user_uid text not null default '', provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	users.exec("create table oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
 	users.exec("create index oauth_user on oauth(user)")
-	users.exec("create index oauth_user_uid on oauth(user_uid)")
 
 	// API token definitions. Hot per-request "used" timestamp lives in
 	// sessions.db.accesses; here we keep just the definition so token loss
 	// doesn't follow sessions.db corruption.
-	users.exec("create table tokens (hash text primary key not null, user integer not null references users(id) on delete cascade, user_uid text not null default '', app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
 	users.exec("create index tokens_user on tokens(user)")
-	users.exec("create index tokens_user_uid on tokens(user_uid)")
 	users.exec("create index tokens_app on tokens(app)")
 
 	// Entities
-	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
-	users.exec("create index entities_fingerprint on entities( fingerprint )")
-	users.exec("create index entities_user on entities( user )")
-	users.exec("create index entities_user_uid on entities( user_uid )")
-	users.exec("create index entities_parent on entities( parent )")
-	users.exec("create index entities_class on entities( class )")
-	users.exec("create index entities_name on entities( name )")
-	users.exec("create index entities_privacy on entities( privacy )")
-	users.exec("create index entities_published on entities( published )")
-
-	// Dual-write triggers: every insert / FK update on a user-referencing
-	// table copies users.uid into the parallel user_uid column. Lets the
-	// codebase migrate to UID-based reads incrementally without splitting
-	// every existing INSERT site.
-	for _, tbl := range []string{"entities", "credentials", "recovery", "totp", "oauth", "tokens"} {
-		users.exec(fmt.Sprintf(`create trigger %s_user_uid_insert after insert on %s
-			when new.user is not null and (new.user_uid is null or new.user_uid = '')
-			begin
-				update %s set user_uid = coalesce((select uid from users where id = new.user), '') where rowid = new.rowid;
-			end`, tbl, tbl, tbl))
-		users.exec(fmt.Sprintf(`create trigger %s_user_uid_update after update of user on %s
-			when new.user is not null
-			begin
-				update %s set user_uid = coalesce((select uid from users where id = new.user), '') where rowid = new.rowid;
-			end`, tbl, tbl, tbl))
-	}
+	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create index entities_fingerprint on entities(fingerprint)")
+	users.exec("create index entities_user on entities(user)")
+	users.exec("create index entities_parent on entities(parent)")
+	users.exec("create index entities_class on entities(class)")
+	users.exec("create index entities_name on entities(name)")
+	users.exec("create index entities_privacy on entities(privacy)")
+	users.exec("create index entities_published on entities(published)")
 
 	// Sessions (login codes and sessions - transient auth data)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
 	sessions.exec("create index codes_expires on codes( expires )")
-	sessions.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	sessions.exec("create unique index sessions_code on sessions(code)")
 	sessions.exec("create index sessions_expires on sessions(expires)")
 	sessions.exec("create index sessions_user on sessions(user)")
 
 	// WebAuthn ceremony sessions (temporary)
-	sessions.exec("create table ceremonies (id text primary key, type text not null, user integer, challenge blob not null, data text not null default '', expires integer not null)")
+	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
 	sessions.exec("create index ceremonies_expires on ceremonies(expires)")
 
 	// Partial authentication sessions (for MFA)
-	sessions.exec("create table partial (id text primary key, user integer not null, completed text not null default '', remaining text not null, expires integer not null)")
+	sessions.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
 	sessions.exec("create index partial_expires on partial(expires)")
 
 	// Last-login timestamps (kept here, not in users.db, so the cold reference
 	// store doesn't take a write on every login)
-	sessions.exec("create table logins (user integer primary key, last integer not null)")
+	sessions.exec("create table logins (user text primary key, last integer not null)")
 
 	// Per-request token access timestamps. Split out of users.db.tokens so the
 	// every-request "used" write doesn't land on the cold reference store, but
 	// the token definitions themselves stay in users.db so token loss doesn't
 	// follow sessions.db corruption. `user` duplicated here for cascade.
-	sessions.exec("create table accesses (hash text primary key not null, user integer not null, used integer not null default 0)")
+	sessions.exec("create table accesses (hash text primary key not null, user text not null, used integer not null default 0)")
 	sessions.exec("create index accesses_user on accesses(user)")
 
 	// Cosmetic last-used timestamp per passkey. Sign count (replay-prevention
 	// state) stays in users.db.credentials; only the cosmetic stat lives here.
-	sessions.exec("create table passkeys (credential blob primary key, user integer not null, last integer not null default 0)")
+	sessions.exec("create table passkeys (credential blob primary key, user text not null, last integer not null default 0)")
 	sessions.exec("create index passkeys_user on passkeys(user)")
 
 	// OAuth verification state (last time each linked identity was used to log
 	// in). Split from users.db.oauth so per-login writes don't land on the cold
 	// reference store. `oauth` references users.db.oauth(id); `user` duplicated
 	// here for cascade.
-	sessions.exec("create table verifications (oauth integer primary key, user integer not null, last integer not null default 0)")
+	sessions.exec("create table verifications (oauth integer primary key, user text not null, last integer not null default 0)")
 	sessions.exec("create index verifications_user on verifications(user)")
 
 	// Directory. `entities` holds per-entity metadata (one row); `locations`
@@ -276,12 +248,12 @@ func db_create() {
 	// Domains
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner integer not null default 0, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	if exists, _ := domains.exists("select 1 from pragma_table_info('routes') where name='owner'"); !exists {
-		domains.exec("alter table routes add column owner integer not null default 0")
+		domains.exec("alter table routes add column owner text not null default ''")
 	}
 	domains.exec("create index if not exists routes_domain on routes(domain)")
-	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists delegations_domain on delegations(domain)")
 	domains.exec("create index if not exists delegations_owner on delegations(owner)")
 
@@ -296,7 +268,7 @@ func db_create() {
 
 	// Scheduled events
 	schedule := db_open("db/schedule.db")
-	schedule.exec("create table schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+	schedule.exec("create table schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 	schedule.exec("create index schedule_due on schedule(due)")
 	schedule.exec("create index schedule_app_event on schedule(app, event)")
 
@@ -333,7 +305,7 @@ func db_apps() *DB {
 
 // db_user opens a database in the user's directory
 func db_user(u *User, name string) *DB {
-	path := fmt.Sprintf("users/%d/%s.db", u.ID, name)
+	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
 
 	// Create tables for user.db
@@ -384,7 +356,7 @@ func db_app(u *User, app *App) *DB {
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%d/%s/db/%s", u.ID, app.id, av.Database.File)
+	path := fmt.Sprintf("users/%s/%s/db/%s", u.UID, app.id, av.Database.File)
 	key := fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
 	db, _, reused := db_open_work(path, key)
 	if db == nil {
@@ -457,7 +429,7 @@ func db_app_system(u *User, app *App) *DB {
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%d/%s/app.db", u.ID, app.id)
+	path := fmt.Sprintf("users/%s/%s/app.db", u.UID, app.id)
 	db, _, reused := db_open_work(path)
 	if db == nil {
 		return nil
@@ -622,6 +594,8 @@ func db_upgrade() {
 			db_upgrade_51()
 		case 52:
 			db_upgrade_52()
+		case 53:
+			db_upgrade_53()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -771,6 +745,282 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_53 replaces the integer `users.id` primary key with the
+// globally-stable `uid` everywhere. Drops the v51 dual-write triggers and
+// parallel `user_uid` columns, rebuilds every FK-bearing table with a TEXT
+// `user` column referencing `users(uid)`, retypes every `user`/`owner` column
+// in sessions.db, domains.db and schedule.db from integer to text, and
+// renames on-disk `users/<int>/` directories to `users/<uid>/` so per-user
+// data paths reflect the new identifier. See claude/plans/replication.md.
+func db_upgrade_53() {
+	users := db_open("db/users.db")
+	sessions := db_open("db/sessions.db")
+	domains := db_open("db/domains.db")
+	schedule := db_open("db/schedule.db")
+
+	// Build int id -> uid map for users. v51 already filled uid in every row.
+	idmap := map[int64]string{}
+	rows, _ := users.rows("select id, uid from users")
+	for _, r := range rows {
+		id, _ := r["id"].(int64)
+		uid, _ := r["uid"].(string)
+		if uid == "" {
+			continue
+		}
+		idmap[id] = uid
+	}
+
+	// Drop the v51 triggers that maintained user_uid in parallel. They're
+	// about to become wrong (the rebuild will keep `uid`/`user` as the only
+	// columns).
+	for _, tbl := range []string{"entities", "credentials", "recovery", "totp", "oauth", "tokens"} {
+		users.exec(fmt.Sprintf("drop trigger if exists %s_user_uid_insert", tbl))
+		users.exec(fmt.Sprintf("drop trigger if exists %s_user_uid_update", tbl))
+	}
+	users.exec("drop trigger if exists users_uid_insert")
+
+	// Foreign keys must be off while we shuffle parents and children; SQLite
+	// otherwise rejects the row copies that recreate the FK target.
+	users.exec("pragma foreign_keys=off")
+	defer users.exec("pragma foreign_keys=on")
+
+	// Rebuild users: uid TEXT PK, no integer id.
+	users.exec("create table users_new (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("insert into users_new (uid, username, role, methods, status) select uid, username, role, methods, status from users")
+	users.exec("drop table users")
+	users.exec("alter table users_new rename to users")
+	users.exec("create unique index users_username on users (username)")
+
+	// Rebuild entities with user TEXT FK to users(uid).
+	users.exec("create table entities_new (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("insert into entities_new (id, private, fingerprint, user, parent, class, name, privacy, data, published) select id, private, fingerprint, coalesce(user_uid, ''), parent, class, name, privacy, data, published from entities")
+	users.exec("drop table entities")
+	users.exec("alter table entities_new rename to entities")
+	users.exec("create index entities_fingerprint on entities(fingerprint)")
+	users.exec("create index entities_user on entities(user)")
+	users.exec("create index entities_parent on entities(parent)")
+	users.exec("create index entities_class on entities(class)")
+	users.exec("create index entities_name on entities(name)")
+	users.exec("create index entities_privacy on entities(privacy)")
+	users.exec("create index entities_published on entities(published)")
+
+	// Rebuild credentials.
+	users.exec("create table credentials_new (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("insert into credentials_new (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) select id, coalesce(user_uid, ''), public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials")
+	users.exec("drop table credentials")
+	users.exec("alter table credentials_new rename to credentials")
+	users.exec("create index credentials_user on credentials(user)")
+
+	// Rebuild recovery.
+	users.exec("create table recovery_new (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
+	users.exec("insert into recovery_new (id, user, hash, created) select id, coalesce(user_uid, ''), hash, created from recovery")
+	users.exec("drop table recovery")
+	users.exec("alter table recovery_new rename to recovery")
+	users.exec("create index recovery_user on recovery(user)")
+
+	// Rebuild totp.
+	users.exec("create table totp_new (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("insert into totp_new (user, secret, verified, created) select coalesce(user_uid, ''), secret, verified, created from totp")
+	users.exec("drop table totp")
+	users.exec("alter table totp_new rename to totp")
+
+	// Rebuild oauth.
+	users.exec("create table oauth_new (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	users.exec("insert into oauth_new (id, user, provider, subject, email, verified, name, created) select id, coalesce(user_uid, ''), provider, subject, email, verified, name, created from oauth")
+	users.exec("drop table oauth")
+	users.exec("alter table oauth_new rename to oauth")
+	users.exec("create index oauth_user on oauth(user)")
+
+	// Rebuild tokens.
+	users.exec("create table tokens_new (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("insert into tokens_new (hash, user, app, name, scopes, created, expires) select hash, coalesce(user_uid, ''), app, name, scopes, created, expires from tokens")
+	users.exec("drop table tokens")
+	users.exec("alter table tokens_new rename to tokens")
+	users.exec("create index tokens_user on tokens(user)")
+	users.exec("create index tokens_app on tokens(app)")
+
+	// sessions.db: retype every user / owner column from integer to text and
+	// remap rows through idmap. Each table is rebuilt so SQLite can change
+	// the column type cleanly.
+	db_upgrade_53_retype_user(sessions, "sessions",
+		"user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code)",
+		"user, code, secret, expires, created, accessed, address, agent",
+		idmap)
+	sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+	sessions.exec("create index if not exists sessions_expires on sessions(expires)")
+	sessions.exec("create index if not exists sessions_user on sessions(user)")
+
+	db_upgrade_53_retype_user(sessions, "ceremonies",
+		"id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null",
+		"id, type, user, challenge, data, expires",
+		idmap)
+	sessions.exec("create index if not exists ceremonies_expires on ceremonies(expires)")
+
+	db_upgrade_53_retype_user(sessions, "partial",
+		"id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null",
+		"id, user, completed, remaining, expires",
+		idmap)
+	sessions.exec("create index if not exists partial_expires on partial(expires)")
+
+	db_upgrade_53_retype_user(sessions, "logins",
+		"user text primary key, last integer not null",
+		"user, last",
+		idmap)
+
+	db_upgrade_53_retype_user(sessions, "accesses",
+		"hash text primary key not null, user text not null, used integer not null default 0",
+		"hash, user, used",
+		idmap)
+	sessions.exec("create index if not exists accesses_user on accesses(user)")
+
+	db_upgrade_53_retype_user(sessions, "passkeys",
+		"credential blob primary key, user text not null, last integer not null default 0",
+		"credential, user, last",
+		idmap)
+	sessions.exec("create index if not exists passkeys_user on passkeys(user)")
+
+	db_upgrade_53_retype_user(sessions, "verifications",
+		"oauth integer primary key, user text not null, last integer not null default 0",
+		"oauth, user, last",
+		idmap)
+	sessions.exec("create index if not exists verifications_user on verifications(user)")
+
+	// domains.db: retype routes.owner and delegations.owner from integer to
+	// text. Rebuild both tables and remap.
+	db_upgrade_53_retype_owner(domains, "routes",
+		"domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade",
+		"domain, path, method, target, context, owner, priority, enabled, created, updated",
+		idmap)
+	domains.exec("create index if not exists routes_domain on routes(domain)")
+
+	db_upgrade_53_retype_owner(domains, "delegations",
+		"id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade",
+		"id, domain, path, owner, created, updated",
+		idmap)
+	domains.exec("create index if not exists delegations_domain on delegations(domain)")
+	domains.exec("create index if not exists delegations_owner on delegations(owner)")
+
+	// schedule.db: retype schedule.user from integer to text.
+	if exists, _ := schedule.exists("select 1 from sqlite_master where type='table' and name='schedule'"); exists {
+		db_upgrade_53_retype_user(schedule, "schedule",
+			"id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null",
+			"id, user, app, due, event, data, interval, created",
+			idmap)
+		schedule.exec("create index if not exists schedule_due on schedule(due)")
+		schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
+	}
+
+	// Rename on-disk per-user data directories from users/<int>/ to
+	// users/<uid>/ so the disk path reflects the new identifier.
+	root := filepath.Join(data_dir, "users")
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			id := atoi(e.Name(), 0)
+			if id <= 0 {
+				continue
+			}
+			uid, ok := idmap[int64(id)]
+			if !ok || uid == "" {
+				warn("Database upgrade 53: no uid for user dir %q, leaving untouched", e.Name())
+				continue
+			}
+			from := filepath.Join(root, e.Name())
+			to := filepath.Join(root, uid)
+			if from == to {
+				continue
+			}
+			if err := os.Rename(from, to); err != nil {
+				warn("Database upgrade 53: rename %q -> %q failed: %v", from, to, err)
+			}
+		}
+	}
+}
+
+// db_upgrade_53_retype_user rebuilds a table that has an integer `user`
+// column into the same shape with `user text`. Existing rows are remapped
+// through idmap (int id -> uid). Rows with no idmap entry are dropped.
+func db_upgrade_53_retype_user(db *DB, table, schema, cols string, idmap map[int64]string) {
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name=?", table); !exists {
+		db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
+		return
+	}
+	// Snapshot existing rows before drop.
+	rows, _ := db.rows(fmt.Sprintf("select %s from %s", cols, table))
+	db.exec(fmt.Sprintf("drop table %s", table))
+	db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
+	colNames := strings.Split(cols, ", ")
+	placeholders := strings.Repeat("?, ", len(colNames))
+	placeholders = strings.TrimSuffix(placeholders, ", ")
+	for _, r := range rows {
+		vals := make([]any, len(colNames))
+		drop := false
+		for i, n := range colNames {
+			if n == "user" {
+				switch v := r[n].(type) {
+				case int64:
+					uid, ok := idmap[v]
+					if !ok {
+						drop = true
+					}
+					vals[i] = uid
+				case string:
+					vals[i] = v
+				default:
+					vals[i] = ""
+				}
+			} else {
+				vals[i] = r[n]
+			}
+		}
+		if drop {
+			continue
+		}
+		db.exec(fmt.Sprintf("insert or ignore into %s (%s) values (%s)", table, cols, placeholders), vals...)
+	}
+}
+
+// db_upgrade_53_retype_owner is the same as db_upgrade_53_retype_user but
+// remaps an `owner` column rather than `user`.
+func db_upgrade_53_retype_owner(db *DB, table, schema, cols string, idmap map[int64]string) {
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name=?", table); !exists {
+		db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
+		return
+	}
+	rows, _ := db.rows(fmt.Sprintf("select %s from %s", cols, table))
+	db.exec(fmt.Sprintf("drop table %s", table))
+	db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
+	colNames := strings.Split(cols, ", ")
+	placeholders := strings.Repeat("?, ", len(colNames))
+	placeholders = strings.TrimSuffix(placeholders, ", ")
+	for _, r := range rows {
+		vals := make([]any, len(colNames))
+		for i, n := range colNames {
+			if n == "owner" {
+				switch v := r[n].(type) {
+				case int64:
+					if v == 0 {
+						vals[i] = ""
+					} else if uid, ok := idmap[v]; ok {
+						vals[i] = uid
+					} else {
+						vals[i] = ""
+					}
+				case string:
+					vals[i] = v
+				default:
+					vals[i] = ""
+				}
+			} else {
+				vals[i] = r[n]
+			}
+		}
+		db.exec(fmt.Sprintf("insert or ignore into %s (%s) values (%s)", table, cols, placeholders), vals...)
 	}
 }
 
@@ -1024,7 +1274,7 @@ func db_for_thread(t *sl.Thread) (*DB, error) {
 		} else {
 			return nil, fmt.Errorf("no user context available")
 		}
-	} else if owner != nil && owner.ID != user.ID {
+	} else if owner != nil && owner.UID != user.UID {
 		db_user = owner
 	} else if domain_routing {
 		if owner != nil {

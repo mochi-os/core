@@ -12,7 +12,7 @@ import (
 )
 
 // Create a JWT using a specific HMAC secret (test helper)
-func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
+func jwt_create_with_secret(user_id string, secret []byte) (string, error) {
 	claims := mochi_claims{
 		User: user_id,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -32,7 +32,7 @@ func jwt_create_with_secret(user_id int, secret []byte) (string, error) {
 // Test jwt_create_with_secret function
 func TestJwtCreateWithSecret(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
-	user_id := 42
+	user_id := "u42"
 
 	token, err := jwt_create_with_secret(user_id, secret)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestJwtCreateWithSecret(t *testing.T) {
 	}
 
 	if claims.User != user_id {
-		t.Errorf("Token user = %d, want %d", claims.User, user_id)
+		t.Errorf("Token user = %q, want %q", claims.User, user_id)
 	}
 }
 
@@ -67,11 +67,11 @@ func TestJwtCreateWithSecret(t *testing.T) {
 func TestJwtCreateWithSecretUserIds(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
 
-	user_ids := []int{0, 1, 100, 999999, -1}
+	user_ids := []string{"u0", "u1", "u100", "u999999"}
 	for _, user_id := range user_ids {
 		token, err := jwt_create_with_secret(user_id, secret)
 		if err != nil {
-			t.Errorf("jwt_create_with_secret(%d) failed: %v", user_id, err)
+			t.Errorf("jwt_create_with_secret(%q) failed: %v", user_id, err)
 			continue
 		}
 
@@ -80,12 +80,12 @@ func TestJwtCreateWithSecretUserIds(t *testing.T) {
 			return secret, nil
 		})
 		if err != nil {
-			t.Errorf("Failed to parse token for user %d: %v", user_id, err)
+			t.Errorf("Failed to parse token for user %q: %v", user_id, err)
 			continue
 		}
 
 		if claims.User != user_id {
-			t.Errorf("Token user = %d, want %d", claims.User, user_id)
+			t.Errorf("Token user = %q, want %q", claims.User, user_id)
 		}
 	}
 }
@@ -94,7 +94,7 @@ func TestJwtCreateWithSecretUserIds(t *testing.T) {
 func TestJwtCreateWithSecretDifferentSecrets(t *testing.T) {
 	secret1 := []byte("secret-one-12345678901234567890123")
 	secret2 := []byte("secret-two-12345678901234567890123")
-	user_id := 42
+	user_id := "u42"
 
 	token1, err := jwt_create_with_secret(user_id, secret1)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestJwtCreateWithSecretDifferentSecrets(t *testing.T) {
 // Test token expiration claims
 func TestJwtCreateWithSecretExpiry(t *testing.T) {
 	secret := []byte("test-secret-key-12345678901234567890")
-	user_id := 42
+	user_id := "u42"
 
 	token, err := jwt_create_with_secret(user_id, secret)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestJwtCreateWithSecretExpiry(t *testing.T) {
 // Benchmark jwt_create_with_secret
 func BenchmarkJwtCreateWithSecret(b *testing.B) {
 	secret := []byte("benchmark-secret-key-1234567890123")
-	user_id := 42
+	user_id := "u42"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

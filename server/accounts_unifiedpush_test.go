@@ -79,7 +79,7 @@ func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	data := map[string]any{
 		// Path-only endpoint — local fast-path should fire
 		"endpoint": "/menu/-/push/inbound/abc123",
@@ -108,7 +108,7 @@ func TestUnifiedPushDeliverRemote(t *testing.T) {
 	setupVAPID(t)
 	auth, p256dh := generateSubscriptionKeys(t)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	data := map[string]any{
 		"endpoint": server.URL + "/push/abc",
 		"auth":     auth,
@@ -136,7 +136,7 @@ func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
 	setupVAPID(t)
 	auth, p256dh := generateSubscriptionKeys(t)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	data := map[string]any{
 		"endpoint": server.URL + "/push/abc",
 		"auth":     auth,
@@ -166,7 +166,7 @@ func setupVAPID(t *testing.T) {
 // TestUnifiedPushDeliverEmptyEndpoint guards against silent success when an
 // account row is missing its endpoint.
 func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	data := map[string]any{} // no endpoint
 	if account_deliver_unifiedpush(user, 42, data, "T", "B", "", "tag", "") {
 		t.Error("delivery should fail when endpoint is empty")
@@ -192,7 +192,7 @@ func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 	setupVAPID(t)
 	auth, p256dh := generateSubscriptionKeys(t)
 
-	user := &User{ID: 1}
+	user := &User{UID: "u1"}
 	data := map[string]any{
 		"endpoint": server.URL + "/some/path",
 		"auth":     auth,
@@ -227,7 +227,7 @@ func TestAccountsHasLastDeliveredColumn(t *testing.T) {
 	defer func() { data_dir = orig_data_dir }()
 
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "42"), 0755)
-	user := &User{ID: 42}
+	user := &User{UID: "u42"}
 	db := db_user(user, "user")
 
 	has, err := db.exists(

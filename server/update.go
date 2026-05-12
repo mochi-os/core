@@ -322,7 +322,7 @@ func update_install_download(url, dest string) error {
 // notification in their own language.
 func update_notify_admins(latest string) {
 	db := db_open("db/users.db")
-	rows, err := db.rows("select id, username from users where role = ?", "administrator")
+	rows, err := db.rows("select uid, username from users where role = ?", "administrator")
 	if err != nil {
 		warn("Server update: list admins: %v", err)
 		return
@@ -335,11 +335,11 @@ func update_notify_admins(latest string) {
 	link := "/settings/system/status"
 
 	for _, row := range rows {
-		id, _ := row["id"].(int64)
-		if id == 0 {
+		id, _ := row["uid"].(string)
+		if id == "" {
 			continue
 		}
-		user := user_by_id(int(id))
+		user := user_by_uid(id)
 		if user == nil {
 			continue
 		}
@@ -358,7 +358,7 @@ func update_notify_admins(latest string) {
 			"count":  int64(1),
 		}
 		if err := service_call_as_server(id, "notifications", "send", args); err != nil {
-			info("Server update: notify user %d: %v", id, err)
+			info("Server update: notify user %q: %v", id, err)
 		}
 	}
 }

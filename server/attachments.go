@@ -96,17 +96,17 @@ func (db *DB) attachments_setup() {
 }
 
 // Get the file path for an attachment (relative to data_dir)
-func attachment_path(user_id int, app_id string, id string, name string) string {
+func attachment_path(user_uid string, app_id string, id string, name string) string {
 	safe_name := filepath.Base(name)
 	if safe_name == "" || safe_name == "." || safe_name == ".." {
 		safe_name = "file"
 	}
-	return fmt.Sprintf("users/%d/%s/files/%s_%s", user_id, app_id, id, safe_name)
+	return fmt.Sprintf("users/%s/%s/files/%s_%s", user_uid, app_id, id, safe_name)
 }
 
 // Get the base directory for attachment files (for use with os.Root)
-func attachment_files_base(user_id int, app_id string) string {
-	return fmt.Sprintf("%s/users/%d/%s/files", data_dir, user_id, app_id)
+func attachment_files_base(user_uid string, app_id string) string {
+	return fmt.Sprintf("%s/users/%s/%s/files", data_dir, user_uid, app_id)
 }
 
 // Get just the filename for an attachment (for use with os.Root)
@@ -302,7 +302,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Open root once for all files (traversal protection)
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return sl_error(fn, "unable to create files directory: %v", err)
 	}
@@ -499,7 +499,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Save file using os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return sl_error(fn, "unable to create files directory: %v", err)
 	}
@@ -626,7 +626,7 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 
 	// Use os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return sl_error(fn, "unable to create files directory: %v", err)
 	}
@@ -787,7 +787,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Save file using os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return sl_error(fn, "unable to create files directory: %v", err)
 	}
@@ -987,12 +987,12 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Get attachment to delete
 	var att Attachment
 	if !db.scan(&att, "select * from attachments where id = ?", id) {
-		debug("attachment_delete: attachment %s not found in user %d database", id, owner.ID)
+		debug("attachment_delete: attachment %s not found in user %q database", id, owner.UID)
 		return sl.False, nil
 	}
 
 	// Delete file and thumbnail using os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	root, err := os.OpenRoot(base)
 	if err == nil {
 		filename := attachment_filename(att.ID, att.Name)
@@ -1056,7 +1056,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	// Delete files using os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	root, err := os.OpenRoot(base)
 	if err == nil {
 		for _, att := range attachments {
@@ -1247,7 +1247,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Local file - read using os.Root for traversal protection
-	base := attachment_files_base(owner.ID, app.id)
+	base := attachment_files_base(owner.UID, app.id)
 	root, err := os.OpenRoot(base)
 	if err != nil {
 		return sl_error(fn, "file not found")
@@ -1356,7 +1356,7 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl.None, nil
 	}
 
-	path := filepath.Join(data_dir, attachment_path(owner.ID, app.id, att.ID, att.Name))
+	path := filepath.Join(data_dir, attachment_path(owner.UID, app.id, att.ID, att.Name))
 	thumb, err := thumbnail_create(path)
 	if err != nil || thumb == "" {
 		return sl.None, nil
@@ -1365,7 +1365,7 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	// Return relative path from app's files directory
 	// The thumbnail is at: data_dir/users/{user}/app/files/thumbnails/id_name_thumbnail.ext
 	// We need to return: thumbnails/id_name_thumbnail.ext
-	base := filepath.Join(data_dir, "users", fmt.Sprintf("%d", owner.ID), app.id, "files")
+	base := filepath.Join(data_dir, "users", owner.UID, app.id, "files")
 	rel, err := filepath.Rel(base, thumb)
 	if err != nil {
 		return sl.None, nil
@@ -1785,7 +1785,7 @@ func (e *Event) attachment_event_delete() {
 
 		// Delete local file and thumbnail using os.Root for traversal protection
 		if e.user != nil && e.app != nil {
-			base := attachment_files_base(e.user.ID, e.app.id)
+			base := attachment_files_base(e.user.UID, e.app.id)
 			root, err := os.OpenRoot(base)
 			if err == nil {
 				filename := attachment_filename(att.ID, att.Name)
@@ -1864,7 +1864,7 @@ func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
 
 	// Resolve the file path — fetch from the original uploader if needed
-	base := attachment_files_base(e.user.ID, e.app.id)
+	base := attachment_files_base(e.user.UID, e.app.id)
 	filename := attachment_filename(att.ID, att.Name)
 	path := filepath.Join(base, filename)
 

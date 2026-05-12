@@ -59,11 +59,10 @@ func replication_file_sync_apply(userUID, appID string, fs *FileSync) ApplyResul
 		return ApplyInvalid
 	}
 
-	localID := user_local_id(userUID)
-	if localID == 0 {
+	if !user_exists(userUID) {
 		return ApplyDeferred
 	}
-	u := &User{ID: localID, UID: userUID}
+	u := &User{UID: userUID}
 	a := app_by_id(appID)
 	if a == nil {
 		return ApplyDeferred

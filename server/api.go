@@ -407,8 +407,8 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //
 // args is encoded as kwargs onto the Starlark function call; positional
 // parameters after the prepended context dict are not used.
-func service_call_as_server(target_user_id int64, service string, function string, args Map) error {
-	user := user_by_id(int(target_user_id))
+func service_call_as_server(target_user_uid string, service string, function string, args Map) error {
+	user := user_by_uid(target_user_uid)
 	if user == nil {
 		return nil
 	}
@@ -567,7 +567,7 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	}
 
 	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -638,7 +638,7 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.ID)
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

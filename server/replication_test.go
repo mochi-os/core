@@ -1281,6 +1281,237 @@ func TestWebpushDedupTTLExpires(t *testing.T) {
 	}
 }
 
+// =====================================================================
+// Two-host integration scenarios (task #11)
+// =====================================================================
+//
+// These tests simulate two hosts in a single process by swapping
+// data_dir and p2p_id between turns. Replication ops "travel" between
+// hosts by being constructed once and applied via replication_apply_op
+// (or its underlying helpers) under each host's context. The real P2P
+// transport is bypassed — its role is at-least-once delivery + dedup,
+// both already covered by transport-level unit tests. What these
+// scenarios prove is that the apply pipelines on different hosts
+// converge to the same end state for the patterns the apps use.
+
+// integration_setup mints two host contexts (data_dirs + p2p_ids) and
+// returns a switch() function: switch("h1") runs subsequent code under
+// host 1's context. Cleanup removes both temp dirs and restores the
+// originals.
+func integration_setup(t *testing.T) (func(string), func()) {
+	t.Helper()
+	dir1, err := os.MkdirTemp("", "mochi_int_h1")
+	if err != nil {
+		t.Fatalf("temp dir 1: %v", err)
+	}
+	dir2, err := os.MkdirTemp("", "mochi_int_h2")
+	if err != nil {
+		os.RemoveAll(dir1)
+		t.Fatalf("temp dir 2: %v", err)
+	}
+	orig_data := data_dir
+	orig_p2p := p2p_id
+
+	hosts := map[string]struct {
+		dir string
+		id  string
+	}{
+		"h1": {dir1, "peer1"},
+		"h2": {dir2, "peer2"},
+	}
+
+	switchTo := func(name string) {
+		h, ok := hosts[name]
+		if !ok {
+			t.Fatalf("unknown host %q", name)
+		}
+		data_dir = h.dir
+		p2p_id = h.id
+		// Lazy-create the per-host replication schema on first use.
+		db_upgrade_50()
+	}
+
+	cleanup := func() {
+		data_dir = orig_data
+		p2p_id = orig_p2p
+		os.RemoveAll(dir1)
+		os.RemoveAll(dir2)
+	}
+	return switchTo, cleanup
+}
+
+func TestIntegrationCounterConvergesAcrossTwoHosts(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1 increments by 5, Host 2 decrements by 3 — independent local
+	// writes plus a replication op exchange. Both hosts must converge to
+	// the same logical value (5 - 3 = 2).
+	switchTo("h1")
+	db1 := db_open("db/test-app.db")
+	counter_local_apply(db1, "votes", "peer1", 5)
+
+	switchTo("h2")
+	db2 := db_open("db/test-app.db")
+	counter_local_apply(db2, "votes", "peer2", -3)
+
+	// Replication: each host's local delta arrives at the other.
+	switchTo("h2")
+	db2 = db_open("db/test-app.db")
+	counter_local_apply(db2, "votes", "peer1", 5)
+
+	switchTo("h1")
+	db1 = db_open("db/test-app.db")
+	counter_local_apply(db1, "votes", "peer2", -3)
+
+	v1 := db1.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
+	switchTo("h2")
+	db2 = db_open("db/test-app.db")
+	v2 := db2.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
+
+	if v1 != 2 {
+		t.Errorf("host1 value: expected 2, got %d", v1)
+	}
+	if v2 != 2 {
+		t.Errorf("host2 value: expected 2, got %d", v2)
+	}
+	if v1 != v2 {
+		t.Errorf("hosts disagree: h1=%d h2=%d", v1, v2)
+	}
+}
+
+func TestIntegrationLWWConvergesAcrossTwoHosts(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1 writes "dark" at ts=100; Host 2 writes "light" at ts=200.
+	// After cross-replication both hosts see "light" (higher ts).
+	switchTo("h1")
+	db1 := db_open("db/test-app.db")
+	lww_local_apply(db1, "settings", "u1", "theme", "dark", 100, "peer1")
+
+	switchTo("h2")
+	db2 := db_open("db/test-app.db")
+	lww_local_apply(db2, "settings", "u1", "theme", "light", 200, "peer2")
+
+	// Cross-replicate.
+	switchTo("h1")
+	db1 = db_open("db/test-app.db")
+	lww_local_apply(db1, "settings", "u1", "theme", "light", 200, "peer2")
+	switchTo("h2")
+	db2 = db_open("db/test-app.db")
+	lww_local_apply(db2, "settings", "u1", "theme", "dark", 100, "peer1")
+
+	row1, _ := db1.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
+	switchTo("h2")
+	db2 = db_open("db/test-app.db")
+	row2, _ := db2.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
+
+	v1, _ := row1["value"].(string)
+	v2, _ := row2["value"].(string)
+	if v1 != "light" {
+		t.Errorf("h1 winner: expected 'light' (ts=200), got %q", v1)
+	}
+	if v2 != "light" {
+		t.Errorf("h2 winner: expected 'light', got %q", v2)
+	}
+	if v1 != v2 {
+		t.Errorf("hosts disagree: h1=%q h2=%q", v1, v2)
+	}
+}
+
+func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1: alice exists locally and creates a session.
+	switchTo("h1")
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+	udb1 := db_open("db/users.db")
+	udb1.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	a := test_entity_id('a')
+	udb1.exec("insert into entities (id, private, fingerprint, user, user_uid, class, name, privacy) values (?, 'priv', 'fp1', 1, 'uid-alice', 'person', 'Alice', 'private')", a)
+
+	// Host 2: receives keys-transfer for alice (introducing her).
+	switchTo("h2")
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+	kt := &KeysTransfer{
+		Username: "alice@example.com",
+		Role:     "user",
+		Methods:  "email",
+		Status:   "active",
+		Entities: []KeysEntity{
+			{ID: a, Private: "priv", Fingerprint: "fp1", Class: "person", Name: "Alice"},
+		},
+	}
+	if n := replication_keys_transfer_apply(a, "peer1", kt); n != 1 {
+		t.Fatalf("keys-transfer on h2: expected 1 entity inserted, got %d", n)
+	}
+	// Patch alice's uid on h2 to match the canonical uid so the session
+	// op's user_uid resolves (in production the keys-transfer would
+	// carry the canonical uid too; the wire format doesn't yet).
+	udb2 := db_open("db/users.db")
+	udb2.exec("update users set uid='uid-alice' where username='alice@example.com'")
+
+	// Host 2 receives a session-insert op from Host 1.
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-alice",
+		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Sequence: 1,
+		Payload: cbor_encode(&SessionInsert{
+			UserUID: "uid-alice", Code: "sess-x", Secret: "s",
+			Expires: 100, Created: 50, Accessed: 50,
+			Address: "1.2.3.4", Agent: "test",
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("session apply on h2: expected ApplyApplied, got %v", got)
+	}
+
+	sdb := db_open("db/sessions.db")
+	count := sdb.integer("select count(*) from sessions where code='sess-x'")
+	if count != 1 {
+		t.Errorf("expected session present on h2; got %d rows", count)
+	}
+}
+
+func TestIntegrationMembershipChangePropagates(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1 announces a host set {peer1, peer2, peer3} for user alice.
+	// Host 2 receives and replaces its local view.
+	switchTo("h1")
+	mc := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1", "peer2", "peer3"}, Sequence: 5}
+	replication_membership_apply("peer1", mc)
+	db1 := db_open("db/replication.db")
+	count := db1.integer("select count(*) from hosts where user='uid-alice'")
+	// h1's peer (peer1=self on h1) is filtered out → 2 rows.
+	if count != 2 {
+		t.Errorf("h1 hosts count: expected 2 (self excluded), got %d", count)
+	}
+
+	switchTo("h2")
+	replication_membership_apply("peer1", mc)
+	db2 := db_open("db/replication.db")
+	count = db2.integer("select count(*) from hosts where user='uid-alice'")
+	// h2's peer (peer2=self on h2) is filtered out → 2 rows.
+	if count != 2 {
+		t.Errorf("h2 hosts count: expected 2 (self excluded), got %d", count)
+	}
+
+	// Stale change must not overwrite either host.
+	switchTo("h1")
+	mc2 := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1"}, Sequence: 3}
+	replication_membership_apply("peer1", mc2)
+	count = db1.integer("select count(*) from hosts where user='uid-alice'")
+	if count != 2 {
+		t.Errorf("h1 host count after stale apply: expected 2, got %d", count)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

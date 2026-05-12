@@ -1426,7 +1426,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			token, _ := data["token"].(string)
 			success = account_deliver_ntfy(server, topic, token, title, body, link)
 		case "unifiedpush":
-			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object)
+			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app)
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
@@ -1517,7 +1517,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 //     instead of HTTP self-call + Web Push round-trip.
 //   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
 //     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
-func account_deliver_unifiedpush(user *User, accountID int64, data map[string]any, title, body, link, tag string) bool {
+func account_deliver_unifiedpush(user *User, accountID int64, data map[string]any, title, body, link, tag, app string) bool {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
 		return false
@@ -1528,6 +1528,7 @@ func account_deliver_unifiedpush(user *User, accountID int64, data map[string]an
 		"body":  body,
 		"link":  link,
 		"tag":   tag,
+		"app":   app,
 	})
 
 	// Local fast-path: path-only endpoint synthesised by our own register

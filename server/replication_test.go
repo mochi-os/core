@@ -1512,6 +1512,69 @@ func TestIntegrationMembershipChangePropagates(t *testing.T) {
 	}
 }
 
+func TestEmailDedupBasic(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_email_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
+	user := &User{ID: 1}
+
+	if email_already_delivered(user, "alice@example.com", "evt-1") {
+		t.Errorf("fresh state must not be marked delivered")
+	}
+
+	email_mark_delivered(user, "alice@example.com", "evt-1")
+
+	if !email_already_delivered(user, "alice@example.com", "evt-1") {
+		t.Errorf("after mark, must be delivered")
+	}
+
+	// Different event_id same address — not yet delivered.
+	if email_already_delivered(user, "alice@example.com", "evt-2") {
+		t.Errorf("different event_id must not dedup")
+	}
+
+	// Different address same event_id — each address tracked independently
+	// so if a user has multiple addresses they all get emailed.
+	if email_already_delivered(user, "alice-work@example.com", "evt-1") {
+		t.Errorf("different address must not dedup")
+	}
+}
+
+func TestEmailDedupTTLExpires(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_email_ttl")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
+	user := &User{ID: 1}
+
+	db := email_dedup_db(user)
+	stale := now() - email_dedup_ttl - 1
+	db.exec("insert into email_delivered (address, event_id, ts) values (?, ?, ?)", "bob@example.com", "evt-old", stale)
+
+	if email_already_delivered(user, "bob@example.com", "evt-old") {
+		t.Errorf("rows older than TTL must not dedup")
+	}
+
+	email_mark_delivered(user, "bob@example.com", "evt-new")
+	count := db.integer("select count(*) from email_delivered where address='bob@example.com' and event_id='evt-old'")
+	if count != 0 {
+		t.Errorf("mark_delivered must prune stale rows; got %d remaining", count)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

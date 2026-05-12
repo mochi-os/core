@@ -22,6 +22,55 @@ func email_tls_policy() gm.TLSPolicy {
 }
 
 // email_send sends a plain text email.
+// email_send_dedup is email_send with a per-user (address, event_id)
+// dedup gate. When event_id is non-empty and the user already received
+// an email for the same (address, event_id) within the TTL window, the
+// send is suppressed — two replicas independently invoking the same
+// logical notification produce one email per recipient address instead
+// of two. Cross-replica dedup is local-only at this layer (same shape
+// as webpush_delivered); the small concurrent-emit race is documented
+// as acceptable for the user-facing duplicate-email impact.
+func email_send_dedup(u *User, event_id, to, subject, body string) {
+	if event_id != "" && u != nil && email_already_delivered(u, to, event_id) {
+		debug("email dedup: address=%q event_id=%q already delivered", to, event_id)
+		return
+	}
+	email_send(to, subject, body)
+	if event_id != "" && u != nil {
+		email_mark_delivered(u, to, event_id)
+	}
+}
+
+// email_dedup_db opens the per-user notifications DB (shared with
+// webpush_delivered) and lazily creates the email_delivered table.
+func email_dedup_db(u *User) *DB {
+	db := db_user(u, "notifications")
+	db.exec("create table if not exists email_delivered (address text not null, event_id text not null, ts integer not null, primary key (address, event_id))")
+	db.exec("create index if not exists email_delivered_ts on email_delivered(ts)")
+	return db
+}
+
+// email_already_delivered consults the per-user dedup table. Returns
+// true when an earlier call already recorded a delivery to this
+// (address, event_id) inside the TTL window.
+func email_already_delivered(u *User, address, event_id string) bool {
+	db := email_dedup_db(u)
+	exists, _ := db.exists("select 1 from email_delivered where address=? and event_id=? and ts > ?", address, event_id, now()-email_dedup_ttl)
+	return exists
+}
+
+// email_mark_delivered records (address, event_id) and opportunistically
+// prunes rows older than the TTL.
+func email_mark_delivered(u *User, address, event_id string) {
+	db := email_dedup_db(u)
+	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", address, event_id, now())
+	db.exec("delete from email_delivered where ts < ?", now()-email_dedup_ttl)
+}
+
+// Dedup TTL — same 24h window as webpush_dedup so the two backends'
+// rolloff is uniform from the user's point of view.
+const email_dedup_ttl int64 = 24 * 3600
+
 func email_send(to string, subject string, body string) {
 	m := gm.NewMsg()
 

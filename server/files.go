@@ -440,6 +440,13 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "unable to write file")
 	}
 
+	// Replicate the write to the user's host set so other replicas see
+	// the same file content. Files above file_sync_max_inline skip this
+	// for now (chunk protocol is the follow-up).
+	if user.UID != "" {
+		replication_emit_file_sync(user.UID, app.id, file, []byte(data))
+	}
+
 	return sl.None, nil
 }
 

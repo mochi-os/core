@@ -88,6 +88,19 @@ type KeysTransfer struct {
 	Entities []KeysEntity `cbor:"entities"`
 }
 
+// FileSync is the wire payload for a small-file replication op. For
+// files at or under file_sync_max_inline bytes the data travels inline
+// in the Data field; receivers write it straight into the per-(user,
+// app) file directory. Larger files fall back to a chunk protocol
+// (not yet implemented) using the same Hash for content-addressed
+// fetches.
+type FileSync struct {
+	Path string `cbor:"path"`
+	Hash string `cbor:"hash,omitempty"`
+	Data []byte `cbor:"data,omitempty"`
+	Size int64  `cbor:"size"`
+}
+
 // WebpushDelivered is the wire payload for replicating a per-user
 // webpush dedup row. Local marks of (endpoint, event_id) fan out to
 // the user's host set so a replica that processes the same event after
@@ -259,6 +272,13 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 			return ApplyInvalid
 		}
 		return replication_lww_apply(op.User, op.Database, &s)
+	case op.Scope == repl_scope_app && op.Table == "_files":
+		var fs FileSync
+		if err := cbor.Unmarshal(op.Payload, &fs); err != nil {
+			info("Replication op _files: decode failed: %v", err)
+			return ApplyInvalid
+		}
+		return replication_file_sync_apply(op.User, op.Database, &fs)
 	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
 		var w WebpushDelivered
 		if err := cbor.Unmarshal(op.Payload, &w); err != nil {

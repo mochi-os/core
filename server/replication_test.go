@@ -1868,6 +1868,74 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	}
 }
 
+func TestFileSyncApplyWritesFile(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+
+	// Register a test app so app_by_id returns non-nil.
+	apps_lock.Lock()
+	apps["myapp"] = &App{id: "myapp"}
+	apps_lock.Unlock()
+	defer func() {
+		apps_lock.Lock()
+		delete(apps, "myapp")
+		apps_lock.Unlock()
+	}()
+
+	fs := &FileSync{
+		Path: "avatars/me.png",
+		Size: 5,
+		Data: []byte("hello"),
+	}
+	if got := replication_file_sync_apply("uid-alice", "myapp", fs); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	// File should now exist on disk.
+	target := filepath.Join(data_dir, "users", "1", "myapp", "files", "avatars", "me.png")
+	contents, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("file missing after apply: %v", err)
+	}
+	if string(contents) != "hello" {
+		t.Errorf("file contents: expected 'hello', got %q", string(contents))
+	}
+}
+
+func TestFileSyncApplyDefersUnknownUser(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	apps_lock.Lock()
+	apps["myapp"] = &App{id: "myapp"}
+	apps_lock.Unlock()
+	defer func() {
+		apps_lock.Lock()
+		delete(apps, "myapp")
+		apps_lock.Unlock()
+	}()
+
+	fs := &FileSync{Path: "foo.txt", Size: 3, Data: []byte("foo")}
+	if got := replication_file_sync_apply("uid-nobody", "myapp", fs); got != ApplyDeferred {
+		t.Errorf("unknown user must defer, got %v", got)
+	}
+}
+
+func TestFileSyncApplyRejectsInvalidPath(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	fs := &FileSync{Path: "../../etc/passwd", Size: 3, Data: []byte("bad")}
+	if got := replication_file_sync_apply("uid-anything", "myapp", fs); got != ApplyInvalid {
+		t.Errorf("invalid path must return ApplyInvalid, got %v", got)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

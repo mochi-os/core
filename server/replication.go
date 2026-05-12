@@ -177,6 +177,7 @@ func replication_op_event(e *Event) {
 			e.peer, op.Scope, op.User, op.Sequence, now())
 		debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
 			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+		commit_hook_fire(op.User, op.Database, op.Table, op.Kind, "")
 	case ApplyDeferred:
 		payload := cbor_encode(&op)
 		db.exec(

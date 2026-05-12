@@ -125,7 +125,16 @@ type AppVersion struct {
 	Actions      map[string]AppAction   `json:"actions"`
 	Events       map[string]AppEvent    `json:"events"`
 	Functions    map[string]AppFunction `json:"functions"`
-	Themes       []AppTheme             `json:"themes"`
+	// Commit.Function is the name of a Starlark function the framework
+	// invokes after any committed write to this app's per-user DB —
+	// both local commits and replication replays. Apps move WebSocket
+	// emission and other "after the row lands" work here so remote-host
+	// writes still reach local subscribers. See pattern 1.6 in
+	// claude/plans/replication.md. Handlers MUST be idempotent.
+	Commit struct {
+		Function string `json:"function"`
+	} `json:"commit,omitempty"`
+	Themes []AppTheme `json:"themes"`
 	// ThemeIcons lets an app declare per-theme icon variants of itself,
 	// keyed by namespaced theme id ("<app_id>:<theme_id>"). Counterpart
 	// to AppTheme.Icons — see apps.go:2110 for the resolution priority.

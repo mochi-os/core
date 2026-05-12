@@ -44,6 +44,7 @@ var (
 	databases_lock sync.Mutex
 
 	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
+		"commit":      api_commit,
 		"execute":     sl.NewBuiltin("mochi.db.execute", api_db_query),
 		"exists":      sl.NewBuiltin("mochi.db.exists", api_db_query),
 		"row":         sl.NewBuiltin("mochi.db.row", api_db_query),

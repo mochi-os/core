@@ -40,6 +40,7 @@ func init() {
 			"ai":         api_ai,
 			"app":        api_app,
 			"attachment": api_attachment,
+			"counter":    api_counter,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
 				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{

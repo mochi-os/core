@@ -76,6 +76,17 @@ type KeysTransfer struct {
 	Entities []KeysEntity `cbor:"entities"`
 }
 
+// CounterDelta is the wire payload for a PN-counter add op. One delta
+// per replication op, carrying the change made on the origin peer's
+// slot. Receivers add to their per-(name, peer) row using INSERT … ON
+// CONFLICT so applies are commutative and order-independent. See
+// pattern 1.1 in claude/plans/replication.md.
+type CounterDelta struct {
+	Name  string `cbor:"name"`
+	Peer  string `cbor:"peer"`
+	Delta int64  `cbor:"delta"`
+}
+
 // SessionInsert is the wire payload for a sessions.sessions insert op.
 // Carried as the CBOR-encoded Payload of a ReplicationOp with
 // Database="sessions" Table="sessions" Kind="insert". UserUID is the
@@ -175,6 +186,13 @@ func replication_op_event(e *Event) {
 // `pending` for a later retry; ApplyInvalid for unrecognised ops.
 func replication_apply_op(op *ReplicationOp) ApplyResult {
 	switch {
+	case op.Scope == repl_scope_app && op.Table == "_counters":
+		var d CounterDelta
+		if err := cbor.Unmarshal(op.Payload, &d); err != nil {
+			info("Replication op _counters/delta: decode failed: %v", err)
+			return ApplyInvalid
+		}
+		return replication_counter_apply(op.User, op.Database, &d)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
 		switch op.Kind {
 		case repl_op_insert:

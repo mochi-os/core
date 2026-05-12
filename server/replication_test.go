@@ -784,6 +784,91 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	}
 }
 
+func TestCounterLocalApplyConverges(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_counter_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/test.db")
+
+	// Two hosts each apply some adds.
+	counter_local_apply(db, "votes", "peerA", 5)
+	counter_local_apply(db, "votes", "peerA", 3)   // +8 on peerA's slot
+	counter_local_apply(db, "votes", "peerB", -2)  // -2 on peerB
+	counter_local_apply(db, "votes", "peerB", 10)  // +10 on peerB
+	counter_local_apply(db, "votes", "peerC", -1)  // -1 on peerC
+	// Final logical value: 8 + 8 - 1 = 15
+
+	n := db.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
+	if n != 15 {
+		t.Errorf("expected counter value 15 (8 + 8 - 1), got %d", n)
+	}
+
+	// Each peer has its own slot.
+	count := db.integer("select count(*) from _counters where name='votes'")
+	if count != 3 {
+		t.Errorf("expected 3 per-peer rows, got %d", count)
+	}
+
+	// pos and neg are separately tracked.
+	row, _ := db.row("select pos, neg from _counters where name='votes' and peer='peerB'")
+	if row == nil {
+		t.Fatal("missing peerB row")
+	}
+	if p, _ := row["pos"].(int64); p != 10 {
+		t.Errorf("peerB pos: expected 10, got %d", p)
+	}
+	if neg, _ := row["neg"].(int64); neg != 2 {
+		t.Errorf("peerB neg: expected 2, got %d", neg)
+	}
+}
+
+func TestCounterLocalApplyCommutative(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_counter_comm")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	// Same set of deltas applied in two different orders to two DBs
+	// must produce the same final value (PN-counter convergence).
+	deltas := []struct {
+		peer  string
+		delta int64
+	}{
+		{"a", 5}, {"b", -3}, {"c", 7}, {"a", -2}, {"b", 4}, {"c", -1},
+	}
+
+	dbA := db_open("db/a.db")
+	for _, d := range deltas {
+		counter_local_apply(dbA, "x", d.peer, d.delta)
+	}
+
+	dbB := db_open("db/b.db")
+	// Reverse order
+	for i := len(deltas) - 1; i >= 0; i-- {
+		d := deltas[i]
+		counter_local_apply(dbB, "x", d.peer, d.delta)
+	}
+
+	a := dbA.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='x'")
+	b := dbB.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='x'")
+	if a != b {
+		t.Errorf("non-commutative: forward=%d reverse=%d", a, b)
+	}
+	if a != 10 {
+		t.Errorf("expected 10 (5-3+7-2+4-1), got %d", a)
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

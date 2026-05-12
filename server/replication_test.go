@@ -981,6 +981,108 @@ func TestLWWLocalApplyConvergesUnderReorder(t *testing.T) {
 	}
 }
 
+func TestLeaderClaimFromVacant(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	if !replication_leader_claim("user:u1", "k1") {
+		t.Errorf("first claim on a vacant lease must succeed")
+	}
+
+	db := db_open("db/replication.db")
+	row, _ := db.row("select peer, fence from leadership where scope='user:u1' and key='k1'")
+	if row == nil {
+		t.Fatal("lease row missing after claim")
+	}
+	if p, _ := row["peer"].(string); p != "self" {
+		t.Errorf("expected peer='self', got %q", p)
+	}
+	if f, _ := row["fence"].(int64); f != 1 {
+		t.Errorf("first lease fence should be 1, got %d", f)
+	}
+}
+
+func TestLeaderClaimRenewalIncrementsFence(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	if !replication_leader_claim("platform", "tick") {
+		t.Fatal("first claim failed")
+	}
+	if !replication_leader_claim("platform", "tick") {
+		t.Fatal("renewal must succeed when we already hold the lease")
+	}
+
+	db := db_open("db/replication.db")
+	row, _ := db.row("select fence from leadership where scope='platform' and key='tick'")
+	if f, _ := row["fence"].(int64); f != 2 {
+		t.Errorf("renewal must bump fence to 2, got %d", f)
+	}
+}
+
+func TestLeaderClaimBlockedByActivePeer(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Someone else holds an active lease.
+	db := db_open("db/replication.db")
+	expires := now() + 60
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('user:u', 'job', 'other-peer', ?, 5)", expires)
+
+	if replication_leader_claim("user:u", "job") {
+		t.Errorf("must NOT claim while another peer holds an active lease")
+	}
+
+	row, _ := db.row("select peer, fence from leadership where scope='user:u' and key='job'")
+	if p, _ := row["peer"].(string); p != "other-peer" {
+		t.Errorf("active lease must not be overwritten; peer is now %q", p)
+	}
+	if f, _ := row["fence"].(int64); f != 5 {
+		t.Errorf("blocked attempt must not bump fence; got %d", f)
+	}
+}
+
+func TestLeaderClaimTakesOverExpired(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Other peer's lease has expired.
+	db := db_open("db/replication.db")
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('user:u', 'job', 'other-peer', ?, 3)", now()-1)
+
+	if !replication_leader_claim("user:u", "job") {
+		t.Errorf("must claim an expired lease")
+	}
+
+	row, _ := db.row("select peer, fence from leadership where scope='user:u' and key='job'")
+	if p, _ := row["peer"].(string); p != "self" {
+		t.Errorf("expected peer='self' after takeover, got %q", p)
+	}
+	if f, _ := row["fence"].(int64); f != 4 {
+		t.Errorf("takeover must bump fence (was 3, expected 4); got %d", f)
+	}
+}
+
+func TestLeaderFenceAndRelease(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	replication_leader_claim("scope", "key")
+	if f := replication_leader_fence("scope", "key"); f != 1 {
+		t.Errorf("fence after first claim: expected 1, got %d", f)
+	}
+
+	replication_leader_release("scope", "key")
+	if f := replication_leader_fence("scope", "key"); f != 0 {
+		t.Errorf("fence after release must be 0, got %d", f)
+	}
+
+	// Re-claim after release succeeds and starts a fresh fence.
+	if !replication_leader_claim("scope", "key") {
+		t.Errorf("re-claim after release must succeed")
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

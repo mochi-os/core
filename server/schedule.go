@@ -30,6 +30,7 @@ var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict
 	"cancel": sl.NewBuiltin("mochi.schedule.cancel", api_schedule_cancel),
 	"every":  sl.NewBuiltin("mochi.schedule.every", api_schedule_every),
 	"get":    sl.NewBuiltin("mochi.schedule.get", api_schedule_get),
+	"leader": sl.NewBuiltin("mochi.schedule.leader", api_schedule_leader),
 	"list":   sl.NewBuiltin("mochi.schedule.list", api_schedule_list),
 })
 

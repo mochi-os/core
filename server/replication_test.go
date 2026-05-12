@@ -4,9 +4,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // setup_replication_test creates a fresh data_dir with replication.db
@@ -1654,6 +1659,68 @@ func TestFenceCurrentEmptyState(t *testing.T) {
 	fence, peer := replication_fence_current("nope", "nada")
 	if fence != 0 || peer != "" {
 		t.Errorf("empty state: expected (0, \"\"), got (%d, %q)", fence, peer)
+	}
+}
+
+func TestReplicationHealthEndpoint(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Populate replication.db with representative state.
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added) values ('peerA', ?)", now())
+	db.exec("insert into pair (peer, added) values ('peerB', ?)", now())
+	db.exec("insert into hosts (user, peer, added) values ('uid-a', 'peerX', ?)", now())
+	db.exec("insert into hosts (user, peer, added) values ('uid-a', 'peerY', ?)", now())
+	db.exec("insert into hosts (user, peer, added) values ('uid-b', 'peerX', ?)", now())
+	db.exec("insert into pending (peer, scope, user, sequence, schema, payload, received) values ('peerX', 'app', 'uid-c', 1, 0, ?, ?)",
+		[]byte{0xa0}, now()-100)
+	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peerX', 'app', 'uid-a', 1, ?)", now())
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('user:uid-a', 'tick', 'self', ?, 1)", now()+60)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/_/replication/health", web_replication_health)
+
+	req := httptest.NewRequest("GET", "/_/replication/health", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if peer, _ := resp["peer_id"].(string); peer != "self" {
+		t.Errorf("peer_id: expected 'self', got %q", peer)
+	}
+
+	pairList, _ := resp["pair"].([]any)
+	if len(pairList) != 2 {
+		t.Errorf("pair: expected 2 entries, got %d (%v)", len(pairList), pairList)
+	}
+
+	if h, _ := resp["hosts"].(float64); int(h) != 3 {
+		t.Errorf("hosts: expected 3, got %v", resp["hosts"])
+	}
+	if u, _ := resp["users_with_hosts"].(float64); int(u) != 2 {
+		t.Errorf("users_with_hosts: expected 2, got %v", resp["users_with_hosts"])
+	}
+	if p, _ := resp["pending"].(float64); int(p) != 1 {
+		t.Errorf("pending: expected 1, got %v", resp["pending"])
+	}
+	if age, _ := resp["pending_oldest_age"].(float64); age < 50 {
+		t.Errorf("pending_oldest_age: expected >= 50, got %v", age)
+	}
+	if s, _ := resp["seen_total"].(float64); int(s) != 1 {
+		t.Errorf("seen_total: expected 1, got %v", resp["seen_total"])
+	}
+	if l, _ := resp["leases_held"].(float64); int(l) != 1 {
+		t.Errorf("leases_held: expected 1, got %v", resp["leases_held"])
 	}
 }
 

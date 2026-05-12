@@ -32,6 +32,17 @@ type ReplicationOp struct {
 	Schema   int    `cbor:"schema,omitempty"`
 }
 
+// MembershipChange announces the new host set for a user. Sent by whichever
+// host the user (or operator) initiated the change on; receivers replace
+// their local view in `replication.db.hosts`. Sequence is a per-user
+// monotonic counter from the originating host; older sequences are
+// recorded as seen but do not overwrite a newer set.
+type MembershipChange struct {
+	User     string   `cbor:"user"`
+	Hosts    []string `cbor:"hosts"`
+	Sequence int64    `cbor:"sequence"`
+}
+
 func init() {
 	a := app("replication")
 	a.service("replication")
@@ -94,11 +105,107 @@ func replication_snapshot_chunk_event(e *Event) {
 	debug("Replication snapshot-chunk not yet implemented (from peer %q)", e.peer)
 }
 
-// replication_membership_change_event: a peer joined or left the user's
-// host set. Receivers update their local view so future ops fan out to the
-// correct set. Not yet wired.
+// replication_membership_change_event applies a membership update from
+// another host in the user's set. The framework has already verified the
+// signature against e.from (the user's identity entity). Dedup on
+// (peer, scope="membership", user, sequence); replace local hosts if the
+// incoming sequence is the newest we've seen for the user.
+//
+// Older membership changes still go into `seen` so a slow peer's stale
+// announcement doesn't keep re-applying after a newer state has landed.
 func replication_membership_change_event(e *Event) {
-	debug("Replication membership-change not yet implemented (from peer %q)", e.peer)
+	var mc MembershipChange
+	if !e.segment(&mc) {
+		info("Replication membership-change dropping: cannot decode payload")
+		return
+	}
+
+	db := db_open("db/replication.db")
+
+	if applied, _ := db.exists(
+		"select 1 from seen where peer=? and scope='membership' and user=? and sequence=?",
+		e.peer, mc.User, mc.Sequence); applied {
+		return
+	}
+
+	// Find the highest membership sequence already applied for this user
+	// (from any peer). A lower-sequenced change is stale — record as seen
+	// so the sender's queue can drop it, but don't overwrite the newer
+	// host set.
+	var latest int64
+	if row, err := db.row("select max(sequence) as seq from seen where scope='membership' and user=?", mc.User); err == nil && row != nil {
+		if v, ok := row["seq"].(int64); ok {
+			latest = v
+		}
+	}
+	stale := mc.Sequence < latest
+
+	if !stale {
+		db.exec("delete from hosts where user=?", mc.User)
+		for _, peer := range mc.Hosts {
+			if peer == "" || peer == p2p_id {
+				continue
+			}
+			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", mc.User, peer, now())
+		}
+	}
+
+	db.exec(
+		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, 'membership', ?, ?, ?)",
+		e.peer, mc.User, mc.Sequence, now())
+
+	if stale {
+		debug("Replication membership-change stale: user=%q seq=%d < latest=%d (from peer %q)",
+			mc.User, mc.Sequence, latest, e.peer)
+	} else {
+		debug("Replication membership-change applied: user=%q seq=%d hosts=%v (from peer %q)",
+			mc.User, mc.Sequence, mc.Hosts, e.peer)
+	}
+}
+
+// replication_membership_update is the local side: bumps the user's
+// membership sequence, replaces local hosts with the new set, and emits a
+// membership-change announcement to every peer in the new set.
+//
+// `hosts` is the complete new host set excluding the local host. The
+// local entry is recorded too, but is filtered out of the outbound peer
+// list (we don't send messages to ourselves).
+func replication_membership_update(user string, hosts []string) {
+	seq := replication_sequence_next(user, "membership")
+
+	db := db_open("db/replication.db")
+	db.exec("delete from hosts where user=?", user)
+	for _, peer := range hosts {
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
+	}
+	db.exec(
+		"insert or ignore into seen (peer, scope, user, sequence, applied) values ('', 'membership', ?, ?, ?)",
+		user, seq, now())
+
+	mc := &MembershipChange{User: user, Hosts: hosts, Sequence: seq}
+
+	udb := db_open("db/users.db")
+	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
+	if err != nil || row == nil {
+		warn("Replication membership-update: no signing entity for user %q: %v", user, err)
+		return
+	}
+	from, _ := row["id"].(string)
+	if from == "" {
+		return
+	}
+
+	for _, peer := range hosts {
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		m := message(from, from, "replication", "membership-change")
+		m.add(mc)
+		m.send_peer(peer)
+	}
 }
 
 // recipients returns the union of per-user opt-in hosts and server-pair

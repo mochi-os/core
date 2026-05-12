@@ -57,19 +57,29 @@ func api_webpush_key(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.String(webpush_public), nil
 }
 
-// mochi.webpush.send(endpoint, auth, p256dh, payload) -> bool: Send push notification
+// mochi.webpush.send(endpoint, auth, p256dh, payload, event_id="...") -> bool: Send push notification.
+//
+// `event_id` is an optional caller-supplied stable id for the logical
+// notification this send corresponds to. When provided the call dedups
+// against a per-user webpush_delivered(endpoint, event_id) row — two
+// replicas independently sending the same logical notification produce
+// one delivery per subscription instead of two. The cross-replica dedup
+// is local-only at this layer: replicating the dedup table tightens the
+// window but a small concurrent-emit race remains and is documented as
+// acceptable for the user-facing duplicate-push impact.
 func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check webpush/send permission
 	if err := require_permission(t, fn, "webpush/send"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	var endpoint, auth, p256dh, payload string
+	var endpoint, auth, p256dh, payload, event_id string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
 		"endpoint", &endpoint,
 		"auth", &auth,
 		"p256dh", &p256dh,
 		"payload", &payload,
+		"event_id?", &event_id,
 	); err != nil {
 		return nil, err
 	}
@@ -93,6 +103,16 @@ func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl.Bool(false), nil
 	}
 
+	// Dedup gate. We only consult the table when event_id is supplied
+	// and a user is on the thread; otherwise behave as before.
+	user, _ := t.Local("user").(*User)
+	if event_id != "" && user != nil {
+		if webpush_already_delivered(user, endpoint, event_id) {
+			debug("webpush dedup: event_id=%q endpoint=%q already delivered", event_id, endpoint)
+			return sl.Bool(true), nil
+		}
+	}
+
 	sub := webpush.Subscription{
 		Endpoint: endpoint,
 		Keys: webpush.Keys{
@@ -113,9 +133,47 @@ func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 	resp.Body.Close()
 
+	ok := resp.StatusCode == 201
+	if ok && event_id != "" && user != nil {
+		webpush_mark_delivered(user, endpoint, event_id)
+	}
+
 	// 201 = success, 404/410 = subscription expired
-	return sl.Bool(resp.StatusCode == 201), nil
+	return sl.Bool(ok), nil
 }
+
+// webpush_already_delivered consults the per-user webpush_delivered
+// table. Returns true when an earlier call already recorded a delivery
+// for this (endpoint, event_id) in the TTL window.
+func webpush_already_delivered(u *User, endpoint, event_id string) bool {
+	db := webpush_dedup_db(u)
+	exists, _ := db.exists("select 1 from webpush_delivered where endpoint=? and event_id=? and ts > ?", endpoint, event_id, now()-webpush_dedup_ttl)
+	return exists
+}
+
+// webpush_mark_delivered records (endpoint, event_id) as delivered now,
+// and opportunistically prunes stale rows so the dedup table doesn't
+// grow without bound.
+func webpush_mark_delivered(u *User, endpoint, event_id string) {
+	db := webpush_dedup_db(u)
+	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", endpoint, event_id, now())
+	db.exec("delete from webpush_delivered where ts < ?", now()-webpush_dedup_ttl)
+}
+
+// webpush_dedup_db opens the per-user notifications DB and lazily
+// creates the webpush_delivered table.
+func webpush_dedup_db(u *User) *DB {
+	db := db_user(u, "notifications")
+	db.exec("create table if not exists webpush_delivered (endpoint text not null, event_id text not null, ts integer not null, primary key (endpoint, event_id))")
+	db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
+	return db
+}
+
+// Dedup TTL — slightly longer than the typical replication window so
+// two replicas processing the same logical event always see each other's
+// previous delivery, but short enough that a stale subscription that
+// happens to reuse an event_id 24 hours later isn't blocked.
+const webpush_dedup_ttl int64 = 24 * 3600
 
 // webpush_service_worker serves the push notification service worker
 func webpush_service_worker(c *gin.Context) {

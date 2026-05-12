@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -1212,6 +1213,71 @@ func TestBroadcastGapDetection(t *testing.T) {
 	gap = incoming > last+1
 	if gap {
 		t.Errorf("gap should NOT be detected when incoming == last+1")
+	}
+}
+
+func TestWebpushDedupBasic(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_webpush_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
+	user := &User{ID: 1}
+
+	if webpush_already_delivered(user, "https://fcm.example/a", "evt-1") {
+		t.Errorf("fresh state must not be marked delivered")
+	}
+
+	webpush_mark_delivered(user, "https://fcm.example/a", "evt-1")
+
+	if !webpush_already_delivered(user, "https://fcm.example/a", "evt-1") {
+		t.Errorf("after mark, must be delivered")
+	}
+
+	// Different event_id on same endpoint → not yet delivered.
+	if webpush_already_delivered(user, "https://fcm.example/a", "evt-2") {
+		t.Errorf("different event_id must not dedup")
+	}
+
+	// Different endpoint on same event_id → each subscription tracked
+	// independently so all of a user's devices still get the push.
+	if webpush_already_delivered(user, "https://fcm.example/b", "evt-1") {
+		t.Errorf("different endpoint must not dedup (each device gets the push)")
+	}
+}
+
+func TestWebpushDedupTTLExpires(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_webpush_ttl")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	os.MkdirAll(filepath.Join(tmp_dir, "users/1"), 0755)
+	user := &User{ID: 1}
+
+	// Manually insert a row with a stale timestamp.
+	db := webpush_dedup_db(user)
+	stale := now() - webpush_dedup_ttl - 1
+	db.exec("insert into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", "https://fcm.example/x", "evt-old", stale)
+
+	if webpush_already_delivered(user, "https://fcm.example/x", "evt-old") {
+		t.Errorf("a row older than the TTL must not dedup")
+	}
+
+	// A fresh mark prunes the stale row as a side effect.
+	webpush_mark_delivered(user, "https://fcm.example/x", "evt-new")
+	count := db.integer("select count(*) from webpush_delivered where endpoint='https://fcm.example/x' and event_id='evt-old'")
+	if count != 0 {
+		t.Errorf("mark_delivered must prune stale rows; got %d remaining", count)
 	}
 }
 

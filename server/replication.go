@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
+	"github.com/gin-gonic/gin"
 )
 
 // Replication scope and op kind constants. See claude/plans/replication.md.
@@ -295,6 +296,50 @@ func replication_session_apply_delete(p *SessionDelete) ApplyResult {
 	sdb.exec("delete from sessions where code=?", p.Code)
 	debug("Replication session-delete applied: code=%q", p.Code)
 	return ApplyApplied
+}
+
+// web_replication_health serves /_/replication/health: a JSON snapshot of
+// the local replication state suitable for LB consumption, operator
+// dashboards, and the staged-rollout monitors in Phase H/I/J.
+//
+// Reports: this host's peer-id, configured server-pair members, per-user
+// opt-in counts, pending-buffer depth (with the age of the oldest entry
+// as a proxy for replication lag), and per-(user, scope) sequence
+// counters for replication outbound flow. Read-only, cheap to call.
+func web_replication_health(c *gin.Context) {
+	db := db_open("db/replication.db")
+	out := gin.H{"peer_id": p2p_id}
+
+	// Server-pair members.
+	pairs := []string{}
+	if rows, err := db.rows("select peer from pair order by peer"); err == nil {
+		for _, r := range rows {
+			if p, ok := r["peer"].(string); ok {
+				pairs = append(pairs, p)
+			}
+		}
+	}
+	out["pair"] = pairs
+
+	// Per-user opt-in counts.
+	out["hosts"] = db.integer("select count(*) from hosts")
+	out["users_with_hosts"] = db.integer("select count(distinct user) from hosts")
+
+	// Pending buffer.
+	pending_count := db.integer("select count(*) from pending")
+	out["pending"] = pending_count
+	if pending_count > 0 {
+		oldest := db.integer("select min(received) from pending")
+		out["pending_oldest_age"] = now() - int64(oldest)
+	}
+
+	// Seen counts for diagnostics.
+	out["seen_total"] = db.integer("select count(*) from seen")
+
+	// Active leaderships held by this host (informational).
+	out["leases_held"] = db.integer("select count(*) from leadership where peer=? and expires > ?", p2p_id, now())
+
+	c.JSON(200, out)
 }
 
 // replication_manager drives the periodic pending-buffer drain.

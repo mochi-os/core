@@ -1455,6 +1455,7 @@ func web_start() {
 	r.POST("/_/abandon", web_abandon)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/health", web_health)
+	r.GET("/_/replication/health", web_replication_health)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/robots.txt", web_robots)

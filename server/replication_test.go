@@ -1778,6 +1778,96 @@ func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
 	}
 }
 
+func TestIntegrationWebpushDedupReplicates(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	// Host 1: alice's webpush_mark_delivered records the row locally.
+	switchTo("h1")
+	setup_users_test_schema()
+	udb1 := db_open("db/users.db")
+	udb1.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+
+	u1 := &User{ID: 1, UID: "uid-alice", Username: "alice@example.com"}
+	webpush_mark_delivered(u1, "https://fcm.example/a", "evt-1")
+	if !webpush_already_delivered(u1, "https://fcm.example/a", "evt-1") {
+		t.Fatal("h1 mark didn't take")
+	}
+
+	// Host 2: alice is local too (keys-transfer landed). Apply the
+	// replicated webpush_delivered op directly via the apply path.
+	switchTo("h2")
+	setup_users_test_schema()
+	udb2 := db_open("db/users.db")
+	udb2.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+
+	op := &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     "uid-alice",
+		Database: "notifications",
+		Table:    "webpush_delivered",
+		Kind:     repl_op_insert,
+		Sequence: 1,
+		Payload: cbor_encode(&WebpushDelivered{
+			Endpoint: "https://fcm.example/a", EventID: "evt-1", TS: now(),
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
+	}
+
+	u2 := &User{ID: 1, UID: "uid-alice"}
+	if !webpush_already_delivered(u2, "https://fcm.example/a", "evt-1") {
+		t.Error("h2 must see the replicated webpush_delivered row")
+	}
+	// Different endpoint isn't deduped — each subscription tracked
+	// independently, replication preserves that.
+	if webpush_already_delivered(u2, "https://fcm.example/b", "evt-1") {
+		t.Error("different endpoint must not be deduped from one replicate")
+	}
+}
+
+func TestIntegrationEmailDedupReplicates(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	switchTo("h1")
+	setup_users_test_schema()
+	udb1 := db_open("db/users.db")
+	udb1.exec("insert into users (id, uid, username) values (1, 'uid-bob', 'bob@example.com')")
+	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+	u1 := &User{ID: 1, UID: "uid-bob"}
+	email_mark_delivered(u1, "bob@example.com", "login:abc")
+
+	switchTo("h2")
+	setup_users_test_schema()
+	udb2 := db_open("db/users.db")
+	udb2.exec("insert into users (id, uid, username) values (1, 'uid-bob', 'bob@example.com')")
+	os.MkdirAll(filepath.Join(data_dir, "users/1"), 0755)
+
+	op := &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     "uid-bob",
+		Database: "notifications",
+		Table:    "email_delivered",
+		Kind:     repl_op_insert,
+		Sequence: 1,
+		Payload: cbor_encode(&EmailDelivered{
+			Address: "bob@example.com", EventID: "login:abc", TS: now(),
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
+	}
+
+	u2 := &User{ID: 1, UID: "uid-bob"}
+	if !email_already_delivered(u2, "bob@example.com", "login:abc") {
+		t.Error("h2 must see the replicated email_delivered row")
+	}
+}
+
 func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

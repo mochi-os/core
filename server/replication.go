@@ -437,28 +437,19 @@ func replication_pending_drain() {
 // replication_webpush_delivered_apply lands a remote webpush_delivered
 // row into the user's local notifications.db. Resolves user_uid to a
 // local users.id; defers when the user isn't yet local. `insert or
-// ignore` makes re-applies idempotent.
+// ignore` makes re-applies idempotent. The apply path only needs
+// User.ID for the db_user() path lookup so it skips the full
+// user_by_id (which insists on a non-nil identity entity).
 func replication_webpush_delivered_apply(userUID string, w *WebpushDelivered) ApplyResult {
 	if w.Endpoint == "" || w.EventID == "" {
 		return ApplyInvalid
 	}
 
-	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", userUID)
-	if row == nil {
-		return ApplyDeferred
-	}
-	var localID int
-	if v, ok := row["id"].(int64); ok {
-		localID = int(v)
-	}
+	localID := user_local_id(userUID)
 	if localID == 0 {
 		return ApplyDeferred
 	}
-	u := user_by_id(localID)
-	if u == nil {
-		return ApplyDeferred
-	}
+	u := &User{ID: localID, UID: userUID}
 
 	db := webpush_dedup_db(u)
 	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", w.Endpoint, w.EventID, w.TS)
@@ -473,27 +464,33 @@ func replication_email_delivered_apply(userUID string, em *EmailDelivered) Apply
 		return ApplyInvalid
 	}
 
-	udb := db_open("db/users.db")
-	row, _ := udb.row("select id from users where uid=?", userUID)
-	if row == nil {
-		return ApplyDeferred
-	}
-	var localID int
-	if v, ok := row["id"].(int64); ok {
-		localID = int(v)
-	}
+	localID := user_local_id(userUID)
 	if localID == 0 {
 		return ApplyDeferred
 	}
-	u := user_by_id(localID)
-	if u == nil {
-		return ApplyDeferred
-	}
+	u := &User{ID: localID, UID: userUID}
 
 	db := email_dedup_db(u)
 	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", em.Address, em.EventID, em.TS)
 	debug("Replication email_delivered apply: user_uid=%q address=%q event_id=%q", userUID, em.Address, em.EventID)
 	return ApplyApplied
+}
+
+// user_local_id translates a user UID to the local integer users.id.
+// Returns 0 when the user isn't on this host (caller treats as deferred).
+func user_local_id(uid string) int {
+	if uid == "" {
+		return 0
+	}
+	udb := db_open("db/users.db")
+	row, _ := udb.row("select id from users where uid=?", uid)
+	if row == nil {
+		return 0
+	}
+	if v, ok := row["id"].(int64); ok {
+		return int(v)
+	}
+	return 0
 }
 
 // replication_emit_webpush_delivered fans out a webpush dedup row to

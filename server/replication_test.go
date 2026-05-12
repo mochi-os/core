@@ -31,14 +31,22 @@ func setup_replication_test(t *testing.T) func() {
 }
 
 // setup_users_test_schema creates a minimal users.db schema for tests that
-// exercise the keys-transfer apply path. Mirrors the relevant subset of
-// db_create() — only the users and entities tables.
+// exercise the keys-transfer or session-replication apply paths. Includes
+// the uid / user_uid columns from migration v51 so cross-host identifier
+// lookups work.
 func setup_users_test_schema() {
 	users := db_open("db/users.db")
-	users.exec("create table users (id integer primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
-	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
+	users.exec("create unique index users_uid on users (uid)")
+	users.exec(`create trigger users_uid_insert after insert on users
+		when new.uid is null or new.uid = ''
+		begin
+			update users set uid = lower(hex(randomblob(16))) where id = new.id;
+		end`)
+	users.exec("create table entities ( id text not null primary key, private text not null, fingerprint text not null, user references users( id ), user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0 )")
 	users.exec("create index entities_user on entities( user )")
+	users.exec("create index entities_user_uid on entities( user_uid )")
 }
 
 // 50-character pseudo-entity-id used in tests where valid("entity") needs
@@ -51,6 +59,14 @@ func test_entity_id(prefix byte) string {
 		out[i] = 'a'
 	}
 	return string(out)
+}
+
+// setup_sessions_test_schema creates the sessions table for tests that
+// exercise session-replication apply paths.
+func setup_sessions_test_schema() {
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table sessions (user integer not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create unique index sessions_code on sessions(code)")
 }
 
 func TestReplicationRecipientsEmpty(t *testing.T) {
@@ -359,6 +375,106 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 	if owner != localID {
 		t.Errorf("entity must be linked to existing local user %d, got %d", localID, owner)
 	}
+}
+
+func TestReplicationSessionApplyInsert(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+
+	p := &SessionInsert{
+		UserUID: "uid-alice", Code: "sess-1", Secret: "secret-1",
+		Expires: 100, Created: 50, Accessed: 50,
+		Address: "127.0.0.1", Agent: "test",
+	}
+	replication_session_apply_insert(p)
+
+	sdb := db_open("db/sessions.db")
+	count := sdb.integer("select count(*) from sessions where code='sess-1' and user=1")
+	if count != 1 {
+		t.Errorf("expected session inserted with local user=1; got %d rows", count)
+	}
+}
+
+func TestReplicationSessionApplyInsertUnknownUser(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	// No matching user row — apply must skip without panicking.
+	p := &SessionInsert{
+		UserUID: "uid-unknown", Code: "sess-1", Secret: "x",
+		Expires: 100, Created: 50, Accessed: 50,
+	}
+	replication_session_apply_insert(p)
+
+	sdb := db_open("db/sessions.db")
+	count := sdb.integer("select count(*) from sessions where code='sess-1'")
+	if count != 0 {
+		t.Errorf("session must not be inserted when user is unknown locally; got %d rows", count)
+	}
+}
+
+func TestReplicationSessionApplyInsertReplaces(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (id, uid, username) values (1, 'uid-alice', 'alice@example.com')")
+
+	// Pre-existing local row.
+	sdb := db_open("db/sessions.db")
+	sdb.exec("insert into sessions (user, code, secret, expires, created, accessed) values (1, 'sess-1', 'old-secret', 100, 50, 50)")
+
+	// Replicated insert with same code but updated fields.
+	p := &SessionInsert{
+		UserUID: "uid-alice", Code: "sess-1", Secret: "new-secret",
+		Expires: 200, Created: 50, Accessed: 75,
+	}
+	replication_session_apply_insert(p)
+
+	row, _ := sdb.row("select secret, accessed from sessions where code='sess-1'")
+	if row == nil {
+		t.Fatalf("session row missing after replace")
+	}
+	if s, _ := row["secret"].(string); s != "new-secret" {
+		t.Errorf("replace should update secret; got %q", s)
+	}
+	if a, _ := row["accessed"].(int64); a != 75 {
+		t.Errorf("replace should update accessed; got %d", a)
+	}
+}
+
+func TestReplicationSessionApplyDelete(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_sessions_test_schema()
+
+	sdb := db_open("db/sessions.db")
+	sdb.exec("insert into sessions (user, code, secret, expires, created, accessed) values (1, 'sess-1', 's', 100, 50, 50)")
+
+	replication_session_apply_delete(&SessionDelete{Code: "sess-1"})
+
+	count := sdb.integer("select count(*) from sessions where code='sess-1'")
+	if count != 0 {
+		t.Errorf("delete must remove the session; got %d rows", count)
+	}
+}
+
+func TestReplicationSessionApplyDeleteNonExistent(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_sessions_test_schema()
+
+	// Delete a code that doesn't exist — must be a no-op, not a panic.
+	replication_session_apply_delete(&SessionDelete{Code: "never-existed"})
 }
 
 func TestUsersUIDMigrationBackfillAndTriggers(t *testing.T) {

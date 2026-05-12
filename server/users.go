@@ -133,14 +133,43 @@ func login_create(user int, address string, agent string) string {
 	code := random_alphanumeric(20)
 	// Create a per-login secret for signing JWTs for this login/device
 	secret := random_alphanumeric(32)
+	expires := now() + 365*86400
+	created := now()
 	db := db_open("db/sessions.db")
-	db.exec("replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)", user, code, secret, now()+365*86400, now(), now(), address, agent)
+	db.exec("replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)", user, code, secret, expires, created, created, address, agent)
+
+	// Replicate the new session to every peer in the user's host set so a
+	// cookie issued here is honoured by every replica.
+	udb := db_open("db/users.db")
+	if row, _ := udb.row("select uid from users where id=?", user); row != nil {
+		if uid, _ := row["uid"].(string); uid != "" {
+			replication_emit_session_insert(uid, code, secret, expires, created, created, address, agent)
+		}
+	}
+
 	return code
 }
 
 func login_delete(code string) {
 	db := db_open("db/sessions.db")
+
+	// Look up the owning user_uid before deletion so we can fan out a
+	// replicated revoke. After the delete the join is impossible.
+	var userUID string
+	if row, _ := db.row("select user from sessions where code=?", code); row != nil {
+		if userInt, ok := row["user"].(int64); ok {
+			udb := db_open("db/users.db")
+			if urow, _ := udb.row("select uid from users where id=?", userInt); urow != nil {
+				userUID, _ = urow["uid"].(string)
+			}
+		}
+	}
+
 	db.exec("delete from sessions where code=?", code)
+
+	if userUID != "" {
+		replication_emit_session_delete(userUID, code)
+	}
 }
 
 // sessions_manager periodically cleans up expired sessions and related data

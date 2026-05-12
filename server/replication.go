@@ -3,6 +3,10 @@
 
 package main
 
+import (
+	cbor "github.com/fxamacker/cbor/v2"
+)
+
 // Replication scope and op kind constants. See claude/plans/replication.md.
 const (
 	repl_scope_app  = "app"
@@ -61,6 +65,28 @@ type KeysTransfer struct {
 	Entities []KeysEntity `cbor:"entities"`
 }
 
+// SessionInsert is the wire payload for a sessions.sessions insert op.
+// Carried as the CBOR-encoded Payload of a ReplicationOp with
+// Database="sessions" Table="sessions" Kind="insert". UserUID is the
+// globally-stable user identifier (task #4); the receiver resolves it to
+// a local users.id before inserting into sessions.db.
+type SessionInsert struct {
+	UserUID  string `cbor:"user_uid"`
+	Code     string `cbor:"code"`
+	Secret   string `cbor:"secret"`
+	Expires  int64  `cbor:"expires"`
+	Created  int64  `cbor:"created"`
+	Accessed int64  `cbor:"accessed"`
+	Address  string `cbor:"address"`
+	Agent    string `cbor:"agent"`
+}
+
+// SessionDelete is the wire payload for a sessions.sessions delete op.
+// Only the code is needed; deletion is unconditional at the receiver.
+type SessionDelete struct {
+	Code string `cbor:"code"`
+}
+
 // KeysEntity is one entity inside a KeysTransfer payload.
 type KeysEntity struct {
 	ID          string `cbor:"id"`
@@ -113,8 +139,8 @@ func replication_op_event(e *Event) {
 	// TODO: schema coordination — if op.Schema > local app schema for
 	// (user, app), buffer in `pending` until `database_upgrade` catches
 	// up. See task #6.
-	// TODO: apply the op via the pattern-library helper that owns this
-	// table. See task #8.
+
+	replication_apply_op(&op)
 
 	db.exec(
 		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
@@ -122,6 +148,108 @@ func replication_op_event(e *Event) {
 
 	debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
 		e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+}
+
+// replication_apply_op dispatches a verified, deduplicated op to the
+// table-specific apply path. Most apps' tables will be handled by the
+// pattern-library helpers (task #8); core-DB applies (sessions, etc.) are
+// special-cased here.
+func replication_apply_op(op *ReplicationOp) {
+	switch {
+	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
+		switch op.Kind {
+		case repl_op_insert:
+			var p SessionInsert
+			if err := cbor.Unmarshal(op.Payload, &p); err != nil {
+				info("Replication op sessions/insert: decode failed: %v", err)
+				return
+			}
+			replication_session_apply_insert(&p)
+		case repl_op_delete:
+			var p SessionDelete
+			if err := cbor.Unmarshal(op.Payload, &p); err != nil {
+				info("Replication op sessions/delete: decode failed: %v", err)
+				return
+			}
+			replication_session_apply_delete(&p)
+		}
+	}
+}
+
+// replication_session_apply_insert lands a replicated session insert into
+// the local sessions.db. Resolves the user_uid to a local users.id; if
+// the user doesn't exist locally yet (e.g. keys-transfer hasn't landed)
+// the insert is skipped — the sender's queue will retry. `replace into`
+// makes re-applies idempotent.
+func replication_session_apply_insert(p *SessionInsert) {
+	udb := db_open("db/users.db")
+	row, _ := udb.row("select id from users where uid=?", p.UserUID)
+	if row == nil {
+		debug("Replication session-insert: user %q not local yet, skipping", p.UserUID)
+		return
+	}
+	var localID int
+	if v, ok := row["id"].(int64); ok {
+		localID = int(v)
+	}
+	if localID == 0 {
+		return
+	}
+
+	sdb := db_open("db/sessions.db")
+	sdb.exec(
+		"replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
+		localID, p.Code, p.Secret, p.Expires, p.Created, p.Accessed, p.Address, p.Agent)
+	debug("Replication session-insert applied: user_uid=%q code=%q", p.UserUID, p.Code)
+}
+
+// replication_session_apply_delete removes a session by code on the
+// receiver. Unconditional — delete wins over a stale insert at the
+// session-revocation layer.
+func replication_session_apply_delete(p *SessionDelete) {
+	sdb := db_open("db/sessions.db")
+	sdb.exec("delete from sessions where code=?", p.Code)
+	debug("Replication session-delete applied: code=%q", p.Code)
+}
+
+// replication_emit_session_insert fans out a session-insert op to every
+// peer in the user's host set. Called by login_create after the local
+// row is committed.
+func replication_emit_session_insert(userUID, code, secret string, expires, created, accessed int64, address, agent string) {
+	if userUID == "" {
+		return
+	}
+	payload := cbor_encode(&SessionInsert{
+		UserUID: userUID, Code: code, Secret: secret,
+		Expires: expires, Created: created, Accessed: accessed,
+		Address: address, Agent: agent,
+	})
+	replication_emit(userUID, &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     userUID,
+		Database: "sessions",
+		Table:    "sessions",
+		Kind:     repl_op_insert,
+		Payload:  payload,
+	})
+}
+
+// replication_emit_session_delete fans out a session-delete op to every
+// peer in the user's host set. Called by login_delete after the local
+// row is removed.
+func replication_emit_session_delete(userUID, code string) {
+	if userUID == "" {
+		return
+	}
+	payload := cbor_encode(&SessionDelete{Code: code})
+	replication_emit(userUID, &ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     userUID,
+		Database: "sessions",
+		Table:    "sessions",
+		Kind:     repl_op_delete,
+		Payload:  payload,
+	})
 }
 
 // replication_snapshot_request_event: per-(user, scope) full state copy
@@ -502,12 +630,11 @@ func replication_emit(user string, op *ReplicationOp) {
 		return
 	}
 
-	// Pick any owned identity for this user as the signing entity. Once
-	// task #4 lands the users.uid → entities join is by UID; until then
-	// the caller's `user` argument should match whatever entities.user
-	// currently stores.
+	// Pick any owned identity for this user as the signing entity. The
+	// join is by user_uid (task #4), which the v51 trigger keeps in sync
+	// with users.uid on insert / FK update.
 	udb := db_open("db/users.db")
-	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
+	row, err := udb.row("select id from entities where user_uid=? order by id limit 1", user)
 	if err != nil || row == nil {
 		warn("Replication emit: no signing entity for user %q: %v", user, err)
 		return

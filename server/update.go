@@ -254,19 +254,31 @@ func update_install_run(version string) error {
 		return fmt.Errorf("download: %v", err)
 	}
 
-	info("Server update: launching msiexec for %s", path)
+	// Write the MSI install log alongside the .msi so a failed upgrade
+	// leaves a forensic trail on disk that survives the service exit.
+	// %ProgramData%\Mochi\data\tmp\mochi-server-<version>.msi.log
+	msi_log := path + ".log"
+
+	info("Server update: launching msiexec for %s (log: %s)", path, msi_log)
 	cmd := exec.Command(
 		"cmd", "/c",
 		"ping -n "+strconv.Itoa(update_install_pre_wait+1)+" 127.0.0.1 > NUL & "+
-			`msiexec /i "`+path+`" /quiet /norestart`,
+			`msiexec /i "`+path+`" /quiet /norestart /l*v "`+msi_log+`"`,
 	)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	// Escape the service's job object on Windows — without this, the
+	// service's own exit (a few milliseconds after this function
+	// returns) tears down the job and kills cmd.exe, ping, and msiexec
+	// before msiexec has a chance to run. Cross-platform stub on other
+	// OSes (the self-install path is Windows-only anyway).
+	update_install_detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn msiexec: %v", err)
 	}
-	// Detach so the service-process exit doesn't kill it.
+	// Release the Go-side os.Process so the service exit doesn't wait
+	// on a Wait() call we're never going to make.
 	if err := cmd.Process.Release(); err != nil {
 		warn("Server update: cmd.Process.Release: %v", err)
 	}

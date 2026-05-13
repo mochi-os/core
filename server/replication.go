@@ -197,9 +197,11 @@ func init() {
 	a.event("join-approved", replication_join_approved_event)
 	a.event("join-denied", replication_join_denied_event)
 	a.event("pair-membership-change", replication_pair_membership_change_event)
-	// System-LWW for core DBs (see replication_system_lww.go).
-	a.event("system-lww", replication_system_lww_event)
-	a.event("system-lww-row", replication_system_lww_row_event)
+	// System-scope replication for core DBs (see replication_system.go).
+	// Pair-scope, libp2p-signed, no LWW — last-applier-by-arrival-order
+	// wins, acceptable for one-operator-per-pair config workloads.
+	a.event("system-set", replication_system_set_event)
+	a.event("system-row", replication_system_row_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the

@@ -32,8 +32,6 @@ type domain struct {
 	TLS      int    `db:"tls"`
 	Created  int64  `db:"created"`
 	Updated  int64  `db:"updated"`
-	TS       int64  `db:"ts"`
-	Peer     string `db:"peer"`
 }
 
 // route represents a row in the routes table
@@ -259,9 +257,8 @@ func domain_list() []domain {
 	return domains
 }
 
-// domain_register creates a new domain entry. Stamps (ts, peer) on the
-// row and emits the row-level system-LWW op so pair members converge
-// on the same domain registry.
+// domain_register creates a new domain entry. Emits a system-row op
+// so pair members converge on the domain registry.
 func domain_register(name string) (*domain, error) {
 	if domain_get(name) != nil {
 		return nil, fmt.Errorf("domain already exists")
@@ -271,9 +268,9 @@ func domain_register(name string) (*domain, error) {
 	n := now()
 	token := random_alphanumeric(32)
 
-	db.exec("insert into domains (domain, verified, token, tls, created, updated, ts, peer) values (?, 0, ?, 1, ?, ?, ?, ?)", name, token, n, n, n, p2p_id)
+	db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 0, ?, 1, ?, ?)", name, token, n, n)
 
-	replication_emit_system_lww_row("domains", "domains",
+	replication_emit_system_row("domains", "domains",
 		map[string]string{"domain": name},
 		map[string]string{
 			"verified": "0",
@@ -281,7 +278,7 @@ func domain_register(name string) (*domain, error) {
 			"tls":      "1",
 			"created":  fmt.Sprintf("%d", n),
 			"updated":  fmt.Sprintf("%d", n),
-		}, false, n)
+		}, false)
 
 	return domain_get(name), nil
 }
@@ -289,9 +286,8 @@ func domain_register(name string) (*domain, error) {
 // Valid column names for domain updates
 var domain_update_columns = map[string]bool{"verified": true, "tls": true}
 
-// domain_update updates a domain entry. Stamps (ts, peer) and emits
-// the row-level system-LWW op with the full post-update column set so
-// the receiver can apply with proper conflict resolution.
+// domain_update updates a domain entry. Reads the row back after the
+// update and emits the full post-update row via system-row.
 func domain_update(name string, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil
@@ -307,16 +303,14 @@ func domain_update(name string, updates map[string]any) error {
 		sets = append(sets, k+"=?")
 		args = append(args, v)
 	}
-	n := now()
-	sets = append(sets, "updated=?", "ts=?", "peer=?")
-	args = append(args, n, n, p2p_id)
+	sets = append(sets, "updated=?")
+	args = append(args, now())
 	args = append(args, name)
 
 	db.exec("update domains set "+strings.Join(sets, ", ")+" where domain=?", args...)
 
-	// Read back the full row to emit with consistent state.
 	if d := domain_get(name); d != nil {
-		replication_emit_system_lww_row("domains", "domains",
+		replication_emit_system_row("domains", "domains",
 			map[string]string{"domain": d.Domain},
 			map[string]string{
 				"verified": fmt.Sprintf("%d", d.Verified),
@@ -324,20 +318,20 @@ func domain_update(name string, updates map[string]any) error {
 				"tls":      fmt.Sprintf("%d", d.TLS),
 				"created":  fmt.Sprintf("%d", d.Created),
 				"updated":  fmt.Sprintf("%d", d.Updated),
-			}, false, n)
+			}, false)
 	}
 	return nil
 }
 
-// domain_delete removes a domain and its routes. Emits a row-level
-// system-LWW delete op so pair members drop their copy too.
+// domain_delete removes a domain and its routes. Emits a system-row
+// delete op so pair members drop their copy too.
 func domain_delete(name string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from routes where domain=?", name)
 	db.exec("delete from domains where domain=?", name)
 
-	replication_emit_system_lww_row("domains", "domains",
-		map[string]string{"domain": name}, nil, true, now())
+	replication_emit_system_row("domains", "domains",
+		map[string]string{"domain": name}, nil, true)
 	return nil
 }
 
@@ -360,9 +354,9 @@ func domain_verify(name string) (bool, error) {
 		if record == expected {
 			db := db_open("db/domains.db")
 			n := now()
-			db.exec("update domains set verified=1, updated=?, ts=?, peer=? where domain=?", n, n, p2p_id, name)
+			db.exec("update domains set verified=1, updated=? where domain=?", n, name)
 			if updated := domain_get(name); updated != nil {
-				replication_emit_system_lww_row("domains", "domains",
+				replication_emit_system_row("domains", "domains",
 					map[string]string{"domain": updated.Domain},
 					map[string]string{
 						"verified": fmt.Sprintf("%d", updated.Verified),
@@ -370,7 +364,7 @@ func domain_verify(name string) (bool, error) {
 						"tls":      fmt.Sprintf("%d", updated.TLS),
 						"created":  fmt.Sprintf("%d", updated.Created),
 						"updated":  fmt.Sprintf("%d", updated.Updated),
-					}, false, n)
+					}, false)
 			}
 			return true, nil
 		}
@@ -416,7 +410,8 @@ func route_get(domain_name, path string) *route {
 	return &r
 }
 
-// route_create creates a new route
+// route_create creates a new route. Emits the row-level op so pair
+// members converge on the route table.
 func route_create(domain_name, path, method, target, context string, owner string, priority int) (*route, error) {
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
@@ -429,13 +424,27 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	n := now()
 	db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, owner, priority, n, n)
 
+	replication_emit_system_row("domains", "routes",
+		map[string]string{"domain": domain_name, "path": path},
+		map[string]string{
+			"method":   method,
+			"target":   target,
+			"context":  context,
+			"owner":    owner,
+			"priority": fmt.Sprintf("%d", priority),
+			"enabled":  "1",
+			"created":  fmt.Sprintf("%d", n),
+			"updated":  fmt.Sprintf("%d", n),
+		}, false)
+
 	return route_get(domain_name, path), nil
 }
 
 // Valid column names for route updates
 var route_update_columns = map[string]bool{"method": true, "target": true, "context": true, "priority": true, "enabled": true}
 
-// route_update updates a route
+// route_update updates a route. Reads the row back and emits the full
+// post-update state via system-row.
 func route_update(domain_name, path string, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil
@@ -457,6 +466,21 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	args = append(args, path)
 
 	db.exec("update routes set "+strings.Join(sets, ", ")+" where domain=? and path=?", args...)
+
+	if r := route_get(domain_name, path); r != nil {
+		replication_emit_system_row("domains", "routes",
+			map[string]string{"domain": r.Domain, "path": r.Path},
+			map[string]string{
+				"method":   r.Method,
+				"target":   r.Target,
+				"context":  r.Context,
+				"owner":    r.Owner,
+				"priority": fmt.Sprintf("%d", r.Priority),
+				"enabled":  fmt.Sprintf("%d", r.Enabled),
+				"created":  fmt.Sprintf("%d", r.Created),
+				"updated":  fmt.Sprintf("%d", r.Updated),
+			}, false)
+	}
 	return nil
 }
 
@@ -464,6 +488,8 @@ func route_update(domain_name, path string, updates map[string]any) error {
 func route_delete(domain_name, path string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from routes where domain=? and path=?", domain_name, path)
+	replication_emit_system_row("domains", "routes",
+		map[string]string{"domain": domain_name, "path": path}, nil, true)
 	return nil
 }
 

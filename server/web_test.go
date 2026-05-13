@@ -24,11 +24,11 @@ func create_web_test_env(t *testing.T) func() {
 
 	// Create settings database
 	settings_db := db_open("db/settings.db")
-	settings_db.exec("create table if not exists settings (name text primary key, value text not null, ts integer not null default 0, peer text not null default '')")
+	settings_db.exec("create table if not exists settings (name text primary key, value text not null)")
 
 	// Create domains database
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null, ts integer not null default 0, peer text not null default '')")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner integer not null default 0, priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	domains.exec("create index if not exists routes_domain on routes(domain)")
 	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner integer not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")

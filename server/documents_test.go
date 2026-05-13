@@ -25,7 +25,7 @@ func setup_documents_test(t *testing.T) func() {
 	data_dir = tmp
 
 	settings := db_open("db/settings.db")
-	settings.exec("create table settings ( name text not null primary key, value text not null, ts integer not null default 0, peer text not null default '' )")
+	settings.exec("create table settings ( name text not null primary key, value text not null )")
 	settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 
 	// Load the core_labels map from the embedded FS so document_setting can

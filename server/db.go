@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 58
+	schema_version = 60
 )
 
 var (
@@ -126,7 +126,7 @@ func db_create() {
 
 	// Settings
 	settings := db_open("db/settings.db")
-	settings.exec("create table settings ( name text not null primary key, value text not null, ts integer not null default 0, peer text not null default '' )")
+	settings.exec("create table settings ( name text not null primary key, value text not null )")
 	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
 	// Documents: operator-customisable Markdown for server rules / terms / privacy.
@@ -247,7 +247,7 @@ func db_create() {
 
 	// Domains
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null, ts integer not null default 0, peer text not null default '')")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	if exists, _ := domains.exists("select 1 from pragma_table_info('routes') where name='owner'"); !exists {
 		domains.exec("alter table routes add column owner text not null default ''")
@@ -306,18 +306,14 @@ func db_create() {
 }
 
 // db_apps opens the apps.db database, creating tables if needed.
-// classes / services / paths / apps carry (ts, peer) for LWW conflict
-// resolution (system-LWW replication, #68). versions / tracks don't —
-// they're three-column tables where field-level LWW is awkward; that
-// migration follows.
 func db_apps() *DB {
 	db := db_open("db/apps.db")
-	db.exec("create table if not exists classes (class text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
-	db.exec("create table if not exists services (service text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
-	db.exec("create table if not exists paths (path text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
+	db.exec("create table if not exists classes (class text not null primary key, app text not null)")
+	db.exec("create table if not exists services (service text not null primary key, app text not null)")
+	db.exec("create table if not exists paths (path text not null primary key, app text not null)")
 	db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 	db.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
-	db.exec("create table if not exists apps (app text not null primary key, installed integer not null, ts integer not null default 0, peer text not null default '')")
+	db.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
 	return db
 }
 
@@ -624,6 +620,10 @@ func db_upgrade() {
 			db_upgrade_57()
 		case 58:
 			db_upgrade_58()
+		case 59:
+			db_upgrade_59()
+		case 60:
+			db_upgrade_60()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -773,6 +773,49 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_60 reverts the (ts, peer) columns added in v56–v59 across
+// settings.db, apps.db and domains.db. The system-LWW conflict-resolution
+// scheme they backed has been replaced with simpler op-replication where
+// last-applier-by-arrival-order wins (acceptable for operator-managed
+// system tables — concurrent same-row writes are rare). The columns
+// are dropped to keep the schema clean. SQLite ≥ 3.35 supports DROP
+// COLUMN natively; ncruces/go-sqlite3 ships a recent SQLite. Idempotent.
+func db_upgrade_60() {
+	for _, target := range []struct {
+		path  string
+		table string
+	}{
+		{"db/settings.db", "settings"},
+		{"db/apps.db", "classes"},
+		{"db/apps.db", "services"},
+		{"db/apps.db", "paths"},
+		{"db/apps.db", "apps"},
+		{"db/domains.db", "domains"},
+		{"db/domains.db", "routes"},
+	} {
+		db := db_open(target.path)
+		if col, _ := db.exists(fmt.Sprintf("select 1 from pragma_table_info('%s') where name='ts'", target.table)); col {
+			db.exec(fmt.Sprintf("alter table %s drop column ts", target.table))
+		}
+		if col, _ := db.exists(fmt.Sprintf("select 1 from pragma_table_info('%s') where name='peer'", target.table)); col {
+			db.exec(fmt.Sprintf("alter table %s drop column peer", target.table))
+		}
+	}
+}
+
+// db_upgrade_59 adds the LWW conflict-resolution columns (ts, peer) to
+// domains.db.routes — composite-key (domain, path) rows replicated via
+// the SystemLWWRow shape. Idempotent.
+func db_upgrade_59() {
+	domains := db_open("db/domains.db")
+	if col, _ := domains.exists("select 1 from pragma_table_info('routes') where name='ts'"); !col {
+		domains.exec("alter table routes add column ts integer not null default 0")
+	}
+	if col, _ := domains.exists("select 1 from pragma_table_info('routes') where name='peer'"); !col {
+		domains.exec("alter table routes add column peer text not null default ''")
 	}
 }
 

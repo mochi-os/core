@@ -88,3 +88,132 @@ func TestApiReplicationStatusPopulated(t *testing.T) {
 		}
 	}
 }
+
+// withUserThread runs fn with t.Local("user") set to u.
+func withUserThread(u *User, fn func(*sl.Thread)) {
+	th := &sl.Thread{}
+	th.SetLocal("user", u)
+	fn(th)
+}
+
+// TestApiReplicationLinksAndHosts: per-user link/host queries scope to
+// the calling user. Inserts rows for two users and asserts the API
+// returns only the calling user's rows.
+func TestApiReplicationLinksAndHosts(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-A', 'a.example', 'ph-1', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-B', 'b.example', 'ph-2', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-bob', 'peer-Z', 'z.example', 'ph-9', 0, 9999999999)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-A', 100, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-Z', 200, 1)")
+
+	alice := &User{UID: "u-alice"}
+	withUserThread(alice, func(th *sl.Thread) {
+		v, err := api_replication_links(th, nil, sl.Tuple{}, nil)
+		if err != nil {
+			t.Fatalf("links: %v", err)
+		}
+		links := v.(*sl.List)
+		if links.Len() != 2 {
+			t.Errorf("links len = %d, want 2 (alice has 2 pending)", links.Len())
+		}
+
+		v, err = api_replication_hosts(th, nil, sl.Tuple{}, nil)
+		if err != nil {
+			t.Fatalf("hosts: %v", err)
+		}
+		hosts := v.(*sl.List)
+		if hosts.Len() != 1 {
+			t.Errorf("hosts len = %d, want 1 (alice has 1 host)", hosts.Len())
+		}
+	})
+
+	// No user — both APIs should error.
+	th := &sl.Thread{}
+	if _, err := api_replication_links(th, sl.NewBuiltin("links", api_replication_links), sl.Tuple{}, nil); err == nil {
+		t.Error("links: expected error for no user")
+	}
+	if _, err := api_replication_hosts(th, sl.NewBuiltin("hosts", api_replication_hosts), sl.Tuple{}, nil); err == nil {
+		t.Error("hosts: expected error for no user")
+	}
+}
+
+// TestApiReplicationLinkDeny: deny removes the link row for the calling
+// user but leaves rows for other users untouched.
+func TestApiReplicationLinkDeny(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-A', '', 'ph-1', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-bob', 'peer-A', '', 'ph-2', 0, 9999999999)")
+
+	alice := &User{UID: "u-alice"}
+	withUserThread(alice, func(th *sl.Thread) {
+		v, err := api_replication_link_deny(th, sl.NewBuiltin("link_deny", api_replication_link_deny), sl.Tuple{sl.String("peer-A")}, nil)
+		if err != nil {
+			t.Fatalf("link_deny: %v", err)
+		}
+		if s, _ := v.(sl.String); string(s) != "denied" {
+			t.Errorf("link_deny first call = %v, want denied", v)
+		}
+
+		// Idempotent: second call returns already-handled.
+		v, _ = api_replication_link_deny(th, sl.NewBuiltin("link_deny", api_replication_link_deny), sl.Tuple{sl.String("peer-A")}, nil)
+		if s, _ := v.(sl.String); string(s) != "already-handled" {
+			t.Errorf("link_deny repeat = %v, want already-handled", v)
+		}
+	})
+
+	// Bob's row must be untouched.
+	exists, _ := rdb.exists("select 1 from links where user='u-bob' and peer='peer-A'")
+	if !exists {
+		t.Error("bob's link row was incorrectly removed by alice's deny")
+	}
+}
+
+// TestApiReplicationHostRemove: removing a host removes only the calling
+// user's row, leaves other users untouched, and returns not-found when
+// the peer wasn't a host.
+func TestApiReplicationHostRemove(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values ('u-alice', 'alice')")
+	udb.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-alice', '', 'fpa', 'u-alice', 'identity', 'Alice')")
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-A', 100, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-B', 200, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-A', 300, 0)")
+
+	alice := &User{UID: "u-alice"}
+	withUserThread(alice, func(th *sl.Thread) {
+		v, err := api_replication_host_remove(th, sl.NewBuiltin("host_remove", api_replication_host_remove), sl.Tuple{sl.String("peer-A")}, nil)
+		if err != nil {
+			t.Fatalf("host_remove: %v", err)
+		}
+		if s, _ := v.(sl.String); string(s) != "removed" {
+			t.Errorf("host_remove = %v, want removed", v)
+		}
+
+		// not-found path.
+		v, _ = api_replication_host_remove(th, sl.NewBuiltin("host_remove", api_replication_host_remove), sl.Tuple{sl.String("peer-unknown")}, nil)
+		if s, _ := v.(sl.String); string(s) != "not-found" {
+			t.Errorf("host_remove unknown peer = %v, want not-found", v)
+		}
+	})
+
+	// Alice's other host and Bob's row must be intact.
+	if exists, _ := rdb.exists("select 1 from hosts where user='u-alice' and peer='peer-B'"); !exists {
+		t.Error("alice's peer-B host was incorrectly removed")
+	}
+	if exists, _ := rdb.exists("select 1 from hosts where user='u-bob' and peer='peer-A'"); !exists {
+		t.Error("bob's host was incorrectly removed by alice's call")
+	}
+}

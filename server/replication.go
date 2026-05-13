@@ -854,7 +854,13 @@ func toString(v any) string {
 // `hosts` is the complete new host set excluding the local host. The
 // local entry is recorded too, but is filtered out of the outbound peer
 // list (we don't send messages to ourselves).
-func replication_membership_update(user string, hosts []string) {
+//
+// Package-level alias so callers route through this hook; tests can
+// replace it with a no-op to keep the send_peer goroutines (which write
+// to queue.db) from outliving their setup tear-down.
+var replication_membership_update = replication_membership_update_impl
+
+func replication_membership_update_impl(user string, hosts []string) {
 	seq := replication_sequence_next(user, "membership")
 
 	db := db_open("db/replication.db")

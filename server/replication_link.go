@@ -313,7 +313,13 @@ func replication_emit_link_approved(destinationPeer, placeholder string, keys *K
 // replication_emit_link_denied sends a denial / expiry / freshness-fail
 // to the destination server. The reason field is informational only;
 // the destination cleans up the placeholder identically regardless.
-func replication_emit_link_denied(destinationPeer, placeholder, reason string) {
+//
+// Package-level alias so tests can replace it with a no-op to keep the
+// send_peer goroutines (which write to queue.db) from outliving the
+// test setup tear-down.
+var replication_emit_link_denied = replication_emit_link_denied_impl
+
+func replication_emit_link_denied_impl(destinationPeer, placeholder, reason string) {
 	if destinationPeer == "" || placeholder == "" {
 		return
 	}

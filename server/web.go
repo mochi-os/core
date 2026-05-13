@@ -1024,8 +1024,9 @@ func web_identity_get(c *gin.Context) {
 
 	response := gin.H{
 		"user": gin.H{
-			"email": u.Username,
-			"name":  "", // Will be populated below if identity exists
+			"email":  u.Username,
+			"name":   "", // Will be populated below if identity exists
+			"status": u.Status,
 		},
 	}
 

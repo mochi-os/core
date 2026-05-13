@@ -46,9 +46,29 @@ func setup_replication_test(t *testing.T) func() {
 	replication_emit_system_set = func(database, table, row, field, value string) {}
 	replication_emit_system_row = func(database, table string, key, cols map[string]string, del bool) {}
 
+	// Membership broadcast spawns send_peer goroutines that hit queue.db
+	// — keep the local DB write side, drop the broadcast.
+	orig_membership := replication_membership_update
+	replication_membership_update = func(user string, hosts []string) {
+		db := db_open("db/replication.db")
+		db.exec("delete from hosts where user=?", user)
+		for _, peer := range hosts {
+			if peer == "" || peer == p2p_id {
+				continue
+			}
+			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
+		}
+	}
+
+	// link-denied emit spawns send_peer goroutines too — same problem.
+	orig_emit_link_denied := replication_emit_link_denied
+	replication_emit_link_denied = func(destinationPeer, placeholder, reason string) {}
+
 	return func() {
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
+		replication_membership_update = orig_membership
+		replication_emit_link_denied = orig_emit_link_denied
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

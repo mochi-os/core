@@ -7,11 +7,20 @@
 // /_/health. /_/health is reserved for LB consumption and exposes a
 // coarser view; the Starlark API is for app-level rendering.
 //
-// Initial surface (v1):
-//   mochi.replication.status() -> dict
+// Surface:
+//   mochi.replication.status()            -> dict (whole-server view)
+//   mochi.replication.links()             -> list (pending inbound link-requests for the calling user)
+//   mochi.replication.hosts()             -> list (active per-user peers for the calling user)
+//   mochi.replication.link_approve(peer)  -> str  ("approved" | "already-approved")
+//   mochi.replication.link_deny(peer)     -> str  ("denied"   | "already-handled")
+//   mochi.replication.host_remove(peer)   -> str  ("removed"  | "not-found")
 //
-// Future additions (when #66 / #70 land): per-user host detail,
-// bootstrap progress, lag thresholds, manual-resync trigger.
+// All per-user functions operate on the calling user (resolved from
+// t.Local("user")). The settings app cannot read or mutate another
+// user's replication state through this API.
+//
+// Future additions (when #66 / #70 land): bootstrap progress, lag
+// thresholds, manual-resync trigger, audit log.
 
 package main
 
@@ -20,9 +29,15 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// api_replication exposes mochi.replication.{status}.
+// api_replication exposes mochi.replication.{status, links, hosts,
+// link_approve, link_deny, host_remove}.
 var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.StringDict{
-	"status": sl.NewBuiltin("mochi.replication.status", api_replication_status),
+	"status":        sl.NewBuiltin("mochi.replication.status", api_replication_status),
+	"links":         sl.NewBuiltin("mochi.replication.links", api_replication_links),
+	"hosts":         sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
+	"link_approve":  sl.NewBuiltin("mochi.replication.link_approve", api_replication_link_approve),
+	"link_deny":     sl.NewBuiltin("mochi.replication.link_deny", api_replication_link_deny),
+	"host_remove":   sl.NewBuiltin("mochi.replication.host_remove", api_replication_host_remove),
 })
 
 // api_replication_status returns a dict describing this server's
@@ -86,4 +101,182 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
 	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))
 	return result, nil
+}
+
+// api_replication_links returns pending inbound link-requests for the
+// calling user. Source-side display: "alice on B wants to replicate
+// from A — Approve / Deny".
+//
+// Returned shape: list of dicts {peer, label, expires}.
+func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows(
+		"select peer, label, expires from links where user=? order by received",
+		u.UID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
+		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_hosts returns the active per-user host set for the
+// calling user — the peers that hold a copy of this user's data via
+// the per-user opt-in flow.
+//
+// Returned shape: list of dicts {peer, added, ack}.
+func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows(
+		"select peer, added, ack from hosts where user=? order by added",
+		u.UID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("added"), sl.MakeInt64(row_int(r, "added")))
+		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_link_approve approves an inbound link-request from
+// `peer` targeting the calling user. Wraps replication_link_approve;
+// the underlying handler runs the freshness probe, emits the
+// keys-transfer, and updates membership.
+//
+// Returns "approved" on success, "already-approved" on the multi-tab
+// loser. Errors surface as Starlark errors.
+func api_replication_link_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	result, err := replication_link_approve(u.UID, peer)
+	if err != nil {
+		return sl_error(fn, "approve: %v", err)
+	}
+	return sl.String(result), nil
+}
+
+// api_replication_link_deny denies an inbound link-request from `peer`
+// targeting the calling user. Wraps replication_link_deny; the
+// underlying handler emits link-denied(reason=denied) to the
+// destination.
+//
+// Returns "denied" on success, "already-handled" on the multi-tab
+// loser. Never returns an error (the underlying call swallows DB
+// failures with a warning).
+func api_replication_link_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	return sl.String(replication_link_deny(u.UID, peer)), nil
+}
+
+// api_replication_host_remove removes `peer` from the calling user's
+// active per-user host set and emits a membership-change to the
+// remaining peers (and the removed one) so the cluster converges on
+// the smaller set. Returns "removed" or "not-found".
+func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists(
+		"select 1 from hosts where user=? and peer=?", u.UID, peer)
+	if !exists {
+		return sl.String("not-found"), nil
+	}
+
+	rows, err := rdb.rows("select peer from hosts where user=? and peer!=?", u.UID, peer)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	remaining := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p := row_string(r, "peer"); p != "" {
+			remaining = append(remaining, p)
+		}
+	}
+
+	// membership-update wipes & rewrites the local hosts table and
+	// broadcasts the new set to every remaining host. The departing
+	// peer learns it's out of the set when it next receives any op
+	// for this user and sees itself missing from the membership list
+	// (or when the periodic reconciler in #66's bootstrap protocol
+	// confirms divergence).
+	replication_membership_update(u.UID, remaining)
+
+	return sl.String("removed"), nil
+}
+
+// row_string / row_int unpack scalar SQL row values defensively. The
+// nil checks let api_replication_* return an empty list cleanly when
+// a row was scanned with an unexpected column type instead of
+// panicking the action.
+func row_string(r map[string]any, key string) string {
+	if v, ok := r[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func row_int(r map[string]any, key string) int64 {
+	switch v := r[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }

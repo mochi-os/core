@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 60
+	schema_version = 61
 )
 
 var (
@@ -624,6 +624,8 @@ func db_upgrade() {
 			db_upgrade_59()
 		case 60:
 			db_upgrade_60()
+		case 61:
+			db_upgrade_61()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -783,6 +785,19 @@ func db_upgrade_49() {
 // system tables — concurrent same-row writes are rare). The columns
 // are dropped to keep the schema clean. SQLite ≥ 3.35 supports DROP
 // COLUMN natively; ncruces/go-sqlite3 ships a recent SQLite. Idempotent.
+// db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran
+// against an earlier build of this session in which the joins-table
+// creation was added after links. Servers that took the first build
+// landed at schema 55 with `links` present but `joins` missing; the
+// schema_version moved past 55 so db_upgrade_55 never re-ran. This
+// migration recreates `joins` + `joins_expires` idempotently. Servers
+// that already have the table are no-ops.
+func db_upgrade_61() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
+	r.exec("create index if not exists joins_expires on joins(expires)")
+}
+
 func db_upgrade_60() {
 	for _, target := range []struct {
 		path  string

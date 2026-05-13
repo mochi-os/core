@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 56
+	schema_version = 57
 )
 
 var (
@@ -305,15 +305,19 @@ func db_create() {
 	replication.exec("create index joins_expires on joins(expires)")
 }
 
-// db_apps opens the apps.db database, creating tables if needed
+// db_apps opens the apps.db database, creating tables if needed.
+// classes / services / paths / apps carry (ts, peer) for LWW conflict
+// resolution (system-LWW replication, #68). versions / tracks don't —
+// they're three-column tables where field-level LWW is awkward; that
+// migration follows.
 func db_apps() *DB {
 	db := db_open("db/apps.db")
-	db.exec("create table if not exists classes (class text not null primary key, app text not null)")
-	db.exec("create table if not exists services (service text not null primary key, app text not null)")
-	db.exec("create table if not exists paths (path text not null primary key, app text not null)")
+	db.exec("create table if not exists classes (class text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
+	db.exec("create table if not exists services (service text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
+	db.exec("create table if not exists paths (path text not null primary key, app text not null, ts integer not null default 0, peer text not null default '')")
 	db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
 	db.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
-	db.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
+	db.exec("create table if not exists apps (app text not null primary key, installed integer not null, ts integer not null default 0, peer text not null default '')")
 	return db
 }
 
@@ -616,6 +620,8 @@ func db_upgrade() {
 			db_upgrade_55()
 		case 56:
 			db_upgrade_56()
+		case 57:
+			db_upgrade_57()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -765,6 +771,23 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_57 adds the LWW conflict-resolution columns (ts, peer) to
+// the apps.db two-column routing tables (classes, services, paths)
+// and the install registry (apps). Same pattern as v56 for settings.
+// The three-column versions/tracks tables follow in a later migration.
+// Idempotent.
+func db_upgrade_57() {
+	apps := db_open("db/apps.db")
+	for _, t := range []string{"classes", "services", "paths", "apps"} {
+		if col, _ := apps.exists(fmt.Sprintf("select 1 from pragma_table_info('%s') where name='ts'", t)); !col {
+			apps.exec(fmt.Sprintf("alter table %s add column ts integer not null default 0", t))
+		}
+		if col, _ := apps.exists(fmt.Sprintf("select 1 from pragma_table_info('%s') where name='peer'", t)); !col {
+			apps.exec(fmt.Sprintf("alter table %s add column peer text not null default ''", t))
+		}
 	}
 }
 

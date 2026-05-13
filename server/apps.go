@@ -1011,16 +1011,23 @@ func apps_class_get(class string) string {
 	return row["app"].(string)
 }
 
-// apps_class_set binds a class to an app ID
+// apps_class_set binds a class to an app ID. Stamps (ts, peer) for
+// system-LWW replication and emits the op to pair members.
 func apps_class_set(class, app string) {
+	ts := now()
 	db := db_apps()
-	db.exec("replace into classes (class, app) values (?, ?)", class, app)
+	db.exec("replace into classes (class, app, ts, peer) values (?, ?, ?, ?)", class, app, ts, p2p_id)
+	replication_emit_system_lww("apps", "classes", class, "app", app, ts)
 }
 
-// apps_class_delete removes a class binding
+// apps_class_delete removes a class binding. Represented in LWW as a
+// write of empty app value (the receiver treats empty as "removed");
+// stamps (ts, peer) and emits so peer-side rows are cleared too.
 func apps_class_delete(class string) {
+	ts := now()
 	db := db_apps()
 	db.exec("delete from classes where class = ?", class)
+	replication_emit_system_lww("apps", "classes", class, "app", "", ts)
 }
 
 // apps_service_get returns the app ID bound to a service, or empty string if not set
@@ -1033,16 +1040,21 @@ func apps_service_get(service string) string {
 	return row["app"].(string)
 }
 
-// apps_service_set binds a service to an app ID
+// apps_service_set binds a service to an app ID. Stamps (ts, peer)
+// and emits system-LWW.
 func apps_service_set(service, app string) {
+	ts := now()
 	db := db_apps()
-	db.exec("replace into services (service, app) values (?, ?)", service, app)
+	db.exec("replace into services (service, app, ts, peer) values (?, ?, ?, ?)", service, app, ts, p2p_id)
+	replication_emit_system_lww("apps", "services", service, "app", app, ts)
 }
 
-// apps_service_delete removes a service binding
+// apps_service_delete removes a service binding (empty-value LWW).
 func apps_service_delete(service string) {
+	ts := now()
 	db := db_apps()
 	db.exec("delete from services where service = ?", service)
+	replication_emit_system_lww("apps", "services", service, "app", "", ts)
 }
 
 // apps_path_get returns the app ID bound to a path, or empty string if not set
@@ -1055,22 +1067,36 @@ func apps_path_get(path string) string {
 	return row["app"].(string)
 }
 
-// apps_path_set binds a path to an app ID
+// apps_path_set binds a path to an app ID. Stamps (ts, peer) and emits
+// system-LWW.
 func apps_path_set(path, app string) {
+	ts := now()
 	db := db_apps()
-	db.exec("replace into paths (path, app) values (?, ?)", path, app)
+	db.exec("replace into paths (path, app, ts, peer) values (?, ?, ?, ?)", path, app, ts, p2p_id)
+	replication_emit_system_lww("apps", "paths", path, "app", app, ts)
 }
 
-// apps_path_delete removes a path binding
+// apps_path_delete removes a path binding (empty-value LWW).
 func apps_path_delete(path string) {
+	ts := now()
 	db := db_apps()
 	db.exec("delete from paths where path = ?", path)
+	replication_emit_system_lww("apps", "paths", path, "app", "", ts)
 }
 
-// apps_record records an app installation timestamp (only if not already recorded)
+// apps_record records an app installation timestamp (only if not already
+// recorded). Stamps (ts, peer) on first install and emits system-LWW
+// so paired members converge on the install registry. No-op when the
+// row already exists — apps_record is called on every startup and we
+// don't want to reseat ts each time.
 func apps_record(app string) {
 	db := db_apps()
-	db.exec("insert or ignore into apps (app, installed) values (?, ?)", app, now())
+	if has, _ := db.exists("select 1 from apps where app=?", app); has {
+		return
+	}
+	ts := now()
+	db.exec("insert into apps (app, installed, ts, peer) values (?, ?, ?, ?)", app, ts, ts, p2p_id)
+	replication_emit_system_lww("apps", "apps", app, "installed", fmt.Sprintf("%d", ts), ts)
 }
 
 // apps_installed returns the installation timestamp for an app, or 0 if not recorded

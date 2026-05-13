@@ -186,3 +186,136 @@ func TestSettingSetWritesTSAndPeer(t *testing.T) {
 		t.Errorf("peer = %q, want %q", got, p2p_id)
 	}
 }
+
+// TestSystemLWWApplyAppsClassesFresh: a class-binding op for a row
+// that doesn't exist locally inserts cleanly.
+func TestSystemLWWApplyAppsClassesFresh(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	db_apps() // create tables
+
+	replication_system_lww_apply("peer-A", &SystemLWWSet{
+		Database: "apps", Table: "classes",
+		Row: "feed", Field: "app",
+		Value: "feeds", TS: 100, Peer: "peer-A",
+	})
+
+	if got := apps_class_get("feed"); got != "feeds" {
+		t.Errorf("apps_class_get = %q, want %q", got, "feeds")
+	}
+}
+
+// TestSystemLWWApplyAppsClassesLWW: lower ts loses against the existing row.
+func TestSystemLWWApplyAppsClassesLWW(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	db := db_apps()
+	db.exec("replace into classes (class, app, ts, peer) values ('feed', 'current', 200, 'peer-X')")
+
+	replication_system_lww_apply("peer-Y", &SystemLWWSet{
+		Database: "apps", Table: "classes",
+		Row: "feed", Field: "app",
+		Value: "stale", TS: 100, Peer: "peer-Y",
+	})
+	if got := apps_class_get("feed"); got != "current" {
+		t.Errorf("after stale apply = %q, want unchanged %q", got, "current")
+	}
+}
+
+// TestSystemLWWApplyAppsClassesDelete: empty-value op deletes the row.
+func TestSystemLWWApplyAppsClassesDelete(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	db := db_apps()
+	db.exec("replace into classes (class, app, ts, peer) values ('feed', 'current', 100, 'peer-X')")
+
+	replication_system_lww_apply("peer-Y", &SystemLWWSet{
+		Database: "apps", Table: "classes",
+		Row: "feed", Field: "app",
+		Value: "", TS: 200, Peer: "peer-Y",
+	})
+	if got := apps_class_get("feed"); got != "" {
+		t.Errorf("after delete-via-lww = %q, want empty", got)
+	}
+}
+
+// TestSystemLWWApplyAppsServicesAndPaths: same machinery for services /
+// paths.
+func TestSystemLWWApplyAppsServicesAndPaths(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_lww_apply("peer-A", &SystemLWWSet{
+		Database: "apps", Table: "services",
+		Row: "feeds", Field: "app",
+		Value: "feeds", TS: 100, Peer: "peer-A",
+	})
+	if got := apps_service_get("feeds"); got != "feeds" {
+		t.Errorf("services apply: get = %q, want %q", got, "feeds")
+	}
+
+	replication_system_lww_apply("peer-A", &SystemLWWSet{
+		Database: "apps", Table: "paths",
+		Row: "/feeds/", Field: "app",
+		Value: "feeds", TS: 100, Peer: "peer-A",
+	})
+	if got := apps_path_get("/feeds/"); got != "feeds" {
+		t.Errorf("paths apply: get = %q, want %q", got, "feeds")
+	}
+}
+
+// TestSystemLWWApplyAppsAppsInstall: apps.apps row insert via LWW.
+func TestSystemLWWApplyAppsAppsInstall(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_lww_apply("peer-A", &SystemLWWSet{
+		Database: "apps", Table: "apps",
+		Row: "feeds", Field: "installed",
+		Value: "1234567890", TS: 100, Peer: "peer-A",
+	})
+
+	if got := apps_installed("feeds"); got != 1234567890 {
+		t.Errorf("apps_installed after apply = %d, want %d", got, int64(1234567890))
+	}
+}
+
+// TestAppsClassSetEmitsAndStamps: apps_class_set writes (ts, peer) and
+// fires the system-LWW emit.
+func TestAppsClassSetEmitsAndStamps(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+
+	// Override the emit stub to capture the call.
+	emit_called := 0
+	orig := replication_emit_system_lww
+	replication_emit_system_lww = func(database, table, row, field, value string, ts int64) {
+		emit_called++
+		if database != "apps" || table != "classes" || row != "feed" || field != "app" || value != "feeds" {
+			t.Errorf("emit called with unexpected args: db=%q table=%q row=%q field=%q value=%q",
+				database, table, row, field, value)
+		}
+	}
+	defer func() { replication_emit_system_lww = orig }()
+
+	apps_class_set("feed", "feeds")
+
+	if emit_called != 1 {
+		t.Errorf("emit_called = %d, want 1", emit_called)
+	}
+
+	db := db_apps()
+	row, _ := db.row("select app, ts, peer from classes where class='feed'")
+	if row == nil {
+		t.Fatal("row should exist after set")
+	}
+	ts, _ := row["ts"].(int64)
+	if ts == 0 {
+		t.Error("ts should be non-zero after set")
+	}
+	if peer, _ := row["peer"].(string); peer != p2p_id {
+		t.Errorf("peer = %q, want %q", peer, p2p_id)
+	}
+}

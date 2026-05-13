@@ -73,6 +73,10 @@ func replication_system_lww_apply(originPeer string, s *SystemLWWSet) {
 	switch s.Database + "." + s.Table {
 	case "settings.settings":
 		replication_system_lww_apply_settings(originPeer, s)
+	case "apps.classes", "apps.services", "apps.paths":
+		replication_system_lww_apply_apps_two_col(originPeer, s)
+	case "apps.apps":
+		replication_system_lww_apply_apps_installs(originPeer, s)
 	default:
 		warn("Replication system-lww: unsupported destination %q.%q (from peer %q)",
 			s.Database, s.Table, originPeer)
@@ -113,6 +117,101 @@ func replication_system_lww_apply_settings(originPeer string, s *SystemLWWSet) {
 		s.Row, s.Value, s.TS, s.Peer)
 	debug("Replication system-lww settings.settings applied: name=%q peer=%q ts=%d (from %q)",
 		s.Row, s.Peer, s.TS, originPeer)
+}
+
+// replication_system_lww_apply_apps_two_col handles classes / services /
+// paths in apps.db. All three are (key, app) tables — the key is in
+// SystemLWWSet.Row, the new app value is SystemLWWSet.Value. Field is
+// "app". An empty value means "delete the row" (LWW-tombstone of the
+// binding). The keying column varies per table.
+func replication_system_lww_apply_apps_two_col(originPeer string, s *SystemLWWSet) {
+	if s.Field != "app" {
+		info("Replication system-lww apps.%s: unsupported field %q (from peer %q)", s.Table, s.Field, originPeer)
+		return
+	}
+	var keyCol string
+	switch s.Table {
+	case "classes":
+		keyCol = "class"
+	case "services":
+		keyCol = "service"
+	case "paths":
+		keyCol = "path"
+	default:
+		return
+	}
+
+	db := db_apps()
+
+	var localTS int64
+	var localPeer string
+	if row, _ := db.row(fmt.Sprintf("select ts, peer from %s where %s=?", s.Table, keyCol), s.Row); row != nil {
+		localTS, _ = row["ts"].(int64)
+		localPeer, _ = row["peer"].(string)
+	}
+
+	if s.TS < localTS {
+		return
+	}
+	if s.TS == localTS && s.Peer <= localPeer {
+		return
+	}
+
+	if s.Value == "" {
+		// Delete-via-LWW: tombstone the row by removing it. The ts/peer
+		// metadata is lost on delete, so a subsequent stale write could
+		// in principle resurrect — acceptable for v1 since the (ts, peer)
+		// of the delete travels in the op envelope and stale incoming
+		// writes are still rejected by the source-peer's own (ts, peer).
+		db.exec(fmt.Sprintf("delete from %s where %s=?", s.Table, keyCol), s.Row)
+	} else {
+		db.exec(
+			fmt.Sprintf("replace into %s (%s, app, ts, peer) values (?, ?, ?, ?)", s.Table, keyCol),
+			s.Row, s.Value, s.TS, s.Peer)
+	}
+	debug("Replication system-lww apps.%s applied: %s=%q value=%q peer=%q ts=%d (from %q)",
+		s.Table, keyCol, s.Row, s.Value, s.Peer, s.TS, originPeer)
+}
+
+// replication_system_lww_apply_apps_installs handles apps.db.apps —
+// the install registry. The Value carries the installed timestamp as
+// a decimal string. Empty value means uninstalled (though uninstall
+// isn't currently a code path; provided for symmetry).
+func replication_system_lww_apply_apps_installs(originPeer string, s *SystemLWWSet) {
+	if s.Field != "installed" {
+		info("Replication system-lww apps.apps: unsupported field %q (from peer %q)", s.Field, originPeer)
+		return
+	}
+
+	db := db_apps()
+	var localTS int64
+	var localPeer string
+	if row, _ := db.row("select ts, peer from apps where app=?", s.Row); row != nil {
+		localTS, _ = row["ts"].(int64)
+		localPeer, _ = row["peer"].(string)
+	}
+
+	if s.TS < localTS {
+		return
+	}
+	if s.TS == localTS && s.Peer <= localPeer {
+		return
+	}
+
+	if s.Value == "" {
+		db.exec("delete from apps where app=?", s.Row)
+	} else {
+		var installed int64
+		_, _ = fmt.Sscanf(s.Value, "%d", &installed)
+		if installed == 0 {
+			installed = s.TS
+		}
+		db.exec(
+			"replace into apps (app, installed, ts, peer) values (?, ?, ?, ?)",
+			s.Row, installed, s.TS, s.Peer)
+	}
+	debug("Replication system-lww apps.apps applied: app=%q value=%q peer=%q ts=%d (from %q)",
+		s.Row, s.Value, s.Peer, s.TS, originPeer)
 }
 
 // replication_emit_system_lww is the package-level function variable

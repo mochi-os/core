@@ -125,6 +125,13 @@ var providers = []Provider{
 		Verify:       false,
 	},
 	{
+		Type:         "fcm",
+		Capabilities: []string{"notify"},
+		Flow:         "browser",
+		Fields:       nil,
+		Verify:       false,
+	},
+	{
 		Type:         "url",
 		Capabilities: []string{"notify"},
 		Flow:         "form",
@@ -517,6 +524,33 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["endpoint"] = endpoint
 		data["auth"] = auth
 		data["p256dh"] = p256dh
+
+	case "fcm":
+		// Firebase Cloud Messaging device token. The Android client calls
+		// /notifications/-/push/register/fcm after FirebaseMessaging.getToken
+		// resolves (and again on onNewToken). The Firebase Installations ID
+		// (install_id) is the stable per-install handle used as `identifier`
+		// so token refreshes update the existing row in place, while a
+		// second phone (different FID) creates a separate row — both can
+		// receive pushes concurrently.
+		token, _ := fields["token"].(string)
+		install_id, _ := fields["install_id"].(string)
+		if token == "" {
+			return sl_error(fn, "required field %q is missing", "token")
+		}
+		if install_id == "" {
+			return sl_error(fn, "required field %q is missing", "install_id")
+		}
+		existing, _ := db.row("select id from accounts where type='fcm' and identifier=?", install_id)
+		if existing != nil {
+			data["token"] = token
+			data_json, _ := json.Marshal(data)
+			db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
+			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
+			return sl_encode(account_redact(row)), nil
+		}
+		identifier = install_id
+		data["token"] = token
 	}
 
 	// Serialize data to JSON
@@ -917,6 +951,9 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	case "unifiedpush":
 		result = account_test_unifiedpush(data, language)
 
+	case "fcm":
+		result = account_test_fcm(data, language)
+
 	case "pushbullet":
 		token, _ := data["token"].(string)
 		result = account_test_pushbullet(token)
@@ -1085,6 +1122,21 @@ func account_test_unifiedpush(data map[string]any, language string) AccountTestR
 		return AccountTestResult{Success: false, Message: "Subscription expired"}
 	}
 
+	return AccountTestResult{Success: false, Message: "Push notification failed"}
+}
+
+// account_test_fcm sends a test notification via Firebase Cloud Messaging,
+// reusing the same delivery path the production notification flow uses so
+// any service-account / API-key misconfiguration surfaces with the same
+// failure mode the user would otherwise hit.
+func account_test_fcm(data map[string]any, language string) AccountTestResult {
+	if setting_get("fcm.service_account", "") == "" {
+		return AccountTestResult{Success: false, Message: "FCM not configured"}
+	}
+	title := resolve_core_label(language, "push.test.title", nil)
+	if account_deliver_fcm(data, title, "", "", "notifications-test-", "notifications") {
+		return AccountTestResult{Success: true, Message: "Test notification sent"}
+	}
 	return AccountTestResult{Success: false, Message: "Push notification failed"}
 }
 
@@ -1427,6 +1479,8 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			success = account_deliver_ntfy(server, topic, token, title, body, link)
 		case "unifiedpush":
 			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app)
+		case "fcm":
+			success = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app)
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)

@@ -388,6 +388,86 @@ func replication_freshness_probe_event(e *Event) {
 	}
 }
 
+// UserLookup / UserLookupResult are the wire payloads for the
+// synchronous "does this username exist on your server?" probe a
+// destination server (B) runs against the source (A) at signup time,
+// before creating a `pending-replication` placeholder. B needs A's uid
+// for the user so the placeholder lands with the canonical id; A is
+// authoritative on what that uid is. Raw-stream request-response, same
+// shape as FreshnessProbe — queued retries can't deliver the response.
+type UserLookup struct {
+	Username string `cbor:"username"`
+}
+
+type UserLookupResult struct {
+	UID    string `cbor:"uid,omitempty"`
+	Exists bool   `cbor:"exists"`
+}
+
+// replication_user_lookup opens a synchronous P2P stream to the source
+// peer, asks "do you have a user named <username>?", and returns the
+// canonical uid (or "" + false if not). Used by the signup-with-
+// Advanced path on B before creating a placeholder row.
+//
+// The lookup is a P2P-only mechanism — there's no HTTPS fallback. If
+// the source peer is unreachable the caller surfaces the failure as a
+// "couldn't reach <source>" form error; the user can retry. We do not
+// fall back to anonymous directory lookups because the source might
+// have private users that aren't in the directory.
+func replication_user_lookup(peer, username string) (string, bool, error) {
+	if peer == "" || username == "" {
+		return "", false, fmt.Errorf("user lookup: empty peer or username")
+	}
+
+	s, err := stream_to_peer(peer, "", "", "replication", "user-lookup", "", nil)
+	if err != nil {
+		return "", false, fmt.Errorf("user lookup: open stream: %w", err)
+	}
+	defer s.close()
+
+	if err := s.write(&UserLookup{Username: username}); err != nil {
+		return "", false, fmt.Errorf("user lookup: write request: %w", err)
+	}
+
+	var result UserLookupResult
+	if err := s.read(&result); err != nil {
+		return "", false, fmt.Errorf("user lookup: read response: %w", err)
+	}
+	return result.UID, result.Exists, nil
+}
+
+// replication_user_lookup_event is A's handler for an inbound lookup.
+// Reads the username, queries the local users.db for the uid, writes
+// the result back on the same stream. Must be invoked via a live
+// stream (e.stream != nil); a queued retry has no caller to respond to
+// and silently no-ops. The query returns the uid for any local user
+// matching the username; the requester is responsible for deciding
+// whether that user wants to be replicated (the link-request flow's
+// Approve step is the actual consent gate).
+func replication_user_lookup_event(e *Event) {
+	if e.stream == nil {
+		info("Replication user-lookup: no stream (queued retry?) — dropping")
+		return
+	}
+	var lu UserLookup
+	if !e.segment(&lu) {
+		info("Replication user-lookup: cannot decode payload")
+		return
+	}
+	result := &UserLookupResult{}
+	if lu.Username != "" {
+		udb := db_open("db/users.db")
+		var u User
+		if udb.scan(&u, "select uid, username, role, methods, status from users where username=?", lu.Username) {
+			result.UID = u.UID
+			result.Exists = true
+		}
+	}
+	if err := e.stream.write(result); err != nil {
+		warn("Replication user-lookup: failed to write response: %v", err)
+	}
+}
+
 // replication_link_expire_sweep walks the `links` table on this host
 // and emits link-denied(reason="expired") for any row past its expiry,
 // then deletes the row locally. Called periodically from the

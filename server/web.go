@@ -1443,6 +1443,7 @@ func web_start() {
 	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
 	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
+	r.POST("/_/auth/replicate", rate_limit_login_middleware, web_auth_replicate)
 	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_oauth_begin)
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
 	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)

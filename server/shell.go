@@ -111,6 +111,17 @@ func web_should_serve_shell(c *gin.Context) bool {
 		return false
 	}
 
+	// Resource routes (attachment downloads, git Smart-HTTP) are never app
+	// HTML. Serving them inside the shell loads the response body into the
+	// shell's sandboxed iframe, which has an opaque origin — Chrome's PDF
+	// viewer (and any feature that relies on same-origin access from inside
+	// the rendered document) then fails with "Sandbox access violation".
+	// These URLs are always direct resource downloads and must reach the
+	// browser as top-level responses, not iframe contents.
+	if strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/") {
+		return false
+	}
+
 	// User must be authenticated
 	session := web_cookie_get(c, "session", "")
 	if session == "" {

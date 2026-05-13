@@ -117,20 +117,26 @@ func (m *gitDiffModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 	return api_git_diff(thread, nil, args, kwargs)
 }
 
-// Get the path to a repository for a given owner and entity ID
-func git_repo_path(owner *User, entity_id string) string {
-	return fmt.Sprintf("%s/users/%s/repositories/%s", data_dir, owner.UID, entity_id)
+// Get the path to a repository for a given owner, calling app, and entity ID.
+// The directory uses the calling app's id so per-user storage lines up with
+// every other path-composing API (db_app, db_app_system, files): published
+// apps land at users/<uid>/<app-entity-id>/<repo-entity>/, dev apps at
+// users/<uid>/<app-name>/<repo-entity>/. The literal "repositories" string
+// was a pre-v54 accident that worked on dev (app.id == "repositories") but
+// diverged from convention on every published deployment.
+func git_repo_path(owner *User, app *App, entity_id string) string {
+	return fmt.Sprintf("%s/users/%s/%s/%s", data_dir, owner.UID, app.id, entity_id)
 }
 
 // Open a repository
-func git_open(owner *User, entity_id string) (*git.Repository, error) {
-	path := git_repo_path(owner, entity_id)
+func git_open(owner *User, app *App, entity_id string) (*git.Repository, error) {
+	path := git_repo_path(owner, app, entity_id)
 	return git.PlainOpen(path)
 }
 
 // Initialize a new bare repository
-func git_init(owner *User, entity_id string) error {
-	path := git_repo_path(owner, entity_id)
+func git_init(owner *User, app *App, entity_id string) error {
+	path := git_repo_path(owner, app, entity_id)
 
 	// Create parent directory if needed
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -184,14 +190,14 @@ func git_init(owner *User, entity_id string) error {
 }
 
 // Delete a repository
-func git_delete(owner *User, entity_id string) error {
-	path := git_repo_path(owner, entity_id)
+func git_delete(owner *User, app *App, entity_id string) error {
+	path := git_repo_path(owner, app, entity_id)
 	return os.RemoveAll(path)
 }
 
 // Get repository size in bytes
-func git_size(owner *User, entity_id string) (int64, error) {
-	path := git_repo_path(owner, entity_id)
+func git_size(owner *User, app *App, entity_id string) (int64, error) {
+	path := git_repo_path(owner, app, entity_id)
 	var size int64
 
 	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
@@ -275,11 +281,12 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	err := git_init(owner, entity_id)
+	err := git_init(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to initialize repository: %v", err)
 	}
@@ -299,11 +306,12 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	err := git_delete(owner, entity_id)
+	err := git_delete(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to delete repository: %v", err)
 	}
@@ -323,11 +331,12 @@ func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	return sl.String(git_repo_path(owner, entity_id)), nil
+	return sl.String(git_repo_path(owner, app, entity_id)), nil
 }
 
 // mochi.git.size(entity_id) -> int: Get repository size in bytes
@@ -342,11 +351,12 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	size, err := git_size(owner, entity_id)
+	size, err := git_size(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to get size: %v", err)
 	}
@@ -366,11 +376,12 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -425,11 +436,12 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -467,11 +479,12 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -529,11 +542,12 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -570,11 +584,12 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -600,11 +615,12 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -635,11 +651,12 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -687,11 +704,12 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -758,11 +776,12 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -816,11 +835,12 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -883,11 +903,12 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -965,11 +986,12 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1061,11 +1083,12 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1115,11 +1138,12 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1185,11 +1209,12 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1259,11 +1284,12 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1352,11 +1378,12 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1415,11 +1442,12 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1575,11 +1603,12 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -2124,11 +2153,12 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	owner := t.Local("owner").(*User)
+	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, entity_id)
+	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -2358,7 +2388,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	}
 
 	// Build repository path
-	repo_path := git_repo_path(owner, id)
+	repo_path := git_repo_path(owner, a, id)
 	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true
@@ -2430,7 +2460,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	}
 
 	// Build repository path from the pre-resolved entity
-	repo_path := git_repo_path(owner, e.ID)
+	repo_path := git_repo_path(owner, a, e.ID)
 	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
 		c.String(http.StatusNotFound, "Repository not found")
 		return true

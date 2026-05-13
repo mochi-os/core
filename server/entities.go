@@ -56,7 +56,7 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	if !valid(name, "name") {
 		return nil, fmt.Errorf("Invalid name")
 	}
-	user_exists, _ := db.exists("select id from users where uid=?", u.UID)
+	user_exists, _ := db.exists("select uid from users where uid=?", u.UID)
 	if !user_exists {
 		return nil, fmt.Errorf("User not found")
 	}
@@ -360,7 +360,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	e, err := entity_create(user, class, name, privacy, data)
 	if err != nil {
-		return sl_error(fn, "unable to create entity: ", err)
+		return sl_error(fn, "unable to create entity: %v", err)
 	}
 
 	return sl_encode(e.ID), nil

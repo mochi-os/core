@@ -272,7 +272,7 @@ func TestRepositoryWithGitInit(t *testing.T) {
 		repoID, "git-project", "A git repository", now, now)
 
 	// Initialize git repository
-	err := git_init(user, repoID)
+	err := git_init(user, testApp, repoID)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestRepositoryGitDelete(t *testing.T) {
 	// Create database record and git repo
 	db.exec(`INSERT INTO repositories (id, name, created, updated) VALUES (?, ?, ?, ?)`,
 		repoID, "to-delete-git", now, now)
-	git_init(user, repoID)
+	git_init(user, testApp, repoID)
 
 	gitPath := filepath.Join(tmpDir, "users", "u1", "repositories", repoID)
 
@@ -310,7 +310,7 @@ func TestRepositoryGitDelete(t *testing.T) {
 	}
 
 	// Delete git repo
-	err := git_delete(user, repoID)
+	err := git_delete(user, testApp, repoID)
 	if err != nil {
 		t.Errorf("git_delete failed: %v", err)
 	}
@@ -331,13 +331,13 @@ func TestRepositoryGitSize(t *testing.T) {
 	repoID := "size-test-repo"
 
 	// Initialize
-	err := git_init(user, repoID)
+	err := git_init(user, testApp, repoID)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
 
 	// Get size (should be small for empty repo)
-	size, err := git_size(user, repoID)
+	size, err := git_size(user, testApp, repoID)
 	if err != nil {
 		t.Fatalf("git_size failed: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestRepositoryPathGeneration(t *testing.T) {
 
 	for _, tc := range tests {
 		user := &User{UID: tc.userID}
-		path := git_repo_path(user, tc.repoID)
+		path := git_repo_path(user, testApp, tc.repoID)
 		if path != tc.expected {
 			t.Errorf("git_repo_path(user %q, %q) = %q, want %q",
 				tc.userID, tc.repoID, path, tc.expected)
@@ -387,8 +387,8 @@ func TestRepositoryPathIsolation(t *testing.T) {
 	user2 := &User{UID: "u2"}
 
 	// Different users should have different paths
-	path1 := git_repo_path(user1, "shared-name")
-	path2 := git_repo_path(user2, "shared-name")
+	path1 := git_repo_path(user1, testApp, "shared-name")
+	path2 := git_repo_path(user2, testApp, "shared-name")
 
 	if path1 == path2 {
 		t.Error("Different users should have different repository paths")
@@ -608,7 +608,7 @@ func TestRepositoryFullLifecycle(t *testing.T) {
 		repoID, repoName, "Testing full lifecycle", now, now)
 
 	// 2. Initialize git repository
-	err := git_init(user, repoID)
+	err := git_init(user, testApp, repoID)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestRepositoryFullLifecycle(t *testing.T) {
 		t.Fatal("Database record not found")
 	}
 
-	repo, err := git_open(user, repoID)
+	repo, err := git_open(user, testApp, repoID)
 	if err != nil {
 		t.Fatalf("git_open failed: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestRepositoryFullLifecycle(t *testing.T) {
 	db.exec("UPDATE repositories SET description = ? WHERE id = ?", "Updated description", repoID)
 
 	// 5. Get size and update
-	size, _ := git_size(user, repoID)
+	size, _ := git_size(user, testApp, repoID)
 	db.exec("UPDATE repositories SET size = ? WHERE id = ?", size, repoID)
 
 	// 6. Verify updates
@@ -641,7 +641,7 @@ func TestRepositoryFullLifecycle(t *testing.T) {
 	}
 
 	// 7. Delete everything
-	git_delete(user, repoID)
+	git_delete(user, testApp, repoID)
 	db.exec("DELETE FROM repositories WHERE id = ?", repoID)
 
 	// 8. Verify deletion
@@ -665,27 +665,27 @@ func TestRepositoryMultipleUsers(t *testing.T) {
 	// Each user creates a repo with the same name
 	repoName := "same-name-repo"
 
-	err := git_init(user1, repoName)
+	err := git_init(user1, testApp, repoName)
 	if err != nil {
 		t.Fatalf("git_init for user1 failed: %v", err)
 	}
 
-	err = git_init(user2, repoName)
+	err = git_init(user2, testApp, repoName)
 	if err != nil {
 		t.Fatalf("git_init for user2 failed: %v", err)
 	}
 
 	// Both should exist independently
-	repo1, _ := git_open(user1, repoName)
-	repo2, _ := git_open(user2, repoName)
+	repo1, _ := git_open(user1, testApp, repoName)
+	repo2, _ := git_open(user2, testApp, repoName)
 
 	if repo1 == nil || repo2 == nil {
 		t.Error("Both users should have their own repository")
 	}
 
 	// Paths should be different
-	path1 := git_repo_path(user1, repoName)
-	path2 := git_repo_path(user2, repoName)
+	path1 := git_repo_path(user1, testApp, repoName)
+	path2 := git_repo_path(user2, testApp, repoName)
 
 	if path1 == path2 {
 		t.Error("Repository paths should be different for different users")

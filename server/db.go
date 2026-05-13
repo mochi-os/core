@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 53
+	schema_version = 54
 )
 
 var (
@@ -596,6 +596,8 @@ func db_upgrade() {
 			db_upgrade_52()
 		case 53:
 			db_upgrade_53()
+		case 54:
+			db_upgrade_54()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -745,6 +747,74 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_54 renames every user's per-user repositories data dir from
+// the literal `users/<uid>/repositories/` to `users/<uid>/<app-id>/`, where
+// app-id is the calling repositories app's id. On dev the dir name is
+// already "repositories" so nothing moves; on every published deployment
+// the data moves to `users/<uid>/1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw/`
+// (the canonical repositories app entity id from apps_default) so per-user
+// storage finally lines up with every other path-composing API.
+//
+// The migration runs before apps_start, so it can't ask app_by_id. Instead
+// it checks for the published-app directory under apps_root and routes:
+//   - published installed: target = the published entity id
+//   - otherwise: dev, leave alone (the source name already matches dev app.id)
+//
+// If the target directory already exists, the source is merged in to avoid
+// clobbering. Per-user errors are logged and skipped — failure here can't
+// orphan FKs because the data is just on-disk git repos.
+func db_upgrade_54() {
+	const repositories_entity = "1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw"
+
+	published := filepath.Join(data_dir, "apps", repositories_entity)
+	if !file_exists(published) {
+		// Dev deployment — source dir name already matches dev app.id.
+		return
+	}
+
+	root := filepath.Join(data_dir, "users")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		from := filepath.Join(root, e.Name(), "repositories")
+		if !file_exists(from) {
+			continue
+		}
+		to := filepath.Join(root, e.Name(), repositories_entity)
+		if !file_exists(to) {
+			if err := os.Rename(from, to); err != nil {
+				warn("Database upgrade 54: rename %q -> %q failed: %v", from, to, err)
+			}
+			continue
+		}
+		// Target already exists: move each child individually rather than
+		// overwrite. A repo entity-id collision is vanishingly unlikely but
+		// we err on the side of preserving data.
+		children, err := os.ReadDir(from)
+		if err != nil {
+			warn("Database upgrade 54: read %q failed: %v", from, err)
+			continue
+		}
+		for _, c := range children {
+			src := filepath.Join(from, c.Name())
+			dst := filepath.Join(to, c.Name())
+			if file_exists(dst) {
+				warn("Database upgrade 54: %q already exists at target, leaving source in place", dst)
+				continue
+			}
+			if err := os.Rename(src, dst); err != nil {
+				warn("Database upgrade 54: rename %q -> %q failed: %v", src, dst, err)
+			}
+		}
+		os.Remove(from)
 	}
 }
 

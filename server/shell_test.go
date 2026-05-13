@@ -125,6 +125,38 @@ func TestShellSkipsSystemEndpoints(t *testing.T) {
 	}
 }
 
+// Test web_should_serve_shell rejects resource routes (attachments, git
+// Smart-HTTP). Browsers send Accept: text/html on target=_blank clicks even
+// when the link points at a PDF or other binary; without this bypass, the
+// shell would wrap the response in its sandboxed iframe and Chrome's PDF
+// viewer would fail to render.
+func TestShellRejectsResourceRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newCtx := func(url string) *gin.Context {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", url, nil)
+		c.Request.Header.Set("Sec-Fetch-Dest", "document")
+		c.Request.Header.Set("Accept", "text/html")
+		return c
+	}
+
+	paths := []string{
+		"/wikis/WFKQdHnpx/-/attachments/019d9bf047e67774965b11777b67aba5",
+		"/wikis/WFKQdHnpx/-/attachments/019d9bf047e67774965b11777b67aba5?token=xyz",
+		"/feeds/abc/-/attachments/def/thumbnail",
+		"/comptroller/-/attachments/abc",
+		"/repositories/myrepo/git/info/refs",
+	}
+	for _, p := range paths {
+		c := newCtx(p)
+		if web_should_serve_shell(c) {
+			t.Errorf("web_should_serve_shell should return false for resource route %q", p)
+		}
+	}
+}
+
 // Test web_should_serve_shell requires authenticated user
 func TestShellRequiresAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)

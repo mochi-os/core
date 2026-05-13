@@ -287,6 +287,95 @@ func TestSystemRowApplyRoutesDelete(t *testing.T) {
 	}
 }
 
+// TestSystemRowApplyAppsVersions: apps.versions row apply (single
+// key, two data columns).
+func TestSystemRowApplyAppsVersions(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "apps", Table: "versions",
+		Key:  map[string]string{"app": "feeds"},
+		Cols: map[string]string{"version": "1.2.3", "track": "stable"},
+	})
+	db := db_apps()
+	row, _ := db.row("select version, track from versions where app='feeds'")
+	if row == nil {
+		t.Fatal("versions row should exist after apply")
+	}
+	if got, _ := row["version"].(string); got != "1.2.3" {
+		t.Errorf("version = %q, want 1.2.3", got)
+	}
+	if got, _ := row["track"].(string); got != "stable" {
+		t.Errorf("track = %q, want stable", got)
+	}
+}
+
+// TestSystemRowApplyAppsTracks: apps.tracks composite-key apply.
+func TestSystemRowApplyAppsTracks(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "apps", Table: "tracks",
+		Key:  map[string]string{"app": "feeds", "track": "beta"},
+		Cols: map[string]string{"version": "2.0.0-rc1"},
+	})
+	db := db_apps()
+	row, _ := db.row("select version from tracks where app='feeds' and track='beta'")
+	if got, _ := row["version"].(string); got != "2.0.0-rc1" {
+		t.Errorf("version = %q, want 2.0.0-rc1", got)
+	}
+}
+
+// TestSystemRowApplyDelegations: domains.delegations composite-key
+// apply with timestamps.
+func TestSystemRowApplyDelegations(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("insert into domains (domain, verified, token, tls, created, updated) values ('example.com', 1, 't', 1, 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "delegations",
+		Key: map[string]string{"domain": "example.com", "path": "/feeds", "owner": "u1"},
+		Cols: map[string]string{
+			"created": "100", "updated": "100",
+		},
+	})
+	row, _ := domains.row("select created, updated from delegations where domain='example.com' and path='/feeds' and owner='u1'")
+	if row == nil {
+		t.Fatal("delegation should exist after apply")
+	}
+	if got, _ := row["created"].(int64); got != 100 {
+		t.Errorf("created = %d, want 100", got)
+	}
+}
+
+// TestSystemRowApplyDelegationsDelete: composite-key delete.
+func TestSystemRowApplyDelegationsDelete(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("insert into domains (domain, verified, token, tls, created, updated) values ('example.com', 1, 't', 1, 100, 100)")
+	domains.exec("insert into delegations (domain, path, owner, created, updated) values ('example.com', '/x', 'u1', 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "delegations",
+		Key:    map[string]string{"domain": "example.com", "path": "/x", "owner": "u1"},
+		Delete: true,
+	})
+	if exists, _ := domains.exists("select 1 from delegations where domain='example.com'"); exists {
+		t.Error("delegation should be deleted after delete-op")
+	}
+}
+
 // TestSystemRowApplyRejectsMissingKey: empty key map drops silently.
 func TestSystemRowApplyRejectsMissingKey(t *testing.T) {
 	cleanup := setup_system_replication_test(t)

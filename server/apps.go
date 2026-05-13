@@ -194,8 +194,13 @@ func (a *App) set_default_version(version, track, admin string) {
 	db := db_apps()
 	if version == "" && track == "" {
 		db.exec("delete from versions where app = ?", a.id)
+		replication_emit_system_row("apps", "versions",
+			map[string]string{"app": a.id}, nil, true)
 	} else {
 		db.exec("replace into versions (app, version, track) values (?, ?, ?)", a.id, version, track)
+		replication_emit_system_row("apps", "versions",
+			map[string]string{"app": a.id},
+			map[string]string{"version": version, "track": track}, false)
 	}
 	if admin != "" {
 		audit_default_version_changed(admin, a.id, version, track)
@@ -218,8 +223,13 @@ func (a *App) set_track(name, version, admin string) {
 	db := db_apps()
 	if version == "" {
 		db.exec("delete from tracks where app = ? and track = ?", a.id, name)
+		replication_emit_system_row("apps", "tracks",
+			map[string]string{"app": a.id, "track": name}, nil, true)
 	} else {
 		db.exec("replace into tracks (app, track, version) values (?, ?, ?)", a.id, name, version)
+		replication_emit_system_row("apps", "tracks",
+			map[string]string{"app": a.id, "track": name},
+			map[string]string{"version": version}, false)
 	}
 	if admin != "" {
 		audit_default_track_changed(admin, a.id, name, version)

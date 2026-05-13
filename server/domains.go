@@ -516,6 +516,13 @@ func delegation_create(domain_name, path string, owner string) (*delegation, err
 	n := now()
 	db.exec("insert into delegations (domain, path, owner, created, updated) values (?, ?, ?, ?, ?)", domain_name, path, owner, n, n)
 
+	replication_emit_system_row("domains", "delegations",
+		map[string]string{"domain": domain_name, "path": path, "owner": owner},
+		map[string]string{
+			"created": fmt.Sprintf("%d", n),
+			"updated": fmt.Sprintf("%d", n),
+		}, false)
+
 	return delegation_get(domain_name, path, owner), nil
 }
 
@@ -523,6 +530,10 @@ func delegation_create(domain_name, path string, owner string) (*delegation, err
 func delegation_delete(domain_name, path string, owner string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from delegations where domain=? and path=? and owner=?", domain_name, path, owner)
+
+	replication_emit_system_row("domains", "delegations",
+		map[string]string{"domain": domain_name, "path": path, "owner": owner},
+		nil, true)
 	return nil
 }
 

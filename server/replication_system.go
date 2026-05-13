@@ -212,6 +212,12 @@ func replication_system_row_apply(originPeer string, s *SystemRow) {
 		replication_system_row_apply_domains(originPeer, s)
 	case "domains.routes":
 		replication_system_row_apply_routes(originPeer, s)
+	case "apps.versions":
+		replication_system_row_apply_apps_versions(originPeer, s)
+	case "apps.tracks":
+		replication_system_row_apply_apps_tracks(originPeer, s)
+	case "domains.delegations":
+		replication_system_row_apply_delegations(originPeer, s)
 	default:
 		warn("Replication system-row: unsupported destination %q.%q (from peer %q)",
 			s.Database, s.Table, originPeer)
@@ -298,4 +304,70 @@ func replication_emit_system_row_real(database, table string, key, cols map[stri
 		m.add(payload)
 		m.send_peer(peer)
 	}
+}
+
+// replication_system_row_apply_apps_versions handles apps.db.versions —
+// (app primary key, version, track). Single-column key, two data
+// columns. Empty row → delete.
+func replication_system_row_apply_apps_versions(originPeer string, s *SystemRow) {
+	app := s.Key["app"]
+	if app == "" {
+		return
+	}
+	db := db_apps()
+	if s.Delete {
+		db.exec("delete from versions where app=?", app)
+		return
+	}
+	db.exec("replace into versions (app, version, track) values (?, ?, ?)",
+		app, s.Cols["version"], s.Cols["track"])
+	debug("Replication system-row apps.versions applied: %q (from %q)", app, originPeer)
+}
+
+// replication_system_row_apply_apps_tracks handles apps.db.tracks —
+// composite key (app, track), single data column (version).
+func replication_system_row_apply_apps_tracks(originPeer string, s *SystemRow) {
+	app := s.Key["app"]
+	track := s.Key["track"]
+	if app == "" || track == "" {
+		return
+	}
+	db := db_apps()
+	if s.Delete {
+		db.exec("delete from tracks where app=? and track=?", app, track)
+		return
+	}
+	db.exec("replace into tracks (app, track, version) values (?, ?, ?)",
+		app, track, s.Cols["version"])
+	debug("Replication system-row apps.tracks applied: %q+%q (from %q)", app, track, originPeer)
+}
+
+// replication_system_row_apply_delegations handles domains.db.delegations —
+// composite key (domain, path, owner), two data columns (created, updated).
+// The id integer PK is local-only; receivers let SQLite assign on insert.
+func replication_system_row_apply_delegations(originPeer string, s *SystemRow) {
+	domain := s.Key["domain"]
+	path := s.Key["path"]
+	owner := s.Key["owner"]
+	if domain == "" || owner == "" {
+		return
+	}
+	db := db_open("db/domains.db")
+	if s.Delete {
+		db.exec("delete from delegations where domain=? and path=? and owner=?", domain, path, owner)
+		return
+	}
+	// Insert if not present; the unique(domain, path, owner) index
+	// keeps replays idempotent. An incoming op for an already-present
+	// row updates the timestamps via ON CONFLICT DO UPDATE pattern —
+	// but SQLite doesn't allow direct ON CONFLICT on a non-pk unique
+	// index here. Use a DELETE-then-INSERT instead.
+	var created, updated int64
+	_, _ = fmt.Sscanf(s.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	db.exec("delete from delegations where domain=? and path=? and owner=?", domain, path, owner)
+	db.exec("insert into delegations (domain, path, owner, created, updated) values (?, ?, ?, ?, ?)",
+		domain, path, owner, created, updated)
+	debug("Replication system-row domains.delegations applied: %q+%q+%q (from %q)",
+		domain, path, owner, originPeer)
 }

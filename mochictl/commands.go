@@ -98,6 +98,23 @@ func init() {
 			help: "Show current pair / pending-join state",
 			run:  cmd_replica_status,
 		},
+		"replication status": {
+			help: "Summarise pair set + per-user host counts + pending requests",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/status",
+					"peer", "pair", "hosts_count", "links_pending", "joins_pending")
+			},
+		},
+		"replication pair list": {
+			help: "List current pair members",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/pair", "members")
+			},
+		},
+		"replication pair remove": {
+			help: "Kick a specific peer from the pair set",
+			run:  cmd_replication_pair_remove,
+		},
 	}
 }
 

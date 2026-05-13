@@ -100,6 +100,21 @@ func main() {
 			args = args[1:]
 		}
 	}
+	// Allow 'replication status', 'replication pair list', 'replication pair remove'.
+	if !ok && name == "replication" && len(args) > 0 {
+		if len(args) >= 2 {
+			if c, found := commands["replication "+args[0]+" "+args[1]]; found {
+				cmd, ok = c, true
+				args = args[2:]
+			}
+		}
+		if !ok {
+			if c, found := commands["replication "+args[0]]; found {
+				cmd, ok = c, true
+				args = args[1:]
+			}
+		}
+	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "mochictl: unknown subcommand %q\n", name)
 		usage()

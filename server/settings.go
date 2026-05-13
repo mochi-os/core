@@ -14,10 +14,16 @@ type Preference struct {
 	Value string
 }
 
-// Setting stores a global setting key-value pair
+// Setting stores a global setting key-value pair plus the LWW
+// conflict-resolution metadata (TS, Peer) used by system-LWW
+// replication. TS is the writer's wall-clock at write time; Peer is
+// the writer's libp2p peer-id. Combined as a (TS, Peer) tuple they
+// give deterministic last-write-wins with peer-id lex tiebreak.
 type Setting struct {
 	Name  string
 	Value string
+	TS    int64  `db:"ts"`
+	Peer  string `db:"peer"`
 }
 
 // SystemSetting defines a system setting with validation and access control
@@ -472,8 +478,10 @@ func setting_get(name string, def string) string {
 }
 
 func setting_set(name string, value string) {
+	ts := now()
 	db := db_open("db/settings.db")
-	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
+	db.exec("replace into settings ( name, value, ts, peer ) values ( ?, ?, ?, ? )", name, value, ts, p2p_id)
+	replication_emit_system_lww("settings", "settings", name, "value", value, ts)
 }
 
 // setting_delete removes a setting row entirely. Distinguished from

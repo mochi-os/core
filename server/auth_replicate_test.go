@@ -24,7 +24,7 @@ func setup_auth_replicate_test(t *testing.T) func() {
 	setup_sessions_test_schema()
 
 	settings := db_open("db/settings.db")
-	settings.exec("create table if not exists settings (name text primary key, value text)")
+	settings.exec("create table if not exists settings (name text primary key, value text, ts integer not null default 0, peer text not null default '')")
 	setting_set("signup_enabled", "true")
 
 	gin.SetMode(gin.TestMode)

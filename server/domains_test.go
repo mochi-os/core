@@ -28,7 +28,7 @@ func create_domains_test_env(t *testing.T) func() {
 
 	// Create settings database for domains_verification setting
 	settings_db := db_open("db/settings.db")
-	settings_db.exec("create table if not exists settings (name text primary key, value text not null)")
+	settings_db.exec("create table if not exists settings (name text primary key, value text not null, ts integer not null default 0, peer text not null default '')")
 
 	// Create domains database
 	domains := db_open("db/domains.db")

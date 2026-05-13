@@ -25,7 +25,7 @@ func setup_admin_replica_test(t *testing.T) func() {
 	repl_cleanup := setup_replication_test(t)
 	setup_users_test_schema()
 	settings := db_open("db/settings.db")
-	settings.exec("create table if not exists settings (name text primary key, value text)")
+	settings.exec("create table if not exists settings (name text primary key, value text, ts integer not null default 0, peer text not null default '')")
 	gin.SetMode(gin.TestMode)
 
 	orig_emit_join := admin_replica_emit_join

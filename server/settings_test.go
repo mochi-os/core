@@ -306,7 +306,7 @@ func TestSettingGet(t *testing.T) {
 
 	// Create settings table
 	db := db_open("db/settings.db")
-	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+	db.exec("create table settings (name text primary key, value text not null, ts integer not null default 0, peer text not null default '')")
 	db.exec("INSERT INTO settings (name, value) VALUES ('test_key', 'test_value')")
 
 	result := setting_get("test_key", "default")
@@ -334,7 +334,7 @@ func TestSettingSet(t *testing.T) {
 
 	// Create settings table
 	db := db_open("db/settings.db")
-	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+	db.exec("create table settings (name text primary key, value text not null, ts integer not null default 0, peer text not null default '')")
 
 	setting_set("new_key", "new_value")
 
@@ -431,7 +431,7 @@ func TestSettingSignupEnabled(t *testing.T) {
 	defer func() { data_dir = orig_data_dir }()
 
 	db := db_open("db/settings.db")
-	db.exec("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+	db.exec("create table settings (name text primary key, value text not null, ts integer not null default 0, peer text not null default '')")
 
 	// Default should be true
 	if !setting_signup_enabled() {

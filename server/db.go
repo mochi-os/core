@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 55
+	schema_version = 56
 )
 
 var (
@@ -126,7 +126,7 @@ func db_create() {
 
 	// Settings
 	settings := db_open("db/settings.db")
-	settings.exec("create table settings ( name text not null primary key, value text not null )")
+	settings.exec("create table settings ( name text not null primary key, value text not null, ts integer not null default 0, peer text not null default '' )")
 	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
 	// Documents: operator-customisable Markdown for server rules / terms / privacy.
@@ -614,6 +614,8 @@ func db_upgrade() {
 			db_upgrade_54()
 		case 55:
 			db_upgrade_55()
+		case 56:
+			db_upgrade_56()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -763,6 +765,21 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_56 adds the LWW conflict-resolution columns (ts, peer) to
+// the settings.db settings table. Subsequent system-LWW replication
+// ops carry (ts, peer) per write and the receiver uses them to drop
+// stale incoming writes (existing local ts > incoming ts, or equal ts
+// with higher peer-id lexicographically). Idempotent.
+func db_upgrade_56() {
+	settings := db_open("db/settings.db")
+	if col, _ := settings.exists("select 1 from pragma_table_info('settings') where name='ts'"); !col {
+		settings.exec("alter table settings add column ts integer not null default 0")
+	}
+	if col, _ := settings.exists("select 1 from pragma_table_info('settings') where name='peer'"); !col {
+		settings.exec("alter table settings add column peer text not null default ''")
 	}
 }
 

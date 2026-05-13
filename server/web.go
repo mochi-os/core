@@ -1426,6 +1426,7 @@ func web_start() {
 	}))
 	r.Use(gin.Recovery())
 	r.Use(web_security_headers)
+	r.Use(web_sticky_session)
 	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)
 	if web_compress != "none" {

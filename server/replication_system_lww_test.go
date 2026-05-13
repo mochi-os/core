@@ -282,6 +282,125 @@ func TestSystemLWWApplyAppsAppsInstall(t *testing.T) {
 	}
 }
 
+// setup_domains_test_schema creates a minimal domains.db schema for
+// row-level LWW tests. Mirrors db_open's domains schema with the LWW
+// columns from v58.
+func setup_domains_test_schema() {
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null, ts integer not null default 0, peer text not null default '')")
+}
+
+// TestSystemLWWRowApplyDomainsFresh: a row-level op for a domain not
+// present locally inserts cleanly.
+func TestSystemLWWRowApplyDomainsFresh(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+
+	replication_system_lww_row_apply("peer-A", &SystemLWWRow{
+		Database: "domains", Table: "domains",
+		Key: map[string]string{"domain": "example.com"},
+		Cols: map[string]string{
+			"verified": "0",
+			"token":    "tok123",
+			"tls":      "1",
+			"created":  "100",
+			"updated":  "100",
+		},
+		TS: 100, Peer: "peer-A",
+	})
+
+	db := db_open("db/domains.db")
+	row, _ := db.row("select domain, token, ts, peer from domains where domain='example.com'")
+	if row == nil {
+		t.Fatal("row should exist after row-level apply")
+	}
+	if got, _ := row["token"].(string); got != "tok123" {
+		t.Errorf("token = %q, want tok123", got)
+	}
+}
+
+// TestSystemLWWRowApplyDomainsHigherTSWins: incoming higher-ts op
+// overwrites the local row.
+func TestSystemLWWRowApplyDomainsHigherTSWins(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	db := db_open("db/domains.db")
+	db.exec("replace into domains (domain, verified, token, tls, created, updated, ts, peer) values ('example.com', 0, 'old', 1, 100, 100, 100, 'peer-X')")
+
+	replication_system_lww_row_apply("peer-Y", &SystemLWWRow{
+		Database: "domains", Table: "domains",
+		Key:  map[string]string{"domain": "example.com"},
+		Cols: map[string]string{"verified": "1", "token": "new", "tls": "1", "created": "100", "updated": "200"},
+		TS:   200, Peer: "peer-Y",
+	})
+
+	row, _ := db.row("select token from domains where domain='example.com'")
+	if got, _ := row["token"].(string); got != "new" {
+		t.Errorf("token after higher-ts apply = %q, want new", got)
+	}
+}
+
+// TestSystemLWWRowApplyDomainsLowerTSLoses: lower-ts incoming is
+// ignored.
+func TestSystemLWWRowApplyDomainsLowerTSLoses(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	db := db_open("db/domains.db")
+	db.exec("replace into domains (domain, verified, token, tls, created, updated, ts, peer) values ('example.com', 0, 'current', 1, 100, 100, 200, 'peer-X')")
+
+	replication_system_lww_row_apply("peer-Y", &SystemLWWRow{
+		Database: "domains", Table: "domains",
+		Key:  map[string]string{"domain": "example.com"},
+		Cols: map[string]string{"token": "stale"},
+		TS:   100, Peer: "peer-Y",
+	})
+
+	row, _ := db.row("select token from domains where domain='example.com'")
+	if got, _ := row["token"].(string); got != "current" {
+		t.Errorf("after lower-ts apply = %q, want unchanged current", got)
+	}
+}
+
+// TestSystemLWWRowApplyDomainsDelete: incoming op with Delete=true
+// removes the local row.
+func TestSystemLWWRowApplyDomainsDelete(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	db := db_open("db/domains.db")
+	db.exec("replace into domains (domain, verified, token, tls, created, updated, ts, peer) values ('example.com', 0, 't', 1, 100, 100, 100, 'peer-X')")
+
+	replication_system_lww_row_apply("peer-Y", &SystemLWWRow{
+		Database: "domains", Table: "domains",
+		Key:    map[string]string{"domain": "example.com"},
+		Delete: true,
+		TS:     200, Peer: "peer-Y",
+	})
+
+	exists, _ := db.exists("select 1 from domains where domain='example.com'")
+	if exists {
+		t.Error("domain should be deleted after delete-op apply")
+	}
+}
+
+// TestSystemLWWRowApplyRejectsUnknownDestination: unknown destination
+// is silently dropped.
+func TestSystemLWWRowApplyRejectsUnknownDestination(t *testing.T) {
+	cleanup := setup_system_lww_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+
+	replication_system_lww_row_apply("peer-A", &SystemLWWRow{
+		Database: "nope", Table: "nope",
+		Key: map[string]string{"k": "v"},
+		TS:  100, Peer: "peer-A",
+	})
+	// No side effect — just verify no panic.
+}
+
 // TestAppsClassSetEmitsAndStamps: apps_class_set writes (ts, peer) and
 // fires the system-LWW emit.
 func TestAppsClassSetEmitsAndStamps(t *testing.T) {

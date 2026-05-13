@@ -38,13 +38,17 @@ func setup_replication_test(t *testing.T) func() {
 	queue := db_open("db/queue.db")
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 
-	// Stub system-LWW emit so setting_set calls (which most handlers
-	// trigger indirectly) don't spawn goroutines that outlive cleanup.
+	// Stub system-LWW emits so setting_set / domain_* / apps_class_set
+	// calls (which many handlers trigger indirectly) don't spawn
+	// goroutines that outlive cleanup.
 	orig_emit_system_lww := replication_emit_system_lww
+	orig_emit_system_lww_row := replication_emit_system_lww_row
 	replication_emit_system_lww = func(database, table, row, field, value string, ts int64) {}
+	replication_emit_system_lww_row = func(database, table string, key, cols map[string]string, del bool, ts int64) {}
 
 	return func() {
 		replication_emit_system_lww = orig_emit_system_lww
+		replication_emit_system_lww_row = orig_emit_system_lww_row
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

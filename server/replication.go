@@ -199,6 +199,7 @@ func init() {
 	a.event("pair-membership-change", replication_pair_membership_change_event)
 	// System-LWW for core DBs (see replication_system_lww.go).
 	a.event("system-lww", replication_system_lww_event)
+	a.event("system-lww-row", replication_system_lww_row_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the

@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 57
+	schema_version = 58
 )
 
 var (
@@ -247,7 +247,7 @@ func db_create() {
 
 	// Domains
 	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null, ts integer not null default 0, peer text not null default '')")
 	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
 	if exists, _ := domains.exists("select 1 from pragma_table_info('routes') where name='owner'"); !exists {
 		domains.exec("alter table routes add column owner text not null default ''")
@@ -622,6 +622,8 @@ func db_upgrade() {
 			db_upgrade_56()
 		case 57:
 			db_upgrade_57()
+		case 58:
+			db_upgrade_58()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -771,6 +773,21 @@ func db_upgrade_49() {
 	settings := db_open("db/settings.db")
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
+}
+
+// db_upgrade_58 adds the LWW conflict-resolution columns (ts, peer) to
+// the domains.db.domains table. Routes and delegations follow when the
+// composite-key shape is wired (their primary keys span multiple
+// columns and need the SystemLWWRow row-level shape rather than the
+// field-level SystemLWWSet shape used here). Idempotent.
+func db_upgrade_58() {
+	domains := db_open("db/domains.db")
+	if col, _ := domains.exists("select 1 from pragma_table_info('domains') where name='ts'"); !col {
+		domains.exec("alter table domains add column ts integer not null default 0")
+	}
+	if col, _ := domains.exists("select 1 from pragma_table_info('domains') where name='peer'"); !col {
+		domains.exec("alter table domains add column peer text not null default ''")
 	}
 }
 

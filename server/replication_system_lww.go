@@ -251,3 +251,131 @@ func replication_emit_system_lww_real(database, table, row, field, value string,
 func system_lww_dispatch_string(db, table string) string {
 	return fmt.Sprintf("%s.%s", db, table)
 }
+
+// SystemLWWRow is the row-level companion to SystemLWWSet. Used for
+// tables where field-level LWW is awkward — multi-column rows, or
+// rows with composite primary keys. Key carries the row's primary-key
+// columns (1+ columns); Cols carries the remaining columns being
+// written. TS / Peer are the LWW metadata, same semantics as
+// SystemLWWSet.
+//
+// Wire: replication/system-lww-row. The dispatcher routes by
+// (Database, Table) just like SystemLWWSet; each destination provides
+// a per-table apply function that knows which columns are key vs
+// data.
+type SystemLWWRow struct {
+	Database string            `cbor:"db"`
+	Table    string            `cbor:"table"`
+	Key      map[string]string `cbor:"key"`
+	Cols     map[string]string `cbor:"cols"`
+	Delete   bool              `cbor:"delete,omitempty"`
+	TS       int64             `cbor:"ts"`
+	Peer     string            `cbor:"peer"`
+}
+
+// replication_system_lww_row_event is the receive handler for
+// row-level system-LWW ops.
+func replication_system_lww_row_event(e *Event) {
+	var s SystemLWWRow
+	if !e.segment(&s) {
+		info("Replication system-lww-row dropping: cannot decode payload")
+		return
+	}
+	replication_system_lww_row_apply(e.peer, &s)
+}
+
+// replication_system_lww_row_apply dispatches an inbound row-level op
+// to its table-specific handler. Unknown destinations are silently
+// dropped after a warn.
+func replication_system_lww_row_apply(originPeer string, s *SystemLWWRow) {
+	if s.Database == "" || s.Table == "" || len(s.Key) == 0 {
+		info("Replication system-lww-row dropping: missing key fields")
+		return
+	}
+	switch s.Database + "." + s.Table {
+	case "domains.domains":
+		replication_system_lww_row_apply_domains(originPeer, s)
+	default:
+		warn("Replication system-lww-row: unsupported destination %q.%q (from peer %q)",
+			s.Database, s.Table, originPeer)
+	}
+}
+
+// replication_system_lww_row_apply_domains handles domains.db.domains
+// writes — a single-column key (domain) with multi-column row data.
+// Insert / update share one code path; delete is signalled by
+// SystemLWWRow.Delete=true.
+func replication_system_lww_row_apply_domains(originPeer string, s *SystemLWWRow) {
+	name := s.Key["domain"]
+	if name == "" {
+		return
+	}
+	db := db_open("db/domains.db")
+
+	var localTS int64
+	var localPeer string
+	if row, _ := db.row("select ts, peer from domains where domain=?", name); row != nil {
+		localTS, _ = row["ts"].(int64)
+		localPeer, _ = row["peer"].(string)
+	}
+
+	if s.TS < localTS {
+		return
+	}
+	if s.TS == localTS && s.Peer <= localPeer {
+		return
+	}
+
+	if s.Delete {
+		db.exec("delete from domains where domain=?", name)
+		debug("Replication system-lww-row domains.domains deleted: %q peer=%q ts=%d (from %q)",
+			name, s.Peer, s.TS, originPeer)
+		return
+	}
+
+	// Upsert. Parse the column values; missing columns get sensible
+	// defaults matching the schema.
+	var verified, tls, created, updated int64
+	_, _ = fmt.Sscanf(s.Cols["verified"], "%d", &verified)
+	_, _ = fmt.Sscanf(s.Cols["tls"], "%d", &tls)
+	_, _ = fmt.Sscanf(s.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	token := s.Cols["token"]
+
+	db.exec(
+		"replace into domains (domain, verified, token, tls, created, updated, ts, peer) values (?, ?, ?, ?, ?, ?, ?, ?)",
+		name, verified, token, tls, created, updated, s.TS, s.Peer)
+
+	debug("Replication system-lww-row domains.domains applied: %q peer=%q ts=%d (from %q)",
+		name, s.Peer, s.TS, originPeer)
+}
+
+// replication_emit_system_lww_row is the package-level function
+// variable for emitting a row-level system-LWW op to every pair
+// member. Tests can stub it to no-op.
+var replication_emit_system_lww_row = replication_emit_system_lww_row_real
+
+// replication_emit_system_lww_row_real is the production
+// implementation. Same shape as replication_emit_system_lww_real but
+// with the SystemLWWRow payload.
+func replication_emit_system_lww_row_real(database, table string, key, cols map[string]string, del bool, ts int64) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer from pair")
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	payload := &SystemLWWRow{
+		Database: database, Table: table,
+		Key: key, Cols: cols, Delete: del,
+		TS: ts, Peer: p2p_id,
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		m := message("", "", "replication", "system-lww-row")
+		m.add(payload)
+		m.send_peer(peer)
+	}
+}

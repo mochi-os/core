@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 54
+	schema_version = 55
 )
 
 var (
@@ -289,6 +289,20 @@ func db_create() {
 	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
 	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', primary key (scope, peer))")
 	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
+	// Per-user link-requests awaiting Approve / Deny in Settings → Replication.
+	// One row per (target user on this host, source peer); newest wins via
+	// INSERT OR REPLACE. Expiry is 1h from receipt; periodic sweep emits
+	// link-denied(reason="expired") to the source side. See "Per-user trigger"
+	// in claude/plans/replication.md.
+	replication.exec("create table links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+	replication.exec("create index links_expires on links(expires)")
+	// Whole-server pair join-requests awaiting Approve / Deny on the Pair
+	// page. One row per source peer; newest wins via INSERT OR REPLACE.
+	// Expiry is 10 minutes from receipt; periodic sweep emits
+	// join-denied(reason="expired") to the replica. See "Operator UI" in
+	// claude/plans/replication.md.
+	replication.exec("create table joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
+	replication.exec("create index joins_expires on joins(expires)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed
@@ -598,6 +612,8 @@ func db_upgrade() {
 			db_upgrade_53()
 		case 54:
 			db_upgrade_54()
+		case 55:
+			db_upgrade_55()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -748,6 +764,22 @@ func db_upgrade_49() {
 	if exists, _ := settings.exists("select 1 from sqlite_master where type='table' and name='documents'"); !exists {
 		settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 	}
+}
+
+// db_upgrade_55 adds two replication.db tables:
+//
+//   - `links` — per-user inbound link-requests awaiting Approve / Deny
+//     on Settings → Replication. Keyed on (user, peer); 1h expiry.
+//   - `joins` — whole-server inbound join-requests awaiting Approve /
+//     Deny on the Pair page. Keyed on peer; 10-minute expiry.
+//
+// Idempotent: running on a DB that already has either table is a no-op.
+func db_upgrade_55() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+	r.exec("create index if not exists links_expires on links(expires)")
+	r.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
+	r.exec("create index if not exists joins_expires on joins(expires)")
 }
 
 // db_upgrade_54 renames every user's per-user repositories data dir from

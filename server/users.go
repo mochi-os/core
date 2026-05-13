@@ -998,6 +998,31 @@ func user_delete(id string) (string, error) {
 		return "", fmt.Errorf("user not found")
 	}
 
+	// Replication membership-change/remove emit: capture the user's current
+	// per-user host set BEFORE entity rows are deleted, because the outgoing
+	// op is signed by one of the user's identity entities. The captured set
+	// already excludes this peer (hosts table never holds self), so the emit
+	// announces "user U is hosted on these other peers" to each of them; each
+	// receiver replaces its local hosts(U) view with the announced set
+	// (self-filtered), naturally dropping this peer.
+	//
+	// Covers both per-user opt-in (other peers learn this host is gone) and
+	// whole-server pair (the SQL row-delete below propagates via the standard
+	// pair replication path, and the receiver's user_delete handler runs the
+	// same hook on its side).
+	rdb := db_open("db/replication.db")
+	var hosts []string
+	if rows, err := rdb.rows("select peer from hosts where user=?", id); err == nil {
+		for _, r := range rows {
+			if peer, ok := r["peer"].(string); ok && peer != "" {
+				hosts = append(hosts, peer)
+			}
+		}
+	}
+	if len(hosts) > 0 {
+		replication_membership_update(id, hosts)
+	}
+
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
@@ -1025,7 +1050,98 @@ func user_delete(id string) (string, error) {
 	db_purge_prefix(fmt.Sprintf("users/%s", id))
 	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
 
+	// Clean up replication.db user-keyed rows now that the user is gone.
+	rdb.exec("delete from hosts where user=?", id)
+	rdb.exec("delete from seen where user=?", id)
+	rdb.exec("delete from pending where user=?", id)
+	rdb.exec("delete from sequence where user=?", id)
+
 	return target.Username, nil
+}
+
+// user_is_fresh returns true if the local user identified by uid shows no
+// signs of activity. Used by:
+//   - dump/restore overwrite protection (refuse to restore into a populated account)
+//   - per-user replication defence-in-depth (refuse the identity-key transfer
+//     if the destination placeholder has somehow accumulated data)
+//
+// Three checks against the destination user, all must pass:
+//
+//  1. Per-user user.db content tables empty (`accounts`, `groups`,
+//     `group_members`, `interests`). These have no system defaults; any row
+//     is the result of user activity (linking a notification destination,
+//     joining/creating a group, opening home or feeds).
+//  2. No attachments — walk users/<uid>/, refuse if any `*/files/`
+//     directory contains files. Attachments are never scaffolded.
+//  3. No entity-scoped subdirectories — refuse if any subdir under
+//     users/<uid>/ is named like an entity id. The directory layout creates
+//     users/<uid>/<app-name>/ lazily for app data and
+//     users/<uid>/<entity-id>/ only when entity-scoped writes happen — an
+//     entity-shaped subdir is unambiguous evidence of activity.
+//
+// Returns true if fresh; false otherwise. Callers surface a generic
+// "destination account is not empty" message at their own UI layer.
+// Preferences and settings are intentionally ignored — those rows are
+// trivial to redo and don't represent real activity.
+func user_is_fresh(uid string) bool {
+	u := &User{UID: uid}
+
+	udb := db_user(u, "user")
+	for _, table := range []string{"accounts", "groups", "group_members", "interests"} {
+		any, _ := udb.exists(fmt.Sprintf("select 1 from %s limit 1", table))
+		if any {
+			return false
+		}
+	}
+
+	root := fmt.Sprintf("%s/users/%s", data_dir, uid)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		// No user directory at all = nothing to be unfresh about.
+		if os.IsNotExist(err) {
+			return true
+		}
+		// Stat error of an unknown kind — refuse cautiously.
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+
+		// Check 3: entity-shaped subdir = evidence of entity-scoped writes.
+		if valid(name, "entity") {
+			return false
+		}
+
+		// Check 2: any file under <name>/files/ = an uploaded attachment.
+		if user_files_dir_has_any(fmt.Sprintf("%s/%s/files", root, name)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// user_files_dir_has_any returns true if dir contains any regular file
+// (recursively). Used by user_is_fresh; reading is bounded by the on-disk
+// layout — attachment dirs are typically shallow.
+func user_files_dir_has_any(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if user_files_dir_has_any(fmt.Sprintf("%s/%s", dir, e.Name())) {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // mochi.user.suspend(id) -> bool: Suspend a user (admin only)

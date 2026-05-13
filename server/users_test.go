@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -378,5 +379,98 @@ func TestSessionsCleanup(t *testing.T) {
 	exists, _ = db.exists("select 1 from partial where id='validpart1'")
 	if !exists {
 		t.Error("valid partial session should not be deleted")
+	}
+}
+
+// TestUserIsFreshEmpty: a uid with no on-disk presence and no user.db rows
+// counts as fresh. The function tolerates the absence of users/<uid>/.
+func TestUserIsFreshEmpty(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	if !user_is_fresh("u-fresh-empty") {
+		t.Error("user_is_fresh should be true for a uid with no data")
+	}
+}
+
+// TestUserIsFreshContentTables: a row in any of the watched user.db tables
+// (accounts, groups, group_members, interests) flips the result to false.
+func TestUserIsFreshContentTables(t *testing.T) {
+	cases := []struct {
+		table string
+		ins   string
+	}{
+		{"accounts", "insert into accounts (type, identifier, created) values ('email', 'x@example.com', 0)"},
+		{"groups", "insert into groups (id, name, created) values ('g1', 'g', 0)"},
+		{"group_members", "insert into group_members (parent, member, type, created) values ('g1', 'u-fresh-content', 'user', 0)"},
+		{"interests", "insert into interests (qid, weight) values ('x', 1)"},
+	}
+	for _, c := range cases {
+		t.Run(c.table, func(t *testing.T) {
+			cleanup := create_test_users_db(t)
+			defer cleanup()
+
+			udb := db_user(&User{UID: "u-fresh-content"}, "user")
+			udb.exec(c.ins)
+
+			if user_is_fresh("u-fresh-content") {
+				t.Errorf("user_is_fresh should be false when %s has rows", c.table)
+			}
+		})
+	}
+}
+
+// TestUserIsFreshAttachment: any file under users/<uid>/<app>/files/ flips
+// the result to false (uploaded attachments are never scaffolded).
+func TestUserIsFreshAttachment(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	dir := fmt.Sprintf("%s/users/u-fresh-attach/some-app/files", data_dir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(fmt.Sprintf("%s/upload.bin", dir), []byte("hi"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if user_is_fresh("u-fresh-attach") {
+		t.Error("user_is_fresh should be false when an attachment file is present")
+	}
+}
+
+// TestUserIsFreshEntityDir: a Base58 entity-shaped subdir under users/<uid>/
+// counts as entity activity and flips the result to false.
+func TestUserIsFreshEntityDir(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	// Valid entity-id shape per valid("entity"): [\w]{49,51}.
+	entity := strings.Repeat("a", 50)
+	dir := fmt.Sprintf("%s/users/u-fresh-ent/%s", data_dir, entity)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if user_is_fresh("u-fresh-ent") {
+		t.Error("user_is_fresh should be false when an entity-shaped subdir is present")
+	}
+}
+
+// TestUserIsFreshAppDir: app-name subdirs (not entity-shaped, no files in
+// files/) do not by themselves flip the result. db_user etc. create empty
+// per-app dirs as a side effect of normal use; user_is_fresh ignores them
+// as long as no content tables, no attachments, no entity-shaped subdirs.
+func TestUserIsFreshAppDir(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	dir := fmt.Sprintf("%s/users/u-fresh-app/feeds/db", data_dir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if !user_is_fresh("u-fresh-app") {
+		t.Error("user_is_fresh should be true when only app-name subdirs (no attachments, no entity-shaped subdirs) are present")
 	}
 }

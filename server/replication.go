@@ -186,6 +186,16 @@ func init() {
 	a.event("snapshot-chunk", replication_snapshot_chunk_event)
 	a.event("membership-change", replication_membership_change_event)
 	a.event("keys-transfer", replication_keys_transfer_event)
+	// Per-user link-request flow (see replication_link.go).
+	a.event("link-request", replication_link_request_event)
+	a.event("link-approved", replication_link_approved_event)
+	a.event("link-denied", replication_link_denied_event)
+	a.event("freshness-probe", replication_freshness_probe_event)
+	// Whole-server pair join-request flow (see replication_join.go).
+	a.event("join-request", replication_join_request_event)
+	a.event("join-approved", replication_join_approved_event)
+	a.event("join-denied", replication_join_denied_event)
+	a.event("pair-membership-change", replication_pair_membership_change_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the

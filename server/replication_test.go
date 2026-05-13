@@ -28,6 +28,15 @@ func setup_replication_test(t *testing.T) func() {
 	p2p_id = "self"
 
 	db_upgrade_50()
+	db_upgrade_55()
+
+	// queue.db is touched by Message.send_work via send_peer goroutines —
+	// approve / deny tests fire emits asynchronously and would otherwise
+	// panic on missing table. Create the queue schema to absorb the
+	// goroutine writes (no actual delivery happens in unit tests; queue
+	// rows just accumulate and are torn down with the temp dir).
+	queue := db_open("db/queue.db")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
 
 	return func() {
 		data_dir = orig_data_dir

@@ -259,6 +259,22 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
+	"fcm.firebase_config": {
+		Name:         "fcm.firebase_config",
+		Pattern:      "text",
+		Default:      "",
+		Description:  "google-services.json downloaded from Firebase Console (Project settings → General → Your apps). Public-by-design — exposed to the Android client by /notifications/-/push/setup. Setting this enables FCM as the primary push transport; leave empty to fall back to UnifiedPush.",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"fcm.service_account": {
+		Name:         "fcm.service_account",
+		Pattern:      "text",
+		Default:      "",
+		Description:  "Firebase private key JSON downloaded from Firebase Console (Project settings → Service accounts → Generate new private key). Used by the Mochi server to send pushes via FCM HTTP v1. Secret — anyone with it can send pushes to any token registered against the same Firebase project.",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{
@@ -458,4 +474,13 @@ func setting_get(name string, def string) string {
 func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
+}
+
+// setting_delete removes a setting row entirely. Distinguished from
+// setting_set(name, "") which leaves an explicit empty row. Used by
+// callers that want subsequent setting_get to return the default
+// rather than an empty string.
+func setting_delete(name string) {
+	db := db_open("db/settings.db")
+	db.exec("delete from settings where name=?", name)
 }

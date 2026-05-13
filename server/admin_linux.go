@@ -253,6 +253,9 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/backup", admin_backup)
 	admin.POST("/stop", admin_stop)
 	admin.POST("/restart", admin_restart)
+	admin.POST("/replica/join", admin_replica_join)
+	admin.POST("/replica/leave", admin_replica_leave)
+	admin.GET("/replica/status", admin_replica_status)
 }
 
 // -- Audit middleware ------------------------------------------------------
@@ -260,9 +263,11 @@ func admin_register_routes(r *gin.Engine) {
 // admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label
 // to record. Anything not in this map is not audited.
 var admin_audited_routes = map[string]string{
-	"POST /_/admin/snapshot": "admin.snapshot",
-	"POST /_/admin/stop":     "admin.stop",
-	"POST /_/admin/restart":  "admin.restart",
+	"POST /_/admin/snapshot":      "admin.snapshot",
+	"POST /_/admin/stop":          "admin.stop",
+	"POST /_/admin/restart":       "admin.restart",
+	"POST /_/admin/replica/join":  "admin.replica.join",
+	"POST /_/admin/replica/leave": "admin.replica.leave",
 }
 
 // admin_audit_middleware records a daemon-facility audit row after each

@@ -86,6 +86,18 @@ func init() {
 				return post_action("/_/admin/restart", "Restarting server")
 			},
 		},
+		"replica join": {
+			help: "Join an existing server as a pair replica (fresh installs only)",
+			run:  cmd_replica_join,
+		},
+		"replica leave": {
+			help: "Leave the pair set (stops sync; does not wipe local data)",
+			run:  cmd_replica_leave,
+		},
+		"replica status": {
+			help: "Show current pair / pending-join state",
+			run:  cmd_replica_status,
+		},
 	}
 }
 

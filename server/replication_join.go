@@ -127,16 +127,27 @@ func replication_join_approved_apply(originPeer string, ja *JoinApproved) {
 }
 
 // replication_join_denied_event is the replica's receive handler for a
-// denial. Idempotent local cleanup — no state to remove on the replica
-// side beyond the pending mochictl process which exits via its own
-// polling.
+// denial. Decodes the payload and delegates to the pure-DB apply
+// function so unit tests can exercise the settings-update path without
+// constructing a live stream Event.
 func replication_join_denied_event(e *Event) {
 	var jd JoinDenied
 	if !e.segment(&jd) {
 		info("Replication join-denied dropping: cannot decode payload")
 		return
 	}
-	debug("Replication join-denied received: reason=%q (from peer %q)", jd.Reason, e.peer)
+	replication_join_denied_apply(e.peer, jd.Reason)
+}
+
+// replication_join_denied_apply records the denial in settings.db if
+// this denial matches the current pending peer. admin_replica_status
+// reads the result to report "denied" the next time mochictl polls.
+func replication_join_denied_apply(originPeer, reason string) {
+	if pending := setting_get("replica.join.peer", ""); pending == originPeer {
+		setting_set("replica.join.state", "denied")
+		setting_set("replica.join.reason", reason)
+	}
+	debug("Replication join-denied received: reason=%q (from peer %q)", reason, originPeer)
 }
 
 // replication_pair_membership_change_event is the existing-member

@@ -93,6 +93,13 @@ func main() {
 		cmd, ok = commands["config show"]
 		args = args[1:]
 	}
+	// Allow 'replica join|leave|status' as two-word subcommands.
+	if !ok && name == "replica" && len(args) > 0 {
+		if c, found := commands["replica "+args[0]]; found {
+			cmd, ok = c, true
+			args = args[1:]
+		}
+	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "mochictl: unknown subcommand %q\n", name)
 		usage()

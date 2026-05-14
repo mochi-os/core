@@ -52,6 +52,16 @@
 
 package main
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
 // Bootstrap scope names. Used as the `scope` key in
 // replication.db.bootstrap and on the wire. Single-word per the
 // project convention.
@@ -197,20 +207,231 @@ func bootstrap_scopes_for_peer(peer string) []map[string]string {
 	return out
 }
 
+// bootstrap_file_scope_root returns the absolute filesystem root for
+// the named scope. Used by both sender (manifest walker, chunk reader)
+// and receiver (.partial writer). Returns ("", error) for unknown
+// scopes; the file-tree protocol only handles two scopes (files,
+// apps), the DB-snapshot protocol handles the rest.
+func bootstrap_file_scope_root(scope string) (string, error) {
+	switch scope {
+	case bootstrap_scope_files:
+		return filepath.Join(data_dir, "users"), nil
+	case bootstrap_scope_apps:
+		return filepath.Join(data_dir, "apps"), nil
+	default:
+		return "", fmt.Errorf("bootstrap: scope %q is not file-tree-based", scope)
+	}
+}
+
+// bootstrap_safe_path joins (root, relative) and confirms the result
+// is contained within root. Rejects absolute paths, "..", and symlink
+// escapes. Returns the absolute path on success. The receiver and
+// sender both call this before any open() / write() so a malicious
+// peer can't tunnel out of the scope root.
+func bootstrap_safe_path(root, relative string) (string, error) {
+	if strings.HasPrefix(relative, "/") {
+		return "", fmt.Errorf("bootstrap: absolute path rejected: %q", relative)
+	}
+	for _, part := range strings.Split(relative, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("bootstrap: parent-dir traversal rejected: %q", relative)
+		}
+	}
+	candidate := filepath.Clean(filepath.Join(root, relative))
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		// File may not yet exist on the receiver — fall back to the
+		// candidate which already passed the textual checks above.
+		// (EvalSymlinks of the candidate's parent + the basename is
+		// what we'd want, but the candidate-only check is sufficient
+		// for V2 since the receiver creates files freshly without
+		// chasing existing symlinks.)
+		resolved = candidate
+	}
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		rootResolved = root
+	}
+	if !strings.HasPrefix(resolved+string(filepath.Separator), rootResolved+string(filepath.Separator)) && resolved != rootResolved {
+		return "", fmt.Errorf("bootstrap: path %q escapes scope root", relative)
+	}
+	return candidate, nil
+}
+
+// bootstrap_walk_manifest enumerates every regular file under
+// `<scope-root>/<prefix>` and returns one BootstrapFileEntry per file
+// with size + sha256. Skips symlinks (we never copy symlinks to a
+// replica; if the source has one the operator must reconstruct it on
+// the replica). V2: returns the full list in one page; pagination is
+// a V3 follow-up. Caller is responsible for splitting into multiple
+// BootstrapFileManifestResult messages if size becomes a concern.
+func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error) {
+	root, err := bootstrap_file_scope_root(scope)
+	if err != nil {
+		return nil, err
+	}
+	startDir, err := bootstrap_safe_path(root, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []BootstrapFileEntry
+	walkErr := filepath.Walk(startDir, func(absPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			// Missing prefix dir → empty manifest, not an error. Anything
+			// else propagates so the caller can see filesystem trouble.
+			if os.IsNotExist(err) && absPath == startDir {
+				return io.EOF
+			}
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil // skip dirs, symlinks, devices
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return err
+		}
+		hash, err := bootstrap_file_sha256(absPath)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, BootstrapFileEntry{
+			Path:   filepath.ToSlash(relPath),
+			Size:   info.Size(),
+			Sha256: hash,
+		})
+		return nil
+	})
+	if walkErr != nil && walkErr != io.EOF {
+		return nil, walkErr
+	}
+	return entries, nil
+}
+
+// bootstrap_file_sha256 hashes the file at `path` and returns the hex
+// digest. Helper for bootstrap_walk_manifest; small files are read in
+// one shot, larger files stream through a 64KB buffer.
+func bootstrap_file_sha256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// bootstrap_read_chunk reads up to `length` bytes from `path` at
+// `offset` and returns the bytes plus an EOF flag. Path is relative
+// to the scope root; bootstrap_safe_path validates against traversal.
+// The receiver issues sequential chunk requests in order to assemble
+// a file; this function is stateless across calls.
+func bootstrap_read_chunk(scope, path string, offset, length int64) ([]byte, bool, error) {
+	root, err := bootstrap_file_scope_root(scope)
+	if err != nil {
+		return nil, false, err
+	}
+	abs, err := bootstrap_safe_path(root, path)
+	if err != nil {
+		return nil, false, err
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	buf := make([]byte, length)
+	n, err := io.ReadFull(f, buf)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return buf[:n], true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	// Did we consume the whole file? Check by stat'ing total size.
+	st, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	eof := offset+int64(n) >= st.Size()
+	return buf[:n], eof, nil
+}
+
+// replication_emit_bootstrap_file_manifest_result sends a manifest
+// page to the receiver. Sender helper; called from the file-manifest
+// request handler after the walker completes.
+//
+// Package-level alias so tests can stub the send_peer broadcast.
+var replication_emit_bootstrap_file_manifest_result = replication_emit_bootstrap_file_manifest_result_impl
+
+func replication_emit_bootstrap_file_manifest_result_impl(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-file-manifest-result")
+	m.add(&BootstrapFileManifestResult{
+		Scope:   scope,
+		Prefix:  prefix,
+		Entries: entries,
+		Done:    done,
+	})
+	m.send_peer(peer)
+}
+
+// replication_emit_bootstrap_file_chunk sends a chunk of file data to
+// the receiver. Sender helper; called from the chunk-request handler
+// after bootstrap_read_chunk returns.
+//
+// Package-level alias so tests can stub the send_peer broadcast.
+var replication_emit_bootstrap_file_chunk = replication_emit_bootstrap_file_chunk_impl
+
+func replication_emit_bootstrap_file_chunk_impl(peer, scope, path string, offset int64, data []byte, eof bool) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-file-chunk")
+	m.add(&BootstrapFileChunk{
+		Scope:  scope,
+		Path:   path,
+		Offset: offset,
+		Data:   data,
+		EOF:    eof,
+	})
+	m.send_peer(peer)
+}
+
 // replication_bootstrap_file_manifest_request_event is the sender's
-// receive handler — it walks the requested path prefix and returns a
-// BootstrapFileManifestResult. V1 stub: logs + returns an empty
-// manifest with Done=true. Full implementation lands in V2.
+// receive handler — walks the requested path prefix, returns a
+// BootstrapFileManifestResult page with the file list (V2: single
+// page, no pagination yet).
 func replication_bootstrap_file_manifest_request_event(e *Event) {
 	var req BootstrapFileManifestRequest
 	if !e.segment(&req) {
 		info("Replication bootstrap-file-manifest-request dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-file-manifest-request: scope=%q prefix=%q from=%q (V1 stub)",
-		req.Scope, req.Prefix, e.peer)
-	// V2: walk the directory tree, emit BootstrapFileManifestResult pages
-	// until the prefix is exhausted, set Done=true on the last page.
+	entries, err := bootstrap_walk_manifest(req.Scope, req.Prefix)
+	if err != nil {
+		info("Replication bootstrap-file-manifest-request: walk failed (scope=%q prefix=%q from=%q): %v",
+			req.Scope, req.Prefix, e.peer, err)
+		// Reply with an empty Done=true manifest so the receiver can
+		// distinguish "couldn't enumerate" from "still walking". A
+		// retried request will produce the same response; the receiver
+		// can backoff + retry if the operator fixes the underlying
+		// filesystem issue.
+		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, nil, true)
+		return
+	}
+	debug("Replication bootstrap-file-manifest-request: scope=%q prefix=%q entries=%d from=%q",
+		req.Scope, req.Prefix, len(entries), e.peer)
+	replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, entries, true)
 }
 
 // replication_bootstrap_file_manifest_result_event is the receiver's
@@ -230,34 +451,98 @@ func replication_bootstrap_file_manifest_result_event(e *Event) {
 }
 
 // replication_bootstrap_file_chunk_request_event is the sender's
-// receive handler — it reads bytes from the requested file and
-// returns a BootstrapFileChunk. V1 stub.
+// receive handler — reads bytes from the requested file and emits a
+// BootstrapFileChunk back to the receiver.
 func replication_bootstrap_file_chunk_request_event(e *Event) {
 	var req BootstrapFileChunkRequest
 	if !e.segment(&req) {
 		info("Replication bootstrap-file-chunk-request dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-file-chunk-request: scope=%q path=%q offset=%d length=%d from=%q (V1 stub)",
-		req.Scope, req.Path, req.Offset, req.Length, e.peer)
-	// V2: open the file, seek to offset, read up to length bytes,
-	// emit BootstrapFileChunk with eof=true when offset+len == size.
+	if req.Length <= 0 || req.Length > bootstrap_max_chunk_size {
+		info("Replication bootstrap-file-chunk-request rejecting: length %d out of range (1..%d)",
+			req.Length, bootstrap_max_chunk_size)
+		return
+	}
+	data, eof, err := bootstrap_read_chunk(req.Scope, req.Path, req.Offset, req.Length)
+	if err != nil {
+		info("Replication bootstrap-file-chunk-request: read failed (scope=%q path=%q offset=%d from=%q): %v",
+			req.Scope, req.Path, req.Offset, e.peer, err)
+		return
+	}
+	debug("Replication bootstrap-file-chunk-request: scope=%q path=%q offset=%d sent=%d eof=%v from=%q",
+		req.Scope, req.Path, req.Offset, len(data), eof, e.peer)
+	replication_emit_bootstrap_file_chunk(e.peer, req.Scope, req.Path, req.Offset, data, eof)
 }
 
-// replication_bootstrap_file_chunk_event is the receiver's handler —
-// it appends the chunk to a `.partial` file, atomic-renames on EOF.
-// V1 stub.
+// bootstrap_max_chunk_size caps a single chunk request at 1 MiB. The
+// receiver issues sequential requests until file size is reached;
+// larger chunks would just add latency on retries.
+const bootstrap_max_chunk_size = 1 << 20
+
+// bootstrap_write_chunk writes a received chunk to disk on the
+// receiver. Bytes go to `<final>.partial` so an interrupted transfer
+// can be resumed without overwriting an intact file. On EOF the
+// partial is atomically renamed to the final path. Creates any
+// missing parent directories.
+//
+// Caller is responsible for matching the (scope, path) tuple to the
+// expected file from the sender's manifest — bootstrap_write_chunk
+// trusts the input and only guards against path traversal.
+func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bool) error {
+	root, err := bootstrap_file_scope_root(scope)
+	if err != nil {
+		return err
+	}
+	final, err := bootstrap_safe_path(root, path)
+	if err != nil {
+		return err
+	}
+	partial := final + ".partial"
+
+	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+		return fmt.Errorf("bootstrap: mkdir for %q: %w", path, err)
+	}
+
+	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return fmt.Errorf("bootstrap: open partial %q: %w", partial, err)
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		f.Close()
+		return fmt.Errorf("bootstrap: seek %q to %d: %w", partial, offset, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("bootstrap: write %q at %d: %w", partial, offset, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("bootstrap: close %q: %w", partial, err)
+	}
+
+	if eof {
+		if err := os.Rename(partial, final); err != nil {
+			return fmt.Errorf("bootstrap: rename %q -> %q: %w", partial, final, err)
+		}
+	}
+	return nil
+}
+
+// replication_bootstrap_file_chunk_event is the receiver's handler.
+// Writes the chunk to a `.partial` file; atomic-renames on EOF.
 func replication_bootstrap_file_chunk_event(e *Event) {
 	var chunk BootstrapFileChunk
 	if !e.segment(&chunk) {
 		info("Replication bootstrap-file-chunk dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-file-chunk: scope=%q path=%q offset=%d len=%d eof=%v from=%q (V1 stub)",
+	if err := bootstrap_write_chunk(chunk.Scope, chunk.Path, chunk.Offset, chunk.Data, chunk.EOF); err != nil {
+		info("Replication bootstrap-file-chunk write failed (scope=%q path=%q offset=%d from=%q): %v",
+			chunk.Scope, chunk.Path, chunk.Offset, e.peer, err)
+		return
+	}
+	debug("Replication bootstrap-file-chunk written: scope=%q path=%q offset=%d len=%d eof=%v from=%q",
 		chunk.Scope, chunk.Path, chunk.Offset, len(chunk.Data), chunk.EOF, e.peer)
-	// V2: open `<path>.partial` O_WRONLY|O_CREATE, write at offset,
-	// rename(<path>.partial → <path>) on EOF, advance per-(scope, peer)
-	// position cursor.
 }
 
 // replication_bootstrap_db_snapshot_request_event is the sender's

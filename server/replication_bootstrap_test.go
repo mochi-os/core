@@ -4,6 +4,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -53,6 +57,269 @@ func TestBootstrapClear(t *testing.T) {
 	state, pos := bootstrap_get_state(bootstrap_scope_apps, "peer-A")
 	if state != "" || pos != "" {
 		t.Errorf("after clear: got state=%q pos=%q, want both empty", state, pos)
+	}
+}
+
+// TestBootstrapSafePathRejectsTraversal: ../ segments, absolute paths,
+// and symlink escapes are all rejected.
+func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(root, 0o755)
+
+	cases := []struct {
+		relative string
+		wantErr  bool
+		desc     string
+	}{
+		{"alice/files/post.md", false, "ordinary relative path"},
+		{"alice/files/../../etc/passwd", true, ".. traversal"},
+		{"/etc/passwd", true, "absolute path"},
+		{"alice/../../../tmp/escape", true, "deep traversal"},
+		{"", false, "empty prefix (= root itself)"},
+		{"alice/files/", false, "trailing slash"},
+	}
+	for _, tc := range cases {
+		_, err := bootstrap_safe_path(root, tc.relative)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err=%v, wantErr=%v", tc.desc, err, tc.wantErr)
+		}
+	}
+}
+
+// TestBootstrapWalkManifest: walks a small tree, asserts (path, size,
+// sha256) for each entry. Symlinks and non-regular files are skipped.
+func TestBootstrapWalkManifest(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+	_ = os.MkdirAll(filepath.Join(usersRoot, "bob", "feed", "files"), 0o755)
+	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "feed", "files", "post.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write alice/post.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "feed", "files", "draft.md"), []byte("draft text"), 0o644); err != nil {
+		t.Fatalf("write alice/draft.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(usersRoot, "bob", "feed", "files", "other.md"), []byte("bob"), 0o644); err != nil {
+		t.Fatalf("write bob/other.md: %v", err)
+	}
+
+	// Whole tree.
+	entries, err := bootstrap_walk_manifest(bootstrap_scope_files, "")
+	if err != nil {
+		t.Fatalf("walk root: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("entries count = %d, want 3 (got: %+v)", len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Sha256 == "" || e.Size == 0 {
+			t.Errorf("entry missing hash/size: %+v", e)
+		}
+		if filepath.IsAbs(e.Path) {
+			t.Errorf("entry path is absolute: %q (paths must be relative to scope root)", e.Path)
+		}
+	}
+
+	// Prefixed walk = subset.
+	subset, err := bootstrap_walk_manifest(bootstrap_scope_files, "alice")
+	if err != nil {
+		t.Fatalf("walk alice: %v", err)
+	}
+	if len(subset) != 2 {
+		t.Errorf("alice subset = %d, want 2", len(subset))
+	}
+
+	// Hash determinism: re-walking returns the same digests.
+	rewalk, _ := bootstrap_walk_manifest(bootstrap_scope_files, "")
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Path] = e.Sha256
+	}
+	for _, e := range rewalk {
+		if got[e.Path] != e.Sha256 {
+			t.Errorf("hash drift for %q: was %q, now %q", e.Path, got[e.Path], e.Sha256)
+		}
+	}
+}
+
+// TestBootstrapReadChunkRoundtrip: write a file, request chunks
+// sequentially, reassemble, compare to the original.
+func TestBootstrapReadChunkRoundtrip(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(usersRoot, "alice"), 0o755)
+	original := []byte("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "blob"), original, 0o644); err != nil {
+		t.Fatalf("write blob: %v", err)
+	}
+
+	// Read in 10-byte chunks.
+	var assembled []byte
+	var offset int64
+	for {
+		data, eof, err := bootstrap_read_chunk(bootstrap_scope_files, "alice/blob", offset, 10)
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		assembled = append(assembled, data...)
+		offset += int64(len(data))
+		if eof {
+			break
+		}
+		if offset > int64(len(original))+100 {
+			t.Fatalf("infinite loop suspected at offset %d", offset)
+		}
+	}
+
+	if string(assembled) != string(original) {
+		t.Errorf("assembled = %q, want %q", assembled, original)
+	}
+
+	// Hash check (defense in depth — confirms no off-by-one in our
+	// chunk boundaries).
+	wantHash := sha256.Sum256(original)
+	gotHash := sha256.Sum256(assembled)
+	if hex.EncodeToString(wantHash[:]) != hex.EncodeToString(gotHash[:]) {
+		t.Errorf("hash mismatch: want %s got %s",
+			hex.EncodeToString(wantHash[:]), hex.EncodeToString(gotHash[:]))
+	}
+}
+
+// TestBootstrapWriteChunkPartialThenRename: chunks land in .partial,
+// rename happens only on EOF, intermediate state survives interruption.
+func TestBootstrapWriteChunkPartialThenRename(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(usersRoot, 0o755)
+
+	final := filepath.Join(usersRoot, "alice", "feed", "files", "post.md")
+	partial := final + ".partial"
+
+	// First chunk — not EOF.
+	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 0, []byte("hello "), false); err != nil {
+		t.Fatalf("write chunk 1: %v", err)
+	}
+	// Partial exists, final doesn't.
+	if _, err := os.Stat(partial); err != nil {
+		t.Errorf(".partial missing after first chunk: %v", err)
+	}
+	if _, err := os.Stat(final); !os.IsNotExist(err) {
+		t.Errorf("final exists before EOF: %v", err)
+	}
+
+	// Second chunk — EOF.
+	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 6, []byte("world"), true); err != nil {
+		t.Fatalf("write chunk 2: %v", err)
+	}
+	// Final exists, partial gone.
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Errorf(".partial still present after EOF: %v", err)
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("assembled file = %q, want %q", got, "hello world")
+	}
+}
+
+// TestBootstrapWriteChunkRejectsTraversal: paths attempting parent-dir
+// traversal are refused.
+func TestBootstrapWriteChunkRejectsTraversal(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	err := bootstrap_write_chunk(bootstrap_scope_files, "../../../etc/passwd", 0, []byte("malicious"), true)
+	if err == nil {
+		t.Error("expected error for parent-dir traversal, got nil")
+	}
+	err = bootstrap_write_chunk(bootstrap_scope_files, "/etc/passwd", 0, []byte("malicious"), true)
+	if err == nil {
+		t.Error("expected error for absolute path, got nil")
+	}
+}
+
+// TestBootstrapFileTransferEndToEnd: sender walks → emits manifest →
+// receiver "diffs" and chunk-fetches each file → sender reads chunk →
+// receiver writes chunk → atomic rename on EOF. Exercises the V2 hot
+// path without P2P transport (handlers called directly).
+func TestBootstrapFileTransferEndToEnd(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+
+	// Source files on the sender side. Use the same data_dir for both
+	// sides since bootstrap_*_scope_root is just data_dir-rooted; the
+	// receiver path computation works against the same root. Real
+	// cross-host usage has distinct data_dirs.
+	contents := map[string]string{
+		"alice/feed/files/post.md":  "first post body",
+		"alice/feed/files/draft.md": "draft text content",
+	}
+	for rel, body := range contents {
+		full := filepath.Join(usersRoot, rel)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatalf("write source %q: %v", rel, err)
+		}
+	}
+
+	// 1. Walker emits manifest with 2 entries.
+	entries, err := bootstrap_walk_manifest(bootstrap_scope_files, "alice")
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("manifest entries = %d, want 2", len(entries))
+	}
+
+	// 2. For each manifest entry, read every chunk from the sender
+	// and write it on the receiver. Use a small chunk size so we
+	// exercise the multi-chunk path.
+	const chunkSize int64 = 7
+	for _, entry := range entries {
+		var offset int64
+		for {
+			data, eof, err := bootstrap_read_chunk(bootstrap_scope_files, entry.Path, offset, chunkSize)
+			if err != nil {
+				t.Fatalf("read %q at %d: %v", entry.Path, offset, err)
+			}
+			// Write into a different sub-tree so we don't overwrite
+			// the source mid-test. Rewrite the path so the receiver
+			// puts the file under "bob" instead of "alice".
+			recvPath := "bob/" + entry.Path[len("alice/"):]
+			if err := bootstrap_write_chunk(bootstrap_scope_files, recvPath, offset, data, eof); err != nil {
+				t.Fatalf("write %q at %d: %v", recvPath, offset, err)
+			}
+			if eof {
+				break
+			}
+			offset += int64(len(data))
+		}
+	}
+
+	// 3. Verify each received file matches the source byte-for-byte.
+	for rel, want := range contents {
+		recvRel := "bob/" + rel[len("alice/"):]
+		got, err := os.ReadFile(filepath.Join(usersRoot, recvRel))
+		if err != nil {
+			t.Errorf("read receiver %q: %v", recvRel, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("receiver %q content = %q, want %q", recvRel, got, want)
+		}
+		// .partial should have been renamed away.
+		if _, err := os.Stat(filepath.Join(usersRoot, recvRel+".partial")); !os.IsNotExist(err) {
+			t.Errorf(".partial still present for %q after transfer: %v", recvRel, err)
+		}
 	}
 }
 

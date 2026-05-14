@@ -68,12 +68,20 @@ func admin_replication_status(c *gin.Context) {
 		}
 	}
 
+	bootstrap_pending := int64(0)
+	if row, _ := rdb.row("select count(*) as c from bootstrap where state != 'done'"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			bootstrap_pending = v
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"peer":           p2p_id,
-		"pair":           pair,
-		"hosts_count":    hosts_count,
-		"links_pending":  links_pending,
-		"joins_pending":  joins_pending,
+		"peer":              p2p_id,
+		"pair":              pair,
+		"hosts_count":       hosts_count,
+		"links_pending":     links_pending,
+		"joins_pending":     joins_pending,
+		"bootstrap_pending": bootstrap_pending,
 	})
 }
 
@@ -95,6 +103,40 @@ func admin_replication_pair(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
+// admin_replication_resync is POST /_/admin/replication/resync.
+// Body: {"peer": "<peer-id>"}
+//
+// Re-seeds the bootstrap state machine against `peer` by clearing
+// any 'done' rows for that peer and re-running bootstrap_start.
+// Idempotent on the wire: the receiver's manifest-diff skips files
+// whose local copy already matches by size + sha256, so a resync of
+// a fully-synced replica is cheap (just hash comparisons).
+//
+// Use cases: a transient transport failure dropped some chunks; the
+// operator manually copied files between data dirs and wants to
+// re-verify; alpha-rollout verification re-runs.
+func admin_replication_resync(c *gin.Context) {
+	var input struct {
+		Peer string `json:"peer"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "peer is required"})
+		return
+	}
+
+	// Wipe any previous bootstrap rows for this peer so the state
+	// machine starts fresh. bootstrap_start re-seeds the four scopes
+	// at 'queued' and emits the manifest-requests.
+	rdb := db_open("db/replication.db")
+	rdb.exec("delete from bootstrap where peer=?", input.Peer)
+	bootstrap_start(input.Peer)
+
+	c.JSON(http.StatusOK, gin.H{
+		"peer":  input.Peer,
+		"state": "queued",
+	})
 }
 
 // admin_replication_pair_remove is POST /_/admin/replication/pair/remove.

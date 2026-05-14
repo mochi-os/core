@@ -102,7 +102,7 @@ func init() {
 			help: "Summarise pair set + per-user host counts + pending requests",
 			run: func(args []string) error {
 				return get_dump("/_/admin/replication/status",
-					"peer", "pair", "hosts_count", "links_pending", "joins_pending")
+					"peer", "pair", "hosts_count", "links_pending", "joins_pending", "bootstrap_pending")
 			},
 		},
 		"replication pair list": {
@@ -114,6 +114,10 @@ func init() {
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",
 			run:  cmd_replication_pair_remove,
+		},
+		"replication resync": {
+			help: "Force a bulk-bootstrap re-run against the given peer",
+			run:  cmd_replication_resync,
 		},
 	}
 }

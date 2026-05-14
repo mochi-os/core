@@ -59,6 +59,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -212,6 +213,45 @@ func bootstrap_get_state(scope, peer string) (string, string) {
 func bootstrap_clear(scope, peer string) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from bootstrap where scope=? and peer=?", scope, peer)
+}
+
+// bootstrap_set_pending sets the (scope, peer) row's pending-file
+// counter and transitions to 'active'. Called when a manifest result
+// arrives with N entries the receiver needs to fetch — that N is the
+// number of files (or DBs) whose EOF chunk we expect to land before
+// the scope is complete.
+func bootstrap_set_pending(scope, peer string, count int64) {
+	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
+}
+
+// bootstrap_pending_decrement atomically subtracts 1 from the (scope,
+// peer) row's pending counter. If the resulting count is 0 (or
+// negative — defensive against unexpected over-decrement), the row
+// transitions to state='done'. Called from the chunk handlers after
+// a successful EOF write.
+//
+// Returns the remaining count (or -1 if the row didn't exist). The
+// returned value is mostly for tests; callers don't need it.
+func bootstrap_pending_decrement(scope, peer string) int64 {
+	rdb := db_open("db/replication.db")
+	row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", scope, peer)
+	if row == nil {
+		return -1
+	}
+	state, _ := row["state"].(string)
+	if state == bootstrap_state_done {
+		// Already complete — nothing to decrement.
+		return 0
+	}
+	positionStr, _ := row["position"].(string)
+	count, _ := strconv.ParseInt(positionStr, 10, 64)
+	count--
+	if count <= 0 {
+		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
+		return 0
+	}
+	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
+	return count
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)
@@ -568,7 +608,9 @@ func replication_bootstrap_file_manifest_result_event(e *Event) {
 		return
 	}
 
-	bootstrap_set_state(res.Scope, e.peer, bootstrap_state_active, res.Prefix)
+	// Seed the pending-file counter so chunk EOFs can drive the
+	// state machine to 'done' as each file's last chunk lands.
+	bootstrap_set_pending(res.Scope, e.peer, int64(len(needed)))
 	for _, entry := range needed {
 		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
 			replication_emit_bootstrap_file_chunk_request(e.peer, res.Scope, req.Path, req.Offset, req.Length)
@@ -576,9 +618,6 @@ func replication_bootstrap_file_manifest_result_event(e *Event) {
 	}
 	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q needed=%d/%d from=%q",
 		res.Scope, res.Prefix, len(needed), len(res.Entries), e.peer)
-	// Note: scope state stays 'active' until the receiver confirms
-	// every chunk landed. V4 will hook the chunk handler to clear the
-	// row once the manifest is fully transferred.
 }
 
 // replication_emit_bootstrap_file_manifest_request kicks off a
@@ -677,7 +716,9 @@ func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bo
 }
 
 // replication_bootstrap_file_chunk_event is the receiver's handler.
-// Writes the chunk to a `.partial` file; atomic-renames on EOF.
+// Writes the chunk to a `.partial` file; atomic-renames on EOF; on
+// EOF also decrements the (scope, peer) pending-file counter so the
+// scope can transition to 'done' once every expected file has landed.
 func replication_bootstrap_file_chunk_event(e *Event) {
 	var chunk BootstrapFileChunk
 	if !e.segment(&chunk) {
@@ -688,6 +729,9 @@ func replication_bootstrap_file_chunk_event(e *Event) {
 		info("Replication bootstrap-file-chunk write failed (scope=%q path=%q offset=%d from=%q): %v",
 			chunk.Scope, chunk.Path, chunk.Offset, e.peer, err)
 		return
+	}
+	if chunk.EOF {
+		bootstrap_pending_decrement(chunk.Scope, e.peer)
 	}
 	debug("Replication bootstrap-file-chunk written: scope=%q path=%q offset=%d len=%d eof=%v from=%q",
 		chunk.Scope, chunk.Path, chunk.Offset, len(chunk.Data), chunk.EOF, e.peer)
@@ -889,6 +933,7 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 			info("Replication bootstrap-db-chunk: rename %q -> %q failed (from=%q): %v", partial, target, e.peer, err)
 			return
 		}
+		bootstrap_pending_decrement(chunk.Scope, e.peer)
 		debug("Replication bootstrap-db-chunk: snapshot landed at %q (from=%q)", target, e.peer)
 		return
 	}
@@ -1061,9 +1106,17 @@ func replication_bootstrap_db_manifest_result_event(e *Event) {
 }
 
 // replication_bootstrap_db_manifest_result_apply fires one
-// snapshot-request per entry. The snapshot handler streams the
-// bytes; the chunk handler atomic-renames the .partial into place.
+// snapshot-request per entry and seeds the pending-DB counter so the
+// chunk handler can drive the scope to 'done' as each DB's last
+// chunk lands. Empty result → scope is immediately 'done'.
 func replication_bootstrap_db_manifest_result_apply(originPeer string, res *BootstrapDBManifestResult) {
+	if len(res.Entries) == 0 {
+		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
+		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
+			res.Scope, originPeer)
+		return
+	}
+	bootstrap_set_pending(res.Scope, originPeer, int64(len(res.Entries)))
 	for _, entry := range res.Entries {
 		replication_emit_bootstrap_db_snapshot_request(originPeer, res.Scope, entry.User, entry.App, entry.DB)
 	}

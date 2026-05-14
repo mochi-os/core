@@ -566,6 +566,74 @@ func TestBootstrapStartEmptyPeerIsNoOp(t *testing.T) {
 	}
 }
 
+// TestBootstrapPendingDecrement: counter advances toward zero and
+// transitions to 'done' on the last decrement; underflow is no-op.
+func TestBootstrapPendingDecrement(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Seed at 3.
+	bootstrap_set_pending(bootstrap_scope_files, "peer-A", 3)
+	state, pos := bootstrap_get_state(bootstrap_scope_files, "peer-A")
+	if state != bootstrap_state_active || pos != "3" {
+		t.Errorf("after seed 3: state=%q pos=%q", state, pos)
+	}
+
+	// 3 → 2 → 1 → 0 (done)
+	if got := bootstrap_pending_decrement(bootstrap_scope_files, "peer-A"); got != 2 {
+		t.Errorf("decrement 1: got %d, want 2", got)
+	}
+	if got := bootstrap_pending_decrement(bootstrap_scope_files, "peer-A"); got != 1 {
+		t.Errorf("decrement 2: got %d, want 1", got)
+	}
+	if got := bootstrap_pending_decrement(bootstrap_scope_files, "peer-A"); got != 0 {
+		t.Errorf("decrement 3: got %d, want 0 (last → done)", got)
+	}
+	state, pos = bootstrap_get_state(bootstrap_scope_files, "peer-A")
+	if state != bootstrap_state_done {
+		t.Errorf("after last decrement: state=%q, want done", state)
+	}
+	if pos != "" {
+		t.Errorf("after done: position=%q, want empty", pos)
+	}
+
+	// Further decrement on a done row is a no-op.
+	if got := bootstrap_pending_decrement(bootstrap_scope_files, "peer-A"); got != 0 {
+		t.Errorf("decrement after done: got %d, want 0", got)
+	}
+	state, _ = bootstrap_get_state(bootstrap_scope_files, "peer-A")
+	if state != bootstrap_state_done {
+		t.Errorf("after no-op decrement: state=%q, want done", state)
+	}
+
+	// Decrement on a missing row returns -1.
+	if got := bootstrap_pending_decrement(bootstrap_scope_files, "peer-missing"); got != -1 {
+		t.Errorf("decrement on missing row: got %d, want -1", got)
+	}
+}
+
+// TestBootstrapDBManifestEmptyImmediatelyDone: zero-entry manifest
+// marks the scope done without firing snapshot requests.
+func TestBootstrapDBManifestEmptyImmediatelyDone(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	called := 0
+	orig := replication_emit_bootstrap_db_snapshot_request
+	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) { called++ }
+	defer func() { replication_emit_bootstrap_db_snapshot_request = orig }()
+
+	res := &BootstrapDBManifestResult{Scope: bootstrap_scope_userdbs, Entries: nil}
+	replication_bootstrap_db_manifest_result_apply("source-A", res)
+
+	if called != 0 {
+		t.Errorf("snapshot requests fired on empty manifest = %d, want 0", called)
+	}
+	state, _ := bootstrap_get_state(bootstrap_scope_userdbs, "source-A")
+	if state != bootstrap_state_done {
+		t.Errorf("empty manifest scope state = %q, want done", state)
+	}
+}
+
 // TestBootstrapWalkDBManifest: enumerates DBs under users/<u>/<a>/db/
 // for userdbs and db/ for sysdbs; rejects non-.db basenames + non-
 // regular entries; returns empty (no error) for missing roots.

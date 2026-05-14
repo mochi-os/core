@@ -64,11 +64,12 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 // Returned shape:
 //
 //	{
-//	  "peer":           "<this-peer-id>",
-//	  "pair":           ["<peer-1>", "<peer-2>"],
-//	  "hosts_count":    N,            // total per-user opt-in rows
-//	  "links_pending":  N,            // pending per-user link-requests
-//	  "joins_pending":  N,            // pending whole-server join-requests
+//	  "peer":              "<this-peer-id>",
+//	  "pair":              ["<peer-1>", "<peer-2>"],
+//	  "hosts_count":       N,         // total per-user opt-in rows
+//	  "links_pending":     N,         // pending per-user link-requests
+//	  "joins_pending":     N,         // pending whole-server join-requests
+//	  "bootstrap_pending": N,         // (scope, peer) rows still queued/active
 //	}
 //
 // Read-only; no parameters; never returns an error.
@@ -105,17 +106,28 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		}
 	}
 
+	// Bootstrap progress: count any (scope, peer) rows still in
+	// queued/active. Zero means every active scope has reached
+	// 'done' (or there are no peers in bootstrap at all).
+	bootstrap_pending := int64(0)
+	if row, _ := rdb.row("select count(*) as c from bootstrap where state != 'done'"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			bootstrap_pending = v
+		}
+	}
+
 	pairValues := make([]sl.Value, 0, len(pair))
 	for _, p := range pair {
 		pairValues = append(pairValues, sl.String(p))
 	}
 
-	result := sl.NewDict(5)
+	result := sl.NewDict(6)
 	_ = result.SetKey(sl.String("peer"), sl.String(p2p_id))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pairValues))
 	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
 	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))
+	_ = result.SetKey(sl.String("bootstrap_pending"), sl.MakeInt64(bootstrap_pending))
 	return result, nil
 }
 

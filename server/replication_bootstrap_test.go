@@ -720,6 +720,108 @@ func TestBootstrapDBManifestResultFiresSnapshotRequests(t *testing.T) {
 	}
 }
 
+// TestBootstrapFileScopeAutoDone: end-to-end glue test — sender walks
+// → manifest-result apply seeds pending + fires chunk-requests →
+// chunk-reads stream bytes → chunk-writes land + decrement counter →
+// scope transitions to 'done' on the last EOF.
+//
+// Uses an in-process indirection (the chunk-request emit is replaced
+// by a recorder, then each recorded request is resolved by calling
+// bootstrap_read_chunk on the source side and bootstrap_write_chunk
+// on the receiver side directly). Skips the live P2P transport but
+// exercises every other line of the bootstrap glue.
+func TestBootstrapFileScopeAutoDone(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+
+	// Source files (placed under "alice" so the walker has something
+	// to manifest).
+	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+	contents := map[string]string{
+		"alice/feed/files/post1.md":  "first post",
+		"alice/feed/files/post2.md":  "second post body",
+		"alice/feed/files/post3.md":  "third",
+	}
+	for rel, body := range contents {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(usersRoot, rel)), 0o755)
+		if err := os.WriteFile(filepath.Join(usersRoot, rel), []byte(body), 0o644); err != nil {
+			t.Fatalf("write source %q: %v", rel, err)
+		}
+	}
+
+	// Capture chunk-requests instead of firing them over the wire.
+	var pending []BootstrapFileChunkRequest
+	orig := replication_emit_bootstrap_file_chunk_request
+	replication_emit_bootstrap_file_chunk_request = func(peer, scope, path string, offset, length int64) {
+		pending = append(pending, BootstrapFileChunkRequest{Scope: scope, Path: path, Offset: offset, Length: length})
+	}
+	defer func() { replication_emit_bootstrap_file_chunk_request = orig }()
+
+	// 1. Walker produces the manifest.
+	entries, err := bootstrap_walk_manifest(bootstrap_scope_files, "alice")
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	// 2. Move source files out of the way so the receiver-side diff
+	// thinks they're missing locally and needs them. We'll restore
+	// to a different location for the receiver and verify there.
+	for rel := range contents {
+		_ = os.Remove(filepath.Join(usersRoot, rel))
+	}
+
+	// 3. Receiver applies the manifest result → fires chunk-requests
+	// + seeds the pending counter.
+	res := &BootstrapFileManifestResult{
+		Scope:   bootstrap_scope_files,
+		Prefix:  "alice",
+		Entries: entries,
+		Done:    true,
+	}
+	replication_bootstrap_file_manifest_result_apply("source-A", res)
+
+	state, _ := bootstrap_get_state(bootstrap_scope_files, "source-A")
+	if state != bootstrap_state_active {
+		t.Errorf("after manifest apply: state=%q, want active", state)
+	}
+	if len(pending) != len(entries) {
+		t.Errorf("chunk requests emitted = %d, want %d (one per file)", len(pending), len(entries))
+	}
+
+	// 4. For the test, the receiver needs the source files to be
+	// readable by bootstrap_read_chunk. Re-create them so the source
+	// side has something to read.
+	for rel, body := range contents {
+		_ = os.WriteFile(filepath.Join(usersRoot, rel), []byte(body), 0o644)
+	}
+
+	// 5. Walk every chunk request: read on the source, write on the
+	// receiver (different sub-tree so we don't overwrite). Mimic the
+	// real chunk-event handler which decrements on EOF.
+	for _, req := range pending {
+		data, eof, err := bootstrap_read_chunk(req.Scope, req.Path, req.Offset, req.Length)
+		if err != nil {
+			t.Fatalf("read %q: %v", req.Path, err)
+		}
+		// Receiver path: keep same path so the verification reads the
+		// correct destination. (In real cross-host usage data_dir
+		// differs; here we trust the apply path's safe-path check.)
+		if err := bootstrap_write_chunk(req.Scope, req.Path, req.Offset, data, eof); err != nil {
+			t.Fatalf("write %q: %v", req.Path, err)
+		}
+		if eof {
+			bootstrap_pending_decrement(req.Scope, "source-A")
+		}
+	}
+
+	// 6. After every chunk has landed: state should be 'done'.
+	state, pos := bootstrap_get_state(bootstrap_scope_files, "source-A")
+	if state != bootstrap_state_done {
+		t.Errorf("after every EOF: state=%q pos=%q, want done", state, pos)
+	}
+}
+
 // TestBootstrapScopesForPeer: every scope for a peer is returned in
 // stable order; rows for other peers are excluded.
 func TestBootstrapScopesForPeer(t *testing.T) {

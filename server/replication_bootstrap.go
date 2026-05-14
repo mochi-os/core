@@ -584,42 +584,49 @@ func replication_emit_bootstrap_file_chunk_request_impl(peer, scope, path string
 }
 
 // replication_bootstrap_file_manifest_result_event is the receiver's
-// handler — diffs the manifest against the local copy and emits a
-// chunk-request for every offset of every needed file. On the final
-// page (Done=true with no needed entries) transitions the (scope,
-// peer) row to 'done'.
+// handler. Decodes the payload and delegates to the pure helper so
+// unit tests can exercise the diff + chunk-request fan-out without
+// constructing a live stream Event.
 func replication_bootstrap_file_manifest_result_event(e *Event) {
 	var res BootstrapFileManifestResult
 	if !e.segment(&res) {
 		info("Replication bootstrap-file-manifest-result dropping: cannot decode")
 		return
 	}
+	replication_bootstrap_file_manifest_result_apply(e.peer, &res)
+}
+
+// replication_bootstrap_file_manifest_result_apply diffs the manifest
+// against the local copy and emits a chunk-request for every offset
+// of every needed file. On the final page (Done=true with no needed
+// entries) transitions the (scope, peer) row to 'done'.
+func replication_bootstrap_file_manifest_result_apply(originPeer string, res *BootstrapFileManifestResult) {
 	needed, err := bootstrap_diff_manifest(res.Scope, res.Prefix, res.Entries)
 	if err != nil {
 		info("Replication bootstrap-file-manifest-result: diff failed (scope=%q prefix=%q from=%q): %v",
-			res.Scope, res.Prefix, e.peer, err)
+			res.Scope, res.Prefix, originPeer, err)
 		return
 	}
 	if len(needed) == 0 {
 		if res.Done {
-			bootstrap_set_state(res.Scope, e.peer, bootstrap_state_done, "")
-			audit_replication_bootstrap_scope_done(e.peer, res.Scope)
+			bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
+			audit_replication_bootstrap_scope_done(originPeer, res.Scope)
 		}
 		debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q entries=%d already up-to-date from=%q",
-			res.Scope, res.Prefix, len(res.Entries), e.peer)
+			res.Scope, res.Prefix, len(res.Entries), originPeer)
 		return
 	}
 
 	// Seed the pending-file counter so chunk EOFs can drive the
 	// state machine to 'done' as each file's last chunk lands.
-	bootstrap_set_pending(res.Scope, e.peer, int64(len(needed)))
+	bootstrap_set_pending(res.Scope, originPeer, int64(len(needed)))
 	for _, entry := range needed {
 		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
-			replication_emit_bootstrap_file_chunk_request(e.peer, res.Scope, req.Path, req.Offset, req.Length)
+			replication_emit_bootstrap_file_chunk_request(originPeer, res.Scope, req.Path, req.Offset, req.Length)
 		}
 	}
 	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q needed=%d/%d from=%q",
-		res.Scope, res.Prefix, len(needed), len(res.Entries), e.peer)
+		res.Scope, res.Prefix, len(needed), len(res.Entries), originPeer)
 }
 
 // replication_emit_bootstrap_file_manifest_request kicks off a

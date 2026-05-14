@@ -113,7 +113,9 @@ func replication_join_approved_event(e *Event) {
 
 // replication_join_approved_apply applies an approved pair set on the
 // replica side. Replaces the local pair table with Members (filtered
-// to exclude self).
+// to exclude self), then kicks off bulk bootstrap against the source
+// peer (the one that approved us) so the replica's empty filesystem
+// gets populated.
 func replication_join_approved_apply(originPeer string, ja *JoinApproved) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from pair")
@@ -124,6 +126,10 @@ func replication_join_approved_apply(originPeer string, ja *JoinApproved) {
 		rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
 	}
 	debug("Replication join-approved applied: members=%v (from peer %q)", ja.Members, originPeer)
+	// Start file-tree bulk bootstrap against the approving source.
+	// V5 handles file-scope only; DB-scope bootstrap arrives in a
+	// follow-up that adds a bootstrap-db-manifest event.
+	bootstrap_start(originPeer)
 }
 
 // replication_join_denied_event is the replica's receive handler for a

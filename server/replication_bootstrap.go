@@ -868,6 +868,33 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 		chunk.Scope, chunk.DB, chunk.Offset, len(chunk.Data), e.peer)
 }
 
+// bootstrap_start kicks off a whole-replica bootstrap from `peer`.
+// Called from the join-approved handler on a fresh replica once the
+// source has accepted the pair join; also exposed via mochictl for
+// manual resume in case of interruption.
+//
+// V5 starts the two file-tree scopes (files + apps) by emitting a
+// manifest-request for each. The corresponding receive handlers diff
+// the result against the local filesystem and emit chunk requests
+// for any needed entry — driving the transfer forward asynchronously.
+// The (scope, peer) bootstrap rows are seeded as 'queued' so progress
+// is observable from the start.
+//
+// DB-scope bootstrap (userdbs / sysdbs) is V6: the receiver needs to
+// learn which (user, app, db) tuples exist on the source — currently
+// it doesn't. The follow-up adds a `bootstrap-db-manifest` event that
+// the source answers with the list of DB tuples; the receiver then
+// fires snapshot-requests against each.
+func bootstrap_start(peer string) {
+	if peer == "" {
+		return
+	}
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
+		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
+		replication_emit_bootstrap_file_manifest_request(peer, scope, "")
+	}
+}
+
 // replication_emit_bootstrap_db_snapshot_request kicks off a DB
 // snapshot transfer from the receiver. Package-level alias so tests
 // can stub the send_peer broadcast.

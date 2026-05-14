@@ -65,11 +65,33 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_link_denied := replication_emit_link_denied
 	replication_emit_link_denied = func(destinationPeer, placeholder, reason string) {}
 
+	// Bootstrap emits also fire send_peer goroutines. Stubbed for the
+	// same reason; tests that need to observe the emit override these
+	// again locally (see TestBootstrapStartSeedsScopesAndEmitsManifests).
+	orig_emit_bootstrap_manifest_req := replication_emit_bootstrap_file_manifest_request
+	orig_emit_bootstrap_chunk_req := replication_emit_bootstrap_file_chunk_request
+	orig_emit_bootstrap_manifest_res := replication_emit_bootstrap_file_manifest_result
+	orig_emit_bootstrap_chunk := replication_emit_bootstrap_file_chunk
+	orig_emit_bootstrap_db_chunk := replication_emit_bootstrap_db_chunk
+	orig_emit_bootstrap_db_snap_req := replication_emit_bootstrap_db_snapshot_request
+	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
+	replication_emit_bootstrap_file_chunk_request = func(peer, scope, path string, offset, length int64) {}
+	replication_emit_bootstrap_file_manifest_result = func(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {}
+	replication_emit_bootstrap_file_chunk = func(peer, scope, path string, offset int64, data []byte, eof bool) {}
+	replication_emit_bootstrap_db_chunk = func(peer string, req *BootstrapDBSnapshotRequest, offset int64, data []byte, eof bool) {}
+	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {}
+
 	return func() {
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
 		replication_membership_update = orig_membership
 		replication_emit_link_denied = orig_emit_link_denied
+		replication_emit_bootstrap_file_manifest_request = orig_emit_bootstrap_manifest_req
+		replication_emit_bootstrap_file_chunk_request = orig_emit_bootstrap_chunk_req
+		replication_emit_bootstrap_file_manifest_result = orig_emit_bootstrap_manifest_res
+		replication_emit_bootstrap_file_chunk = orig_emit_bootstrap_chunk
+		replication_emit_bootstrap_db_chunk = orig_emit_bootstrap_db_chunk
+		replication_emit_bootstrap_db_snapshot_request = orig_emit_bootstrap_db_snap_req
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

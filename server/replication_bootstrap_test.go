@@ -511,6 +511,61 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	}
 }
 
+// TestBootstrapStartSeedsScopesAndEmitsManifests: bootstrap_start
+// seeds 'queued' rows for both file-tree scopes and fires manifest
+// requests at the source peer.
+func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var requests []struct{ peer, scope, prefix string }
+	orig := replication_emit_bootstrap_file_manifest_request
+	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {
+		requests = append(requests, struct{ peer, scope, prefix string }{peer, scope, prefix})
+	}
+	defer func() { replication_emit_bootstrap_file_manifest_request = orig }()
+
+	bootstrap_start("source-A")
+
+	if len(requests) != 2 {
+		t.Fatalf("emit count = %d, want 2 (files + apps)", len(requests))
+	}
+	seen := map[string]bool{}
+	for _, r := range requests {
+		seen[r.scope] = true
+		if r.peer != "source-A" || r.prefix != "" {
+			t.Errorf("emit %+v: unexpected peer/prefix", r)
+		}
+	}
+	if !seen[bootstrap_scope_files] || !seen[bootstrap_scope_apps] {
+		t.Errorf("scopes covered = %v, want files+apps", seen)
+	}
+
+	// Each scope landed a 'queued' row.
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
+		state, _ := bootstrap_get_state(scope, "source-A")
+		if state != bootstrap_state_queued {
+			t.Errorf("scope %q state = %q, want queued", scope, state)
+		}
+	}
+}
+
+// TestBootstrapStartEmptyPeerIsNoOp: empty peer string short-circuits;
+// no rows seeded, no emits fired.
+func TestBootstrapStartEmptyPeerIsNoOp(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	called := false
+	orig := replication_emit_bootstrap_file_manifest_request
+	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) { called = true }
+	defer func() { replication_emit_bootstrap_file_manifest_request = orig }()
+
+	bootstrap_start("")
+	if called {
+		t.Error("bootstrap_start(\"\") emitted a request; should be a no-op")
+	}
+}
+
 // TestBootstrapScopesForPeer: every scope for a peer is returned in
 // stable order; rows for other peers are excluded.
 func TestBootstrapScopesForPeer(t *testing.T) {

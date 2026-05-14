@@ -245,6 +245,85 @@ func TestBootstrapWriteChunkRejectsTraversal(t *testing.T) {
 	}
 }
 
+// TestBootstrapDiffManifestSkipsMatchingFiles: files whose local copy
+// has the same size + sha256 are excluded from the needed list.
+func TestBootstrapDiffManifestSkipsMatchingFiles(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	usersRoot := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+
+	// Local copy of post.md matches one of the remote entries.
+	localPath := filepath.Join(usersRoot, "alice", "feed", "files", "post.md")
+	if err := os.WriteFile(localPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write local post.md: %v", err)
+	}
+	localHash, err := bootstrap_file_sha256(localPath)
+	if err != nil {
+		t.Fatalf("hash local: %v", err)
+	}
+
+	remote := []BootstrapFileEntry{
+		// Matches local.
+		{Path: "alice/feed/files/post.md", Size: 5, Sha256: localHash},
+		// Same path, different content → must be fetched.
+		{Path: "alice/feed/files/draft.md", Size: 10, Sha256: "deadbeef"},
+	}
+
+	needed, err := bootstrap_diff_manifest(bootstrap_scope_files, "alice", remote)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if len(needed) != 1 {
+		t.Fatalf("needed = %d, want 1 (post.md matches, draft.md missing)", len(needed))
+	}
+	if needed[0].Path != "alice/feed/files/draft.md" {
+		t.Errorf("needed[0].Path = %q, want draft.md", needed[0].Path)
+	}
+}
+
+// TestBootstrapChunkRequestsForEntry: a non-trivial file is split into
+// bootstrap_max_chunk_size chunks; zero-byte file gets a single
+// (0, 0) request as the create-empty-file signal.
+func TestBootstrapChunkRequestsForEntry(t *testing.T) {
+	// Zero-byte file → single request with length 0.
+	reqs := bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "x", Size: 0})
+	if len(reqs) != 1 || reqs[0].Length != 0 || reqs[0].Offset != 0 {
+		t.Errorf("zero-byte file: got %+v, want [{Offset:0 Length:0}]", reqs)
+	}
+
+	// File just under one chunk.
+	reqs = bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "y", Size: bootstrap_max_chunk_size - 1})
+	if len(reqs) != 1 || reqs[0].Length != bootstrap_max_chunk_size-1 {
+		t.Errorf("short file: got %d requests, want 1 of size %d", len(reqs), bootstrap_max_chunk_size-1)
+	}
+
+	// File spanning multiple chunks.
+	size := int64(bootstrap_max_chunk_size)*2 + 17
+	reqs = bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "z", Size: size})
+	if len(reqs) != 3 {
+		t.Fatalf("multi-chunk: got %d requests, want 3 (got: %+v)", len(reqs), reqs)
+	}
+	if reqs[0].Offset != 0 || reqs[0].Length != bootstrap_max_chunk_size {
+		t.Errorf("req[0] = %+v", reqs[0])
+	}
+	if reqs[2].Offset != int64(bootstrap_max_chunk_size)*2 || reqs[2].Length != 17 {
+		t.Errorf("req[2] = %+v, want offset=2*chunk, length=17", reqs[2])
+	}
+
+	// Coverage: offsets are contiguous, end at exactly Size.
+	var covered int64
+	for _, r := range reqs {
+		if r.Offset != covered {
+			t.Errorf("non-contiguous: offset %d expected %d", r.Offset, covered)
+		}
+		covered += r.Length
+	}
+	if covered != size {
+		t.Errorf("total covered = %d, want %d", covered, size)
+	}
+}
+
 // TestBootstrapFileTransferEndToEnd: sender walks → emits manifest →
 // receiver "diffs" and chunk-fetches each file → sender reads chunk →
 // receiver writes chunk → atomic rename on EOF. Exercises the V2 hot

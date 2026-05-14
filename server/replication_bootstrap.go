@@ -434,20 +434,140 @@ func replication_bootstrap_file_manifest_request_event(e *Event) {
 	replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, entries, true)
 }
 
+// bootstrap_diff_manifest returns the subset of `remote` entries whose
+// local copy is missing or differs (size or sha256 mismatch). Local
+// state is computed by re-walking the same scope/prefix on the
+// receiver's filesystem; entries the receiver has but the sender
+// doesn't are NOT removed locally — bulk bootstrap is additive at
+// this layer, garbage collection is a follow-up concern.
+//
+// V3 caveat: the rehash of every local file under the prefix is O(N)
+// in local bytes per manifest page. Acceptable for the per-user files
+// scope; for the apps scope (where most files are unchanged binaries)
+// the V4 follow-up adds an "ack-list" so the receiver only rehashes
+// candidates it has previously cached as up-to-date.
+func bootstrap_diff_manifest(scope, prefix string, remote []BootstrapFileEntry) ([]BootstrapFileEntry, error) {
+	localEntries, err := bootstrap_walk_manifest(scope, prefix)
+	if err != nil {
+		// Walk failed → treat every remote entry as missing locally.
+		// The receiver's chunk-write path will create the parent dirs
+		// as it goes, so an empty / missing local tree just means we
+		// fetch the lot.
+		localEntries = nil
+	}
+	local := make(map[string]BootstrapFileEntry, len(localEntries))
+	for _, e := range localEntries {
+		local[e.Path] = e
+	}
+
+	var needed []BootstrapFileEntry
+	for _, r := range remote {
+		if l, ok := local[r.Path]; ok && l.Size == r.Size && l.Sha256 == r.Sha256 {
+			continue // already-have, skip
+		}
+		needed = append(needed, r)
+	}
+	return needed, nil
+}
+
+// bootstrap_chunk_requests_for_entry yields the sequence of
+// (offset, length) chunk requests needed to fetch the full file. Uses
+// bootstrap_max_chunk_size as the chunk granularity; the last chunk
+// is short. A zero-byte file gets one (0, 0) request — the sender
+// responds with EOF=true and an empty Data, which is the explicit
+// "create an empty file here" signal.
+func bootstrap_chunk_requests_for_entry(entry BootstrapFileEntry) []BootstrapFileChunkRequest {
+	if entry.Size == 0 {
+		return []BootstrapFileChunkRequest{{Path: entry.Path, Offset: 0, Length: 0}}
+	}
+	var out []BootstrapFileChunkRequest
+	var offset int64
+	for offset < entry.Size {
+		length := int64(bootstrap_max_chunk_size)
+		if remaining := entry.Size - offset; remaining < length {
+			length = remaining
+		}
+		out = append(out, BootstrapFileChunkRequest{Path: entry.Path, Offset: offset, Length: length})
+		offset += length
+	}
+	return out
+}
+
+// replication_emit_bootstrap_file_chunk_request sends a chunk-request
+// to the sender. Receiver helper; called by the manifest-diff
+// orchestrator for each needed (path, offset) pair.
+//
+// Package-level alias so tests can stub the send_peer broadcast.
+var replication_emit_bootstrap_file_chunk_request = replication_emit_bootstrap_file_chunk_request_impl
+
+func replication_emit_bootstrap_file_chunk_request_impl(peer, scope, path string, offset, length int64) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-file-chunk-request")
+	m.add(&BootstrapFileChunkRequest{
+		Scope:  scope,
+		Path:   path,
+		Offset: offset,
+		Length: length,
+	})
+	m.send_peer(peer)
+}
+
 // replication_bootstrap_file_manifest_result_event is the receiver's
-// handler — it diffs the manifest against the local copy and queues
-// chunk requests for missing/differing files. V1 stub.
+// handler — diffs the manifest against the local copy and emits a
+// chunk-request for every offset of every needed file. On the final
+// page (Done=true with no needed entries) transitions the (scope,
+// peer) row to 'done'.
 func replication_bootstrap_file_manifest_result_event(e *Event) {
 	var res BootstrapFileManifestResult
 	if !e.segment(&res) {
 		info("Replication bootstrap-file-manifest-result dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q entries=%d done=%v from=%q (V1 stub)",
-		res.Scope, res.Prefix, len(res.Entries), res.Done, e.peer)
-	// V2: diff against local files, emit BootstrapFileChunkRequest for
-	// each (path, offset) pair until all chunks complete; on the final
-	// page (Done=true) the receiver transitions the scope to 'done'.
+	needed, err := bootstrap_diff_manifest(res.Scope, res.Prefix, res.Entries)
+	if err != nil {
+		info("Replication bootstrap-file-manifest-result: diff failed (scope=%q prefix=%q from=%q): %v",
+			res.Scope, res.Prefix, e.peer, err)
+		return
+	}
+	if len(needed) == 0 {
+		if res.Done {
+			bootstrap_set_state(res.Scope, e.peer, bootstrap_state_done, "")
+		}
+		debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q entries=%d already up-to-date from=%q",
+			res.Scope, res.Prefix, len(res.Entries), e.peer)
+		return
+	}
+
+	bootstrap_set_state(res.Scope, e.peer, bootstrap_state_active, res.Prefix)
+	for _, entry := range needed {
+		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
+			replication_emit_bootstrap_file_chunk_request(e.peer, res.Scope, req.Path, req.Offset, req.Length)
+		}
+	}
+	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q needed=%d/%d from=%q",
+		res.Scope, res.Prefix, len(needed), len(res.Entries), e.peer)
+	// Note: scope state stays 'active' until the receiver confirms
+	// every chunk landed. V4 will hook the chunk handler to clear the
+	// row once the manifest is fully transferred.
+}
+
+// replication_emit_bootstrap_file_manifest_request kicks off a
+// bootstrap from the receiver's side. Caller is the driver that
+// orchestrates the four scopes (#66 V4); for now this helper exists
+// so unit tests and the eventual driver have a single entry point.
+//
+// Package-level alias so tests can stub the send_peer broadcast.
+var replication_emit_bootstrap_file_manifest_request = replication_emit_bootstrap_file_manifest_request_impl
+
+func replication_emit_bootstrap_file_manifest_request_impl(peer, scope, prefix string) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-file-manifest-request")
+	m.add(&BootstrapFileManifestRequest{Scope: scope, Prefix: prefix})
+	m.send_peer(peer)
 }
 
 // replication_bootstrap_file_chunk_request_event is the sender's

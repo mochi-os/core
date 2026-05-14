@@ -26,10 +26,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Package-level emit-function variable so tests can stub the goroutine-
-// spawning emit out, same pattern as admin_replica.go.
-var admin_replication_emit_pair_membership = replication_emit_pair_membership_change
-
 // admin_replication_status is GET /_/admin/replication/status.
 // Returns a minimal snapshot of the replication state visible from
 // this server: own peer-id, current pair members, count of per-user
@@ -129,35 +125,4 @@ func admin_replication_pair_remove(c *gin.Context) {
 		"removed": removed,
 		"members": remaining,
 	})
-}
-
-// replication_pair_remove deletes `peer` from the local pair table and
-// announces the resulting member set to every remaining member.
-// Returns (removed-peer, remaining-members, ok). ok is false when the
-// peer wasn't in the pair set. Shared by the admin HTTP handler and
-// the mochi.replication.pair_remove Starlark API.
-func replication_pair_remove(peer string) (string, []string, bool) {
-	rdb := db_open("db/replication.db")
-	exists, _ := rdb.exists("select 1 from pair where peer=?", peer)
-	if !exists {
-		return "", nil, false
-	}
-
-	rdb.exec("delete from pair where peer=?", peer)
-
-	var remaining []string
-	if rows, err := rdb.rows("select peer from pair"); err == nil {
-		for _, r := range rows {
-			if p, ok := r["peer"].(string); ok && p != "" {
-				remaining = append(remaining, p)
-			}
-		}
-	}
-
-	full := append([]string{p2p_id}, remaining...)
-	if len(remaining) > 0 {
-		admin_replication_emit_pair_membership(full, remaining)
-	}
-
-	return peer, remaining, true
 }

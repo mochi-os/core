@@ -378,3 +378,42 @@ func replication_join_deny(peer string) string {
 	}
 	return status
 }
+
+// admin_replication_emit_pair_membership is the package-level emit-function
+// variable used by replication_pair_remove. Lives here (rather than alongside
+// the admin HTTP handler) so the cross-platform Starlark API and tests can
+// reach it on non-Linux builds. Tests stub it out, same pattern as
+// admin_replica_emit_pair_membership.
+var admin_replication_emit_pair_membership = replication_emit_pair_membership_change
+
+// replication_pair_remove deletes `peer` from the local pair table and
+// announces the resulting member set to every remaining member.
+// Returns (removed-peer, remaining-members, ok). ok is false when the
+// peer wasn't in the pair set. Shared by the admin HTTP handler
+// (Linux-only) and the mochi.replication.pair_remove Starlark API
+// (cross-platform), so it lives here rather than in admin_replication.go.
+func replication_pair_remove(peer string) (string, []string, bool) {
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists("select 1 from pair where peer=?", peer)
+	if !exists {
+		return "", nil, false
+	}
+
+	rdb.exec("delete from pair where peer=?", peer)
+
+	var remaining []string
+	if rows, err := rdb.rows("select peer from pair"); err == nil {
+		for _, r := range rows {
+			if p, ok := r["peer"].(string); ok && p != "" {
+				remaining = append(remaining, p)
+			}
+		}
+	}
+
+	full := append([]string{p2p_id}, remaining...)
+	if len(remaining) > 0 {
+		admin_replication_emit_pair_membership(full, remaining)
+	}
+
+	return peer, remaining, true
+}

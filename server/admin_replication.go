@@ -125,7 +125,7 @@ func admin_replication_resync(c *gin.Context) {
 		Peer string `json:"peer"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "peer is required"})
+		respond_error(c, http.StatusBadRequest, "missing_peer", "errors.missing_peer", nil)
 		return
 	}
 
@@ -179,13 +179,13 @@ func admin_replication_pair_remove(c *gin.Context) {
 		Peer string `json:"peer"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "peer is required"})
+		respond_error(c, http.StatusBadRequest, "missing_peer", "errors.missing_peer", nil)
 		return
 	}
 
 	removed, remaining, ok := replication_pair_remove(input.Peer)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "peer is not a pair member"})
+		respond_error(c, http.StatusNotFound, "not_a_pair_member", "errors.not_a_pair_member", nil)
 		return
 	}
 

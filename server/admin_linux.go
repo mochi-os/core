@@ -24,7 +24,6 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"net"
@@ -39,14 +38,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 	"golang.org/x/sys/unix"
-
-	// Side-effect import: registers a pure-Go "sqlite3" database/sql
-	// driver. Used here to open the read-only source connection for
-	// snapshot_copy_db; the main app/core DB pools live in db.go and
-	// open via sqlitedrv.Open with their own ConnectHooks.
-	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
 // -- Listener + peer credentials -------------------------------------------
@@ -363,42 +355,8 @@ func snapshot_walk_snaps(root string) ([]string, error) {
 	return paths, err
 }
 
-// snapshot_copy_db copies srcPath to dstPath using SQLite's online backup
-// API. Page-copying preserves byte offsets across snapshots, so rsync delta
-// stays tight.
-func snapshot_copy_db(srcPath, dstPath string) (int64, error) {
-	src, err := sql.Open("sqlite3", "file:"+srcPath+"?mode=ro&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return 0, fmt.Errorf("open source %s: %w", srcPath, err)
-	}
-	defer src.Close()
-
-	_ = os.Remove(dstPath)
-
-	ctx := context.Background()
-	srcConn, err := src.Conn(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("source conn: %w", err)
-	}
-	defer srcConn.Close()
-
-	rawErr := srcConn.Raw(func(driverConn any) error {
-		dc, ok := driverConn.(sqlitedrv.Conn)
-		if !ok {
-			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
-		}
-		return dc.Raw().Backup("main", dstPath)
-	})
-	if rawErr != nil {
-		return 0, fmt.Errorf("backup: %w", rawErr)
-	}
-
-	info, err := os.Stat(dstPath)
-	if err != nil {
-		return 0, err
-	}
-	return info.Size(), nil
-}
+// snapshot_copy_db lives in db_snapshot.go (cross-platform); the
+// bootstrap protocol calls it on every platform too.
 
 // snapshot_acquire_lock takes an exclusive lock on <run_dir>/snapshot.lock so
 // concurrent snapshot calls don't race. Linux flock is released automatically

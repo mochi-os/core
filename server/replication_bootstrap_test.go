@@ -402,6 +402,115 @@ func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 	}
 }
 
+// TestBootstrapDBBasenameSafe: validates the basename allowlist.
+func TestBootstrapDBBasenameSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"users.db", true},
+		{"feed.db", true},
+		{"my-app_v2.db", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{".db", true}, // pathologically minimal but matches the regex
+		{"users", false},
+		{"users.txt", false},
+		{"path/users.db", false},
+		{"../users.db", false},
+		{"users.db/", false},
+		{"u sers.db", false},
+	}
+	for _, tc := range cases {
+		if got := bootstrap_db_basename_safe(tc.name); got != tc.want {
+			t.Errorf("bootstrap_db_basename_safe(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBootstrapDBSourcePathRejectsInvalid: every path-traversal style
+// the source-path builder might be asked to validate is rejected.
+func TestBootstrapDBSourcePathRejectsInvalid(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	cases := []struct {
+		scope, user, app, db string
+		wantErr              bool
+		desc                 string
+	}{
+		{bootstrap_scope_userdbs, "alice", "feed", "users.db", false, "well-formed user-db"},
+		{bootstrap_scope_sysdbs, "", "", "users.db", false, "well-formed system-db"},
+		{bootstrap_scope_userdbs, "../etc", "feed", "users.db", true, "user with .."},
+		{bootstrap_scope_userdbs, "alice/etc", "feed", "users.db", true, "user with /"},
+		{bootstrap_scope_userdbs, "alice", "../feed", "users.db", true, "app with .."},
+		{bootstrap_scope_userdbs, "alice", "feed", "../users.db", true, "db with .."},
+		{bootstrap_scope_userdbs, "alice", "feed", "users.txt", true, "db missing .db suffix"},
+		{bootstrap_scope_userdbs, "", "feed", "users.db", true, "userdbs missing user"},
+		{bootstrap_scope_userdbs, "alice", "", "users.db", true, "userdbs missing app"},
+		{bootstrap_scope_files, "alice", "feed", "users.db", true, "wrong scope (files)"},
+	}
+	for _, tc := range cases {
+		_, err := bootstrap_db_source_path(tc.scope, tc.user, tc.app, tc.db)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err=%v, wantErr=%v", tc.desc, err, tc.wantErr)
+		}
+	}
+}
+
+// TestBootstrapDBSnapshotRoundtrip: write a real SQLite DB, snapshot
+// it via snapshot_copy_db, confirm the copy is openable and contains
+// the same data.
+func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	srcDir := filepath.Join(data_dir, "users", "alice", "feed", "db")
+	_ = os.MkdirAll(srcDir, 0o755)
+
+	// Create a small SQLite DB via the existing db_open path so we
+	// get the project's normal connection setup (busy_timeout etc.).
+	src := db_open("users/alice/feed/db/feed.db")
+	src.exec("create table if not exists posts (id text primary key, body text)")
+	src.exec("insert into posts (id, body) values ('p1', 'hello world')")
+	src.exec("insert into posts (id, body) values ('p2', 'second post')")
+
+	srcPath, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "alice", "feed", "feed.db")
+	if err != nil {
+		t.Fatalf("source path: %v", err)
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		t.Fatalf("source DB missing at %q: %v", srcPath, err)
+	}
+
+	// Snapshot to a tempfile (relative to data_dir so db_open can
+	// reopen it via the standard pool).
+	snapRel := "snap.db"
+	snapAbs := filepath.Join(data_dir, snapRel)
+	size, err := snapshot_copy_db(srcPath, snapAbs)
+	if err != nil {
+		t.Fatalf("snapshot_copy_db: %v", err)
+	}
+	if size == 0 {
+		t.Errorf("snapshot size = 0; expected a non-empty DB file")
+	}
+
+	// Re-open the snapshot and confirm the rows came across. Reset
+	// the db pool so db_open gives us a fresh connection rather than
+	// the cached one pointing at the old file.
+	databases = map[string]*DB{}
+	defer func() { databases = map[string]*DB{} }()
+	dst := db_open(snapRel)
+	rows, err := dst.rows("select id, body from posts order by id")
+	if err != nil {
+		t.Fatalf("query snapshot: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("snapshot rows = %d, want 2", len(rows))
+	}
+}
+
 // TestBootstrapScopesForPeer: every scope for a peer is returned in
 // stable order; rows for other peers are excluded.
 func TestBootstrapScopesForPeer(t *testing.T) {

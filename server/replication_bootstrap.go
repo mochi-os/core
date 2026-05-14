@@ -665,33 +665,224 @@ func replication_bootstrap_file_chunk_event(e *Event) {
 		chunk.Scope, chunk.Path, chunk.Offset, len(chunk.Data), chunk.EOF, e.peer)
 }
 
+// bootstrap_db_source_path returns the absolute path of the source DB
+// for a snapshot request. Per-user app DBs live at
+// users/<user>/<app>/db/<file>, system DBs live at db/<file>. The
+// file basename is validated to prevent directory traversal (only
+// `^[A-Za-z0-9_.-]+\.db$`).
+func bootstrap_db_source_path(scope, user, app, db string) (string, error) {
+	if !bootstrap_db_basename_safe(db) {
+		return "", fmt.Errorf("bootstrap: invalid db basename %q", db)
+	}
+	switch scope {
+	case bootstrap_scope_userdbs:
+		if user == "" || app == "" {
+			return "", fmt.Errorf("bootstrap: user-scope db needs user + app")
+		}
+		// user / app names: alphanumerics + a few extras, no /, no ..
+		if strings.Contains(user, "/") || strings.Contains(user, "..") {
+			return "", fmt.Errorf("bootstrap: invalid user %q", user)
+		}
+		if strings.Contains(app, "/") || strings.Contains(app, "..") {
+			return "", fmt.Errorf("bootstrap: invalid app %q", app)
+		}
+		return filepath.Join(data_dir, "users", user, app, "db", db), nil
+	case bootstrap_scope_sysdbs:
+		return filepath.Join(data_dir, "db", db), nil
+	default:
+		return "", fmt.Errorf("bootstrap: scope %q is not db-snapshot-based", scope)
+	}
+}
+
+// bootstrap_db_target_path mirrors bootstrap_db_source_path on the
+// receiver side. Same layout; same validation.
+func bootstrap_db_target_path(scope, user, app, db string) (string, error) {
+	return bootstrap_db_source_path(scope, user, app, db)
+}
+
+// bootstrap_db_basename_safe matches `^[A-Za-z0-9_.-]+\.db$` — the
+// only DB filenames we accept on the wire. Rejects empty names, slash,
+// "..", leading dot.
+func bootstrap_db_basename_safe(name string) bool {
+	if name == "" || name == "." || name == ".." || !strings.HasSuffix(name, ".db") {
+		return false
+	}
+	for _, ch := range name {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+		case ch >= 'A' && ch <= 'Z':
+		case ch >= '0' && ch <= '9':
+		case ch == '.' || ch == '_' || ch == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// replication_emit_bootstrap_db_chunk sends one chunk of a DB
+// snapshot. Package-level alias for test stubbing.
+var replication_emit_bootstrap_db_chunk = replication_emit_bootstrap_db_chunk_impl
+
+func replication_emit_bootstrap_db_chunk_impl(peer string, req *BootstrapDBSnapshotRequest, offset int64, data []byte, eof bool) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-db-chunk")
+	m.add(&BootstrapDBChunk{
+		Scope:  req.Scope,
+		User:   req.User,
+		App:    req.App,
+		DB:     req.DB,
+		Offset: offset,
+		Data:   data,
+		EOF:    eof,
+	})
+	m.send_peer(peer)
+}
+
 // replication_bootstrap_db_snapshot_request_event is the sender's
-// receive handler — VACUUM INTO a tempfile, stream as
-// BootstrapDBChunk. V1 stub.
+// receive handler. Takes a SQLite online backup of the live DB into
+// a tempfile, streams the result as a series of BootstrapDBChunk
+// events, then deletes the tempfile.
+//
+// V4 caveat: writes to the live DB during the snapshot are not
+// buffered — they will be picked up by the standard replication op
+// channel as long as the (scope, peer) tracker for the receiver is
+// in place. High-write workloads during bootstrap may experience a
+// brief inconsistency window that's resolved once live op replay
+// catches up. The pending-ops-buffer design (plan line 644-646) is a
+// V5 follow-up.
 func replication_bootstrap_db_snapshot_request_event(e *Event) {
 	var req BootstrapDBSnapshotRequest
 	if !e.segment(&req) {
 		info("Replication bootstrap-db-snapshot-request dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-db-snapshot-request: scope=%q user=%q app=%q db=%q from=%q (V1 stub)",
-		req.Scope, req.User, req.App, req.DB, e.peer)
-	// V2: VACUUM INTO <tmp>; chunk-emit; on completion, flush any ops
-	// that arrived during the snapshot from a per-(user, app, db)
-	// pending buffer via the standard op channel; transition the
-	// (scope, peer) row to 'done'.
+
+	srcPath, err := bootstrap_db_source_path(req.Scope, req.User, req.App, req.DB)
+	if err != nil {
+		info("Replication bootstrap-db-snapshot-request rejecting (scope=%q user=%q app=%q db=%q from=%q): %v",
+			req.Scope, req.User, req.App, req.DB, e.peer, err)
+		return
+	}
+	if !file_exists(srcPath) {
+		info("Replication bootstrap-db-snapshot-request: source %q does not exist (from=%q)", srcPath, e.peer)
+		return
+	}
+
+	tmp, err := os.CreateTemp("", "mochi-bootstrap-*.db")
+	if err != nil {
+		info("Replication bootstrap-db-snapshot-request: tempfile create failed (from=%q): %v", e.peer, err)
+		return
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	size, err := snapshot_copy_db(srcPath, tmpPath)
+	if err != nil {
+		info("Replication bootstrap-db-snapshot-request: backup %q failed (from=%q): %v", srcPath, e.peer, err)
+		return
+	}
+	debug("Replication bootstrap-db-snapshot: source=%q size=%d to=%q", srcPath, size, e.peer)
+
+	// Stream the snapshot in bootstrap_max_chunk_size pieces.
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		info("Replication bootstrap-db-snapshot-request: reopen snapshot failed (from=%q): %v", e.peer, err)
+		return
+	}
+	defer f.Close()
+
+	buf := make([]byte, bootstrap_max_chunk_size)
+	var offset int64
+	for {
+		n, readErr := f.Read(buf)
+		eof := readErr == io.EOF || offset+int64(n) >= size
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			replication_emit_bootstrap_db_chunk(e.peer, &req, offset, chunk, eof)
+			offset += int64(n)
+		}
+		if eof {
+			break
+		}
+		if readErr != nil {
+			info("Replication bootstrap-db-snapshot-request: read failed at %d (from=%q): %v", offset, e.peer, readErr)
+			return
+		}
+	}
 }
 
 // replication_bootstrap_db_chunk_event is the receiver's handler.
-// V1 stub.
+// Writes the chunk to <target>.partial; atomic-renames to <target>
+// on EOF. Same path validation + .partial pattern as the file-tree
+// receiver.
 func replication_bootstrap_db_chunk_event(e *Event) {
 	var chunk BootstrapDBChunk
 	if !e.segment(&chunk) {
 		info("Replication bootstrap-db-chunk dropping: cannot decode")
 		return
 	}
-	debug("Replication bootstrap-db-chunk: scope=%q user=%q app=%q db=%q offset=%d len=%d eof=%v from=%q (V1 stub)",
-		chunk.Scope, chunk.User, chunk.App, chunk.DB, chunk.Offset, len(chunk.Data), chunk.EOF, e.peer)
-	// V2: write chunk to <target>.partial; on EOF, rename and proceed
-	// to the live-op flush phase.
+	target, err := bootstrap_db_target_path(chunk.Scope, chunk.User, chunk.App, chunk.DB)
+	if err != nil {
+		info("Replication bootstrap-db-chunk rejecting (scope=%q user=%q app=%q db=%q from=%q): %v",
+			chunk.Scope, chunk.User, chunk.App, chunk.DB, e.peer, err)
+		return
+	}
+	partial := target + ".partial"
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		info("Replication bootstrap-db-chunk: mkdir failed (from=%q): %v", e.peer, err)
+		return
+	}
+
+	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		info("Replication bootstrap-db-chunk: open partial %q failed (from=%q): %v", partial, e.peer, err)
+		return
+	}
+	if _, err := f.Seek(chunk.Offset, io.SeekStart); err != nil {
+		f.Close()
+		info("Replication bootstrap-db-chunk: seek %q failed (from=%q): %v", partial, e.peer, err)
+		return
+	}
+	if _, err := f.Write(chunk.Data); err != nil {
+		f.Close()
+		info("Replication bootstrap-db-chunk: write %q failed (from=%q): %v", partial, e.peer, err)
+		return
+	}
+	_ = f.Close()
+
+	if chunk.EOF {
+		if err := os.Rename(partial, target); err != nil {
+			info("Replication bootstrap-db-chunk: rename %q -> %q failed (from=%q): %v", partial, target, e.peer, err)
+			return
+		}
+		debug("Replication bootstrap-db-chunk: snapshot landed at %q (from=%q)", target, e.peer)
+		return
+	}
+	debug("Replication bootstrap-db-chunk: scope=%q db=%q offset=%d len=%d from=%q",
+		chunk.Scope, chunk.DB, chunk.Offset, len(chunk.Data), e.peer)
+}
+
+// replication_emit_bootstrap_db_snapshot_request kicks off a DB
+// snapshot transfer from the receiver. Package-level alias so tests
+// can stub the send_peer broadcast.
+var replication_emit_bootstrap_db_snapshot_request = replication_emit_bootstrap_db_snapshot_request_impl
+
+func replication_emit_bootstrap_db_snapshot_request_impl(peer, scope, user, app, db string) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-db-snapshot-request")
+	m.add(&BootstrapDBSnapshotRequest{
+		Scope: scope,
+		User:  user,
+		App:   app,
+		DB:    db,
+	})
+	m.send_peer(peer)
 }

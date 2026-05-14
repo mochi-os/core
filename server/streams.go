@@ -263,9 +263,15 @@ func stream_receive(s *Stream, version int, peer string) {
 		message_mark_seen(h.ID)
 	}
 
-	// Send ACK on success, NACK on failure (only for direct signed messages)
-	// ACK is sent on same stream without challenge (TLS provides transport security)
-	if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
+	// Send ACK on success, NACK on failure. Any message with an ID
+	// gets a reply on the stream — anonymous server-to-server events
+	// (From="") need ACKs too, otherwise the sender's queue retries
+	// indefinitely. Without this, a paired server emitting hundreds
+	// of system-set / bootstrap-* / link-request ops accumulates
+	// unbounded pending rows in queue.db (caught live: instance 1's
+	// queue.db reached 3GB with 1100+ stuck bootstrap-db-chunks
+	// before SQLite signalled "database or disk is full").
+	if h.ID != "" && s.writer != nil {
 		if route_err == nil {
 			s.send_ack("ack", h.ID, h.To, h.From)
 		} else {

@@ -175,6 +175,90 @@ func TestApiReplicationLinkDeny(t *testing.T) {
 	}
 }
 
+// TestApiReplicationJoinsAndDeny: joins() lists all pending whole-server
+// join-requests (no user filter; system-wide). join_deny removes one
+// row idempotently.
+func TestApiReplicationJoinsAndDeny(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	orig_emit_join_denied := replication_emit_join_denied
+	replication_emit_join_denied = func(peer, reason string) {}
+	defer func() { replication_emit_join_denied = orig_emit_join_denied }()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-A', 'a.example', 0, 9999999999)")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-B', 'b.example', 1, 9999999999)")
+
+	th := &sl.Thread{}
+	v, err := api_replication_joins(th, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("joins: %v", err)
+	}
+	joins := v.(*sl.List)
+	if joins.Len() != 2 {
+		t.Errorf("joins len = %d, want 2", joins.Len())
+	}
+
+	// Deny peer-A.
+	v, err = api_replication_join_deny(th, sl.NewBuiltin("join_deny", api_replication_join_deny), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("join_deny: %v", err)
+	}
+	if s, _ := v.(sl.String); string(s) != "denied" {
+		t.Errorf("join_deny first call = %v, want denied", v)
+	}
+
+	// Idempotent.
+	v, _ = api_replication_join_deny(th, sl.NewBuiltin("join_deny", api_replication_join_deny), sl.Tuple{sl.String("peer-A")}, nil)
+	if s, _ := v.(sl.String); string(s) != "already-handled" {
+		t.Errorf("join_deny repeat = %v, want already-handled", v)
+	}
+
+	// peer-B still pending.
+	v, _ = api_replication_joins(th, nil, sl.Tuple{}, nil)
+	if v.(*sl.List).Len() != 1 {
+		t.Errorf("after denying A, joins len = %d, want 1", v.(*sl.List).Len())
+	}
+}
+
+// TestApiReplicationPairRemove: removing a pair member drops the row
+// and informs remaining members via the emit hook.
+func TestApiReplicationPairRemove(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	emitted := false
+	orig_emit := admin_replication_emit_pair_membership
+	admin_replication_emit_pair_membership = func(full, recipients []string) { emitted = true }
+	defer func() { admin_replication_emit_pair_membership = orig_emit }()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-B', 0, '')")
+
+	th := &sl.Thread{}
+	v, err := api_replication_pair_remove(th, sl.NewBuiltin("pair_remove", api_replication_pair_remove), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("pair_remove: %v", err)
+	}
+	if s, _ := v.(sl.String); string(s) != "removed" {
+		t.Errorf("pair_remove = %v, want removed", v)
+	}
+	if !emitted {
+		t.Error("admin_replication_emit_pair_membership was not called for remaining members")
+	}
+
+	// peer-B still present.
+	if exists, _ := rdb.exists("select 1 from pair where peer='peer-B'"); !exists {
+		t.Error("peer-B was incorrectly removed alongside peer-A")
+	}
+
+	// not-found path.
+	v, _ = api_replication_pair_remove(th, sl.NewBuiltin("pair_remove", api_replication_pair_remove), sl.Tuple{sl.String("peer-unknown")}, nil)
+	if s, _ := v.(sl.String); string(s) != "not-found" {
+		t.Errorf("pair_remove unknown = %v, want not-found", v)
+	}
+}
+
 // TestApiReplicationHostRemove: removing a host removes only the calling
 // user's row, leaves other users untouched, and returns not-found when
 // the peer wasn't a host.

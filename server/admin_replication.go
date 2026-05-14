@@ -119,16 +119,32 @@ func admin_replication_pair_remove(c *gin.Context) {
 		return
 	}
 
-	rdb := db_open("db/replication.db")
-	exists, _ := rdb.exists("select 1 from pair where peer=?", input.Peer)
-	if !exists {
+	removed, remaining, ok := replication_pair_remove(input.Peer)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "peer is not a pair member"})
 		return
 	}
 
-	rdb.exec("delete from pair where peer=?", input.Peer)
+	c.JSON(http.StatusOK, gin.H{
+		"removed": removed,
+		"members": remaining,
+	})
+}
 
-	// Build the new member set (current pair − removed peer).
+// replication_pair_remove deletes `peer` from the local pair table and
+// announces the resulting member set to every remaining member.
+// Returns (removed-peer, remaining-members, ok). ok is false when the
+// peer wasn't in the pair set. Shared by the admin HTTP handler and
+// the mochi.replication.pair_remove Starlark API.
+func replication_pair_remove(peer string) (string, []string, bool) {
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists("select 1 from pair where peer=?", peer)
+	if !exists {
+		return "", nil, false
+	}
+
+	rdb.exec("delete from pair where peer=?", peer)
+
 	var remaining []string
 	if rows, err := rdb.rows("select peer from pair"); err == nil {
 		for _, r := range rows {
@@ -138,17 +154,10 @@ func admin_replication_pair_remove(c *gin.Context) {
 		}
 	}
 
-	// Announce the new set (including self) to remaining members so
-	// they replace their pair tables. We do NOT announce to the
-	// removed peer — they'll find out via gossip from a remaining
-	// member, or by attempting to fan-out a write and getting refused.
 	full := append([]string{p2p_id}, remaining...)
 	if len(remaining) > 0 {
 		admin_replication_emit_pair_membership(full, remaining)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"removed":  input.Peer,
-		"members":  remaining,
-	})
+	return peer, remaining, true
 }

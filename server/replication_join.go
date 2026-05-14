@@ -233,7 +233,13 @@ func replication_emit_join_approved(replicaPeer string, members []string) {
 
 // replication_emit_join_denied sends a denial to the replica with an
 // informational reason.
-func replication_emit_join_denied(replicaPeer, reason string) {
+//
+// Package-level alias so tests can replace it with a no-op to keep
+// the send_peer goroutines (which write to queue.db) from outliving
+// the test setup tear-down.
+var replication_emit_join_denied = replication_emit_join_denied_impl
+
+func replication_emit_join_denied_impl(replicaPeer, reason string) {
 	if replicaPeer == "" {
 		return
 	}

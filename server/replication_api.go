@@ -14,10 +14,21 @@
 //   mochi.replication.link_approve(peer)  -> str  ("approved" | "already-approved")
 //   mochi.replication.link_deny(peer)     -> str  ("denied"   | "already-handled")
 //   mochi.replication.host_remove(peer)   -> str  ("removed"  | "not-found")
+//   mochi.replication.joins()             -> list (pending whole-server join-requests)
+//   mochi.replication.join_approve(peer)  -> str  ("approved" | "already-handled")
+//   mochi.replication.join_deny(peer)     -> str  ("denied"   | "already-handled")
+//   mochi.replication.pair_remove(peer)   -> str  ("removed"  | "not-found")
 //
 // All per-user functions operate on the calling user (resolved from
 // t.Local("user")). The settings app cannot read or mutate another
 // user's replication state through this API.
+//
+// The whole-server join/pair functions (joins / join_approve /
+// join_deny / pair_remove) are role-agnostic at the API level; the
+// settings app's `system/replication.star` action wrapper enforces
+// require_admin before calling them — same pattern as
+// mochi.server.update.install. Apps without an admin context must not
+// call these directly.
 //
 // Future additions (when #66 / #70 land): bootstrap progress, lag
 // thresholds, manual-resync trigger, audit log.
@@ -30,7 +41,8 @@ import (
 )
 
 // api_replication exposes mochi.replication.{status, links, hosts,
-// link_approve, link_deny, host_remove}.
+// link_approve, link_deny, host_remove, joins, join_approve, join_deny,
+// pair_remove}.
 var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.StringDict{
 	"status":        sl.NewBuiltin("mochi.replication.status", api_replication_status),
 	"links":         sl.NewBuiltin("mochi.replication.links", api_replication_links),
@@ -38,6 +50,10 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 	"link_approve":  sl.NewBuiltin("mochi.replication.link_approve", api_replication_link_approve),
 	"link_deny":     sl.NewBuiltin("mochi.replication.link_deny", api_replication_link_deny),
 	"host_remove":   sl.NewBuiltin("mochi.replication.host_remove", api_replication_host_remove),
+	"joins":         sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
+	"join_approve":  sl.NewBuiltin("mochi.replication.join_approve", api_replication_join_approve),
+	"join_deny":     sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
+	"pair_remove":   sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
 })
 
 // api_replication_status returns a dict describing this server's
@@ -257,6 +273,91 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// confirms divergence).
 	replication_membership_update(u.UID, remaining)
 
+	return sl.String("removed"), nil
+}
+
+// api_replication_joins returns pending inbound whole-server
+// join-requests. Server-wide; the action wrapper must require_admin
+// before calling. Returned shape: list of dicts {peer, label, expires}.
+func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, label, expires from joins order by received")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
+		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_join_approve approves an inbound pair join-request
+// from `peer`. Wraps replication_join_approve: replaces the local pair
+// table with the new member set and emits join-approved + a
+// pair-membership-change to existing members. Returns "approved" or
+// "already-handled".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+func api_replication_join_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	result, err := replication_join_approve(peer)
+	if err != nil {
+		return sl_error(fn, "approve: %v", err)
+	}
+	return sl.String(result), nil
+}
+
+// api_replication_join_deny denies an inbound pair join-request from
+// `peer`. Wraps replication_join_deny: emits join-denied(reason=denied)
+// to the replica on the winner, no-op on the multi-tab loser. Returns
+// "denied" or "already-handled".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+func api_replication_join_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+	return sl.String(replication_join_deny(peer)), nil
+}
+
+// api_replication_pair_remove drops `peer` from the local pair set and
+// announces the new member set to every remaining pair member. Wraps
+// replication_pair_remove (shared with the admin HTTP handler).
+// Returns "removed" or "not-found".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+// The removed peer is intentionally not announced to — it learns of
+// the change via gossip from a remaining member, matching the
+// admin HTTP endpoint behavior.
+func api_replication_pair_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+	_, _, removed := replication_pair_remove(peer)
+	if !removed {
+		return sl.String("not-found"), nil
+	}
 	return sl.String("removed"), nil
 }
 

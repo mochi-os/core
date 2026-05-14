@@ -74,31 +74,33 @@ var (
 // lives in the account row's data blob (`{"token": "..."}`), set by
 // notifications/push/register/fcm.
 //
-// Returns true on a 200 response. Returns false on any error, including
-// "FCM not configured" (which is the expected path when account_deliver
-// is dispatching for a user who registered FCM but the admin then cleared
-// fcm.service_account).
-func account_deliver_fcm(data map[string]any, title, body, link, tag, app string) bool {
+// Returns (success, retire, detail).
+//   - retire=true means the token is permanently dead (Google returned
+//     404 UNREGISTERED, INVALID_ARGUMENT on token, or the row's data has
+//     no token at all) and api_account_notify should delete the row.
+//   - detail is a short human-readable failure reason for surfaces like
+//     the connected-accounts "Test" button. Empty on success.
+func account_deliver_fcm(data map[string]any, title, body, link, tag, app string) (success bool, retire bool, detail string) {
 	token, _ := data["token"].(string)
 	if token == "" {
-		return false
+		return false, true, "Account has no token"
 	}
 
 	sa_raw := setting_get("fcm.service_account", "")
 	if sa_raw == "" {
 		warn("FCM: account_deliver_fcm called but fcm.service_account is empty")
-		return false
+		return false, false, "FCM service account not configured"
 	}
 	sa, err := fcm_parse_service_account(sa_raw)
 	if err != nil {
 		warn("FCM: parse service account: %v", err)
-		return false
+		return false, false, fmt.Sprintf("Service account JSON invalid: %v", err)
 	}
 
 	access_token, err := fcm_access_token(sa)
 	if err != nil {
 		warn("FCM: mint access token: %v", err)
-		return false
+		return false, false, fmt.Sprintf("OAuth2 token mint failed: %v", err)
 	}
 
 	envelope := map[string]any{
@@ -122,14 +124,14 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app string
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		warn("FCM: marshal envelope: %v", err)
-		return false
+		return false, false, fmt.Sprintf("Envelope marshal failed: %v", err)
 	}
 
 	url := fmt.Sprintf(fcm_send_url_format, sa.ProjectID)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
 	if err != nil {
 		warn("FCM: build request: %v", err)
-		return false
+		return false, false, fmt.Sprintf("Request build failed: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+access_token)
 	req.Header.Set("Content-Type", "application/json")
@@ -138,15 +140,50 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app string
 	resp, err := client.Do(req)
 	if err != nil {
 		warn("FCM: send: %v", err)
-		return false
+		return false, false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {
-		return true
+		return true, false, ""
 	}
 	body_bytes, _ := io.ReadAll(resp.Body)
 	warn("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
-	return false
+	// Permanent-failure classification — drop the row so the next
+	// register from the phone creates a fresh one rather than the upsert
+	// path resurrecting the dead token. 404 UNREGISTERED is the canonical
+	// "the app was uninstalled or the token was rotated by Google"
+	// signal; INVALID_ARGUMENT on the token field means malformed.
+	retire = resp.StatusCode == 404 ||
+		(resp.StatusCode == 400 && bytes.Contains(body_bytes, []byte("INVALID_ARGUMENT")))
+	return false, retire, fcm_summarise_error(resp.StatusCode, body_bytes)
+}
+
+// fcm_summarise_error extracts the most useful identifier from an FCM v1
+// error response so the connected-accounts "Test" surface shows
+// "UNREGISTERED" rather than the generic "Push notification failed".
+// Falls back to the HTTP status when the body doesn't parse.
+func fcm_summarise_error(status int, body []byte) string {
+	var parsed struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			Details []struct {
+				Type      string `json:"@type"`
+				ErrorCode string `json:"errorCode"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &parsed) == nil {
+		for _, d := range parsed.Error.Details {
+			if d.ErrorCode != "" {
+				return fmt.Sprintf("FCM %d %s", status, d.ErrorCode)
+			}
+		}
+		if parsed.Error.Status != "" {
+			return fmt.Sprintf("FCM %d %s", status, parsed.Error.Status)
+		}
+	}
+	return fmt.Sprintf("FCM %d", status)
 }
 
 func fcm_parse_service_account(raw string) (*fcm_service_account, error) {

@@ -898,6 +898,28 @@ type AccountTestResult struct {
 	Message string `json:"message"`
 }
 
+// account_display_label returns a friendly name for a connected account for
+// use in test-notification bodies. Prefers the user-set label; falls back to
+// a localised provider-typed string ("Android device", "Email", etc.), or to
+// the identifier for email accounts when no label is set, or to the raw type
+// as a last resort.
+func account_display_label(row map[string]any, language string) string {
+	if label, _ := row["label"].(string); label != "" {
+		return label
+	}
+	ptype, _ := row["type"].(string)
+	identifier, _ := row["identifier"].(string)
+	if ptype == "email" && identifier != "" {
+		return identifier
+	}
+	key := "account.display." + ptype
+	resolved := resolve_core_label(language, key, nil)
+	if resolved != key {
+		return resolved
+	}
+	return ptype
+}
+
 // mochi.account.test(id) -> dict: Test an account connection
 func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -921,7 +943,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	db := db_user(user, "user")
 
 	// Get account with data
-	row, err := db.row("select id, type, identifier, data from accounts where id=?", id)
+	row, err := db.row("select id, type, identifier, label, data from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -941,22 +963,31 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	var result AccountTestResult
 
 	language := user_language(user)
+	label := account_display_label(row, language)
 	switch ptype {
 	case "email":
-		result = account_test_email(identifier, language)
+		result = account_test_email(identifier, language, label)
 
 	case "browser":
-		result = account_test_browser(data, language)
+		result = account_test_browser(data, language, label)
 
 	case "unifiedpush":
-		result = account_test_unifiedpush(data, language)
+		result = account_test_unifiedpush(data, language, label)
 
 	case "fcm":
-		result = account_test_fcm(data, language)
+		var retire bool
+		result, retire = account_test_fcm(data, language, label)
+		if !result.Success && retire {
+			// Permanent FCM failure (UNREGISTERED / INVALID_ARGUMENT) —
+			// drop the row here too so the next FcmRegistrar.connect from
+			// the phone replaces it cleanly. Without this, every Test
+			// click re-hits Google with the same dead token forever.
+			db.exec("delete from accounts where id=?", id)
+		}
 
 	case "pushbullet":
 		token, _ := data["token"].(string)
-		result = account_test_pushbullet(token)
+		result = account_test_pushbullet(token, language, label)
 
 	case "claude":
 		api_key, _ := data["api_key"].(string)
@@ -975,7 +1006,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		server, _ := data["server"].(string)
 		topic, _ := data["topic"].(string)
 		token, _ := data["token"].(string)
-		result = account_test_ntfy(server, topic, token)
+		result = account_test_ntfy(server, topic, token, language, label)
 
 	case "url":
 		url := identifier
@@ -994,9 +1025,10 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // account_test_email sends a test email, localised to the recipient user's
 // language preference via the core label resolver.
-func account_test_email(address string, language string) AccountTestResult {
+func account_test_email(address string, language string, account_label string) AccountTestResult {
 	subject := resolve_core_label(language, "email.test.subject", nil)
 	heading := resolve_core_label(language, "email.test.heading", nil)
+	body := resolve_core_label(language, "email.test.body", map[string]any{"account": account_label})
 	htmlBody := `<!DOCTYPE html>
 <html>
 <head>
@@ -1010,7 +1042,8 @@ func account_test_email(address string, language string) AccountTestResult {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
             <td style="padding: 40px; text-align: center;">
-              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
+              <h1 style="margin: 0 0 12px 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
+              <p style="margin: 0; font-size: 15px; color: #52525b;">` + html.EscapeString(body) + `</p>
             </td>
           </tr>
         </table>
@@ -1025,7 +1058,7 @@ func account_test_email(address string, language string) AccountTestResult {
 
 // account_test_browser sends a test browser push notification, localised to
 // the recipient user's language preference.
-func account_test_browser(data map[string]any, language string) AccountTestResult {
+func account_test_browser(data map[string]any, language string, account_label string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
 		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
@@ -1041,7 +1074,7 @@ func account_test_browser(data map[string]any, language string) AccountTestResul
 
 	payload, _ := json.Marshal(map[string]string{
 		"title": resolve_core_label(language, "push.test.title", nil),
-		"body":  "",
+		"body":  resolve_core_label(language, "push.test.body", map[string]any{"account": account_label}),
 	})
 
 	sub := webpush.Subscription{
@@ -1077,7 +1110,7 @@ func account_test_browser(data map[string]any, language string) AccountTestResul
 // Uses RFC 8030 Web Push to whatever endpoint URL the distributor allocated;
 // works for our own distributor and for third-party distributors (ntfy etc.)
 // alike — endpoint is opaque.
-func account_test_unifiedpush(data map[string]any, language string) AccountTestResult {
+func account_test_unifiedpush(data map[string]any, language string, account_label string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
 		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
@@ -1093,7 +1126,7 @@ func account_test_unifiedpush(data map[string]any, language string) AccountTestR
 
 	payload, _ := json.Marshal(map[string]string{
 		"title": resolve_core_label(language, "push.test.title", nil),
-		"body":  "",
+		"body":  resolve_core_label(language, "push.test.body", map[string]any{"account": account_label}),
 	})
 
 	sub := webpush.Subscription{
@@ -1128,28 +1161,37 @@ func account_test_unifiedpush(data map[string]any, language string) AccountTestR
 // account_test_fcm sends a test notification via Firebase Cloud Messaging,
 // reusing the same delivery path the production notification flow uses so
 // any service-account / API-key misconfiguration surfaces with the same
-// failure mode the user would otherwise hit.
-func account_test_fcm(data map[string]any, language string) AccountTestResult {
+// failure mode the user would otherwise hit. Returns the test result plus
+// retire=true when the row holds a permanently-dead token (Google
+// UNREGISTERED / INVALID_ARGUMENT) so the caller can drop it — same
+// semantics as the production-push path in api_account_notify.
+func account_test_fcm(data map[string]any, language string, account_label string) (AccountTestResult, bool) {
 	if setting_get("fcm.service_account", "") == "" {
-		return AccountTestResult{Success: false, Message: "FCM not configured"}
+		return AccountTestResult{Success: false, Message: "FCM not configured"}, false
 	}
 	title := resolve_core_label(language, "push.test.title", nil)
-	if account_deliver_fcm(data, title, "", "", "notifications-test-", "notifications") {
-		return AccountTestResult{Success: true, Message: "Test notification sent"}
+	body := resolve_core_label(language, "push.test.body", map[string]any{"account": account_label})
+	success, retire, detail := account_deliver_fcm(data, title, body, "", "notifications-test-", "notifications")
+	if success {
+		return AccountTestResult{Success: true, Message: "Test notification sent"}, false
 	}
-	return AccountTestResult{Success: false, Message: "Push notification failed"}
+	msg := detail
+	if msg == "" {
+		msg = "Push notification failed"
+	}
+	return AccountTestResult{Success: false, Message: msg}, retire
 }
 
 // account_test_pushbullet sends a test notification via Pushbullet
-func account_test_pushbullet(token string) AccountTestResult {
+func account_test_pushbullet(token string, language string, account_label string) AccountTestResult {
 	if token == "" {
 		return AccountTestResult{Success: false, Message: "No access token"}
 	}
 
 	payload, _ := json.Marshal(map[string]string{
 		"type":  "note",
-		"title": "Mochi test notification",
-		"body":  "",
+		"title": resolve_core_label(language, "push.test.title", nil),
+		"body":  resolve_core_label(language, "push.test.body", map[string]any{"account": account_label}),
 	})
 
 	req, _ := http.NewRequest("POST", "https://api.pushbullet.com/v2/pushes", bytes.NewReader(payload))
@@ -1311,7 +1353,7 @@ func account_test_mcp(url, token string) AccountTestResult {
 }
 
 // account_test_ntfy sends a test notification via ntfy
-func account_test_ntfy(server, topic, token string) AccountTestResult {
+func account_test_ntfy(server, topic, token string, language string, account_label string) AccountTestResult {
 	if topic == "" {
 		return AccountTestResult{Success: false, Message: "No topic configured"}
 	}
@@ -1323,8 +1365,10 @@ func account_test_ntfy(server, topic, token string) AccountTestResult {
 	if url_is_cloud_metadata(url) {
 		return AccountTestResult{Success: false, Message: "URL not allowed"}
 	}
-	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte("Mochi test notification")))
-	req.Header.Set("Title", "Mochi test notification")
+	title := resolve_core_label(language, "push.test.title", nil)
+	body := resolve_core_label(language, "push.test.body", map[string]any{"account": account_label})
+	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte(body)))
+	req.Header.Set("Title", title)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -1480,7 +1524,18 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		case "unifiedpush":
 			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app)
 		case "fcm":
-			success = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app)
+			var retire bool
+			success, retire, _ = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app)
+			if !success && retire {
+				// Google reported UNREGISTERED / INVALID_ARGUMENT — the
+				// token is permanently dead. Drop the row so the next
+				// FcmRegistrar.connect from the phone creates a fresh
+				// one rather than the upsert resurrecting the dead
+				// token. (Same one-strike semantics as browser below.)
+				db.exec("delete from accounts where id=?", account)
+				failed++
+				continue
+			}
 		case "url":
 			secret, _ := data["secret"].(string)
 			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)

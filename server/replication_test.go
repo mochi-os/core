@@ -74,12 +74,16 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_bootstrap_chunk := replication_emit_bootstrap_file_chunk
 	orig_emit_bootstrap_db_chunk := replication_emit_bootstrap_db_chunk
 	orig_emit_bootstrap_db_snap_req := replication_emit_bootstrap_db_snapshot_request
+	orig_emit_bootstrap_db_manifest_req := replication_emit_bootstrap_db_manifest_request
+	orig_emit_bootstrap_db_manifest_res := replication_emit_bootstrap_db_manifest_result
 	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
 	replication_emit_bootstrap_file_chunk_request = func(peer, scope, path string, offset, length int64) {}
 	replication_emit_bootstrap_file_manifest_result = func(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {}
 	replication_emit_bootstrap_file_chunk = func(peer, scope, path string, offset int64, data []byte, eof bool) {}
 	replication_emit_bootstrap_db_chunk = func(peer string, req *BootstrapDBSnapshotRequest, offset int64, data []byte, eof bool) {}
 	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {}
+	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
+	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}
 
 	return func() {
 		replication_emit_system_set = orig_emit_system_set

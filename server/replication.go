@@ -209,6 +209,8 @@ func init() {
 	a.event("bootstrap-file-manifest-result", replication_bootstrap_file_manifest_result_event)
 	a.event("bootstrap-file-chunk-request", replication_bootstrap_file_chunk_request_event)
 	a.event("bootstrap-file-chunk", replication_bootstrap_file_chunk_event)
+	a.event("bootstrap-db-manifest-request", replication_bootstrap_db_manifest_request_event)
+	a.event("bootstrap-db-manifest-result", replication_bootstrap_db_manifest_result_event)
 	a.event("bootstrap-db-snapshot-request", replication_bootstrap_db_snapshot_request_event)
 	a.event("bootstrap-db-chunk", replication_bootstrap_db_chunk_event)
 }

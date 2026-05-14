@@ -53,6 +53,16 @@ func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 // Connect to a peer
 func p2p_connect(peer string, addresses []string) bool {
 	//debug("P2P connecting to peer %q at %v", peer, addresses)
+
+	// Defensive: a send_peer goroutine spawned before p2p_start
+	// initialized p2p_me would panic on the Connect() call below.
+	// Pre-p2p emit sites should be reordered (see main.go ordering),
+	// but guard here too so the class of race is robust against
+	// future regressions.
+	if p2p_me == nil {
+		return false
+	}
+
 	var err error
 
 	var ai p2p_peer.AddrInfo

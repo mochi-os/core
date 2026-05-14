@@ -184,9 +184,13 @@ func main_serve(ready func()) int {
 		warn("Failed to load domain certificates: %v", err)
 	}
 	domains_init_acme()
-	setting_set("server_started", itoa(int(now())))
 	apps_start()
 	p2p_start()
+	// setting_set replicates to every pair member via system-set ops
+	// (#68). Must run after p2p_start so the spawned send_peer
+	// goroutines don't dereference a nil p2p_me on a server that
+	// already has pair members from a prior run.
+	setting_set("server_started", itoa(int(now())))
 	if err := admin_start(); err != nil {
 		warn("admin listener disabled: %v", err)
 	}

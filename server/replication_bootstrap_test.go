@@ -539,14 +539,24 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	if len(fileRequests) != 2 {
 		t.Errorf("file-manifest emit count = %d, want 2 (files + apps)", len(fileRequests))
 	}
-	if len(dbRequests) != 2 {
-		t.Errorf("db-manifest emit count = %d, want 2 (userdbs + sysdbs)", len(dbRequests))
+	// sysdbs is intentionally not bootstrapped as file snapshots — the
+	// running receiver holds the system DBs open and rename(2) would
+	// leave its fds pinned to the old inode. Source backfills sysdbs
+	// row-by-row via replication_pair_backfill instead. So only
+	// userdbs gets a db-manifest emit.
+	if len(dbRequests) != 1 {
+		t.Errorf("db-manifest emit count = %d, want 1 (userdbs only; sysdbs goes through op-channel backfill)", len(dbRequests))
 	}
-	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs, bootstrap_scope_sysdbs} {
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs} {
 		state, _ := bootstrap_get_state(scope, "source-A")
 		if state != bootstrap_state_queued {
 			t.Errorf("scope %q state = %q, want queued", scope, state)
 		}
+	}
+	// sysdbs must NOT have a bootstrap row.
+	state, _ := bootstrap_get_state(bootstrap_scope_sysdbs, "source-A")
+	if state != "" {
+		t.Errorf("sysdbs state = %q, want empty (not bootstrapped as a file scope)", state)
 	}
 }
 

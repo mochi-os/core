@@ -1065,16 +1065,21 @@ func bootstrap_resume() {
 // source has accepted the pair join; also exposed via mochictl for
 // manual resume in case of interruption.
 //
-// V6 starts every scope: two file-tree (files + apps) and two DB
-// (userdbs + sysdbs). File-tree scopes proceed via manifest-request
-// → chunk-request → atomic-rename; DB scopes proceed via DB-manifest-
-// request → snapshot-request → atomic-rename. All four (scope, peer)
-// rows are seeded 'queued' so progress is observable from the start.
+// Three scopes are file-snapshot-based and safe to atomic-rename
+// because the receiver doesn't hold them open at pair-join time:
+//   - files: users/<u>/<app>/files/<path>
+//   - apps: apps/<entity>/<path>
+//   - userdbs: users/<u>/<app>/db/<file>.db (opened on demand)
+//
+// System DBs (users.db / settings.db / apps.db / domains.db) are NOT
+// bootstrapped as file snapshots — the running receiver holds them
+// open from boot, and rename(2)-replacing the file out from under a
+// live SQLite connection leaves the connection pinned to the now-
+// unlinked original inode. The source handles these via
+// replication_pair_backfill (row-by-row, fired from join-approved).
 //
 // Bootstrap is fully asynchronous: bootstrap_start returns
-// immediately after firing the entry-point emits. Per-scope
-// completion happens in the corresponding receive handlers as
-// chunks land.
+// immediately after firing the entry-point emits.
 func bootstrap_start(peer string) {
 	if peer == "" {
 		return
@@ -1083,10 +1088,8 @@ func bootstrap_start(peer string) {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
 		replication_emit_bootstrap_file_manifest_request(peer, scope, "")
 	}
-	for _, scope := range []string{bootstrap_scope_userdbs, bootstrap_scope_sysdbs} {
-		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
-		replication_emit_bootstrap_db_manifest_request(peer, scope)
-	}
+	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
+	replication_emit_bootstrap_db_manifest_request(peer, bootstrap_scope_userdbs)
 	audit_replication_bootstrap_started(peer)
 }
 

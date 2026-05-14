@@ -65,6 +65,13 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_link_denied := replication_emit_link_denied
 	replication_emit_link_denied = func(destinationPeer, placeholder, reason string) {}
 
+	// Pair backfill (row-by-row sysdbs replication on join-approve)
+	// enumerates users + system tables and fires queue-based emits.
+	// Stub here; tests that exercise the backfill itself override
+	// locally.
+	orig_pair_backfill := replication_pair_backfill
+	replication_pair_backfill = func(peer string) {}
+
 	// Bootstrap emits also fire send_peer goroutines. Stubbed for the
 	// same reason; tests that need to observe the emit override these
 	// again locally (see TestBootstrapStartSeedsScopesAndEmitsManifests).
@@ -98,6 +105,7 @@ func setup_replication_test(t *testing.T) func() {
 		replication_emit_bootstrap_db_snapshot_request = orig_emit_bootstrap_db_snap_req
 		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req
 		replication_emit_bootstrap_db_manifest_result = orig_emit_bootstrap_db_manifest_res
+		replication_pair_backfill = orig_pair_backfill
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

@@ -354,6 +354,11 @@ func replication_join_approve(peer string) (string, error) {
 	if len(existing) > 0 {
 		replication_emit_pair_membership_change(full, existing)
 	}
+	// Backfill system DBs (users + settings + apps + domains) to the
+	// new peer via the op channel. Replaces the sysdbs scope of bulk
+	// bootstrap, which atomic-rename-replaced files the running
+	// receiver had open and corrupted state. Async; returns immediately.
+	replication_pair_backfill(peer)
 	audit_replication_pair_join_approved(peer)
 	return status, nil
 }

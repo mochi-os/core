@@ -220,7 +220,7 @@ func replication_emit_join_request(sourcePeer, label string) {
 	if sourcePeer == "" {
 		return
 	}
-	m := message("", "", "replication", "join-request")
+	m := message("", "", "replication", "join/request")
 	m.add(&JoinRequest{Label: label})
 	m.send_peer(sourcePeer)
 }
@@ -232,7 +232,7 @@ func replication_emit_join_approved(replicaPeer string, members []string) {
 	if replicaPeer == "" {
 		return
 	}
-	m := message("", "", "replication", "join-approved")
+	m := message("", "", "replication", "join/approved")
 	m.add(&JoinApproved{Members: members})
 	m.send_peer(replicaPeer)
 }
@@ -249,7 +249,7 @@ func replication_emit_join_denied_impl(replicaPeer, reason string) {
 	if replicaPeer == "" {
 		return
 	}
-	m := message("", "", "replication", "join-denied")
+	m := message("", "", "replication", "join/denied")
 	m.add(&JoinDenied{Reason: reason})
 	m.send_peer(replicaPeer)
 }
@@ -264,7 +264,7 @@ func replication_emit_pair_membership_change(members, targets []string) {
 		if peer == "" || peer == p2p_id {
 			continue
 		}
-		m := message("", "", "replication", "pair-membership-change")
+		m := message("", "", "replication", "pair/membership/change")
 		m.add(pmc)
 		m.send_peer(peer)
 	}

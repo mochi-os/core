@@ -188,45 +188,45 @@ func init() {
 	// authorize via that peer-id (e.g. bootstrap chunks require the
 	// peer be an active bootstrap source for the scope).
 	a.event("op", replication_op_event)
-	a.event("snapshot-request", replication_snapshot_request_event)
-	a.event("snapshot-chunk", replication_snapshot_chunk_event)
-	a.event("membership-change", replication_membership_change_event)
-	a.event("keys-transfer", replication_keys_transfer_event)
+	a.event("snapshot/request", replication_snapshot_request_event)
+	a.event("snapshot/chunk", replication_snapshot_chunk_event)
+	a.event("membership/change", replication_membership_change_event)
+	a.event("keys/transfer", replication_keys_transfer_event)
 	// Per-user link-request flow (see replication_link.go).
 	// Server-to-server: B has no entity yet at link-request time;
 	// A's response (link-approved/denied) is keyed on the placeholder
 	// not on entity identity.
-	a.event_anonymous("link-request", replication_link_request_event)
-	a.event_anonymous("link-approved", replication_link_approved_event)
-	a.event_anonymous("link-denied", replication_link_denied_event)
-	a.event_anonymous("freshness-probe", replication_freshness_probe_event)
-	a.event_anonymous("user-lookup", replication_user_lookup_event)
+	a.event_anonymous("link/request", replication_link_request_event)
+	a.event_anonymous("link/approved", replication_link_approved_event)
+	a.event_anonymous("link/denied", replication_link_denied_event)
+	a.event_anonymous("freshness/probe", replication_freshness_probe_event)
+	a.event_anonymous("user/lookup", replication_user_lookup_event)
 	// Whole-server pair join-request flow (see replication_join.go).
 	// Server-to-server: a fresh replica has no entities at all.
-	a.event_anonymous("join-request", replication_join_request_event)
-	a.event_anonymous("join-approved", replication_join_approved_event)
-	a.event_anonymous("join-denied", replication_join_denied_event)
-	a.event_anonymous("pair-membership-change", replication_pair_membership_change_event)
+	a.event_anonymous("join/request", replication_join_request_event)
+	a.event_anonymous("join/approved", replication_join_approved_event)
+	a.event_anonymous("join/denied", replication_join_denied_event)
+	a.event_anonymous("pair/membership/change", replication_pair_membership_change_event)
 	// System-scope replication for core DBs (see replication_system.go).
 	// Pair-scoped, libp2p-signed (no entity signer for settings/apps/
 	// domains rows). Last-applier-by-arrival-order wins.
-	a.event_anonymous("system-set", replication_system_set_event)
-	a.event_anonymous("system-row", replication_system_row_event)
+	a.event_anonymous("system/set", replication_system_set_event)
+	a.event_anonymous("system/row", replication_system_row_event)
 	// Bulk bootstrap protocol (see replication_bootstrap.go).
 	// Pair-scoped, libp2p-signed; chunk handlers gate on
 	// bootstrap_is_active_source(scope, e.peer) so an unauthorized
 	// peer can't inject data into our scope roots.
-	a.event_anonymous("bootstrap-file-manifest-request", replication_bootstrap_file_manifest_request_event)
-	a.event_anonymous("bootstrap-file-manifest-result", replication_bootstrap_file_manifest_result_event)
+	a.event_anonymous("bootstrap/file/manifest/request", replication_bootstrap_file_manifest_request_event)
+	a.event_anonymous("bootstrap/file/manifest/result", replication_bootstrap_file_manifest_result_event)
 	// File-chunk transfer is synchronous stream RPC (no queue) — sender
 	// reads the request from e.content, writes the response on e.stream.
 	// Replaces the old queue-based chunk-request + chunk-response pair
 	// which filled queue.db with 1 MiB payloads and tripped the 1 GB cap.
-	a.event_anonymous("bootstrap-file-chunk-fetch", replication_bootstrap_file_chunk_fetch_event)
-	a.event_anonymous("bootstrap-db-manifest-request", replication_bootstrap_db_manifest_request_event)
-	a.event_anonymous("bootstrap-db-manifest-result", replication_bootstrap_db_manifest_result_event)
-	a.event_anonymous("bootstrap-db-snapshot-request", replication_bootstrap_db_snapshot_request_event)
-	a.event_anonymous("bootstrap-db-chunk", replication_bootstrap_db_chunk_event)
+	a.event_anonymous("bootstrap/file/chunk/fetch", replication_bootstrap_file_chunk_fetch_event)
+	a.event_anonymous("bootstrap/db/manifest/request", replication_bootstrap_db_manifest_request_event)
+	a.event_anonymous("bootstrap/db/manifest/result", replication_bootstrap_db_manifest_result_event)
+	a.event_anonymous("bootstrap/db/snapshot/request", replication_bootstrap_db_snapshot_request_event)
+	a.event_anonymous("bootstrap/db/chunk", replication_bootstrap_db_chunk_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -854,7 +854,7 @@ func replication_transfer_keys(userUID string, peer string) bool {
 	}
 
 	from := kt.Entities[0].ID
-	m := message(from, "", "replication", "keys-transfer")
+	m := message(from, "", "replication", "keys/transfer")
 	m.add(&kt)
 	m.send_peer(peer)
 	return true
@@ -917,7 +917,7 @@ func replication_membership_update_impl(user string, hosts []string) {
 		if peer == "" || peer == p2p_id {
 			continue
 		}
-		m := message(from, from, "replication", "membership-change")
+		m := message(from, from, "replication", "membership/change")
 		m.add(mc)
 		m.send_peer(peer)
 	}

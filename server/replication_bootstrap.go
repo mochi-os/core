@@ -480,7 +480,7 @@ func replication_emit_bootstrap_file_manifest_result_impl(peer, scope, prefix st
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-file-manifest-result")
+	m := message("", "", "replication", "bootstrap/file/manifest/result")
 	m.add(&BootstrapFileManifestResult{
 		Scope:   scope,
 		Prefix:  prefix,
@@ -601,7 +601,7 @@ func bootstrap_file_chunk_fetch_impl(peer, scope, path string, offset, length in
 	if peer == "" {
 		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: empty peer")
 	}
-	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap-file-chunk-fetch", "", nil)
+	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap/file/chunk/fetch", "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: open stream: %w", err)
 	}
@@ -725,7 +725,7 @@ func replication_emit_bootstrap_file_manifest_request_impl(peer, scope, prefix s
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-file-manifest-request")
+	m := message("", "", "replication", "bootstrap/file/manifest/request")
 	m.add(&BootstrapFileManifestRequest{Scope: scope, Prefix: prefix})
 	m.send_peer(peer)
 }
@@ -887,7 +887,7 @@ func replication_emit_bootstrap_db_chunk_impl(peer string, req *BootstrapDBSnaps
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-db-chunk")
+	m := message("", "", "replication", "bootstrap/db/chunk")
 	m.add(&BootstrapDBChunk{
 		Scope:  req.Scope,
 		User:   req.User,
@@ -1212,7 +1212,7 @@ func replication_emit_bootstrap_db_manifest_request_impl(peer, scope string) {
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-db-manifest-request")
+	m := message("", "", "replication", "bootstrap/db/manifest/request")
 	m.add(&BootstrapDBManifestRequest{Scope: scope})
 	m.send_peer(peer)
 }
@@ -1225,7 +1225,7 @@ func replication_emit_bootstrap_db_manifest_result_impl(peer, scope string, entr
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-db-manifest-result")
+	m := message("", "", "replication", "bootstrap/db/manifest/result")
 	m.add(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
 	m.send_peer(peer)
 }
@@ -1292,7 +1292,7 @@ func replication_emit_bootstrap_db_snapshot_request_impl(peer, scope, user, app,
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap-db-snapshot-request")
+	m := message("", "", "replication", "bootstrap/db/snapshot/request")
 	m.add(&BootstrapDBSnapshotRequest{
 		Scope: scope,
 		User:  user,

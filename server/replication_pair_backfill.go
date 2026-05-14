@@ -272,7 +272,7 @@ func replication_system_set_to_peer_impl(peer, database, table, row, field, valu
 	if peer == "" || peer == p2p_id {
 		return
 	}
-	m := message("", "", "replication", "system-set")
+	m := message("", "", "replication", "system/set")
 	m.add(&SystemSet{
 		Database: database, Table: table, Row: row, Field: field, Value: value,
 	})
@@ -291,7 +291,7 @@ func replication_system_row_to_peer_impl(peer, database, table string, key, cols
 	if peer == "" || peer == p2p_id {
 		return
 	}
-	m := message("", "", "replication", "system-row")
+	m := message("", "", "replication", "system/row")
 	m.add(&SystemRow{
 		Database: database, Table: table, Key: key, Cols: cols, Delete: del,
 	})

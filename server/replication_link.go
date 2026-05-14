@@ -290,7 +290,7 @@ func replication_emit_link_request(sourcePeer, targetUser, label, placeholder st
 	if sourcePeer == "" || targetUser == "" || placeholder == "" {
 		return
 	}
-	m := message("", "", "replication", "link-request")
+	m := message("", "", "replication", "link/request")
 	m.add(&LinkRequest{TargetUser: targetUser, Label: label, Placeholder: placeholder})
 	m.send_peer(sourcePeer)
 }
@@ -305,7 +305,7 @@ func replication_emit_link_approved(destinationPeer, placeholder string, keys *K
 	if destinationPeer == "" || placeholder == "" || keys == nil {
 		return
 	}
-	m := message("", "", "replication", "link-approved")
+	m := message("", "", "replication", "link/approved")
 	m.add(&LinkApproved{Placeholder: placeholder, Keys: *keys})
 	m.send_peer(destinationPeer)
 }
@@ -323,7 +323,7 @@ func replication_emit_link_denied_impl(destinationPeer, placeholder, reason stri
 	if destinationPeer == "" || placeholder == "" {
 		return
 	}
-	m := message("", "", "replication", "link-denied")
+	m := message("", "", "replication", "link/denied")
 	m.add(&LinkDenied{Placeholder: placeholder, Reason: reason})
 	m.send_peer(destinationPeer)
 }
@@ -356,7 +356,7 @@ func replication_link_freshness_probe(peer, placeholder string) (bool, error) {
 		return false, fmt.Errorf("freshness probe: empty peer or placeholder")
 	}
 
-	s, err := stream_to_peer(peer, "", "", "replication", "freshness-probe", "", nil)
+	s, err := stream_to_peer(peer, "", "", "replication", "freshness/probe", "", nil)
 	if err != nil {
 		return false, fmt.Errorf("freshness probe: open stream: %w", err)
 	}
@@ -423,7 +423,7 @@ func replication_user_lookup(peer, username string) (string, bool, error) {
 		return "", false, fmt.Errorf("user lookup: empty peer or username")
 	}
 
-	s, err := stream_to_peer(peer, "", "", "replication", "user-lookup", "", nil)
+	s, err := stream_to_peer(peer, "", "", "replication", "user/lookup", "", nil)
 	if err != nil {
 		return "", false, fmt.Errorf("user lookup: open stream: %w", err)
 	}

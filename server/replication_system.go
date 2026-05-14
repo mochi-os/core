@@ -167,7 +167,7 @@ func replication_emit_system_set_real(database, table, row, field, value string)
 		if peer == "" || peer == p2p_id {
 			continue
 		}
-		m := message("", "", "replication", "system-set")
+		m := message("", "", "replication", "system/set")
 		m.add(payload)
 		m.send_peer(peer)
 	}
@@ -300,7 +300,7 @@ func replication_emit_system_row_real(database, table string, key, cols map[stri
 		if peer == "" || peer == p2p_id {
 			continue
 		}
-		m := message("", "", "replication", "system-row")
+		m := message("", "", "replication", "system/row")
 		m.add(payload)
 		m.send_peer(peer)
 	}

@@ -250,6 +250,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/replica/status", admin_replica_status)
 	admin.GET("/replication/status", admin_replication_status)
 	admin.GET("/replication/pair", admin_replication_pair)
+	admin.GET("/replication/progress", admin_replication_progress)
 	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
 	admin.POST("/replication/resync", admin_replication_resync)
 }

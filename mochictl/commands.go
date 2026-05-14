@@ -111,6 +111,16 @@ func init() {
 				return get_dump("/_/admin/replication/pair", "members")
 			},
 		},
+		"replication progress": {
+			help: "Per-(peer, scope) bulk-bootstrap progress",
+			run: func(args []string) error {
+				path := "/_/admin/replication/progress"
+				if len(args) > 0 && args[0] != "" {
+					path = path + "?peer=" + args[0]
+				}
+				return get_dump(path, "rows")
+			},
+		},
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",
 			run:  cmd_replication_pair_remove,

@@ -139,6 +139,29 @@ func admin_replication_resync(c *gin.Context) {
 	})
 }
 
+// admin_replication_progress is GET /_/admin/replication/progress.
+// Returns the per-(peer, scope) bulk-bootstrap progress as
+// {"rows": [{"peer", "scope", "state", "position"}, ...]}. Same data
+// as the mochi.replication.bootstrap_progress() Starlark API, exposed
+// over the admin socket for mochictl.
+//
+// Optional `peer` query parameter filters to a single peer.
+func admin_replication_progress(c *gin.Context) {
+	rdb := db_open("db/replication.db")
+	var rows []map[string]any
+	var err error
+	if peerFilter := c.Query("peer"); peerFilter != "" {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap where peer=? order by peer, scope", peerFilter)
+	} else {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap order by peer, scope")
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"rows": rows})
+}
+
 // admin_replication_pair_remove is POST /_/admin/replication/pair/remove.
 // Body: {"peer": "<peer-id>"}
 //

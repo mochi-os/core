@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 61
+	schema_version = 62
 )
 
 var (
@@ -626,6 +626,8 @@ func db_upgrade() {
 			db_upgrade_60()
 		case 61:
 			db_upgrade_61()
+		case 62:
+			db_upgrade_62()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -785,6 +787,25 @@ func db_upgrade_49() {
 // system tables — concurrent same-row writes are rare). The columns
 // are dropped to keep the schema clean. SQLite ≥ 3.35 supports DROP
 // COLUMN natively; ncruces/go-sqlite3 ships a recent SQLite. Idempotent.
+// db_upgrade_62 adds the `state` column to replication.db.bootstrap.
+// The bulk-bootstrap protocol (#66) tracks per-(scope, peer) progress
+// as one of three states:
+//
+//   - 'queued'  — entry exists but no transfer has started yet
+//   - 'active'  — transfer in progress; `position` is the resume marker
+//   - 'done'    — transfer complete; further ops arrive via the live op
+//                 channel
+//
+// Existing rows (which all carry position='' from db_upgrade_50) are
+// inferred as 'queued' — they've never started a real transfer. New
+// rows go through the bootstrap_set_* helpers. Idempotent.
+func db_upgrade_62() {
+	r := db_open("db/replication.db")
+	if col, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='state'"); !col {
+		r.exec("alter table bootstrap add column state text not null default 'queued'")
+	}
+}
+
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran
 // against an earlier build of this session in which the joins-table
 // creation was added after links. Servers that took the first build
@@ -1347,7 +1368,7 @@ func db_upgrade_50() {
 		replication.exec("create index leadership_expires on leadership(expires)")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='bootstrap'"); !exists {
-		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', primary key (scope, peer))")
+		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', primary key (scope, peer))")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='schemas'"); !exists {
 		replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")

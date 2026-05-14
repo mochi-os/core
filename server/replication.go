@@ -202,6 +202,15 @@ func init() {
 	// wins, acceptable for one-operator-per-pair config workloads.
 	a.event("system-set", replication_system_set_event)
 	a.event("system-row", replication_system_row_event)
+	// Bulk bootstrap protocol (see replication_bootstrap.go). V1
+	// scaffolding only; handlers stub out until the file-walker and
+	// SQLite snapshot driver land in V2.
+	a.event("bootstrap-file-manifest-request", replication_bootstrap_file_manifest_request_event)
+	a.event("bootstrap-file-manifest-result", replication_bootstrap_file_manifest_result_event)
+	a.event("bootstrap-file-chunk-request", replication_bootstrap_file_chunk_request_event)
+	a.event("bootstrap-file-chunk", replication_bootstrap_file_chunk_event)
+	a.event("bootstrap-db-snapshot-request", replication_bootstrap_db_snapshot_request_event)
+	a.event("bootstrap-db-chunk", replication_bootstrap_db_chunk_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the

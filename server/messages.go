@@ -141,10 +141,33 @@ func (m *Message) send() {
 	go m.send_work()
 }
 
-// Send a completed outgoing message to a specified peer
+// Send a completed outgoing message to a specified peer. Persists the
+// message to queue.db and signals the queue manager to drain — does
+// NOT spawn a goroutine to try the send immediately. The queue manager
+// handles every outbound message serially within its single goroutine,
+// so multiple send_peer() calls for the same peer can't race each
+// other into N concurrent libp2p streams (which trip the receiver's
+// per-peer rate limit and snowball into unbounded queue.db growth —
+// observed live as instance 1's queue hitting the 1GB SQLite cap and
+// panicking after ~1100 unack'd bootstrap-db-chunks accumulated).
+//
+// Latency: worst case is the queue tick interval (1 second). For
+// interactive operations like an Approve click → join-approved emit,
+// that's imperceptible. For high-volume operations like bulk bootstrap
+// chunk delivery, the queue drains 50 entries per tick — sufficient
+// throughput because the drain is serial through one peer's connection
+// rather than fan-out from many goroutines.
+//
+// send_work is retained as the per-message wire send helper used by
+// queue_process; no longer called from send_peer directly.
 func (m *Message) send_peer(peer string) {
 	m.target = peer
-	go m.send_work()
+	if m.ID == "" {
+		m.ID = uid()
+	}
+	content := cbor_encode(m.content)
+	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+	queue_wake()
 }
 
 // Do the work of sending (queue-first, read challenge before sending, wait for ACK)

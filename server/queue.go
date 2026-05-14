@@ -35,6 +35,23 @@ const (
 	queue_max_age = 7 * 86400 // 7 days
 )
 
+// queue_wake_ch is a buffered channel used by send_peer to nudge the
+// queue manager into processing the queue immediately rather than
+// waiting for the next tick. Buffer-of-1 means multiple wakes between
+// ticks coalesce into a single processing pass — no work for the
+// manager to do beyond what queue_process already handles.
+var queue_wake_ch = make(chan struct{}, 1)
+
+// queue_wake nudges the queue manager. Non-blocking; if a wake is
+// already pending, the additional signal is dropped (the manager will
+// pick up new rows when it processes).
+func queue_wake() {
+	select {
+	case queue_wake_ch <- struct{}{}:
+	default:
+	}
+}
+
 // Retry delays: 1m, 2m, 4m, 8m, 15m, 30m, 1h
 var retry_delays = []int64{60, 120, 240, 480, 900, 1800, 3600}
 
@@ -348,11 +365,25 @@ func queue_drain(timeout time.Duration) {
 	}
 }
 
-// Queue manager goroutine
+// Queue manager goroutine. Single processing loop owns every outbound
+// send so that fan-out to a peer is serialised — multiple send_peer()
+// callers don't race each other onto the wire. Worst-case latency
+// between send_peer and the wire write is queue_tick_interval (1s) if
+// no wake fires; with wake, it's the wake-pickup roundtrip
+// (sub-millisecond).
 func queue_manager() {
-	// Process queue every 10 seconds
+	// Periodic process tick. Picked up to 50 entries per pass; long-
+	// running pair-backfill scenarios (hundreds of system-set ops at
+	// once) drain in a few ticks rather than hammering N concurrent
+	// goroutines.
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
 	go func() {
-		for range time.Tick(10 * time.Second) {
+		for {
+			select {
+			case <-tick.C:
+			case <-queue_wake_ch:
+			}
 			queue_process()
 			queue_check_ack_timeout()
 		}

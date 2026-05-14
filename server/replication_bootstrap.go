@@ -950,6 +950,40 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 		chunk.Scope, chunk.DB, chunk.Offset, len(chunk.Data), e.peer)
 }
 
+// bootstrap_resume picks up where the receiver left off across every
+// (peer, scope) row that hasn't reached state='done'. Called from
+// the server's startup hook so a crash mid-bootstrap doesn't leave
+// the replica stuck in 'active' forever — on next boot every
+// non-done row gets a fresh manifest-request fired against its peer,
+// and the receiver-side diff skips files that already match by
+// size + sha256 so the resume is incremental.
+//
+// Idempotent: running on a server with no active bootstrap rows is
+// a no-op. Running while bootstrap is mid-flight is harmless (the
+// in-flight transfer's manifests + chunks will land normally; the
+// extra manifest-request just adds one round-trip).
+func bootstrap_resume() {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, scope from bootstrap where state != 'done'")
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		scope, _ := r["scope"].(string)
+		if peer == "" || scope == "" {
+			continue
+		}
+		switch scope {
+		case bootstrap_scope_files, bootstrap_scope_apps:
+			replication_emit_bootstrap_file_manifest_request(peer, scope, "")
+		case bootstrap_scope_userdbs, bootstrap_scope_sysdbs:
+			replication_emit_bootstrap_db_manifest_request(peer, scope)
+		}
+	}
+	info("Replication bootstrap_resume: re-fired manifest-requests for %d non-done rows", len(rows))
+}
+
 // bootstrap_start kicks off a whole-replica bootstrap from `peer`.
 // Called from the join-approved handler on a fresh replica once the
 // source has accepted the pair join; also exposed via mochictl for

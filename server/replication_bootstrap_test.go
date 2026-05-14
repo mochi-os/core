@@ -550,6 +550,67 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	}
 }
 
+// TestBootstrapResume: re-fires manifest-requests for every non-done
+// row; 'done' rows are ignored; correct event type per scope.
+func TestBootstrapResume(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var fileReqs []struct{ peer, scope string }
+	var dbReqs []struct{ peer, scope string }
+	origFile := replication_emit_bootstrap_file_manifest_request
+	origDB := replication_emit_bootstrap_db_manifest_request
+	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {
+		fileReqs = append(fileReqs, struct{ peer, scope string }{peer, scope})
+	}
+	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {
+		dbReqs = append(dbReqs, struct{ peer, scope string }{peer, scope})
+	}
+	defer func() {
+		replication_emit_bootstrap_file_manifest_request = origFile
+		replication_emit_bootstrap_db_manifest_request = origDB
+	}()
+
+	// Seed the bootstrap table with a mix of states / scopes.
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_active, "12")
+	bootstrap_set_state(bootstrap_scope_apps, "peer-A", bootstrap_state_queued, "")
+	bootstrap_set_state(bootstrap_scope_userdbs, "peer-A", bootstrap_state_done, "")
+	bootstrap_set_state(bootstrap_scope_sysdbs, "peer-B", bootstrap_state_queued, "")
+
+	bootstrap_resume()
+
+	// 'done' row for peer-A/userdbs was skipped; everything else fired.
+	if len(fileReqs) != 2 {
+		t.Errorf("file requests = %d, want 2 (peer-A's files + apps)", len(fileReqs))
+	}
+	if len(dbReqs) != 1 {
+		t.Errorf("db requests = %d, want 1 (peer-B's sysdbs only — peer-A's userdbs was already done)", len(dbReqs))
+	}
+}
+
+// TestBootstrapResumeNoActiveRows: no-op when every row is done /
+// none exist.
+func TestBootstrapResumeNoActiveRows(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	called := false
+	origFile := replication_emit_bootstrap_file_manifest_request
+	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) { called = true }
+	defer func() { replication_emit_bootstrap_file_manifest_request = origFile }()
+
+	bootstrap_resume()
+	if called {
+		t.Error("bootstrap_resume fired against empty table; should have been no-op")
+	}
+
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_done, "")
+	bootstrap_resume()
+	if called {
+		t.Error("bootstrap_resume fired against all-done rows; should have been no-op")
+	}
+}
+
 // TestBootstrapStartEmptyPeerIsNoOp: empty peer string short-circuits;
 // no rows seeded, no emits fired.
 func TestBootstrapStartEmptyPeerIsNoOp(t *testing.T) {

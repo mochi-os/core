@@ -199,6 +199,7 @@ func main_serve(ready func()) int {
 	go queue_manager()
 	go ratelimit_manager()
 	go replication_manager()
+	go bootstrap_resume()
 	go sessions_manager()
 	go update_manager()
 	go web_start()

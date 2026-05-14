@@ -138,6 +138,34 @@ type BootstrapDBSnapshotRequest struct {
 	DB    string `cbor:"db"`              // file basename, e.g. "users.db" or "feed.db"
 }
 
+// BootstrapDBManifestRequest is the receiver→sender ask for the list
+// of per-user app DBs + system DBs the source has. The receiver fires
+// one of these after the file-tree scopes complete (so the
+// /var/lib/mochi/users/<u>/<a>/db/ directory trees exist) and uses
+// the response to drive snapshot-requests for each (user, app, db)
+// triple. System DBs (`db/*.db`) are enumerated separately for the
+// sysdbs scope.
+type BootstrapDBManifestRequest struct {
+	Scope string `cbor:"scope"` // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
+}
+
+// BootstrapDBManifestResult lists every DB the source has at the
+// time of the request. For userdbs the entries are
+// (user, app, db); for sysdbs only the `db` field is populated.
+type BootstrapDBManifestResult struct {
+	Scope   string             `cbor:"scope"`
+	Entries []BootstrapDBEntry `cbor:"entries"`
+}
+
+// BootstrapDBEntry is one DB the source has. Comparable to a row of
+// the eventual file manifest but specialised: SQLite DBs go through
+// the snapshot protocol, not the file-chunk protocol.
+type BootstrapDBEntry struct {
+	User string `cbor:"user,omitempty"`
+	App  string `cbor:"app,omitempty"`
+	DB   string `cbor:"db"`
+}
+
 // BootstrapDBChunk is the sender→receiver chunk of a DB snapshot.
 // Offset + len(Data) == EOF position when EOF=true.
 type BootstrapDBChunk struct {
@@ -873,18 +901,16 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 // source has accepted the pair join; also exposed via mochictl for
 // manual resume in case of interruption.
 //
-// V5 starts the two file-tree scopes (files + apps) by emitting a
-// manifest-request for each. The corresponding receive handlers diff
-// the result against the local filesystem and emit chunk requests
-// for any needed entry — driving the transfer forward asynchronously.
-// The (scope, peer) bootstrap rows are seeded as 'queued' so progress
-// is observable from the start.
+// V6 starts every scope: two file-tree (files + apps) and two DB
+// (userdbs + sysdbs). File-tree scopes proceed via manifest-request
+// → chunk-request → atomic-rename; DB scopes proceed via DB-manifest-
+// request → snapshot-request → atomic-rename. All four (scope, peer)
+// rows are seeded 'queued' so progress is observable from the start.
 //
-// DB-scope bootstrap (userdbs / sysdbs) is V6: the receiver needs to
-// learn which (user, app, db) tuples exist on the source — currently
-// it doesn't. The follow-up adds a `bootstrap-db-manifest` event that
-// the source answers with the list of DB tuples; the receiver then
-// fires snapshot-requests against each.
+// Bootstrap is fully asynchronous: bootstrap_start returns
+// immediately after firing the entry-point emits. Per-scope
+// completion happens in the corresponding receive handlers as
+// chunks land.
 func bootstrap_start(peer string) {
 	if peer == "" {
 		return
@@ -893,6 +919,156 @@ func bootstrap_start(peer string) {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
 		replication_emit_bootstrap_file_manifest_request(peer, scope, "")
 	}
+	for _, scope := range []string{bootstrap_scope_userdbs, bootstrap_scope_sysdbs} {
+		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
+		replication_emit_bootstrap_db_manifest_request(peer, scope)
+	}
+}
+
+// bootstrap_walk_db_manifest enumerates every DB the source has for
+// the requested scope. For userdbs: every users/<u>/<a>/db/*.db; for
+// sysdbs: every db/*.db at the top level.
+//
+// Only files matching bootstrap_db_basename_safe are included — junk
+// files in the db dir are ignored. Symlinks and non-regular entries
+// are skipped on the same principle as the file-tree walker.
+func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
+	var entries []BootstrapDBEntry
+	switch scope {
+	case bootstrap_scope_userdbs:
+		usersRoot := filepath.Join(data_dir, "users")
+		userEntries, err := os.ReadDir(usersRoot)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return entries, nil
+			}
+			return nil, err
+		}
+		for _, u := range userEntries {
+			if !u.IsDir() {
+				continue
+			}
+			user := u.Name()
+			userDir := filepath.Join(usersRoot, user)
+			appEntries, err := os.ReadDir(userDir)
+			if err != nil {
+				continue
+			}
+			for _, a := range appEntries {
+				if !a.IsDir() {
+					continue
+				}
+				app := a.Name()
+				dbDir := filepath.Join(userDir, app, "db")
+				dbFiles, err := os.ReadDir(dbDir)
+				if err != nil {
+					continue
+				}
+				for _, f := range dbFiles {
+					if !f.Type().IsRegular() {
+						continue
+					}
+					name := f.Name()
+					if !bootstrap_db_basename_safe(name) {
+						continue
+					}
+					entries = append(entries, BootstrapDBEntry{User: user, App: app, DB: name})
+				}
+			}
+		}
+	case bootstrap_scope_sysdbs:
+		dbDir := filepath.Join(data_dir, "db")
+		files, err := os.ReadDir(dbDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return entries, nil
+			}
+			return nil, err
+		}
+		for _, f := range files {
+			if !f.Type().IsRegular() {
+				continue
+			}
+			name := f.Name()
+			if !bootstrap_db_basename_safe(name) {
+				continue
+			}
+			entries = append(entries, BootstrapDBEntry{DB: name})
+		}
+	default:
+		return nil, fmt.Errorf("bootstrap: scope %q is not db-manifest-based", scope)
+	}
+	return entries, nil
+}
+
+// replication_emit_bootstrap_db_manifest_request asks the source for
+// a DB manifest. Package-level alias for test stubbing.
+var replication_emit_bootstrap_db_manifest_request = replication_emit_bootstrap_db_manifest_request_impl
+
+func replication_emit_bootstrap_db_manifest_request_impl(peer, scope string) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-db-manifest-request")
+	m.add(&BootstrapDBManifestRequest{Scope: scope})
+	m.send_peer(peer)
+}
+
+// replication_emit_bootstrap_db_manifest_result responds with the
+// enumerated DB list. Package-level alias for test stubbing.
+var replication_emit_bootstrap_db_manifest_result = replication_emit_bootstrap_db_manifest_result_impl
+
+func replication_emit_bootstrap_db_manifest_result_impl(peer, scope string, entries []BootstrapDBEntry) {
+	if peer == "" {
+		return
+	}
+	m := message("", "", "replication", "bootstrap-db-manifest-result")
+	m.add(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
+	m.send_peer(peer)
+}
+
+// replication_bootstrap_db_manifest_request_event is the sender-side
+// handler. Walks the appropriate root and emits a result.
+func replication_bootstrap_db_manifest_request_event(e *Event) {
+	var req BootstrapDBManifestRequest
+	if !e.segment(&req) {
+		info("Replication bootstrap-db-manifest-request dropping: cannot decode")
+		return
+	}
+	entries, err := bootstrap_walk_db_manifest(req.Scope)
+	if err != nil {
+		info("Replication bootstrap-db-manifest-request: walk failed (scope=%q from=%q): %v",
+			req.Scope, e.peer, err)
+		replication_emit_bootstrap_db_manifest_result(e.peer, req.Scope, nil)
+		return
+	}
+	debug("Replication bootstrap-db-manifest-request: scope=%q entries=%d from=%q",
+		req.Scope, len(entries), e.peer)
+	replication_emit_bootstrap_db_manifest_result(e.peer, req.Scope, entries)
+}
+
+// replication_bootstrap_db_manifest_result_event is the receiver-side
+// handler. Decodes the payload and delegates to the pure helper so
+// unit tests can exercise the snapshot-emit fan-out without a live
+// stream.
+func replication_bootstrap_db_manifest_result_event(e *Event) {
+	var res BootstrapDBManifestResult
+	if !e.segment(&res) {
+		info("Replication bootstrap-db-manifest-result dropping: cannot decode")
+		return
+	}
+	replication_bootstrap_db_manifest_result_apply(e.peer, &res)
+}
+
+// replication_bootstrap_db_manifest_result_apply fires one
+// snapshot-request per entry. The snapshot handler streams the
+// bytes; the chunk handler atomic-renames the .partial into place.
+func replication_bootstrap_db_manifest_result_apply(originPeer string, res *BootstrapDBManifestResult) {
+	for _, entry := range res.Entries {
+		replication_emit_bootstrap_db_snapshot_request(originPeer, res.Scope, entry.User, entry.App, entry.DB)
+	}
+	debug("Replication bootstrap-db-manifest-result: scope=%q entries=%d snapshot-requests-fired from=%q",
+		res.Scope, len(res.Entries), originPeer)
 }
 
 // replication_emit_bootstrap_db_snapshot_request kicks off a DB

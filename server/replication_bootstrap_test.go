@@ -512,37 +512,37 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 }
 
 // TestBootstrapStartSeedsScopesAndEmitsManifests: bootstrap_start
-// seeds 'queued' rows for both file-tree scopes and fires manifest
-// requests at the source peer.
+// seeds 'queued' rows for all four scopes (files, apps, userdbs,
+// sysdbs) and fires the corresponding manifest-request to the source
+// peer for each.
 func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	var requests []struct{ peer, scope, prefix string }
-	orig := replication_emit_bootstrap_file_manifest_request
+	var fileRequests []struct{ peer, scope, prefix string }
+	var dbRequests []struct{ peer, scope string }
+	origFile := replication_emit_bootstrap_file_manifest_request
+	origDB := replication_emit_bootstrap_db_manifest_request
 	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {
-		requests = append(requests, struct{ peer, scope, prefix string }{peer, scope, prefix})
+		fileRequests = append(fileRequests, struct{ peer, scope, prefix string }{peer, scope, prefix})
 	}
-	defer func() { replication_emit_bootstrap_file_manifest_request = orig }()
+	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {
+		dbRequests = append(dbRequests, struct{ peer, scope string }{peer, scope})
+	}
+	defer func() {
+		replication_emit_bootstrap_file_manifest_request = origFile
+		replication_emit_bootstrap_db_manifest_request = origDB
+	}()
 
 	bootstrap_start("source-A")
 
-	if len(requests) != 2 {
-		t.Fatalf("emit count = %d, want 2 (files + apps)", len(requests))
+	if len(fileRequests) != 2 {
+		t.Errorf("file-manifest emit count = %d, want 2 (files + apps)", len(fileRequests))
 	}
-	seen := map[string]bool{}
-	for _, r := range requests {
-		seen[r.scope] = true
-		if r.peer != "source-A" || r.prefix != "" {
-			t.Errorf("emit %+v: unexpected peer/prefix", r)
-		}
+	if len(dbRequests) != 2 {
+		t.Errorf("db-manifest emit count = %d, want 2 (userdbs + sysdbs)", len(dbRequests))
 	}
-	if !seen[bootstrap_scope_files] || !seen[bootstrap_scope_apps] {
-		t.Errorf("scopes covered = %v, want files+apps", seen)
-	}
-
-	// Each scope landed a 'queued' row.
-	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs, bootstrap_scope_sysdbs} {
 		state, _ := bootstrap_get_state(scope, "source-A")
 		if state != bootstrap_state_queued {
 			t.Errorf("scope %q state = %q, want queued", scope, state)
@@ -563,6 +563,92 @@ func TestBootstrapStartEmptyPeerIsNoOp(t *testing.T) {
 	bootstrap_start("")
 	if called {
 		t.Error("bootstrap_start(\"\") emitted a request; should be a no-op")
+	}
+}
+
+// TestBootstrapWalkDBManifest: enumerates DBs under users/<u>/<a>/db/
+// for userdbs and db/ for sysdbs; rejects non-.db basenames + non-
+// regular entries; returns empty (no error) for missing roots.
+func TestBootstrapWalkDBManifest(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// userdbs layout: alice/feed/db/feed.db + bob/chat/db/chat.db
+	_ = os.MkdirAll(filepath.Join(data_dir, "users", "alice", "feed", "db"), 0o755)
+	_ = os.MkdirAll(filepath.Join(data_dir, "users", "bob", "chat", "db"), 0o755)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "feed", "db", "feed.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "bob", "chat", "db", "chat.db"), []byte("x"), 0o644)
+	// Junk file that should be filtered:
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "feed", "db", "notes.txt"), []byte("x"), 0o644)
+
+	entries, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs)
+	if err != nil {
+		t.Fatalf("walk userdbs: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("userdbs entries = %d, want 2 (notes.txt should be filtered)", len(entries))
+	}
+	for _, e := range entries {
+		if e.User == "" || e.App == "" || e.DB == "" {
+			t.Errorf("incomplete entry: %+v", e)
+		}
+	}
+
+	// sysdbs layout
+	_ = os.MkdirAll(filepath.Join(data_dir, "db"), 0o755)
+	_ = os.WriteFile(filepath.Join(data_dir, "db", "users.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "db", "settings.db"), []byte("x"), 0o644)
+
+	sys, err := bootstrap_walk_db_manifest(bootstrap_scope_sysdbs)
+	if err != nil {
+		t.Fatalf("walk sysdbs: %v", err)
+	}
+	// Could be > 2 because setup_replication_test already creates
+	// replication.db and queue.db. Just assert our two are present.
+	have := map[string]bool{}
+	for _, e := range sys {
+		if e.User != "" || e.App != "" {
+			t.Errorf("sysdbs entry has user/app populated: %+v", e)
+		}
+		have[e.DB] = true
+	}
+	if !have["users.db"] || !have["settings.db"] {
+		t.Errorf("sysdbs missing one of users.db/settings.db; got %v", have)
+	}
+
+	// Wrong scope.
+	if _, err := bootstrap_walk_db_manifest(bootstrap_scope_files); err == nil {
+		t.Error("expected error for files scope on db-manifest walker")
+	}
+}
+
+// TestBootstrapDBManifestResultFiresSnapshotRequests: receiver handler
+// emits one snapshot-request per entry in the manifest.
+func TestBootstrapDBManifestResultFiresSnapshotRequests(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var snapshotReqs []struct{ peer, scope, user, app, db string }
+	orig := replication_emit_bootstrap_db_snapshot_request
+	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {
+		snapshotReqs = append(snapshotReqs, struct{ peer, scope, user, app, db string }{peer, scope, user, app, db})
+	}
+	defer func() { replication_emit_bootstrap_db_snapshot_request = orig }()
+
+	res := &BootstrapDBManifestResult{
+		Scope: bootstrap_scope_userdbs,
+		Entries: []BootstrapDBEntry{
+			{User: "alice", App: "feed", DB: "feed.db"},
+			{User: "bob", App: "chat", DB: "chat.db"},
+		},
+	}
+	replication_bootstrap_db_manifest_result_apply("source-A", res)
+
+	if len(snapshotReqs) != 2 {
+		t.Fatalf("snapshot requests = %d, want 2", len(snapshotReqs))
+	}
+	if snapshotReqs[0].peer != "source-A" || snapshotReqs[0].scope != bootstrap_scope_userdbs {
+		t.Errorf("snapshot request[0] = %+v", snapshotReqs[0])
 	}
 }
 

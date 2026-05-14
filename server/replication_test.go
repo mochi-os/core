@@ -96,6 +96,8 @@ func setup_replication_test(t *testing.T) func() {
 		replication_emit_bootstrap_file_chunk = orig_emit_bootstrap_chunk
 		replication_emit_bootstrap_db_chunk = orig_emit_bootstrap_db_chunk
 		replication_emit_bootstrap_db_snapshot_request = orig_emit_bootstrap_db_snap_req
+		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req
+		replication_emit_bootstrap_db_manifest_result = orig_emit_bootstrap_db_manifest_res
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

@@ -129,6 +129,21 @@ func admin_replication_resync(c *gin.Context) {
 		return
 	}
 
+	// Safety: refuse if this server has users. Bulk bootstrap on a
+	// populated, running server overwrites SQLite files mid-flight
+	// and crashes the daemon (caught live by a 'database is locked'
+	// panic in queue_add_direct after a clobber). Bootstrap is meant
+	// for fresh replicas; this matches the existing /_/admin/replica/join
+	// guard.
+	udb := db_open("db/users.db")
+	if has, _ := udb.exists("select 1 from users limit 1"); has {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":   "populated_server",
+			"message": "This server has users; bulk bootstrap requires a fresh install. Run 'mochictl replica join' on a fresh replica instead.",
+		})
+		return
+	}
+
 	// Wipe any previous bootstrap rows for this peer so the state
 	// machine starts fresh. bootstrap_start re-seeds the four scopes
 	// at 'queued' and emits the manifest-requests.

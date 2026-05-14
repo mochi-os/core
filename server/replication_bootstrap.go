@@ -84,6 +84,31 @@ const (
 	bootstrap_scope_sysdbs  = "sysdbs"  // core system DBs
 )
 
+// bootstrap_sysdb_excluded names system DBs that must NOT be
+// transferred during bulk bootstrap. These are receiver-local
+// infrastructure state machines whose contents are meaningful only
+// to the host that owns them — overwriting them on a running server
+// causes file-handle / SQLite-lock confusion that crashes the daemon
+// (observed live as 'database is locked' panic in queue_add_direct
+// after a clobber). Both sender (manifest enumeration) and receiver
+// (chunk-write apply) honour the deny-list defensively.
+//
+//   queue.db        — outbound message queue, server-local
+//   replication.db  — replication state machine (seen/pending/hosts/
+//                     bootstrap rows), server-local
+//   peers.db        — libp2p peer cache, server-local
+//
+// Other system DBs (users, settings, domains, apps, directory,
+// sessions, schedule, external) are legitimately part of the
+// bootstrap payload — apart from sessions.db which arguably should
+// also be excluded, but the existing session-replication ops handle
+// it correctly through the live channel, so leaving it as-is for V1.
+var bootstrap_sysdb_excluded = map[string]bool{
+	"queue.db":       true,
+	"replication.db": true,
+	"peers.db":       true,
+}
+
 // Bootstrap state values. Mirrors replication.db.bootstrap.state.
 const (
 	bootstrap_state_queued = "queued"
@@ -862,6 +887,10 @@ func replication_bootstrap_db_snapshot_request_event(e *Event) {
 		return
 	}
 
+	if req.Scope == bootstrap_scope_sysdbs && bootstrap_sysdb_excluded[req.DB] {
+		info("Replication bootstrap-db-snapshot-request rejecting: sysdb %q is server-local and must not be transferred", req.DB)
+		return
+	}
 	srcPath, err := bootstrap_db_source_path(req.Scope, req.User, req.App, req.DB)
 	if err != nil {
 		info("Replication bootstrap-db-snapshot-request rejecting (scope=%q user=%q app=%q db=%q from=%q): %v",
@@ -934,6 +963,11 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 	if !bootstrap_is_active_source(chunk.Scope, e.peer) {
 		info("Replication bootstrap-db-chunk dropping: peer %q is not an active bootstrap source for scope %q",
 			e.peer, chunk.Scope)
+		return
+	}
+	if chunk.Scope == bootstrap_scope_sysdbs && bootstrap_sysdb_excluded[chunk.DB] {
+		info("Replication bootstrap-db-chunk dropping: sysdb %q is server-local infrastructure and must not be received via bootstrap",
+			chunk.DB)
 		return
 	}
 	target, err := bootstrap_db_target_path(chunk.Scope, chunk.User, chunk.App, chunk.DB)
@@ -1122,6 +1156,9 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 			}
 			name := f.Name()
 			if !bootstrap_db_basename_safe(name) {
+				continue
+			}
+			if bootstrap_sysdb_excluded[name] {
 				continue
 			}
 			entries = append(entries, BootstrapDBEntry{DB: name})

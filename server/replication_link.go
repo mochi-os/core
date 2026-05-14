@@ -383,12 +383,10 @@ func replication_freshness_probe_event(e *Event) {
 		info("Replication freshness-probe: no stream (queued retry?) — dropping")
 		return
 	}
-	var fp FreshnessProbe
-	if !e.segment(&fp) {
-		info("Replication freshness-probe: cannot decode payload")
-		return
-	}
-	result := &FreshnessResult{Fresh: user_is_fresh(fp.Placeholder)}
+	// Stream payload arrives as e.content (same reasoning as
+	// replication_user_lookup_event — see comment there).
+	placeholder, _ := e.content["placeholder"].(string)
+	result := &FreshnessResult{Fresh: user_is_fresh(placeholder)}
 	if err := e.stream.write(result); err != nil {
 		warn("Replication freshness-probe: failed to write response: %v", err)
 	}
@@ -450,21 +448,23 @@ func replication_user_lookup(peer, username string) (string, bool, error) {
 // matching the username; the requester is responsible for deciding
 // whether that user wants to be replicated (the link-request flow's
 // Approve step is the actual consent gate).
+//
+// Payload arrives as the stream's first segment, which the dispatch
+// path already decoded into e.content (a map[string]any) — so the
+// handler reads fields from e.content directly rather than re-decoding
+// via e.segment (which is for additional segments past the content
+// envelope, and would EOF here because the caller only sent one).
 func replication_user_lookup_event(e *Event) {
 	if e.stream == nil {
 		info("Replication user-lookup: no stream (queued retry?) — dropping")
 		return
 	}
-	var lu UserLookup
-	if !e.segment(&lu) {
-		info("Replication user-lookup: cannot decode payload")
-		return
-	}
+	username, _ := e.content["username"].(string)
 	result := &UserLookupResult{}
-	if lu.Username != "" {
+	if username != "" {
 		udb := db_open("db/users.db")
 		var u User
-		if udb.scan(&u, "select uid, username, role, methods, status from users where username=?", lu.Username) {
+		if udb.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
 			result.UID = u.UID
 			result.Exists = true
 		}

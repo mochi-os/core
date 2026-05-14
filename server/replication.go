@@ -218,8 +218,11 @@ func init() {
 	// peer can't inject data into our scope roots.
 	a.event_anonymous("bootstrap-file-manifest-request", replication_bootstrap_file_manifest_request_event)
 	a.event_anonymous("bootstrap-file-manifest-result", replication_bootstrap_file_manifest_result_event)
-	a.event_anonymous("bootstrap-file-chunk-request", replication_bootstrap_file_chunk_request_event)
-	a.event_anonymous("bootstrap-file-chunk", replication_bootstrap_file_chunk_event)
+	// File-chunk transfer is synchronous stream RPC (no queue) — sender
+	// reads the request from e.content, writes the response on e.stream.
+	// Replaces the old queue-based chunk-request + chunk-response pair
+	// which filled queue.db with 1 MiB payloads and tripped the 1 GB cap.
+	a.event_anonymous("bootstrap-file-chunk-fetch", replication_bootstrap_file_chunk_fetch_event)
 	a.event_anonymous("bootstrap-db-manifest-request", replication_bootstrap_db_manifest_request_event)
 	a.event_anonymous("bootstrap-db-manifest-result", replication_bootstrap_db_manifest_result_event)
 	a.event_anonymous("bootstrap-db-snapshot-request", replication_bootstrap_db_snapshot_request_event)

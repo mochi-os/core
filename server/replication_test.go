@@ -76,17 +76,19 @@ func setup_replication_test(t *testing.T) func() {
 	// same reason; tests that need to observe the emit override these
 	// again locally (see TestBootstrapStartSeedsScopesAndEmitsManifests).
 	orig_emit_bootstrap_manifest_req := replication_emit_bootstrap_file_manifest_request
-	orig_emit_bootstrap_chunk_req := replication_emit_bootstrap_file_chunk_request
 	orig_emit_bootstrap_manifest_res := replication_emit_bootstrap_file_manifest_result
-	orig_emit_bootstrap_chunk := replication_emit_bootstrap_file_chunk
+	orig_file_chunk_fetch := bootstrap_file_chunk_fetch
+	orig_file_scope_driver := bootstrap_file_scope_driver
 	orig_emit_bootstrap_db_chunk := replication_emit_bootstrap_db_chunk
 	orig_emit_bootstrap_db_snap_req := replication_emit_bootstrap_db_snapshot_request
 	orig_emit_bootstrap_db_manifest_req := replication_emit_bootstrap_db_manifest_request
 	orig_emit_bootstrap_db_manifest_res := replication_emit_bootstrap_db_manifest_result
 	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
-	replication_emit_bootstrap_file_chunk_request = func(peer, scope, path string, offset, length int64) {}
 	replication_emit_bootstrap_file_manifest_result = func(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {}
-	replication_emit_bootstrap_file_chunk = func(peer, scope, path string, offset int64, data []byte, eof bool) {}
+	bootstrap_file_chunk_fetch = func(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
+		return nil, nil
+	}
+	bootstrap_file_scope_driver = func(peer, scope string, needed []BootstrapFileEntry) {}
 	replication_emit_bootstrap_db_chunk = func(peer string, req *BootstrapDBSnapshotRequest, offset int64, data []byte, eof bool) {}
 	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {}
 	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
@@ -98,9 +100,9 @@ func setup_replication_test(t *testing.T) func() {
 		replication_membership_update = orig_membership
 		replication_emit_link_denied = orig_emit_link_denied
 		replication_emit_bootstrap_file_manifest_request = orig_emit_bootstrap_manifest_req
-		replication_emit_bootstrap_file_chunk_request = orig_emit_bootstrap_chunk_req
 		replication_emit_bootstrap_file_manifest_result = orig_emit_bootstrap_manifest_res
-		replication_emit_bootstrap_file_chunk = orig_emit_bootstrap_chunk
+		bootstrap_file_chunk_fetch = orig_file_chunk_fetch
+		bootstrap_file_scope_driver = orig_file_scope_driver
 		replication_emit_bootstrap_db_chunk = orig_emit_bootstrap_db_chunk
 		replication_emit_bootstrap_db_snapshot_request = orig_emit_bootstrap_db_snap_req
 		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req

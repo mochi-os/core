@@ -490,28 +490,6 @@ func replication_emit_bootstrap_file_manifest_result_impl(peer, scope, prefix st
 	m.send_peer(peer)
 }
 
-// replication_emit_bootstrap_file_chunk sends a chunk of file data to
-// the receiver. Sender helper; called from the chunk-request handler
-// after bootstrap_read_chunk returns.
-//
-// Package-level alias so tests can stub the send_peer broadcast.
-var replication_emit_bootstrap_file_chunk = replication_emit_bootstrap_file_chunk_impl
-
-func replication_emit_bootstrap_file_chunk_impl(peer, scope, path string, offset int64, data []byte, eof bool) {
-	if peer == "" {
-		return
-	}
-	m := message("", "", "replication", "bootstrap-file-chunk")
-	m.add(&BootstrapFileChunk{
-		Scope:  scope,
-		Path:   path,
-		Offset: offset,
-		Data:   data,
-		EOF:    eof,
-	})
-	m.send_peer(peer)
-}
-
 // replication_bootstrap_file_manifest_request_event is the sender's
 // receive handler — walks the requested path prefix, returns a
 // BootstrapFileManifestResult page with the file list (V2: single
@@ -598,25 +576,48 @@ func bootstrap_chunk_requests_for_entry(entry BootstrapFileEntry) []BootstrapFil
 	return out
 }
 
-// replication_emit_bootstrap_file_chunk_request sends a chunk-request
-// to the sender. Receiver helper; called by the manifest-diff
-// orchestrator for each needed (path, offset) pair.
+// bootstrap_file_chunk_fetch is the synchronous-stream chunk fetch.
+// Opens a stream to the sender, writes the chunk-request as the first
+// segment, reads the chunk-response (one segment carrying up to
+// bootstrap_max_chunk_size bytes + EOF flag), closes the stream.
 //
-// Package-level alias so tests can stub the send_peer broadcast.
-var replication_emit_bootstrap_file_chunk_request = replication_emit_bootstrap_file_chunk_request_impl
+// Replaces the earlier queue-based chunk-request / chunk-response pair
+// which fed every 1 MiB chunk through queue.db on both sides. With a
+// few hundred files and a few hundred MiB per per-user-app-DB, the
+// queue's 1 GB cap was tripped within seconds of bootstrap kickoff.
+// Going synchronous makes each chunk a single round-trip with no
+// queue involvement — the response IS the ACK.
+//
+// The caller is the manifest-diff orchestrator running in its own
+// goroutine per scope; it fetches each needed (path, offset) pair
+// sequentially, writing chunks to `.partial` as they arrive, and
+// atomic-renaming on EOF. Failure on any chunk drops the file —
+// the operator's resync re-fetches.
+//
+// Package-level alias so tests can stub the network call.
+var bootstrap_file_chunk_fetch = bootstrap_file_chunk_fetch_impl
 
-func replication_emit_bootstrap_file_chunk_request_impl(peer, scope, path string, offset, length int64) {
+func bootstrap_file_chunk_fetch_impl(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
 	if peer == "" {
-		return
+		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: empty peer")
 	}
-	m := message("", "", "replication", "bootstrap-file-chunk-request")
-	m.add(&BootstrapFileChunkRequest{
-		Scope:  scope,
-		Path:   path,
-		Offset: offset,
-		Length: length,
-	})
-	m.send_peer(peer)
+	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap-file-chunk-fetch", "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: open stream: %w", err)
+	}
+	defer s.close()
+
+	if err := s.write(&BootstrapFileChunkRequest{
+		Scope: scope, Path: path, Offset: offset, Length: length,
+	}); err != nil {
+		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: write request: %w", err)
+	}
+
+	var resp BootstrapFileChunk
+	if err := s.read(&resp); err != nil {
+		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: read response: %w", err)
+	}
+	return &resp, nil
 }
 
 // replication_bootstrap_file_manifest_result_event is the receiver's
@@ -633,9 +634,17 @@ func replication_bootstrap_file_manifest_result_event(e *Event) {
 }
 
 // replication_bootstrap_file_manifest_result_apply diffs the manifest
-// against the local copy and emits a chunk-request for every offset
-// of every needed file. On the final page (Done=true with no needed
-// entries) transitions the (scope, peer) row to 'done'.
+// against the local copy and spawns one driver goroutine that
+// synchronously fetches each needed file's chunks via stream RPC.
+// No queue involvement: the goroutine opens one stream per chunk,
+// writes the request, reads the response, writes the chunk to
+// .partial, and atomic-renames on EOF.
+//
+// Why per-scope driver vs per-file goroutine: serialising the fetches
+// keeps a single stream-open-at-a-time pattern that doesn't trip the
+// peer's per-second connection rate limit. Bandwidth is the limit,
+// not concurrency. For per-file fan-out we'd need to throttle to
+// stay under the rate limit anyway.
 func replication_bootstrap_file_manifest_result_apply(originPeer string, res *BootstrapFileManifestResult) {
 	needed, err := bootstrap_diff_manifest(res.Scope, res.Prefix, res.Entries)
 	if err != nil {
@@ -653,16 +662,55 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		return
 	}
 
-	// Seed the pending-file counter so chunk EOFs can drive the
-	// state machine to 'done' as each file's last chunk lands.
+	// Seed the pending-file counter so the driver can update state
+	// as files complete; transitions to 'done' on last EOF.
 	bootstrap_set_pending(res.Scope, originPeer, int64(len(needed)))
+	go bootstrap_file_scope_driver(originPeer, res.Scope, needed)
+	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q driving %d/%d from=%q",
+		res.Scope, res.Prefix, len(needed), len(res.Entries), originPeer)
+}
+
+// bootstrap_file_scope_driver runs in its own goroutine for one
+// (scope, peer) pair. Fetches each file's chunks sequentially via
+// stream RPC, writes to .partial, atomic-renames on EOF, decrements
+// the pending counter. Failure on any chunk skips the file (the
+// pending counter still decrements so the scope can complete; the
+// missing file gets re-fetched on the next operator-initiated resync,
+// which re-runs the diff and re-drives this loop).
+//
+// Package-level variable so tests can stub the network drive entirely.
+var bootstrap_file_scope_driver = bootstrap_file_scope_driver_impl
+
+func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFileEntry) {
 	for _, entry := range needed {
+		ok := true
 		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
-			replication_emit_bootstrap_file_chunk_request(originPeer, res.Scope, req.Path, req.Offset, req.Length)
+			resp, err := bootstrap_file_chunk_fetch(peer, scope, req.Path, req.Offset, req.Length)
+			if err != nil {
+				info("Bootstrap file-scope driver: fetch failed (scope=%q path=%q offset=%d from=%q): %v",
+					scope, req.Path, req.Offset, peer, err)
+				ok = false
+				break
+			}
+			if err := bootstrap_write_chunk(scope, resp.Path, resp.Offset, resp.Data, resp.EOF); err != nil {
+				info("Bootstrap file-scope driver: write failed (scope=%q path=%q offset=%d): %v",
+					scope, resp.Path, resp.Offset, err)
+				ok = false
+				break
+			}
+			if resp.EOF {
+				break
+			}
+		}
+		if ok {
+			bootstrap_pending_decrement(scope, peer)
+		} else {
+			// Failed file: still decrement so the scope can settle
+			// (otherwise it's stuck active forever). A re-run picks
+			// up missing files.
+			bootstrap_pending_decrement(scope, peer)
 		}
 	}
-	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q needed=%d/%d from=%q",
-		res.Scope, res.Prefix, len(needed), len(res.Entries), originPeer)
 }
 
 // replication_emit_bootstrap_file_manifest_request kicks off a
@@ -682,29 +730,45 @@ func replication_emit_bootstrap_file_manifest_request_impl(peer, scope, prefix s
 	m.send_peer(peer)
 }
 
-// replication_bootstrap_file_chunk_request_event is the sender's
-// receive handler — reads bytes from the requested file and emits a
-// BootstrapFileChunk back to the receiver.
-func replication_bootstrap_file_chunk_request_event(e *Event) {
-	var req BootstrapFileChunkRequest
-	if !e.segment(&req) {
-		info("Replication bootstrap-file-chunk-request dropping: cannot decode")
+// replication_bootstrap_file_chunk_fetch_event is the sender's
+// stream handler for synchronous chunk fetch. Reads the request from
+// e.content (single-segment stream RPC, same pattern as user-lookup
+// and freshness-probe), reads the file chunk, writes the response
+// back on the same stream. No queue involvement — the response goes
+// directly over the open stream the caller is reading from.
+func replication_bootstrap_file_chunk_fetch_event(e *Event) {
+	if e.stream == nil {
+		info("Replication bootstrap-file-chunk-fetch: no stream (queued retry?) — dropping")
 		return
 	}
-	if req.Length <= 0 || req.Length > bootstrap_max_chunk_size {
-		info("Replication bootstrap-file-chunk-request rejecting: length %d out of range (1..%d)",
-			req.Length, bootstrap_max_chunk_size)
+	// Stream-RPC payload arrives as e.content (already decoded as
+	// map[string]any by read_content); pull fields out instead of
+	// calling e.segment which would EOF (only one segment was sent).
+	scope, _ := e.content["scope"].(string)
+	path, _ := e.content["path"].(string)
+	offset := row_int(e.content, "offset")
+	length := row_int(e.content, "length")
+	if length <= 0 || length > bootstrap_max_chunk_size {
+		info("Replication bootstrap-file-chunk-fetch rejecting: length %d out of range (1..%d) from=%q",
+			length, bootstrap_max_chunk_size, e.peer)
 		return
 	}
-	data, eof, err := bootstrap_read_chunk(req.Scope, req.Path, req.Offset, req.Length)
+	data, eof, err := bootstrap_read_chunk(scope, path, offset, length)
 	if err != nil {
-		info("Replication bootstrap-file-chunk-request: read failed (scope=%q path=%q offset=%d from=%q): %v",
-			req.Scope, req.Path, req.Offset, e.peer, err)
+		info("Replication bootstrap-file-chunk-fetch: read failed (scope=%q path=%q offset=%d from=%q): %v",
+			scope, path, offset, e.peer, err)
 		return
 	}
-	debug("Replication bootstrap-file-chunk-request: scope=%q path=%q offset=%d sent=%d eof=%v from=%q",
-		req.Scope, req.Path, req.Offset, len(data), eof, e.peer)
-	replication_emit_bootstrap_file_chunk(e.peer, req.Scope, req.Path, req.Offset, data, eof)
+	resp := &BootstrapFileChunk{
+		Scope: scope, Path: path, Offset: offset, Data: data, EOF: eof,
+	}
+	if err := e.stream.write(resp); err != nil {
+		info("Replication bootstrap-file-chunk-fetch: write response failed (scope=%q path=%q offset=%d from=%q): %v",
+			scope, path, offset, e.peer, err)
+		return
+	}
+	debug("Replication bootstrap-file-chunk-fetch served: scope=%q path=%q offset=%d sent=%d eof=%v to=%q",
+		scope, path, offset, len(data), eof, e.peer)
 }
 
 // bootstrap_max_chunk_size caps a single chunk request at 1 MiB. The
@@ -758,38 +822,6 @@ func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bo
 		}
 	}
 	return nil
-}
-
-// replication_bootstrap_file_chunk_event is the receiver's handler.
-// Writes the chunk to a `.partial` file; atomic-renames on EOF; on
-// EOF also decrements the (scope, peer) pending-file counter so the
-// scope can transition to 'done' once every expected file has landed.
-//
-// Defensive: chunks from peers we're not actively bootstrapping from
-// are silently dropped. Combined with bootstrap_safe_path's
-// traversal guard, this prevents an unauthorized peer from writing
-// arbitrary data into our scope roots.
-func replication_bootstrap_file_chunk_event(e *Event) {
-	var chunk BootstrapFileChunk
-	if !e.segment(&chunk) {
-		info("Replication bootstrap-file-chunk dropping: cannot decode")
-		return
-	}
-	if !bootstrap_is_active_source(chunk.Scope, e.peer) {
-		info("Replication bootstrap-file-chunk dropping: peer %q is not an active bootstrap source for scope %q",
-			e.peer, chunk.Scope)
-		return
-	}
-	if err := bootstrap_write_chunk(chunk.Scope, chunk.Path, chunk.Offset, chunk.Data, chunk.EOF); err != nil {
-		info("Replication bootstrap-file-chunk write failed (scope=%q path=%q offset=%d from=%q): %v",
-			chunk.Scope, chunk.Path, chunk.Offset, e.peer, err)
-		return
-	}
-	if chunk.EOF {
-		bootstrap_pending_decrement(chunk.Scope, e.peer)
-	}
-	debug("Replication bootstrap-file-chunk written: scope=%q path=%q offset=%d len=%d eof=%v from=%q",
-		chunk.Scope, chunk.Path, chunk.Offset, len(chunk.Data), chunk.EOF, e.peer)
 }
 
 // bootstrap_db_source_path returns the absolute path of the source DB

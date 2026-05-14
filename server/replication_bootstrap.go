@@ -26,29 +26,40 @@
 //     flushed as standard `op` events once the snapshot lands.
 //
 // Per-(scope, peer) progress is tracked in replication.db.bootstrap
-// (state ∈ {'queued', 'active', 'done'}; position is an opaque per-
-// scope cursor). Server restart picks up where it left off.
+// (state ∈ {'queued', 'active', 'done'}; position is the remaining
+// EOF count while active, empty while done). Server restart
+// re-fires manifest-requests for any non-done row via bootstrap_resume.
 //
-// V1 (this file) lands:
-//   - Wire types for all four payloads.
-//   - Event-name registration in replication.go init.
-//   - bootstrap_set_* / bootstrap_get_* / bootstrap_clear helpers
-//     so callers (mochictl replica join, the eventual receiver-side
-//     driver loop) can persist progress.
-//   - Stub event handlers that log + decode + persist a no-op
-//     bootstrap row — enough for the protocol to be wireable end-to-
-//     end without yet transferring bytes.
+// What's landed (V1–V7):
+//   - Wire types for all four payload pairs (file-tree + DB-snapshot,
+//     both with manifest + chunk variants).
+//   - Sender-side: file-tree walker (sha256-hashing each file), DB
+//     manifest enumerator, file-chunk reader, SQLite online-backup
+//     via the ncruces driver's sqlite3_backup_init.
+//   - Receiver-side: .partial → atomic-rename chunk writer with
+//     traversal-safe path resolution, manifest-diff orchestrator that
+//     skips files whose local copy matches by size + sha256, and a
+//     pending-counter state machine that auto-transitions each scope
+//     to 'done' on the last EOF.
+//   - Driver: bootstrap_start fires manifest-requests for all four
+//     scopes (files, apps, userdbs, sysdbs) on join-approved and on
+//     mochictl replication resync. bootstrap_resume re-fires on
+//     server start for any row not yet 'done'.
+//   - Operator visibility: mochi.replication.status() exposes
+//     aggregate bootstrap_pending; mochi.replication.bootstrap_progress()
+//     exposes the per-(peer, scope) drill-down. The Pair page renders
+//     this; mochictl wraps the admin HTTP equivalents.
+//   - Defensive: chunks from peers not actively bootstrapping the
+//     given scope are silently dropped (bootstrap_is_active_source).
 //
-// V2 (subsequent commits) lands:
-//   - File-tree walker + chunk reader on the sender side.
-//   - Receiver-side .partial → atomic-rename writer with resume.
-//   - SQLite snapshot driver using ncruces sqlite3 backup API.
-//   - The driver loop that orchestrates the four scopes in order
-//     (files → apps → user DBs → system DBs) and transitions to
-//     state='done' when all four are complete.
-//
-// V3 (post-alpha): receiver-side throttling, sender-side backpressure,
-// integrity-failure retry policy, audit-log event for every step.
+// Future polish (deferred to alpha-tuning):
+//   - Pending-ops buffer during DB snapshot so writes that land mid-
+//     snapshot are flushed after the snapshot transfers (rather than
+//     trusting the live op-replication channel's idempotent apply).
+//   - Multi-page file-tree manifest for TB-scale trees (the current
+//     single-page approach reads the full manifest into memory).
+//   - Retry policy on transient transport failures (currently
+//     surfaced via mochictl replication resync).
 
 package main
 

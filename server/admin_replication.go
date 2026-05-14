@@ -8,13 +8,15 @@
 // it exists right now — listing current members, removing a specific
 // member, summarising replication health.
 //
-//   GET  /_/admin/replication/status         — pair + per-user-host summary
+//   GET  /_/admin/replication/status         — pair + per-user-host + bootstrap-pending summary
 //   GET  /_/admin/replication/pair           — current pair members
+//   GET  /_/admin/replication/progress       — per-(peer, scope) bootstrap progress
 //   POST /_/admin/replication/pair/remove    — kick a specific pair member
+//   POST /_/admin/replication/resync         — re-run bulk bootstrap against a peer
 //
-// Bootstrap progress / per-(user, scope) lag is part of mochi.replication.status()
-// landed in #66; until that lands, `status` reports the bounded view it can
-// compute from replication.db.pair + replication.db.hosts.
+// Per-(user, scope) lag is a future addition; the current status
+// surfaces an aggregate `bootstrap_pending` count + a drill-down via
+// `/progress` that's enough for operators to spot stuck transfers.
 
 //go:build linux
 
@@ -32,9 +34,10 @@ import (
 // opt-in hosts, count of pending link-requests, count of pending
 // join-requests.
 //
-// The full health / lag / queue-depth view will land via the
-// mochi.replication.status() Starlark API in #66; until then this
-// is a bounded "what's the pair set, and is anything pending?" read.
+// Bootstrap progress is surfaced as the aggregate `bootstrap_pending`
+// count here; the per-(peer, scope) drill-down lives at
+// `/_/admin/replication/progress`. Per-(user, scope) op-replication
+// lag is a future addition.
 func admin_replication_status(c *gin.Context) {
 	rdb := db_open("db/replication.db")
 

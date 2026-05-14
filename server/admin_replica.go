@@ -161,10 +161,10 @@ func admin_replica_status(c *gin.Context) {
 		case inPair:
 			state = "approved"
 			// Self-clearing: once the operator observes "approved" via
-			// the status endpoint, the pending state can drop. Bootstrap
-			// progress (when #66 lands) will be reported separately
-			// via `mochi.replication.status()`. Until then, "approved"
-			// is the terminal state for the replica join attempt.
+			// the status endpoint, the pending state can drop. The
+			// per-scope bulk-bootstrap progress is reported via
+			// `mochi.replication.status()` (aggregate `bootstrap_pending`)
+			// and `mochi.replication.bootstrap_progress()` (drill-down).
 			setting_delete("replica.join.peer")
 			setting_delete("replica.join.state")
 			setting_delete("replica.join.reason")

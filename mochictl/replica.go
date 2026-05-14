@@ -93,7 +93,7 @@ func cmd_replica_join(args []string) error {
 				})))
 			} else {
 				fmt.Printf("Approved. Pair set: %s\n", strings.Join(members, ", "))
-				fmt.Println("Bootstrap is pending (Phase G #66).")
+				fmt.Printf("Bootstrap started against %s. Track with: mochictl replication progress %s\n", source, source)
 			}
 			return nil
 		case "denied":

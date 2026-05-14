@@ -18,6 +18,7 @@
 //   mochi.replication.join_approve(peer)  -> str  ("approved" | "already-handled")
 //   mochi.replication.join_deny(peer)     -> str  ("denied"   | "already-handled")
 //   mochi.replication.pair_remove(peer)   -> str  ("removed"  | "not-found")
+//   mochi.replication.bootstrap_progress() -> list (per-(peer, scope) progress)
 //
 // All per-user functions operate on the calling user (resolved from
 // t.Local("user")). The settings app cannot read or mutate another
@@ -54,6 +55,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 	"join_approve":  sl.NewBuiltin("mochi.replication.join_approve", api_replication_join_approve),
 	"join_deny":     sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
 	"pair_remove":   sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
+	"bootstrap_progress": sl.NewBuiltin("mochi.replication.bootstrap_progress", api_replication_bootstrap_progress),
 })
 
 // api_replication_status returns a dict describing this server's
@@ -371,6 +373,49 @@ func api_replication_pair_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl.String("not-found"), nil
 	}
 	return sl.String("removed"), nil
+}
+
+// api_replication_bootstrap_progress returns the per-(peer, scope)
+// bulk-bootstrap progress as a list of dicts. Each entry includes
+// the peer, scope, state ('queued' | 'active' | 'done'), and a
+// position cursor whose meaning depends on the state: for 'active'
+// it's the count of items remaining; for 'done' it's empty.
+//
+// Optional argument: a single peer-id string filters to that peer's
+// rows; omitted returns every peer's rows. Whole-server scope; no
+// per-user filtering. Action wrappers gate to admin.
+//
+// Returned shape: list of dicts {peer, scope, state, position}.
+func api_replication_bootstrap_progress(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var peerFilter string
+	if len(args) > 0 && args[0] != sl.None {
+		if p, ok := sl.AsString(args[0]); ok {
+			peerFilter = p
+		}
+	}
+
+	rdb := db_open("db/replication.db")
+	var rows []map[string]any
+	var err error
+	if peerFilter != "" {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap where peer=? order by peer, scope", peerFilter)
+	} else {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap order by peer, scope")
+	}
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(4)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("scope"), sl.String(row_string(r, "scope")))
+		_ = entry.SetKey(sl.String("state"), sl.String(row_string(r, "state")))
+		_ = entry.SetKey(sl.String("position"), sl.String(row_string(r, "position")))
+		_ = out.Append(entry)
+	}
+	return out, nil
 }
 
 // row_string / row_int unpack scalar SQL row values defensively. The

@@ -96,6 +96,58 @@ func withUserThread(u *User, fn func(*sl.Thread)) {
 	fn(th)
 }
 
+// TestApiReplicationBootstrapProgress: returns per-(peer, scope) rows;
+// peer-filtered arg narrows to one peer.
+func TestApiReplicationBootstrapProgress(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	bootstrap_set_state("files", "peer-A", "done", "")
+	bootstrap_set_state("apps", "peer-A", "active", "12")
+	bootstrap_set_state("files", "peer-B", "queued", "")
+
+	th := &sl.Thread{}
+
+	// No filter — every row.
+	v, err := api_replication_bootstrap_progress(th, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	all := v.(*sl.List)
+	if all.Len() != 3 {
+		t.Errorf("all rows = %d, want 3", all.Len())
+	}
+
+	// Filtered to peer-A.
+	v, err = api_replication_bootstrap_progress(th, sl.NewBuiltin("bootstrap_progress", api_replication_bootstrap_progress), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("progress filtered: %v", err)
+	}
+	filtered := v.(*sl.List)
+	if filtered.Len() != 2 {
+		t.Errorf("peer-A rows = %d, want 2", filtered.Len())
+	}
+
+	// Check entry shape — iterate the first row and look up keys.
+	it := filtered.Iterate()
+	defer it.Done()
+	var first sl.Value
+	if !it.Next(&first) {
+		t.Fatalf("filtered list is empty")
+	}
+	d := first.(*sl.Dict)
+	for _, key := range []string{"peer", "scope", "state", "position"} {
+		v, ok, _ := d.Get(sl.String(key))
+		if !ok {
+			t.Errorf("entry missing key %q", key)
+			continue
+		}
+		if _, ok := v.(sl.String); !ok {
+			t.Errorf("entry %q value is not a string: %T", key, v)
+		}
+	}
+}
+
 // TestApiReplicationLinksAndHosts: per-user link/host queries scope to
 // the calling user. Inserts rows for two users and asserts the API
 // returns only the calling user's rows.

@@ -228,3 +228,51 @@ func audit_user_version_changed(user string, app string, version string, track s
 func audit_user_routing_changed(user string, routing_type string, key string, app string) {
 	audit_write("OPS", fmt.Sprintf("user_routing_changed user=%s type=%s key=%s app=%s", user, routing_type, key, app))
 }
+
+// audit_replication_pair_join_approved logs that the operator approved
+// an incoming whole-server pair join request from `peer`.
+func audit_replication_pair_join_approved(peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_pair_join_approved peer=%s", peer))
+}
+
+// audit_replication_pair_join_denied logs that the operator denied an
+// incoming whole-server pair join request from `peer`.
+func audit_replication_pair_join_denied(peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_pair_join_denied peer=%s", peer))
+}
+
+// audit_replication_pair_removed logs that the operator kicked a peer
+// out of the pair set.
+func audit_replication_pair_removed(peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_pair_removed peer=%s", peer))
+}
+
+// audit_replication_link_approved logs that a user approved an
+// incoming per-user replication link request from another server.
+func audit_replication_link_approved(user string, peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_link_approved user=%s peer=%s", user, peer))
+}
+
+// audit_replication_link_denied logs that a user denied an incoming
+// per-user replication link request.
+func audit_replication_link_denied(user string, peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_link_denied user=%s peer=%s", user, peer))
+}
+
+// audit_replication_host_removed logs that a user removed a host from
+// their per-user opt-in replication set.
+func audit_replication_host_removed(user string, peer string) {
+	audit_write("OPS", fmt.Sprintf("replication_host_removed user=%s peer=%s", user, peer))
+}
+
+// audit_replication_bootstrap_started logs that a bulk-bootstrap run
+// has been initiated against `peer`.
+func audit_replication_bootstrap_started(peer string) {
+	audit_write("DAEMON", fmt.Sprintf("replication_bootstrap_started peer=%s", peer))
+}
+
+// audit_replication_bootstrap_scope_done logs that one scope of the
+// bulk bootstrap has reached state='done' for a given peer.
+func audit_replication_bootstrap_scope_done(peer string, scope string) {
+	audit_write("DAEMON", fmt.Sprintf("replication_bootstrap_scope_done peer=%s scope=%s", peer, scope))
+}

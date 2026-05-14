@@ -581,6 +581,7 @@ func replication_link_approve(user, peer string) (string, error) {
 	}
 
 	replication_emit_link_approved(peer, placeholder, keys)
+	audit_replication_link_approved(user, peer)
 
 	// Add peer to user's host set + emit membership-change so any
 	// existing per-user peers also learn about the new member.
@@ -627,5 +628,6 @@ func replication_link_deny(user, peer string) string {
 	if placeholder != "" {
 		replication_emit_link_denied(peer, placeholder, "denied")
 	}
+	audit_replication_link_denied(user, peer)
 	return "denied"
 }

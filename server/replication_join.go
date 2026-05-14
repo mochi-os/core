@@ -354,6 +354,7 @@ func replication_join_approve(peer string) (string, error) {
 	if len(existing) > 0 {
 		replication_emit_pair_membership_change(full, existing)
 	}
+	audit_replication_pair_join_approved(peer)
 	return status, nil
 }
 
@@ -381,6 +382,7 @@ func replication_join_deny(peer string) string {
 	status := replication_join_deny_core(peer)
 	if status == "denied" {
 		replication_emit_join_denied(peer, "denied")
+		audit_replication_pair_join_denied(peer)
 	}
 	return status
 }
@@ -420,6 +422,7 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 	if len(remaining) > 0 {
 		admin_replication_emit_pair_membership(full, remaining)
 	}
+	audit_replication_pair_removed(peer)
 
 	return peer, remaining, true
 }

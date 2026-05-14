@@ -286,6 +286,7 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// (or when the periodic reconciler in #66's bootstrap protocol
 	// confirms divergence).
 	replication_membership_update(u.UID, remaining)
+	audit_replication_host_removed(u.UID, peer)
 
 	return sl.String("removed"), nil
 }

@@ -248,6 +248,7 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 	count--
 	if count <= 0 {
 		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
+		audit_replication_bootstrap_scope_done(peer, scope)
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
@@ -602,6 +603,7 @@ func replication_bootstrap_file_manifest_result_event(e *Event) {
 	if len(needed) == 0 {
 		if res.Done {
 			bootstrap_set_state(res.Scope, e.peer, bootstrap_state_done, "")
+			audit_replication_bootstrap_scope_done(e.peer, res.Scope)
 		}
 		debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q entries=%d already up-to-date from=%q",
 			res.Scope, res.Prefix, len(res.Entries), e.peer)
@@ -968,6 +970,7 @@ func bootstrap_start(peer string) {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
 		replication_emit_bootstrap_db_manifest_request(peer, scope)
 	}
+	audit_replication_bootstrap_started(peer)
 }
 
 // bootstrap_walk_db_manifest enumerates every DB the source has for
@@ -1112,6 +1115,7 @@ func replication_bootstrap_db_manifest_result_event(e *Event) {
 func replication_bootstrap_db_manifest_result_apply(originPeer string, res *BootstrapDBManifestResult) {
 	if len(res.Entries) == 0 {
 		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
+		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
 		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
 			res.Scope, originPeer)
 		return

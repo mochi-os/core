@@ -728,10 +728,20 @@ func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bo
 // Writes the chunk to a `.partial` file; atomic-renames on EOF; on
 // EOF also decrements the (scope, peer) pending-file counter so the
 // scope can transition to 'done' once every expected file has landed.
+//
+// Defensive: chunks from peers we're not actively bootstrapping from
+// are silently dropped. Combined with bootstrap_safe_path's
+// traversal guard, this prevents an unauthorized peer from writing
+// arbitrary data into our scope roots.
 func replication_bootstrap_file_chunk_event(e *Event) {
 	var chunk BootstrapFileChunk
 	if !e.segment(&chunk) {
 		info("Replication bootstrap-file-chunk dropping: cannot decode")
+		return
+	}
+	if !bootstrap_is_active_source(chunk.Scope, e.peer) {
+		info("Replication bootstrap-file-chunk dropping: peer %q is not an active bootstrap source for scope %q",
+			e.peer, chunk.Scope)
 		return
 	}
 	if err := bootstrap_write_chunk(chunk.Scope, chunk.Path, chunk.Offset, chunk.Data, chunk.EOF); err != nil {
@@ -901,10 +911,18 @@ func replication_bootstrap_db_snapshot_request_event(e *Event) {
 // Writes the chunk to <target>.partial; atomic-renames to <target>
 // on EOF. Same path validation + .partial pattern as the file-tree
 // receiver.
+//
+// Defensive: chunks from peers we're not actively bootstrapping from
+// are silently dropped (same protection as the file-tree handler).
 func replication_bootstrap_db_chunk_event(e *Event) {
 	var chunk BootstrapDBChunk
 	if !e.segment(&chunk) {
 		info("Replication bootstrap-db-chunk dropping: cannot decode")
+		return
+	}
+	if !bootstrap_is_active_source(chunk.Scope, e.peer) {
+		info("Replication bootstrap-db-chunk dropping: peer %q is not an active bootstrap source for scope %q",
+			e.peer, chunk.Scope)
 		return
 	}
 	target, err := bootstrap_db_target_path(chunk.Scope, chunk.User, chunk.App, chunk.DB)
@@ -948,6 +966,19 @@ func replication_bootstrap_db_chunk_event(e *Event) {
 	}
 	debug("Replication bootstrap-db-chunk: scope=%q db=%q offset=%d len=%d from=%q",
 		chunk.Scope, chunk.DB, chunk.Offset, len(chunk.Data), e.peer)
+}
+
+// bootstrap_is_active_source returns true if there's a (scope, peer)
+// row in replication.db.bootstrap that hasn't reached 'done'. Used
+// by the chunk handlers as a defensive check: a chunk for a scope
+// we're not actively bootstrapping from this peer is silently
+// dropped. Prevents a malicious or buggy peer from writing arbitrary
+// data into our scope roots (subject to bootstrap_safe_path's
+// existing traversal guard).
+func bootstrap_is_active_source(scope, peer string) bool {
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists("select 1 from bootstrap where scope=? and peer=? and state != 'done'", scope, peer)
+	return exists
 }
 
 // bootstrap_resume picks up where the receiver left off across every

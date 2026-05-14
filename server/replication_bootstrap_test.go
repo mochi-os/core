@@ -550,6 +550,42 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	}
 }
 
+// TestBootstrapIsActiveSource: returns true only for (scope, peer)
+// rows whose state isn't 'done'; missing row → false.
+func TestBootstrapIsActiveSource(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Missing row → false.
+	if bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
+		t.Error("missing row reported as active source")
+	}
+
+	// queued → true (we haven't started yet but it's authorized).
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_queued, "")
+	if !bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
+		t.Error("queued row reported as not active")
+	}
+
+	// active → true.
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_active, "42")
+	if !bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
+		t.Error("active row reported as not active")
+	}
+
+	// done → false (no longer authorized to receive chunks).
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_done, "")
+	if bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
+		t.Error("done row reported as active source")
+	}
+
+	// Different peer → false even if the scope has rows for someone else.
+	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_active, "1")
+	if bootstrap_is_active_source(bootstrap_scope_files, "peer-B") {
+		t.Error("different peer reported as active source for the same scope")
+	}
+}
+
 // TestBootstrapResume: re-fires manifest-requests for every non-done
 // row; 'done' rows are ignored; correct event type per scope.
 func TestBootstrapResume(t *testing.T) {

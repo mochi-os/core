@@ -721,20 +721,20 @@ func TestBootstrapPendingDecrement(t *testing.T) {
 }
 
 // TestBootstrapDBManifestEmptyImmediatelyDone: zero-entry manifest
-// marks the scope done without firing snapshot requests.
+// marks the scope done without spawning the fetch driver.
 func TestBootstrapDBManifestEmptyImmediatelyDone(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	called := 0
-	orig := replication_emit_bootstrap_db_snapshot_request
-	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) { called++ }
-	defer func() { replication_emit_bootstrap_db_snapshot_request = orig }()
+	driven := 0
+	orig := bootstrap_db_scope_driver
+	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) { driven++ }
+	defer func() { bootstrap_db_scope_driver = orig }()
 
 	res := &BootstrapDBManifestResult{Scope: bootstrap_scope_userdbs, Entries: nil}
 	replication_bootstrap_db_manifest_result_apply("source-A", res)
 
-	if called != 0 {
-		t.Errorf("snapshot requests fired on empty manifest = %d, want 0", called)
+	if driven != 0 {
+		t.Errorf("db-scope driver invocations on empty manifest = %d, want 0", driven)
 	}
 	state, _ := bootstrap_get_state(bootstrap_scope_userdbs, "source-A")
 	if state != bootstrap_state_done {
@@ -798,18 +798,26 @@ func TestBootstrapWalkDBManifest(t *testing.T) {
 	}
 }
 
-// TestBootstrapDBManifestResultFiresSnapshotRequests: receiver handler
-// emits one snapshot-request per entry in the manifest.
-func TestBootstrapDBManifestResultFiresSnapshotRequests(t *testing.T) {
+// TestBootstrapDBManifestResultSpawnsDriver: receiver handler spawns
+// the per-scope driver goroutine with the full entry list. Replaces
+// the old "fires one snapshot-request per entry" test — the new
+// sync-stream flow has no per-entry queue emit; the driver runs in
+// its own goroutine and calls bootstrap_db_fetch per entry.
+func TestBootstrapDBManifestResultSpawnsDriver(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	var snapshotReqs []struct{ peer, scope, user, app, db string }
-	orig := replication_emit_bootstrap_db_snapshot_request
-	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {
-		snapshotReqs = append(snapshotReqs, struct{ peer, scope, user, app, db string }{peer, scope, user, app, db})
+	type drivenCall struct {
+		peer    string
+		scope   string
+		entries []BootstrapDBEntry
 	}
-	defer func() { replication_emit_bootstrap_db_snapshot_request = orig }()
+	driven := make(chan drivenCall, 1)
+	orig := bootstrap_db_scope_driver
+	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) {
+		driven <- drivenCall{peer, scope, entries}
+	}
+	defer func() { bootstrap_db_scope_driver = orig }()
 
 	res := &BootstrapDBManifestResult{
 		Scope: bootstrap_scope_userdbs,
@@ -820,11 +828,16 @@ func TestBootstrapDBManifestResultFiresSnapshotRequests(t *testing.T) {
 	}
 	replication_bootstrap_db_manifest_result_apply("source-A", res)
 
-	if len(snapshotReqs) != 2 {
-		t.Fatalf("snapshot requests = %d, want 2", len(snapshotReqs))
-	}
-	if snapshotReqs[0].peer != "source-A" || snapshotReqs[0].scope != bootstrap_scope_userdbs {
-		t.Errorf("snapshot request[0] = %+v", snapshotReqs[0])
+	select {
+	case call := <-driven:
+		if call.peer != "source-A" || call.scope != bootstrap_scope_userdbs {
+			t.Errorf("driver call = peer=%q scope=%q, want source-A / %q", call.peer, call.scope, bootstrap_scope_userdbs)
+		}
+		if len(call.entries) != 2 {
+			t.Errorf("driver entries = %d, want 2", len(call.entries))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("driver was not invoked within 2s")
 	}
 }
 

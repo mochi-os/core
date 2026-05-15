@@ -84,6 +84,23 @@ func peer_is_bootstrap(id string) bool {
 	return false
 }
 
+// peer_is_pair returns true if the peer ID is in the local pair set.
+// Pair members are our own infrastructure (whole-server replication
+// partners we explicitly chose to pair with) — the inbound stream
+// rate limit is anti-DoS for unknown peers and shouldn't throttle
+// them. During bulk bootstrap the file-scope driver can legitimately
+// fire >100 chunk-fetch streams per second on a fast local network,
+// and rate-limiting them stalls the bootstrap with a flood of
+// "P2P rate limited peer" log lines.
+func peer_is_pair(id string) bool {
+	if id == "" {
+		return false
+	}
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists("select 1 from pair where peer=?", id)
+	return exists
+}
+
 // Add some peers we already know about from the database
 func peers_add_from_db(limit int) {
 	var ps []Peer

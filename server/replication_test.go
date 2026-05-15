@@ -79,8 +79,8 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_bootstrap_manifest_res := replication_emit_bootstrap_file_manifest_result
 	orig_file_chunk_fetch := bootstrap_file_chunk_fetch
 	orig_file_scope_driver := bootstrap_file_scope_driver
-	orig_emit_bootstrap_db_chunk := replication_emit_bootstrap_db_chunk
-	orig_emit_bootstrap_db_snap_req := replication_emit_bootstrap_db_snapshot_request
+	orig_db_fetch := bootstrap_db_fetch
+	orig_db_scope_driver := bootstrap_db_scope_driver
 	orig_emit_bootstrap_db_manifest_req := replication_emit_bootstrap_db_manifest_request
 	orig_emit_bootstrap_db_manifest_res := replication_emit_bootstrap_db_manifest_result
 	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
@@ -89,8 +89,8 @@ func setup_replication_test(t *testing.T) func() {
 		return nil, nil
 	}
 	bootstrap_file_scope_driver = func(peer, scope string, needed []BootstrapFileEntry) {}
-	replication_emit_bootstrap_db_chunk = func(peer string, req *BootstrapDBSnapshotRequest, offset int64, data []byte, eof bool) {}
-	replication_emit_bootstrap_db_snapshot_request = func(peer, scope, user, app, db string) {}
+	bootstrap_db_fetch = func(peer, scope, user, app, db string) error { return nil }
+	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) {}
 	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
 	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}
 
@@ -103,8 +103,8 @@ func setup_replication_test(t *testing.T) func() {
 		replication_emit_bootstrap_file_manifest_result = orig_emit_bootstrap_manifest_res
 		bootstrap_file_chunk_fetch = orig_file_chunk_fetch
 		bootstrap_file_scope_driver = orig_file_scope_driver
-		replication_emit_bootstrap_db_chunk = orig_emit_bootstrap_db_chunk
-		replication_emit_bootstrap_db_snapshot_request = orig_emit_bootstrap_db_snap_req
+		bootstrap_db_fetch = orig_db_fetch
+		bootstrap_db_scope_driver = orig_db_scope_driver
 		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req
 		replication_emit_bootstrap_db_manifest_result = orig_emit_bootstrap_db_manifest_res
 		replication_pair_backfill = orig_pair_backfill

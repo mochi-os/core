@@ -288,42 +288,25 @@ func queue_check_ack_timeout() {
 		queue_next_retry(0), stuck)
 }
 
-// Check queue for messages to a specific entity (called when entity location discovered)
+// queue_check_entity is called when an entity's location is discovered.
+// Nudges the queue manager — the single processing goroutine will pick
+// up any rows targeted at the entity in its next pass.
+//
+// Earlier versions ran this in a fresh goroutine that re-scanned the
+// queue and re-sent rows itself. That meant multiple discovery events
+// fired concurrent SELECT * FROM queue scans, each cloning every row's
+// content/data blob via sqlx → bytes.Clone (the live capture showed
+// 4.7 GB pinned across 8 stacked goroutines after the source emitted a
+// 3.7 MB manifest-result for the 21,612-entry apps scope). Funnelling
+// through queue_wake removes that fan-out: one goroutine, one scan.
 func queue_check_entity(entity string) {
-	db := db_open("db/queue.db")
-
-	var entries []QueueEntry
-	err := db.scans(&entries, "select * from queue where type = 'direct' and to_entity = ? and status = 'pending' limit 10", entity)
-	if err != nil {
-		warn("Database error checking queue for entity %q: %v", entity, err)
-		return
-	}
-
-	for _, q := range entries {
-		if queue_send_direct(&q) {
-			db.exec("delete from queue where id = ?", q.ID)
-			debug("Queue direct %q sent to entity %q", q.ID, entity)
-		}
-	}
+	queue_wake()
 }
 
-// Check queue for messages to a specific peer (called when peer discovered)
+// queue_check_peer is called when a peer is discovered. Same design
+// as queue_check_entity — nudge the queue manager, don't fan out.
 func queue_check_peer(peer string) {
-	db := db_open("db/queue.db")
-
-	var entries []QueueEntry
-	err := db.scans(&entries, "select * from queue where type = 'direct' and target = ? and status = 'pending' limit 10", peer)
-	if err != nil {
-		warn("Database error checking queue for peer %q: %v", peer, err)
-		return
-	}
-
-	for _, q := range entries {
-		if queue_send_direct(&q) {
-			db.exec("delete from queue where id = ?", q.ID)
-			debug("Queue direct %q sent to peer %q", q.ID, peer)
-		}
-	}
+	queue_wake()
 }
 
 // Clean up old entries

@@ -28,6 +28,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -253,6 +254,27 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/replication/progress", admin_replication_progress)
 	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
 	admin.POST("/replication/resync", admin_replication_resync)
+
+	// pprof endpoints — admin-socket only, no separate port. Peer-cred
+	// auth gates access. Useful for diagnosing memory bloat / goroutine
+	// leaks during replication tests:
+	//   mochictl -s admin.sock raw GET /_/admin/debug/pprof/heap > heap.pb.gz
+	//   go tool pprof heap.pb.gz
+	// curl -s --unix-socket admin.sock http://x/_/admin/debug/pprof/<profile>
+	// is the lower-level form for ad-hoc captures.
+	debug := r.Group("/_/admin/debug/pprof")
+	debug.GET("/", gin.WrapF(pprof.Index))
+	debug.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+	debug.GET("/profile", gin.WrapF(pprof.Profile))
+	debug.GET("/symbol", gin.WrapF(pprof.Symbol))
+	debug.POST("/symbol", gin.WrapF(pprof.Symbol))
+	debug.GET("/trace", gin.WrapF(pprof.Trace))
+	debug.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
+	debug.GET("/heap", gin.WrapH(pprof.Handler("heap")))
+	debug.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+	debug.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
+	debug.GET("/block", gin.WrapH(pprof.Handler("block")))
+	debug.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
 }
 
 // -- Audit middleware ------------------------------------------------------

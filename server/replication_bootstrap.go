@@ -73,6 +73,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Bootstrap scope names. Used as the `scope` key in
@@ -315,8 +316,12 @@ func bootstrap_pending_add(scope, peer string, delta int64) {
 // bootstrap_pending_decrement atomically subtracts 1 from the (scope,
 // peer) row's pending counter. If the resulting count is 0 (or
 // negative — defensive against unexpected over-decrement), the row
-// transitions to state='done'. Called from the chunk handlers after
-// a successful EOF write.
+// transitions to state='done' AND triggers an immediate drain of the
+// per-app `pending` op buffer (so any ops that arrived during the
+// transfer window — and were marked ApplyDeferred because the target
+// user / DB wasn't local yet — apply immediately instead of waiting
+// up to 30 s for the next replication_manager tick). Called from the
+// chunk handlers after a successful EOF write.
 //
 // Locks bootstrap_pending_lock so concurrent drivers don't race the
 // read/modify/write of `position` and lose decrements.
@@ -325,15 +330,16 @@ func bootstrap_pending_add(scope, peer string, delta int64) {
 // returned value is mostly for tests; callers don't need it.
 func bootstrap_pending_decrement(scope, peer string) int64 {
 	bootstrap_pending_lock.Lock()
-	defer bootstrap_pending_lock.Unlock()
 	rdb := db_open("db/replication.db")
 	row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", scope, peer)
 	if row == nil {
+		bootstrap_pending_lock.Unlock()
 		return -1
 	}
 	state, _ := row["state"].(string)
 	if state == bootstrap_state_done {
 		// Already complete — nothing to decrement.
+		bootstrap_pending_lock.Unlock()
 		return 0
 	}
 	positionStr, _ := row["position"].(string)
@@ -342,9 +348,14 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 	if count <= 0 {
 		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(peer, scope)
+		bootstrap_pending_lock.Unlock()
+		// Drain replication.db.pending now that the scope is done.
+		// Cheap: typical post-bootstrap pending depth is <100.
+		go replication_pending_drain()
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
+	bootstrap_pending_lock.Unlock()
 	return count
 }
 
@@ -767,9 +778,42 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 			audit_replication_bootstrap_scope_done(originPeer, res.Scope)
 		}
 		bootstrap_pending_lock.Unlock()
+		if settle {
+			// Same rationale as bootstrap_pending_decrement: drain
+			// deferred ops promptly when a scope settles.
+			go replication_pending_drain()
+		}
 	}
 	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q page-entries=%d needed=%d done=%v from=%q",
 		res.Scope, res.Prefix, len(res.Entries), len(needed), res.Done, originPeer)
+}
+
+// bootstrap_chunk_fetch_with_retry wraps bootstrap_file_chunk_fetch
+// with bounded exponential-backoff retry for transient stream errors.
+// Backoff: 1s, 2s, 4s, capped at 4 attempts. Matches the plan's
+// "5 s → 60 s cap" intent for whole-bootstrap retries, scaled down
+// because chunk fetches are individual RPCs; total worst-case retry
+// budget is ~7 s before giving up.
+//
+// The receiver's driver gives up on a file after this returns an
+// error and decrements the pending counter (so the scope can settle),
+// then the operator's `mochictl replication resync` picks up the
+// remaining files on a re-run.
+func bootstrap_chunk_fetch_with_retry(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
+		}
+		resp, err := bootstrap_file_chunk_fetch(peer, scope, path, offset, length)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		debug("Bootstrap chunk-fetch retry: scope=%q path=%q offset=%d attempt=%d err=%v",
+			scope, path, offset, attempt+1, err)
+	}
+	return nil, lastErr
 }
 
 // bootstrap_file_scope_driver runs in its own goroutine for one
@@ -787,9 +831,9 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 	for _, entry := range needed {
 		ok := true
 		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
-			resp, err := bootstrap_file_chunk_fetch(peer, scope, req.Path, req.Offset, req.Length)
+			resp, err := bootstrap_chunk_fetch_with_retry(peer, scope, req.Path, req.Offset, req.Length)
 			if err != nil {
-				info("Bootstrap file-scope driver: fetch failed (scope=%q path=%q offset=%d from=%q): %v",
+				info("Bootstrap file-scope driver: fetch failed after retries (scope=%q path=%q offset=%d from=%q): %v",
 					scope, req.Path, req.Offset, peer, err)
 				ok = false
 				break
@@ -1210,9 +1254,28 @@ var bootstrap_db_scope_driver = bootstrap_db_scope_driver_impl
 
 func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEntry) {
 	for _, entry := range entries {
-		if err := bootstrap_db_fetch(peer, scope, entry.User, entry.App, entry.DB); err != nil {
-			info("Bootstrap db-scope driver: fetch failed (scope=%q user=%q app=%q db=%q from=%q): %v",
-				scope, entry.User, entry.App, entry.DB, peer, err)
+		var lastErr error
+		// Bounded exponential-backoff retry — same shape as the file
+		// chunk-fetch retry. DB transfers are bigger so each retry is
+		// more expensive, but transient flow-control or libp2p stream
+		// hiccups are recoverable and a single attempt's failure
+		// shouldn't strand a whole DB until operator resync.
+		for attempt := 0; attempt < 4; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
+				debug("Bootstrap db-scope driver retry: scope=%q user=%q app=%q db=%q attempt=%d",
+					scope, entry.User, entry.App, entry.DB, attempt+1)
+			}
+			if err := bootstrap_db_fetch(peer, scope, entry.User, entry.App, entry.DB); err != nil {
+				lastErr = err
+				continue
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr != nil {
+			info("Bootstrap db-scope driver: fetch failed after retries (scope=%q user=%q app=%q db=%q from=%q): %v",
+				scope, entry.User, entry.App, entry.DB, peer, lastErr)
 		}
 		// Decrement whether the fetch succeeded or failed so the scope
 		// can settle to 'done'; the missing DB gets refetched on next
@@ -1449,6 +1512,9 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 	if len(res.Entries) == 0 {
 		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
+		// Same rationale as bootstrap_pending_decrement: drain
+		// deferred ops promptly when a scope settles.
+		go replication_pending_drain()
 		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
 			res.Scope, originPeer)
 		return

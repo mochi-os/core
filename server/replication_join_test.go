@@ -50,21 +50,27 @@ func TestReplicationJoinRequestApplyReplacesOnSecond(t *testing.T) {
 	}
 }
 
-// TestReplicationJoinRequestApplyRefusesExistingMember: a join-request
-// from a peer that's already in the pair set silently drops — no row
-// in joins.
-func TestReplicationJoinRequestApplyRefusesExistingMember(t *testing.T) {
+// TestReplicationJoinRequestApplyAcceptsExistingMember: a join-request
+// from a peer that's already in the pair set is accepted (recovery
+// flow for a replica that lost its disk and re-installed with the
+// same p2p id). The admin's Approve action handles the re-pair through
+// the existing code path (pair INSERT OR REPLACE, fresh join-approved,
+// pair-backfill).
+func TestReplicationJoinRequestApplyAcceptsExistingMember(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into pair (peer, added, role) values ('peer-B', 0, '')")
 
-	replication_join_request_apply("peer-B", &JoinRequest{})
+	replication_join_request_apply("peer-B", &JoinRequest{Label: "recovery"})
 
-	exists, _ := rdb.exists("select 1 from joins where peer='peer-B'")
-	if exists {
-		t.Error("join-request from existing pair member should be refused (no row written)")
+	row, _ := rdb.row("select label from joins where peer='peer-B'")
+	if row == nil {
+		t.Fatal("join-request from existing pair member should be stored (recovery path)")
+	}
+	if got := row["label"].(string); got != "recovery" {
+		t.Errorf("joins row label = %q, want %q", got, "recovery")
 	}
 }
 

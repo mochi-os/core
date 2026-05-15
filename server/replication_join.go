@@ -74,9 +74,17 @@ func replication_join_request_event(e *Event) {
 // replication_join_request_apply is the pure-DB half of the
 // join-request path. Upserts a row in `replication.db.joins` keyed on
 // the source peer; INSERT OR REPLACE makes the dedup mechanical (a
-// repeat from the same replica overwrites the prior row). Refuses if
-// the source peer is already an active pair member — no point pending
-// a join for someone already in the set.
+// repeat from the same replica overwrites the prior row).
+//
+// A join-request from a peer that is already in the pair set is
+// accepted (not dropped) — this is the recovery flow for a replica
+// that lost its disk and re-installed with the same p2p id. The
+// admin's Approve action runs through the same code path either way:
+// the pair INSERT OR REPLACE is a no-op for the already-present row,
+// the join-approved emit makes the replica re-run bootstrap_start, and
+// replication_pair_backfill re-seeds the sysdbs. Without this, the
+// only operator path back is to remove the pair row on the source side
+// first, which is fiddlier and unnecessary.
 func replication_join_request_apply(originPeer string, jr *JoinRequest) {
 	if originPeer == "" {
 		info("Replication join-request dropping: empty peer")
@@ -84,10 +92,6 @@ func replication_join_request_apply(originPeer string, jr *JoinRequest) {
 	}
 
 	rdb := db_open("db/replication.db")
-	if exists, _ := rdb.exists("select 1 from pair where peer=?", originPeer); exists {
-		info("Replication join-request dropping: peer %q already a pair member", originPeer)
-		return
-	}
 
 	const join_request_ttl_seconds = 600 // 10 minutes
 	received := now()

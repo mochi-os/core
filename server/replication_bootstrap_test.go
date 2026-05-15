@@ -453,7 +453,7 @@ func TestBootstrapDBSourcePathRejectsInvalid(t *testing.T) {
 		{bootstrap_scope_files, "alice", "feed", "users.db", true, "wrong scope (files)"},
 	}
 	for _, tc := range cases {
-		_, err := bootstrap_db_source_path(tc.scope, tc.user, tc.app, tc.db)
+		_, err := bootstrap_db_source_path(tc.scope, "", tc.user, tc.app, tc.db)
 		if (err != nil) != tc.wantErr {
 			t.Errorf("%s: err=%v, wantErr=%v", tc.desc, err, tc.wantErr)
 		}
@@ -477,7 +477,7 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	src.exec("insert into posts (id, body) values ('p1', 'hello world')")
 	src.exec("insert into posts (id, body) values ('p2', 'second post')")
 
-	srcPath, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "alice", "feed", "feed.db")
+	srcPath, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "", "alice", "feed", "feed.db")
 	if err != nil {
 		t.Fatalf("source path: %v", err)
 	}

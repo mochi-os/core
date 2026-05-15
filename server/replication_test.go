@@ -89,7 +89,7 @@ func setup_replication_test(t *testing.T) func() {
 		return nil, nil
 	}
 	bootstrap_file_scope_driver = func(peer, scope string, needed []BootstrapFileEntry) {}
-	bootstrap_db_fetch = func(peer, scope, user, app, db string) error { return nil }
+	bootstrap_db_fetch = func(peer, scope, path, user, app, db string) error { return nil }
 	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) {}
 	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
 	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}

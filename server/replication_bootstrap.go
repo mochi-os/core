@@ -184,9 +184,10 @@ type BootstrapFileChunk struct {
 // snapshot tempfile only lives for the lifetime of the single stream.
 type BootstrapDBFetchRequest struct {
 	Scope string `cbor:"scope"`           // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
-	User  string `cbor:"user,omitempty"`  // empty for system DBs
-	App   string `cbor:"app,omitempty"`   // empty for system DBs
-	DB    string `cbor:"db"`              // file basename, e.g. "users.db" or "feed.db"
+	Path  string `cbor:"path,omitempty"`  // relative path under data_dir (modern); preferred when set
+	User  string `cbor:"user,omitempty"`  // legacy fallback (when Path empty)
+	App   string `cbor:"app,omitempty"`   // legacy fallback (when Path empty)
+	DB    string `cbor:"db,omitempty"`    // legacy fallback (when Path empty)
 }
 
 // BootstrapDBManifestRequest is the receiver→sender ask for the list
@@ -211,10 +212,21 @@ type BootstrapDBManifestResult struct {
 // BootstrapDBEntry is one DB the source has. Comparable to a row of
 // the eventual file manifest but specialised: SQLite DBs go through
 // the snapshot protocol, not the file-chunk protocol.
+//
+// Path is the source's relative location under data_dir (e.g.
+// "users/<u>/<app>/db/<file>.db", "users/<u>/<app>/app.db",
+// "users/<u>/user.db", "db/<file>.db"). The receiver mirrors it
+// verbatim into its own data_dir. This single field replaces the
+// older User/App/DB triple which assumed a fixed users/<u>/<a>/db/
+// layout and missed per-app config DBs (users/<u>/<a>/app.db) and
+// per-user infrastructure DBs (users/<u>/user.db). User/App/DB are
+// retained for back-compat and audit log readability — the receiver
+// trusts Path when set and falls back to the legacy triple when not.
 type BootstrapDBEntry struct {
+	Path string `cbor:"path,omitempty"`
 	User string `cbor:"user,omitempty"`
 	App  string `cbor:"app,omitempty"`
-	DB   string `cbor:"db"`
+	DB   string `cbor:"db,omitempty"`
 }
 
 // BootstrapDBChunk is the sender→receiver chunk of a DB snapshot.
@@ -1004,11 +1016,26 @@ func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bo
 }
 
 // bootstrap_db_source_path returns the absolute path of the source DB
-// for a snapshot request. Per-user app DBs live at
-// users/<user>/<app>/db/<file>, system DBs live at db/<file>. The
-// file basename is validated to prevent directory traversal (only
-// `^[A-Za-z0-9_.-]+\.db$`).
-func bootstrap_db_source_path(scope, user, app, db string) (string, error) {
+// for a snapshot request.
+//
+// If `path` is non-empty it's the explicit relative path supplied by
+// the walker (e.g. "users/<u>/<app>/app.db", "users/<u>/user.db",
+// "db/queue.db"). It's validated against directory traversal and
+// joined under data_dir. This is the modern code path that covers
+// every user-tree layout (per-app data DBs in db/, per-app config DBs
+// at the app root, per-user infrastructure DBs at the user root).
+//
+// If `path` is empty we fall back to the legacy User/App/DB triple
+// shape — used by manifest entries from older senders. The legacy
+// layout is users/<user>/<app>/db/<db> for userdbs and db/<db> for
+// sysdbs.
+//
+// The file basename is validated to prevent directory traversal
+// (only `^[A-Za-z0-9_.-]+\.db$` for the bare filename).
+func bootstrap_db_source_path(scope, path, user, app, db string) (string, error) {
+	if path != "" {
+		return bootstrap_db_safe_path(path)
+	}
 	if !bootstrap_db_basename_safe(db) {
 		return "", fmt.Errorf("bootstrap: invalid db basename %q", db)
 	}
@@ -1034,8 +1061,34 @@ func bootstrap_db_source_path(scope, user, app, db string) (string, error) {
 
 // bootstrap_db_target_path mirrors bootstrap_db_source_path on the
 // receiver side. Same layout; same validation.
-func bootstrap_db_target_path(scope, user, app, db string) (string, error) {
-	return bootstrap_db_source_path(scope, user, app, db)
+func bootstrap_db_target_path(scope, path, user, app, db string) (string, error) {
+	return bootstrap_db_source_path(scope, path, user, app, db)
+}
+
+// bootstrap_db_safe_path validates a relative DB path supplied by a
+// peer manifest. Rejects empty, absolute, "..", or non-.db basenames.
+// Joins under data_dir. Used by the new Path-bearing manifest entries
+// to support per-app config DBs and per-user infrastructure DBs that
+// don't fit the historical users/<u>/<a>/db/ layout.
+func bootstrap_db_safe_path(rel string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("bootstrap: empty db path")
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("bootstrap: absolute db path %q", rel)
+	}
+	clean := filepath.Clean(rel)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("bootstrap: traversal in db path %q", rel)
+	}
+	if !bootstrap_db_basename_safe(filepath.Base(clean)) {
+		return "", fmt.Errorf("bootstrap: invalid db basename in path %q", rel)
+	}
+	// Whole-path validation: only allow the documented subtrees.
+	if !strings.HasPrefix(clean, "users/") && !strings.HasPrefix(clean, "db/") {
+		return "", fmt.Errorf("bootstrap: db path %q outside users/ or db/", rel)
+	}
+	return filepath.Join(data_dir, clean), nil
 }
 
 // bootstrap_db_basename_safe matches `^[A-Za-z0-9_.-]+\.db$` — the
@@ -1082,18 +1135,26 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 	// map[string]any); pull fields directly rather than calling
 	// e.segment which would EOF (only one request segment was sent).
 	scope, _ := e.content["scope"].(string)
+	path, _ := e.content["path"].(string)
 	user, _ := e.content["user"].(string)
 	app, _ := e.content["app"].(string)
 	db, _ := e.content["db"].(string)
 
-	if scope == bootstrap_scope_sysdbs && bootstrap_sysdb_excluded[db] {
-		info("Replication bootstrap-db-fetch rejecting: sysdb %q is server-local and must not be transferred", db)
+	// For sysdb exclusion the basename is what matters — path-bearing
+	// (modern) requests have the basename embedded in path; legacy
+	// requests have it in db.
+	basename := db
+	if path != "" {
+		basename = filepath.Base(path)
+	}
+	if scope == bootstrap_scope_sysdbs && bootstrap_sysdb_excluded[basename] {
+		info("Replication bootstrap-db-fetch rejecting: sysdb %q is server-local and must not be transferred", basename)
 		return
 	}
-	srcPath, err := bootstrap_db_source_path(scope, user, app, db)
+	srcPath, err := bootstrap_db_source_path(scope, path, user, app, db)
 	if err != nil {
-		info("Replication bootstrap-db-fetch rejecting (scope=%q user=%q app=%q db=%q from=%q): %v",
-			scope, user, app, db, e.peer, err)
+		info("Replication bootstrap-db-fetch rejecting (scope=%q path=%q user=%q app=%q db=%q from=%q): %v",
+			scope, path, user, app, db, e.peer, err)
 		return
 	}
 	if !file_exists(srcPath) {
@@ -1171,11 +1232,11 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 // Package-level alias so tests can stub the network call.
 var bootstrap_db_fetch = bootstrap_db_fetch_impl
 
-func bootstrap_db_fetch_impl(peer, scope, user, app, db string) error {
+func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if peer == "" {
 		return fmt.Errorf("bootstrap-db-fetch: empty peer")
 	}
-	target, err := bootstrap_db_target_path(scope, user, app, db)
+	target, err := bootstrap_db_target_path(scope, path, user, app, db)
 	if err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: target path: %w", err)
 	}
@@ -1211,7 +1272,7 @@ func bootstrap_db_fetch_impl(peer, scope, user, app, db string) error {
 	s.max_bytes = bootstrap_stream_max_bytes
 
 	if err := s.write(&BootstrapDBFetchRequest{
-		Scope: scope, User: user, App: app, DB: db,
+		Scope: scope, Path: path, User: user, App: app, DB: db,
 	}); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: write request: %w", err)
 	}
@@ -1263,10 +1324,10 @@ func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEnt
 		for attempt := 0; attempt < 4; attempt++ {
 			if attempt > 0 {
 				time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
-				debug("Bootstrap db-scope driver retry: scope=%q user=%q app=%q db=%q attempt=%d",
-					scope, entry.User, entry.App, entry.DB, attempt+1)
+				debug("Bootstrap db-scope driver retry: scope=%q path=%q attempt=%d",
+					scope, entry.Path, attempt+1)
 			}
-			if err := bootstrap_db_fetch(peer, scope, entry.User, entry.App, entry.DB); err != nil {
+			if err := bootstrap_db_fetch(peer, scope, entry.Path, entry.User, entry.App, entry.DB); err != nil {
 				lastErr = err
 				continue
 			}
@@ -1274,8 +1335,8 @@ func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEnt
 			break
 		}
 		if lastErr != nil {
-			info("Bootstrap db-scope driver: fetch failed after retries (scope=%q user=%q app=%q db=%q from=%q): %v",
-				scope, entry.User, entry.App, entry.DB, peer, lastErr)
+			info("Bootstrap db-scope driver: fetch failed after retries (scope=%q path=%q user=%q app=%q db=%q from=%q): %v",
+				scope, entry.Path, entry.User, entry.App, entry.DB, peer, lastErr)
 		}
 		// Decrement whether the fetch succeeded or failed so the scope
 		// can settle to 'done'; the missing DB gets refetched on next
@@ -1365,8 +1426,14 @@ func bootstrap_start(peer string) {
 }
 
 // bootstrap_walk_db_manifest enumerates every DB the source has for
-// the requested scope. For userdbs: every users/<u>/<a>/db/*.db; for
-// sysdbs: every db/*.db at the top level.
+// the requested scope. For userdbs three layouts are covered:
+//   - users/<u>/user.db          — per-user infrastructure DB
+//   - users/<u>/<app>/app.db     — per-app config DB (attachments,
+//                                  access lists, etc.)
+//   - users/<u>/<app>/db/*.db    — per-app data DB (feeds.db etc.)
+//
+// For sysdbs: every db/*.db at the top level (excluding the
+// server-local DBs in bootstrap_sysdb_excluded).
 //
 // Only files matching bootstrap_db_basename_safe are included — junk
 // files in the db dir are ignored. Symlinks and non-regular entries
@@ -1389,16 +1456,55 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 			}
 			user := u.Name()
 			userDir := filepath.Join(usersRoot, user)
-			appEntries, err := os.ReadDir(userDir)
+			// Per-user infrastructure DBs at the user root
+			// (users/<u>/*.db — e.g. user.db).
+			rootEntries, err := os.ReadDir(userDir)
 			if err != nil {
 				continue
 			}
-			for _, a := range appEntries {
+			for _, r := range rootEntries {
+				if !r.Type().IsRegular() {
+					continue
+				}
+				name := r.Name()
+				if !bootstrap_db_basename_safe(name) {
+					continue
+				}
+				entries = append(entries, BootstrapDBEntry{
+					Path: filepath.Join("users", user, name),
+					User: user,
+					DB:   name,
+				})
+			}
+			for _, a := range rootEntries {
 				if !a.IsDir() {
 					continue
 				}
 				app := a.Name()
-				dbDir := filepath.Join(userDir, app, "db")
+				appDir := filepath.Join(userDir, app)
+				// Per-app config DB at the app root
+				// (users/<u>/<app>/app.db).
+				appRootEntries, err := os.ReadDir(appDir)
+				if err != nil {
+					continue
+				}
+				for _, ar := range appRootEntries {
+					if !ar.Type().IsRegular() {
+						continue
+					}
+					name := ar.Name()
+					if !bootstrap_db_basename_safe(name) {
+						continue
+					}
+					entries = append(entries, BootstrapDBEntry{
+						Path: filepath.Join("users", user, app, name),
+						User: user,
+						App:  app,
+						DB:   name,
+					})
+				}
+				// Per-app data DBs in users/<u>/<app>/db/.
+				dbDir := filepath.Join(appDir, "db")
 				dbFiles, err := os.ReadDir(dbDir)
 				if err != nil {
 					continue
@@ -1411,7 +1517,12 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 					if !bootstrap_db_basename_safe(name) {
 						continue
 					}
-					entries = append(entries, BootstrapDBEntry{User: user, App: app, DB: name})
+					entries = append(entries, BootstrapDBEntry{
+						Path: filepath.Join("users", user, app, "db", name),
+						User: user,
+						App:  app,
+						DB:   name,
+					})
 				}
 			}
 		}
@@ -1435,7 +1546,10 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 			if bootstrap_sysdb_excluded[name] {
 				continue
 			}
-			entries = append(entries, BootstrapDBEntry{DB: name})
+			entries = append(entries, BootstrapDBEntry{
+				Path: filepath.Join("db", name),
+				DB:   name,
+			})
 		}
 	default:
 		return nil, fmt.Errorf("bootstrap: scope %q is not db-manifest-based", scope)

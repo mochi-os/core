@@ -889,6 +889,28 @@ func replication_bootstrap_file_chunk_fetch_event(e *Event) {
 // larger chunks would just add latency on retries.
 const bootstrap_max_chunk_size = 1 << 20
 
+// bootstrap_stream_timeout is the per-{read,write} deadline used for
+// the long-lived sync-stream RPCs that carry bulk-bootstrap chunks.
+// The framework default (30s, see stream.read / stream.write) is
+// per-call, not per-stream — but a single 1 MiB write on a long DB
+// transfer can sit under flow-control backpressure for >30s when the
+// receiver's disk lags behind the sender's network throughput. The
+// 948 MB feeds.db transfer in live testing tripped this at offset
+// 100 MiB. Five minutes is generous: per-call, not cumulative — each
+// chunk gets a fresh 5-min window. If a write actually does block
+// for 5 minutes the underlying transport is broken; failing then is
+// correct.
+const bootstrap_stream_timeout = 300
+
+// bootstrap_stream_max_bytes caps the receiver's decoder LimitReader
+// for a bulk-bootstrap DB transfer. Default cbor_max_size (100 MB) is
+// cumulative across the stream's lifetime; multi-GB DB transfers hit
+// it well before the snapshot ends. 50 GiB covers the per-DB cap
+// (db_max_page_count × 4 KiB = 25 GiB at the current setting) with
+// 2x headroom. Per-element CBOR limits (MaxMapPairs, MaxArrayElements,
+// MaxNestedLevels) still bound any single message's structure.
+const bootstrap_stream_max_bytes = 50 * 1024 * 1024 * 1024
+
 // bootstrap_write_chunk writes a received chunk to disk on the
 // receiver. Bytes go to `<final>.partial` so an interrupted transfer
 // can be resumed without overwriting an intact file. On EOF the
@@ -1058,6 +1080,11 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 	}
 	defer f.Close()
 
+	// Bulk DB transfer can run for minutes on a large user DB; bump
+	// the per-call write deadline so flow-control backpressure
+	// from a slow-disk receiver doesn't trip the 30s default.
+	e.stream.timeout.write = bootstrap_stream_timeout
+
 	buf := make([]byte, bootstrap_max_chunk_size)
 	var offset int64
 	for {
@@ -1126,6 +1153,18 @@ func bootstrap_db_fetch_impl(peer, scope, user, app, db string) error {
 		return fmt.Errorf("bootstrap-db-fetch: open stream: %w", err)
 	}
 	defer s.close()
+
+	// Mirror the source-side bump: long DB transfers can have a gap
+	// between chunks if the source is reading a slow disk or the
+	// libp2p stream is under backpressure. The default 30s read
+	// deadline trips spuriously on multi-GB DBs.
+	s.timeout.read = bootstrap_stream_timeout
+	// Cumulative-bytes cap: the default cbor_max_size (100 MB) is the
+	// io.LimitReader wrapping the decoder for the stream's lifetime.
+	// A multi-GB DB transfer hits it at offset 100 MB and the decoder
+	// returns EOF. Bump to bootstrap_stream_max_bytes so the whole DB
+	// fits in one stream.
+	s.max_bytes = bootstrap_stream_max_bytes
 
 	if err := s.write(&BootstrapDBFetchRequest{
 		Scope: scope, User: user, App: app, DB: db,

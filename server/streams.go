@@ -49,6 +49,14 @@ type Stream struct {
 		read  int
 		write int
 	}
+	// max_bytes overrides the cumulative LimitReader cap used to
+	// wrap the CBOR decoder. Zero = use cbor_max_size (100 MB total
+	// for the stream's lifetime); set to a larger value before the
+	// first read on streams that legitimately carry hundreds of MB
+	// or more (bulk-bootstrap DB transfer). Must be set BEFORE the
+	// first read or read_headers call, since the decoder + its
+	// underlying LimitReader are constructed lazily.
+	max_bytes     int64
 	on_close      func() // Called once when stream is closed (e.g. release semaphore)
 	on_close_once sync.Once
 }
@@ -349,7 +357,7 @@ func (s *Stream) read(v any) error {
 	}
 
 	if s.decoder == nil {
-		s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
+		s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, s.cbor_limit()))
 	}
 	err := s.decoder.Decode(v)
 	if err != nil {
@@ -358,6 +366,19 @@ func (s *Stream) read(v any) error {
 
 	// debug("Stream %d read segment: %+v", s.id, v)
 	return nil
+}
+
+// cbor_limit returns the cumulative byte limit applied to the CBOR
+// decoder via io.LimitReader. The default (cbor_max_size) caps total
+// decoder reads at 100 MB for a stream's lifetime, which is sufficient
+// for normal app-message streams but breaks bulk-bootstrap DB transfer
+// (a 948 MB feeds.db hits the cap at offset ~100 MB). Streams that
+// legitimately carry more bytes set s.max_bytes before the first read.
+func (s *Stream) cbor_limit() int64 {
+	if s.max_bytes > 0 {
+		return s.max_bytes
+	}
+	return int64(cbor_max_size)
 }
 
 // Read headers from a stream (limited to 4KB)
@@ -378,11 +399,11 @@ func (s *Stream) read_headers(h *Headers) error {
 	}
 
 	// Use a size-limited decoder (must be called before read())
-	// Use cbor_max_size since the same decoder is reused for content and segments
+	// Use s.cbor_limit() since the same decoder is reused for content and segments
 	if s.decoder != nil {
 		return fmt.Errorf("stream %d: read_headers must be called before read", s.id)
 	}
-	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, cbor_max_size))
+	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, s.cbor_limit()))
 
 	err := s.decoder.Decode(h)
 	if err != nil {

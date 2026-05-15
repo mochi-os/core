@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -260,27 +259,8 @@ func update_install_run(version string) error {
 	msi_log := path + ".log"
 
 	info("Server update: launching msiexec for %s (log: %s)", path, msi_log)
-	cmd := exec.Command(
-		"cmd", "/c",
-		"ping -n "+strconv.Itoa(update_install_pre_wait+1)+" 127.0.0.1 > NUL & "+
-			`msiexec /i "`+path+`" /quiet /norestart /l*v "`+msi_log+`"`,
-	)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	// Escape the service's job object on Windows — without this, the
-	// service's own exit (a few milliseconds after this function
-	// returns) tears down the job and kills cmd.exe, ping, and msiexec
-	// before msiexec has a chance to run. Cross-platform stub on other
-	// OSes (the self-install path is Windows-only anyway).
-	update_install_detach(cmd)
-	if err := cmd.Start(); err != nil {
+	if err := update_install_spawn(path, msi_log); err != nil {
 		return fmt.Errorf("spawn msiexec: %v", err)
-	}
-	// Release the Go-side os.Process so the service exit doesn't wait
-	// on a Wait() call we're never going to make.
-	if err := cmd.Process.Release(); err != nil {
-		warn("Server update: cmd.Process.Release: %v", err)
 	}
 
 	info("Server update: shutting down for self-install")

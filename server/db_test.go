@@ -624,10 +624,11 @@ func TestStarlarkSQLPrefixBlocked(t *testing.T) {
 	}
 }
 
-// Test database page count limit is 1GB
+// Test database page-count limit. 4 KB page size × 6,553,600 pages = 25 GB.
+// Bumped from 262_144 pages (1 GB) on 2026-05-15 so legitimate per-user
+// app DBs (e.g. feeds.db on heavy users) don't hit the cap.
 func TestDbMaxPageCountConstant(t *testing.T) {
-	// 1GB / 4KB = 262144 pages
-	expectedLimit := 262144
+	expectedLimit := 6_553_600
 	if db_max_page_count != expectedLimit {
 		t.Errorf("db_max_page_count = %d, expected %d", db_max_page_count, expectedLimit)
 	}

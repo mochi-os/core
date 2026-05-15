@@ -352,8 +352,21 @@ func db_user(u *User, name string) *DB {
 	return db
 }
 
-// Maximum database size per app per user (1GB / 4KB page size = 262144 pages)
-const db_max_page_count = 262144
+// Per-database page-count cap applied to every SQLite connection via
+// the db_setup_conn PRAGMA. Acts as a safety net against runaway growth
+// — at the cap SQLite returns SQLITE_FULL, which the must() wrapper
+// turns into a panic; operator wakes up before the disk does.
+//
+// Bumped 2026-05-15 from 262_144 pages (1 GB) to 6_553_600 pages
+// (25 GB) so legitimate per-user app DBs can grow past 1 GB. A heavy
+// feeds.db hit ~2 GB in alpha testing; rough projection for a
+// medium-sized server is a few users in the 10-25 GB range, the rest
+// well under 100 MB. Headroom for the busy outliers without removing
+// the safety net for actually-runaway code.
+//
+// Total max disk per server is approximately (number of DB files) ×
+// 25 GB, but in practice only a handful of DBs ever approach the cap.
+const db_max_page_count = 6_553_600
 
 // db_app opens a database file for an app, creating, upgrading, or downgrading it as necessary.
 // App databases are stored in users/{user_id}/{app_id}/db/{file.db}.

@@ -72,6 +72,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Bootstrap scope names. Used as the `scope` key in
@@ -263,13 +264,52 @@ func bootstrap_clear(scope, peer string) {
 	rdb.exec("delete from bootstrap where scope=? and peer=?", scope, peer)
 }
 
+// bootstrap_pending_lock serialises every read-modify-write of a
+// (scope, peer) bootstrap row's `position` field. Paginated manifest
+// pagination spawns one driver per page; each driver decrements the
+// shared counter as its files land. Without this mutex the parallel
+// decrements race (read position, subtract 1, write back) and lose
+// updates — observed live: with the apps scope's 21,612 files split
+// across 5 driver goroutines, the counter settled at ~2,100 instead
+// of 0 despite every file landing on the receiver.
+//
+// One global mutex is fine: bootstrap traffic is rare (per-pair, not
+// per-request) and the protected region is microseconds of SQLite
+// work. A per-(scope, peer) mutex would scale better in theory but
+// is unnecessary churn.
+var bootstrap_pending_lock sync.Mutex
+
 // bootstrap_set_pending sets the (scope, peer) row's pending-file
 // counter and transitions to 'active'. Called when a manifest result
 // arrives with N entries the receiver needs to fetch — that N is the
 // number of files (or DBs) whose EOF chunk we expect to land before
 // the scope is complete.
 func bootstrap_set_pending(scope, peer string, count int64) {
+	bootstrap_pending_lock.Lock()
+	defer bootstrap_pending_lock.Unlock()
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
+}
+
+// bootstrap_pending_add increases the (scope, peer) row's pending
+// counter by `delta` and transitions to 'active'. Used by the
+// manifest-result receiver when manifests are paginated — each page
+// adds its own needed-files contribution rather than overwriting the
+// total. Existing 'done' rows are left alone (a late page after the
+// scope already settled is a no-op).
+func bootstrap_pending_add(scope, peer string, delta int64) {
+	bootstrap_pending_lock.Lock()
+	defer bootstrap_pending_lock.Unlock()
+	rdb := db_open("db/replication.db")
+	row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", scope, peer)
+	var current int64
+	if row != nil {
+		if state, _ := row["state"].(string); state == bootstrap_state_done {
+			return
+		}
+		positionStr, _ := row["position"].(string)
+		current, _ = strconv.ParseInt(positionStr, 10, 64)
+	}
+	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(current+delta, 10))
 }
 
 // bootstrap_pending_decrement atomically subtracts 1 from the (scope,
@@ -278,9 +318,14 @@ func bootstrap_set_pending(scope, peer string, count int64) {
 // transitions to state='done'. Called from the chunk handlers after
 // a successful EOF write.
 //
+// Locks bootstrap_pending_lock so concurrent drivers don't race the
+// read/modify/write of `position` and lose decrements.
+//
 // Returns the remaining count (or -1 if the row didn't exist). The
 // returned value is mostly for tests; callers don't need it.
 func bootstrap_pending_decrement(scope, peer string) int64 {
+	bootstrap_pending_lock.Lock()
+	defer bootstrap_pending_lock.Unlock()
 	rdb := db_open("db/replication.db")
 	row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", scope, peer)
 	if row == nil {
@@ -502,10 +547,21 @@ func replication_emit_bootstrap_file_manifest_result_impl(peer, scope, prefix st
 	m.send_peer(peer)
 }
 
+// bootstrap_manifest_page_size caps the number of entries in any one
+// BootstrapFileManifestResult payload. The receiver's CBOR decoder
+// rejects arrays over 10,000 elements (cbor_max_elements), and the
+// per-message queue.db row also doesn't want to be tens of MB even
+// briefly (the queue_check fan-out is fixed but bytes still get
+// cloned during scan + send). The apps scope on a fully-populated
+// server is 21k+ files (every published app's web/dist tree), so a
+// single-page manifest is not viable. 5000 entries per page gives
+// ~3-5 pages for the apps scope, each ~500-900 KB CBOR.
+const bootstrap_manifest_page_size = 5000
+
 // replication_bootstrap_file_manifest_request_event is the sender's
-// receive handler — walks the requested path prefix, returns a
-// BootstrapFileManifestResult page with the file list (V2: single
-// page, no pagination yet).
+// receive handler — walks the requested path prefix, returns one or
+// more BootstrapFileManifestResult pages. Each page carries up to
+// bootstrap_manifest_page_size entries; the final page has Done=true.
 func replication_bootstrap_file_manifest_request_event(e *Event) {
 	var req BootstrapFileManifestRequest
 	if !e.segment(&req) {
@@ -526,7 +582,20 @@ func replication_bootstrap_file_manifest_request_event(e *Event) {
 	}
 	debug("Replication bootstrap-file-manifest-request: scope=%q prefix=%q entries=%d from=%q",
 		req.Scope, req.Prefix, len(entries), e.peer)
-	replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, entries, true)
+	// Empty manifest is still a single page with Done=true so the
+	// receiver knows to transition the scope to 'done'.
+	if len(entries) == 0 {
+		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, nil, true)
+		return
+	}
+	for i := 0; i < len(entries); i += bootstrap_manifest_page_size {
+		end := i + bootstrap_manifest_page_size
+		if end > len(entries) {
+			end = len(entries)
+		}
+		done := end == len(entries)
+		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, entries[i:end], done)
+	}
 }
 
 // bootstrap_diff_manifest returns the subset of `remote` entries whose
@@ -664,22 +733,43 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 			res.Scope, res.Prefix, originPeer, err)
 		return
 	}
-	if len(needed) == 0 {
-		if res.Done {
+	// Manifests are paginated. Each page contributes its own needed-
+	// files count to the pending counter; the per-scope driver
+	// decrements it as each file lands. The final page (Done=true)
+	// triggers a settle check: if no files were ever needed across all
+	// pages, the scope transitions to 'done' here. Otherwise the last
+	// pending decrement transitions it.
+	if len(needed) > 0 {
+		bootstrap_pending_add(res.Scope, originPeer, int64(len(needed)))
+		go bootstrap_file_scope_driver(originPeer, res.Scope, needed)
+	}
+	if res.Done {
+		// Read position + state under the same lock the decrement
+		// uses, so a concurrent decrement in flight at the moment the
+		// final page lands can't lead to a missed settle-to-done.
+		bootstrap_pending_lock.Lock()
+		rdb := db_open("db/replication.db")
+		row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", res.Scope, originPeer)
+		var settle bool
+		if row == nil {
+			// No row at all — no work was ever queued.
+			settle = true
+		} else {
+			state, _ := row["state"].(string)
+			positionStr, _ := row["position"].(string)
+			count, _ := strconv.ParseInt(positionStr, 10, 64)
+			// Pending=0 + Done=true means every needed file across all
+			// pages is already local (or nothing was needed at all).
+			settle = state != bootstrap_state_done && count == 0
+		}
+		if settle {
 			bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
 			audit_replication_bootstrap_scope_done(originPeer, res.Scope)
 		}
-		debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q entries=%d already up-to-date from=%q",
-			res.Scope, res.Prefix, len(res.Entries), originPeer)
-		return
+		bootstrap_pending_lock.Unlock()
 	}
-
-	// Seed the pending-file counter so the driver can update state
-	// as files complete; transitions to 'done' on last EOF.
-	bootstrap_set_pending(res.Scope, originPeer, int64(len(needed)))
-	go bootstrap_file_scope_driver(originPeer, res.Scope, needed)
-	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q driving %d/%d from=%q",
-		res.Scope, res.Prefix, len(needed), len(res.Entries), originPeer)
+	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q page-entries=%d needed=%d done=%v from=%q",
+		res.Scope, res.Prefix, len(res.Entries), len(needed), res.Done, originPeer)
 }
 
 // bootstrap_file_scope_driver runs in its own goroutine for one
@@ -760,16 +850,27 @@ func replication_bootstrap_file_chunk_fetch_event(e *Event) {
 	path, _ := e.content["path"].(string)
 	offset := row_int(e.content, "offset")
 	length := row_int(e.content, "length")
-	if length <= 0 || length > bootstrap_max_chunk_size {
-		info("Replication bootstrap-file-chunk-fetch rejecting: length %d out of range (1..%d) from=%q",
+	// Length=0 is the "empty file marker" produced by
+	// bootstrap_chunk_requests_for_entry for zero-byte files — the
+	// caller still wants the path created locally, so we reply with
+	// EOF=true and empty Data instead of rejecting.
+	if length < 0 || length > bootstrap_max_chunk_size {
+		info("Replication bootstrap-file-chunk-fetch rejecting: length %d out of range (0..%d) from=%q",
 			length, bootstrap_max_chunk_size, e.peer)
 		return
 	}
-	data, eof, err := bootstrap_read_chunk(scope, path, offset, length)
-	if err != nil {
-		info("Replication bootstrap-file-chunk-fetch: read failed (scope=%q path=%q offset=%d from=%q): %v",
-			scope, path, offset, e.peer, err)
-		return
+	var data []byte
+	var eof bool
+	if length == 0 {
+		eof = true
+	} else {
+		var err error
+		data, eof, err = bootstrap_read_chunk(scope, path, offset, length)
+		if err != nil {
+			info("Replication bootstrap-file-chunk-fetch: read failed (scope=%q path=%q offset=%d from=%q): %v",
+				scope, path, offset, e.peer, err)
+			return
+		}
 	}
 	resp := &BootstrapFileChunk{
 		Scope: scope, Path: path, Offset: offset, Data: data, EOF: eof,

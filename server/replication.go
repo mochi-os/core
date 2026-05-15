@@ -86,6 +86,30 @@ type KeysTransfer struct {
 	Methods  string       `cbor:"methods,omitempty"`
 	Status   string       `cbor:"status,omitempty"`
 	Entities []KeysEntity `cbor:"entities"`
+	// OAuth provider links the user has (GitHub, Google, etc.). Each
+	// entry is a row from the source's users.db.oauth, minus the
+	// per-host integer PK. The receiver re-keys to its own local
+	// users.uid at apply time (the uid is per-host; (provider, subject)
+	// is the cross-host stable lookup key). Without this, a user who
+	// signed up via OAuth on the source can't log in on the replica:
+	// oauth_login finds no row for (provider, subject), falls back to
+	// the email-collision branch, and refuses the login with
+	// "An account with that email already exists. Sign in first..." —
+	// a dead end because the user has no other auth method to use.
+	OAuth []KeysOauth `cbor:"oauth,omitempty"`
+}
+
+// KeysOauth is one OAuth provider link inside a KeysTransfer payload.
+// Mirrors the columns of users.db.oauth except the per-host integer PK
+// (recreated on the receiver) and the user column (re-keyed to the
+// receiver's local uid for the matching username).
+type KeysOauth struct {
+	Provider string `cbor:"provider"`
+	Subject  string `cbor:"subject"`
+	Email    string `cbor:"email,omitempty"`
+	Verified bool   `cbor:"verified,omitempty"`
+	Name     string `cbor:"name,omitempty"`
+	Created  int64  `cbor:"created"`
 }
 
 // FileSync is the wire payload for a small-file replication op. For
@@ -780,8 +804,24 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 		inserted++
 	}
 
-	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d (from peer %q)",
-		kt.Username, len(kt.Entities), inserted, originPeer)
+	// Replicate OAuth provider links. Re-keyed to the local userUID;
+	// (provider, subject) is the unique constraint and is stable across
+	// hosts, so the INSERT OR IGNORE makes a re-applied keys-transfer
+	// idempotent. Without this, a user who signed up via OAuth on the
+	// source can't log in on the replica (oauth_login lookup misses,
+	// falls through to the email-collision refusal).
+	for _, link := range kt.OAuth {
+		if link.Provider == "" || link.Subject == "" {
+			continue
+		}
+		udb.exec(`insert or ignore into oauth
+			(user, provider, subject, email, verified, name, created)
+			values (?, ?, ?, ?, ?, ?, ?)`,
+			userUID, link.Provider, link.Subject, link.Email, boolint(link.Verified), link.Name, link.Created)
+	}
+
+	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d (from peer %q)",
+		kt.Username, len(kt.Entities), inserted, len(kt.OAuth), originPeer)
 
 	// A new user (or new entities) just landed — any session inserts
 	// previously deferred while waiting on this user now have a fighting
@@ -830,6 +870,26 @@ func replication_transfer_keys(userUID string, peer string) bool {
 		Role:     u.Role,
 		Methods:  u.Methods,
 		Status:   u.Status,
+	}
+	if oauthRows, err := udb.rows("select provider, subject, email, verified, name, created from oauth where user=?", userUID); err == nil {
+		for _, or := range oauthRows {
+			link := KeysOauth{
+				Provider: toString(or["provider"]),
+				Subject:  toString(or["subject"]),
+				Email:    toString(or["email"]),
+				Name:     toString(or["name"]),
+			}
+			if v, ok := or["verified"].(int64); ok {
+				link.Verified = v != 0
+			}
+			if v, ok := or["created"].(int64); ok {
+				link.Created = v
+			}
+			if link.Provider == "" || link.Subject == "" {
+				continue
+			}
+			kt.OAuth = append(kt.OAuth, link)
+		}
 	}
 	for _, r := range rows {
 		id, _ := r["id"].(string)

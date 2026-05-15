@@ -81,6 +81,20 @@ type MembershipChange struct {
 // signature is the entire authorisation. Only somebody who already holds
 // the user's private keys can introduce the user to a new host.
 type KeysTransfer struct {
+	// UID is the source's users.uid. The receiver re-uses it verbatim
+	// so per-user filesystem paths (users/<uid>/<app>/files,
+	// users/<uid>/<app>/db) and entity ownership FKs match the
+	// bootstrap-copied data on disk. Without this, keys-transfer
+	// created a fresh local uid for each user, and the bulk-bootstrap
+	// file transfer left every per-user-app DB and file tree at the
+	// source's path — invisible to the now-different local uid.
+	// Caught live: pair-bootstrap put feeds.db at users/<source-uid>/
+	// feeds/db/feeds.db (148k posts), but the user logged in on the
+	// replica as the new local uid and saw no feeds. (Empty string
+	// allowed for backwards compatibility with per-user link callers
+	// that haven't been updated yet; receiver falls back to uid() in
+	// that case.)
+	UID      string       `cbor:"uid,omitempty"`
 	Username string       `cbor:"username"`
 	Role     string       `cbor:"role,omitempty"`
 	Methods  string       `cbor:"methods,omitempty"`
@@ -780,7 +794,16 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 			status = "active"
 		}
 
-		userUID = uid()
+		// Prefer the source's UID. The bootstrap file + DB transfer
+		// copied this user's data into users/<source-uid>/...; if we
+		// generated a fresh local uid here every per-user-app DB and
+		// file tree would be invisible to the user after login.
+		// Fall back to a freshly-minted uid only if the source didn't
+		// supply one (older per-user-link callers).
+		userUID = kt.UID
+		if userUID == "" {
+			userUID = uid()
+		}
 		if _, err := udb.internal.Exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, ?, ?)",
 			userUID, kt.Username, role, methods, status); err != nil {
 			warn("Replication keys-transfer: failed to insert user %q: %v", kt.Username, err)
@@ -866,6 +889,7 @@ func replication_transfer_keys(userUID string, peer string) bool {
 	}
 
 	kt := KeysTransfer{
+		UID:      u.UID,
 		Username: u.Username,
 		Role:     u.Role,
 		Methods:  u.Methods,

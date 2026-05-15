@@ -148,7 +148,7 @@ func entity_privacy_set(e *Entity, privacy string) error {
 	e.Privacy = privacy
 
 	if privacy == "private" {
-		db_open("db/directory.db").exec("delete from directory where id=?", e.ID)
+		db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
 		m := message(e.ID, "", "directory", "delete")
 		m.set("entity", e.ID)
 		go m.publish(false)
@@ -176,7 +176,7 @@ func entity_name_set(e *Entity, name string) error {
 
 	if e.Privacy == "public" {
 		directory_create(e)
-		db_open("db/directory.db").exec("update directory set created=? where id=?", now(), e.ID)
+		db_open("db/directory.db").exec("update entities set created=? where id=?", now(), e.ID)
 		directory_publish(e, true)
 	}
 	return nil
@@ -209,7 +209,7 @@ func (e *Entity) delete() {
 	}
 
 	// Remove from local directory
-	db_open("db/directory.db").exec("delete from directory where id=?", e.ID)
+	db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
 
 	// Remove entity
 	db.exec("delete from entities where id=?", e.ID)
@@ -493,7 +493,7 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	// Check directory (by id or fingerprint)
 	db = db_open("db/directory.db")
-	row, err = db.row("select name from directory where id=? or fingerprint=?", id, id)
+	row, err = db.row("select name from entities where id=? or fingerprint=?", id, id)
 	if err == nil && row != nil {
 		if name, ok := row["name"].(string); ok {
 			return sl.String(name), nil
@@ -645,7 +645,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// Update directory after all changes are applied
 	if changed_to_private {
 		// Remove from directory and broadcast deletion
-		db_open("db/directory.db").exec("delete from directory where id=?", id)
+		db_open("db/directory.db").exec("delete from entities where id=?", id)
 		m := message(id, "", "directory", "delete")
 		m.set("entity", id)
 		go m.publish(false)
@@ -659,7 +659,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			// by creating a blank entry early, waiting for a legitimate entity with the
 			// same name, then renaming to appear first in search results.
 			if name_changed {
-				db_open("db/directory.db").exec("update directory set created=? where id=?", now(), id)
+				db_open("db/directory.db").exec("update entities set created=? where id=?", now(), id)
 			}
 			directory_publish(&e, true)
 		}

@@ -233,10 +233,16 @@ func stream_receive(s *Stream, version int, peer string) {
 		h.From = ""
 	}
 
-	// Deduplication check: skip if we've already processed this message ID
+	// Deduplication check: skip if we've already processed this message
+	// ID. ACK gate matches the success path below — anonymous server-to-
+	// server events have From="" / To="" but still need ACKs, otherwise
+	// the sender's queue retries forever (caught live: duplicate
+	// bootstrap manifest-result messages logged "sending ACK only" but
+	// the From/To gate silently skipped the actual send, leaving 30
+	// queue rows stuck in retry-forever state on instance 1).
 	if h.ID != "" && message_seen(h.ID) {
 		debug("Stream %d duplicate message %q, sending ACK only", s.id, h.ID)
-		if h.From != "" && h.To != "" && s.writer != nil {
+		if s.writer != nil {
 			s.send_ack("ack", h.ID, h.To, h.From)
 		}
 		return
@@ -246,7 +252,10 @@ func stream_receive(s *Stream, version int, peer string) {
 	content, err := s.read_content()
 	if err != nil {
 		info("Stream %d error reading content: %v", s.id, err)
-		if h.From != "" && h.To != "" && h.ID != "" && s.writer != nil {
+		// Same gate as the success path — anonymous server-to-server
+		// events (From="") need NACKs too, otherwise the sender's queue
+		// retries forever on a permanent decode error.
+		if h.ID != "" && s.writer != nil {
 			s.send_ack("nack", h.ID, h.To, h.From)
 		}
 		return

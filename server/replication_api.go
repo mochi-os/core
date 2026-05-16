@@ -430,11 +430,29 @@ func row_string(r map[string]any, key string) string {
 	return ""
 }
 
+// row_int extracts a numeric field from a map[string]any returned by
+// a CBOR-decoded payload or a sqlite row scan. The cbor library
+// decodes non-negative integers into uint64 (not int64) when the
+// target is interface{}, so callers like the bootstrap chunk-fetch
+// handler would see length=0 for every non-empty file because the
+// uint64(903) case wasn't matched and fell through to the zero
+// return. That broke file-chunk delivery — every file landed as a
+// zero-byte file on the receiver, including 21,612 entity-id app
+// files whose empty app.json then made the published-apps loader
+// silently skip the entire installed-app set.
 func row_int(r map[string]any, key string) int64 {
 	switch v := r[key].(type) {
 	case int64:
 		return v
+	case uint64:
+		return int64(v)
 	case int:
+		return int64(v)
+	case uint:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case uint32:
 		return int64(v)
 	}
 	return 0

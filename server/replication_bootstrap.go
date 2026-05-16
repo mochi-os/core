@@ -361,14 +361,32 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(peer, scope)
 		bootstrap_pending_lock.Unlock()
-		// Drain replication.db.pending now that the scope is done.
-		// Cheap: typical post-bootstrap pending depth is <100.
-		go replication_pending_drain()
+		bootstrap_scope_settled(scope)
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
 	bootstrap_pending_lock.Unlock()
 	return count
+}
+
+// bootstrap_scope_settled is the side-effect hook fired when a
+// (scope, peer) bootstrap row transitions to state='done'. Common to
+// the pending-decrement, file-manifest-settle, and empty-db-manifest
+// paths so the post-settle work is consistent regardless of which
+// path got us there.
+//
+// Today: drain the deferred-op buffer (so ops that arrived during the
+// transfer window apply immediately instead of waiting for the next
+// replication_manager tick), and re-scan the published apps directory
+// when the apps scope settles (so newly-bootstrapped apps load into
+// the in-memory registry — without this, the receiver only knows
+// about its dev apps and the operator sees "No apps installed" until
+// the next server restart).
+func bootstrap_scope_settled(scope string) {
+	go replication_pending_drain()
+	if scope == bootstrap_scope_apps {
+		go apps_load_published()
+	}
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)
@@ -443,6 +461,22 @@ func bootstrap_safe_path(root, relative string) (string, error) {
 	return candidate, nil
 }
 
+// file_is_sqlite_sidecar returns true for filenames that belong to
+// SQLite databases — the main .db file (which the userdbs scope
+// handles via online-backup snapshots) and its sidecar files
+// (-wal, -shm, -journal) which are transient and reconstructed by
+// SQLite on next open. We don't want the file-tree walker to pick
+// any of these up: the userdbs and files scopes would race on the
+// same target file, leaving corruption.
+func file_is_sqlite_sidecar(name string) bool {
+	for _, suffix := range []string{".db", ".db-wal", ".db-shm", ".db-journal", ".db.snap"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // bootstrap_walk_manifest enumerates every regular file under
 // `<scope-root>/<prefix>` and returns one BootstrapFileEntry per file
 // with size + sha256. Skips symlinks (we never copy symlinks to a
@@ -472,6 +506,20 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 		}
 		if !info.Mode().IsRegular() {
 			return nil // skip dirs, symlinks, devices
+		}
+		// Skip SQLite databases + their sidecar files. The userdbs scope
+		// handles every users/*/*.db / users/*/*/app.db / users/*/*/db/*.db
+		// via SQLite online-backup snapshots. If the file-tree walker
+		// also picked them up, the two scopes' drivers would race on the
+		// shared <target>.partial file, leaving the receiver with a
+		// random mix of raw-file and snapshot bytes — caught live as a
+		// 950 MB feeds.db that was 600 MB zeros + 300 MB real data
+		// after the userdbs snapshot landed first and the files-scope
+		// raw copy overwrote chunks 0..600 with whatever the live DB
+		// (under concurrent writes) had at walk time.
+		name := info.Name()
+		if file_is_sqlite_sidecar(name) {
+			return nil
 		}
 		relPath, err := filepath.Rel(root, absPath)
 		if err != nil {
@@ -791,9 +839,7 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		}
 		bootstrap_pending_lock.Unlock()
 		if settle {
-			// Same rationale as bootstrap_pending_decrement: drain
-			// deferred ops promptly when a scope settles.
-			go replication_pending_drain()
+			bootstrap_scope_settled(res.Scope)
 		}
 	}
 	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q page-entries=%d needed=%d done=%v from=%q",
@@ -1285,8 +1331,12 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 		if _, err := f.Seek(chunk.Offset, io.SeekStart); err != nil {
 			return fmt.Errorf("bootstrap-db-fetch: seek partial %q: %w", partial, err)
 		}
-		if _, err := f.Write(chunk.Data); err != nil {
+		n, err := f.Write(chunk.Data)
+		if err != nil {
 			return fmt.Errorf("bootstrap-db-fetch: write partial %q: %w", partial, err)
+		}
+		if n != len(chunk.Data) {
+			return fmt.Errorf("bootstrap-db-fetch: short write at offset %d: wrote %d of %d", chunk.Offset, n, len(chunk.Data))
 		}
 		if chunk.EOF {
 			break
@@ -1626,9 +1676,7 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 	if len(res.Entries) == 0 {
 		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
-		// Same rationale as bootstrap_pending_decrement: drain
-		// deferred ops promptly when a scope settles.
-		go replication_pending_drain()
+		bootstrap_scope_settled(res.Scope)
 		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
 			res.Scope, originPeer)
 		return

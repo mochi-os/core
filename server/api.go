@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -42,7 +41,6 @@ func init() {
 			"app":        api_app,
 			"attachment": api_attachment,
 			"broadcast":  api_broadcast,
-			"counter":    api_counter,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
 				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{
@@ -62,7 +60,6 @@ func init() {
 			"group":       api_group,
 			"interests":   api_interests,
 			"log":         api_log,
-			"lww":         api_lww,
 			"message":     api_message,
 			"permission":  api_permission,
 			"qid":         api_qid,
@@ -1028,7 +1025,17 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(""), nil
 	}
 
-	r, err := url_request("GET", rawurl, map[string]string{"timeout": "10"}, map[string]string{"User-Agent": "Mochi/1.0"}, nil)
+	// Use a recognizable, Mozilla-prefixed UA so sites that gate content on
+	// "browser-ish" user-agents still serve us their og:image-bearing HTML
+	// rather than a stripped/anti-bot variant. The self-identifying URL lets
+	// responsible operators throttle deliberately without us trying to evade
+	// detection.
+	r, err := url_request("GET", rawurl,
+		map[string]string{"timeout": "10"},
+		map[string]string{
+			"User-Agent": "Mozilla/5.0 (compatible; MochiBot/1.0; +https://mochi-os.org)",
+			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		}, nil)
 	if err != nil {
 		return sl.String(""), nil
 	}
@@ -1038,19 +1045,21 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(""), nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	if err != nil {
-		return sl.String(""), nil
-	}
-
-	return sl.String(url_extract_preview(body, rawurl)), nil
+	// Stream-parse rather than reading the whole body into memory. The
+	// parser breaks at <body> (or `</head>`) so we usually consume <100 KB.
+	// The LimitReader cap is a safety bound for pathological pages — 16 MB
+	// is well past any real-world <head> length (heavy news/media sites
+	// rarely exceed 500 KB, even with embedded preload/JSON-LD/analytics)
+	// while still preventing a malicious endpoint from streaming gigabytes.
+	return sl.String(url_extract_preview(io.LimitReader(r.Body, 16*1024*1024), rawurl)), nil
 }
 
 // url_extract_preview finds the og:image or twitter:image meta tag in HTML
 // and resolves relative URLs against the page URL. Returns "" if neither tag
-// is present or the head ends without one.
-func url_extract_preview(body []byte, pageURL string) string {
-	tokenizer := html.NewTokenizer(bytes.NewReader(body))
+// is present or the head ends without one. Reads incrementally so callers
+// stop paying memory cost once <body> is reached.
+func url_extract_preview(body io.Reader, pageURL string) string {
+	tokenizer := html.NewTokenizer(body)
 	var ogImage, twitterImage string
 
 	for {

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // Helper to create a test database
@@ -1058,5 +1060,120 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 	}
 	if want := int(inserts.Load() + txs.Load()); n != want {
 		t.Errorf("final count = %d, want %d", n, want)
+	}
+}
+
+// TestDbUserForThread covers db_user_for_thread, the shared helper that picks
+// which user's perspective mochi.db.* and mochi.entity.* act from. The
+// "logged-in + entity owned by other user" case is a regression guard for the
+// silent owner-DB swap removed from db_for_thread: subscribe-style writes
+// must always land in the requesting user's database, never the entity
+// owner's.
+func TestDbUserForThread(t *testing.T) {
+	alice := &User{UID: "alice"}
+	bob := &User{UID: "bob"}
+
+	action_with_route := func(ctx string) *Action {
+		return &Action{
+			domain: &DomainInfo{
+				route: &DomainRouteInfo{context: ctx},
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		user    *User
+		owner   *User
+		action  *Action
+		want    *User
+		wantErr bool
+	}{
+		{
+			name:  "anonymous_reads_owner_db",
+			user:  nil,
+			owner: alice,
+			want:  alice,
+		},
+		{
+			name:    "anonymous_with_no_owner_errors",
+			user:    nil,
+			owner:   nil,
+			wantErr: true,
+		},
+		{
+			name:  "logged_in_no_entity_uses_own_db",
+			user:  alice,
+			owner: nil,
+			want:  alice,
+		},
+		{
+			name:  "logged_in_own_entity_uses_own_db",
+			user:  alice,
+			owner: alice,
+			want:  alice,
+		},
+		// Regression guard: prior to the fix this returned bob,
+		// causing subscribe-style writes to land in the entity owner's
+		// database instead of the requester's. See mochi-dev-345.
+		{
+			name:  "logged_in_other_entity_keeps_own_db",
+			user:  alice,
+			owner: bob,
+			want:  alice,
+		},
+		{
+			name:   "logged_in_under_domain_routing_uses_route_owner",
+			user:   alice,
+			owner:  bob,
+			action: action_with_route("/blog"),
+			want:   bob,
+		},
+		{
+			name:    "logged_in_under_domain_routing_no_owner_errors",
+			user:    alice,
+			owner:   nil,
+			action:  action_with_route("/blog"),
+			wantErr: true,
+		},
+		// An action with an empty domain context is not "domain routing"
+		// — main-site requests carry an Action but no route, so the
+		// logged-in branch must still return the user's own DB.
+		{
+			name:   "logged_in_main_site_action_uses_own_db",
+			user:   alice,
+			owner:  bob,
+			action: action_with_route(""),
+			want:   alice,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			thread := &sl.Thread{Name: "test"}
+			if tc.user != nil {
+				thread.SetLocal("user", tc.user)
+			}
+			if tc.owner != nil {
+				thread.SetLocal("owner", tc.owner)
+			}
+			if tc.action != nil {
+				thread.SetLocal("action", tc.action)
+			}
+
+			got, err := db_user_for_thread(thread)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("db_user_for_thread() = %v, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("db_user_for_thread() unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("db_user_for_thread() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

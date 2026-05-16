@@ -438,26 +438,9 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	// Determine effective user using the same logic as database access
-	owner, _ := t.Local("owner").(*User)
-	user, _ := t.Local("user").(*User)
-
-	var effective *User
-	var domain_routing bool
-	if action := t.Local("action"); action != nil {
-		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
-			domain_routing = a.domain.route.context != ""
-		}
-	}
-
-	if user == nil {
-		effective = owner
-	} else if domain_routing {
-		effective = owner
-	} else {
-		effective = user
-	}
-
+	// Determine effective user using the same logic as database access. An
+	// "no usable context" error here just means "no entities to show".
+	effective, _ := db_user_for_thread(t)
 	if effective == nil {
 		return sl_encode([]any{}), nil
 	}

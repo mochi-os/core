@@ -411,13 +411,6 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 			return ApplyInvalid
 		}
 		return replication_file_sync_apply(op.User, op.Database, &fs)
-	case op.Scope == repl_scope_app && (op.Kind == "row.set" || op.Kind == "row.delete"):
-		var r AppRow
-		if err := cbor.Unmarshal(op.Payload, &r); err != nil {
-			info("Replication op row.%s: decode failed: %v", op.Kind, err)
-			return ApplyInvalid
-		}
-		return replication_row_apply(op.User, op.Database, &r)
 	case op.Scope == repl_scope_app && op.Database == "users" && (op.Kind == "users-row.set" || op.Kind == "users-row.delete"):
 		return users_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && (op.Kind == "sessions-row.set" || op.Kind == "sessions-row.delete"):

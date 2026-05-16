@@ -56,6 +56,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 	"join_deny":     sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
 	"pair_remove":   sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
 	"bootstrap_progress": sl.NewBuiltin("mochi.replication.bootstrap_progress", api_replication_bootstrap_progress),
+	"row":           api_replication_row,
 })
 
 // api_replication_status returns a dict describing this server's

@@ -418,6 +418,8 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 			return ApplyInvalid
 		}
 		return replication_row_apply(op.User, op.Database, &r)
+	case op.Scope == repl_scope_app && op.Database == "users" && (op.Kind == "users-row.set" || op.Kind == "users-row.delete"):
+		return users_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
 		var w WebpushDelivered
 		if err := cbor.Unmarshal(op.Payload, &w); err != nil {

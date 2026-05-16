@@ -539,13 +539,27 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	// it survives sessions.db corruption. The cosmetic last-used row goes to
 	// sessions.db, populated lazily on first assertion.
 	users := db_open("db/users.db")
+	created := now()
 	users.exec(`insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
              values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		credential.ID, user.UID, credential.PublicKey,
 		credential.Authenticator.SignCount, name, transports,
-		credential.Flags.BackupEligible, credential.Flags.BackupState, now())
+		credential.Flags.BackupEligible, credential.Flags.BackupState, created)
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, 0)",
 		credential.ID, user.UID)
+	replication_emit_users_row(user.UID, &UsersRow{
+		Table:    "credentials",
+		KeyBytes: map[string][]byte{"id": credential.ID},
+		Cols: map[string]string{
+			"sign_count":      fmt.Sprintf("%d", credential.Authenticator.SignCount),
+			"name":            name,
+			"transports":      transports,
+			"backup_eligible": boolint01(credential.Flags.BackupEligible),
+			"backup_state":    boolint01(credential.Flags.BackupState),
+			"created":         fmt.Sprintf("%d", created),
+		},
+		ColsBytes: map[string][]byte{"public_key": credential.PublicKey},
+	})
 
 	audit_password_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
@@ -633,6 +647,11 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	db.exec("delete from credentials where id=? and user=?", id, user.UID)
 	db_open("db/sessions.db").exec("delete from passkeys where credential=?", id)
+	replication_emit_users_row(user.UID, &UsersRow{
+		Table:    "credentials",
+		KeyBytes: map[string][]byte{"id": id},
+		Delete:   true,
+	})
 	audit_password_changed(user.Username, "passkey_deleted")
 	return sl.True, nil
 }

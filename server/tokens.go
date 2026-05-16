@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -61,17 +62,41 @@ func token_create(user string, app string, name string, scopes []string, expires
 	hash := token_hash(token)
 	scopes_json, _ := json.Marshal(scopes)
 
+	created := now()
 	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, created, expires) values (?, ?, ?, ?, ?, ?, ?)",
-		hash, user, app, name, string(scopes_json), now(), expires)
+		hash, user, app, name, string(scopes_json), created, expires)
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, 0)", hash, user)
+	replication_emit_users_row(user, &UsersRow{
+		Table: "tokens",
+		Cols: map[string]string{
+			"hash":    hash,
+			"app":     app,
+			"name":    name,
+			"scopes":  string(scopes_json),
+			"created": fmt.Sprintf("%d", created),
+			"expires": fmt.Sprintf("%d", expires),
+		},
+	})
 
 	return token
 }
 
 // Delete a token by its hash
 func token_delete(hash string) bool {
+	// Find the user before deleting so we can sign the cross-host emit.
+	var owner string
+	if row, _ := db_open("db/users.db").row("select user from tokens where hash=?", hash); row != nil {
+		owner, _ = row["user"].(string)
+	}
 	db_open("db/users.db").exec("delete from tokens where hash = ?", hash)
 	db_open("db/sessions.db").exec("delete from accesses where hash = ?", hash)
+	if owner != "" {
+		replication_emit_users_row(owner, &UsersRow{
+			Table:  "tokens",
+			Cols:   map[string]string{"hash": hash},
+			Delete: true,
+		})
+	}
 	return true
 }
 

@@ -324,8 +324,7 @@ func web_passkey_login_finish(c *gin.Context) {
 
 		// Create partial session
 		partial := random_alphanumeric(32)
-		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'passkey', ?, ?)",
-			partial, user.UID, strings.Join(remaining, ","), now()+300)
+		partial_create(db, partial, user.UID, "passkey", strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,

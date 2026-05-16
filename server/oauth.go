@@ -501,9 +501,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 		remaining := auth_remaining_oauth(user)
 		if len(remaining) > 0 {
 			partial := random_alphanumeric(32)
-			sessions := db_open("db/sessions.db")
-			sessions.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-				partial, user.UID, strings.Join(remaining, ","), now()+300)
+			partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
 			web_cookie_set(c, "oauth_partial", partial)
 			c.Redirect(http.StatusFound, "/login/codes")
 			return
@@ -1040,10 +1038,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		remaining := auth_remaining_oauth(user)
 		if len(remaining) > 0 {
 			partial := random_alphanumeric(32)
-			db_open("db/sessions.db").exec(
-				"insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-				partial, user.UID, strings.Join(remaining, ","), now()+300,
-			)
+			partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
 			code, err := oauth_mobile_store(st.Challenge, map[string]any{
 				"mfa":       true,
 				"partial":   partial,

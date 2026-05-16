@@ -123,8 +123,19 @@ func code_send(email string, c *gin.Context) string {
 	// Generate 10 character unambiguous mixed-case code
 	code := random_unambiguous(10)
 	sessions := db_open("db/sessions.db")
-	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, now()+3600)
+	expires := now() + 3600
+	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, expires)
 	u := user_by_username(email)
+	// Replicate to the user's host set so the click-through can land
+	// on any host. Skip if the user doesn't exist yet (brand-new
+	// signup — single-host flow until first login).
+	if u != nil {
+		replication_emit_sessions_row(u.UID, &SessionsRow{
+			Table: "codes",
+			Key:   map[string]string{"code": code, "username": email},
+			Cols:  map[string]string{"expires": fmt.Sprintf("%d", expires)},
+		})
+	}
 	email_login_code(u, email, code, request_language(c, u))
 	return ""
 }
@@ -277,6 +288,14 @@ func user_from_code(code string) (*User, string) {
 	db := db_open("db/users.db")
 	var u User
 	if db.scan(&u, "select uid, username, role, methods, status from users where username=?", c.Username) {
+		// Fan the consume out to peers so other hosts in the user's
+		// host set drop their copy of the code too — prevents replay
+		// on a second host within the 1-hour TTL.
+		replication_emit_sessions_row(u.UID, &SessionsRow{
+			Table:  "codes",
+			Key:    map[string]string{"code": code, "username": c.Username},
+			Delete: true,
+		})
 		if u.Status == "suspended" {
 			return nil, "suspended"
 		}

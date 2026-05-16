@@ -78,9 +78,7 @@ func web_login_verify(c *gin.Context) {
 	if len(remaining) > 0 {
 		// Create partial session for MFA
 		partial := random_alphanumeric(32)
-		db := db_open("db/sessions.db")
-		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'email', ?, ?)",
-			partial, user.UID, strings.Join(remaining, ","), now()+300)
+		partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -292,9 +290,7 @@ func web_auth_totp(c *gin.Context) {
 
 		// Create partial session for remaining MFA
 		partial := random_alphanumeric(32)
-		db := db_open("db/sessions.db")
-		db.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, 'totp', ?, ?)",
-			partial, user.UID, strings.Join(remaining, ","), now()+300)
+		partial_create(db_open("db/sessions.db"), partial, user.UID, "totp", strings.Join(remaining, ","), now()+300)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -502,9 +498,30 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	if len(pending) > 0 {
-		// Still more methods required
+		// Still more methods required. Re-emit the full row so peers
+		// observe the partial-state progression and can complete the
+		// flow if the user lands on a different host for the next
+		// factor.
+		pendingStr := strings.Join(pending, ",")
 		db.exec("update partial set completed=?, remaining=? where id=?",
-			completed, strings.Join(pending, ","), input.Partial)
+			completed, pendingStr, input.Partial)
+		// Look up the row's expires + user to include in the replace emit.
+		if row, _ := db.row("select user, expires from partial where id=?", input.Partial); row != nil {
+			rowUser, _ := row["user"].(string)
+			rowExpires, _ := row["expires"].(int64)
+			if rowUser != "" {
+				replication_emit_sessions_row(rowUser, &SessionsRow{
+					Table: "partial",
+					Key:   map[string]string{"id": input.Partial},
+					Cols: map[string]string{
+						"user":      rowUser,
+						"completed": completed,
+						"remaining": pendingStr,
+						"expires":   fmt.Sprintf("%d", rowExpires),
+					},
+				})
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   input.Partial,
@@ -513,8 +530,8 @@ func web_auth_mfa(c *gin.Context) {
 		return
 	}
 
-	// All methods complete - delete partial session and create full session
-	db.exec("delete from partial where id=?", input.Partial)
+	// All methods complete - delete partial session and create full session.
+	partial_delete(db, input.Partial, user.UID)
 
 	// Load identity for the response
 	user.Identity = user.identity()
@@ -677,9 +694,24 @@ func email_code_check(username string, code string) bool {
 }
 
 // email_code_consume deletes an email code after successful validation
+// and fans the delete out to peers so the code can't be replayed on
+// another host in the user's host set.
 func email_code_consume(code string) {
 	sessions := db_open("db/sessions.db")
+	// Look up the username before deleting so we can resolve the user
+	// for the cross-host emit (codes is keyed on (code, username)).
+	var username string
+	if row, _ := sessions.row("select username from codes where code=?", code); row != nil {
+		username, _ = row["username"].(string)
+	}
 	sessions.exec("delete from codes where code=?", code)
+	if u := user_by_username(username); u != nil {
+		replication_emit_sessions_row(u.UID, &SessionsRow{
+			Table:  "codes",
+			Key:    map[string]string{"code": code, "username": username},
+			Delete: true,
+		})
+	}
 }
 
 // totp_verify checks a TOTP code for a user (used by MFA endpoint)

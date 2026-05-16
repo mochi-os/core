@@ -45,16 +45,16 @@ import (
 // link_approve, link_deny, host_remove, joins, join_approve, join_deny,
 // pair_remove}.
 var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.StringDict{
-	"status":        sl.NewBuiltin("mochi.replication.status", api_replication_status),
-	"links":         sl.NewBuiltin("mochi.replication.links", api_replication_links),
-	"hosts":         sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
-	"link_approve":  sl.NewBuiltin("mochi.replication.link_approve", api_replication_link_approve),
-	"link_deny":     sl.NewBuiltin("mochi.replication.link_deny", api_replication_link_deny),
-	"host_remove":   sl.NewBuiltin("mochi.replication.host_remove", api_replication_host_remove),
-	"joins":         sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
-	"join_approve":  sl.NewBuiltin("mochi.replication.join_approve", api_replication_join_approve),
-	"join_deny":     sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
-	"pair_remove":   sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
+	"status":             sl.NewBuiltin("mochi.replication.status", api_replication_status),
+	"links":              sl.NewBuiltin("mochi.replication.links", api_replication_links),
+	"hosts":              sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
+	"link_approve":       sl.NewBuiltin("mochi.replication.link_approve", api_replication_link_approve),
+	"link_deny":          sl.NewBuiltin("mochi.replication.link_deny", api_replication_link_deny),
+	"host_remove":        sl.NewBuiltin("mochi.replication.host_remove", api_replication_host_remove),
+	"joins":              sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
+	"join_approve":       sl.NewBuiltin("mochi.replication.join_approve", api_replication_join_approve),
+	"join_deny":          sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
+	"pair_remove":        sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
 	"bootstrap_progress": sl.NewBuiltin("mochi.replication.bootstrap_progress", api_replication_bootstrap_progress),
 })
 

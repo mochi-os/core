@@ -575,7 +575,8 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-late",
-		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Class:    repl_class_sql,
+		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
 	if got := replication_apply_op(op); got != ApplyDeferred {
@@ -647,7 +648,8 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-via-keys",
-		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Class:    repl_class_sql,
+		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
 	db := db_open("db/replication.db")
@@ -786,203 +788,6 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	dir.exec("insert into locations (entity, peer, seen) values ('e2', 'oldpeer', ?)", now_ts-31*86400)
 	if ps := entity_peers("e2"); len(ps) != 0 {
 		t.Errorf("aged-out peers must not be returned; got %v", ps)
-	}
-}
-
-func TestCounterLocalApplyConverges(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_counter_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	db := db_open("db/test.db")
-
-	// Two hosts each apply some adds.
-	counter_local_apply(db, "votes", "peerA", 5)
-	counter_local_apply(db, "votes", "peerA", 3)   // +8 on peerA's slot
-	counter_local_apply(db, "votes", "peerB", -2)  // -2 on peerB
-	counter_local_apply(db, "votes", "peerB", 10)  // +10 on peerB
-	counter_local_apply(db, "votes", "peerC", -1)  // -1 on peerC
-	// Final logical value: 8 + 8 - 1 = 15
-
-	n := db.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
-	if n != 15 {
-		t.Errorf("expected counter value 15 (8 + 8 - 1), got %d", n)
-	}
-
-	// Each peer has its own slot.
-	count := db.integer("select count(*) from _counters where name='votes'")
-	if count != 3 {
-		t.Errorf("expected 3 per-peer rows, got %d", count)
-	}
-
-	// pos and neg are separately tracked.
-	row, _ := db.row("select pos, neg from _counters where name='votes' and peer='peerB'")
-	if row == nil {
-		t.Fatal("missing peerB row")
-	}
-	if p, _ := row["pos"].(int64); p != 10 {
-		t.Errorf("peerB pos: expected 10, got %d", p)
-	}
-	if neg, _ := row["neg"].(int64); neg != 2 {
-		t.Errorf("peerB neg: expected 2, got %d", neg)
-	}
-}
-
-func TestCounterLocalApplyCommutative(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_counter_comm")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	// Same set of deltas applied in two different orders to two DBs
-	// must produce the same final value (PN-counter convergence).
-	deltas := []struct {
-		peer  string
-		delta int64
-	}{
-		{"a", 5}, {"b", -3}, {"c", 7}, {"a", -2}, {"b", 4}, {"c", -1},
-	}
-
-	dbA := db_open("db/a.db")
-	for _, d := range deltas {
-		counter_local_apply(dbA, "x", d.peer, d.delta)
-	}
-
-	dbB := db_open("db/b.db")
-	// Reverse order
-	for i := len(deltas) - 1; i >= 0; i-- {
-		d := deltas[i]
-		counter_local_apply(dbB, "x", d.peer, d.delta)
-	}
-
-	a := dbA.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='x'")
-	b := dbB.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='x'")
-	if a != b {
-		t.Errorf("non-commutative: forward=%d reverse=%d", a, b)
-	}
-	if a != 10 {
-		t.Errorf("expected 10 (5-3+7-2+4-1), got %d", a)
-	}
-}
-
-func TestLWWLocalApplyHigherWins(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_lww_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	db := db_open("db/test.db")
-
-	// Initial write
-	lww_local_apply(db, "settings", "u1", "theme", "dark", 100, "peerA")
-	row, _ := db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
-	if v, _ := row["value"].(string); v != "dark" {
-		t.Errorf("initial value: expected 'dark', got %q", v)
-	}
-
-	// Earlier timestamp must NOT overwrite.
-	lww_local_apply(db, "settings", "u1", "theme", "light", 50, "peerB")
-	row, _ = db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
-	if v, _ := row["value"].(string); v != "dark" {
-		t.Errorf("older write must not overwrite: got %q", v)
-	}
-
-	// Later timestamp DOES overwrite.
-	lww_local_apply(db, "settings", "u1", "theme", "auto", 200, "peerC")
-	row, _ = db.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
-	if v, _ := row["value"].(string); v != "auto" {
-		t.Errorf("newer write must overwrite: got %q", v)
-	}
-}
-
-func TestLWWLocalApplyPeerTiebreak(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_lww_tie")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	db := db_open("db/test.db")
-
-	// Same timestamp, different peer: higher peer-id (lex) wins.
-	lww_local_apply(db, "t", "r", "f", "valueA", 100, "peerA")
-	lww_local_apply(db, "t", "r", "f", "valueB", 100, "peerB")
-	row, _ := db.row("select value, peer from _lww where tbl='t' and row='r' and field='f'")
-	if v, _ := row["value"].(string); v != "valueB" {
-		t.Errorf("peer tiebreak: expected 'valueB' (higher peer-id), got %q", v)
-	}
-
-	// peerB already won; peerA at the same ts must NOT overwrite.
-	lww_local_apply(db, "t", "r", "f", "valueA-again", 100, "peerA")
-	row, _ = db.row("select value from _lww where tbl='t' and row='r' and field='f'")
-	if v, _ := row["value"].(string); v != "valueB" {
-		t.Errorf("losing peer at same ts must not overwrite: got %q", v)
-	}
-}
-
-func TestLWWLocalApplyConvergesUnderReorder(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_lww_reorder")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
-	type op struct {
-		value string
-		ts    int64
-		peer  string
-	}
-	ops := []op{
-		{"a", 100, "p1"},
-		{"b", 200, "p2"},
-		{"c", 150, "p3"},
-		{"d", 200, "p1"}, // same ts as b, lower peer
-		{"e", 300, "p2"},
-	}
-
-	dbForward := db_open("db/forward.db")
-	for _, o := range ops {
-		lww_local_apply(dbForward, "t", "r", "f", o.value, o.ts, o.peer)
-	}
-
-	dbReverse := db_open("db/reverse.db")
-	for i := len(ops) - 1; i >= 0; i-- {
-		o := ops[i]
-		lww_local_apply(dbReverse, "t", "r", "f", o.value, o.ts, o.peer)
-	}
-
-	rowF, _ := dbForward.row("select value from _lww where tbl='t' and row='r' and field='f'")
-	rowR, _ := dbReverse.row("select value from _lww where tbl='t' and row='r' and field='f'")
-	if rowF == nil || rowR == nil {
-		t.Fatal("missing row in one of the DBs")
-	}
-	vF, _ := rowF["value"].(string)
-	vR, _ := rowR["value"].(string)
-	if vF != vR {
-		t.Errorf("non-convergent under reorder: forward=%q reverse=%q", vF, vR)
-	}
-	// Expected winner: ts=300/p2 ("e"). It dominates everything.
-	if vF != "e" {
-		t.Errorf("expected winner 'e' (highest ts), got %q", vF)
 	}
 }
 
@@ -1344,86 +1149,6 @@ func integration_setup(t *testing.T) (func(string), func()) {
 	return switchTo, cleanup
 }
 
-func TestIntegrationCounterConvergesAcrossTwoHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	// Host 1 increments by 5, Host 2 decrements by 3 — independent local
-	// writes plus a replication op exchange. Both hosts must converge to
-	// the same logical value (5 - 3 = 2).
-	switchTo("h1")
-	db1 := db_open("db/test-app.db")
-	counter_local_apply(db1, "votes", "peer1", 5)
-
-	switchTo("h2")
-	db2 := db_open("db/test-app.db")
-	counter_local_apply(db2, "votes", "peer2", -3)
-
-	// Replication: each host's local delta arrives at the other.
-	switchTo("h2")
-	db2 = db_open("db/test-app.db")
-	counter_local_apply(db2, "votes", "peer1", 5)
-
-	switchTo("h1")
-	db1 = db_open("db/test-app.db")
-	counter_local_apply(db1, "votes", "peer2", -3)
-
-	v1 := db1.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
-	switchTo("h2")
-	db2 = db_open("db/test-app.db")
-	v2 := db2.integer("select coalesce(sum(pos) - sum(neg), 0) from _counters where name='votes'")
-
-	if v1 != 2 {
-		t.Errorf("host1 value: expected 2, got %d", v1)
-	}
-	if v2 != 2 {
-		t.Errorf("host2 value: expected 2, got %d", v2)
-	}
-	if v1 != v2 {
-		t.Errorf("hosts disagree: h1=%d h2=%d", v1, v2)
-	}
-}
-
-func TestIntegrationLWWConvergesAcrossTwoHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	// Host 1 writes "dark" at ts=100; Host 2 writes "light" at ts=200.
-	// After cross-replication both hosts see "light" (higher ts).
-	switchTo("h1")
-	db1 := db_open("db/test-app.db")
-	lww_local_apply(db1, "settings", "u1", "theme", "dark", 100, "peer1")
-
-	switchTo("h2")
-	db2 := db_open("db/test-app.db")
-	lww_local_apply(db2, "settings", "u1", "theme", "light", 200, "peer2")
-
-	// Cross-replicate.
-	switchTo("h1")
-	db1 = db_open("db/test-app.db")
-	lww_local_apply(db1, "settings", "u1", "theme", "light", 200, "peer2")
-	switchTo("h2")
-	db2 = db_open("db/test-app.db")
-	lww_local_apply(db2, "settings", "u1", "theme", "dark", 100, "peer1")
-
-	row1, _ := db1.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
-	switchTo("h2")
-	db2 = db_open("db/test-app.db")
-	row2, _ := db2.row("select value from _lww where tbl='settings' and row='u1' and field='theme'")
-
-	v1, _ := row1["value"].(string)
-	v2, _ := row2["value"].(string)
-	if v1 != "light" {
-		t.Errorf("h1 winner: expected 'light' (ts=200), got %q", v1)
-	}
-	if v2 != "light" {
-		t.Errorf("h2 winner: expected 'light', got %q", v2)
-	}
-	if v1 != v2 {
-		t.Errorf("hosts disagree: h1=%q h2=%q", v1, v2)
-	}
-}
-
 func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	switchTo, cleanup := integration_setup(t)
 	defer cleanup()
@@ -1461,7 +1186,8 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	// Host 2 receives a session-insert op from Host 1.
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-alice",
-		Database: "sessions", Table: "sessions", Kind: repl_op_insert,
+		Class:    repl_class_sql,
+		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1,
 		Payload: cbor_encode(&SessionInsert{
 			UserUID: "uid-alice", Code: "sess-x", Secret: "s",
@@ -1802,12 +1528,13 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     "uid-alice",
-		Database: "notifications",
-		Table:    "webpush_delivered",
-		Kind:     repl_op_insert,
-		Sequence: 1,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      "uid-alice",
+		Database:  "notifications",
+		Table:     "webpush_delivered",
+		Operation: repl_op_insert,
+		Sequence:  1,
 		Payload: cbor_encode(&WebpushDelivered{
 			Endpoint: "https://fcm.example/a", EventID: "evt-1", TS: now(),
 		}),
@@ -1846,12 +1573,13 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     "uid-bob",
-		Database: "notifications",
-		Table:    "email_delivered",
-		Kind:     repl_op_insert,
-		Sequence: 1,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      "uid-bob",
+		Database:  "notifications",
+		Table:     "email_delivered",
+		Operation: repl_op_insert,
+		Sequence:  1,
 		Payload: cbor_encode(&EmailDelivered{
 			Address: "bob@example.com", EventID: "login:abc", TS: now(),
 		}),
@@ -1950,12 +1678,12 @@ func TestIntegrationFileSyncAcrossHosts(t *testing.T) {
 	// Host 1 writes a file locally; we represent that with the
 	// replicated op carrying the inline contents.
 	op := &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     "uid-alice",
-		Database: "myapp",
-		Table:    "_files",
-		Kind:     "sync",
-		Sequence: 1,
+		Class:     repl_class_file,
+		Scope:     repl_scope_app,
+		User:      "uid-alice",
+		Database:  "myapp",
+		Operation: repl_op_filesync,
+		Sequence:  1,
 		Payload: cbor_encode(&FileSync{
 			Path: "avatars/me.png",
 			Size: 5,

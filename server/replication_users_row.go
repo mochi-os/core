@@ -50,17 +50,18 @@ func replication_emit_users_row(user string, r *UsersRow) {
 		return
 	}
 	payload := cbor_encode(r)
-	kind := "users-row.set"
+	operation := "users-row.set"
 	if r.Delete {
-		kind = "users-row.delete"
+		operation = "users-row.delete"
 	}
 	replication_emit(user, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     user,
-		Database: "users",
-		Table:    r.Table,
-		Kind:     kind,
-		Payload:  payload,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "users",
+		Table:     r.Table,
+		Operation: operation,
+		Payload:   payload,
 	})
 }
 

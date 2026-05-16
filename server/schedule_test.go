@@ -177,7 +177,7 @@ func TestScheduleStarlarkObject(t *testing.T) {
 	t.Run("SlScheduledEvent properties", func(t *testing.T) {
 		se := &ScheduledEvent{
 			ID:       123,
-			User: "u1",
+			User:     "u1",
 			App:      "test-app",
 			Due:      1710522000,
 			Event:    "test_event",
@@ -228,7 +228,7 @@ func TestScheduleStarlarkObject(t *testing.T) {
 	t.Run("SlScheduledEvent with empty data", func(t *testing.T) {
 		se := &ScheduledEvent{
 			ID:       124,
-			User: "u1",
+			User:     "u1",
 			App:      "test-app",
 			Due:      1710522000,
 			Event:    "test_event",

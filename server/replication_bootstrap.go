@@ -95,10 +95,10 @@ const (
 // after a clobber). Both sender (manifest enumeration) and receiver
 // (chunk-write apply) honour the deny-list defensively.
 //
-//   queue.db        — outbound message queue, server-local
-//   replication.db  — replication state machine (seen/pending/hosts/
-//                     bootstrap rows), server-local
-//   peers.db        — libp2p peer cache, server-local
+//	queue.db        — outbound message queue, server-local
+//	replication.db  — replication state machine (seen/pending/hosts/
+//	                  bootstrap rows), server-local
+//	peers.db        — libp2p peer cache, server-local
 //
 // Other system DBs (users, settings, domains, apps, directory,
 // sessions, schedule, external) are legitimately part of the
@@ -130,10 +130,10 @@ type BootstrapFileManifestRequest struct {
 // requested prefix. The receiver compares (path, size, sha256) to its
 // local copy and requests chunks for any missing or differing file.
 type BootstrapFileManifestResult struct {
-	Scope   string                 `cbor:"scope"`
-	Prefix  string                 `cbor:"prefix"`
-	Entries []BootstrapFileEntry   `cbor:"entries"`
-	Done    bool                   `cbor:"done,omitempty"` // false → another result page follows
+	Scope   string               `cbor:"scope"`
+	Prefix  string               `cbor:"prefix"`
+	Entries []BootstrapFileEntry `cbor:"entries"`
+	Done    bool                 `cbor:"done,omitempty"` // false → another result page follows
 }
 
 // BootstrapFileEntry is one (path, size, hash) tuple from a manifest.
@@ -183,11 +183,11 @@ type BootstrapFileChunk struct {
 // (multiple chunks) rather than one chunk per RPC — the source's
 // snapshot tempfile only lives for the lifetime of the single stream.
 type BootstrapDBFetchRequest struct {
-	Scope string `cbor:"scope"`           // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
-	Path  string `cbor:"path,omitempty"`  // relative path under data_dir (modern); preferred when set
-	User  string `cbor:"user,omitempty"`  // legacy fallback (when Path empty)
-	App   string `cbor:"app,omitempty"`   // legacy fallback (when Path empty)
-	DB    string `cbor:"db,omitempty"`    // legacy fallback (when Path empty)
+	Scope string `cbor:"scope"`          // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
+	Path  string `cbor:"path,omitempty"` // relative path under data_dir (modern); preferred when set
+	User  string `cbor:"user,omitempty"` // legacy fallback (when Path empty)
+	App   string `cbor:"app,omitempty"`  // legacy fallback (when Path empty)
+	DB    string `cbor:"db,omitempty"`   // legacy fallback (when Path empty)
 }
 
 // BootstrapDBManifestRequest is the receiver→sender ask for the list
@@ -255,7 +255,7 @@ func bootstrap_set_state(scope, peer, state, position string) {
 }
 
 // bootstrap_get_state reads the recorded (state, position) for a
-// (scope, peer) pair. Returns ('', '') if no row exists; callers
+// (scope, peer) pair. Returns (”, ”) if no row exists; callers
 // should treat absence as "never started, queue if needed".
 func bootstrap_get_state(scope, peer string) (string, string) {
 	rdb := db_open("db/replication.db")
@@ -1479,7 +1479,7 @@ func bootstrap_start(peer string) {
 // the requested scope. For userdbs three layouts are covered:
 //   - users/<u>/user.db          — per-user infrastructure DB
 //   - users/<u>/<app>/app.db     — per-app config DB (attachments,
-//                                  access lists, etc.)
+//     access lists, etc.)
 //   - users/<u>/<app>/db/*.db    — per-app data DB (feeds.db etc.)
 //
 // For sysdbs: every db/*.db at the top level (excluding the

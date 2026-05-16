@@ -282,11 +282,11 @@ func admin_register_routes(r *gin.Engine) {
 // admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label
 // to record. Anything not in this map is not audited.
 var admin_audited_routes = map[string]string{
-	"POST /_/admin/snapshot":               "admin.snapshot",
-	"POST /_/admin/stop":                   "admin.stop",
-	"POST /_/admin/restart":                "admin.restart",
-	"POST /_/admin/replica/join":           "admin.replica.join",
-	"POST /_/admin/replica/leave":          "admin.replica.leave",
+	"POST /_/admin/snapshot":                "admin.snapshot",
+	"POST /_/admin/stop":                    "admin.stop",
+	"POST /_/admin/restart":                 "admin.restart",
+	"POST /_/admin/replica/join":            "admin.replica.join",
+	"POST /_/admin/replica/leave":           "admin.replica.leave",
 	"POST /_/admin/replication/pair/remove": "admin.replication.pair.remove",
 	"POST /_/admin/replication/resync":      "admin.replication.resync",
 }

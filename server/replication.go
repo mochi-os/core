@@ -10,13 +10,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Replication scope and op kind constants. See claude/plans/replication.md.
+// Replication scope, class, and op constants. See claude/plans/replication.md.
 const (
-	repl_scope_app  = "app"
-	repl_scope_core = "core"
-	repl_op_insert  = "insert"
-	repl_op_update  = "update"
-	repl_op_delete  = "delete"
+	repl_scope_app   = "app"
+	repl_scope_core  = "core"
+	repl_class_sql   = "sql"
+	repl_class_file  = "file"
+	repl_op_insert   = "insert"
+	repl_op_update   = "update"
+	repl_op_delete   = "delete"
+	repl_op_exec     = "exec"
+	repl_op_filesync = "sync"
 )
 
 // ApplyResult is returned by replication_apply_op to tell the caller
@@ -46,11 +50,12 @@ const (
 // `replication.db.fence_witness` and drop the op when a higher fence
 // has already been seen (stale-leader output).
 type ReplicationOp struct {
+	Class       string `cbor:"class"`
 	Scope       string `cbor:"scope"`
 	User        string `cbor:"user,omitempty"`
 	Database    string `cbor:"db"`
-	Table       string `cbor:"table"`
-	Kind        string `cbor:"kind"`
+	Table       string `cbor:"table,omitempty"`
+	Operation   string `cbor:"operation"`
 	Payload     []byte `cbor:"payload"`
 	Sequence    int64  `cbor:"sequence"`
 	Schema      int    `cbor:"schema,omitempty"`
@@ -208,32 +213,9 @@ type EmailDelivered struct {
 	TS      int64  `cbor:"ts"`
 }
 
-// CounterDelta is the wire payload for a PN-counter add op. One delta
-// per replication op, carrying the change made on the origin peer's
-// slot. Receivers add to their per-(name, peer) row using INSERT … ON
-// CONFLICT so applies are commutative and order-independent. See
-// pattern 1.1 in claude/plans/replication.md.
-type CounterDelta struct {
-	Name  string `cbor:"name"`
-	Peer  string `cbor:"peer"`
-	Delta int64  `cbor:"delta"`
-}
-
-// LWWSet is the wire payload for a last-write-wins register update.
-// Conflict resolution at the receiver is by (ts, peer): the higher
-// pair wins, with peer-id lex tie-break. See pattern 1.2.
-type LWWSet struct {
-	Tbl   string `cbor:"tbl"`
-	Row   string `cbor:"row"`
-	Field string `cbor:"field"`
-	Value string `cbor:"value"`
-	TS    int64  `cbor:"ts"`
-	Peer  string `cbor:"peer"`
-}
-
 // SessionInsert is the wire payload for a sessions.sessions insert op.
 // Carried as the CBOR-encoded Payload of a ReplicationOp with
-// Database="sessions" Table="sessions" Kind="insert". UserUID is the
+// Database="sessions" Table="sessions" Operation="insert". UserUID is the
 // globally-stable user identifier (task #4); the receiver resolves it to
 // a local users.id before inserting into sessions.db.
 type SessionInsert struct {
@@ -366,54 +348,61 @@ func replication_op_event(e *Event) {
 		db.exec(
 			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
 			e.peer, op.Scope, op.User, op.Sequence, now())
-		debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
-			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
-		commit_hook_fire(op.User, op.Database, op.Table, op.Kind, "")
+		debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q op=%q",
+			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
+		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, "")
 	case ApplyDeferred:
 		payload := cbor_encode(&op)
 		db.exec(
 			"insert or ignore into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?)",
 			e.peer, op.Scope, op.User, op.Sequence, op.Schema, payload, now())
-		debug("Replication op deferred: peer=%q scope=%q user=%q seq=%d db=%q table=%q kind=%q",
-			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Kind)
+		debug("Replication op deferred: peer=%q scope=%q user=%q seq=%d db=%q table=%q op=%q",
+			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
 	case ApplyInvalid:
-		info("Replication op dropping: unrecognised shape peer=%q scope=%q db=%q table=%q kind=%q",
-			e.peer, op.Scope, op.Database, op.Table, op.Kind)
+		info("Replication op dropping: unrecognised shape peer=%q scope=%q db=%q table=%q op=%q",
+			e.peer, op.Scope, op.Database, op.Table, op.Operation)
 	}
 }
 
 // replication_apply_op dispatches a verified, deduplicated op to the
-// table-specific apply path. Most apps' tables will be handled by the
-// pattern-library helpers (task #8); core-DB applies (sessions, etc.) are
-// special-cased here. Returns ApplyDeferred when the op can't be applied
-// yet (waiting on a local user or app DB) so the caller buffers it in
-// `pending` for a later retry; ApplyInvalid for unrecognised ops.
+// class-specific apply path. Class is the top-level discriminator: "sql"
+// for typed-row writes against system or app DBs, "file" for per-(user,
+// app) file replication. Within "sql", Database and Table pick the
+// concrete apply handler. Returns ApplyDeferred when the op can't be
+// applied yet (waiting on a local user or app DB) so the caller buffers
+// it in `pending` for a later retry; ApplyInvalid for unrecognised ops.
 func replication_apply_op(op *ReplicationOp) ApplyResult {
+	switch op.Class {
+	case repl_class_file:
+		return replication_apply_file(op)
+	case repl_class_sql:
+		return replication_apply_sql(op)
+	}
+	return ApplyInvalid
+}
+
+// replication_apply_file decodes a FileSync payload and writes it into
+// the per-(user, app) file tree.
+func replication_apply_file(op *ReplicationOp) ApplyResult {
+	var fs FileSync
+	if err := cbor.Unmarshal(op.Payload, &fs); err != nil {
+		info("Replication file op: decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_file_sync_apply(op.User, op.Database, &fs)
+}
+
+// replication_apply_sql dispatches a SQL-class op to the right system-DB
+// apply handler based on Database and Table. Per-app SQL command
+// replication (the opt-out default) lands here via Operation == "exec".
+func replication_apply_sql(op *ReplicationOp) ApplyResult {
+	if op.Operation == repl_op_exec {
+		return replication_apply_sql_command(op)
+	}
 	switch {
-	case op.Scope == repl_scope_app && op.Table == "_counters":
-		var d CounterDelta
-		if err := cbor.Unmarshal(op.Payload, &d); err != nil {
-			info("Replication op _counters/delta: decode failed: %v", err)
-			return ApplyInvalid
-		}
-		return replication_counter_apply(op.User, op.Database, &d)
-	case op.Scope == repl_scope_app && op.Table == "_lww":
-		var s LWWSet
-		if err := cbor.Unmarshal(op.Payload, &s); err != nil {
-			info("Replication op _lww/set: decode failed: %v", err)
-			return ApplyInvalid
-		}
-		return replication_lww_apply(op.User, op.Database, &s)
-	case op.Scope == repl_scope_app && op.Table == "_files":
-		var fs FileSync
-		if err := cbor.Unmarshal(op.Payload, &fs); err != nil {
-			info("Replication op _files: decode failed: %v", err)
-			return ApplyInvalid
-		}
-		return replication_file_sync_apply(op.User, op.Database, &fs)
-	case op.Scope == repl_scope_app && op.Database == "users" && (op.Kind == "users-row.set" || op.Kind == "users-row.delete"):
+	case op.Scope == repl_scope_app && op.Database == "users" && (op.Operation == "users-row.set" || op.Operation == "users-row.delete"):
 		return users_row_decode_and_apply(op.Payload, op.User)
-	case op.Scope == repl_scope_app && op.Database == "sessions" && (op.Kind == "sessions-row.set" || op.Kind == "sessions-row.delete"):
+	case op.Scope == repl_scope_app && op.Database == "sessions" && (op.Operation == "sessions-row.set" || op.Operation == "sessions-row.delete"):
 		return sessions_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
 		var w WebpushDelivered
@@ -430,7 +419,7 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 		}
 		return replication_email_delivered_apply(op.User, &em)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && op.Table == "sessions":
-		switch op.Kind {
+		switch op.Operation {
 		case repl_op_insert:
 			var p SessionInsert
 			if err := cbor.Unmarshal(op.Payload, &p); err != nil {
@@ -642,12 +631,13 @@ func replication_emit_webpush_delivered(userUID, endpoint, event_id string, ts i
 	}
 	payload := cbor_encode(&WebpushDelivered{Endpoint: endpoint, EventID: event_id, TS: ts})
 	replication_emit(userUID, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     userUID,
-		Database: "notifications",
-		Table:    "webpush_delivered",
-		Kind:     repl_op_insert,
-		Payload:  payload,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  "notifications",
+		Table:     "webpush_delivered",
+		Operation: repl_op_insert,
+		Payload:   payload,
 	})
 }
 
@@ -659,12 +649,13 @@ func replication_emit_email_delivered(userUID, address, event_id string, ts int6
 	}
 	payload := cbor_encode(&EmailDelivered{Address: address, EventID: event_id, TS: ts})
 	replication_emit(userUID, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     userUID,
-		Database: "notifications",
-		Table:    "email_delivered",
-		Kind:     repl_op_insert,
-		Payload:  payload,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  "notifications",
+		Table:     "email_delivered",
+		Operation: repl_op_insert,
+		Payload:   payload,
 	})
 }
 
@@ -681,12 +672,13 @@ func replication_emit_session_insert(userUID, code, secret string, expires, crea
 		Address: address, Agent: agent,
 	})
 	replication_emit(userUID, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     userUID,
-		Database: "sessions",
-		Table:    "sessions",
-		Kind:     repl_op_insert,
-		Payload:  payload,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  "sessions",
+		Table:     "sessions",
+		Operation: repl_op_insert,
+		Payload:   payload,
 	})
 }
 
@@ -699,12 +691,13 @@ func replication_emit_session_delete(userUID, code string) {
 	}
 	payload := cbor_encode(&SessionDelete{Code: code})
 	replication_emit(userUID, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     userUID,
-		Database: "sessions",
-		Table:    "sessions",
-		Kind:     repl_op_delete,
-		Payload:  payload,
+		Class:     repl_class_sql,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  "sessions",
+		Table:     "sessions",
+		Operation: repl_op_delete,
+		Payload:   payload,
 	})
 }
 

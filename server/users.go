@@ -51,7 +51,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
 	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
 	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
-	"get": &userGetModule{},
+	"get":      &userGetModule{},
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
 	}),

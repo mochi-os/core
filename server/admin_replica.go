@@ -29,8 +29,8 @@ import (
 // cleanup, hitting a torn-down data_dir on the way out). Production
 // uses the real emit functions.
 var (
-	admin_replica_emit_join             = replication_emit_join_request
-	admin_replica_emit_pair_membership  = replication_emit_pair_membership_change
+	admin_replica_emit_join            = replication_emit_join_request
+	admin_replica_emit_pair_membership = replication_emit_pair_membership_change
 )
 
 // admin_replica_join is POST /_/admin/replica/join.
@@ -126,10 +126,10 @@ func admin_replica_leave(c *gin.Context) {
 // Polled by mochictl during `replica join`. Reconciles the pending
 // state in settings.db with the current pair table:
 //
-//   pair has source ⇒ approved (and the pending state self-clears here)
-//   state="denied"   ⇒ denied (with reason)
-//   pending peer set ⇒ waiting
-//   otherwise        ⇒ idle (this server isn't in any pair)
+//	pair has source ⇒ approved (and the pending state self-clears here)
+//	state="denied"   ⇒ denied (with reason)
+//	pending peer set ⇒ waiting
+//	otherwise        ⇒ idle (this server isn't in any pair)
 //
 // Always returns 200 with a JSON state; mochictl never has to interpret
 // HTTP codes for this endpoint.

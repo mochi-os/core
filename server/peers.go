@@ -542,4 +542,3 @@ func peers_shutdown() {
 		}
 	}
 }
-

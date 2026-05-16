@@ -248,4 +248,3 @@ func TestAccountsHasLastDeliveredColumn(t *testing.T) {
 	db.internal.Close()
 	db.starlark.Close()
 }
-

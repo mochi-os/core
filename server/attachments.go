@@ -38,22 +38,22 @@ type Attachment struct {
 }
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
-	"save":   sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-	"create": &attachmentCreateModule{},
-	"insert": sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
-	"update": sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
-	"move":   sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
-	"delete": sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
-	"clear":  sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
-	"list":   sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
-	"get":    sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
-	"exists": sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
-	"data":   sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
-	"path":   sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
+	"save":      sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
+	"create":    &attachmentCreateModule{},
+	"insert":    sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
+	"update":    sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
+	"move":      sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
+	"delete":    sl.NewBuiltin("mochi.attachment.delete", api_attachment_delete),
+	"clear":     sl.NewBuiltin("mochi.attachment.clear", api_attachment_clear),
+	"list":      sl.NewBuiltin("mochi.attachment.list", api_attachment_list),
+	"get":       sl.NewBuiltin("mochi.attachment.get", api_attachment_get),
+	"exists":    sl.NewBuiltin("mochi.attachment.exists", api_attachment_exists),
+	"data":      sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
+	"path":      sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
 	"thumbnail": sl.NewBuiltin("mochi.attachment.thumbnail", api_attachment_thumbnail),
-	"store": sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
-	"sync":  sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
-	"fetch": sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
+	"store":     sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
+	"sync":      sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
+	"fetch":     sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
 // attachmentCreateModule is a callable module that also has a .stream method.

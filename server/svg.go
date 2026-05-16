@@ -16,7 +16,7 @@ var (
 	// Match on* event handler attributes (onclick, onload, onerror, etc.)
 	svg_re_on_attr = regexp.MustCompile(`(?i)\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)`)
 	// Match javascript: in href/xlink:href attributes
-	svg_re_js_href = regexp.MustCompile(`(?i)((?:xlink:)?href\s*=\s*")javascript:[^"]*"`)
+	svg_re_js_href    = regexp.MustCompile(`(?i)((?:xlink:)?href\s*=\s*")javascript:[^"]*"`)
 	svg_re_js_href_sq = regexp.MustCompile(`(?i)((?:xlink:)?href\s*=\s*')javascript:[^']*'`)
 )
 

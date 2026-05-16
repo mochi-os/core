@@ -108,4 +108,3 @@ func admin_restart(c *gin.Context) {
 		respond_error(c, http.StatusConflict, "shutdown_in_progress", "errors.shutdown_in_progress", nil)
 	}
 }
-

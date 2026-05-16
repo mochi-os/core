@@ -128,20 +128,20 @@ func style_preset_vars(density string) map[string]string {
 	}
 
 	vars := map[string]string{
-		"--spacing-base":  spacingBase,
-		"--spacing":       spacingBase,
-		"--font-sans":     fontSans,
-		"--font-mono":     fontMono,
-		"--border-width":  borderWidth,
-		"--shadow-color":  shadowColor,
-		"--shadow-2xs":    fmt.Sprintf("0 1px 2px %s", shadowColor),
-		"--shadow-xs":     fmt.Sprintf("0 1px 3px %s", shadowColor),
-		"--shadow-sm":     fmt.Sprintf("0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
-		"--shadow":        fmt.Sprintf("0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
-		"--shadow-md":     fmt.Sprintf("0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
-		"--shadow-lg":     fmt.Sprintf("0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
-		"--shadow-xl":     fmt.Sprintf("0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
-		"--shadow-2xl":    fmt.Sprintf("0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
+		"--spacing-base": spacingBase,
+		"--spacing":      spacingBase,
+		"--font-sans":    fontSans,
+		"--font-mono":    fontMono,
+		"--border-width": borderWidth,
+		"--shadow-color": shadowColor,
+		"--shadow-2xs":   fmt.Sprintf("0 1px 2px %s", shadowColor),
+		"--shadow-xs":    fmt.Sprintf("0 1px 3px %s", shadowColor),
+		"--shadow-sm":    fmt.Sprintf("0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
+		"--shadow":       fmt.Sprintf("0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
+		"--shadow-md":    fmt.Sprintf("0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
+		"--shadow-lg":    fmt.Sprintf("0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
+		"--shadow-xl":    fmt.Sprintf("0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
+		"--shadow-2xl":   fmt.Sprintf("0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
 	}
 
 	switch density {

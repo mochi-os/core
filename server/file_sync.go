@@ -40,12 +40,12 @@ func replication_emit_file_sync(userUID, appID, path string, data []byte) {
 		Data: data,
 	})
 	replication_emit(userUID, &ReplicationOp{
-		Scope:    repl_scope_app,
-		User:     userUID,
-		Database: appID,
-		Table:    "_files",
-		Kind:     "sync",
-		Payload:  payload,
+		Class:     repl_class_file,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  appID,
+		Operation: repl_op_filesync,
+		Payload:   payload,
 	})
 }
 

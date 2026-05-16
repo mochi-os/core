@@ -117,6 +117,17 @@ type AppVersion struct {
 		Downgrade struct {
 			Function string `json:"function"`
 		} `json:"downgrade"`
+		// Replicate controls which writes to this app's per-user DB
+		// fan out to the user's other hosts. Default is opt-out: every
+		// INSERT/UPDATE/DELETE replays on every replica. Apps list
+		// caches and other local-only state in
+		// `database.replicate.exclude.tables` to keep them off the wire.
+		// See claude/plans/replication.md.
+		Replicate struct {
+			Exclude struct {
+				Tables []string `json:"tables"`
+			} `json:"exclude"`
+		} `json:"replicate"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
 	Icon         string                 `json:"icon"`
@@ -474,12 +485,12 @@ var (
 	})
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"asset":         api_app_asset,
-		"class":         api_app_class,
-		"cleanup":       sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
-		"get":           sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons":         sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"label":         sl.NewBuiltin("mochi.app.label", api_app_label),
+		"asset":   api_app_asset,
+		"class":   api_app_class,
+		"cleanup": sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
+		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"label":   sl.NewBuiltin("mochi.app.label", api_app_label),
 		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
 		"package": api_app_package,
 		"path":    api_app_path,

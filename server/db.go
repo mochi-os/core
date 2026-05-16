@@ -807,9 +807,9 @@ func db_upgrade_49() {
 //   - 'queued'  — entry exists but no transfer has started yet
 //   - 'active'  — transfer in progress; `position` is the resume marker
 //   - 'done'    — transfer complete; further ops arrive via the live op
-//                 channel
+//     channel
 //
-// Existing rows (which all carry position='' from db_upgrade_50) are
+// Existing rows (which all carry position=” from db_upgrade_50) are
 // inferred as 'queued' — they've never started a real transfer. New
 // rows go through the bootstrap_set_* helpers. Idempotent.
 func db_upgrade_62() {
@@ -1544,6 +1544,27 @@ func db_user_for_thread(t *sl.Thread) (*User, error) {
 	return user, nil
 }
 
+// db_replicate_after_exec emits a replication op for a successful local
+// app-DB write. Called from api_db_query (mochi.db.execute) and from
+// TransactionHandle's deferred-emit flush at commit. The decision on
+// whether to actually emit (table not excluded, user has UID, app
+// resolvable) lives in replication_emit_sql_command.
+func db_replicate_after_exec(t *sl.Thread, sql string, args []any) {
+	u, err := db_user_for_thread(t)
+	if err != nil || u == nil {
+		return
+	}
+	app, _ := t.Local("app").(*App)
+	if app == nil {
+		return
+	}
+	av := app.active(u)
+	if av == nil {
+		return
+	}
+	replication_emit_sql_command(u, app, av, sql, args)
+}
+
 // db_for_thread resolves the correct per-user database for the current Starlark
 // thread, applying the same authentication-vs-routing rules used by
 // mochi.db.execute and mochi.db.transaction. Returns the DB, or an error
@@ -1618,6 +1639,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
+		db_replicate_after_exec(t, query, as)
 		return sl.None, nil
 
 	case "mochi.db.exists":
@@ -1720,9 +1742,24 @@ func db_starlark_sql_blocked(query string) string {
 // transaction, plus commit and rollback. Forgetting to call commit() is safe —
 // the cleanup hook in starlark.go rolls back any uncommitted handles when the
 // Starlark thread tears down (script return, error, or timeout).
+//
+// Pending replication ops accumulate in pending_emits as each execute()
+// lands; commit() flushes them after the SQL commit succeeds, rollback()
+// drops them. This way a discarded transaction never leaves emitted ops
+// without matching local state on the source.
 type TransactionHandle struct {
-	tx     *sqlx.Tx
-	closed bool
+	tx            *sqlx.Tx
+	closed        bool
+	pending_emits []sql_pending_emit
+	user          *User
+	app           *App
+	av            *AppVersion
+}
+
+// sql_pending_emit is one buffered (sql, args) tuple awaiting commit.
+type sql_pending_emit struct {
+	sql  string
+	args []any
 }
 
 func (h *TransactionHandle) String() string { return "mochi.db.transaction" }
@@ -1805,6 +1842,7 @@ func (h *TransactionHandle) sl_execute(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	if _, err := h.tx.Exec(query, params...); err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
+	h.pending_emits = append(h.pending_emits, sql_pending_emit{sql: query, args: params})
 	return sl.None, nil
 }
 
@@ -1887,9 +1925,14 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	}
 	if err := h.tx.Commit(); err != nil {
 		h.closed = true
+		h.pending_emits = nil
 		return sl_error(fn, "commit failed: %v", err)
 	}
 	h.closed = true
+	for _, e := range h.pending_emits {
+		replication_emit_sql_command(h.user, h.app, h.av, e.sql, e.args)
+	}
+	h.pending_emits = nil
 	return sl.None, nil
 }
 
@@ -1933,6 +1976,13 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	h := &TransactionHandle{tx: tx}
+	if user, _ := db_user_for_thread(t); user != nil {
+		if app, _ := t.Local("app").(*App); app != nil {
+			h.user = user
+			h.app = app
+			h.av = app.active(user)
+		}
+	}
 	t.SetLocal("transactions", append(existing, h))
 	return h, nil
 }

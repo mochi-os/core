@@ -322,6 +322,16 @@ func replication_system_row_apply_apps_versions(originPeer string, s *SystemRow)
 	db.exec("replace into versions (app, version, track) values (?, ?, ?)",
 		app, s.Cols["version"], s.Cols["track"])
 	debug("Replication system-row apps.versions applied: %q (from %q)", app, originPeer)
+	// A version row update for an entity-id app means the source
+	// installed or upgraded a published app. The replica needs the
+	// matching code on disk to actually serve requests against it;
+	// fire app_check_install so the publisher download happens now
+	// instead of waiting for the next 24-hour apps_manager tick.
+	// Skip non-entity ids (dev / internal apps live on the local
+	// filesystem and don't need downloading).
+	if valid(app, "entity") {
+		go app_check_install(app)
+	}
 }
 
 // replication_system_row_apply_apps_tracks handles apps.db.tracks —

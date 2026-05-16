@@ -111,6 +111,16 @@ type KeysTransfer struct {
 	// "An account with that email already exists. Sign in first..." —
 	// a dead end because the user has no other auth method to use.
 	OAuth []KeysOauth `cbor:"oauth,omitempty"`
+	// Auth-method state. Whole-server pair already gets these via
+	// users.db bootstrap snapshot, but per-user link (one user moves
+	// to a second host while their other-user data stays on the
+	// source) needs them in the keys-transfer payload — otherwise
+	// the user lands on the replica with username + entities only
+	// and can't use any of their existing auth factors.
+	Credentials []KeysCredential `cbor:"credentials,omitempty"`
+	Recovery    []KeysRecovery   `cbor:"recovery,omitempty"`
+	Tokens      []KeysToken      `cbor:"tokens,omitempty"`
+	Totp        *KeysTotp        `cbor:"totp,omitempty"`
 }
 
 // KeysOauth is one OAuth provider link inside a KeysTransfer payload.
@@ -123,6 +133,46 @@ type KeysOauth struct {
 	Email    string `cbor:"email,omitempty"`
 	Verified bool   `cbor:"verified,omitempty"`
 	Name     string `cbor:"name,omitempty"`
+	Created  int64  `cbor:"created"`
+}
+
+// KeysCredential is one passkey / WebAuthn credential. Mirrors
+// users.db.credentials minus the per-host user FK (re-keyed at apply
+// time). The blob `id` is the WebAuthn credential ID (cross-host
+// stable); `public_key` is the credential's signing key.
+type KeysCredential struct {
+	ID             []byte `cbor:"id"`
+	PublicKey      []byte `cbor:"public_key"`
+	SignCount      int64  `cbor:"sign_count,omitempty"`
+	Name           string `cbor:"name,omitempty"`
+	Transports     string `cbor:"transports,omitempty"`
+	BackupEligible bool   `cbor:"backup_eligible,omitempty"`
+	BackupState    bool   `cbor:"backup_state,omitempty"`
+	Created        int64  `cbor:"created"`
+}
+
+// KeysRecovery is one recovery code (hashed) for the user. The
+// receiver re-allocates the integer PK locally; the natural
+// cross-host identity is (user, hash).
+type KeysRecovery struct {
+	Hash    string `cbor:"hash"`
+	Created int64  `cbor:"created"`
+}
+
+// KeysToken is one API token row. The hash is the cross-host stable PK.
+type KeysToken struct {
+	Hash    string `cbor:"hash"`
+	App     string `cbor:"app"`
+	Name    string `cbor:"name,omitempty"`
+	Scopes  string `cbor:"scopes,omitempty"`
+	Created int64  `cbor:"created"`
+	Expires int64  `cbor:"expires,omitempty"`
+}
+
+// KeysTotp is the per-user TOTP secret. Single row per user.
+type KeysTotp struct {
+	Secret   string `cbor:"secret"`
+	Verified bool   `cbor:"verified,omitempty"`
 	Created  int64  `cbor:"created"`
 }
 
@@ -843,8 +893,55 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 			userUID, link.Provider, link.Subject, link.Email, boolint(link.Verified), link.Name, link.Created)
 	}
 
-	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d (from peer %q)",
-		kt.Username, len(kt.Entities), inserted, len(kt.OAuth), originPeer)
+	// Passkeys / WebAuthn credentials. Cross-host stable id is the
+	// blob credential ID. INSERT OR IGNORE on the PK (id) makes
+	// re-application idempotent.
+	for _, c := range kt.Credentials {
+		if len(c.ID) == 0 {
+			continue
+		}
+		udb.exec(`insert or ignore into credentials
+			(id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ID, userUID, c.PublicKey, c.SignCount, c.Name, c.Transports, boolint(c.BackupEligible), boolint(c.BackupState), c.Created)
+	}
+
+	// Recovery codes (hashed). The integer PK is per-host; the natural
+	// cross-host identity is (user, hash). Skip if the receiver
+	// already has the same hash for the same user.
+	for _, r := range kt.Recovery {
+		if r.Hash == "" {
+			continue
+		}
+		if exists, _ := udb.exists("select 1 from recovery where user=? and hash=?", userUID, r.Hash); exists {
+			continue
+		}
+		udb.exec(`insert into recovery (user, hash, created) values (?, ?, ?)`,
+			userUID, r.Hash, r.Created)
+	}
+
+	// API tokens. Hash is the cross-host stable PK.
+	for _, t := range kt.Tokens {
+		if t.Hash == "" {
+			continue
+		}
+		udb.exec(`insert or ignore into tokens
+			(hash, user, app, name, scopes, created, expires)
+			values (?, ?, ?, ?, ?, ?, ?)`,
+			t.Hash, userUID, t.App, t.Name, t.Scopes, t.Created, t.Expires)
+	}
+
+	// TOTP secret (one per user).
+	if kt.Totp != nil && kt.Totp.Secret != "" {
+		udb.exec(`insert or ignore into totp
+			(user, secret, verified, created)
+			values (?, ?, ?, ?)`,
+			userUID, kt.Totp.Secret, boolint(kt.Totp.Verified), kt.Totp.Created)
+	}
+
+	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d credentials=%d recovery=%d tokens=%d totp=%v (from peer %q)",
+		kt.Username, len(kt.Entities), inserted, len(kt.OAuth),
+		len(kt.Credentials), len(kt.Recovery), len(kt.Tokens), kt.Totp != nil, originPeer)
 
 	// A new user (or new entities) just landed — any session inserts
 	// previously deferred while waiting on this user now have a fighting
@@ -913,6 +1010,80 @@ func replication_transfer_keys(userUID string, peer string) bool {
 				continue
 			}
 			kt.OAuth = append(kt.OAuth, link)
+		}
+	}
+	if credRows, err := udb.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", userUID); err == nil {
+		for _, cr := range credRows {
+			c := KeysCredential{
+				Name:       toString(cr["name"]),
+				Transports: toString(cr["transports"]),
+			}
+			if id, ok := cr["id"].([]byte); ok {
+				c.ID = id
+			}
+			if pk, ok := cr["public_key"].([]byte); ok {
+				c.PublicKey = pk
+			}
+			if v, ok := cr["sign_count"].(int64); ok {
+				c.SignCount = v
+			}
+			if v, ok := cr["backup_eligible"].(int64); ok {
+				c.BackupEligible = v != 0
+			}
+			if v, ok := cr["backup_state"].(int64); ok {
+				c.BackupState = v != 0
+			}
+			if v, ok := cr["created"].(int64); ok {
+				c.Created = v
+			}
+			if len(c.ID) == 0 {
+				continue
+			}
+			kt.Credentials = append(kt.Credentials, c)
+		}
+	}
+	if recRows, err := udb.rows("select hash, created from recovery where user=?", userUID); err == nil {
+		for _, rr := range recRows {
+			r := KeysRecovery{Hash: toString(rr["hash"])}
+			if v, ok := rr["created"].(int64); ok {
+				r.Created = v
+			}
+			if r.Hash == "" {
+				continue
+			}
+			kt.Recovery = append(kt.Recovery, r)
+		}
+	}
+	if tokRows, err := udb.rows("select hash, app, name, scopes, created, expires from tokens where user=?", userUID); err == nil {
+		for _, tr := range tokRows {
+			t := KeysToken{
+				Hash:   toString(tr["hash"]),
+				App:    toString(tr["app"]),
+				Name:   toString(tr["name"]),
+				Scopes: toString(tr["scopes"]),
+			}
+			if v, ok := tr["created"].(int64); ok {
+				t.Created = v
+			}
+			if v, ok := tr["expires"].(int64); ok {
+				t.Expires = v
+			}
+			if t.Hash == "" {
+				continue
+			}
+			kt.Tokens = append(kt.Tokens, t)
+		}
+	}
+	if totpRow, err := udb.row("select secret, verified, created from totp where user=?", userUID); err == nil && totpRow != nil {
+		t := &KeysTotp{Secret: toString(totpRow["secret"])}
+		if v, ok := totpRow["verified"].(int64); ok {
+			t.Verified = v != 0
+		}
+		if v, ok := totpRow["created"].(int64); ok {
+			t.Created = v
+		}
+		if t.Secret != "" {
+			kt.Totp = t
 		}
 	}
 	for _, r := range rows {

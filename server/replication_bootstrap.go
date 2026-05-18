@@ -241,6 +241,17 @@ type BootstrapDBChunk struct {
 	EOF    bool   `cbor:"eof,omitempty"`
 }
 
+// BootstrapScopeDone is the receiver→source ack that a bulk-bootstrap
+// scope has fully transferred and flipped to `done` on the receiver.
+// The source uses it to delete its `bootstrap_served (peer, scope)`
+// row; the per-pair-member Syncing/Synced status in the operator UI
+// reads this table on the source side so both sides settle to
+// "Synced" together rather than the source displaying "Synced" the
+// instant the join is approved.
+type BootstrapScopeDone struct {
+	Scope string `cbor:"scope"`
+}
+
 // bootstrap_set_state upserts a bootstrap progress row, recording the
 // (scope, peer) pair's current state + opaque position cursor. Use
 // bootstrap_state_active while transferring and bootstrap_state_done
@@ -361,7 +372,7 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(peer, scope)
 		bootstrap_pending_lock.Unlock()
-		bootstrap_scope_settled(scope)
+		bootstrap_scope_settled(peer, scope)
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
@@ -377,16 +388,53 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 //
 // Today: drain the deferred-op buffer (so ops that arrived during the
 // transfer window apply immediately instead of waiting for the next
-// replication_manager tick), and re-scan the published apps directory
+// replication_manager tick), re-scan the published apps directory
 // when the apps scope settles (so newly-bootstrapped apps load into
 // the in-memory registry — without this, the receiver only knows
 // about its dev apps and the operator sees "No apps installed" until
-// the next server restart).
-func bootstrap_scope_settled(scope string) {
+// the next server restart), and send a `bootstrap/scope/done` ack to
+// the source so it can clear its `bootstrap_served` row and the
+// per-pair-member Syncing/Synced status settles symmetrically.
+func bootstrap_scope_settled(peer, scope string) {
 	go replication_pending_drain()
 	if scope == bootstrap_scope_apps {
 		go apps_load_published()
 	}
+	if peer != "" {
+		go replication_bootstrap_emit_scope_done(peer, scope)
+	}
+}
+
+// replication_bootstrap_emit_scope_done sends a `bootstrap/scope/done`
+// ack to the source that served this scope. Pair-scoped, libp2p-signed
+// — no entity context, this is a server-to-server message. Package-level
+// var so unit tests can stub it out (the real send_peer touches queue.db,
+// which isn't always set up under test isolation).
+var replication_bootstrap_emit_scope_done = func(peer, scope string) {
+	m := message("", "", "replication", "bootstrap/scope/done")
+	m.add(&BootstrapScopeDone{Scope: scope})
+	m.send_peer(peer)
+}
+
+// replication_bootstrap_scope_done_event is the source-side handler
+// for `bootstrap/scope/done` acks. Removes the matching
+// `bootstrap_served (peer, scope)` row so the Pair members status
+// column flips this peer to "Synced" once every served scope has
+// acked. Anonymous (libp2p-signed) — the sender is whichever peer
+// holds the message channel; we trust it for this informational
+// signal.
+func replication_bootstrap_scope_done_event(e *Event) {
+	var done BootstrapScopeDone
+	if !e.segment(&done) {
+		info("Replication bootstrap-scope-done dropping: cannot decode payload (from peer %q)", e.peer)
+		return
+	}
+	if done.Scope == "" {
+		return
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("delete from bootstrap_served where peer=? and scope=?", e.peer, done.Scope)
+	debug("Replication bootstrap-scope-done: peer=%q scope=%q", e.peer, done.Scope)
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)
@@ -839,7 +887,7 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		}
 		bootstrap_pending_lock.Unlock()
 		if settle {
-			bootstrap_scope_settled(res.Scope)
+			bootstrap_scope_settled(originPeer, res.Scope)
 		}
 	}
 	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q page-entries=%d needed=%d done=%v from=%q",
@@ -1676,7 +1724,7 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 	if len(res.Entries) == 0 {
 		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
-		bootstrap_scope_settled(res.Scope)
+		bootstrap_scope_settled(originPeer, res.Scope)
 		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
 			res.Scope, originPeer)
 		return

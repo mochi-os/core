@@ -297,6 +297,7 @@ func init() {
 	a.event_anonymous("bootstrap/file/chunk/fetch", replication_bootstrap_file_chunk_fetch_event)
 	a.event_anonymous("bootstrap/db/manifest/request", replication_bootstrap_db_manifest_request_event)
 	a.event_anonymous("bootstrap/db/manifest/result", replication_bootstrap_db_manifest_result_event)
+	a.event_anonymous("bootstrap/scope/done", replication_bootstrap_scope_done_event)
 	// DB transfer is synchronous stream RPC (one stream per DB, multiple
 	// chunk segments down the same stream until EOF). Replaces the old
 	// queue-based snapshot-request + chunk pair which queued every 1 MiB

@@ -335,6 +335,16 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 
 	rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
 
+	// Pre-populate bootstrap_served with the scopes the new replica
+	// is about to pull. Each gets cleared by a `bootstrap/scope/done`
+	// ack from the replica when it flips that scope to done locally.
+	// While a row exists, the operator UI shows this peer as "Syncing"
+	// instead of "Synced", matching the replica's own status.
+	ts := now()
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs} {
+		rdb.exec("insert or replace into bootstrap_served (peer, scope, started) values (?, ?, ?)", peer, scope, ts)
+	}
+
 	var members []string
 	if rows, err := rdb.rows("select peer from pair"); err == nil {
 		for _, r := range rows {

@@ -94,7 +94,18 @@ func setup_replication_test(t *testing.T) func() {
 	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
 	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}
 
+	// bootstrap_scope_settled fires this emit as a goroutine; queue.db
+	// may be torn down before it runs.
+	orig_emit_bootstrap_scope_done := replication_bootstrap_emit_scope_done
+	replication_bootstrap_emit_scope_done = func(peer, scope string) {}
+
+	// db_upgrade_63 adds the bootstrap_served table that
+	// replication_join_approve_core populates. Without it the
+	// approve path errors out.
+	db_upgrade_63()
+
 	return func() {
+		replication_bootstrap_emit_scope_done = orig_emit_bootstrap_scope_done
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
 		replication_membership_update = orig_membership

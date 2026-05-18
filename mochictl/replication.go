@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 )
 
@@ -102,6 +104,122 @@ func cmd_replication_pair_remove(args []string) error {
 	}
 	if err := json.Unmarshal(raw, &result); err == nil {
 		fmt.Printf("Removed %s. Remaining pair members: %s\n", result.Removed, strings.Join(result.Members, ", "))
+	}
+	return nil
+}
+
+// cmd_replication_progress handles `mochictl replication progress [peer-id]`.
+// Renders the inbound bulk-bootstrap state grouped by peer with one
+// line per scope. With -j or -t, falls through to the generic dump for
+// scripted consumption. The optional peer-id arg filters server-side.
+//
+// scopeOrder lists scopes in the natural transfer order — sysdbs go
+// first (operator-supplied), then files, apps, userdbs in dependency
+// order. Anything else falls to the end alphabetically.
+func cmd_replication_progress(args []string) error {
+	path := "/_/admin/replication/progress"
+	if len(args) > 0 && args[0] != "" {
+		path = path + "?peer=" + args[0]
+	}
+	if flag_json || flag_tabs {
+		return get_dump(path, "rows")
+	}
+
+	resp, err := client().Get(path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, body)
+	}
+
+	var payload struct {
+		Rows []struct {
+			Peer     string `json:"peer"`
+			Scope    string `json:"scope"`
+			State    string `json:"state"`
+			Position string `json:"position"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		os.Stdout.Write(body)
+		return nil
+	}
+
+	if len(payload.Rows) == 0 {
+		fmt.Println("No inbound bootstrap activity on this server.")
+		fmt.Println("If you expected progress here, you may have queried the wrong instance — bootstrap state is tracked on the joining server, not the source.")
+		return nil
+	}
+
+	// Group by peer in the order they first appear.
+	type entry struct{ scope, state, position string }
+	byPeer := map[string][]entry{}
+	var peers []string
+	for _, r := range payload.Rows {
+		if _, seen := byPeer[r.Peer]; !seen {
+			peers = append(peers, r.Peer)
+		}
+		byPeer[r.Peer] = append(byPeer[r.Peer], entry{r.Scope, r.State, r.Position})
+	}
+
+	scopeRank := map[string]int{"sysdbs": 0, "files": 1, "apps": 2, "userdbs": 3}
+	scopeLabel := map[string]string{
+		"sysdbs":  "system databases",
+		"userdbs": "user databases",
+	}
+	label := func(scope string) string {
+		if l, ok := scopeLabel[scope]; ok {
+			return l
+		}
+		return scope
+	}
+
+	// Column widths sized to the widest rendered scope label across all
+	// rows so alignment doesn't lose its grid when a "user databases"
+	// row shares a peer with a 5-char "files" row.
+	scopeCol := 0
+	for _, rows := range byPeer {
+		for _, r := range rows {
+			if l := label(r.scope); len(l) > scopeCol {
+				scopeCol = len(l)
+			}
+		}
+	}
+	scopeCol += 2 // gap before the state column
+
+	for i, peer := range peers {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Println(peer)
+		rows := byPeer[peer]
+		sort.SliceStable(rows, func(a, b int) bool {
+			ra, oka := scopeRank[rows[a].scope]
+			rb, okb := scopeRank[rows[b].scope]
+			if oka && okb {
+				return ra < rb
+			}
+			if oka {
+				return true
+			}
+			if okb {
+				return false
+			}
+			return rows[a].scope < rows[b].scope
+		})
+		const stateCol = 8
+		for _, r := range rows {
+			scopeStr := label(r.scope) + strings.Repeat(" ", scopeCol-len(label(r.scope)))
+			stateStr := r.state + strings.Repeat(" ", stateCol-len(r.state))
+			tail := ""
+			if r.state == "active" && r.position != "" {
+				tail = r.position + " items remaining"
+			}
+			fmt.Printf("  %s%s%s\n", scopeStr, stateStr, tail)
+		}
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 	"join_deny":          sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
 	"pair_remove":        sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
 	"bootstrap_progress": sl.NewBuiltin("mochi.replication.bootstrap_progress", api_replication_bootstrap_progress),
+	"bootstrap_serving":  sl.NewBuiltin("mochi.replication.bootstrap_serving", api_replication_bootstrap_serving),
 })
 
 // api_replication_status returns a dict describing this server's
@@ -414,6 +415,32 @@ func api_replication_bootstrap_progress(t *sl.Thread, fn *sl.Builtin, args sl.Tu
 		_ = entry.SetKey(sl.String("scope"), sl.String(row_string(r, "scope")))
 		_ = entry.SetKey(sl.String("state"), sl.String(row_string(r, "state")))
 		_ = entry.SetKey(sl.String("position"), sl.String(row_string(r, "position")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_bootstrap_serving returns the per-(peer, scope) rows
+// from `bootstrap_served` — scopes this server is currently serving to
+// a joined replica, with each row cleared when the replica acks the
+// scope as done. Counterpart to bootstrap_progress: progress is the
+// inbound view (this server consuming from a source), serving is the
+// outbound view (this server feeding a replica). Both are needed for
+// the operator UI to show symmetric Syncing/Synced status on both sides.
+//
+// Returned shape: list of dicts {peer, scope, started}.
+func api_replication_bootstrap_serving(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, scope, started from bootstrap_served order by peer, scope")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("scope"), sl.String(row_string(r, "scope")))
+		_ = entry.SetKey(sl.String("started"), sl.MakeInt64(row_int(r, "started")))
 		_ = out.Append(entry)
 	}
 	return out, nil

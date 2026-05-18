@@ -36,7 +36,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 62
+	schema_version = 63
 )
 
 var (
@@ -288,6 +288,13 @@ func db_create() {
 	replication.exec("create index leadership_expires on leadership(expires)")
 	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
 	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', primary key (scope, peer))")
+	// bootstrap_served: source-side tracking of scopes we're currently
+	// serving to each joined peer. Inserted on join approval (one row
+	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
+	// Symmetry with the receiver's `bootstrap` table — the receiver
+	// sees "syncing" while it pulls; the source sees "syncing" while
+	// these rows exist.
+	replication.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
 	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 	// Per-user link-requests awaiting Approve / Deny in Settings → Replication.
 	// One row per (target user on this host, source peer); newest wins via
@@ -641,6 +648,8 @@ func db_upgrade() {
 			db_upgrade_61()
 		case 62:
 			db_upgrade_62()
+		case 63:
+			db_upgrade_63()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -816,6 +825,17 @@ func db_upgrade_62() {
 	r := db_open("db/replication.db")
 	if col, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='state'"); !col {
 		r.exec("alter table bootstrap add column state text not null default 'queued'")
+	}
+}
+
+// db_upgrade_63 adds the bootstrap_served table — source-side tracking
+// of scopes a consumer hasn't acked as done yet. Symmetry with the
+// receiver's `bootstrap` table; the UI uses both to compute the
+// per-pair-member Synced/Syncing status. Idempotent.
+func db_upgrade_63() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from sqlite_master where type='table' and name='bootstrap_served'"); !has {
+		r.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
 	}
 }
 

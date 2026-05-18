@@ -22,6 +22,21 @@ import (
 	"time"
 )
 
+// self_invocation reconstructs the `mochictl [global-flags]` prefix that
+// would target the same admin socket as the current run. Used when we
+// print a follow-up command for the user to copy — without the flag the
+// hint would default to /etc/mochi/mochi.conf and silently miss the
+// instance they're actually managing.
+func self_invocation() string {
+	if socket != "" {
+		return fmt.Sprintf("mochictl -s %s", socket)
+	}
+	if file != "" && file != default_config {
+		return fmt.Sprintf("mochictl -f %s", file)
+	}
+	return "mochictl"
+}
+
 // http_error formats a non-2xx admin-socket response as a user-friendly
 // error string. Tries the JSON `message` field first (server-side
 // translated text from respond_error), then the `error` code, and
@@ -135,13 +150,7 @@ func init() {
 		},
 		"replication progress": {
 			help: "Per-(peer, scope) bulk-bootstrap progress",
-			run: func(args []string) error {
-				path := "/_/admin/replication/progress"
-				if len(args) > 0 && args[0] != "" {
-					path = path + "?peer=" + args[0]
-				}
-				return get_dump(path, "rows")
-			},
+			run:  cmd_replication_progress,
 		},
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",

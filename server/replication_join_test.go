@@ -113,7 +113,10 @@ func TestReplicationJoinApprovedApplyReplacesPair(t *testing.T) {
 }
 
 // TestReplicationPairMembershipApplyFresh: a pair-membership-change op
-// with a newer sequence than anything seen replaces the local pair table.
+// with a newer sequence than anything seen replaces the local pair
+// table. The receiver must be in the announced Members set; otherwise
+// the op is treated as "you've been kicked" (see ApplyKickedReceiver
+// test below).
 func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -121,8 +124,9 @@ func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into pair (peer, added, role) values ('stale', 0, '')")
 
+	// p2p_id is "self" in setup_replication_test — must be in Members.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 
@@ -135,6 +139,32 @@ func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	}
 }
 
+// TestReplicationPairMembershipApplyKickedReceiver: a membership-change
+// whose Members list does NOT include the receiver is interpreted as
+// "I've been removed from the pair set" — the receiver clears its pair
+// table entirely. This closes the N=2 unpair loop: the kicked peer
+// learns it was removed even though there are no remaining members
+// left to forward the change.
+func TestReplicationPairMembershipApplyKickedReceiver(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
+
+	// Members announces a set that does NOT include "self" — peer-A
+	// is telling us we've been removed.
+	replication_pair_membership_apply("peer-A", &PairMembershipChange{
+		Members:  []string{"peer-A"},
+		Sequence: 1,
+	})
+
+	count := rdb.integer("select count(*) from pair")
+	if count != 0 {
+		t.Errorf("kicked receiver should have empty pair; got %d rows", count)
+	}
+}
+
 // TestReplicationPairMembershipApplyStaleIgnored: a pair-membership-change
 // with sequence less than what we've already seen is recorded as seen
 // but does not overwrite the pair table.
@@ -142,14 +172,15 @@ func TestReplicationPairMembershipApplyStaleIgnored(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	// Apply newer first.
+	// Apply newer first (receiver "self" is in Members so this is the
+	// normal "I'm in the pair" path, not a kick).
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 5,
 	})
 	// Now stale older.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A"},
+		Members:  []string{"peer-A", "self"},
 		Sequence: 3,
 	})
 
@@ -167,7 +198,7 @@ func TestReplicationPairMembershipApplyDuplicateIgnored(t *testing.T) {
 	defer cleanup()
 
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 	rdb := db_open("db/replication.db")
@@ -175,7 +206,7 @@ func TestReplicationPairMembershipApplyDuplicateIgnored(t *testing.T) {
 
 	// Re-apply same sequence: should not re-insert peer-A.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 

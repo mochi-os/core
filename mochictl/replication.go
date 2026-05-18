@@ -51,7 +51,7 @@ func cmd_replication_resync(args []string) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return http_error(resp.StatusCode, raw)
 	}
 
 	if flag_json {
@@ -86,7 +86,7 @@ func cmd_replication_pair_remove(args []string) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return http_error(resp.StatusCode, raw)
 	}
 
 	if flag_json {

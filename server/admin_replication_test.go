@@ -232,10 +232,11 @@ func TestAdminReplicationPairRemoveDeletes(t *testing.T) {
 	emit_called := false
 	admin_replication_emit_pair_membership = func(full, targets []string) {
 		emit_called = true
-		// `targets` is the set the announcement goes to: remaining members
-		// (peer-A, peer-C), not the removed one.
-		if len(targets) != 2 {
-			t.Errorf("targets = %v, want 2 remaining members", targets)
+		// `targets` is the set the announcement goes to: the kicked peer
+		// (peer-B) plus the remaining members (peer-A, peer-C). The kicked
+		// peer needs to learn it was removed so it can clear its pair.
+		if len(targets) != 3 {
+			t.Errorf("targets = %v, want 3 (kicked + 2 remaining)", targets)
 		}
 		// `full` includes self (filtered to p2p_id="self" + remaining).
 		if len(full) != 3 {
@@ -267,7 +268,9 @@ func TestAdminReplicationPairRemoveDeletes(t *testing.T) {
 }
 
 // TestAdminReplicationPairRemoveLastMember: removing the last member
-// works (announces to nobody, just deletes locally).
+// still announces to the kicked peer so it can clear its own pair
+// table. Without this, an N=2 unpair leaves the other side believing
+// the pair still exists.
 func TestAdminReplicationPairRemoveLastMember(t *testing.T) {
 	cleanup := setup_admin_replication_test(t)
 	defer cleanup()
@@ -275,9 +278,10 @@ func TestAdminReplicationPairRemoveLastMember(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
 
-	emit_called := false
+	var got_full, got_targets []string
 	admin_replication_emit_pair_membership = func(full, targets []string) {
-		emit_called = true
+		got_full = full
+		got_targets = targets
 	}
 
 	w, _ := admin_replication_call(t, "POST", "/_/admin/replication/pair/remove",
@@ -289,8 +293,10 @@ func TestAdminReplicationPairRemoveLastMember(t *testing.T) {
 	if len(rows) != 0 {
 		t.Errorf("pair should be empty; got %d rows", len(rows))
 	}
-	// No remaining members → no broadcast.
-	if emit_called {
-		t.Error("pair-membership-change should NOT be emitted when no members remain")
+	if len(got_targets) != 1 || got_targets[0] != "peer-A" {
+		t.Errorf("targets = %v, want [peer-A] (the kicked peer)", got_targets)
+	}
+	if len(got_full) != 1 || got_full[0] != "self" {
+		t.Errorf("full = %v, want [self] (kicked peer not in new set)", got_full)
 	}
 }

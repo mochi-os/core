@@ -196,12 +196,24 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 	stale := pmc.Sequence < latest
 
 	if !stale {
-		db.exec("delete from pair")
-		for _, peer := range pmc.Members {
-			if peer == "" || peer == p2p_id {
-				continue
+		// If this receiver isn't in the announced set, treat as
+		// "I've been kicked": empty the pair entirely. Otherwise
+		// rebuild it as the announced set minus self.
+		in_set := false
+		for _, p := range pmc.Members {
+			if p == p2p_id {
+				in_set = true
+				break
 			}
-			db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+		}
+		db.exec("delete from pair")
+		if in_set {
+			for _, peer := range pmc.Members {
+				if peer == "" || peer == p2p_id {
+					continue
+				}
+				db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+			}
 		}
 	}
 
@@ -427,10 +439,15 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 		}
 	}
 
+	// Announce the new pair set to remaining members AND the kicked
+	// peer. The kicked peer receives Members that doesn't include it,
+	// which the receiver treats as "I've been kicked" — empties its
+	// pair table. Without notifying the kicked peer, an N=2 unpair
+	// would leave the other side believing the pair still exists,
+	// because there are no remaining members to forward the change.
 	full := append([]string{p2p_id}, remaining...)
-	if len(remaining) > 0 {
-		admin_replication_emit_pair_membership(full, remaining)
-	}
+	recipients := append([]string{peer}, remaining...)
+	admin_replication_emit_pair_membership(full, recipients)
 	audit_replication_pair_removed(peer)
 
 	return peer, remaining, true

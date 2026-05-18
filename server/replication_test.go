@@ -1083,7 +1083,7 @@ func TestBroadcastGapDetection(t *testing.T) {
 
 	// Sequence 5 arrives — gap of {3, 4} detected (app would request
 	// replay; we just check the math).
-	incoming := 5
+	incoming := int64(5)
 	gap := incoming > last+1
 	if !gap {
 		t.Errorf("gap should be detected when incoming > last+1")

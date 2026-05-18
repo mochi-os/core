@@ -122,11 +122,38 @@ func queue_fail(id string, err string) {
 	}
 }
 
+// queue_expand_empty_target is the retry-time fan-out: if a row has
+// an empty target (entity_peers returned nothing at enqueue) and
+// entity_peers now finds N live locations, clone (N-1) sibling rows
+// targeting the additional peers and return the first peer for this
+// attempt. Returns the empty string if entity_peers is still empty
+// (caller should fail the row for retry later).
+//
+// Split out from queue_send_direct so the expansion logic is unit-
+// testable without dragging in libp2p.
+func queue_expand_empty_target(q *QueueEntry) string {
+	peers := entity_peers(q.ToEntity)
+	if len(peers) == 0 {
+		return ""
+	}
+	for i := 1; i < len(peers); i++ {
+		queue_add_direct(uid(), peers[i], q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp,
+			strings.Split(q.FromServices, ","), q.Content, q.Data, q.File, q.Expires)
+	}
+	return peers[0]
+}
+
 // Send a queued direct message (reads challenge before sending, waits for ACK)
+//
+// Multi-host fan-out: if the row was enqueued with an empty target
+// (entity_peers returned nothing at the time, so send_work couldn't
+// fan out) and entity_peers now finds multiple live locations, expand
+// this row to N peers by inserting (N-1) sibling rows with fresh IDs.
+// Send the primary copy on this attempt to whichever peer comes first.
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
-		peer = entity_peer(q.ToEntity)
+		peer = queue_expand_empty_target(q)
 	}
 	if peer == "" {
 		return false

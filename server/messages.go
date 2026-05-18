@@ -171,26 +171,65 @@ func (m *Message) send_peer(peer string) {
 }
 
 // Do the work of sending (queue-first, read challenge before sending, wait for ACK)
+//
+// Multi-host fan-out: when the caller didn't pin a specific peer (the
+// usual case for app-level `mochi.message.send`), look up every live
+// peer hosting the recipient entity and queue one row per peer with its
+// target set. Each replica receives the event directly from the source,
+// rather than relying on the chosen-peer → pair-replication relay to
+// fan it out internally. Resilient to one replica being briefly
+// unreachable (the others still get the direct hit) and to stale
+// directory entries pinning routing at a dead peer.
+//
+// `send_peer` (target already set) keeps single-row behaviour — it's
+// the path for system-to-system / replication messages where the
+// sender already picked which peer to talk to.
+//
+// When entity_peers returns nothing (entity unknown to local directory)
+// the original single empty-target row is queued so the queue retry
+// can attempt resolution again later via entity_peer.
 func (m *Message) send_work() {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-
-	peer := m.target
-	if peer == "" {
-		peer = entity_peer(m.To)
-	}
-
-	//debug("Message sending to peer %q: id %q, from %q, to %q, service %q, event %q", peer, m.ID, m.From, m.To, m.Service, m.Event)
-
 	content := cbor_encode(m.content)
-	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 
-	if peer == "" {
-		//debug("Message unable to determine peer, will retry from queue")
+	if m.target != "" {
+		queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		message_attempt_send(m, m.target, content)
 		return
 	}
 
+	peers := entity_peers(m.To)
+	if len(peers) == 0 {
+		// Unknown entity — queue one row with empty target so the
+		// retry loop can re-resolve later. Same as before.
+		queue_add_direct(m.ID, "", m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		return
+	}
+
+	for i, peer := range peers {
+		// Each replica gets its own queue row + ID. The original m.ID
+		// becomes the first row; additional peers get fresh ids.
+		id := m.ID
+		if i > 0 {
+			id = uid()
+		}
+		queue_add_direct(id, peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+	}
+	// Try to send the primary row immediately; additional peer rows ride
+	// the queue tick. Avoids fanning N goroutines from a single send.
+	message_attempt_send(m, peers[0], content)
+}
+
+// message_attempt_send is the inline send-now path extracted from
+// send_work for the single-peer case. Splits naturally now that
+// send_work loops over peers. Package-level var so unit tests can
+// stub it out — the real implementation reaches into the libp2p
+// infrastructure which isn't set up under in-process tests.
+var message_attempt_send = message_attempt_send_real
+
+func message_attempt_send_real(m *Message, peer string, content []byte) {
 	// Mark as sending to prevent other queue processors from picking it up
 	queue_sending(m.ID)
 

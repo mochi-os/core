@@ -160,6 +160,32 @@ func (e *Event) route() error {
 		}
 	}
 
+	// System broadcast events. Handled internally, bypassing app-level
+	// event registration since every subscription app gets the same
+	// mechanism for free.
+	if e.event == "broadcast/resync" || e.event == "broadcast/acknowledge" {
+		if e.from == "" {
+			info("Event dropping unsigned broadcast event %q to app %q", e.event, a.id)
+			return fmt.Errorf("unsigned broadcast event")
+		}
+		if e.user == nil {
+			info("Event dropping broadcast event for nil user")
+			return fmt.Errorf("broadcast event requires user")
+		}
+		e.db = db_app(e.user, a)
+		if e.db == nil {
+			info("Event app %q failed to open database", a.id)
+			return fmt.Errorf("no app database")
+		}
+		defer e.db.close()
+		switch e.event {
+		case "broadcast/resync":
+			return e.broadcast_resync(a, av)
+		case "broadcast/acknowledge":
+			return e.broadcast_acknowledge()
+		}
+	}
+
 	// Find event in app
 	apps_lock.Lock()
 	ae, found := av.Events[e.event]
@@ -239,7 +265,40 @@ func (e *Event) route() error {
 		}
 	}
 
+	// Broadcast gap detection. Events carrying _key + _sequence in
+	// content are part of a sequenced broadcast stream from e.peer.
+	// We dedup duplicates, NACK on gap (sender retries; meanwhile we
+	// asynchronously request a replay from the owner to fill it), and
+	// advance _received after a successful handler.
+	bkey, _ := e.content["_key"].(string)
+	bseq := event_int64(e.content["_sequence"])
+	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.db != nil
+	if broadcast_check {
+		last := broadcast_received_get(e.db, e.peer, bkey)
+		if bseq <= last {
+			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
+			return nil
+		}
+		if bseq > last+1 {
+			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); requesting resync", bseq, last+1, e.peer, bkey)
+			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
+			return fmt.Errorf("broadcast gap detected (peer=%s, key=%s, last=%d, seq=%d)", e.peer, bkey, last, bseq)
+		}
+	}
+
 	// Check which engine the app uses, and run it
+	handler_err := e.run_handler(a, av, ae)
+
+	if broadcast_check && handler_err == nil {
+		broadcast_advance_local(e.db, e.peer, bkey, bseq)
+	}
+	return handler_err
+}
+
+// run_handler invokes the per-app event handler under the correct
+// engine. Factored out so the broadcast wrapper can call it once and
+// check the result.
+func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err error) {
 	switch av.Architecture.Engine {
 	case "": // Internal app
 		if ae.internal_function == nil {
@@ -247,7 +306,6 @@ func (e *Event) route() error {
 			return fmt.Errorf("no handler for event %q", e.event)
 		}
 
-		var handler_err error
 		defer func() {
 			r := recover()
 			if r != nil {
@@ -279,6 +337,22 @@ func (e *Event) route() error {
 		info("Event unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)
 		return fmt.Errorf("unknown engine %q", av.Architecture.Engine)
 	}
+}
+
+// event_int64 normalises a content field that may decode as int64,
+// uint64, or float64 depending on the JSON/CBOR path.
+func event_int64(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case uint64:
+		return int64(x)
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return 0
 }
 
 // Decode the next segment from a received event

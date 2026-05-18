@@ -4,6 +4,7 @@
 package main
 
 import (
+	"sync"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -188,10 +189,11 @@ type KeysTotp struct {
 // (not yet implemented) using the same Hash for content-addressed
 // fetches.
 type FileSync struct {
-	Path string `cbor:"path"`
-	Hash string `cbor:"hash,omitempty"`
-	Data []byte `cbor:"data,omitempty"`
-	Size int64  `cbor:"size"`
+	Path   string `cbor:"path"`
+	Hash   string `cbor:"hash,omitempty"`
+	Data   []byte `cbor:"data,omitempty"`
+	Size   int64  `cbor:"size,omitempty"`
+	Delete bool   `cbor:"delete,omitempty"`
 }
 
 // WebpushDelivered is the wire payload for replicating a per-user
@@ -519,6 +521,50 @@ func replication_manager() {
 	}
 }
 
+// replication_pending_kick is invoked when a buffered op stays
+// deferred. Schema-skew (op.Schema > local) and "app not installed yet"
+// are the two app-side reasons an op gets stuck; both are unstuck by
+// app_check_install downloading the matching published version. We
+// kick best-effort — the call is idempotent when the local version is
+// already current, so a no-op cost when the deferral is for a different
+// reason (e.g. unknown user awaiting keys-transfer).
+func replication_pending_kick(op *ReplicationOp) {
+	if op == nil || op.Class != repl_class_sql {
+		return
+	}
+	if op.Database == "" || !valid(op.Database, "entity") {
+		// system-DB tables (users, sessions, notifications) or dev /
+		// internal apps — no publisher download path applies.
+		return
+	}
+	if !replication_pending_kick_due(op.Database) {
+		return
+	}
+	go app_check_install(op.Database)
+}
+
+// replication_pending_kick_state tracks the last time
+// replication_pending_kick fired for each app id, so a busy drain
+// doesn't fan out duplicate app_check_install goroutines for the same
+// stuck app every 30 seconds. The TTL is long compared to the drain
+// interval but short compared to operator patience.
+var (
+	replication_pending_kick_last  = map[string]int64{}
+	replication_pending_kick_mu    sync.Mutex
+	replication_pending_kick_ttl_s = int64(300) // 5 minutes
+)
+
+func replication_pending_kick_due(appID string) bool {
+	replication_pending_kick_mu.Lock()
+	defer replication_pending_kick_mu.Unlock()
+	now_ts := now()
+	if last, ok := replication_pending_kick_last[appID]; ok && now_ts-last < replication_pending_kick_ttl_s {
+		return false
+	}
+	replication_pending_kick_last[appID] = now_ts
+	return true
+}
+
 // replication_pending_drain walks `replication.db.pending` in arrival
 // order and re-evaluates each buffered op against the current local
 // state. Ops that now apply move to `seen`; ops that are still deferred
@@ -560,7 +606,14 @@ func replication_pending_drain() {
 			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
 			debug("Replication pending drain: applied (peer=%q scope=%q user=%q seq=%d)", peer, scope, userField, sequence)
 		case ApplyDeferred:
-			// Still not ready — leave in pending.
+			// Still not ready — leave in pending. Kick auxiliary
+			// progress where we know it might unblock the op:
+			// an exec op referencing an entity-style app id whose
+			// version isn't installed locally is unblocked by an
+			// app_check_install side-effect that downloads the
+			// app from the publisher. Without this, ops sit waiting
+			// for the next 24-hour apps_manager tick.
+			replication_pending_kick(&op)
 		case ApplyInvalid:
 			info("Replication pending drain: invalid op dropped (peer=%q seq=%d)", peer, sequence)
 			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)

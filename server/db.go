@@ -1802,6 +1802,7 @@ func transaction_close(t *sl.Thread) {
 		if !h.closed {
 			h.tx.Rollback()
 			h.closed = true
+			h.pending_emits = nil
 		}
 	}
 	t.SetLocal("transactions", nil)
@@ -1942,6 +1943,7 @@ func (h *TransactionHandle) sl_rollback(t *sl.Thread, fn *sl.Builtin, args sl.Tu
 	}
 	h.tx.Rollback()
 	h.closed = true
+	h.pending_emits = nil
 	return sl.None, nil
 }
 

@@ -635,6 +635,68 @@ func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
 	}
 }
 
+// TestReplicationPendingKickTTL: replication_pending_kick fires at
+// most once per app id within the TTL window. Without this gate, a
+// drain finding 50 stuck ops for the same app would fan out 50
+// app_check_install goroutines on each 30s tick.
+func TestReplicationPendingKickTTL(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Use a valid-shaped entity id so the kick gate's `valid(_, "entity")`
+	// check passes.
+	appID := test_entity_id('a')
+
+	// Fresh state: first kick is due.
+	replication_pending_kick_mu.Lock()
+	delete(replication_pending_kick_last, appID)
+	replication_pending_kick_mu.Unlock()
+
+	if !replication_pending_kick_due(appID) {
+		t.Error("first kick on fresh app: want true, got false")
+	}
+	// Immediately re-asking: gated by TTL.
+	if replication_pending_kick_due(appID) {
+		t.Error("repeat kick within TTL: want false, got true")
+	}
+
+	// Backdate the last-kick timestamp past the TTL → next call is due.
+	replication_pending_kick_mu.Lock()
+	replication_pending_kick_last[appID] = now() - replication_pending_kick_ttl_s - 1
+	replication_pending_kick_mu.Unlock()
+	if !replication_pending_kick_due(appID) {
+		t.Error("kick after TTL elapsed: want true, got false")
+	}
+}
+
+// TestReplicationPendingKickRejectsNonEntityApp: dev / internal apps
+// (string ids) don't have a publisher download path, so kicking
+// app_check_install for them is pointless. Verify the gate filters them.
+func TestReplicationPendingKickRejectsNonEntityApp(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Snapshot the kick map; ensure it doesn't gain an entry for a
+	// non-entity app id even after a Deferred call goes through.
+	replication_pending_kick_mu.Lock()
+	before := len(replication_pending_kick_last)
+	replication_pending_kick_mu.Unlock()
+
+	replication_pending_kick(&ReplicationOp{
+		Class:    repl_class_sql,
+		Scope:    repl_scope_app,
+		Database: "feeds", // string id, not a fingerprint
+		User:     "u1",
+	})
+
+	replication_pending_kick_mu.Lock()
+	after := len(replication_pending_kick_last)
+	replication_pending_kick_mu.Unlock()
+	if after != before {
+		t.Errorf("non-entity app id must not be tracked; before=%d after=%d", before, after)
+	}
+}
+
 func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

@@ -49,10 +49,29 @@ func replication_emit_file_sync(userUID, appID, path string, data []byte) {
 	})
 }
 
-// replication_file_sync_apply lands a replicated file write into the
-// per-(user, app) file directory. Defers when the user isn't local yet
-// or the app isn't installed; the next pending-drain or a keys-transfer
-// landing the user will retry.
+// replication_emit_file_delete fans out a file removal to the user's
+// host set. Called from api_file_delete after a successful local
+// remove. The FileSync payload carries only Path + Delete=true; no
+// content.
+func replication_emit_file_delete(userUID, appID, path string) {
+	if userUID == "" || appID == "" {
+		return
+	}
+	payload := cbor_encode(&FileSync{Path: path, Delete: true})
+	replication_emit(userUID, &ReplicationOp{
+		Class:     repl_class_file,
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  appID,
+		Operation: repl_op_delete,
+		Payload:   payload,
+	})
+}
+
+// replication_file_sync_apply lands a replicated file write or delete
+// into the per-(user, app) file directory. Defers when the user isn't
+// local yet or the app isn't installed; the next pending-drain or a
+// keys-transfer landing the user will retry.
 func replication_file_sync_apply(userUID, appID string, fs *FileSync) ApplyResult {
 	if fs.Path == "" || !valid(fs.Path, "filepath") {
 		info("Replication file-sync rejected: invalid path %q", fs.Path)
@@ -69,6 +88,21 @@ func replication_file_sync_apply(userUID, appID string, fs *FileSync) ApplyResul
 	}
 
 	base := api_file_base(u, a)
+	if fs.Delete {
+		root, err := os.OpenRoot(base)
+		if err != nil {
+			// Base dir absent — nothing to delete. Treat as applied.
+			debug("Replication file-delete: base dir absent for user=%q app=%q", userUID, appID)
+			return ApplyApplied
+		}
+		defer root.Close()
+		// Remove is best-effort: a missing file is fine (delete is
+		// idempotent across replays and races with the remote write).
+		root.Remove(fs.Path)
+		debug("Replication file-delete apply: user_uid=%q app=%q path=%q", userUID, appID, fs.Path)
+		return ApplyApplied
+	}
+
 	if err := os.MkdirAll(base, 0755); err != nil {
 		warn("Replication file-sync: unable to create base dir %q: %v", base, err)
 		return ApplyInvalid

@@ -232,6 +232,7 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	defer root.Close()
 
 	root.Remove(file)
+	replication_emit_file_delete(user.UID, app.id, file)
 	return sl.None, nil
 }
 

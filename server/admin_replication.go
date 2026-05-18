@@ -11,6 +11,7 @@
 //   GET  /_/admin/replication/status         — pair + per-user-host + bootstrap-pending summary
 //   GET  /_/admin/replication/pair           — current pair members
 //   GET  /_/admin/replication/progress       — per-(peer, scope) bootstrap progress
+//   GET  /_/admin/replication/ops[?user=]    — per-(user, scope) op-replication snapshot
 //   POST /_/admin/replication/pair/remove    — kick a specific pair member
 //   POST /_/admin/replication/resync         — re-run bulk bootstrap against a peer
 //
@@ -178,6 +179,127 @@ func admin_replication_progress(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"rows": rows})
+}
+
+// admin_replication_ops is GET /_/admin/replication/ops[?user=<uid>].
+// Returns a snapshot of per-(user, scope) op replication: this server's
+// emit high-water marks, the highest sequence applied from every peer,
+// and the pending-buffer state. Aimed at the cross-host manual test
+// flow — answers "did host A's writes reach host B?" in one call.
+//
+// Without ?user: returns aggregates across every user.
+// With ?user=<uid>: returns the per-user breakdown.
+func admin_replication_ops(c *gin.Context) {
+	rdb := db_open("db/replication.db")
+	user_filter := c.Query("user")
+
+	type seqRow struct {
+		User  string `db:"user"`
+		Scope string `db:"scope"`
+		Next  int64  `db:"next"`
+	}
+	type seenRow struct {
+		Peer  string `db:"peer"`
+		User  string `db:"user"`
+		Scope string `db:"scope"`
+		Max   int64  `db:"max"`
+	}
+	type pendRow struct {
+		Peer    string `db:"peer"`
+		User    string `db:"user"`
+		Scope   string `db:"scope"`
+		Count   int64  `db:"count"`
+		Oldest  int64  `db:"oldest"`
+	}
+
+	emitted_query := "select user, scope, next from sequence"
+	seen_query := "select peer, user, scope, max(sequence) as max from seen group by peer, user, scope"
+	pending_query := "select peer, user, scope, count(*) as count, min(received) as oldest from pending group by peer, user, scope"
+	args := []any{}
+	if user_filter != "" {
+		emitted_query += " where user=?"
+		seen_query = "select peer, user, scope, max(sequence) as max from seen where user=? group by peer, user, scope"
+		pending_query = "select peer, user, scope, count(*) as count, min(received) as oldest from pending where user=? group by peer, user, scope"
+		args = []any{user_filter}
+	}
+
+	emitted_rows, _ := rdb.rows(emitted_query, args...)
+	seen_rows, _ := rdb.rows(seen_query, args...)
+	pending_rows, _ := rdb.rows(pending_query, args...)
+
+	// emitted_by_user[user][scope] = highest local sequence
+	emitted_by_user := map[string]map[string]int64{}
+	for _, r := range emitted_rows {
+		u, _ := r["user"].(string)
+		s, _ := r["scope"].(string)
+		n, _ := r["next"].(int64)
+		if emitted_by_user[u] == nil {
+			emitted_by_user[u] = map[string]int64{}
+		}
+		emitted_by_user[u][s] = n
+	}
+
+	// applied_by_user[user][peer][scope] = highest sequence we've applied
+	applied_by_user := map[string]map[string]map[string]int64{}
+	for _, r := range seen_rows {
+		u, _ := r["user"].(string)
+		p, _ := r["peer"].(string)
+		s, _ := r["scope"].(string)
+		m, _ := r["max"].(int64)
+		if applied_by_user[u] == nil {
+			applied_by_user[u] = map[string]map[string]int64{}
+		}
+		if applied_by_user[u][p] == nil {
+			applied_by_user[u][p] = map[string]int64{}
+		}
+		applied_by_user[u][p][s] = m
+	}
+
+	// pending_by_user[user][peer][scope] = {count, age_seconds}
+	now_ts := now()
+	pending_by_user := map[string]map[string]map[string]map[string]int64{}
+	pending_total := int64(0)
+	oldest_age := int64(0)
+	for _, r := range pending_rows {
+		u, _ := r["user"].(string)
+		p, _ := r["peer"].(string)
+		s, _ := r["scope"].(string)
+		cnt, _ := r["count"].(int64)
+		oldest, _ := r["oldest"].(int64)
+		age := now_ts - oldest
+		if age > oldest_age {
+			oldest_age = age
+		}
+		pending_total += cnt
+		if pending_by_user[u] == nil {
+			pending_by_user[u] = map[string]map[string]map[string]int64{}
+		}
+		if pending_by_user[u][p] == nil {
+			pending_by_user[u][p] = map[string]map[string]int64{}
+		}
+		pending_by_user[u][p][s] = map[string]int64{
+			"count":       cnt,
+			"age_seconds": age,
+		}
+	}
+
+	if user_filter != "" {
+		c.JSON(http.StatusOK, gin.H{
+			"user":    user_filter,
+			"emitted": emitted_by_user[user_filter],
+			"applied": applied_by_user[user_filter],
+			"pending": pending_by_user[user_filter],
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"emitted":              emitted_by_user,
+		"applied":              applied_by_user,
+		"pending":              pending_by_user,
+		"pending_total":        pending_total,
+		"pending_oldest_age_s": oldest_age,
+	})
 }
 
 // admin_replication_pair_remove is POST /_/admin/replication/pair/remove.

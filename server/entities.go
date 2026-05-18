@@ -79,7 +79,8 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 
 	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.UID, parent, class, name, privacy, data)
 
-	e := Entity{ID: public, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+	e := Entity{ID: public, Private: private, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+	replication_emit_users_entities_create(u.UID, &e)
 
 	// Audit log entity/identity creation
 	audit_identity_created(u.Username, public, class)
@@ -146,6 +147,7 @@ func entity_privacy_set(e *Entity, privacy string) error {
 
 	db_open("db/users.db").exec("update entities set privacy=? where id=?", privacy, e.ID)
 	e.Privacy = privacy
+	replication_emit_users_entities_update(e.User, e.ID, map[string]string{"privacy": privacy})
 
 	if privacy == "private" {
 		db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
@@ -173,6 +175,7 @@ func entity_name_set(e *Entity, name string) error {
 
 	db_open("db/users.db").exec("update entities set name=? where id=?", name, e.ID)
 	e.Name = name
+	replication_emit_users_entities_update(e.User, e.ID, map[string]string{"name": name})
 
 	if e.Privacy == "public" {
 		directory_create(e)
@@ -213,6 +216,7 @@ func (e *Entity) delete() {
 
 	// Remove entity
 	db.exec("delete from entities where id=?", e.ID)
+	replication_emit_users_entities_delete(e.User, e.ID)
 
 	// Audit log entity deletion
 	audit_identity_deleted(username, e.ID)
@@ -598,6 +602,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			}
 			if name != e.Name {
 				db.exec("update entities set name=? where id=?", name, id)
+				replication_emit_users_entities_update(e.User, id, map[string]string{"name": name})
 				name_changed = true
 			}
 
@@ -607,6 +612,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 				return sl_error(fn, "invalid data %q", data)
 			}
 			db.exec("update entities set data=? where id=?", data, id)
+			replication_emit_users_entities_update(e.User, id, map[string]string{"data": data})
 
 		case "privacy":
 			privacy, ok := sl.AsString(kv[1])
@@ -615,6 +621,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			}
 			if privacy != old_privacy {
 				db.exec("update entities set privacy=? where id=?", privacy, id)
+				replication_emit_users_entities_update(e.User, id, map[string]string{"privacy": privacy})
 				if privacy == "private" {
 					changed_to_private = true
 				}

@@ -906,6 +906,7 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		db.exec("update users set username=? where uid=?", username, id)
 		if old != username {
 			audit_email_changed(user.Username, id, old, username)
+			replication_emit_users_users_set(id, map[string]string{"username": username})
 		}
 	}
 
@@ -921,10 +922,13 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			old = row["role"].(string)
 		}
 		db.exec("update users set role=? where uid=?", role, id)
-		if old != role && role == "administrator" {
-			audit_admin_escalation(user.Username, id, "promote")
-		} else if old != role && old == "administrator" {
-			audit_admin_escalation(user.Username, id, "demote")
+		if old != role {
+			replication_emit_users_users_set(id, map[string]string{"role": role})
+			if role == "administrator" {
+				audit_admin_escalation(user.Username, id, "promote")
+			} else if old == "administrator" {
+				audit_admin_escalation(user.Username, id, "demote")
+			}
 		}
 	}
 
@@ -1193,6 +1197,7 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db.exec("update users set status='suspended' where uid=?", id)
+	replication_emit_users_users_set(id, map[string]string{"status": "suspended"})
 	return sl.True, nil
 }
 
@@ -1222,6 +1227,7 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db.exec("update users set status='active' where uid=?", id)
+	replication_emit_users_users_set(id, map[string]string{"status": "active"})
 	return sl.True, nil
 }
 

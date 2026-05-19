@@ -30,12 +30,13 @@
 //   - apps.db.apps (install registry): every row via SystemSet.
 //   - apps.db.versions / .tracks: every row via SystemRow.
 //   - domains.db.domains / .routes / .delegations: every row via SystemRow.
+//   - sessions.db.sessions: every active session via SessionInsert.
+//     Lets a freshly-joined replica honour cookies issued before the
+//     pair was established. Per-event ops handle ongoing activity.
 //
 // Not covered (intentional):
 //   - directory.db: per-server entity discovery cache, regenerates from
 //     P2P traffic.
-//   - sessions.db: session activity replicates via per-event ops as
-//     things happen.
 //   - schedule.db: per-server scheduled events; the leader-claim
 //     pattern handles cross-replica coordination separately.
 //   - external.db: account state replicates via mochi.account ops.
@@ -48,6 +49,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // replication_pair_backfill runs on the source after approving a pair
@@ -254,6 +256,139 @@ func replication_pair_backfill_system(peer string) {
 				map[string]string{"created": strconv.FormatInt(created, 10)}, false)
 		}
 	}
+
+	replication_pair_backfill_sessions(peer)
+	replication_pair_backfill_accounts(peer)
+}
+
+// replication_pair_backfill_accounts sends every replicable accounts
+// row (per user) to the new peer via the exec-user-core op channel.
+// Skips per-device types (browser, unifiedpush, fcm) — each device
+// registers separately on each host. Ids are preserved by emitting
+// "insert or replace" with the explicit local id, so destinations
+// table rows referencing the account by integer id stay valid.
+func replication_pair_backfill_accounts(peer string) {
+	udb := db_open("db/users.db")
+	users, err := udb.rows("select uid from users where status = 'active'")
+	if err != nil {
+		warn("Replication pair-backfill accounts: enumerate users failed: %v", err)
+		return
+	}
+	total := 0
+	for _, u := range users {
+		uid, _ := u["uid"].(string)
+		if uid == "" {
+			continue
+		}
+		user := &User{UID: uid}
+		db := db_user(user, "user")
+		rows, err := db.rows("select id, type, label, identifier, data, created, verified from accounts where type not in ('browser', 'unifiedpush', 'fcm')")
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			id, _ := r["id"].(int64)
+			ptype, _ := r["type"].(string)
+			if id == 0 || ptype == "" {
+				continue
+			}
+			label, _ := r["label"].(string)
+			identifier, _ := r["identifier"].(string)
+			data, _ := r["data"].(string)
+			created, _ := r["created"].(int64)
+			verified, _ := r["verified"].(int64)
+			replication_emit_user_core_exec_to_peer_var(peer, user,
+				"insert or replace into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
+				[]any{id, ptype, label, identifier, data, created, verified})
+			total++
+		}
+	}
+	debug("Replication pair-backfill: %d account rows queued to peer %q", total, peer)
+}
+
+// replication_emit_user_core_exec_to_peer_var is the per-peer variant
+// of replication_emit_user_core_exec. Used by pair-backfill to deliver
+// rows to one specific peer rather than fanning out.
+var replication_emit_user_core_exec_to_peer_var = replication_emit_user_core_exec_to_peer_impl
+
+func replication_emit_user_core_exec_to_peer_impl(peer string, user *User, sql string, args []any) {
+	if peer == "" || peer == p2p_id || user == nil || user.UID == "" {
+		return
+	}
+	table := sql_target_table(sql)
+	if table == "" {
+		return
+	}
+	for _, prefix := range sql_default_excluded {
+		if strings.HasPrefix(table, prefix) {
+			return
+		}
+	}
+	payload := cbor_encode(&SQLCommand{Statement: sql, Args: args})
+	replication_emit_to_peer(user.UID, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user.UID,
+		Database:  repl_db_user_core_sentinel,
+		Table:     table,
+		Operation: repl_op_exec_user_core,
+		Payload:   payload,
+	}, peer)
+}
+
+// replication_pair_backfill_sessions sends every active (non-expired)
+// session row to the new peer via the same op channel login_create
+// uses. The receiver's apply path is idempotent (REPLACE INTO), so
+// re-runs after partial delivery are safe.
+func replication_pair_backfill_sessions(peer string) {
+	sdb := db_open("db/sessions.db")
+	rows, err := sdb.rows("select user, code, secret, expires, created, accessed, address, agent from sessions where expires >= ?", now())
+	if err != nil {
+		warn("Replication pair-backfill sessions: enumerate failed: %v", err)
+		return
+	}
+	count := 0
+	for _, r := range rows {
+		userUID, _ := r["user"].(string)
+		code, _ := r["code"].(string)
+		if userUID == "" || code == "" {
+			continue
+		}
+		secret, _ := r["secret"].(string)
+		expires, _ := r["expires"].(int64)
+		created, _ := r["created"].(int64)
+		accessed, _ := r["accessed"].(int64)
+		address, _ := r["address"].(string)
+		agent, _ := r["agent"].(string)
+		replication_emit_session_insert_to_peer_var(peer, userUID, code, secret, expires, created, accessed, address, agent)
+		count++
+	}
+	debug("Replication pair-backfill: %d session rows queued to peer %q", count, peer)
+}
+
+// replication_emit_session_insert_to_peer_var is the per-peer variant
+// of the live session-insert emit. Same payload shape; sends only to
+// the targeted peer instead of fan-out to all pair members.
+//
+// Package-level variable so tests can stub the wire emission.
+var replication_emit_session_insert_to_peer_var = replication_emit_session_insert_to_peer_impl
+
+func replication_emit_session_insert_to_peer_impl(peer, userUID, code, secret string, expires, created, accessed int64, address, agent string) {
+	if peer == "" || peer == p2p_id || userUID == "" {
+		return
+	}
+	payload := cbor_encode(&SessionInsert{
+		UserUID: userUID, Code: code, Secret: secret,
+		Expires: expires, Created: created, Accessed: accessed,
+		Address: address, Agent: agent,
+	})
+	replication_emit_to_peer(userUID, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      userUID,
+		Database:  "sessions",
+		Table:     "sessions",
+		Operation: repl_op_insert,
+		Payload:   payload,
+	}, peer)
 }
 
 // replication_system_set_to_peer_var emits a SystemSet to a single peer

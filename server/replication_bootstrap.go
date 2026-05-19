@@ -645,66 +645,44 @@ func bootstrap_read_chunk(scope, path string, offset, length int64) ([]byte, boo
 	return buf[:n], eof, nil
 }
 
-// replication_emit_bootstrap_file_manifest_result sends a manifest
-// page to the receiver. Sender helper; called from the file-manifest
-// request handler after the walker completes.
-//
-// Package-level alias so tests can stub the send_peer broadcast.
-var replication_emit_bootstrap_file_manifest_result = replication_emit_bootstrap_file_manifest_result_impl
-
-func replication_emit_bootstrap_file_manifest_result_impl(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {
-	if peer == "" {
-		return
-	}
-	m := message("", "", "replication", "bootstrap/file/manifest/result")
-	m.add(&BootstrapFileManifestResult{
-		Scope:   scope,
-		Prefix:  prefix,
-		Entries: entries,
-		Done:    done,
-	})
-	m.send_peer(peer)
-}
-
 // bootstrap_manifest_page_size caps the number of entries in any one
-// BootstrapFileManifestResult payload. The receiver's CBOR decoder
-// rejects arrays over 10,000 elements (cbor_max_elements), and the
-// per-message queue.db row also doesn't want to be tens of MB even
-// briefly (the queue_check fan-out is fixed but bytes still get
-// cloned during scan + send). The apps scope on a fully-populated
-// server is 21k+ files (every published app's web/dist tree), so a
-// single-page manifest is not viable. 5000 entries per page gives
-// ~3-5 pages for the apps scope, each ~500-900 KB CBOR.
+// BootstrapFileManifestResult page on the stream. The receiver's CBOR
+// decoder rejects arrays over 10,000 elements (cbor_max_elements); the
+// apps scope on a fully-populated server is 21k+ files (every published
+// app's web/dist tree), so a single-page manifest is not viable. 5000
+// entries per page gives ~3-5 pages for the apps scope, each ~500-900
+// KB CBOR.
 const bootstrap_manifest_page_size = 5000
 
-// replication_bootstrap_file_manifest_request_event is the sender's
-// receive handler — walks the requested path prefix, returns one or
-// more BootstrapFileManifestResult pages. Each page carries up to
-// bootstrap_manifest_page_size entries; the final page has Done=true.
-func replication_bootstrap_file_manifest_request_event(e *Event) {
+// replication_bootstrap_file_manifest_event is the sender's stream
+// handler for sync-RPC manifest fetch. Reads the request from the
+// stream, walks the requested path prefix, writes one or more
+// BootstrapFileManifestResult pages back on the same stream. Each
+// page carries up to bootstrap_manifest_page_size entries; the final
+// page has Done=true.
+func replication_bootstrap_file_manifest_event(e *Event) {
 	var req BootstrapFileManifestRequest
 	if !e.segment(&req) {
-		info("Replication bootstrap-file-manifest-request dropping: cannot decode")
+		info("Replication bootstrap-file-manifest dropping: cannot decode")
 		return
 	}
 	entries, err := bootstrap_walk_manifest(req.Scope, req.Prefix)
 	if err != nil {
-		info("Replication bootstrap-file-manifest-request: walk failed (scope=%q prefix=%q from=%q): %v",
+		info("Replication bootstrap-file-manifest: walk failed (scope=%q prefix=%q from=%q): %v",
 			req.Scope, req.Prefix, e.peer, err)
-		// Reply with an empty Done=true manifest so the receiver can
-		// distinguish "couldn't enumerate" from "still walking". A
-		// retried request will produce the same response; the receiver
-		// can backoff + retry if the operator fixes the underlying
-		// filesystem issue.
-		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, nil, true)
+		// Reply with an empty Done=true page so the receiver can
+		// transition the scope; a retried request will produce the
+		// same response and the receiver can backoff + retry if the
+		// operator fixes the underlying filesystem issue.
+		_ = e.stream.write(&BootstrapFileManifestResult{Scope: req.Scope, Prefix: req.Prefix, Done: true})
 		return
 	}
-	debug("Replication bootstrap-file-manifest-request: scope=%q prefix=%q entries=%d from=%q",
+	debug("Replication bootstrap-file-manifest: scope=%q prefix=%q entries=%d from=%q",
 		req.Scope, req.Prefix, len(entries), e.peer)
 	// Empty manifest is still a single page with Done=true so the
 	// receiver knows to transition the scope to 'done'.
 	if len(entries) == 0 {
-		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, nil, true)
+		_ = e.stream.write(&BootstrapFileManifestResult{Scope: req.Scope, Prefix: req.Prefix, Done: true})
 		return
 	}
 	for i := 0; i < len(entries); i += bootstrap_manifest_page_size {
@@ -713,7 +691,15 @@ func replication_bootstrap_file_manifest_request_event(e *Event) {
 			end = len(entries)
 		}
 		done := end == len(entries)
-		replication_emit_bootstrap_file_manifest_result(e.peer, req.Scope, req.Prefix, entries[i:end], done)
+		if err := e.stream.write(&BootstrapFileManifestResult{
+			Scope:   req.Scope,
+			Prefix:  req.Prefix,
+			Entries: entries[i:end],
+			Done:    done,
+		}); err != nil {
+			info("Replication bootstrap-file-manifest: write page failed: %v", err)
+			return
+		}
 	}
 }
 
@@ -818,19 +804,6 @@ func bootstrap_file_chunk_fetch_impl(peer, scope, path string, offset, length in
 		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: read response: %w", err)
 	}
 	return &resp, nil
-}
-
-// replication_bootstrap_file_manifest_result_event is the receiver's
-// handler. Decodes the payload and delegates to the pure helper so
-// unit tests can exercise the diff + chunk-request fan-out without
-// constructing a live stream Event.
-func replication_bootstrap_file_manifest_result_event(e *Event) {
-	var res BootstrapFileManifestResult
-	if !e.segment(&res) {
-		info("Replication bootstrap-file-manifest-result dropping: cannot decode")
-		return
-	}
-	replication_bootstrap_file_manifest_result_apply(e.peer, &res)
 }
 
 // replication_bootstrap_file_manifest_result_apply diffs the manifest
@@ -965,21 +938,44 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 	}
 }
 
-// replication_emit_bootstrap_file_manifest_request kicks off a
-// bootstrap from the receiver's side. Caller is the driver that
-// orchestrates the four scopes (#66 V4); for now this helper exists
-// so unit tests and the eventual driver have a single entry point.
+// replication_bootstrap_file_manifest_fetch is the receiver-side
+// orchestrator for a file-manifest sync RPC. Opens a stream to peer,
+// writes the request, reads paged manifest responses, applies each via
+// replication_bootstrap_file_manifest_result_apply, and returns when
+// the final Done=true page lands. Designed to run in a goroutine —
+// the caller fires-and-forgets; this function blocks for the full
+// manifest stream duration.
 //
-// Package-level alias so tests can stub the send_peer broadcast.
-var replication_emit_bootstrap_file_manifest_request = replication_emit_bootstrap_file_manifest_request_impl
+// Package-level alias so tests can stub the network call.
+var replication_bootstrap_file_manifest_fetch = replication_bootstrap_file_manifest_fetch_impl
 
-func replication_emit_bootstrap_file_manifest_request_impl(peer, scope, prefix string) {
+func replication_bootstrap_file_manifest_fetch_impl(peer, scope, prefix string) {
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap/file/manifest/request")
-	m.add(&BootstrapFileManifestRequest{Scope: scope, Prefix: prefix})
-	m.send_peer(peer)
+	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap/file/manifest", "", nil)
+	if err != nil {
+		info("Replication bootstrap-file-manifest-fetch: open stream (scope=%q peer=%q): %v", scope, peer, err)
+		return
+	}
+	defer s.close()
+
+	if err := s.write(&BootstrapFileManifestRequest{Scope: scope, Prefix: prefix}); err != nil {
+		info("Replication bootstrap-file-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
+		return
+	}
+
+	for {
+		var page BootstrapFileManifestResult
+		if err := s.read(&page); err != nil {
+			info("Replication bootstrap-file-manifest-fetch: read page (scope=%q peer=%q): %v", scope, peer, err)
+			return
+		}
+		replication_bootstrap_file_manifest_result_apply(peer, &page)
+		if page.Done {
+			return
+		}
+	}
 }
 
 // replication_bootstrap_file_chunk_fetch_event is the sender's
@@ -1482,9 +1478,9 @@ func bootstrap_resume() {
 		}
 		switch scope {
 		case bootstrap_scope_files, bootstrap_scope_apps:
-			replication_emit_bootstrap_file_manifest_request(peer, scope, "")
+			go replication_bootstrap_file_manifest_fetch(peer, scope, "")
 		case bootstrap_scope_userdbs, bootstrap_scope_sysdbs:
-			replication_emit_bootstrap_db_manifest_request(peer, scope)
+			go replication_bootstrap_db_manifest_fetch(peer, scope)
 		}
 	}
 	info("Replication bootstrap_resume: re-fired manifest-requests for %d non-done rows", len(rows))
@@ -1516,10 +1512,10 @@ func bootstrap_start(peer string) {
 	}
 	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
-		replication_emit_bootstrap_file_manifest_request(peer, scope, "")
+		go replication_bootstrap_file_manifest_fetch(peer, scope, "")
 	}
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
-	replication_emit_bootstrap_db_manifest_request(peer, bootstrap_scope_userdbs)
+	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs)
 	audit_replication_bootstrap_started(peer)
 }
 
@@ -1655,63 +1651,57 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 	return entries, nil
 }
 
-// replication_emit_bootstrap_db_manifest_request asks the source for
-// a DB manifest. Package-level alias for test stubbing.
-var replication_emit_bootstrap_db_manifest_request = replication_emit_bootstrap_db_manifest_request_impl
+// replication_bootstrap_db_manifest_fetch is the receiver-side
+// orchestrator for a DB-manifest sync RPC. Opens a stream, writes the
+// request, reads one response, applies it via the result-apply path.
+// Designed to run in a goroutine.
+//
+// Package-level alias so tests can stub the network call.
+var replication_bootstrap_db_manifest_fetch = replication_bootstrap_db_manifest_fetch_impl
 
-func replication_emit_bootstrap_db_manifest_request_impl(peer, scope string) {
+func replication_bootstrap_db_manifest_fetch_impl(peer, scope string) {
 	if peer == "" {
 		return
 	}
-	m := message("", "", "replication", "bootstrap/db/manifest/request")
-	m.add(&BootstrapDBManifestRequest{Scope: scope})
-	m.send_peer(peer)
-}
-
-// replication_emit_bootstrap_db_manifest_result responds with the
-// enumerated DB list. Package-level alias for test stubbing.
-var replication_emit_bootstrap_db_manifest_result = replication_emit_bootstrap_db_manifest_result_impl
-
-func replication_emit_bootstrap_db_manifest_result_impl(peer, scope string, entries []BootstrapDBEntry) {
-	if peer == "" {
+	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap/db/manifest", "", nil)
+	if err != nil {
+		info("Replication bootstrap-db-manifest-fetch: open stream (scope=%q peer=%q): %v", scope, peer, err)
 		return
 	}
-	m := message("", "", "replication", "bootstrap/db/manifest/result")
-	m.add(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
-	m.send_peer(peer)
+	defer s.close()
+
+	if err := s.write(&BootstrapDBManifestRequest{Scope: scope}); err != nil {
+		info("Replication bootstrap-db-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
+		return
+	}
+
+	var res BootstrapDBManifestResult
+	if err := s.read(&res); err != nil {
+		info("Replication bootstrap-db-manifest-fetch: read response (scope=%q peer=%q): %v", scope, peer, err)
+		return
+	}
+	replication_bootstrap_db_manifest_result_apply(peer, &res)
 }
 
-// replication_bootstrap_db_manifest_request_event is the sender-side
-// handler. Walks the appropriate root and emits a result.
-func replication_bootstrap_db_manifest_request_event(e *Event) {
+// replication_bootstrap_db_manifest_event is the sender-side stream
+// handler. Reads the request, walks the appropriate root, writes the
+// response back on the same stream.
+func replication_bootstrap_db_manifest_event(e *Event) {
 	var req BootstrapDBManifestRequest
 	if !e.segment(&req) {
-		info("Replication bootstrap-db-manifest-request dropping: cannot decode")
+		info("Replication bootstrap-db-manifest dropping: cannot decode")
 		return
 	}
 	entries, err := bootstrap_walk_db_manifest(req.Scope)
 	if err != nil {
-		info("Replication bootstrap-db-manifest-request: walk failed (scope=%q from=%q): %v",
+		info("Replication bootstrap-db-manifest: walk failed (scope=%q from=%q): %v",
 			req.Scope, e.peer, err)
-		replication_emit_bootstrap_db_manifest_result(e.peer, req.Scope, nil)
+		_ = e.stream.write(&BootstrapDBManifestResult{Scope: req.Scope})
 		return
 	}
-	debug("Replication bootstrap-db-manifest-request: scope=%q entries=%d from=%q",
+	debug("Replication bootstrap-db-manifest: scope=%q entries=%d from=%q",
 		req.Scope, len(entries), e.peer)
-	replication_emit_bootstrap_db_manifest_result(e.peer, req.Scope, entries)
-}
-
-// replication_bootstrap_db_manifest_result_event is the receiver-side
-// handler. Decodes the payload and delegates to the pure helper so
-// unit tests can exercise the snapshot-emit fan-out without a live
-// stream.
-func replication_bootstrap_db_manifest_result_event(e *Event) {
-	var res BootstrapDBManifestResult
-	if !e.segment(&res) {
-		info("Replication bootstrap-db-manifest-result dropping: cannot decode")
-		return
-	}
-	replication_bootstrap_db_manifest_result_apply(e.peer, &res)
+	_ = e.stream.write(&BootstrapDBManifestResult{Scope: req.Scope, Entries: entries})
 }
 
 // replication_bootstrap_db_manifest_result_apply seeds the pending-DB

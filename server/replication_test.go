@@ -72,27 +72,24 @@ func setup_replication_test(t *testing.T) func() {
 	orig_pair_backfill := replication_pair_backfill
 	replication_pair_backfill = func(peer string) {}
 
-	// Bootstrap emits also fire send_peer goroutines. Stubbed for the
-	// same reason; tests that need to observe the emit override these
-	// again locally (see TestBootstrapStartSeedsScopesAndEmitsManifests).
-	orig_emit_bootstrap_manifest_req := replication_emit_bootstrap_file_manifest_request
-	orig_emit_bootstrap_manifest_res := replication_emit_bootstrap_file_manifest_result
+	// Bootstrap sync-RPC fetches spawn goroutines that hit libp2p; stub
+	// them out for the same reason. Tests that need to observe the
+	// emit override these again locally (see
+	// TestBootstrapStartSeedsScopesAndEmitsManifests).
+	orig_file_manifest_fetch := replication_bootstrap_file_manifest_fetch
+	orig_db_manifest_fetch := replication_bootstrap_db_manifest_fetch
 	orig_file_chunk_fetch := bootstrap_file_chunk_fetch
 	orig_file_scope_driver := bootstrap_file_scope_driver
 	orig_db_fetch := bootstrap_db_fetch
 	orig_db_scope_driver := bootstrap_db_scope_driver
-	orig_emit_bootstrap_db_manifest_req := replication_emit_bootstrap_db_manifest_request
-	orig_emit_bootstrap_db_manifest_res := replication_emit_bootstrap_db_manifest_result
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
-	replication_emit_bootstrap_file_manifest_result = func(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {}
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {}
 	bootstrap_file_chunk_fetch = func(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
 		return nil, nil
 	}
 	bootstrap_file_scope_driver = func(peer, scope string, needed []BootstrapFileEntry) {}
 	bootstrap_db_fetch = func(peer, scope, path, user, app, db string) error { return nil }
 	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) {}
-	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
-	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}
 
 	// bootstrap_scope_settled fires this emit as a goroutine; queue.db
 	// may be torn down before it runs.
@@ -110,14 +107,12 @@ func setup_replication_test(t *testing.T) func() {
 		replication_emit_system_row = orig_emit_system_row
 		replication_membership_update = orig_membership
 		replication_emit_link_denied = orig_emit_link_denied
-		replication_emit_bootstrap_file_manifest_request = orig_emit_bootstrap_manifest_req
-		replication_emit_bootstrap_file_manifest_result = orig_emit_bootstrap_manifest_res
+		replication_bootstrap_file_manifest_fetch = orig_file_manifest_fetch
+		replication_bootstrap_db_manifest_fetch = orig_db_manifest_fetch
 		bootstrap_file_chunk_fetch = orig_file_chunk_fetch
 		bootstrap_file_scope_driver = orig_file_scope_driver
 		bootstrap_db_fetch = orig_db_fetch
 		bootstrap_db_scope_driver = orig_db_scope_driver
-		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req
-		replication_emit_bootstrap_db_manifest_result = orig_emit_bootstrap_db_manifest_res
 		replication_pair_backfill = orig_pair_backfill
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id

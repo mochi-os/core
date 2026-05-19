@@ -158,6 +158,28 @@ func admin_replication_resync(c *gin.Context) {
 	})
 }
 
+// admin_replication_backfill is POST /_/admin/replication/backfill.
+// Re-runs replication_pair_backfill against `peer`. Unlike the
+// bulk-bootstrap resync, this is safe on a populated host: it emits
+// rows through the live op channel (REPLACE INTO on the receiver),
+// never rename-replaces an open DB file. Used after adding a new
+// system table to backfill coverage, and as an ops escape hatch when
+// per-event ops missed a window of state between pair members.
+func admin_replication_backfill(c *gin.Context) {
+	var input struct {
+		Peer string `json:"peer"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
+		respond_error(c, http.StatusBadRequest, "missing_peer", "errors.missing_peer", nil)
+		return
+	}
+	go replication_pair_backfill(input.Peer)
+	c.JSON(http.StatusOK, gin.H{
+		"peer":  input.Peer,
+		"state": "dispatched",
+	})
+}
+
 // admin_replication_progress is GET /_/admin/replication/progress.
 // Returns the per-(peer, scope) bulk-bootstrap progress as
 // {"rows": [{"peer", "scope", "state", "position"}, ...]}. Same data

@@ -13,12 +13,15 @@ import (
 
 // Replication scope and op constants. See claude/plans/replication.md.
 const (
-	repl_scope_app  = "app"
-	repl_scope_core = "core"
-	repl_op_insert  = "insert"
-	repl_op_update  = "update"
-	repl_op_delete  = "delete"
-	repl_op_exec    = "exec"
+	repl_scope_app             = "app"
+	repl_scope_core            = "core"
+	repl_op_insert             = "insert"
+	repl_op_update             = "update"
+	repl_op_delete             = "delete"
+	repl_op_exec               = "exec"
+	repl_op_exec_app_system    = "exec-app-system"
+	repl_op_exec_user_core     = "exec-user-core"
+	repl_db_user_core_sentinel = "user"
 )
 
 // ApplyResult is returned by replication_apply_op to tell the caller
@@ -268,25 +271,18 @@ func init() {
 	// domains rows). Last-applier-by-arrival-order wins.
 	a.event_anonymous("system/set", replication_system_set_event)
 	a.event_anonymous("system/row", replication_system_row_event)
-	// Bulk bootstrap protocol (see replication_bootstrap.go).
-	// Pair-scoped, libp2p-signed; chunk handlers gate on
-	// bootstrap_is_active_source(scope, e.peer) so an unauthorized
-	// peer can't inject data into our scope roots.
-	a.event_anonymous("bootstrap/file/manifest/request", replication_bootstrap_file_manifest_request_event)
-	a.event_anonymous("bootstrap/file/manifest/result", replication_bootstrap_file_manifest_result_event)
-	// File-chunk transfer is synchronous stream RPC (no queue) — sender
-	// reads the request from e.content, writes the response on e.stream.
-	// Replaces the old queue-based chunk-request + chunk-response pair
-	// which filled queue.db with 1 MiB payloads and tripped the 1 GB cap.
+	// Bulk bootstrap protocol (see replication_bootstrap.go). Pair-scoped,
+	// libp2p-signed; chunk handlers gate on bootstrap_is_active_source(scope,
+	// e.peer) so an unauthorized peer can't inject data into our scope roots.
+	// Every bootstrap-time exchange is a synchronous stream RPC: requester
+	// opens a stream, writes the request, reads one or more response
+	// segments on the same stream until done. No queue.db involvement, no
+	// ID-matching dance — the response IS the ACK.
+	a.event_anonymous("bootstrap/file/manifest", replication_bootstrap_file_manifest_event)
 	a.event_anonymous("bootstrap/file/chunk/fetch", replication_bootstrap_file_chunk_fetch_event)
-	a.event_anonymous("bootstrap/db/manifest/request", replication_bootstrap_db_manifest_request_event)
-	a.event_anonymous("bootstrap/db/manifest/result", replication_bootstrap_db_manifest_result_event)
-	a.event_anonymous("bootstrap/scope/done", replication_bootstrap_scope_done_event)
-	// DB transfer is synchronous stream RPC (one stream per DB, multiple
-	// chunk segments down the same stream until EOF). Replaces the old
-	// queue-based snapshot-request + chunk pair which queued every 1 MiB
-	// of every DB on both sides.
+	a.event_anonymous("bootstrap/db/manifest", replication_bootstrap_db_manifest_event)
 	a.event_anonymous("bootstrap/db/fetch", replication_bootstrap_db_fetch_event)
+	a.event_anonymous("bootstrap/scope/done", replication_bootstrap_scope_done_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -367,6 +363,12 @@ func replication_apply_op(op *ReplicationOp) ApplyResult {
 func replication_apply_sql(op *ReplicationOp) ApplyResult {
 	if op.Operation == repl_op_exec {
 		return replication_apply_sql_command(op)
+	}
+	if op.Operation == repl_op_exec_app_system {
+		return replication_apply_app_system_exec(op)
+	}
+	if op.Operation == repl_op_exec_user_core {
+		return replication_apply_user_core_exec(op)
 	}
 	switch {
 	case op.Scope == repl_scope_app && op.Database == "users" && (op.Operation == "users-row.set" || op.Operation == "users-row.delete"):
@@ -1244,7 +1246,19 @@ func replication_sequence_next(user, scope string) int64 {
 // have populated replication.db.hosts / replication.db.pair for emit to
 // have any peers to send to; with no recipients, emit is a no-op.
 func replication_emit(user string, op *ReplicationOp) {
-	peers := recipients(user)
+	replication_emit_to(user, op, nil)
+}
+
+// replication_emit_to_peer emits the op exclusively to one peer, used
+// for pair-backfill where existing pair members already hold the row.
+func replication_emit_to_peer(user string, op *ReplicationOp, peer string) {
+	replication_emit_to(user, op, []string{peer})
+}
+
+func replication_emit_to(user string, op *ReplicationOp, peers []string) {
+	if peers == nil {
+		peers = recipients(user)
+	}
 	if len(peers) == 0 {
 		return
 	}

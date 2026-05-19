@@ -160,6 +160,10 @@ func init() {
 			help: "Force a bulk-bootstrap re-run against the given peer",
 			run:  cmd_replication_resync,
 		},
+		"replication backfill": {
+			help: "Re-run the pair-join system-row backfill against the given peer",
+			run:  cmd_replication_backfill,
+		},
 	}
 }
 

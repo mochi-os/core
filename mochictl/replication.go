@@ -11,6 +11,7 @@
 // `mochictl replication pair list`     → GET /_/admin/replication/pair
 // `mochictl replication pair remove`   → POST /_/admin/replication/pair/remove
 // `mochictl replication resync`        → POST /_/admin/replication/resync
+// `mochictl replication backfill`      → POST /_/admin/replication/backfill
 
 //go:build linux
 
@@ -64,6 +65,47 @@ func cmd_replication_resync(args []string) error {
 		return nil
 	}
 	fmt.Printf("Re-bootstrap initiated against peer %s. Track progress with 'mochictl replication status'.\n", peer)
+	return nil
+}
+
+// cmd_replication_backfill handles `mochictl replication backfill <peer-id>`.
+// Re-runs the pair-join system-row backfill against `peer`. Safe on
+// populated hosts: every row goes through the live op channel
+// (REPLACE INTO on the receiver), never rename-replacing an open DB
+// file. Use this after extending pair-backfill coverage with a new
+// table, or as an escape hatch when per-event ops missed a window.
+//
+// Usage:
+//   mochictl replication backfill <peer-id>
+func cmd_replication_backfill(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mochictl replication backfill <peer-id>")
+	}
+	peer := args[0]
+
+	body, err := json.Marshal(map[string]string{"peer": peer})
+	if err != nil {
+		return err
+	}
+
+	resp, err := client().Post("/_/admin/replication/backfill", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, raw)
+	}
+
+	if flag_json {
+		fmt.Println(string(raw))
+		return nil
+	}
+	if !flag_verbose {
+		return nil
+	}
+	fmt.Printf("Pair-backfill dispatched against peer %s.\n", peer)
 	return nil
 }
 

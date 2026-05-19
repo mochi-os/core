@@ -32,8 +32,24 @@ type DB struct {
 	internal *sqlx.DB
 	starlark *sqlx.DB
 	user     *User
+	app      *App
+	kind     string
 	closed   int64
 }
+
+// db_kind_* tag a DB handle with the per-host file role so the
+// matching emit/apply pair can route replicated writes back into the
+// right file on the receiver.
+//   - "app-system": users/<uid>/<app>/app.db (access, attachments)
+//   - "user-core" : users/<uid>/user.db (groups, accounts, interests,
+//     permissions, settings, classes/services/paths/versions)
+//
+// Everything else (per-app data DBs, sessions.db, users.db, …) goes
+// through its own replication path and leaves kind unset.
+const (
+	db_kind_app_system = "app-system"
+	db_kind_user_core  = "user-core"
+)
 
 const (
 	schema_version = 63
@@ -328,6 +344,10 @@ func db_apps() *DB {
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
+	db.user = u
+	if name == "user" {
+		db.kind = db_kind_user_core
+	}
 
 	// Create tables for user.db
 	if name == "user" {
@@ -469,6 +489,8 @@ func db_app_system(u *User, app *App) *DB {
 		return nil
 	}
 	db.user = u
+	db.app = app
+	db.kind = db_kind_app_system
 
 	if reused {
 		return db
@@ -1437,6 +1459,29 @@ func db_purge_prefix(dir string) {
 
 func (db *DB) exec(query string, values ...any) {
 	must(db.internal.Exec(query, values...))
+}
+
+// exec_replicated runs a write against the local DB and, if the handle
+// is tagged with a replicating kind (app-system, user-core), fans the
+// statement out to the user's host set. Used by Go-side APIs
+// (mochi.access.*, mochi.group.*, …) so their writes converge across
+// hosts the same way mochi.db.execute does for app-defined tables.
+//
+// Schema DDL (create table, create index, alter table) must keep using
+// the plain exec — receivers create their own tables on first open.
+func (db *DB) exec_replicated(query string, values ...any) {
+	must(db.internal.Exec(query, values...))
+	if db.user == nil || db.user.UID == "" {
+		return
+	}
+	switch db.kind {
+	case db_kind_app_system:
+		if db.app != nil {
+			replication_emit_app_system_exec(db.user, db.app, query, values)
+		}
+	case db_kind_user_core:
+		replication_emit_user_core_exec(db.user, query, values)
+	}
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {

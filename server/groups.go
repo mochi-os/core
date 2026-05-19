@@ -207,7 +207,7 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
-	db.exec("replace into groups (id, name, description, created) values (?, ?, ?, ?)", id, name, description, now())
+	db.exec_replicated("replace into groups (id, name, description, created) values (?, ?, ?, ?)", id, name, description, now())
 
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
 }
@@ -283,9 +283,9 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 		switch key {
 		case "name":
-			db.exec("update groups set name=? where id=?", val, id)
+			db.exec_replicated("update groups set name=? where id=?", val, id)
 		case "description":
-			db.exec("update groups set description=? where id=?", val, id)
+			db.exec_replicated("update groups set description=? where id=?", val, id)
 		}
 	}
 
@@ -315,9 +315,9 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	db := db_user(owner, "user")
 
-	db.exec("delete from groups where id=?", id)
-	db.exec("delete from group_members where parent=?", id)
-	db.exec("delete from group_members where member=? and type='group'", id)
+	db.exec_replicated("delete from groups where id=?", id)
+	db.exec_replicated("delete from group_members where parent=?", id)
+	db.exec_replicated("delete from group_members where member=? and type='group'", id)
 
 	return sl.None, nil
 }
@@ -362,7 +362,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 
-	db.exec("replace into group_members (parent, member, type, created) values (?, ?, ?, ?)", group, member, member_type, now())
+	db.exec_replicated("replace into group_members (parent, member, type, created) values (?, ?, ?, ?)", group, member, member_type, now())
 
 	return sl.None, nil
 }
@@ -394,7 +394,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
-	db.exec("delete from group_members where parent=? and member=?", group, member)
+	db.exec_replicated("delete from group_members where parent=? and member=?", group, member)
 
 	return sl.None, nil
 }

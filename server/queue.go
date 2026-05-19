@@ -6,8 +6,27 @@ package main
 import (
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 )
+
+// queue_per_peer_concurrency caps the number of in-flight sends to a
+// single target peer per tick. Each in-flight send opens its own
+// libp2p stream and waits for its ACK; allowing multiple sends per
+// peer in parallel lets one tick drain ~Nx faster than the strict
+// serial pattern. Receivers handle multiple concurrent streams from
+// the same peer fine (libp2p multiplexes; ACK dedup keys are
+// per-message ID), and SQL ops apply by sequence number on the
+// receiver — out-of-order arrival on the wire is rebuilt at apply.
+//
+// 8 is conservative: enough to overcome per-message ACK latency
+// (localhost ~50ms × 8 ≈ 6.25ms/op effective), well under any
+// per-peer rate limits in tests.
+const queue_per_peer_concurrency = 8
+
+// File pushes stay serial per peer — one in-flight file at a time per
+// peer. Parallel file pushes only divide the same bandwidth.
+const queue_per_peer_file_concurrency = 1
 
 // Queue entry for outgoing messages
 type QueueEntry struct {
@@ -261,20 +280,19 @@ func queue_process() {
 	if err != nil {
 		info("Queue process scan error: %v", err)
 	}
-	//if len(entries) > 0 {
-	//	info("Queue processing %d entries", len(entries))
-	//}
 
 	udb := db_open("db/users.db")
+
+	// Pre-filter: drop expired and from-deleted-entity rows serially.
+	// Cheap, no network. The remaining `valid` slice goes through the
+	// parallel send path below.
+	valid := entries[:0]
 	for _, q := range entries {
-		// Skip expired messages
 		if q.Expires > 0 && q.Expires < now() {
 			debug("Queue message %q expired", q.ID)
 			db.exec("delete from queue where id = ?", q.ID)
 			continue
 		}
-
-		// Drop messages from deleted entities (can't sign without the private key)
 		if q.FromEntity != "" {
 			if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
 				info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
@@ -282,27 +300,82 @@ func queue_process() {
 				continue
 			}
 		}
+		valid = append(valid, q)
+	}
 
-		var ok bool
+	if len(valid) == 0 {
+		return
+	}
+
+	// Per-peer semaphore: at most N in-flight sends per target peer.
+	// Different peers proceed in parallel. The semaphore is allocated
+	// lazily per peer; a single tick's worth of goroutines share these
+	// channels. After this function returns, the semaphores are GC'd.
+	//
+	// Broadcasts share one bucket (no specific target). File pushes
+	// use the same per-peer mechanism but with concurrency=1 — one
+	// large file at a time per peer (parallel pushes would just
+	// divide bandwidth).
+	semaphores := map[string]chan struct{}{}
+	var semLock sync.Mutex
+	getSem := func(peer string, cap int) chan struct{} {
+		semLock.Lock()
+		defer semLock.Unlock()
+		s, ok := semaphores[peer]
+		if !ok {
+			s = make(chan struct{}, cap)
+			semaphores[peer] = s
+		}
+		return s
+	}
+
+	var wg sync.WaitGroup
+	for _, q := range valid {
+		wg.Add(1)
+		// Bucketing key + concurrency cap per send type.
+		var bucket string
+		cap := queue_per_peer_concurrency
 		switch {
 		case q.Type == "broadcast":
-			ok = queue_send_broadcast(&q)
+			bucket = "\x00broadcast\x00"
 		case q.Event == "file/push":
-			ok = queue_send_file_push(&q)
+			bucket = "\x00file\x00" + q.Target
+			cap = queue_per_peer_file_concurrency
 		default:
-			ok = queue_send_direct(&q)
+			// Serialise per (target peer, from-entity) so SQL ops for
+			// the same user to the same peer apply in order on the
+			// receiver. Without this, FK-dependent ops can arrive
+			// before their parents (e.g. subscribers INSERT landing
+			// before the parent feeds row INSERT) and fail with FK
+			// violations. Different users on the same peer still
+			// parallelise, retaining most of the throughput win.
+			bucket = "\x00direct\x00" + q.Target + "\x00" + q.FromEntity
+			cap = 1
 		}
+		sem := getSem(bucket, cap)
+		sem <- struct{}{}
+		go func(q QueueEntry, sem chan struct{}) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		if ok {
-			// Message sent and ACK received (or broadcast sent), remove from queue
-			db.exec("delete from queue where id = ?", q.ID)
-			//debug("Queue %s %q completed", q.Type, q.ID)
-		} else {
-			queue_fail(q.ID, "send failed")
-		}
+			var ok bool
+			switch {
+			case q.Type == "broadcast":
+				ok = queue_send_broadcast(&q)
+			case q.Event == "file/push":
+				ok = queue_send_file_push(&q)
+			default:
+				ok = queue_send_direct(&q)
+			}
 
-		time.Sleep(time.Millisecond)
+			if ok {
+				db.exec("delete from queue where id = ?", q.ID)
+			} else {
+				queue_fail(q.ID, "send failed")
+			}
+		}(q, sem)
 	}
+	wg.Wait()
 }
 
 // Check for sent messages that haven't received ACK (timeout)

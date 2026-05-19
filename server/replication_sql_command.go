@@ -243,10 +243,16 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 	}
 
 	if _, err := db.starlark.Exec(cmd.Statement, cmd.Args...); err != nil {
-		// Receiver-side failures are logged but don't block dedup;
-		// the row would otherwise be re-sent forever. A persistent
-		// failure indicates schema drift or a bug — surface via
-		// the audit channel.
+		// FK violations under out-of-order arrival (parallel-queue
+		// send sends N ops to one peer concurrently; receiver applies
+		// in arrival order). The parent row may arrive a fraction of
+		// a second after the child — defer so the next pending-drain
+		// tick retries once the parent has landed. Other errors
+		// (schema drift, real bugs) log + advance dedup as before.
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			debug("Replication exec deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
+			return ApplyDeferred
+		}
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
 		return ApplyApplied
 	}

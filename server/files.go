@@ -435,7 +435,11 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "unable to write file")
 	}
 
-	_, err = f.Write([]byte(data))
+	// WriteString writes directly from the string's backing bytes — no
+	// []byte() conversion, no duplicate allocation. Important for large
+	// writes: a 5 GiB string via Write([]byte(data)) needs 10 GiB heap
+	// during the write; WriteString stays at 5 GiB.
+	_, err = f.WriteString(data)
 	f.Close()
 	if err != nil {
 		return sl_error(fn, "unable to write file")

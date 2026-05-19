@@ -483,7 +483,7 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"uid": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.username(username) -> dict | None: Get a user by username (admin only)
@@ -516,7 +516,7 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"uid": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.identity(identity) -> dict | None: Get a user by identity entity ID (admin only)
@@ -559,7 +559,7 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"uid": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.get.fingerprint(fingerprint) -> dict | None: Get a user by fingerprint (admin only)
@@ -605,7 +605,7 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl.None, nil
 	}
 
-	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"uid": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.list(limit, offset, sort, order) -> list: List all users (admin only).
@@ -864,7 +864,7 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	audit_user_created(user.Username, username, role)
-	return sl_encode(map[string]any{"id": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
+	return sl_encode(map[string]any{"uid": u.UID, "username": u.Username, "role": u.Role, "methods": u.Methods, "status": u.Status}), nil
 }
 
 // mochi.user.update(id, username, role) -> bool: Update a user (admin only)
@@ -1327,14 +1327,22 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 			return sl_error(fn, "session not found")
 		}
 		db.exec("delete from sessions where user=? and code=?", target, found)
+		replication_emit_session_delete(target, found)
 		count = 1
 	} else {
-		// Revoke all sessions for user
-		row, _ := db.row("select count(*) as c from sessions where user=?", target)
-		if row != nil && row["c"] != nil {
-			count = int(row["c"].(int64))
+		// Revoke all sessions for user. Collect codes up-front so each
+		// removal fans out a session-delete op to the user's host set.
+		codes, err := db.rows("select code from sessions where user=?", target)
+		if err != nil {
+			return sl_error(fn, "database error")
 		}
+		count = len(codes)
 		db.exec("delete from sessions where user=?", target)
+		for _, row := range codes {
+			if code, ok := row["code"].(string); ok && code != "" {
+				replication_emit_session_delete(target, code)
+			}
+		}
 	}
 
 	return sl.MakeInt(count), nil

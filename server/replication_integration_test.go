@@ -11,8 +11,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -60,7 +58,7 @@ func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
 
 	// The op h1 would emit.
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-alice",
+		Scope: repl_scope_app, User: "uid-alice",
 		Database: "myapp", Operation: repl_op_exec, Schema: 1, Sequence: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title) values (?, ?)",
@@ -87,78 +85,6 @@ func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
 	}
 }
 
-func TestIntegrationFileSyncDeleteAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	// h2: lay down a pre-existing file (as if a previous file-sync op
-	// had landed it).
-	switchTo("h2")
-	setup_users_test_schema()
-	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "old.txt")
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(target, []byte("doomed"), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	// h1 deletes it; the op h1 would emit:
-	op := &ReplicationOp{
-		Class: repl_class_file, Scope: repl_scope_app, User: "uid-alice",
-		Database: "myapp", Operation: repl_op_delete, Sequence: 1,
-		Payload: cbor_encode(&FileSync{Path: "old.txt", Delete: true}),
-	}
-
-	// h2 applies — file is gone.
-	if got := replication_apply_op(op); got != ApplyApplied {
-		t.Fatalf("h2 apply: want ApplyApplied, got %v", got)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Errorf("file must be removed; stat err = %v", err)
-	}
-}
-
-func TestIntegrationFileSyncDeleteOfMissingIsApplied(t *testing.T) {
-	// Delete-of-missing must be idempotent: receiver applies cleanly
-	// even when the file never existed locally (a replay or a delete
-	// arriving before any write).
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	switchTo("h2")
-	setup_users_test_schema()
-	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-
-	op := &ReplicationOp{
-		Class: repl_class_file, Scope: repl_scope_app, User: "uid-alice",
-		Database: "myapp", Operation: repl_op_delete, Sequence: 1,
-		Payload: cbor_encode(&FileSync{Path: "never-existed.txt", Delete: true}),
-	}
-	if got := replication_apply_op(op); got != ApplyApplied {
-		t.Errorf("delete of missing file: want ApplyApplied, got %v", got)
-	}
-}
-
 func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
 	switchTo, cleanup := integration_setup(t)
 	defer cleanup()
@@ -169,7 +95,7 @@ func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
 	udb.exec("insert into users (uid, username, role) values (?, ?, 'user')", "uid-alice", "alice@example.com")
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-alice",
+		Scope: repl_scope_app, User: "uid-alice",
 		Database: "users", Operation: "users-row.set", Sequence: 1,
 		Payload: cbor_encode(&UsersRow{
 			Table: "users",
@@ -196,7 +122,7 @@ func TestIntegrationUsersEntitiesCreateAcrossHosts(t *testing.T) {
 
 	entityID := test_entity_id('z')
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-alice",
+		Scope: repl_scope_app, User: "uid-alice",
 		Database: "users", Operation: "users-row.set", Sequence: 1,
 		Payload: cbor_encode(&UsersRow{
 			Table: "entities",
@@ -240,7 +166,7 @@ func TestIntegrationUsersEntitiesUpdateAcrossHosts(t *testing.T) {
 	udb.exec("insert into entities (id, private, fingerprint, user, class, name, privacy) values (?, 'p', 'fp', 'uid-alice', 'feed', 'Orig', 'public')", id)
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-alice",
+		Scope: repl_scope_app, User: "uid-alice",
 		Database: "users", Operation: "users-row.set", Sequence: 1,
 		Payload: cbor_encode(&UsersRow{
 			Table: "entities",
@@ -271,7 +197,7 @@ func TestIntegrationUsersEntitiesDeleteAcrossHosts(t *testing.T) {
 	udb.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, 'p', 'fp', 'uid-alice', 'feed', 'Doomed')", id)
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-alice",
+		Scope: repl_scope_app, User: "uid-alice",
 		Database: "users", Operation: "users-row.delete", Sequence: 1,
 		Payload: cbor_encode(&UsersRow{
 			Table:  "entities",

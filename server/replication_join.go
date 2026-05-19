@@ -206,6 +206,22 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 				break
 			}
 		}
+
+		// Compute newly-added peers (in announced \ current pair) BEFORE
+		// rewriting pair. Those are fresh joiners — clear any stale
+		// `seen` rows the same way the approver does in
+		// replication_join_approve_core. Member-leave (peer in current
+		// pair but not in announced) does NOT clear seen because a
+		// future re-join goes through the approve path again.
+		current := map[string]bool{}
+		if rows, err := db.rows("select peer from pair"); err == nil {
+			for _, r := range rows {
+				if p, ok := r["peer"].(string); ok && p != "" {
+					current[p] = true
+				}
+			}
+		}
+
 		db.exec("delete from pair")
 		if in_set {
 			for _, peer := range pmc.Members {
@@ -213,6 +229,9 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 					continue
 				}
 				db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+				if !current[peer] {
+					db.exec("delete from seen where peer=?", peer)
+				}
 			}
 		}
 	}
@@ -334,6 +353,14 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 	}
 
 	rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+
+	// Joining replica is fresh by protocol contract — its sequence
+	// counters restart at 0. Clear any stale `seen` rows from a prior
+	// incarnation of the same libp2p host (preserved across reinstall
+	// per the per-server-not-per-user host-key convention) so its new
+	// ops at low sequence numbers don't get silently dropped as
+	// duplicates by max-seen-sequence dedup.
+	rdb.exec("delete from seen where peer=?", peer)
 
 	// Pre-populate bootstrap_served with the scopes the new replica
 	// is about to pull. Each gets cleared by a `bootstrap/scope/done`

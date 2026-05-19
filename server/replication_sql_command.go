@@ -194,7 +194,6 @@ func replication_emit_sql_command(user *User, app *App, av *AppVersion, sql stri
 	}
 	payload := cbor_encode(&SQLCommand{Statement: sql, Args: args})
 	replication_emit(user.UID, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      user.UID,
 		Database:  app.id,

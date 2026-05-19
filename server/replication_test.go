@@ -586,7 +586,6 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-late",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
@@ -694,7 +693,6 @@ func TestReplicationPendingKickRejectsNonEntityApp(t *testing.T) {
 	replication_pending_kick_mu.Unlock()
 
 	replication_pending_kick(&ReplicationOp{
-		Class:    repl_class_sql,
 		Scope:    repl_scope_app,
 		Database: "feeds", // string id, not a fingerprint
 		User:     "u1",
@@ -721,7 +719,6 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-via-keys",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
@@ -1259,7 +1256,6 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	// Host 2 receives a session-insert op from Host 1.
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-alice",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1,
 		Payload: cbor_encode(&SessionInsert{
@@ -1601,7 +1597,6 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      "uid-alice",
 		Database:  "notifications",
@@ -1646,7 +1641,6 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      "uid-bob",
 		Database:  "notifications",
@@ -1664,124 +1658,6 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	u2 := &User{UID: "uid-bob"}
 	if !email_already_delivered(u2, "bob@example.com", "login:abc") {
 		t.Error("h2 must see the replicated email_delivered row")
-	}
-}
-
-func TestFileSyncApplyWritesFile(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	setup_users_test_schema()
-
-	udb := db_open("db/users.db")
-	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-
-	// Register a test app so app_by_id returns non-nil.
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	fs := &FileSync{
-		Path: "avatars/me.png",
-		Size: 5,
-		Data: []byte("hello"),
-	}
-	if got := replication_file_sync_apply("uid-alice", "myapp", fs); got != ApplyApplied {
-		t.Fatalf("expected ApplyApplied, got %v", got)
-	}
-
-	// File should now exist on disk.
-	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
-	contents, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("file missing after apply: %v", err)
-	}
-	if string(contents) != "hello" {
-		t.Errorf("file contents: expected 'hello', got %q", string(contents))
-	}
-}
-
-func TestFileSyncApplyDefersUnknownUser(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	setup_users_test_schema()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	fs := &FileSync{Path: "foo.txt", Size: 3, Data: []byte("foo")}
-	if got := replication_file_sync_apply("uid-nobody", "myapp", fs); got != ApplyDeferred {
-		t.Errorf("unknown user must defer, got %v", got)
-	}
-}
-
-func TestFileSyncApplyRejectsInvalidPath(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	fs := &FileSync{Path: "../../etc/passwd", Size: 3, Data: []byte("bad")}
-	if got := replication_file_sync_apply("uid-anything", "myapp", fs); got != ApplyInvalid {
-		t.Errorf("invalid path must return ApplyInvalid, got %v", got)
-	}
-}
-
-func TestIntegrationFileSyncAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	// Host 1 writes a file locally; we represent that with the
-	// replicated op carrying the inline contents.
-	op := &ReplicationOp{
-		Class:     repl_class_file,
-		Scope:     repl_scope_app,
-		User:      "uid-alice",
-		Database:  "myapp",
-		Operation: repl_op_filesync,
-		Sequence:  1,
-		Payload: cbor_encode(&FileSync{
-			Path: "avatars/me.png",
-			Size: 5,
-			Data: []byte("hello"),
-		}),
-	}
-
-	// Host 2 receives and applies — file lands at the expected path
-	// inside h2's per-(user, app) file directory.
-	switchTo("h2")
-	setup_users_test_schema()
-	udb := db_open("db/users.db")
-	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-
-	if got := replication_apply_op(op); got != ApplyApplied {
-		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
-	}
-
-	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
-	contents, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("h2 file missing after apply: %v", err)
-	}
-	if string(contents) != "hello" {
-		t.Errorf("h2 contents: expected 'hello', got %q", string(contents))
 	}
 }
 

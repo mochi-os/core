@@ -356,7 +356,7 @@ func replication_link_freshness_probe(peer, placeholder string) (bool, error) {
 		return false, fmt.Errorf("freshness probe: empty peer or placeholder")
 	}
 
-	s, err := stream_to_peer(peer, "", "", "replication", "freshness/probe", "", nil)
+	s, err := stream_to_peer(peer, "", "", "replication", "lookup/freshness", "", nil)
 	if err != nil {
 		return false, fmt.Errorf("freshness probe: open stream: %w", err)
 	}
@@ -423,7 +423,7 @@ func replication_user_lookup(peer, username string) (string, bool, error) {
 		return "", false, fmt.Errorf("user lookup: empty peer or username")
 	}
 
-	s, err := stream_to_peer(peer, "", "", "replication", "user/lookup", "", nil)
+	s, err := stream_to_peer(peer, "", "", "replication", "lookup/user", "", nil)
 	if err != nil {
 		return "", false, fmt.Errorf("user lookup: open stream: %w", err)
 	}

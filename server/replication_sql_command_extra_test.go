@@ -28,7 +28,6 @@ func TestReplicationApplySQLCommandDoesNotReEmit(t *testing.T) {
 	db_upgrade_50() // creates replication.db.sequence
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  appID,
@@ -62,7 +61,7 @@ func TestReplicationApplySQLCommandIdempotentReplay(t *testing.T) {
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title) values (?, ?)",
@@ -97,7 +96,7 @@ func TestReplicationApplySQLCommandReceiverFailureLogged(t *testing.T) {
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title, missing) values (?, ?, ?)",
@@ -144,7 +143,7 @@ func TestReplicationSQLCommandMixedArgTypesRoundTrip(t *testing.T) {
 	t.Logf("decoded arg types: %T %T %T %T", decoded.Args[0], decoded.Args[1], decoded.Args[2], decoded.Args[3])
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: payload,
 	}
@@ -186,7 +185,7 @@ func TestReplicationSQLCommandNoParamsStatement(t *testing.T) {
 	db.exec("insert into posts (id, title) values ('b', 'B')")
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "delete from posts"}),
 	}
@@ -206,7 +205,7 @@ func TestReplicationSQLCommandSchemaDefer(t *testing.T) {
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 99,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title) values (?, ?)",

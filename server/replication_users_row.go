@@ -140,7 +140,6 @@ func replication_emit_users_row(user string, r *UsersRow) {
 		operation = "users-row.delete"
 	}
 	replication_emit(user, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      user,
 		Database:  "users",

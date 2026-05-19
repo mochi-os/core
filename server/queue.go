@@ -284,9 +284,12 @@ func queue_process() {
 		}
 
 		var ok bool
-		if q.Type == "broadcast" {
+		switch {
+		case q.Type == "broadcast":
 			ok = queue_send_broadcast(&q)
-		} else {
+		case q.Event == "file/push":
+			ok = queue_send_file_push(&q)
+		default:
 			ok = queue_send_direct(&q)
 		}
 

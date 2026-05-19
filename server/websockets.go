@@ -16,7 +16,8 @@ import (
 
 var (
 	api_websocket = sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
-		"write": sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
+		"write":     sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
+		"broadcast": sl.NewBuiltin("mochi.websocket.broadcast", sl_websocket_broadcast),
 	})
 	websockets        = map[string]map[string]map[string]*websocket.Conn{}
 	websockets_lock   sync.RWMutex
@@ -144,6 +145,58 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 		delete(websockets, u.UID)
 	}
 	websockets_lock.Unlock()
+}
+
+// Broadcast to every connection on this key, regardless of which user owns it.
+// Used for federated/multi-subscriber events where the Starlark thread's user
+// is not the same as the users whose browsers need to receive the update.
+func websockets_broadcast(key string, content any) {
+	j := json_encode(content)
+	type fail struct {
+		uid string
+		id  string
+		ws  *websocket.Conn
+	}
+	var failed []fail
+
+	websockets_lock.RLock()
+	for uid, byKey := range websockets {
+		for id, ws := range byKey[key] {
+			if err := ws.Write(websocket_context, websocket.MessageText, []byte(j)); err != nil {
+				failed = append(failed, fail{uid, id, ws})
+			}
+		}
+	}
+	websockets_lock.RUnlock()
+
+	for _, f := range failed {
+		f.ws.CloseNow()
+		websockets_lock.Lock()
+		delete(websockets[f.uid][key], f.id)
+		if len(websockets[f.uid][key]) == 0 {
+			delete(websockets[f.uid], key)
+		}
+		if len(websockets[f.uid]) == 0 {
+			delete(websockets, f.uid)
+		}
+		websockets_lock.Unlock()
+	}
+}
+
+// mochi.websocket.broadcast(key, content) -> None: Send content to every WebSocket
+// client subscribed to this key, across all users.
+func sl_websocket_broadcast(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <key: string>, <content: any>")
+	}
+
+	key, ok := sl.AsString(args[0])
+	if !ok || !valid(key, "constant") {
+		return sl_error(fn, "invalid key %q", key)
+	}
+
+	websockets_broadcast(key, sl_decode(args[1]))
+	return sl.None, nil
 }
 
 // mochi.websocket.write(key, content) -> None: Send content to connected WebSocket clients

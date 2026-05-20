@@ -100,7 +100,7 @@ func main() {
 			args = args[1:]
 		}
 	}
-	// Allow 'replication status', 'replication resync', 'replication pair list', 'replication pair remove'.
+	// Allow 'replication status', 'replication resync', 'replication backfill', 'replication pair list', 'replication pair remove'.
 	if !ok && name == "replication" && len(args) > 0 {
 		if len(args) >= 2 {
 			if c, found := commands["replication "+args[0]+" "+args[1]]; found {

@@ -108,20 +108,20 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 		g = 1
 	}
 
-	db.exec("replace into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
+	db.exec_replicated("replace into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
 	audit_permission_changed(granter, subject, resource, operation, grant)
 }
 
 // Clear all access rules for a resource
 func (db *DB) access_clear_resource(resource string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from access where resource=? or resource like ?", resource, resource+"/%")
+	db.exec_replicated("delete from access where resource=? or resource like ?", resource, resource+"/%")
 }
 
 // Clear all access rules for a subject
 func (db *DB) access_clear_subject(subject string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from access where subject=?", subject)
+	db.exec_replicated("delete from access where subject=?", subject)
 }
 
 // List access rules for a resource
@@ -137,7 +137,7 @@ func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
 // Revoke access
 func (db *DB) access_revoke(subject string, resource string, operation string) {
 	db.access_setup() // Ensure table exists
-	db.exec("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
+	db.exec_replicated("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
 }
 
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource

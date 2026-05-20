@@ -24,9 +24,94 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	cbor "github.com/fxamacker/cbor/v2"
 )
+
+// replication_users_users_mutable lists the columns of users.db.users
+// that may be updated via row replication. Other columns (uid) are
+// keys; columns added later that should NOT replicate stay off this
+// list and are silently ignored by the apply path.
+var replication_users_users_mutable = map[string]bool{
+	"username": true,
+	"role":     true,
+	"methods":  true,
+	"status":   true,
+}
+
+// replication_emit_users_users_set emits a partial update for one
+// row of users.db.users. Callers pass only the columns they changed;
+// the receiver runs UPDATE … SET <col>=?, … WHERE uid=?.
+func replication_emit_users_users_set(uid string, fields map[string]string) {
+	if uid == "" || len(fields) == 0 {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{Table: "users", Cols: fields})
+}
+
+// replication_users_entities_mutable lists the columns of
+// users.db.entities that may be updated via row replication. id is the
+// row key. user is the owner FK (re-keyed from op.User on the receiver).
+// private, fingerprint, parent, class are immutable post-create.
+// published is per-host scheduling state (last directory republish ts)
+// and intentionally stays off this list — each host re-republishes on
+// its own cadence.
+var replication_users_entities_mutable = map[string]bool{
+	"name":    true,
+	"privacy": true,
+	"data":    true,
+}
+
+// replication_emit_users_entities_create replicates a new entity row.
+// Called from entity_create after the local INSERT. Carries every
+// column except the user FK (re-keyed on the receiver from op.User).
+func replication_emit_users_entities_create(uid string, e *Entity) {
+	if uid == "" || e == nil || e.ID == "" {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{
+		Table: "entities",
+		Cols: map[string]string{
+			"id":          e.ID,
+			"private":     e.Private,
+			"fingerprint": e.Fingerprint,
+			"parent":      e.Parent,
+			"class":       e.Class,
+			"name":        e.Name,
+			"privacy":     e.Privacy,
+			"data":        e.Data,
+			"published":   fmt.Sprintf("%d", e.Published),
+		},
+	})
+}
+
+// replication_emit_users_entities_update replicates a partial column
+// update against an existing entity row. The id is always included in
+// fields so the receiver can identify the target row.
+func replication_emit_users_entities_update(uid, id string, fields map[string]string) {
+	if uid == "" || id == "" || len(fields) == 0 {
+		return
+	}
+	cols := make(map[string]string, len(fields)+1)
+	for k, v := range fields {
+		cols[k] = v
+	}
+	cols["id"] = id
+	replication_emit_users_row(uid, &UsersRow{Table: "entities", Cols: cols})
+}
+
+// replication_emit_users_entities_delete replicates a row delete.
+func replication_emit_users_entities_delete(uid, id string) {
+	if uid == "" || id == "" {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{
+		Table:  "entities",
+		Cols:   map[string]string{"id": id},
+		Delete: true,
+	})
+}
 
 // UsersRow is the wire payload for an insert / delete against a
 // users.db auth table. Key and Cols carry the row's columns split
@@ -55,7 +140,6 @@ func replication_emit_users_row(user string, r *UsersRow) {
 		operation = "users-row.delete"
 	}
 	replication_emit(user, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      user,
 		Database:  "users",
@@ -82,9 +166,92 @@ func replication_users_row_apply(userUID string, r *UsersRow) ApplyResult {
 		return replication_users_tokens_apply(udb, userUID, r)
 	case "totp":
 		return replication_users_totp_apply(udb, userUID, r)
+	case "users":
+		return replication_users_users_apply(udb, userUID, r)
+	case "entities":
+		return replication_users_entities_apply(udb, userUID, r)
 	}
 	info("Replication users-row dropping: unsupported table %q", r.Table)
 	return ApplyInvalid
+}
+
+// replication_users_entities_apply lands an INSERT / partial UPDATE /
+// DELETE against users.db.entities. The op carries the entity's user
+// FK in op.User; the apply path scopes every statement to
+// (entities.id = ? AND entities.user = ?) so a misbehaving emitter
+// can't touch another user's rows.
+func replication_users_entities_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	id := r.Cols["id"]
+	if id == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		udb.exec("delete from entities where id=? and user=?", id, userUID)
+		return ApplyApplied
+	}
+	// A full-row create carries "private" (immutable post-create).
+	if _, full := r.Cols["private"]; full {
+		var published int64
+		_, _ = fmt.Sscanf(r.Cols["published"], "%d", &published)
+		udb.exec(`insert or ignore into entities
+			(id, private, fingerprint, user, parent, class, name, privacy, data, published)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, r.Cols["private"], r.Cols["fingerprint"], userUID,
+			r.Cols["parent"], r.Cols["class"], r.Cols["name"],
+			r.Cols["privacy"], r.Cols["data"], published)
+		return ApplyApplied
+	}
+	// Partial update: whitelist mutable columns.
+	sets := []string{}
+	vals := []any{}
+	for col, v := range r.Cols {
+		if col == "id" || !replication_users_entities_mutable[col] {
+			continue
+		}
+		if col == "published" {
+			var pub int64
+			_, _ = fmt.Sscanf(v, "%d", &pub)
+			sets = append(sets, col+"=?")
+			vals = append(vals, pub)
+		} else {
+			sets = append(sets, col+"=?")
+			vals = append(vals, v)
+		}
+	}
+	if len(sets) == 0 {
+		return ApplyInvalid
+	}
+	vals = append(vals, id, userUID)
+	udb.exec("update entities set "+strings.Join(sets, ", ")+" where id=? and user=?", vals...)
+	return ApplyApplied
+}
+
+// replication_users_users_apply lands a partial UPDATE against
+// users.db.users. Whitelists the changed columns and runs one UPDATE
+// against the row identified by op.User. Skips silently if the user
+// row isn't local yet — defer so a later keys-transfer lands first.
+func replication_users_users_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	if r.Delete {
+		// Cross-host user delete is a server-pair / link operation,
+		// not a row op. Treat any incoming delete as a no-op so we
+		// can't accidentally lose accounts via row replication.
+		return ApplyApplied
+	}
+	sets := []string{}
+	vals := []any{}
+	for col, v := range r.Cols {
+		if !replication_users_users_mutable[col] {
+			continue
+		}
+		sets = append(sets, col+"=?")
+		vals = append(vals, v)
+	}
+	if len(sets) == 0 {
+		return ApplyInvalid
+	}
+	vals = append(vals, userUID)
+	udb.exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
+	return ApplyApplied
 }
 
 func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {

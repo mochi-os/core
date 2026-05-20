@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -520,23 +521,41 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
+	var mu sync.Mutex
 	var fileRequests []struct{ peer, scope, prefix string }
 	var dbRequests []struct{ peer, scope string }
-	origFile := replication_emit_bootstrap_file_manifest_request
-	origDB := replication_emit_bootstrap_db_manifest_request
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {
+	origFile := replication_bootstrap_file_manifest_fetch
+	origDB := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
 		fileRequests = append(fileRequests, struct{ peer, scope, prefix string }{peer, scope, prefix})
+		mu.Unlock()
 	}
-	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {
+	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {
+		mu.Lock()
 		dbRequests = append(dbRequests, struct{ peer, scope string }{peer, scope})
+		mu.Unlock()
 	}
 	defer func() {
-		replication_emit_bootstrap_file_manifest_request = origFile
-		replication_emit_bootstrap_db_manifest_request = origDB
+		replication_bootstrap_file_manifest_fetch = origFile
+		replication_bootstrap_db_manifest_fetch = origDB
 	}()
 
 	bootstrap_start("source-A")
+	// bootstrap_start spawns the fetches in goroutines; give them a
+	// moment to record their stubbed calls.
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileRequests) == 2 && len(dbRequests) == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(fileRequests) != 2 {
 		t.Errorf("file-manifest emit count = %d, want 2 (files + apps)", len(fileRequests))
 	}
@@ -603,19 +622,24 @@ func TestBootstrapResume(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
+	var mu sync.Mutex
 	var fileReqs []struct{ peer, scope string }
 	var dbReqs []struct{ peer, scope string }
-	origFile := replication_emit_bootstrap_file_manifest_request
-	origDB := replication_emit_bootstrap_db_manifest_request
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {
+	origFile := replication_bootstrap_file_manifest_fetch
+	origDB := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
 		fileReqs = append(fileReqs, struct{ peer, scope string }{peer, scope})
+		mu.Unlock()
 	}
-	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {
+	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {
+		mu.Lock()
 		dbReqs = append(dbReqs, struct{ peer, scope string }{peer, scope})
+		mu.Unlock()
 	}
 	defer func() {
-		replication_emit_bootstrap_file_manifest_request = origFile
-		replication_emit_bootstrap_db_manifest_request = origDB
+		replication_bootstrap_file_manifest_fetch = origFile
+		replication_bootstrap_db_manifest_fetch = origDB
 	}()
 
 	// Seed the bootstrap table with a mix of states / scopes.
@@ -625,7 +649,18 @@ func TestBootstrapResume(t *testing.T) {
 	bootstrap_set_state(bootstrap_scope_sysdbs, "peer-B", bootstrap_state_queued, "")
 
 	bootstrap_resume()
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileReqs) == 2 && len(dbReqs) == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	// 'done' row for peer-A/userdbs was skipped; everything else fired.
 	if len(fileReqs) != 2 {
 		t.Errorf("file requests = %d, want 2 (peer-A's files + apps)", len(fileReqs))
@@ -641,18 +676,30 @@ func TestBootstrapResumeNoActiveRows(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
+	var mu sync.Mutex
 	called := false
-	origFile := replication_emit_bootstrap_file_manifest_request
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) { called = true }
-	defer func() { replication_emit_bootstrap_file_manifest_request = origFile }()
+	origFile := replication_bootstrap_file_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		called = true
+		mu.Unlock()
+	}
+	defer func() { replication_bootstrap_file_manifest_fetch = origFile }()
 
 	bootstrap_resume()
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
 	if called {
+		mu.Unlock()
 		t.Error("bootstrap_resume fired against empty table; should have been no-op")
 	}
+	mu.Unlock()
 
 	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_done, "")
 	bootstrap_resume()
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
 	if called {
 		t.Error("bootstrap_resume fired against all-done rows; should have been no-op")
 	}
@@ -663,12 +710,20 @@ func TestBootstrapResumeNoActiveRows(t *testing.T) {
 func TestBootstrapStartEmptyPeerIsNoOp(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
+	var mu sync.Mutex
 	called := false
-	orig := replication_emit_bootstrap_file_manifest_request
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) { called = true }
-	defer func() { replication_emit_bootstrap_file_manifest_request = orig }()
+	orig := replication_bootstrap_file_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		called = true
+		mu.Unlock()
+	}
+	defer func() { replication_bootstrap_file_manifest_fetch = orig }()
 
 	bootstrap_start("")
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
 	if called {
 		t.Error("bootstrap_start(\"\") emitted a request; should be a no-op")
 	}

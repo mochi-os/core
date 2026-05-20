@@ -635,7 +635,9 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	db.exec("update users set methods=? where uid=?", strings.Join(methods, ","), user.UID)
+	methodsCsv := strings.Join(methods, ",")
+	db.exec("update users set methods=? where uid=?", methodsCsv, user.UID)
+	replication_emit_users_users_set(user.UID, map[string]string{"methods": methodsCsv})
 	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
@@ -675,6 +677,7 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		target_name = target.Username
 	}
 	db.exec("update users set methods='email' where uid=?", id)
+	replication_emit_users_users_set(id, map[string]string{"methods": "email"})
 	audit_password_changed(target_name, "admin_reset")
 	return sl.True, nil
 }

@@ -40,40 +40,61 @@ func passkey_init() {
 	webauthn_instances = make(map[string]*webauthn.WebAuthn)
 }
 
-// Return a WebAuthn instance for the given request host, creating one if needed
-func webauthn_for_host(host string) *webauthn.WebAuthn {
-	// Strip port from host
-	domain := host
-	if i := strings.IndexByte(domain, ':'); i != -1 {
-		domain = domain[:i]
+// webauthn_for_origin returns a WebAuthn instance bound to the request's
+// actual origin (scheme + host + optional port). Cached by origin string,
+// so each distinct (scheme, host, port) the server is reached at gets its
+// own configured instance — production HTTPS and any localhost port the
+// operator binds to all work without a hardcoded port allowlist.
+func webauthn_for_origin(origin string) *webauthn.WebAuthn {
+	if origin == "" {
+		return nil
 	}
 
 	webauthn_mu.RLock()
-	instance := webauthn_instances[domain]
+	instance := webauthn_instances[origin]
 	webauthn_mu.RUnlock()
 	if instance != nil {
 		return instance
 	}
 
-	origins := []string{"https://" + domain}
-	if domain == "localhost" {
-		origins = append(origins, "http://localhost", "http://localhost:8080", "http://localhost:8081")
+	// RPID is the registrable domain — the host portion stripped of
+	// scheme and port. The browser will only return credentials whose
+	// stored RPID matches this exact string, so it needs to be stable
+	// across the http/https/port permutations of the same site.
+	domain := origin
+	if i := strings.Index(domain, "://"); i != -1 {
+		domain = domain[i+3:]
+	}
+	if i := strings.IndexByte(domain, ':'); i != -1 {
+		domain = domain[:i]
 	}
 
 	instance, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: "Mochi",
 		RPID:          domain,
-		RPOrigins:     origins,
+		RPOrigins:     []string{origin},
 	})
 	if err != nil {
-		warn("Failed to initialize WebAuthn for %s: %v", domain, err)
+		warn("Failed to initialize WebAuthn for %s: %v", origin, err)
 		return nil
 	}
 
 	webauthn_mu.Lock()
-	webauthn_instances[domain] = instance
+	webauthn_instances[origin] = instance
 	webauthn_mu.Unlock()
 	return instance
+}
+
+// request_origin returns the full origin string ("scheme://host[:port]")
+// for the incoming request. Scheme is "https" when TLS is terminated at
+// this server, otherwise "http"; the operator's reverse proxy (if any)
+// must terminate TLS and rewrite Host before forwarding.
+func request_origin(c *gin.Context) string {
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + c.Request.Host
 }
 
 // WebAuthnUser adapts User for the go-webauthn library
@@ -173,7 +194,7 @@ func passkey_lasts(user_id string) map[string]int64 {
 
 // POST /_/auth/passkey/begin - Start discoverable login
 func web_passkey_login_begin(c *gin.Context) {
-	wa := webauthn_for_host(c.Request.Host)
+	wa := webauthn_for_origin(request_origin(c))
 	if wa == nil {
 		respond_error(c, http.StatusInternalServerError, "webauthn_not_configured", "errors.webauthn_not_configured", nil)
 		return
@@ -205,7 +226,7 @@ func web_passkey_login_begin(c *gin.Context) {
 
 // POST /_/auth/passkey/finish - Complete discoverable login
 func web_passkey_login_finish(c *gin.Context) {
-	wa := webauthn_for_host(c.Request.Host)
+	wa := webauthn_for_origin(request_origin(c))
 	if wa == nil {
 		respond_error(c, http.StatusInternalServerError, "webauthn_not_configured", "errors.webauthn_not_configured", nil)
 		return
@@ -408,8 +429,8 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl_error(fn, "%v", err)
 	}
 
-	host, _ := t.Local("host").(string)
-	wa := webauthn_for_host(host)
+	origin, _ := t.Local("origin").(string)
+	wa := webauthn_for_origin(origin)
 	if wa == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
@@ -450,8 +471,8 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "%v", err)
 	}
 
-	host, _ := t.Local("host").(string)
-	wa := webauthn_for_host(host)
+	origin, _ := t.Local("origin").(string)
+	wa := webauthn_for_origin(origin)
 	if wa == nil {
 		return sl_error(fn, "webauthn not configured")
 	}
@@ -601,6 +622,11 @@ func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db.exec("update credentials set name=? where id=? and user=?", name, id, user.UID)
+	replication_emit_users_row(user.UID, &UsersRow{
+		Table:    "credentials",
+		KeyBytes: map[string][]byte{"id": id},
+		Cols:     map[string]string{"name": name},
+	})
 	return sl.True, nil
 }
 

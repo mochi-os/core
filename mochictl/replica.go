@@ -54,7 +54,7 @@ func cmd_replica_join(args []string) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return http_error(resp.StatusCode, raw)
 	}
 
 	var start struct {
@@ -93,7 +93,7 @@ func cmd_replica_join(args []string) error {
 				})))
 			} else {
 				fmt.Printf("Approved. Pair set: %s\n", strings.Join(members, ", "))
-				fmt.Printf("Bootstrap started against %s. Track with: mochictl replication progress %s\n", source, source)
+				fmt.Printf("Bootstrap started against %s. Track with: %s replication progress\n", source, self_invocation())
 			}
 			return nil
 		case "denied":
@@ -133,7 +133,7 @@ func cmd_replica_leave(args []string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 	if flag_json {
 		fmt.Println(string(body))
@@ -167,7 +167,7 @@ func replica_status_read() (string, string, string, []string, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return "", "", "", nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", "", "", nil, http_error(resp.StatusCode, body)
 	}
 	var s struct {
 		State   string   `json:"state"`

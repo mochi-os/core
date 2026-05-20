@@ -79,7 +79,8 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 
 	db.exec("replace into entities ( id, private, fingerprint, user, parent, class, name, privacy, data, published ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 )", public, private, fingerprint, u.UID, parent, class, name, privacy, data)
 
-	e := Entity{ID: public, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+	e := Entity{ID: public, Private: private, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
+	replication_emit_users_entities_create(u.UID, &e)
 
 	// Audit log entity/identity creation
 	audit_identity_created(u.Username, public, class)
@@ -146,6 +147,7 @@ func entity_privacy_set(e *Entity, privacy string) error {
 
 	db_open("db/users.db").exec("update entities set privacy=? where id=?", privacy, e.ID)
 	e.Privacy = privacy
+	replication_emit_users_entities_update(e.User, e.ID, map[string]string{"privacy": privacy})
 
 	if privacy == "private" {
 		db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
@@ -173,6 +175,7 @@ func entity_name_set(e *Entity, name string) error {
 
 	db_open("db/users.db").exec("update entities set name=? where id=?", name, e.ID)
 	e.Name = name
+	replication_emit_users_entities_update(e.User, e.ID, map[string]string{"name": name})
 
 	if e.Privacy == "public" {
 		directory_create(e)
@@ -213,6 +216,7 @@ func (e *Entity) delete() {
 
 	// Remove entity
 	db.exec("delete from entities where id=?", e.ID)
+	replication_emit_users_entities_delete(e.User, e.ID)
 
 	// Audit log entity deletion
 	audit_identity_deleted(username, e.ID)
@@ -256,6 +260,49 @@ func entity_peers(id string) []string {
 	}
 	return out
 }
+
+// entity_peers_failover returns peers hosting `id` ordered for
+// stream / RPC failover.
+//
+// Tier 1 — "active": peers whose `seen` is within 2× the entity
+// republish interval (2 hours). They're presumed alive; among them
+// the row with the OLDEST `seen` comes first (the most stably-running
+// replica, not the one that just republished). Sticky-ish ordering
+// reduces routing chatter without hard-pinning.
+//
+// Tier 2 — "stale but not aged out": peers with seen older than the
+// active window but still within the 30-day directory retention.
+// Used as a last-ditch fallback when no active peer accepts a stream.
+//
+// Local entity short-circuits to [self].
+func entity_peers_failover(id string) []string {
+	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+		return []string{p2p_id}
+	}
+	db := db_open("db/directory.db")
+	now_ts := now()
+	active_cutoff := now_ts - directory_active_window
+	stale_cutoff := now_ts - 30*86400
+
+	active, _ := db.rows("select peer from locations where entity=? and seen > ? order by seen asc", id, active_cutoff)
+	stale, _ := db.rows("select peer from locations where entity=? and seen > ? and seen <= ? order by seen desc", id, stale_cutoff, active_cutoff)
+
+	seen_peer := map[string]bool{}
+	out := make([]string, 0, len(active)+len(stale))
+	for _, r := range append(active, stale...) {
+		if p, ok := r["peer"].(string); ok && p != "" && !seen_peer[p] {
+			seen_peer[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// directory_active_window is the freshness window used by the
+// stream/RPC failover policy. Set to 2× the entity republish interval
+// (1 hour) so a peer that missed one republish tick still counts as
+// active. Peers outside this window fall to the stale-fallback tier.
+const directory_active_window = 2 * 60 * 60
 
 // Sign a string using an entity's private key
 func entity_sign(entity string, s string) string {
@@ -598,6 +645,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			}
 			if name != e.Name {
 				db.exec("update entities set name=? where id=?", name, id)
+				replication_emit_users_entities_update(e.User, id, map[string]string{"name": name})
 				name_changed = true
 			}
 
@@ -607,6 +655,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 				return sl_error(fn, "invalid data %q", data)
 			}
 			db.exec("update entities set data=? where id=?", data, id)
+			replication_emit_users_entities_update(e.User, id, map[string]string{"data": data})
 
 		case "privacy":
 			privacy, ok := sl.AsString(kv[1])
@@ -615,6 +664,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			}
 			if privacy != old_privacy {
 				db.exec("update entities set privacy=? where id=?", privacy, id)
+				replication_emit_users_entities_update(e.User, id, map[string]string{"privacy": privacy})
 				if privacy == "private" {
 					changed_to_private = true
 				}

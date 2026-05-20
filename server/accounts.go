@@ -576,6 +576,19 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	id, _ := result.LastInsertId()
 
+	// Replicate user-facing account inserts so the other host has the
+	// same row id (destinations.target references this integer id and
+	// is replicated independently). Per-device types stay host-local —
+	// each browser / phone registers its own push endpoint per host.
+	switch ptype {
+	case "browser", "unifiedpush", "fcm":
+		// host-local
+	default:
+		replication_emit_user_core_exec(user,
+			"insert or replace into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
+			[]any{id, ptype, label, identifier, data_json, now, verified})
+	}
+
 	return sl_encode(map[string]any{
 		"id":         id,
 		"type":       ptype,
@@ -620,7 +633,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		switch key {
 		case "label":
 			label, _ := sl.AsString(kv[1])
-			db.exec("update accounts set label=? where id=?", label, id)
+			db.exec_replicated("update accounts set label=? where id=?", label, id)
 
 		case "enabled":
 			var val int
@@ -633,14 +646,14 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				i, _ := v.Int64()
 				val = int(i)
 			}
-			db.exec("update accounts set enabled=? where id=?", val, id)
+			db.exec_replicated("update accounts set enabled=? where id=?", val, id)
 
 		case "default":
 			val, _ := sl.AsString(kv[1])
 			if val != "" {
-				db.exec("update accounts set \"default\"='' where \"default\"=?", val)
+				db.exec_replicated("update accounts set \"default\"='' where \"default\"=?", val)
 			}
-			db.exec("update accounts set \"default\"=? where id=?", val, id)
+			db.exec_replicated("update accounts set \"default\"=? where id=?", val, id)
 
 		case "model":
 			model, _ := sl.AsString(kv[1])
@@ -667,9 +680,9 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 					if model != "" {
 						ident = model
 					}
-					db.exec("update accounts set data=?, identifier=? where id=?", string(j), ident, id)
+					db.exec_replicated("update accounts set data=?, identifier=? where id=?", string(j), ident, id)
 				} else {
-					db.exec("update accounts set data=? where id=?", string(j), id)
+					db.exec_replicated("update accounts set data=? where id=?", string(j), id)
 				}
 			}
 
@@ -726,7 +739,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.False, nil
 	}
 
-	db.exec("delete from accounts where id=?", id)
+	db.exec_replicated("delete from accounts where id=?", id)
 	return sl.True, nil
 }
 
@@ -806,7 +819,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			// Reuse existing code, extend expiration
 			data["expires"] = now + 3600
 			data_json, _ := json.Marshal(data)
-			db.exec("update accounts set data=? where id=?", string(data_json), id)
+			db.exec_replicated("update accounts set data=? where id=?", string(data_json), id)
 			account_send_verification_email(identifier, existing_code, language)
 		} else {
 			// Generate new code
@@ -815,7 +828,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			data["expires"] = now + 3600
 
 			data_json, _ := json.Marshal(data)
-			db.exec("update accounts set data=? where id=?", string(data_json), id)
+			db.exec_replicated("update accounts set data=? where id=?", string(data_json), id)
 
 			account_send_verification_email(identifier, new_code, language)
 		}
@@ -839,7 +852,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	delete(data, "expires")
 
 	data_json, _ := json.Marshal(data)
-	db.exec("update accounts set verified=?, data=? where id=?", now, string(data_json), id)
+	db.exec_replicated("update accounts set verified=?, data=? where id=?", now, string(data_json), id)
 
 	return sl.True, nil
 }

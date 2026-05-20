@@ -145,7 +145,6 @@ func TestReplicationApplySQLCommandInsert(t *testing.T) {
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  appID,
@@ -182,7 +181,7 @@ func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
 	db.exec("insert into posts (id, title) values (?, ?)", "p1", "Old")
 
 	upd := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "update posts set title = ? where id = ?",
@@ -198,7 +197,7 @@ func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
 	}
 
 	del := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "delete from posts where id = ?",
@@ -219,7 +218,7 @@ func TestReplicationApplySQLCommandDeferralPaths(t *testing.T) {
 
 	// Unknown user → deferred.
 	unknownUser := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-missing",
+		Scope: repl_scope_app, User: "uid-missing",
 		Database: appID, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
@@ -229,7 +228,7 @@ func TestReplicationApplySQLCommandDeferralPaths(t *testing.T) {
 
 	// Unknown app → deferred.
 	unknownApp := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: "missingapp", Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
@@ -239,7 +238,7 @@ func TestReplicationApplySQLCommandDeferralPaths(t *testing.T) {
 
 	// Sender schema newer than receiver → deferred.
 	newerSchema := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+		Scope: repl_scope_app, User: userUID,
 		Database: appID, Operation: repl_op_exec, Schema: 99,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
@@ -254,7 +253,7 @@ func TestReplicationApplySQLCommandInvalid(t *testing.T) {
 
 	// Bad cbor → Invalid.
 	bad := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-test-sql",
+		Scope: repl_scope_app, User: "uid-test-sql",
 		Database: "myapp", Operation: repl_op_exec, Schema: 1,
 		Payload: []byte{0xff, 0xff, 0xff},
 	}
@@ -264,7 +263,7 @@ func TestReplicationApplySQLCommandInvalid(t *testing.T) {
 
 	// Empty statement → Invalid.
 	empty := &ReplicationOp{
-		Class: repl_class_sql, Scope: repl_scope_app, User: "uid-test-sql",
+		Scope: repl_scope_app, User: "uid-test-sql",
 		Database: "myapp", Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: ""}),
 	}
@@ -284,7 +283,7 @@ func TestReplicationApplySQLCommandRoundTrip(t *testing.T) {
 
 	apply := func(sql string, args ...any) {
 		op := &ReplicationOp{
-			Class: repl_class_sql, Scope: repl_scope_app, User: userUID,
+			Scope: repl_scope_app, User: userUID,
 			Database: appID, Operation: repl_op_exec, Schema: 1,
 			Payload: cbor_encode(&SQLCommand{Statement: sql, Args: args}),
 		}

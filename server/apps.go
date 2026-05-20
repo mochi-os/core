@@ -426,6 +426,7 @@ var (
 			{"accounts/manage", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
+			{"notifications/send", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/write", ""},
 			{"user/identity/write", ""},

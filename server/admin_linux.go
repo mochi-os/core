@@ -252,8 +252,10 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/replication/status", admin_replication_status)
 	admin.GET("/replication/pair", admin_replication_pair)
 	admin.GET("/replication/progress", admin_replication_progress)
+	admin.GET("/replication/ops", admin_replication_ops)
 	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
 	admin.POST("/replication/resync", admin_replication_resync)
+	admin.POST("/replication/backfill", admin_replication_backfill)
 
 	// pprof endpoints — admin-socket only, no separate port. Peer-cred
 	// auth gates access. Useful for diagnosing memory bloat / goroutine
@@ -289,6 +291,7 @@ var admin_audited_routes = map[string]string{
 	"POST /_/admin/replica/leave":           "admin.replica.leave",
 	"POST /_/admin/replication/pair/remove": "admin.replication.pair.remove",
 	"POST /_/admin/replication/resync":      "admin.replication.resync",
+	"POST /_/admin/replication/backfill":    "admin.replication.backfill",
 }
 
 // admin_audit_middleware records a daemon-facility audit row after each

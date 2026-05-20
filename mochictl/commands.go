@@ -22,6 +22,43 @@ import (
 	"time"
 )
 
+// self_invocation reconstructs the `mochictl [global-flags]` prefix that
+// would target the same admin socket as the current run. Used when we
+// print a follow-up command for the user to copy — without the flag the
+// hint would default to /etc/mochi/mochi.conf and silently miss the
+// instance they're actually managing.
+func self_invocation() string {
+	if socket != "" {
+		return fmt.Sprintf("mochictl -s %s", socket)
+	}
+	if file != "" && file != default_config {
+		return fmt.Sprintf("mochictl -f %s", file)
+	}
+	return "mochictl"
+}
+
+// http_error formats a non-2xx admin-socket response as a user-friendly
+// error string. Tries the JSON `message` field first (server-side
+// translated text from respond_error), then the `error` code, and
+// finally falls back to the raw trimmed body. Drops the HTTP status —
+// CLI users care about the cause, not the code; use -v if you need it.
+func http_error(status int, body []byte) error {
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) == 0 {
+		return fmt.Errorf("HTTP %d", status)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+		if m, ok := parsed["message"].(string); ok && m != "" {
+			return fmt.Errorf("%s", m)
+		}
+		if e, ok := parsed["error"].(string); ok && e != "" {
+			return fmt.Errorf("%s", e)
+		}
+	}
+	return fmt.Errorf("%s", trimmed)
+}
+
 func init() {
 	commands = map[string]command{
 		"health": {
@@ -113,13 +150,7 @@ func init() {
 		},
 		"replication progress": {
 			help: "Per-(peer, scope) bulk-bootstrap progress",
-			run: func(args []string) error {
-				path := "/_/admin/replication/progress"
-				if len(args) > 0 && args[0] != "" {
-					path = path + "?peer=" + args[0]
-				}
-				return get_dump(path, "rows")
-			},
+			run:  cmd_replication_progress,
 		},
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",
@@ -128,6 +159,10 @@ func init() {
 		"replication resync": {
 			help: "Force a bulk-bootstrap re-run against the given peer",
 			run:  cmd_replication_resync,
+		},
+		"replication backfill": {
+			help: "Re-run the pair-join system-row backfill against the given peer",
+			run:  cmd_replication_backfill,
 		},
 	}
 }
@@ -144,7 +179,7 @@ func get_dump(path string, order ...string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 	return render(body, order...)
 }
@@ -165,7 +200,7 @@ func post_action(path, human_msg string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 	if flag_verbose {
 		fmt.Println(human_msg)
@@ -189,7 +224,7 @@ func post_silent(path string, order ...string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 	return nil
 }
@@ -203,7 +238,7 @@ func post_dump(path string, order ...string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 	return render(body, order...)
 }
@@ -223,7 +258,7 @@ func cmd_health(args []string) error {
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return http_error(resp.StatusCode, body)
 	}
 	return nil
 }
@@ -269,7 +304,7 @@ func cmd_backup(args []string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return http_error(resp.StatusCode, body)
 	}
 
 	var out io.Writer
@@ -382,7 +417,7 @@ func post_with_body(path string, payload any) error {
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(out)))
+		return http_error(resp.StatusCode, out)
 	}
 	os.Stdout.Write(out)
 	if len(out) > 0 && out[len(out)-1] != '\n' {

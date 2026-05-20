@@ -75,36 +75,45 @@ func stream_challenge() ([]byte, error) {
 	return b, nil
 }
 
-// Create a new stream with specified headers (reads challenge, then sends)
+// Create a new stream with specified headers (reads challenge, then sends).
+//
+// Multi-host failover: when the recipient entity has multiple known
+// locations, try each in order until one accepts the stream. Order is
+// from entity_peers_failover — active peers (seen within 2× republish
+// interval) sorted oldest-seen first, then stale peers as a last
+// resort. Stops at the first peer that completes the handshake.
 func stream(from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
-	peer := entity_peer(to)
-	if peer == "" {
+	peers := entity_peers_failover(to)
+	if len(peers) == 0 {
 		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
 	}
 
-	s := peer_stream(peer)
-	if s == nil {
-		return nil, fmt.Errorf("stream unable to open to peer %q for entity %q", peer, to)
+	var last_err error
+	for _, peer := range peers {
+		s := peer_stream(peer)
+		if s == nil {
+			last_err = fmt.Errorf("stream unable to open to peer %q for entity %q", peer, to)
+			continue
+		}
+
+		// Read challenge from receiver
+		challenge, err := s.read_challenge()
+		if err != nil {
+			s.close()
+			last_err = fmt.Errorf("stream unable to read challenge from peer %q: %v", peer, err)
+			continue
+		}
+
+		id := uid()
+		signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
+		if err := s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature}); err != nil {
+			s.close()
+			last_err = err
+			continue
+		}
+		return s, nil
 	}
-
-	// Read challenge from receiver
-	challenge, err := s.read_challenge()
-	if err != nil {
-		s.close()
-		return nil, fmt.Errorf("stream unable to read challenge: %v", err)
-	}
-
-	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
-
-	id := uid()
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
-	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature})
-	if err != nil {
-		s.close()
-		return nil, err
-	}
-
-	return s, nil
+	return nil, last_err
 }
 
 // Create a stream to a specific peer (without entity lookup)

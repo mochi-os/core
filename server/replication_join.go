@@ -196,12 +196,43 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 	stale := pmc.Sequence < latest
 
 	if !stale {
-		db.exec("delete from pair")
-		for _, peer := range pmc.Members {
-			if peer == "" || peer == p2p_id {
-				continue
+		// If this receiver isn't in the announced set, treat as
+		// "I've been kicked": empty the pair entirely. Otherwise
+		// rebuild it as the announced set minus self.
+		in_set := false
+		for _, p := range pmc.Members {
+			if p == p2p_id {
+				in_set = true
+				break
 			}
-			db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+		}
+
+		// Compute newly-added peers (in announced \ current pair) BEFORE
+		// rewriting pair. Those are fresh joiners — clear any stale
+		// `seen` rows the same way the approver does in
+		// replication_join_approve_core. Member-leave (peer in current
+		// pair but not in announced) does NOT clear seen because a
+		// future re-join goes through the approve path again.
+		current := map[string]bool{}
+		if rows, err := db.rows("select peer from pair"); err == nil {
+			for _, r := range rows {
+				if p, ok := r["peer"].(string); ok && p != "" {
+					current[p] = true
+				}
+			}
+		}
+
+		db.exec("delete from pair")
+		if in_set {
+			for _, peer := range pmc.Members {
+				if peer == "" || peer == p2p_id {
+					continue
+				}
+				db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+				if !current[peer] {
+					db.exec("delete from seen where peer=?", peer)
+				}
+			}
 		}
 	}
 
@@ -323,6 +354,24 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 
 	rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
 
+	// Joining replica is fresh by protocol contract — its sequence
+	// counters restart at 0. Clear any stale `seen` rows from a prior
+	// incarnation of the same libp2p host (preserved across reinstall
+	// per the per-server-not-per-user host-key convention) so its new
+	// ops at low sequence numbers don't get silently dropped as
+	// duplicates by max-seen-sequence dedup.
+	rdb.exec("delete from seen where peer=?", peer)
+
+	// Pre-populate bootstrap_served with the scopes the new replica
+	// is about to pull. Each gets cleared by a `bootstrap/scope/done`
+	// ack from the replica when it flips that scope to done locally.
+	// While a row exists, the operator UI shows this peer as "Syncing"
+	// instead of "Synced", matching the replica's own status.
+	ts := now()
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs} {
+		rdb.exec("insert or replace into bootstrap_served (peer, scope, started) values (?, ?, ?)", peer, scope, ts)
+	}
+
 	var members []string
 	if rows, err := rdb.rows("select peer from pair"); err == nil {
 		for _, r := range rows {
@@ -427,10 +476,15 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 		}
 	}
 
+	// Announce the new pair set to remaining members AND the kicked
+	// peer. The kicked peer receives Members that doesn't include it,
+	// which the receiver treats as "I've been kicked" — empties its
+	// pair table. Without notifying the kicked peer, an N=2 unpair
+	// would leave the other side believing the pair still exists,
+	// because there are no remaining members to forward the change.
 	full := append([]string{p2p_id}, remaining...)
-	if len(remaining) > 0 {
-		admin_replication_emit_pair_membership(full, remaining)
-	}
+	recipients := append([]string{peer}, remaining...)
+	admin_replication_emit_pair_membership(full, recipients)
 	audit_replication_pair_removed(peer)
 
 	return peer, remaining, true

@@ -113,7 +113,10 @@ func TestReplicationJoinApprovedApplyReplacesPair(t *testing.T) {
 }
 
 // TestReplicationPairMembershipApplyFresh: a pair-membership-change op
-// with a newer sequence than anything seen replaces the local pair table.
+// with a newer sequence than anything seen replaces the local pair
+// table. The receiver must be in the announced Members set; otherwise
+// the op is treated as "you've been kicked" (see ApplyKickedReceiver
+// test below).
 func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -121,8 +124,9 @@ func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into pair (peer, added, role) values ('stale', 0, '')")
 
+	// p2p_id is "self" in setup_replication_test — must be in Members.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 
@@ -135,6 +139,32 @@ func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	}
 }
 
+// TestReplicationPairMembershipApplyKickedReceiver: a membership-change
+// whose Members list does NOT include the receiver is interpreted as
+// "I've been removed from the pair set" — the receiver clears its pair
+// table entirely. This closes the N=2 unpair loop: the kicked peer
+// learns it was removed even though there are no remaining members
+// left to forward the change.
+func TestReplicationPairMembershipApplyKickedReceiver(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
+
+	// Members announces a set that does NOT include "self" — peer-A
+	// is telling us we've been removed.
+	replication_pair_membership_apply("peer-A", &PairMembershipChange{
+		Members:  []string{"peer-A"},
+		Sequence: 1,
+	})
+
+	count := rdb.integer("select count(*) from pair")
+	if count != 0 {
+		t.Errorf("kicked receiver should have empty pair; got %d rows", count)
+	}
+}
+
 // TestReplicationPairMembershipApplyStaleIgnored: a pair-membership-change
 // with sequence less than what we've already seen is recorded as seen
 // but does not overwrite the pair table.
@@ -142,14 +172,15 @@ func TestReplicationPairMembershipApplyStaleIgnored(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	// Apply newer first.
+	// Apply newer first (receiver "self" is in Members so this is the
+	// normal "I'm in the pair" path, not a kick).
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 5,
 	})
 	// Now stale older.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A"},
+		Members:  []string{"peer-A", "self"},
 		Sequence: 3,
 	})
 
@@ -167,7 +198,7 @@ func TestReplicationPairMembershipApplyDuplicateIgnored(t *testing.T) {
 	defer cleanup()
 
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 	rdb := db_open("db/replication.db")
@@ -175,7 +206,7 @@ func TestReplicationPairMembershipApplyDuplicateIgnored(t *testing.T) {
 
 	// Re-apply same sequence: should not re-insert peer-A.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
-		Members:  []string{"peer-A", "peer-B"},
+		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
 	})
 
@@ -241,6 +272,102 @@ func TestReplicationJoinApproveCoreAddsToPair(t *testing.T) {
 	// existing = [peer-C] (peer-B was the joiner; self is the source not in `existing`)
 	if len(existing) != 1 || existing[0] != "peer-C" {
 		t.Errorf("existing = %v, want [peer-C]", existing)
+	}
+}
+
+// TestReplicationJoinApproveCoreClearsSeenForJoiner: approving a fresh
+// join clears any stale `seen` rows for the joining peer so its
+// post-reinstall ops at low sequence numbers aren't silently dropped
+// as duplicates. This is the bug we hit when mochi2 was wiped and
+// re-paired: its libp2p host key survived the wipe (per-server, not
+// per-user), so its peer ID stayed the same, but its sequence
+// counters restarted from 0 and collided with mochi1's historical
+// seen rows.
+func TestReplicationJoinApproveCoreClearsSeenForJoiner(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-B', 'b', 0, 9999999999)")
+	// Plant stale seen rows from a previous incarnation of peer-B.
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'app', 'u1', 5000, 0)")
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'app', 'u2', 12345, 0)")
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'system', '', 7, 0)")
+	// Plant unrelated rows that must survive (different peer).
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-X', 'app', 'u1', 99, 0)")
+
+	if _, _, _, err := replication_join_approve_core("peer-B"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	if n := rdb.integer("select count(*) from seen where peer='peer-B'"); n != 0 {
+		t.Errorf("seen rows for joining peer not cleared: got %d, want 0", n)
+	}
+	if n := rdb.integer("select count(*) from seen where peer='peer-X'"); n != 1 {
+		t.Errorf("seen rows for unrelated peer must survive: got %d, want 1", n)
+	}
+}
+
+// TestReplicationPairMembershipApplyClearsSeenForNewMembers: when an
+// existing member receives a pair-membership-change announcement, it
+// also clears `seen` for any peer that's newly in the announced set
+// (i.e. was just added to the pair). Peers already in the local pair
+// are unaffected, and a member-leave doesn't clear anything (the
+// leaver's seen rows stay so subsequent re-pair goes through approve).
+func TestReplicationPairMembershipApplyClearsSeenForNewMembers(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	// Existing pair from this receiver's perspective: peer-C is already paired.
+	db.exec("insert into pair (peer, added, role) values ('peer-C', 0, '')")
+	// Stale seen rows: peer-B (newly joining) has stale entries that
+	// should be cleared; peer-C (already paired) and peer-X (unrelated)
+	// must survive.
+	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'app', 'u1', 9999, 0)")
+	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-C', 'app', 'u1', 50, 0)")
+	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-X', 'app', 'u1', 1, 0)")
+
+	pmc := &PairMembershipChange{
+		Members:  []string{p2p_id, "peer-B", "peer-C"}, // includes self + the new joiner
+		Sequence: 1,
+	}
+	replication_pair_membership_apply("peer-Z" /* origin = some other member */, pmc)
+
+	if n := db.integer("select count(*) from seen where peer='peer-B'"); n != 0 {
+		t.Errorf("seen for newly-joined peer-B not cleared: got %d, want 0", n)
+	}
+	if n := db.integer("select count(*) from seen where peer='peer-C'"); n != 1 {
+		t.Errorf("seen for already-paired peer-C must survive: got %d, want 1", n)
+	}
+	if n := db.integer("select count(*) from seen where peer='peer-X'"); n != 1 {
+		t.Errorf("seen for unrelated peer-X must survive: got %d, want 1", n)
+	}
+}
+
+// TestReplicationPairMembershipApplyLeaveDoesNotClearSeen: when a peer
+// leaves the pair (drops out of the announced set), its `seen` rows
+// stay — a re-pair later goes through the approve path which clears
+// them. Without this rule, every member shrink would wipe history we
+// might still need.
+func TestReplicationPairMembershipApplyLeaveDoesNotClearSeen(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added, role) values ('peer-B', 0, '')")
+	db.exec("insert into pair (peer, added, role) values ('peer-C', 0, '')")
+	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'app', 'u1', 50, 0)")
+
+	// Announce a new membership without peer-B (peer-B left).
+	pmc := &PairMembershipChange{
+		Members:  []string{p2p_id, "peer-C"},
+		Sequence: 1,
+	}
+	replication_pair_membership_apply("peer-C", pmc)
+
+	if n := db.integer("select count(*) from seen where peer='peer-B'"); n != 1 {
+		t.Errorf("seen for leaving peer must survive: got %d, want 1", n)
 	}
 }
 

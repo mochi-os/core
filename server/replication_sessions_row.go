@@ -56,7 +56,6 @@ func replication_emit_sessions_row(user string, r *SessionsRow) {
 		operation = "sessions-row.delete"
 	}
 	replication_emit(user, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      user,
 		Database:  "sessions",

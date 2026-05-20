@@ -4,23 +4,24 @@
 package main
 
 import (
+	"sync"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
 )
 
-// Replication scope, class, and op constants. See claude/plans/replication.md.
+// Replication scope and op constants. See claude/plans/replication.md.
 const (
-	repl_scope_app   = "app"
-	repl_scope_core  = "core"
-	repl_class_sql   = "sql"
-	repl_class_file  = "file"
-	repl_op_insert   = "insert"
-	repl_op_update   = "update"
-	repl_op_delete   = "delete"
-	repl_op_exec     = "exec"
-	repl_op_filesync = "sync"
+	repl_scope_app             = "app"
+	repl_scope_core            = "core"
+	repl_op_insert             = "insert"
+	repl_op_update             = "update"
+	repl_op_delete             = "delete"
+	repl_op_exec               = "exec"
+	repl_op_exec_app_system    = "exec-app-system"
+	repl_op_exec_user_core     = "exec-user-core"
+	repl_db_user_core_sentinel = "user"
 )
 
 // ApplyResult is returned by replication_apply_op to tell the caller
@@ -50,7 +51,6 @@ const (
 // `replication.db.fence_witness` and drop the op when a higher fence
 // has already been seen (stale-leader output).
 type ReplicationOp struct {
-	Class       string `cbor:"class"`
 	Scope       string `cbor:"scope"`
 	User        string `cbor:"user,omitempty"`
 	Database    string `cbor:"db"`
@@ -181,19 +181,6 @@ type KeysTotp struct {
 	Created  int64  `cbor:"created"`
 }
 
-// FileSync is the wire payload for a small-file replication op. For
-// files at or under file_sync_max_inline bytes the data travels inline
-// in the Data field; receivers write it straight into the per-(user,
-// app) file directory. Larger files fall back to a chunk protocol
-// (not yet implemented) using the same Hash for content-addressed
-// fetches.
-type FileSync struct {
-	Path string `cbor:"path"`
-	Hash string `cbor:"hash,omitempty"`
-	Data []byte `cbor:"data,omitempty"`
-	Size int64  `cbor:"size"`
-}
-
 // WebpushDelivered is the wire payload for replicating a per-user
 // webpush dedup row. Local marks of (endpoint, event_id) fan out to
 // the user's host set so a replica that processes the same event after
@@ -257,11 +244,13 @@ func init() {
 	// peer authentication — e.peer is the verified sender. Handlers
 	// authorize via that peer-id (e.g. bootstrap chunks require the
 	// peer be an active bootstrap source for the scope).
-	a.event("op", replication_op_event)
-	a.event("snapshot/request", replication_snapshot_request_event)
-	a.event("snapshot/chunk", replication_snapshot_chunk_event)
-	a.event("membership/change", replication_membership_change_event)
+	a.event("sql/op", replication_op_event)
+	a.event("host/membership/change", replication_membership_change_event)
 	a.event("keys/transfer", replication_keys_transfer_event)
+	// Live file replication (see file_push.go). Per-(user, peer) push;
+	// any size; sha256-verified on the receiver before atomic rename.
+	a.event("file/push", replication_file_push_event)
+	a.event("file/delete", replication_file_delete_event)
 	// Per-user link-request flow (see replication_link.go).
 	// Server-to-server: B has no entity yet at link-request time;
 	// A's response (link-approved/denied) is keyed on the placeholder
@@ -269,8 +258,8 @@ func init() {
 	a.event_anonymous("link/request", replication_link_request_event)
 	a.event_anonymous("link/approved", replication_link_approved_event)
 	a.event_anonymous("link/denied", replication_link_denied_event)
-	a.event_anonymous("freshness/probe", replication_freshness_probe_event)
-	a.event_anonymous("user/lookup", replication_user_lookup_event)
+	a.event_anonymous("lookup/freshness", replication_freshness_probe_event)
+	a.event_anonymous("lookup/user", replication_user_lookup_event)
 	// Whole-server pair join-request flow (see replication_join.go).
 	// Server-to-server: a fresh replica has no entities at all.
 	a.event_anonymous("join/request", replication_join_request_event)
@@ -282,24 +271,18 @@ func init() {
 	// domains rows). Last-applier-by-arrival-order wins.
 	a.event_anonymous("system/set", replication_system_set_event)
 	a.event_anonymous("system/row", replication_system_row_event)
-	// Bulk bootstrap protocol (see replication_bootstrap.go).
-	// Pair-scoped, libp2p-signed; chunk handlers gate on
-	// bootstrap_is_active_source(scope, e.peer) so an unauthorized
-	// peer can't inject data into our scope roots.
-	a.event_anonymous("bootstrap/file/manifest/request", replication_bootstrap_file_manifest_request_event)
-	a.event_anonymous("bootstrap/file/manifest/result", replication_bootstrap_file_manifest_result_event)
-	// File-chunk transfer is synchronous stream RPC (no queue) — sender
-	// reads the request from e.content, writes the response on e.stream.
-	// Replaces the old queue-based chunk-request + chunk-response pair
-	// which filled queue.db with 1 MiB payloads and tripped the 1 GB cap.
+	// Bulk bootstrap protocol (see replication_bootstrap.go). Pair-scoped,
+	// libp2p-signed; chunk handlers gate on bootstrap_is_active_source(scope,
+	// e.peer) so an unauthorized peer can't inject data into our scope roots.
+	// Every bootstrap-time exchange is a synchronous stream RPC: requester
+	// opens a stream, writes the request, reads one or more response
+	// segments on the same stream until done. No queue.db involvement, no
+	// ID-matching dance — the response IS the ACK.
+	a.event_anonymous("bootstrap/file/manifest", replication_bootstrap_file_manifest_event)
 	a.event_anonymous("bootstrap/file/chunk/fetch", replication_bootstrap_file_chunk_fetch_event)
-	a.event_anonymous("bootstrap/db/manifest/request", replication_bootstrap_db_manifest_request_event)
-	a.event_anonymous("bootstrap/db/manifest/result", replication_bootstrap_db_manifest_result_event)
-	// DB transfer is synchronous stream RPC (one stream per DB, multiple
-	// chunk segments down the same stream until EOF). Replaces the old
-	// queue-based snapshot-request + chunk pair which queued every 1 MiB
-	// of every DB on both sides.
+	a.event_anonymous("bootstrap/db/manifest", replication_bootstrap_db_manifest_event)
 	a.event_anonymous("bootstrap/db/fetch", replication_bootstrap_db_fetch_event)
+	a.event_anonymous("bootstrap/scope/done", replication_bootstrap_scope_done_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -365,39 +348,27 @@ func replication_op_event(e *Event) {
 }
 
 // replication_apply_op dispatches a verified, deduplicated op to the
-// class-specific apply path. Class is the top-level discriminator: "sql"
-// for typed-row writes against system or app DBs, "file" for per-(user,
-// app) file replication. Within "sql", Database and Table pick the
-// concrete apply handler. Returns ApplyDeferred when the op can't be
-// applied yet (waiting on a local user or app DB) so the caller buffers
-// it in `pending` for a later retry; ApplyInvalid for unrecognised ops.
+// right apply path based on Database + Table. Returns ApplyDeferred
+// when the op can't be applied yet (waiting on a local user or app
+// DB) so the caller buffers it in `pending` for a later retry;
+// ApplyInvalid for unrecognised ops. File ops travel as their own
+// events (file/push, file/delete), never through ReplicationOp.
 func replication_apply_op(op *ReplicationOp) ApplyResult {
-	switch op.Class {
-	case repl_class_file:
-		return replication_apply_file(op)
-	case repl_class_sql:
-		return replication_apply_sql(op)
-	}
-	return ApplyInvalid
+	return replication_apply_sql(op)
 }
 
-// replication_apply_file decodes a FileSync payload and writes it into
-// the per-(user, app) file tree.
-func replication_apply_file(op *ReplicationOp) ApplyResult {
-	var fs FileSync
-	if err := cbor.Unmarshal(op.Payload, &fs); err != nil {
-		info("Replication file op: decode failed: %v", err)
-		return ApplyInvalid
-	}
-	return replication_file_sync_apply(op.User, op.Database, &fs)
-}
-
-// replication_apply_sql dispatches a SQL-class op to the right system-DB
+// replication_apply_sql dispatches a verified op to the right system-DB
 // apply handler based on Database and Table. Per-app SQL command
 // replication (the opt-out default) lands here via Operation == "exec".
 func replication_apply_sql(op *ReplicationOp) ApplyResult {
 	if op.Operation == repl_op_exec {
 		return replication_apply_sql_command(op)
+	}
+	if op.Operation == repl_op_exec_app_system {
+		return replication_apply_app_system_exec(op)
+	}
+	if op.Operation == repl_op_exec_user_core {
+		return replication_apply_user_core_exec(op)
 	}
 	switch {
 	case op.Scope == repl_scope_app && op.Database == "users" && (op.Operation == "users-row.set" || op.Operation == "users-row.delete"):
@@ -519,6 +490,50 @@ func replication_manager() {
 	}
 }
 
+// replication_pending_kick is invoked when a buffered op stays
+// deferred. Schema-skew (op.Schema > local) and "app not installed yet"
+// are the two app-side reasons an op gets stuck; both are unstuck by
+// app_check_install downloading the matching published version. We
+// kick best-effort — the call is idempotent when the local version is
+// already current, so a no-op cost when the deferral is for a different
+// reason (e.g. unknown user awaiting keys-transfer).
+func replication_pending_kick(op *ReplicationOp) {
+	if op == nil {
+		return
+	}
+	if op.Database == "" || !valid(op.Database, "entity") {
+		// system-DB tables (users, sessions, notifications) or dev /
+		// internal apps — no publisher download path applies.
+		return
+	}
+	if !replication_pending_kick_due(op.Database) {
+		return
+	}
+	go app_check_install(op.Database)
+}
+
+// replication_pending_kick_state tracks the last time
+// replication_pending_kick fired for each app id, so a busy drain
+// doesn't fan out duplicate app_check_install goroutines for the same
+// stuck app every 30 seconds. The TTL is long compared to the drain
+// interval but short compared to operator patience.
+var (
+	replication_pending_kick_last  = map[string]int64{}
+	replication_pending_kick_mu    sync.Mutex
+	replication_pending_kick_ttl_s = int64(300) // 5 minutes
+)
+
+func replication_pending_kick_due(appID string) bool {
+	replication_pending_kick_mu.Lock()
+	defer replication_pending_kick_mu.Unlock()
+	now_ts := now()
+	if last, ok := replication_pending_kick_last[appID]; ok && now_ts-last < replication_pending_kick_ttl_s {
+		return false
+	}
+	replication_pending_kick_last[appID] = now_ts
+	return true
+}
+
 // replication_pending_drain walks `replication.db.pending` in arrival
 // order and re-evaluates each buffered op against the current local
 // state. Ops that now apply move to `seen`; ops that are still deferred
@@ -560,7 +575,14 @@ func replication_pending_drain() {
 			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
 			debug("Replication pending drain: applied (peer=%q scope=%q user=%q seq=%d)", peer, scope, userField, sequence)
 		case ApplyDeferred:
-			// Still not ready — leave in pending.
+			// Still not ready — leave in pending. Kick auxiliary
+			// progress where we know it might unblock the op:
+			// an exec op referencing an entity-style app id whose
+			// version isn't installed locally is unblocked by an
+			// app_check_install side-effect that downloads the
+			// app from the publisher. Without this, ops sit waiting
+			// for the next 24-hour apps_manager tick.
+			replication_pending_kick(&op)
 		case ApplyInvalid:
 			info("Replication pending drain: invalid op dropped (peer=%q seq=%d)", peer, sequence)
 			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
@@ -631,7 +653,6 @@ func replication_emit_webpush_delivered(userUID, endpoint, event_id string, ts i
 	}
 	payload := cbor_encode(&WebpushDelivered{Endpoint: endpoint, EventID: event_id, TS: ts})
 	replication_emit(userUID, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  "notifications",
@@ -649,7 +670,6 @@ func replication_emit_email_delivered(userUID, address, event_id string, ts int6
 	}
 	payload := cbor_encode(&EmailDelivered{Address: address, EventID: event_id, TS: ts})
 	replication_emit(userUID, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  "notifications",
@@ -672,7 +692,6 @@ func replication_emit_session_insert(userUID, code, secret string, expires, crea
 		Address: address, Agent: agent,
 	})
 	replication_emit(userUID, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  "sessions",
@@ -691,7 +710,6 @@ func replication_emit_session_delete(userUID, code string) {
 	}
 	payload := cbor_encode(&SessionDelete{Code: code})
 	replication_emit(userUID, &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      userUID,
 		Database:  "sessions",
@@ -699,19 +717,6 @@ func replication_emit_session_delete(userUID, code string) {
 		Operation: repl_op_delete,
 		Payload:   payload,
 	})
-}
-
-// replication_snapshot_request_event: per-(user, scope) full state copy
-// request. Used when a peer first joins a user's host set (per-user opt-in)
-// or as a fallback for whole-server bootstrap. Not yet wired.
-func replication_snapshot_request_event(e *Event) {
-	debug("Replication snapshot-request not yet implemented (from peer %q)", e.peer)
-}
-
-// replication_snapshot_chunk_event: streamed reply to a snapshot-request.
-// Not yet wired.
-func replication_snapshot_chunk_event(e *Event) {
-	debug("Replication snapshot-chunk not yet implemented (from peer %q)", e.peer)
 }
 
 // replication_membership_change_event applies a membership update from
@@ -1172,7 +1177,7 @@ func replication_membership_update_impl(user string, hosts []string) {
 		if peer == "" || peer == p2p_id {
 			continue
 		}
-		m := message(from, from, "replication", "membership/change")
+		m := message(from, from, "replication", "host/membership/change")
 		m.add(mc)
 		m.send_peer(peer)
 	}
@@ -1241,7 +1246,19 @@ func replication_sequence_next(user, scope string) int64 {
 // have populated replication.db.hosts / replication.db.pair for emit to
 // have any peers to send to; with no recipients, emit is a no-op.
 func replication_emit(user string, op *ReplicationOp) {
-	peers := recipients(user)
+	replication_emit_to(user, op, nil)
+}
+
+// replication_emit_to_peer emits the op exclusively to one peer, used
+// for pair-backfill where existing pair members already hold the row.
+func replication_emit_to_peer(user string, op *ReplicationOp, peer string) {
+	replication_emit_to(user, op, []string{peer})
+}
+
+func replication_emit_to(user string, op *ReplicationOp, peers []string) {
+	if peers == nil {
+		peers = recipients(user)
+	}
 	if len(peers) == 0 {
 		return
 	}
@@ -1278,7 +1295,7 @@ func replication_emit(user string, op *ReplicationOp) {
 	}
 
 	for _, peer := range peers {
-		m := message(from, from, "replication", "op")
+		m := message(from, from, "replication", "sql/op")
 		m.add(op)
 		m.send_peer(peer)
 	}

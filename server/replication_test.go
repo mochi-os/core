@@ -72,41 +72,47 @@ func setup_replication_test(t *testing.T) func() {
 	orig_pair_backfill := replication_pair_backfill
 	replication_pair_backfill = func(peer string) {}
 
-	// Bootstrap emits also fire send_peer goroutines. Stubbed for the
-	// same reason; tests that need to observe the emit override these
-	// again locally (see TestBootstrapStartSeedsScopesAndEmitsManifests).
-	orig_emit_bootstrap_manifest_req := replication_emit_bootstrap_file_manifest_request
-	orig_emit_bootstrap_manifest_res := replication_emit_bootstrap_file_manifest_result
+	// Bootstrap sync-RPC fetches spawn goroutines that hit libp2p; stub
+	// them out for the same reason. Tests that need to observe the
+	// emit override these again locally (see
+	// TestBootstrapStartSeedsScopesAndEmitsManifests).
+	orig_file_manifest_fetch := replication_bootstrap_file_manifest_fetch
+	orig_db_manifest_fetch := replication_bootstrap_db_manifest_fetch
 	orig_file_chunk_fetch := bootstrap_file_chunk_fetch
 	orig_file_scope_driver := bootstrap_file_scope_driver
 	orig_db_fetch := bootstrap_db_fetch
 	orig_db_scope_driver := bootstrap_db_scope_driver
-	orig_emit_bootstrap_db_manifest_req := replication_emit_bootstrap_db_manifest_request
-	orig_emit_bootstrap_db_manifest_res := replication_emit_bootstrap_db_manifest_result
-	replication_emit_bootstrap_file_manifest_request = func(peer, scope, prefix string) {}
-	replication_emit_bootstrap_file_manifest_result = func(peer, scope, prefix string, entries []BootstrapFileEntry, done bool) {}
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {}
 	bootstrap_file_chunk_fetch = func(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
 		return nil, nil
 	}
 	bootstrap_file_scope_driver = func(peer, scope string, needed []BootstrapFileEntry) {}
 	bootstrap_db_fetch = func(peer, scope, path, user, app, db string) error { return nil }
 	bootstrap_db_scope_driver = func(peer, scope string, entries []BootstrapDBEntry) {}
-	replication_emit_bootstrap_db_manifest_request = func(peer, scope string) {}
-	replication_emit_bootstrap_db_manifest_result = func(peer, scope string, entries []BootstrapDBEntry) {}
+
+	// bootstrap_scope_settled fires this emit as a goroutine; queue.db
+	// may be torn down before it runs.
+	orig_emit_bootstrap_scope_done := replication_bootstrap_emit_scope_done
+	replication_bootstrap_emit_scope_done = func(peer, scope string) {}
+
+	// db_upgrade_63 adds the bootstrap_served table that
+	// replication_join_approve_core populates. Without it the
+	// approve path errors out.
+	db_upgrade_63()
 
 	return func() {
+		replication_bootstrap_emit_scope_done = orig_emit_bootstrap_scope_done
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
 		replication_membership_update = orig_membership
 		replication_emit_link_denied = orig_emit_link_denied
-		replication_emit_bootstrap_file_manifest_request = orig_emit_bootstrap_manifest_req
-		replication_emit_bootstrap_file_manifest_result = orig_emit_bootstrap_manifest_res
+		replication_bootstrap_file_manifest_fetch = orig_file_manifest_fetch
+		replication_bootstrap_db_manifest_fetch = orig_db_manifest_fetch
 		bootstrap_file_chunk_fetch = orig_file_chunk_fetch
 		bootstrap_file_scope_driver = orig_file_scope_driver
 		bootstrap_db_fetch = orig_db_fetch
 		bootstrap_db_scope_driver = orig_db_scope_driver
-		replication_emit_bootstrap_db_manifest_request = orig_emit_bootstrap_db_manifest_req
-		replication_emit_bootstrap_db_manifest_result = orig_emit_bootstrap_db_manifest_res
 		replication_pair_backfill = orig_pair_backfill
 		data_dir = orig_data_dir
 		p2p_id = orig_p2p_id
@@ -575,7 +581,6 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-late",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
@@ -635,6 +640,67 @@ func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
 	}
 }
 
+// TestReplicationPendingKickTTL: replication_pending_kick fires at
+// most once per app id within the TTL window. Without this gate, a
+// drain finding 50 stuck ops for the same app would fan out 50
+// app_check_install goroutines on each 30s tick.
+func TestReplicationPendingKickTTL(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Use a valid-shaped entity id so the kick gate's `valid(_, "entity")`
+	// check passes.
+	appID := test_entity_id('a')
+
+	// Fresh state: first kick is due.
+	replication_pending_kick_mu.Lock()
+	delete(replication_pending_kick_last, appID)
+	replication_pending_kick_mu.Unlock()
+
+	if !replication_pending_kick_due(appID) {
+		t.Error("first kick on fresh app: want true, got false")
+	}
+	// Immediately re-asking: gated by TTL.
+	if replication_pending_kick_due(appID) {
+		t.Error("repeat kick within TTL: want false, got true")
+	}
+
+	// Backdate the last-kick timestamp past the TTL → next call is due.
+	replication_pending_kick_mu.Lock()
+	replication_pending_kick_last[appID] = now() - replication_pending_kick_ttl_s - 1
+	replication_pending_kick_mu.Unlock()
+	if !replication_pending_kick_due(appID) {
+		t.Error("kick after TTL elapsed: want true, got false")
+	}
+}
+
+// TestReplicationPendingKickRejectsNonEntityApp: dev / internal apps
+// (string ids) don't have a publisher download path, so kicking
+// app_check_install for them is pointless. Verify the gate filters them.
+func TestReplicationPendingKickRejectsNonEntityApp(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Snapshot the kick map; ensure it doesn't gain an entry for a
+	// non-entity app id even after a Deferred call goes through.
+	replication_pending_kick_mu.Lock()
+	before := len(replication_pending_kick_last)
+	replication_pending_kick_mu.Unlock()
+
+	replication_pending_kick(&ReplicationOp{
+		Scope:    repl_scope_app,
+		Database: "feeds", // string id, not a fingerprint
+		User:     "u1",
+	})
+
+	replication_pending_kick_mu.Lock()
+	after := len(replication_pending_kick_last)
+	replication_pending_kick_mu.Unlock()
+	if after != before {
+		t.Errorf("non-entity app id must not be tracked; before=%d after=%d", before, after)
+	}
+}
+
 func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -648,7 +714,6 @@ func TestReplicationKeysTransferDrainsPending(t *testing.T) {
 	}
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-via-keys",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1, Payload: cbor_encode(p),
 	}
@@ -1010,7 +1075,7 @@ func TestBroadcastGapDetection(t *testing.T) {
 
 	// Sequence 5 arrives — gap of {3, 4} detected (app would request
 	// replay; we just check the math).
-	incoming := 5
+	incoming := int64(5)
 	gap := incoming > last+1
 	if !gap {
 		t.Errorf("gap should be detected when incoming > last+1")
@@ -1186,7 +1251,6 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	// Host 2 receives a session-insert op from Host 1.
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-alice",
-		Class:    repl_class_sql,
 		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
 		Sequence: 1,
 		Payload: cbor_encode(&SessionInsert{
@@ -1528,7 +1592,6 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      "uid-alice",
 		Database:  "notifications",
@@ -1573,7 +1636,6 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	os.MkdirAll(filepath.Join(data_dir, "users/uid-alice"), 0755)
 
 	op := &ReplicationOp{
-		Class:     repl_class_sql,
 		Scope:     repl_scope_app,
 		User:      "uid-bob",
 		Database:  "notifications",
@@ -1591,124 +1653,6 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	u2 := &User{UID: "uid-bob"}
 	if !email_already_delivered(u2, "bob@example.com", "login:abc") {
 		t.Error("h2 must see the replicated email_delivered row")
-	}
-}
-
-func TestFileSyncApplyWritesFile(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	setup_users_test_schema()
-
-	udb := db_open("db/users.db")
-	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-
-	// Register a test app so app_by_id returns non-nil.
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	fs := &FileSync{
-		Path: "avatars/me.png",
-		Size: 5,
-		Data: []byte("hello"),
-	}
-	if got := replication_file_sync_apply("uid-alice", "myapp", fs); got != ApplyApplied {
-		t.Fatalf("expected ApplyApplied, got %v", got)
-	}
-
-	// File should now exist on disk.
-	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
-	contents, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("file missing after apply: %v", err)
-	}
-	if string(contents) != "hello" {
-		t.Errorf("file contents: expected 'hello', got %q", string(contents))
-	}
-}
-
-func TestFileSyncApplyDefersUnknownUser(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	setup_users_test_schema()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	fs := &FileSync{Path: "foo.txt", Size: 3, Data: []byte("foo")}
-	if got := replication_file_sync_apply("uid-nobody", "myapp", fs); got != ApplyDeferred {
-		t.Errorf("unknown user must defer, got %v", got)
-	}
-}
-
-func TestFileSyncApplyRejectsInvalidPath(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	fs := &FileSync{Path: "../../etc/passwd", Size: 3, Data: []byte("bad")}
-	if got := replication_file_sync_apply("uid-anything", "myapp", fs); got != ApplyInvalid {
-		t.Errorf("invalid path must return ApplyInvalid, got %v", got)
-	}
-}
-
-func TestIntegrationFileSyncAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
-	defer cleanup()
-
-	apps_lock.Lock()
-	apps["myapp"] = &App{id: "myapp"}
-	apps_lock.Unlock()
-	defer func() {
-		apps_lock.Lock()
-		delete(apps, "myapp")
-		apps_lock.Unlock()
-	}()
-
-	// Host 1 writes a file locally; we represent that with the
-	// replicated op carrying the inline contents.
-	op := &ReplicationOp{
-		Class:     repl_class_file,
-		Scope:     repl_scope_app,
-		User:      "uid-alice",
-		Database:  "myapp",
-		Operation: repl_op_filesync,
-		Sequence:  1,
-		Payload: cbor_encode(&FileSync{
-			Path: "avatars/me.png",
-			Size: 5,
-			Data: []byte("hello"),
-		}),
-	}
-
-	// Host 2 receives and applies — file lands at the expected path
-	// inside h2's per-(user, app) file directory.
-	switchTo("h2")
-	setup_users_test_schema()
-	udb := db_open("db/users.db")
-	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
-
-	if got := replication_apply_op(op); got != ApplyApplied {
-		t.Fatalf("h2 apply: expected ApplyApplied, got %v", got)
-	}
-
-	target := filepath.Join(data_dir, "users", "uid-alice", "myapp", "files", "avatars", "me.png")
-	contents, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("h2 file missing after apply: %v", err)
-	}
-	if string(contents) != "hello" {
-		t.Errorf("h2 contents: expected 'hello', got %q", string(contents))
 	}
 }
 

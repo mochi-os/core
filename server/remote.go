@@ -94,12 +94,16 @@ func peer_connect_url(url string) (string, error) {
 	return info.Peer, nil
 }
 
-// Connect to a remote entity, returning the peer ID
-// Uses peer if provided, otherwise looks up in directory
-// If peer is an entity ID, resolve it to a peer ID first
+// Connect to a remote entity, returning the peer ID.
+//
+// If `peer` is explicitly given (libp2p id or entity id), uses that
+// after a single resolution. If only `entity_id` is given, tries each
+// location from entity_peers_failover in order, returning the first
+// peer we can reach. Same multi-host failover policy as stream().
 func remote_connect(entity_id string, peer string) (string, error) {
 	if peer != "" {
-		// If peer is an entity ID, resolve it first
+		// If peer is an entity ID, resolve it first (single shot —
+		// caller asked for that specific entity's location).
 		if valid(peer, "entity") {
 			peer = entity_peer(peer)
 			if peer == "" {
@@ -114,13 +118,17 @@ func remote_connect(entity_id string, peer string) (string, error) {
 		return peer, nil
 	}
 
-	// Look up entity in directory
-	peer = entity_peer(entity_id)
-	if peer == "" {
+	// Look up entity in directory and try peers in failover order.
+	peers := entity_peers_failover(entity_id)
+	if len(peers) == 0 {
 		return "", fmt.Errorf("entity not found in directory")
 	}
-
-	return peer, nil
+	for _, p := range peers {
+		if peer_connect(p) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("failed to connect to any peer for entity %s", entity_id)
 }
 
 // mochi.remote.request(entity_id, service, event, payload, peer) -> dict: Make a request to a remote entity

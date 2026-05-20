@@ -32,11 +32,27 @@ type DB struct {
 	internal *sqlx.DB
 	starlark *sqlx.DB
 	user     *User
+	app      *App
+	kind     string
 	closed   int64
 }
 
+// db_kind_* tag a DB handle with the per-host file role so the
+// matching emit/apply pair can route replicated writes back into the
+// right file on the receiver.
+//   - "app-system": users/<uid>/<app>/app.db (access, attachments)
+//   - "user-core" : users/<uid>/user.db (groups, accounts, interests,
+//     permissions, settings, classes/services/paths/versions)
+//
+// Everything else (per-app data DBs, sessions.db, users.db, …) goes
+// through its own replication path and leaves kind unset.
 const (
-	schema_version = 62
+	db_kind_app_system = "app-system"
+	db_kind_user_core  = "user-core"
+)
+
+const (
+	schema_version = 63
 )
 
 var (
@@ -288,6 +304,13 @@ func db_create() {
 	replication.exec("create index leadership_expires on leadership(expires)")
 	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
 	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', primary key (scope, peer))")
+	// bootstrap_served: source-side tracking of scopes we're currently
+	// serving to each joined peer. Inserted on join approval (one row
+	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
+	// Symmetry with the receiver's `bootstrap` table — the receiver
+	// sees "syncing" while it pulls; the source sees "syncing" while
+	// these rows exist.
+	replication.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
 	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 	// Per-user link-requests awaiting Approve / Deny in Settings → Replication.
 	// One row per (target user on this host, source peer); newest wins via
@@ -321,6 +344,10 @@ func db_apps() *DB {
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
+	db.user = u
+	if name == "user" {
+		db.kind = db_kind_user_core
+	}
 
 	// Create tables for user.db
 	if name == "user" {
@@ -462,6 +489,8 @@ func db_app_system(u *User, app *App) *DB {
 		return nil
 	}
 	db.user = u
+	db.app = app
+	db.kind = db_kind_app_system
 
 	if reused {
 		return db
@@ -641,6 +670,8 @@ func db_upgrade() {
 			db_upgrade_61()
 		case 62:
 			db_upgrade_62()
+		case 63:
+			db_upgrade_63()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -816,6 +847,17 @@ func db_upgrade_62() {
 	r := db_open("db/replication.db")
 	if col, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='state'"); !col {
 		r.exec("alter table bootstrap add column state text not null default 'queued'")
+	}
+}
+
+// db_upgrade_63 adds the bootstrap_served table — source-side tracking
+// of scopes a consumer hasn't acked as done yet. Symmetry with the
+// receiver's `bootstrap` table; the UI uses both to compute the
+// per-pair-member Synced/Syncing status. Idempotent.
+func db_upgrade_63() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from sqlite_master where type='table' and name='bootstrap_served'"); !has {
+		r.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
 	}
 }
 
@@ -1419,6 +1461,29 @@ func (db *DB) exec(query string, values ...any) {
 	must(db.internal.Exec(query, values...))
 }
 
+// exec_replicated runs a write against the local DB and, if the handle
+// is tagged with a replicating kind (app-system, user-core), fans the
+// statement out to the user's host set. Used by Go-side APIs
+// (mochi.access.*, mochi.group.*, …) so their writes converge across
+// hosts the same way mochi.db.execute does for app-defined tables.
+//
+// Schema DDL (create table, create index, alter table) must keep using
+// the plain exec — receivers create their own tables on first open.
+func (db *DB) exec_replicated(query string, values ...any) {
+	must(db.internal.Exec(query, values...))
+	if db.user == nil || db.user.UID == "" {
+		return
+	}
+	switch db.kind {
+	case db_kind_app_system:
+		if db.app != nil {
+			replication_emit_app_system_exec(db.user, db.app, query, values)
+		}
+	case db_kind_user_core:
+		replication_emit_user_core_exec(db.user, query, values)
+	}
+}
+
 func (db *DB) exists(query string, values ...any) (bool, error) {
 	r, err := db.internal.Query(query, values...)
 	if err != nil {
@@ -1802,6 +1867,7 @@ func transaction_close(t *sl.Thread) {
 		if !h.closed {
 			h.tx.Rollback()
 			h.closed = true
+			h.pending_emits = nil
 		}
 	}
 	t.SetLocal("transactions", nil)
@@ -1942,6 +2008,7 @@ func (h *TransactionHandle) sl_rollback(t *sl.Thread, fn *sl.Builtin, args sl.Tu
 	}
 	h.tx.Rollback()
 	h.closed = true
+	h.pending_emits = nil
 	return sl.None, nil
 }
 

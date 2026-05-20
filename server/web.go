@@ -444,6 +444,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		s.set("action", &action)
 		s.set("app", a)
 		s.set("host", c.Request.Host)
+		s.set("origin", request_origin(c))
 		// For `public: true` actions invoked anonymously (webhooks, OAuth
 		// callbacks, public APIs), there is no Mochi-authenticated caller —
 		// the manifest's `public: true` is itself the explicit declaration

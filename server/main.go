@@ -204,6 +204,8 @@ func main_serve(ready func()) int {
 	go ratelimit_manager()
 	go replication_manager()
 	go bootstrap_resume()
+	go bootstrap_retry_incomplete_manager()
+	go replication_link_resume_pending_activations()
 	go sessions_manager()
 	go update_manager()
 	go web_start()

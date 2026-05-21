@@ -353,6 +353,14 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
+	// Refuse service calls into an account whose per-user replication
+	// backfill hasn't finished — its DBs are mid-transfer. Parallels
+	// the web_action gate; honours "don't let users use Mochi apps
+	// until replication is up to date".
+	if user != nil && user.Status == "pending-replication" {
+		return sl_error(fn, "account %q is still being replicated", user.UID)
+	}
+
 	// Run first-time setup for target service app (grants default permissions)
 	app_user_setup(user, a.id)
 
@@ -408,6 +416,12 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 func service_call_as_server(target_user_uid string, service string, function string, args Map) error {
 	user := user_by_uid(target_user_uid)
 	if user == nil {
+		return nil
+	}
+	// Skip silently while the target's per-user replication backfill is
+	// in progress — same treatment as suspended users. A server-side
+	// call (e.g. a notification row) would open a DB that's mid-swap.
+	if user.Status == "pending-replication" {
 		return nil
 	}
 	a := app_for_service(user, service)

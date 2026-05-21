@@ -382,6 +382,20 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	var call_err error
 
 	go func() {
+		// Recover panics so a fault in one Starlark call (a malformed
+		// SQLite DB, a nil deref in a Go-side API, etc.) becomes a
+		// call_err the caller can report — instead of unwinding an
+		// unguarded goroutine and taking the whole server down. gin's
+		// Recovery middleware only wraps HTTP handlers; this goroutine
+		// is spawned outside it, so without this defer a single bad DB
+		// crashed the process (2026-05-21: a user DB mid-bootstrap-swap
+		// panicked here and killed mochi2).
+		defer func() {
+			if r := recover(); r != nil {
+				call_err = fmt.Errorf("Starlark call %q panicked: %v", function, r)
+				close(done)
+			}
+		}()
 		result, call_err = sl.Call(s.thread, f, args, kw)
 		close(done)
 	}()

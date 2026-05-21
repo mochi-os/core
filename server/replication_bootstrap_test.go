@@ -523,7 +523,7 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 
 	var mu sync.Mutex
 	var fileRequests []struct{ peer, scope, prefix string }
-	var dbRequests []struct{ peer, scope string }
+	var dbRequests []struct{ peer, scope, user string }
 	origFile := replication_bootstrap_file_manifest_fetch
 	origDB := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
@@ -531,9 +531,9 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 		fileRequests = append(fileRequests, struct{ peer, scope, prefix string }{peer, scope, prefix})
 		mu.Unlock()
 	}
-	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
 		mu.Lock()
-		dbRequests = append(dbRequests, struct{ peer, scope string }{peer, scope})
+		dbRequests = append(dbRequests, struct{ peer, scope, user string }{peer, scope, user})
 		mu.Unlock()
 	}
 	defer func() {
@@ -577,6 +577,100 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	state, _ := bootstrap_get_state(bootstrap_scope_sysdbs, "source-A")
 	if state != "" {
 		t.Errorf("sysdbs state = %q, want empty (not bootstrapped as a file scope)", state)
+	}
+}
+
+// TestBootstrapStartUserFiresFilteredFetches: bootstrap_start_user
+// (called from replication_link_apply_keys after a per-user link
+// signup is approved) must fire (1) a file-manifest fetch with
+// prefix=<uid>/ so only that user's files come over, and (2) a
+// db-manifest fetch with user=<uid> so the source only sends back
+// that user's DB list. Apps + sysdbs must NOT be touched — those are
+// whole-server scopes that pair-join handles, not per-user link.
+func TestBootstrapStartUserFiresFilteredFetches(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var mu sync.Mutex
+	var fileReqs []struct{ peer, scope, prefix string }
+	var dbReqs []struct{ peer, scope, user string }
+	origFile := replication_bootstrap_file_manifest_fetch
+	origDB := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		fileReqs = append(fileReqs, struct{ peer, scope, prefix string }{peer, scope, prefix})
+		mu.Unlock()
+	}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
+		mu.Lock()
+		dbReqs = append(dbReqs, struct{ peer, scope, user string }{peer, scope, user})
+		mu.Unlock()
+	}
+	defer func() {
+		replication_bootstrap_file_manifest_fetch = origFile
+		replication_bootstrap_db_manifest_fetch = origDB
+	}()
+
+	bootstrap_start_user("source-peer", "alice-uid")
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileReqs) == 1 && len(dbReqs) == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fileReqs) != 1 {
+		t.Fatalf("file-manifest emit count = %d, want 1 (files only; apps is whole-server)", len(fileReqs))
+	}
+	if fileReqs[0].scope != bootstrap_scope_files {
+		t.Errorf("file-manifest scope = %q, want %q", fileReqs[0].scope, bootstrap_scope_files)
+	}
+	if fileReqs[0].prefix != "alice-uid/" {
+		t.Errorf("file-manifest prefix = %q, want %q (must be uid-scoped — never empty, that would pull every user)", fileReqs[0].prefix, "alice-uid/")
+	}
+	if len(dbReqs) != 1 {
+		t.Fatalf("db-manifest emit count = %d, want 1 (userdbs only; sysdbs is per-server)", len(dbReqs))
+	}
+	if dbReqs[0].user != "alice-uid" {
+		t.Errorf("db-manifest user filter = %q, want %q (must be set — empty filter would expose every user's DB list)", dbReqs[0].user, "alice-uid")
+	}
+	// Apps + sysdbs must remain absent from bootstrap state — they
+	// are not per-user concerns.
+	for _, scope := range []string{bootstrap_scope_apps, bootstrap_scope_sysdbs} {
+		state, _ := bootstrap_get_state(scope, "source-peer")
+		if state != "" {
+			t.Errorf("bootstrap_start_user touched scope %q (state=%q); only files + userdbs should be seeded", scope, state)
+		}
+	}
+}
+
+// TestBootstrapStartUserRejectsEmpty: defensive guard. An empty peer
+// or empty uid must not fire any fetches — both are required.
+func TestBootstrapStartUserRejectsEmpty(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	calls := 0
+	origFile := replication_bootstrap_file_manifest_fetch
+	origDB := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) { calls++ }
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) { calls++ }
+	defer func() {
+		replication_bootstrap_file_manifest_fetch = origFile
+		replication_bootstrap_db_manifest_fetch = origDB
+	}()
+
+	bootstrap_start_user("", "alice-uid")
+	bootstrap_start_user("source-peer", "")
+	// Give any stray goroutines a beat to record themselves.
+	time.Sleep(50 * time.Millisecond)
+	if calls != 0 {
+		t.Errorf("bootstrap_start_user fired fetches with empty peer/uid (%d calls); both args are required", calls)
 	}
 }
 
@@ -632,7 +726,7 @@ func TestBootstrapResume(t *testing.T) {
 		fileReqs = append(fileReqs, struct{ peer, scope string }{peer, scope})
 		mu.Unlock()
 	}
-	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
 		mu.Lock()
 		dbReqs = append(dbReqs, struct{ peer, scope string }{peer, scope})
 		mu.Unlock()
@@ -812,7 +906,7 @@ func TestBootstrapWalkDBManifest(t *testing.T) {
 	// Junk file that should be filtered:
 	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "feed", "db", "notes.txt"), []byte("x"), 0o644)
 
-	entries, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs)
+	entries, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs, "")
 	if err != nil {
 		t.Fatalf("walk userdbs: %v", err)
 	}
@@ -830,7 +924,7 @@ func TestBootstrapWalkDBManifest(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(data_dir, "db", "users.db"), []byte("x"), 0o644)
 	_ = os.WriteFile(filepath.Join(data_dir, "db", "settings.db"), []byte("x"), 0o644)
 
-	sys, err := bootstrap_walk_db_manifest(bootstrap_scope_sysdbs)
+	sys, err := bootstrap_walk_db_manifest(bootstrap_scope_sysdbs, "")
 	if err != nil {
 		t.Fatalf("walk sysdbs: %v", err)
 	}
@@ -848,8 +942,262 @@ func TestBootstrapWalkDBManifest(t *testing.T) {
 	}
 
 	// Wrong scope.
-	if _, err := bootstrap_walk_db_manifest(bootstrap_scope_files); err == nil {
+	if _, err := bootstrap_walk_db_manifest(bootstrap_scope_files, ""); err == nil {
 		t.Error("expected error for files scope on db-manifest walker")
+	}
+}
+
+// TestBootstrapWalkDBManifestUserFilter: per-user link signup passes
+// the placeholder's uid so the source returns only that user's DBs,
+// never any other user's. With the filter set to "alice" we should
+// see alice/feed/db/feed.db but not bob/chat/db/chat.db.
+func TestBootstrapWalkDBManifestUserFilter(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	_ = os.MkdirAll(filepath.Join(data_dir, "users", "alice", "feed", "db"), 0o755)
+	_ = os.MkdirAll(filepath.Join(data_dir, "users", "bob", "chat", "db"), 0o755)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "feed", "db", "feed.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "user.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "alice", "feed", "app.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "bob", "chat", "db", "chat.db"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(data_dir, "users", "bob", "user.db"), []byte("x"), 0o644)
+
+	entries, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs, "alice")
+	if err != nil {
+		t.Fatalf("walk userdbs (user=alice): %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("filtered userdbs entries = %d, want 3 (alice's user.db + feed/app.db + feed/db/feed.db only)", len(entries))
+	}
+	for _, e := range entries {
+		if e.User != "alice" {
+			t.Errorf("filtered entry leaks non-matching user: %+v", e)
+		}
+	}
+
+	// Empty filter still returns everything (pair-join behaviour).
+	all, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs, "")
+	if err != nil {
+		t.Fatalf("walk userdbs (no filter): %v", err)
+	}
+	if len(all) <= len(entries) {
+		t.Errorf("unfiltered manifest didn't include bob's DBs; got %d entries, filtered had %d", len(all), len(entries))
+	}
+
+	// Filter for a user with no on-disk dir → empty manifest, no error.
+	none, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs, "nobody")
+	if err != nil {
+		t.Fatalf("walk userdbs (user=nobody): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("filter for missing user returned %d entries, want 0", len(none))
+	}
+}
+
+// TestBootstrapSettleIncompleteWhenFailures: pending counter draining
+// to 0 with failed > 0 transitions to 'incomplete', not 'done'. The
+// failure mode this guards: the file driver decrements pending for
+// EVERY entry (success or failure) so the scope can settle, but if
+// `failed` is ignored the receiver lands on a 'done' state with data
+// gaps and silently activates a half-empty user (caught live 2026-05-20:
+// 35% of files missing while bootstrap state said 'done').
+func TestBootstrapSettleIncompleteWhenFailures(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	bootstrap_pending_add(bootstrap_scope_files, "peer-A", 3)
+	// Simulate two of the three transfers failing.
+	bootstrap_failed_increment(bootstrap_scope_files, "peer-A")
+	bootstrap_failed_increment(bootstrap_scope_files, "peer-A")
+	// Drain the pending counter all three times.
+	bootstrap_pending_decrement(bootstrap_scope_files, "peer-A")
+	bootstrap_pending_decrement(bootstrap_scope_files, "peer-A")
+	bootstrap_pending_decrement(bootstrap_scope_files, "peer-A")
+
+	state, _ := bootstrap_get_state(bootstrap_scope_files, "peer-A")
+	if state != bootstrap_state_incomplete {
+		t.Errorf("state after 3-pending / 2-failed drain = %q, want %q", state, bootstrap_state_incomplete)
+	}
+	if f := bootstrap_get_failed(bootstrap_scope_files, "peer-A"); f != 2 {
+		t.Errorf("failed counter = %d, want 2", f)
+	}
+}
+
+// TestBootstrapSettleDoneWhenZeroFailures: the happy path — pending
+// drains to zero with no failures, scope settles to 'done'.
+func TestBootstrapSettleDoneWhenZeroFailures(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	bootstrap_pending_add(bootstrap_scope_files, "peer-A", 2)
+	bootstrap_pending_decrement(bootstrap_scope_files, "peer-A")
+	bootstrap_pending_decrement(bootstrap_scope_files, "peer-A")
+
+	state, _ := bootstrap_get_state(bootstrap_scope_files, "peer-A")
+	if state != bootstrap_state_done {
+		t.Errorf("state after clean drain = %q, want %q", state, bootstrap_state_done)
+	}
+	if f := bootstrap_get_failed(bootstrap_scope_files, "peer-A"); f != 0 {
+		t.Errorf("failed counter = %d, want 0", f)
+	}
+}
+
+// TestBootstrapPeerUserResolvesByMembership: bootstrap_peer_user
+// distinguishes pair-join (peer in pair set → empty filter, whole-
+// server) from per-user link (peer in hosts → uid filter).
+func TestBootstrapPeerUserResolvesByMembership(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('pair-peer', 1, '')")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('alice-uid', 'link-peer', 1, 0)")
+
+	if got := bootstrap_peer_user("pair-peer"); got != "" {
+		t.Errorf("pair-peer must resolve to '' (whole-server); got %q", got)
+	}
+	if got := bootstrap_peer_user("link-peer"); got != "alice-uid" {
+		t.Errorf("link-peer must resolve to 'alice-uid'; got %q", got)
+	}
+	if got := bootstrap_peer_user("unknown-peer"); got != "" {
+		t.Errorf("unknown peer returns ''; got %q", got)
+	}
+}
+
+// TestBootstrapRetryIncompleteOnceRefiresAndResets: an 'incomplete'
+// row in the bootstrap table gets re-fired with reset counters and
+// the right user filter (or empty for pair).
+func TestBootstrapRetryIncompleteOnceRefiresAndResets(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('alice-uid', 'src-peer', 1, 0)")
+	// Seed two incomplete scopes: files (per-user) and userdbs (per-user).
+	rdb.exec("insert into bootstrap (scope, peer, state, position, failed) values ('files', 'src-peer', 'incomplete', '0', 5)")
+	rdb.exec("insert into bootstrap (scope, peer, state, position, failed) values ('userdbs', 'src-peer', 'incomplete', '0', 2)")
+	// A done row in the same table — must be left alone.
+	rdb.exec("insert into bootstrap (scope, peer, state, position, failed) values ('apps', 'other-peer', 'done', '', 0)")
+
+	var mu sync.Mutex
+	var fileReqs []struct{ peer, scope, prefix string }
+	var dbReqs []struct{ peer, scope, user string }
+	origFile := replication_bootstrap_file_manifest_fetch
+	origDB := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		fileReqs = append(fileReqs, struct{ peer, scope, prefix string }{peer, scope, prefix})
+		mu.Unlock()
+	}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
+		mu.Lock()
+		dbReqs = append(dbReqs, struct{ peer, scope, user string }{peer, scope, user})
+		mu.Unlock()
+	}
+	defer func() {
+		replication_bootstrap_file_manifest_fetch = origFile
+		replication_bootstrap_db_manifest_fetch = origDB
+	}()
+
+	bootstrap_retry_incomplete_once()
+
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileReqs) == 1 && len(dbReqs) == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fileReqs) != 1 {
+		t.Fatalf("retry must re-fire one file manifest for files-incomplete row; got %d", len(fileReqs))
+	}
+	if fileReqs[0].prefix != "alice-uid/" {
+		t.Errorf("retry file prefix = %q, want %q (uid-scoped because src-peer is in hosts not pair)", fileReqs[0].prefix, "alice-uid/")
+	}
+	if len(dbReqs) != 1 {
+		t.Fatalf("retry must re-fire one db manifest for userdbs-incomplete row; got %d", len(dbReqs))
+	}
+	if dbReqs[0].user != "alice-uid" {
+		t.Errorf("retry db user = %q, want %q", dbReqs[0].user, "alice-uid")
+	}
+
+	// Counters must be reset on the retried rows so the new round can
+	// repopulate them via pending_add.
+	state, _ := bootstrap_get_state(bootstrap_scope_files, "src-peer")
+	if state != bootstrap_state_queued {
+		t.Errorf("files state after retry = %q, want %q (reset)", state, bootstrap_state_queued)
+	}
+	if f := bootstrap_get_failed(bootstrap_scope_files, "src-peer"); f != 0 {
+		t.Errorf("files failed counter after retry = %d, want 0 (reset)", f)
+	}
+
+	// The unrelated done row stays as it was.
+	state, _ = bootstrap_get_state(bootstrap_scope_apps, "other-peer")
+	if state != bootstrap_state_done {
+		t.Errorf("untouched done row mutated by retry: state=%q", state)
+	}
+}
+
+// TestBootstrapDBLandClearsStaleSidecars: landing a snapshot must
+// remove the destination's stale -wal / -shm / -journal sidecars.
+// Regression for the 2026-05-21 mochi2 crash: bootstrap renamed the
+// `.db` into place but left the previous database's write-ahead log
+// next to it; the next open replayed that log against the new file
+// and SQLite raised "database disk image is malformed", which (in a
+// Starlark goroutine) killed the server.
+func TestBootstrapDBLandClearsStaleSidecars(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	dir := filepath.Join(data_dir, "users", "u-alice", "feeds", "db")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(dir, "feeds.db")
+	partial := target + ".partial"
+
+	// The destination already exists with stale sidecars from the
+	// server's prior use of that path.
+	if err := os.WriteFile(target, []byte("OLD-DB"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
+		if err := os.WriteFile(sidecar, []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The freshly-transferred snapshot.
+	if err := os.WriteFile(partial, []byte("NEW-SNAPSHOT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := bootstrap_db_land(partial, target); err != nil {
+		t.Fatalf("bootstrap_db_land: %v", err)
+	}
+
+	// The snapshot replaced the target...
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != "NEW-SNAPSHOT" {
+		t.Errorf("target content = %q, want %q", got, "NEW-SNAPSHOT")
+	}
+	// ...the partial was consumed...
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Errorf("partial %q still exists after land", partial)
+	}
+	// ...and every stale sidecar is gone.
+	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
+		if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+			t.Errorf("stale sidecar %q survived land — a fresh open would replay it and corrupt the new DB", sidecar)
+		}
 	}
 }
 

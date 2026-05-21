@@ -83,7 +83,7 @@ func setup_replication_test(t *testing.T) func() {
 	orig_db_fetch := bootstrap_db_fetch
 	orig_db_scope_driver := bootstrap_db_scope_driver
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {}
-	replication_bootstrap_db_manifest_fetch = func(peer, scope string) {}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {}
 	bootstrap_file_chunk_fetch = func(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
 		return nil, nil
 	}
@@ -129,6 +129,14 @@ func setup_users_test_schema() {
 	users.exec("create unique index users_username on users (username)")
 	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	users.exec("create index entities_user on entities(user)")
+	// Auth-factor tables — mirrors db.go's uid-keyed schema. Needed by
+	// the per-user link keys-transfer tests (auth factors travel in the
+	// payload).
+	users.exec("create table credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
+	users.exec("create table totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
 }
 
 // 50-character pseudo-entity-id used in tests where valid("entity") needs

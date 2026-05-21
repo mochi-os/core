@@ -456,7 +456,7 @@ var admin_replication_emit_pair_membership = replication_emit_pair_membership_ch
 // announces the resulting member set to every remaining member.
 // Returns (removed-peer, remaining-members, ok). ok is false when the
 // peer wasn't in the pair set. Shared by the admin HTTP handler
-// (Linux-only) and the mochi.replication.pair_remove Starlark API
+// (Linux-only) and the mochi.replication.pair.remove Starlark API
 // (cross-platform), so it lives here rather than in admin_replication.go.
 func replication_pair_remove(peer string) (string, []string, bool) {
 	rdb := db_open("db/replication.db")

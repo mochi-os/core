@@ -183,7 +183,7 @@ func admin_replication_backfill(c *gin.Context) {
 // admin_replication_progress is GET /_/admin/replication/progress.
 // Returns the per-(peer, scope) bulk-bootstrap progress as
 // {"rows": [{"peer", "scope", "state", "position"}, ...]}. Same data
-// as the mochi.replication.bootstrap_progress() Starlark API, exposed
+// as the mochi.replication.bootstrap.progress() Starlark API, exposed
 // over the admin socket for mochictl.
 //
 // Optional `peer` query parameter filters to a single peer.

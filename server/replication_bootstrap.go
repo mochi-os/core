@@ -46,7 +46,7 @@
 //     mochictl replication resync. bootstrap_resume re-fires on
 //     server start for any row not yet 'done'.
 //   - Operator visibility: mochi.replication.status() exposes
-//     aggregate bootstrap_pending; mochi.replication.bootstrap_progress()
+//     aggregate bootstrap_pending; mochi.replication.bootstrap.progress()
 //     exposes the per-(peer, scope) drill-down. The Pair page renders
 //     this; mochictl wraps the admin HTTP equivalents.
 //   - Defensive: chunks from peers not actively bootstrapping the

@@ -112,10 +112,20 @@ var bootstrap_sysdb_excluded = map[string]bool{
 }
 
 // Bootstrap state values. Mirrors replication.db.bootstrap.state.
+//
+// Lifecycle: queued → active → (done | incomplete). A scope reaches
+// 'done' only when every entry the source advertised in its manifest
+// was successfully transferred locally. If any entry failed all retries
+// the scope settles to 'incomplete' instead — bootstrap_retry_incomplete
+// keeps re-running until the gap closes. Importantly, the per-user
+// link signup flow waits for 'done' (not just 'pending counter == 0'),
+// so a user with incomplete data stays on the /login/replicating page
+// rather than landing on a half-empty dashboard.
 const (
-	bootstrap_state_queued = "queued"
-	bootstrap_state_active = "active"
-	bootstrap_state_done   = "done"
+	bootstrap_state_queued     = "queued"
+	bootstrap_state_active     = "active"
+	bootstrap_state_done       = "done"
+	bootstrap_state_incomplete = "incomplete"
 )
 
 // BootstrapFileManifestRequest is the receiver→sender request for a
@@ -197,8 +207,14 @@ type BootstrapDBFetchRequest struct {
 // the response to drive snapshot-requests for each (user, app, db)
 // triple. System DBs (`db/*.db`) are enumerated separately for the
 // sysdbs scope.
+//
+// User is the per-user filter for the per-user link signup path: when
+// set, the source only returns rows under users/<User>/ — never any
+// other user's DBs. Empty User is the whole-server case used by
+// pair-join, where the receiver is mirroring every user on the source.
 type BootstrapDBManifestRequest struct {
-	Scope string `cbor:"scope"` // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
+	Scope string `cbor:"scope"`          // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
+	User  string `cbor:"user,omitempty"` // optional per-user filter (uid)
 }
 
 // BootstrapDBManifestResult lists every DB the source has at the
@@ -277,6 +293,42 @@ func bootstrap_get_state(scope, peer string) (string, string) {
 	state, _ := row["state"].(string)
 	position, _ := row["position"].(string)
 	return state, position
+}
+
+// bootstrap_get_failed reads the recorded failed-entry count for a
+// (scope, peer) pair. Returns 0 if the row doesn't exist or the count
+// is missing.
+func bootstrap_get_failed(scope, peer string) int64 {
+	rdb := db_open("db/replication.db")
+	return int64(rdb.integer("select failed from bootstrap where scope=? and peer=?", scope, peer))
+}
+
+// bootstrap_failed_increment atomically bumps the (scope, peer) row's
+// failed counter. Called from the file + db scope drivers when a
+// transfer gives up after exhausting its retry budget. Must be paired
+// with the pending counter decrement so the scope can still settle —
+// settle path inspects `failed` and chooses 'done' vs 'incomplete'.
+//
+// Locks bootstrap_pending_lock so the failed bump + pending decrement
+// can be observed together by the settle-check.
+func bootstrap_failed_increment(scope, peer string) {
+	bootstrap_pending_lock.Lock()
+	defer bootstrap_pending_lock.Unlock()
+	rdb := db_open("db/replication.db")
+	rdb.exec(
+		"update bootstrap set failed = failed + 1 where scope=? and peer=?",
+		scope, peer)
+}
+
+// bootstrap_settled_state chooses between 'done' and 'incomplete' for
+// a scope that's reached pending==0. Pure decision function — callers
+// already hold bootstrap_pending_lock.
+func bootstrap_settled_state(scope, peer string) string {
+	rdb := db_open("db/replication.db")
+	if rdb.integer("select failed from bootstrap where scope=? and peer=?", scope, peer) > 0 {
+		return bootstrap_state_incomplete
+	}
+	return bootstrap_state_done
 }
 
 // bootstrap_clear removes the (scope, peer) row entirely. Called when
@@ -369,10 +421,18 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 	count, _ := strconv.ParseInt(positionStr, 10, 64)
 	count--
 	if count <= 0 {
-		bootstrap_set_state(scope, peer, bootstrap_state_done, "")
-		audit_replication_bootstrap_scope_done(peer, scope)
+		settled := bootstrap_settled_state(scope, peer)
+		bootstrap_set_state(scope, peer, settled, "")
+		if settled == bootstrap_state_done {
+			audit_replication_bootstrap_scope_done(peer, scope)
+		}
 		bootstrap_pending_lock.Unlock()
-		bootstrap_scope_settled(peer, scope)
+		// Only signal scope-settled hook on 'done'; 'incomplete' means
+		// the retry manager will re-fire and the receiver shouldn't
+		// announce completion to the source yet.
+		if settled == bootstrap_state_done {
+			bootstrap_scope_settled(peer, scope)
+		}
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
@@ -661,28 +721,34 @@ const bootstrap_manifest_page_size = 5000
 // page carries up to bootstrap_manifest_page_size entries; the final
 // page has Done=true.
 func replication_bootstrap_file_manifest_event(e *Event) {
-	var req BootstrapFileManifestRequest
-	if !e.segment(&req) {
-		info("Replication bootstrap-file-manifest dropping: cannot decode")
+	if e.stream == nil {
+		info("Replication bootstrap-file-manifest: no stream (queued retry?) — dropping")
 		return
 	}
-	entries, err := bootstrap_walk_manifest(req.Scope, req.Prefix)
+	// Stream-RPC payload arrives as e.content (already decoded as
+	// map[string]any by stream_receive's read_content); pull fields
+	// directly rather than calling e.segment which would EOF — only
+	// one request segment was sent on the stream.
+	scope, _ := e.content["scope"].(string)
+	prefix, _ := e.content["prefix"].(string)
+
+	entries, err := bootstrap_walk_manifest(scope, prefix)
 	if err != nil {
 		info("Replication bootstrap-file-manifest: walk failed (scope=%q prefix=%q from=%q): %v",
-			req.Scope, req.Prefix, e.peer, err)
+			scope, prefix, e.peer, err)
 		// Reply with an empty Done=true page so the receiver can
 		// transition the scope; a retried request will produce the
 		// same response and the receiver can backoff + retry if the
 		// operator fixes the underlying filesystem issue.
-		_ = e.stream.write(&BootstrapFileManifestResult{Scope: req.Scope, Prefix: req.Prefix, Done: true})
+		_ = e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true})
 		return
 	}
 	debug("Replication bootstrap-file-manifest: scope=%q prefix=%q entries=%d from=%q",
-		req.Scope, req.Prefix, len(entries), e.peer)
+		scope, prefix, len(entries), e.peer)
 	// Empty manifest is still a single page with Done=true so the
 	// receiver knows to transition the scope to 'done'.
 	if len(entries) == 0 {
-		_ = e.stream.write(&BootstrapFileManifestResult{Scope: req.Scope, Prefix: req.Prefix, Done: true})
+		_ = e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true})
 		return
 	}
 	for i := 0; i < len(entries); i += bootstrap_manifest_page_size {
@@ -692,8 +758,8 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 		}
 		done := end == len(entries)
 		if err := e.stream.write(&BootstrapFileManifestResult{
-			Scope:   req.Scope,
-			Prefix:  req.Prefix,
+			Scope:   scope,
+			Prefix:  prefix,
 			Entries: entries[i:end],
 			Done:    done,
 		}); err != nil {
@@ -854,12 +920,16 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 			// pages is already local (or nothing was needed at all).
 			settle = state != bootstrap_state_done && count == 0
 		}
+		var settledState string
 		if settle {
-			bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
-			audit_replication_bootstrap_scope_done(originPeer, res.Scope)
+			settledState = bootstrap_settled_state(res.Scope, originPeer)
+			bootstrap_set_state(res.Scope, originPeer, settledState, "")
+			if settledState == bootstrap_state_done {
+				audit_replication_bootstrap_scope_done(originPeer, res.Scope)
+			}
 		}
 		bootstrap_pending_lock.Unlock()
-		if settle {
+		if settle && settledState == bootstrap_state_done {
 			bootstrap_scope_settled(originPeer, res.Scope)
 		}
 	}
@@ -927,14 +997,16 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 				break
 			}
 		}
-		if ok {
-			bootstrap_pending_decrement(scope, peer)
-		} else {
-			// Failed file: still decrement so the scope can settle
-			// (otherwise it's stuck active forever). A re-run picks
-			// up missing files.
-			bootstrap_pending_decrement(scope, peer)
+		if !ok {
+			// Failed file: bump the failed counter so the settle path
+			// chooses 'incomplete' instead of 'done'. The pending
+			// counter still decrements below so the scope can settle
+			// — the retry manager will re-fire later, the diff will
+			// match this file as still-needed, and it gets fetched
+			// again with fresh retries.
+			bootstrap_failed_increment(scope, peer)
 		}
+		bootstrap_pending_decrement(scope, peer)
 	}
 }
 
@@ -1390,6 +1462,31 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: close partial %q: %w", partial, err)
 	}
+	return bootstrap_db_land(partial, target)
+}
+
+// bootstrap_db_land atomically installs the completed snapshot at
+// `partial` as `target`. The snapshot is a self-contained SQLite
+// online-backup output — no WAL needed. But `target` may already
+// exist with a `-wal`/`-shm` from the server's prior use of that
+// path. Renaming only the `.db` would leave the new snapshot beside
+// the OLD write-ahead log; the next connection replays a log that
+// belongs to the previous database and SQLite reports "database disk
+// image is malformed" — which, raised inside a Starlark goroutine,
+// crashed the server outright (2026-05-21). So the order is:
+//  1. evict the cached handle so the server isn't pinned to the
+//     pre-swap inode,
+//  2. drop the stale -wal/-shm/-journal sidecars,
+//  3. rename the snapshot into place.
+//
+// A fresh open then sees the snapshot with no sidecars and creates
+// its own clean WAL.
+func bootstrap_db_land(partial, target string) error {
+	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
+	db_evict_path(rel)
+	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
+		_ = os.Remove(sidecar)
+	}
 	if err := os.Rename(partial, target); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: rename %q -> %q: %w", partial, target, err)
 	}
@@ -1431,10 +1528,12 @@ func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEnt
 		if lastErr != nil {
 			info("Bootstrap db-scope driver: fetch failed after retries (scope=%q path=%q user=%q app=%q db=%q from=%q): %v",
 				scope, entry.Path, entry.User, entry.App, entry.DB, peer, lastErr)
+			// Settle path consults this counter to choose
+			// 'incomplete' instead of 'done'. Retry manager fires
+			// the manifest again later; the diff naturally picks up
+			// the still-missing DB and re-drives this loop.
+			bootstrap_failed_increment(scope, peer)
 		}
-		// Decrement whether the fetch succeeded or failed so the scope
-		// can settle to 'done'; the missing DB gets refetched on next
-		// resync.
 		bootstrap_pending_decrement(scope, peer)
 	}
 }
@@ -1476,14 +1575,103 @@ func bootstrap_resume() {
 		if peer == "" || scope == "" {
 			continue
 		}
-		switch scope {
-		case bootstrap_scope_files, bootstrap_scope_apps:
-			go replication_bootstrap_file_manifest_fetch(peer, scope, "")
-		case bootstrap_scope_userdbs, bootstrap_scope_sysdbs:
-			go replication_bootstrap_db_manifest_fetch(peer, scope)
-		}
+		uid := bootstrap_peer_user(peer)
+		bootstrap_refire_manifest(peer, scope, uid)
 	}
 	info("Replication bootstrap_resume: re-fired manifest-requests for %d non-done rows", len(rows))
+}
+
+// bootstrap_peer_user returns the user-uid filter to apply for a peer's
+// bootstrap, or empty if this is a pair-join peer (whole-server).
+// Looks up `replication.pair` first; if the peer is in the pair set
+// it's a whole-server source. Otherwise checks `replication.hosts` for
+// the per-user link case where one user has this peer in their host
+// set. Returns "" if peer is in neither table (orphan row — caller
+// treats as whole-server, which is a no-op since the peer won't reply).
+func bootstrap_peer_user(peer string) string {
+	if peer == "" {
+		return ""
+	}
+	rdb := db_open("db/replication.db")
+	if isPair, _ := rdb.exists("select 1 from pair where peer=?", peer); isPair {
+		return ""
+	}
+	row, _ := rdb.row("select user from hosts where peer=? order by added asc limit 1", peer)
+	if row == nil {
+		return ""
+	}
+	uid, _ := row["user"].(string)
+	return uid
+}
+
+// bootstrap_refire_manifest re-fires the appropriate manifest fetch for
+// (scope, peer) with the per-user filter set when applicable. Shared by
+// bootstrap_resume (server start, picks up where a crash left off) and
+// bootstrap_retry_incomplete (recurring drain of failed transfers).
+func bootstrap_refire_manifest(peer, scope, uid string) {
+	switch scope {
+	case bootstrap_scope_files:
+		prefix := ""
+		if uid != "" {
+			prefix = uid + "/"
+		}
+		go replication_bootstrap_file_manifest_fetch(peer, scope, prefix)
+	case bootstrap_scope_apps:
+		// apps is whole-server only — per-user link doesn't subscribe to it.
+		go replication_bootstrap_file_manifest_fetch(peer, scope, "")
+	case bootstrap_scope_userdbs:
+		go replication_bootstrap_db_manifest_fetch(peer, scope, uid)
+	case bootstrap_scope_sysdbs:
+		// sysdbs is whole-server only — per-user link doesn't include
+		// it (sessions/login/etc. are server-local).
+		go replication_bootstrap_db_manifest_fetch(peer, scope, "")
+	}
+}
+
+// bootstrap_retry_incomplete_manager runs forever, periodically draining
+// any (scope, peer) row that settled to 'incomplete' (every entry was
+// attempted but some failed). Resets the row's counters and re-fires the
+// manifest; the diff naturally picks up still-missing files/DBs and
+// re-drives the scope driver. Loops at bootstrap_retry_interval until
+// the operator removes the row via mochictl OR every entry transfers
+// successfully on a subsequent attempt.
+//
+// Per-user link signup blocks the user on /login/replicating until
+// the scope reaches 'done' (see bootstrap_wait_then_activate), so this
+// manager is what eventually lets a user with a flaky network land on
+// a complete dashboard instead of a half-empty one.
+const bootstrap_retry_interval = 30 * time.Second
+
+func bootstrap_retry_incomplete_manager() {
+	for {
+		time.Sleep(bootstrap_retry_interval)
+		bootstrap_retry_incomplete_once()
+	}
+}
+
+// bootstrap_retry_incomplete_once does one pass: read every 'incomplete'
+// row, reset its counters, re-fire the manifest. Pulled out so tests
+// can drive a single iteration without spinning the manager loop.
+func bootstrap_retry_incomplete_once() {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, scope from bootstrap where state=?", bootstrap_state_incomplete)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		scope, _ := r["scope"].(string)
+		if peer == "" || scope == "" {
+			continue
+		}
+		// Reset the counters so the new manifest pass starts fresh —
+		// pending_add will re-bump position as each page lands and the
+		// driver decrements as files transfer.
+		rdb.exec("update bootstrap set state='queued', position='', failed=0 where scope=? and peer=?", scope, peer)
+		uid := bootstrap_peer_user(peer)
+		debug("Replication bootstrap-retry: scope=%q peer=%q uid=%q re-firing manifest", scope, peer, uid)
+		bootstrap_refire_manifest(peer, scope, uid)
+	}
 }
 
 // bootstrap_start kicks off a whole-replica bootstrap from `peer`.
@@ -1515,7 +1703,42 @@ func bootstrap_start(peer string) {
 		go replication_bootstrap_file_manifest_fetch(peer, scope, "")
 	}
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
-	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs)
+	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, "")
+	audit_replication_bootstrap_started(peer)
+}
+
+// bootstrap_start_user is the per-user link signup analogue of
+// bootstrap_start: it pulls *only* one user's data from `peer`,
+// suitable for the case where this server has accepted hosting a
+// single user (not joined a whole-server pair).
+//
+// Scopes used:
+//   - files:   prefix = "<uid>/" so the file walk is rooted at
+//     users/<uid>/ on the source and only that user's uploads / blobs
+//     come over.
+//   - userdbs: with the User filter set so the manifest only lists
+//     DBs under users/<uid>/.
+//
+// Skipped vs bootstrap_start:
+//   - apps: whole-server, handled by the destination's own
+//     apps_default install at boot (this peer's catalogue is
+//     independent of which users are hosted here).
+//   - sysdbs: not transferred by pair-join either; per-server.
+//
+// State is recorded under the same (scope, peer) keys as pair-join.
+// In the current model a peer is either a pair member or a per-user
+// link source, not both, so the keys don't collide.
+//
+// Fully asynchronous: returns immediately after firing the entry-point
+// goroutines.
+func bootstrap_start_user(peer, uid string) {
+	if peer == "" || uid == "" {
+		return
+	}
+	bootstrap_set_state(bootstrap_scope_files, peer, bootstrap_state_queued, "")
+	go replication_bootstrap_file_manifest_fetch(peer, bootstrap_scope_files, uid+"/")
+	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
+	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, uid)
 	audit_replication_bootstrap_started(peer)
 }
 
@@ -1532,7 +1755,19 @@ func bootstrap_start(peer string) {
 // Only files matching bootstrap_db_basename_safe are included — junk
 // files in the db dir are ignored. Symlinks and non-regular entries
 // are skipped on the same principle as the file-tree walker.
-func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
+// bootstrap_walk_db_manifest enumerates every DB the source has for
+// the requested scope, optionally filtered to a single user (uid).
+//
+// userFilter:
+//   - empty string → return every user's DBs (pair-join's whole-server
+//     mirror).
+//   - non-empty → return only DBs under users/<userFilter>/. Used by the
+//     per-user link signup path so a peer that hosts one user's data
+//     never sees another user's DB list.
+//
+// userFilter is ignored when scope == bootstrap_scope_sysdbs (sysdbs
+// aren't per-user, and a filtered sysdb request is meaningless).
+func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, error) {
 	var entries []BootstrapDBEntry
 	switch scope {
 	case bootstrap_scope_userdbs:
@@ -1549,6 +1784,9 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 				continue
 			}
 			user := u.Name()
+			if userFilter != "" && user != userFilter {
+				continue
+			}
 			userDir := filepath.Join(usersRoot, user)
 			// Per-user infrastructure DBs at the user root
 			// (users/<u>/*.db — e.g. user.db).
@@ -1659,7 +1897,11 @@ func bootstrap_walk_db_manifest(scope string) ([]BootstrapDBEntry, error) {
 // Package-level alias so tests can stub the network call.
 var replication_bootstrap_db_manifest_fetch = replication_bootstrap_db_manifest_fetch_impl
 
-func replication_bootstrap_db_manifest_fetch_impl(peer, scope string) {
+// replication_bootstrap_db_manifest_fetch_impl opens a stream to peer
+// and asks for the DB manifest for `scope`. `user` is the optional
+// per-user filter — empty for pair-join (every user), non-empty for
+// per-user link signup (only that uid's DBs).
+func replication_bootstrap_db_manifest_fetch_impl(peer, scope, user string) {
 	if peer == "" {
 		return
 	}
@@ -1670,7 +1912,7 @@ func replication_bootstrap_db_manifest_fetch_impl(peer, scope string) {
 	}
 	defer s.close()
 
-	if err := s.write(&BootstrapDBManifestRequest{Scope: scope}); err != nil {
+	if err := s.write(&BootstrapDBManifestRequest{Scope: scope, User: user}); err != nil {
 		info("Replication bootstrap-db-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
 		return
 	}
@@ -1687,21 +1929,26 @@ func replication_bootstrap_db_manifest_fetch_impl(peer, scope string) {
 // handler. Reads the request, walks the appropriate root, writes the
 // response back on the same stream.
 func replication_bootstrap_db_manifest_event(e *Event) {
-	var req BootstrapDBManifestRequest
-	if !e.segment(&req) {
-		info("Replication bootstrap-db-manifest dropping: cannot decode")
+	if e.stream == nil {
+		info("Replication bootstrap-db-manifest: no stream (queued retry?) — dropping")
 		return
 	}
-	entries, err := bootstrap_walk_db_manifest(req.Scope)
+	// Stream-RPC payload arrives as e.content (same pattern as the
+	// file manifest + chunk-fetch handlers — calling e.segment here
+	// would EOF because only one request segment was written).
+	scope, _ := e.content["scope"].(string)
+	user, _ := e.content["user"].(string)
+
+	entries, err := bootstrap_walk_db_manifest(scope, user)
 	if err != nil {
-		info("Replication bootstrap-db-manifest: walk failed (scope=%q from=%q): %v",
-			req.Scope, e.peer, err)
-		_ = e.stream.write(&BootstrapDBManifestResult{Scope: req.Scope})
+		info("Replication bootstrap-db-manifest: walk failed (scope=%q user=%q from=%q): %v",
+			scope, user, e.peer, err)
+		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope})
 		return
 	}
-	debug("Replication bootstrap-db-manifest: scope=%q entries=%d from=%q",
-		req.Scope, len(entries), e.peer)
-	_ = e.stream.write(&BootstrapDBManifestResult{Scope: req.Scope, Entries: entries})
+	debug("Replication bootstrap-db-manifest: scope=%q user=%q entries=%d from=%q",
+		scope, user, len(entries), e.peer)
+	_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
 }
 
 // replication_bootstrap_db_manifest_result_apply seeds the pending-DB

@@ -284,6 +284,18 @@ func app_user_setup(u *User, app_id string) {
 		return
 	}
 
+	// Skip while the user's per-user DBs are still being bootstrapped
+	// from another host. db_user(u, "user") below opens user.db, and
+	// during a per-user replication backfill that file is being
+	// rename(2)-swapped underneath us — opening it mid-swap raised
+	// "database disk image is malformed" and crashed the server
+	// (2026-05-21). Setup re-runs harmlessly once the user flips to
+	// active: the `setup != expected` check makes the next call a
+	// real setup pass.
+	if u.Status == "pending-replication" {
+		return
+	}
+
 	db := db_user(u, "user")
 	db.apps_setup()
 

@@ -27,6 +27,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 // LinkRequest is the wire payload for an inbound per-user replication
@@ -197,15 +198,18 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 
 	udb := db_open("db/users.db")
 
-	// Reconcile the placeholder with the source's canonical username.
-	// Per the replicated-column policy (users.db — beyond entities in
-	// the plan), per-user replication keeps username server-local;
-	// the placeholder retains whatever the user chose on B at signup,
-	// and the source's username is ignored.
-	if _, err := udb.internal.Exec("update users set status='active' where uid=?", placeholder); err != nil {
-		warn("Replication link-approved: failed to flip placeholder %q to active: %v", placeholder, err)
-		return 0
-	}
+	// IMPORTANT: do NOT flip status='active' here. The placeholder
+	// stays in 'pending-replication' until the file + userdbs scopes
+	// of bootstrap_start_user complete (see bootstrap_wait_then_activate
+	// below). If we activated immediately, the user lands on their
+	// dashboard while bulk-bootstrap is still rename(2)-ing DBs out
+	// from under any web request that's already opened them — caught
+	// live on 2026-05-20 as a "sqlite3: database disk image is
+	// malformed" panic on user.db plus a feeds.db that ended at 221 KB
+	// instead of the source's 1 GB (the running feeds handler's fd was
+	// pinned to the pre-snapshot inode). Deferring activation lets
+	// /login/replicating's poll continue showing "waiting" until the
+	// backfill is on disk, then bounces the user to a working dashboard.
 
 	inserted := 0
 	for _, ent := range kt.Entities {
@@ -221,6 +225,15 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 		inserted++
 	}
 
+	replication_link_apply_extras(udb, placeholder, kt)
+
+	// Mirror the source's auth-method list so the login UI offers the
+	// factors we just imported (passkey / oauth / totp). The placeholder
+	// was created with the default methods='email'.
+	if kt.Methods != "" {
+		udb.exec("update users set methods=? where uid=?", kt.Methods, placeholder)
+	}
+
 	// Add the source peer to this user's per-user host set so future
 	// ops fan out to it. The membership-change op the source emits
 	// at Approve time will eventually reconcile, but we record the
@@ -230,9 +243,209 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 		"insert or replace into hosts (user, peer, added, ack) values (?, ?, ?, 0)",
 		placeholder, originPeer, now())
 
+	// Backfill this user's existing data from the source. Without
+	// this the placeholder would have the schema in place (via lazy
+	// database_upgrade on first request) but zero rows — only writes
+	// that happen *after* the link is approved would ever reach us
+	// via the now-correct hosts fan-out. The user would land on their
+	// dashboard with no posts, no notifications, no preferences, no
+	// attachments.
+	//
+	// bootstrap_start_user is fully async; it returns immediately and
+	// the file + db manifest fetches run in goroutines.
+	bootstrap_start_user(originPeer, placeholder)
+
+	// Background waiter that flips status='active' once the bootstrap
+	// scopes settle. Until then the placeholder stays pending-replication
+	// and /login/replicating's polling keeps the user on the waiting page.
+	go bootstrap_wait_then_activate(originPeer, placeholder)
+
 	debug("Replication link-approved applied: placeholder=%q peer=%q username=%q entities=%d",
 		placeholder, originPeer, kt.Username, inserted)
 	return inserted
+}
+
+// replication_link_apply_extras writes the keys-transfer payload that
+// isn't entities — auth factors (into users.db) and scheduled events
+// (into schedule.db) — re-keyed to the placeholder uid. The mirror of
+// replication_link_collect_extras on the source.
+//
+// Every insert is idempotent: replication_link_apply_keys is not
+// exactly-once (a retried link-approved op re-runs it), so OAuth /
+// credentials / tokens use INSERT OR IGNORE on their cross-host-stable
+// keys, recovery codes are checked by (user, hash) since their PK is a
+// local autoincrement, TOTP is INSERT OR REPLACE (one row per user),
+// and scheduled events dedup on (user, app, event, created). Bool
+// fields are passed straight through — the SQLite driver stores Go
+// bools as 0/1 (same as the passkey-registration path).
+func replication_link_apply_extras(udb *DB, placeholder string, kt *KeysTransfer) {
+	for _, o := range kt.OAuth {
+		udb.exec(
+			"insert or ignore into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
+			placeholder, o.Provider, o.Subject, o.Email, o.Verified, o.Name, o.Created)
+	}
+	for _, c := range kt.Credentials {
+		udb.exec(
+			"insert or ignore into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			c.ID, placeholder, c.PublicKey, c.SignCount, c.Name, c.Transports, c.BackupEligible, c.BackupState, c.Created)
+	}
+	for _, r := range kt.Recovery {
+		if exists, _ := udb.exists("select 1 from recovery where user=? and hash=?", placeholder, r.Hash); !exists {
+			udb.exec("insert into recovery (user, hash, created) values (?, ?, ?)", placeholder, r.Hash, r.Created)
+		}
+	}
+	for _, tok := range kt.Tokens {
+		udb.exec(
+			"insert or ignore into tokens (hash, user, app, name, scopes, created, expires) values (?, ?, ?, ?, ?, ?, ?)",
+			tok.Hash, placeholder, tok.App, tok.Name, tok.Scopes, tok.Created, tok.Expires)
+	}
+	if kt.Totp != nil {
+		udb.exec(
+			"insert or replace into totp (user, secret, verified, created) values (?, ?, ?, ?)",
+			placeholder, kt.Totp.Secret, kt.Totp.Verified, kt.Totp.Created)
+	}
+
+	// Scheduled events go into db/schedule.db. The PK is a local
+	// autoincrement; dedup on (user, app, event, created) so a
+	// re-applied keys-transfer doesn't double-insert.
+	sdb := schedule_db()
+	for _, s := range kt.Schedule {
+		exists, _ := sdb.exists(
+			"select 1 from schedule where user=? and app=? and event=? and created=?",
+			placeholder, s.App, s.Event, s.Created)
+		if exists {
+			continue
+		}
+		sdb.exec(
+			"insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+			placeholder, s.App, s.Due, s.Event, s.Data, s.Interval, s.Created)
+	}
+}
+
+// bootstrap_wait_then_activate polls the bootstrap state until the
+// `files` and `userdbs` scopes for `peer` both reach state='done',
+// then flips the placeholder user from `pending-replication` to
+// `active`. Designed to run in a goroutine spawned by apply_keys (or
+// by the startup re-spawn that recovers from a mid-bootstrap crash).
+//
+// Behaviour notes:
+//   - Idempotent: the final UPDATE is gated on the current status, so
+//     a second waiter (re-spawn after restart) is a no-op once active.
+//   - Bounded: gives up after bootstrap_wait_timeout and leaves the
+//     placeholder as pending-replication. The user can cancel via
+//     /login/replicating's Cancel button, or the bootstrap_resume on
+//     next start will re-fire the manifest and a fresh waiter.
+//   - Single-target: a per-user link by definition has exactly one
+//     source peer, so we don't need to coordinate across multiple
+//     peers' scope state — only this one.
+var bootstrap_wait_then_activate = bootstrap_wait_then_activate_impl
+
+const (
+	bootstrap_wait_poll_interval = 2 * time.Second
+	bootstrap_wait_timeout       = 60 * time.Minute
+)
+
+func bootstrap_wait_then_activate_impl(peer, uid string) {
+	if peer == "" || uid == "" {
+		return
+	}
+	deadline := time.Now().Add(bootstrap_wait_timeout)
+	for time.Now().Before(deadline) {
+		filesState, _ := bootstrap_get_state(bootstrap_scope_files, peer)
+		userdbsState, _ := bootstrap_get_state(bootstrap_scope_userdbs, peer)
+		if filesState == bootstrap_state_done && userdbsState == bootstrap_state_done {
+			// The userdbs bootstrap copied user.db wholesale, including
+			// the user's per-device push subscriptions. Those are
+			// host-local by design (accounts.go keeps browser/
+			// unifiedpush/fcm rows out of the ongoing-ops fan-out —
+			// "each browser/phone registers its own push endpoint per
+			// host"). Prune them now, before the user goes active, so
+			// this host doesn't push to endpoints that belong to a
+			// browser/phone paired with the source.
+			replication_link_prune_devices(uid)
+
+			udb := db_open("db/users.db")
+			res, err := udb.internal.Exec(
+				"update users set status='active' where uid=? and status='pending-replication'",
+				uid)
+			if err != nil {
+				warn("Replication bootstrap-wait: failed to flip placeholder %q to active: %v", uid, err)
+				return
+			}
+			affected, _ := res.RowsAffected()
+			if affected > 0 {
+				info("Replication bootstrap-wait: placeholder %q activated after bootstrap from peer %q", uid, peer)
+			}
+			return
+		}
+		time.Sleep(bootstrap_wait_poll_interval)
+	}
+	info("Replication bootstrap-wait: gave up after %v on placeholder=%q peer=%q (files=%q userdbs=%q)",
+		bootstrap_wait_timeout, uid, peer,
+		bootstrapStateOrEmpty(bootstrap_scope_files, peer),
+		bootstrapStateOrEmpty(bootstrap_scope_userdbs, peer))
+}
+
+// replication_link_prune_devices deletes per-device push subscriptions
+// (browser / unifiedpush / fcm) from the linked user's user.db.accounts
+// table. These travel into the replica only because the userdbs
+// bootstrap copies user.db wholesale; the ongoing-ops path deliberately
+// excludes them (accounts.go) because a push endpoint is registered by
+// a specific browser/phone against a specific host. Leaving the
+// source's endpoints on the replica would make this host push to
+// devices it has no relationship with — double notifications at best.
+// Non-device account types (email, AI services, MCP) are host-shared
+// and correctly kept.
+func replication_link_prune_devices(uid string) {
+	udb := db_user(&User{UID: uid}, "user")
+	udb.exec("delete from accounts where type in ('browser', 'unifiedpush', 'fcm')")
+}
+
+func bootstrapStateOrEmpty(scope, peer string) string {
+	s, _ := bootstrap_get_state(scope, peer)
+	return s
+}
+
+// replication_link_resume_pending_activations re-spawns the wait-then-
+// activate goroutine for every pending-replication placeholder still
+// on disk. Called from server startup so a crash or restart mid-
+// bootstrap doesn't strand the user — the bootstrap itself resumes via
+// bootstrap_resume; this paired routine ensures the activation flip
+// still happens once the resumed bootstrap settles.
+//
+// Source-peer discovery: per-user link signup writes the source peer
+// to replication.db.hosts at apply_keys time, so we read the host
+// list for each pending-replication user and pick the first peer.
+// A placeholder with multiple hosts predates the activation flip so
+// using "first" is fine — there's no fan-out yet.
+func replication_link_resume_pending_activations() {
+	udb := db_open("db/users.db")
+	users, err := udb.rows("select uid from users where status='pending-replication'")
+	if err != nil {
+		info("Replication link resume: failed to read pending-replication users: %v", err)
+		return
+	}
+	if len(users) == 0 {
+		return
+	}
+	rdb := db_open("db/replication.db")
+	for _, u := range users {
+		uid, _ := u["uid"].(string)
+		if uid == "" {
+			continue
+		}
+		hostRows, err := rdb.rows("select peer from hosts where user=? order by added asc limit 1", uid)
+		if err != nil || len(hostRows) == 0 {
+			info("Replication link resume: pending-replication user %q has no host — skipping", uid)
+			continue
+		}
+		peer, _ := hostRows[0]["peer"].(string)
+		if peer == "" {
+			continue
+		}
+		debug("Replication link resume: re-spawning wait-then-activate for placeholder=%q peer=%q", uid, peer)
+		go bootstrap_wait_then_activate(peer, uid)
+	}
 }
 
 // replication_link_denied_event is B's receive handler. Decodes the
@@ -579,6 +792,7 @@ func replication_link_approve(user, peer string) (string, error) {
 		// Role intentionally omitted — server-local per the plan.
 		Entities: keysEntities,
 	}
+	replication_link_collect_extras(udb, user, keys)
 
 	replication_emit_link_approved(peer, placeholder, keys)
 	audit_replication_link_approved(user, peer)
@@ -600,6 +814,98 @@ func replication_link_approve(user, peer string) (string, error) {
 	replication_membership_update(user, current)
 
 	return "approved", nil
+}
+
+// replication_link_collect_extras fills the non-entity fields of `keys`
+// from the source for `uid`: OAuth provider links, passkey credentials,
+// recovery codes, API tokens, the TOTP secret (all from users.db), and
+// scheduled events (from schedule.db).
+//
+// Whole-server pair replication gets the users.db rows for free via the
+// bootstrap snapshot. Per-user link has no such snapshot — only this
+// user moves to the replica, the rest of users.db stays on the source
+// — so the keys-transfer payload must carry them explicitly. Without
+// this the user reaches the replica with username + entities only:
+// their OAuth links, recovery codes, passkeys, TOTP and scheduled
+// events all silently absent, leaving a fresh email code as the one
+// usable login method.
+func replication_link_collect_extras(udb *DB, uid string, keys *KeysTransfer) {
+	if oauth, err := udb.rows("select provider, subject, email, verified, name, created from oauth where user=?", uid); err == nil {
+		for _, r := range oauth {
+			keys.OAuth = append(keys.OAuth, KeysOauth{
+				Provider: row_string(r, "provider"),
+				Subject:  row_string(r, "subject"),
+				Email:    row_string(r, "email"),
+				Verified: row_int(r, "verified") != 0,
+				Name:     row_string(r, "name"),
+				Created:  row_int(r, "created"),
+			})
+		}
+	}
+
+	if creds, err := udb.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", uid); err == nil {
+		for _, r := range creds {
+			id, _ := r["id"].([]byte)
+			pk, _ := r["public_key"].([]byte)
+			keys.Credentials = append(keys.Credentials, KeysCredential{
+				ID:             id,
+				PublicKey:      pk,
+				SignCount:      row_int(r, "sign_count"),
+				Name:           row_string(r, "name"),
+				Transports:     row_string(r, "transports"),
+				BackupEligible: row_int(r, "backup_eligible") != 0,
+				BackupState:    row_int(r, "backup_state") != 0,
+				Created:        row_int(r, "created"),
+			})
+		}
+	}
+
+	if recovery, err := udb.rows("select hash, created from recovery where user=?", uid); err == nil {
+		for _, r := range recovery {
+			keys.Recovery = append(keys.Recovery, KeysRecovery{
+				Hash:    row_string(r, "hash"),
+				Created: row_int(r, "created"),
+			})
+		}
+	}
+
+	if tokens, err := udb.rows("select hash, app, name, scopes, created, expires from tokens where user=?", uid); err == nil {
+		for _, r := range tokens {
+			keys.Tokens = append(keys.Tokens, KeysToken{
+				Hash:    row_string(r, "hash"),
+				App:     row_string(r, "app"),
+				Name:    row_string(r, "name"),
+				Scopes:  row_string(r, "scopes"),
+				Created: row_int(r, "created"),
+				Expires: row_int(r, "expires"),
+			})
+		}
+	}
+
+	if totp, _ := udb.row("select secret, verified, created from totp where user=?", uid); totp != nil {
+		keys.Totp = &KeysTotp{
+			Secret:   row_string(totp, "secret"),
+			Verified: row_int(totp, "verified") != 0,
+			Created:  row_int(totp, "created"),
+		}
+	}
+
+	// Scheduled events live in db/schedule.db (a system DB, not in any
+	// per-user bootstrap scope), so per-user link must carry them in
+	// the payload or the user's reminders / recurring jobs are left
+	// behind on the source.
+	if sched, err := schedule_db().rows("select app, due, event, data, interval, created from schedule where user=?", uid); err == nil {
+		for _, r := range sched {
+			keys.Schedule = append(keys.Schedule, KeysSchedule{
+				App:      row_string(r, "app"),
+				Due:      row_int(r, "due"),
+				Event:    row_string(r, "event"),
+				Data:     row_string(r, "data"),
+				Interval: row_int(r, "interval"),
+				Created:  row_int(r, "created"),
+			})
+		}
+	}
 }
 
 // replication_link_deny is called from the Deny handler on A's settings

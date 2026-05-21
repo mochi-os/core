@@ -4,6 +4,8 @@
 package main
 
 import (
+	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -126,6 +128,25 @@ type KeysTransfer struct {
 	Recovery    []KeysRecovery   `cbor:"recovery,omitempty"`
 	Tokens      []KeysToken      `cbor:"tokens,omitempty"`
 	Totp        *KeysTotp        `cbor:"totp,omitempty"`
+	// Scheduled events the user owns (db/schedule.db rows). Per-user
+	// link otherwise leaves them on the source — lost if the source is
+	// later dropped, and never present on the replica. Carried here so
+	// the replica has them too. Note: once an event exists on >1 host,
+	// its callback must be mochi.schedule.leader-gated to fire once.
+	Schedule []KeysSchedule `cbor:"schedule,omitempty"`
+}
+
+// KeysSchedule is one scheduled event for the user. Mirrors
+// db/schedule.db.schedule minus the per-host autoincrement PK (the
+// receiver re-allocates it). The cross-host identity for idempotent
+// re-apply is (user, app, event, created).
+type KeysSchedule struct {
+	App      string `cbor:"app"`
+	Due      int64  `cbor:"due"`
+	Event    string `cbor:"event"`
+	Data     string `cbor:"data,omitempty"`
+	Interval int64  `cbor:"interval,omitempty"`
+	Created  int64  `cbor:"created"`
 }
 
 // KeysOauth is one OAuth provider link inside a KeysTransfer payload.
@@ -478,6 +499,74 @@ func web_replication_health(c *gin.Context) {
 	out["leases_held"] = db.integer("select count(*) from leadership where peer=? and expires > ?", p2p_id, now())
 
 	c.JSON(200, out)
+}
+
+// web_replication_progress reports the current bootstrap progress for
+// the authenticated user. Used by /login/replicating to display "still
+// syncing files (264 left)" instead of "Waiting for approval" once the
+// approval has actually landed and bulk-transfer is underway.
+//
+// Response shape:
+//
+//	{
+//	  "user": { "status": "pending-replication" | "active" },
+//	  "approved": true|false,
+//	  "scopes": [
+//	    { "scope": "files",   "state": "...", "remaining": N, "failed": M },
+//	    { "scope": "userdbs", "state": "...", "remaining": N, "failed": M }
+//	  ]
+//	}
+//
+// `approved` is true once the source has approved the link — detected
+// by the presence of a replication.db.hosts row, which apply_keys
+// inserts at approval time. It's the clean signal /login/replicating
+// uses to switch from "Waiting for approval" to "Syncing your data",
+// independent of how far the individual scopes have progressed (a
+// freshly-approved link sits briefly in scope state 'queued', which
+// must still read as "approved, syncing").
+//
+// Only the scopes relevant to this user's link (files + userdbs) are
+// returned — apps/sysdbs are whole-server concerns and aren't part of
+// the per-user activation gate.
+func web_replication_progress(c *gin.Context) {
+	u := web_auth(c)
+	if u == nil {
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
+		return
+	}
+	rdb := db_open("db/replication.db")
+	// Find the source peer for this user. If the user has no hosts row,
+	// they're either a regular local user (post-replication or never
+	// replicated) or the placeholder was just created and apply_keys
+	// hasn't inserted the host row yet — report empty scopes so the
+	// page still polls.
+	peer := ""
+	if row, _ := rdb.row("select peer from hosts where user=? order by added asc limit 1", u.UID); row != nil {
+		peer, _ = row["peer"].(string)
+	}
+	scopes := []gin.H{}
+	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_userdbs} {
+		entry := gin.H{"scope": scope, "state": "", "remaining": 0, "failed": 0}
+		if peer != "" {
+			row, _ := rdb.row("select state, position, failed from bootstrap where scope=? and peer=?", scope, peer)
+			if row != nil {
+				state, _ := row["state"].(string)
+				entry["state"] = state
+				positionStr, _ := row["position"].(string)
+				if positionStr != "" {
+					remaining, _ := strconv.ParseInt(positionStr, 10, 64)
+					entry["remaining"] = remaining
+				}
+				entry["failed"] = row["failed"]
+			}
+		}
+		scopes = append(scopes, entry)
+	}
+	c.JSON(200, gin.H{
+		"user":     gin.H{"status": u.Status},
+		"approved": peer != "",
+		"scopes":   scopes,
+	})
 }
 
 // replication_manager drives the periodic pending-buffer drain.

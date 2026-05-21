@@ -1097,16 +1097,15 @@ func apps_path_delete(path string) {
 	replication_emit_system_set("apps", "paths", path, "app", "")
 }
 
-// apps_record records an app installation timestamp (only if not already
-// recorded). Emits system-set so pair members converge on the install
-// registry. No-op when the row already exists.
+// apps_record stamps an app's install timestamp and emits a system-set
+// op so pair members can pull the same code from the publisher. Always
+// writes (REPLACE INTO) and always emits — re-installs after an
+// upgrade need to re-broadcast the timestamp so the receiver-side
+// apply handler fires app_check_install for the new version.
 func apps_record(app string) {
 	db := db_apps()
-	if has, _ := db.exists("select 1 from apps where app=?", app); has {
-		return
-	}
 	ts := now()
-	db.exec("insert into apps (app, installed) values (?, ?)", app, ts)
+	db.exec("replace into apps (app, installed) values (?, ?)", app, ts)
 	replication_emit_system_set("apps", "apps", app, "installed", fmt.Sprintf("%d", ts))
 }
 

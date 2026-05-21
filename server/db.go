@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	schema_version = 63
+	schema_version = 64
 )
 
 var (
@@ -303,7 +303,7 @@ func db_create() {
 	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index leadership_expires on leadership(expires)")
 	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
-	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', primary key (scope, peer))")
+	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, primary key (scope, peer))")
 	// bootstrap_served: source-side tracking of scopes we're currently
 	// serving to each joined peer. Inserted on join approval (one row
 	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
@@ -672,6 +672,8 @@ func db_upgrade() {
 			db_upgrade_62()
 		case 63:
 			db_upgrade_63()
+		case 64:
+			db_upgrade_64()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -858,6 +860,23 @@ func db_upgrade_63() {
 	r := db_open("db/replication.db")
 	if has, _ := r.exists("select 1 from sqlite_master where type='table' and name='bootstrap_served'"); !has {
 		r.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
+	}
+}
+
+// db_upgrade_64 adds a `failed` counter to the bootstrap table so the
+// state machine can distinguish "every entry was attempted" from "every
+// entry was successfully transferred". Before this column, the file
+// scope driver decremented the pending counter on both success AND
+// failure so the scope could settle to 'done' even with chunks missing;
+// the receiving user landed on their dashboard with silently incomplete
+// data (caught live during Stage 17 per-user link signup: ~900 MB / 35%
+// of files absent on mochi2 while bootstrap state said 'done'). Now we
+// settle to a new 'incomplete' state instead, and a background retry
+// manager drains the failures until 'done' is reachable.
+func db_upgrade_64() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='failed'"); !has {
+		r.exec("alter table bootstrap add column failed integer not null default 0")
 	}
 }
 
@@ -1423,7 +1442,7 @@ func db_upgrade_50() {
 		replication.exec("create index leadership_expires on leadership(expires)")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='bootstrap'"); !exists {
-		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', primary key (scope, peer))")
+		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, primary key (scope, peer))")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='schemas'"); !exists {
 		replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
@@ -1455,6 +1474,31 @@ func db_purge_prefix(dir string) {
 	for _, h := range closers {
 		h.Close()
 	}
+}
+
+// db_evict_path closes and evicts the single cached DB at `relpath`
+// (relative to data_dir). Use it before rename(2)-replacing a DB file
+// out from under the server — e.g. when bootstrap lands a snapshot —
+// so the next db_open picks up the fresh inode instead of a handle
+// pinned to the now-unlinked original. Returns true if a handle was
+// actually evicted. No-op if the path isn't cached.
+func db_evict_path(relpath string) bool {
+	full := filepath.Join(data_dir, relpath)
+	var closers []*sqlx.DB
+	databases_lock.Lock()
+	for key, db := range databases {
+		if db.path == full {
+			closers = append(closers, db.internal, db.starlark)
+			delete(databases, key)
+		}
+	}
+	databases_lock.Unlock()
+	for _, h := range closers {
+		if h != nil {
+			h.Close()
+		}
+	}
+	return len(closers) > 0
 }
 
 func (db *DB) exec(query string, values ...any) {

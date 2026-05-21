@@ -125,7 +125,11 @@ func replication_system_set_apply_apps_two_col(originPeer string, s *SystemSet) 
 }
 
 // replication_system_set_apply_apps_installs handles apps.db.apps —
-// the install registry. Value carries the install timestamp.
+// the install registry. Value carries the install timestamp. A bump
+// (re-broadcast of a newer timestamp) means the source just installed
+// or upgraded the app; the receiver needs the matching code on disk
+// to keep the pair in sync, so app_check_install runs async to pull
+// the latest version from the publisher.
 func replication_system_set_apply_apps_installs(originPeer string, s *SystemSet) {
 	if s.Field != "installed" {
 		info("Replication system-set apps.apps: unsupported field %q (from peer %q)", s.Field, originPeer)
@@ -144,6 +148,9 @@ func replication_system_set_apply_apps_installs(originPeer string, s *SystemSet)
 	}
 	debug("Replication system-set apps.apps applied: app=%q value=%q (from %q)",
 		s.Row, s.Value, originPeer)
+	if s.Value != "" && valid(s.Row, "entity") {
+		go app_check_install(s.Row)
+	}
 }
 
 // replication_emit_system_set is the package-level emit function
@@ -335,7 +342,11 @@ func replication_system_row_apply_apps_versions(originPeer string, s *SystemRow)
 }
 
 // replication_system_row_apply_apps_tracks handles apps.db.tracks —
-// composite key (app, track), single data column (version).
+// composite key (app, track), single data column (version). Operator
+// pinning a track to a new version means the source has (or wants)
+// that version locally; the receiver needs it on disk to follow the
+// pin, so app_check_install runs async — same pattern as the
+// versions apply handler above.
 func replication_system_row_apply_apps_tracks(originPeer string, s *SystemRow) {
 	app := s.Key["app"]
 	track := s.Key["track"]
@@ -350,6 +361,9 @@ func replication_system_row_apply_apps_tracks(originPeer string, s *SystemRow) {
 	db.exec("replace into tracks (app, track, version) values (?, ?, ?)",
 		app, track, s.Cols["version"])
 	debug("Replication system-row apps.tracks applied: %q+%q (from %q)", app, track, originPeer)
+	if valid(app, "entity") {
+		go app_check_install(app)
+	}
 }
 
 // replication_system_row_apply_delegations handles domains.db.delegations —

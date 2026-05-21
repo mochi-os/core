@@ -120,6 +120,22 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
+	// Block app actions for users whose per-user replication bootstrap
+	// hasn't completed. The /login app stays reachable so the user can
+	// see the /login/replicating waiting page (it polls /_/identity, not
+	// an /<app>/-/action, so it doesn't hit this code path). Without
+	// this gate the user could navigate to /<app>/ while bootstrap is
+	// still rename(2)-ing DBs and either (a) corrupt the running DB
+	// connection (the "disk image malformed" panic caught 2026-05-20),
+	// or (b) see a half-empty dashboard with no signal that anything
+	// is wrong (the 35%-files-missing case from the same incident).
+	// The /login/-/* paths are the only ones that need to work while
+	// pending — the user has to be able to cancel or wait.
+	if user != nil && user.Status == "pending-replication" && a.id != "login" {
+		respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+		return true
+	}
+
 	// Run first-time setup for this user and app (grants default permissions)
 	app_user_setup(user, a.id)
 
@@ -1460,6 +1476,7 @@ func web_start() {
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/health", web_health)
 	r.GET("/_/replication/health", web_replication_health)
+	r.GET("/_/replication/progress", web_replication_progress)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/robots.txt", web_robots)

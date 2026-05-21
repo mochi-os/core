@@ -1225,17 +1225,54 @@ func toString(v any) string {
 // membership sequence, replaces local hosts with the new set, and emits a
 // membership-change announcement to every peer in the new set.
 //
-// `hosts` is the complete new host set excluding the local host. The
-// local entry is recorded too, but is filtered out of the outbound peer
-// list (we don't send messages to ourselves).
+// `hosts` is the host set as the caller knows it. Callers build it from
+// `select peer from hosts` — the local hosts table, which by
+// construction never lists this server itself. This function adds
+// `p2p_id` so the *broadcast* set is complete: a server running a
+// membership-update is, by definition, a host of that user (it holds
+// their account and manages their host set), so it belongs in the set
+// every replica is told about. Without this the emitted MembershipChange
+// omitted the origin, and each replica's apply (which deletes + rewrites
+// its hosts table from the payload) dropped the origin from its own host
+// set — so the replica could no longer fan its writes back to the
+// source. (Caught 2026-05-21: a per-user replica's "My hosts" listed a
+// stale peer but not the source server.)
+//
+// The local-table rewrite still filters self out (a server isn't its
+// own host), so adding p2p_id only affects the outbound set.
 //
 // Package-level alias so callers route through this hook; tests can
 // replace it with a no-op to keep the send_peer goroutines (which write
 // to queue.db) from outliving their setup tear-down.
 var replication_membership_update = replication_membership_update_impl
 
+// replication_membership_full_set returns the complete membership set
+// for a user: this server (p2p_id) plus `hosts`, de-duplicated with
+// blanks dropped and self first. Callers build `hosts` from the local
+// `hosts` table, which by construction never lists this server — so
+// without prepending p2p_id the broadcast membership set omits the
+// origin, and replicas applying it drop the origin from their own host
+// set. A server running a membership-update is always a host of that
+// user, so it always belongs in the set.
+func replication_membership_full_set(hosts []string) []string {
+	seen := map[string]bool{}
+	full := make([]string, 0, len(hosts)+1)
+	for _, peer := range append([]string{p2p_id}, hosts...) {
+		if peer == "" || seen[peer] {
+			continue
+		}
+		seen[peer] = true
+		full = append(full, peer)
+	}
+	return full
+}
+
 func replication_membership_update_impl(user string, hosts []string) {
 	seq := replication_sequence_next(user, "membership")
+
+	// The broadcast set must include this server (the origin); the
+	// local-table rewrite below still filters self out.
+	hosts = replication_membership_full_set(hosts)
 
 	db := db_open("db/replication.db")
 	db.exec("delete from hosts where user=?", user)

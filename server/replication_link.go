@@ -123,13 +123,17 @@ func replication_link_request_apply(originPeer string, lr *LinkRequest) {
 		return
 	}
 
-	// Replication-to-self refusal: if this peer already shows up in
-	// the user's per-user host set, there's nothing to do.
+	// A link-request from a peer that's ALREADY in the host set is not
+	// a no-op: a healthy replica never re-runs signup, so a re-request
+	// means that host lost its local data (wipe / reinstall / disk
+	// failure) while keeping its per-server libp2p key, and is asking
+	// to re-pull the account. Surface it as a normal pending request so
+	// the user can re-approve — approval re-emits the keys-transfer and
+	// re-runs the bootstrap, all idempotent (links / hosts are keyed on
+	// (user, peer) with INSERT OR REPLACE, so no duplicate rows result).
+	// Previously this case was silently dropped, leaving the wiped
+	// replica stuck on "waiting for approval" forever.
 	rdb := db_open("db/replication.db")
-	if exists, _ := rdb.exists("select 1 from hosts where user=? and peer=?", u.UID, originPeer); exists {
-		info("Replication link-request dropping: peer %q already in user %q's host set", originPeer, u.UID)
-		return
-	}
 
 	const link_request_ttl_seconds = 3600 // 1 hour
 	received := now()
@@ -139,6 +143,27 @@ func replication_link_request_apply(originPeer string, lr *LinkRequest) {
 
 	debug("Replication link-request stored: user=%q peer=%q label=%q placeholder=%q",
 		u.UID, originPeer, lr.Label, lr.Placeholder)
+
+	// A re-request from a peer already in the host set means that host
+	// lost its data (wipe / reinstall) — see the comment above. The
+	// wiped replica re-approves with a reset replication.db: its
+	// outbound sequence counter restarts at 1. So:
+	//   - drop it from the host set (approval re-adds it),
+	//   - purge the bulk replication already queued to it — it has no
+	//     keys to verify those until re-approval, and the post-approval
+	//     bootstrap re-transfers the data wholesale, and
+	//   - clear our `seen` dedup rows for it: otherwise its restarted
+	//     sequence numbers collide with the pre-wipe ones and we drop
+	//     every new op as a duplicate. The pre-wipe ops those rows
+	//     referred to no longer exist, so dropping the rows is safe.
+	// Control messages (priority above bulk) are left in place.
+	if host, _ := rdb.exists("select 1 from hosts where user=? and peer=?", u.UID, originPeer); host {
+		rdb.exec("delete from hosts where user=? and peer=?", u.UID, originPeer)
+		rdb.exec("delete from seen where peer=? and user=?", originPeer, u.UID)
+		db_open("db/queue.db").exec(
+			"delete from queue where target=? and priority<=?", originPeer, priority_bulk)
+		info("Replication link-request: peer %q re-linking user %q after data loss — dropped from host set, cleared dedup state, purged queued bulk replication", originPeer, u.UID)
+	}
 }
 
 // replication_link_approved_event is B's receive handler. The matching

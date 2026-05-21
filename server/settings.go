@@ -441,23 +441,33 @@ func user_preference_get(u *User, name, def string) string {
 	return def
 }
 
-// user_preference_set sets a user preference
+// user_preference_set sets a user preference.
+//
+// Uses exec_replicated, not exec: preferences (language, theme,
+// timezone, …) are account-global, not host-local — the user expects a
+// preference changed on one host of their account to take effect on
+// every host. The user.db handle is tagged db_kind_user_core, so the
+// replicated write fans the statement out to the account's host set,
+// the same path mochi.access.* / mochi.group.* writes already use.
+// (Caught 2026-05-21: language changed on mochi1 didn't reach mochi2.)
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
-	db.exec("replace into preferences (name, value) values (?, ?)", name, value)
+	db.exec_replicated("replace into preferences (name, value) values (?, ?)", name, value)
 	if u.Preferences == nil {
 		u.Preferences = map[string]string{}
 	}
 	u.Preferences[name] = value
 }
 
-// user_preference_delete deletes a user preference, returns true if it existed
+// user_preference_delete deletes a user preference, returns true if it
+// existed. Replicated for the same reason as user_preference_set —
+// clearing a preference must converge across the account's hosts.
 func user_preference_delete(u *User, name string) bool {
 	if _, ok := u.Preferences[name]; !ok {
 		return false
 	}
 	db := db_user(u, "user")
-	db.exec("delete from preferences where name = ?", name)
+	db.exec_replicated("delete from preferences where name = ?", name)
 	delete(u.Preferences, name)
 	return true
 }

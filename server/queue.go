@@ -28,6 +28,42 @@ const queue_per_peer_concurrency = 8
 // peer. Parallel file pushes only divide the same bandwidth.
 const queue_per_peer_file_concurrency = 1
 
+// Message priority tiers, stored in queue.priority and used by
+// queue_process to order delivery — higher is more urgent. Spaced by 10
+// so a tier can be inserted between two existing ones (or below bulk)
+// without renumbering, since the values are purely ordinal.
+const (
+	priority_control     = 30 // replication coordination: link/*, membership, keys/transfer
+	priority_interactive = 20 // normal app and entity messages (the default)
+	priority_bulk        = 10 // replication data: sql/op, system/set, system/row
+)
+
+// queue_bulk_floor is the number of slots queue_process reserves each
+// tick for the bulk tier. A sustained flood of higher-priority traffic
+// can therefore never starve replication — a permanently-behind replica
+// would defeat the point of replicating.
+const queue_bulk_floor = 10
+
+// queue_priority classifies an outbound message into a priority tier
+// from its service and event. Replication coordination jumps ahead of
+// everything so an approval is never stuck behind a sync; replication's
+// bulk data sits below normal app traffic so a large sync cannot delay
+// interactive messages. Everything else is interactive.
+func queue_priority(service, event string) int {
+	if service == "replication" {
+		switch event {
+		case "sql/op", "system/set", "system/row":
+			return priority_bulk
+		case "link/request", "link/approved", "link/denied",
+			"join/request", "join/approved", "join/denied",
+			"host/membership/change", "pair/membership/change",
+			"keys/transfer", "bootstrap/scope/done":
+			return priority_control
+		}
+	}
+	return priority_interactive
+}
+
 // Queue entry for outgoing messages
 type QueueEntry struct {
 	ID           string `db:"id"`
@@ -48,6 +84,7 @@ type QueueEntry struct {
 	NextRetry    int64  `db:"next_retry"`
 	LastError    string `db:"last_error"`
 	Created      int64  `db:"created"`
+	Priority     int    `db:"priority"`
 }
 
 const (
@@ -90,9 +127,9 @@ func queue_add_direct(id, target, from_entity, to_entity, service, event, from_a
 	db := db_open("db/queue.db")
 	from_services := strings.Join(services, ",")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created)
-		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
+		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), queue_priority(service, event))
 }
 
 // Add a broadcast message to the queue
@@ -100,9 +137,9 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 	db := db_open("db/queue.db")
 	from_services := strings.Join(services, ",")
 	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created)
-		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?)`,
-		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now())
+		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
+		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?, ?)`,
+		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now(), queue_priority(service, event))
 }
 
 // Mark a message as acknowledged (remove from queue)
@@ -271,15 +308,44 @@ func queue_send_broadcast(q *QueueEntry) bool {
 	return true
 }
 
+// queue_select pulls the next batch of due messages, ordered so urgent
+// traffic is delivered first. Lane A is the 50 most-urgent due messages
+// (priority, then next_retry). Lane B is a reserved floor of bulk-tier
+// slots so a sustained flood of higher-priority traffic can never
+// starve replication. The lanes are merged and de-duplicated on id (a
+// bulk row can appear in both when there is little urgent traffic).
+func queue_select(db *DB) []QueueEntry {
+	ts := now()
+
+	var urgent []QueueEntry
+	if err := db.scans(&urgent, "select * from queue where status = 'pending' and next_retry <= ? order by priority desc, next_retry limit 50", ts); err != nil {
+		info("Queue select error: %v", err)
+	}
+
+	var bulk []QueueEntry
+	if err := db.scans(&bulk, "select * from queue where status = 'pending' and next_retry <= ? and priority <= ? order by next_retry limit ?", ts, priority_bulk, queue_bulk_floor); err != nil {
+		info("Queue select error (bulk floor): %v", err)
+	}
+
+	seen := make(map[string]bool, len(urgent)+len(bulk))
+	entries := make([]QueueEntry, 0, len(urgent)+len(bulk))
+	for _, q := range urgent {
+		seen[q.ID] = true
+		entries = append(entries, q)
+	}
+	for _, q := range bulk {
+		if !seen[q.ID] {
+			entries = append(entries, q)
+		}
+	}
+	return entries
+}
+
 // Process pending queue entries
 func queue_process() {
 	db := db_open("db/queue.db")
 
-	var entries []QueueEntry
-	err := db.scans(&entries, "select * from queue where status = 'pending' and next_retry <= ? limit 50", now())
-	if err != nil {
-		info("Queue process scan error: %v", err)
-	}
+	entries := queue_select(db)
 
 	udb := db_open("db/users.db")
 

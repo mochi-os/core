@@ -138,6 +138,17 @@ func directory_download_from_peer(peer string) bool {
 			fp = fingerprint(d.ID)
 		}
 		db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated)
+
+		// Also record the location claim in `locations` — the routing
+		// table that entity_peer / entity_peers_failover read. The
+		// per-entity live handler (directory_publish_event) does this,
+		// but the bulk download previously wrote `entities` only, so a
+		// freshly-wiped server ended up knowing every entity yet able
+		// to route to almost none until each one happened to republish.
+		// `seen` is the record's own `Updated` (not now()) so the
+		// active/stale failover tiering stays honest about freshness.
+		directory_record_location(db, d.ID, d.Location, d.Updated)
+
 		go queue_check_entity(d.ID)
 	}
 }
@@ -290,14 +301,26 @@ func directory_publish_event(e *Event) {
 
 	db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
 
-	// Record the location claim in the per-peer table. The `location` field
-	// carries "p2p/<peer-id>" so we strip the prefix; refuse to record an
-	// empty peer or our own self-claim.
-	if peer := strings_trim_prefix(location, "p2p/"); peer != "" && peer != p2p_id {
-		db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", id, peer, now)
-	}
+	directory_record_location(db, id, location, now)
 
 	go queue_check_entity(id)
+}
+
+// directory_record_location records an entity's location claim into the
+// `locations` routing table — the table entity_peer / entity_peers /
+// entity_peers_failover read to resolve an entity to its host peer(s).
+// The `location` field carries "p2p/<peer-id>"; the prefix is stripped,
+// and an empty peer or our own self-claim is skipped (a server isn't a
+// routable remote peer for its own entities).
+//
+// `seen` is the freshness timestamp the failover tiering uses: pass the
+// live now() for a fresh first-hand claim (directory_publish_event), or
+// the record's own `updated` for a bulk-download record so a stale
+// directory entry isn't misreported as just-seen.
+func directory_record_location(db *DB, id, location string, seen int64) {
+	if peer := strings_trim_prefix(location, "p2p/"); peer != "" && peer != p2p_id {
+		db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", id, peer, seen)
+	}
 }
 
 // strings_trim_prefix is a tiny helper that avoids importing the strings

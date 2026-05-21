@@ -104,9 +104,23 @@ func web_auth_replicate(c *gin.Context) {
 	// eventual link-approved keys-transfer flips the same row to
 	// active. Username is the B-local email per the server-local
 	// username rule.
+	//
+	// Apply the first-user-becomes-administrator rule, exactly as
+	// user_create does for email / OAuth signup. role is server-local
+	// (the source's role is deliberately NOT carried in the keys-
+	// transfer), so "first user on THIS server runs THIS server"
+	// must hold regardless of how that first user was created. Without
+	// this, a fresh server whose very first account arrives via
+	// per-user replication ends up with no administrator and no way
+	// to mint one — every later signup also sees a non-empty users
+	// table and is created as a plain user.
+	role := "user"
+	if hasUsers, _ := udb.exists("select uid from users limit 1"); !hasUsers {
+		role = "administrator"
+	}
 	udb.exec(
-		"insert into users (uid, username, status) values (?, ?, 'pending-replication')",
-		sourceUID, input.Email)
+		"insert into users (uid, username, role, status) values (?, ?, ?, 'pending-replication')",
+		sourceUID, input.Email, role)
 
 	// Emit the link-request to the source peer. Source's Settings →
 	// Replication page will pick it up; alice approves there.

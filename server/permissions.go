@@ -220,7 +220,9 @@ func permission_grant(u *User, app_id string, permission string) {
 
 	db := db_user(u, "user")
 	db.permissions_setup()
-	db.exec("replace into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object)
+	// Replicated: a permission grant is the user's own decision and is
+	// account-global — it must converge on every host of the account.
+	db.exec_replicated("replace into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object)
 }
 
 // permission_revoke revokes a permission from an app for a user
@@ -233,7 +235,12 @@ func permission_revoke(u *User, app_id string, permission string) {
 
 	db := db_user(u, "user")
 	db.permissions_setup()
-	db.exec("delete from permissions where app=? and permission=? and object=?", app_id, name, object)
+	// Soft-delete (granted=0), not a row delete: app_user_setup re-applies
+	// an app's default permissions with `insert or ignore` whenever the
+	// default set changes, and a removed row would be silently re-granted.
+	// A granted=0 row makes that insert a no-op, so the revoke sticks.
+	// Replicated so it converges across the account's hosts.
+	db.exec_replicated("replace into permissions (app, permission, object, granted) values (?, ?, ?, 0)", app_id, name, object)
 }
 
 // permissions_list returns all permissions for an app for a user

@@ -98,11 +98,16 @@ func TestReplicationLinkRequestApplyDifferentPeersDistinct(t *testing.T) {
 	}
 }
 
-// TestReplicationLinkRequestApplyRefusesReplicationToSelf: if the source
-// peer is already in the target user's hosts set (per-user opt-in or
-// whole-server pair already covers it), the link-request is silently
-// refused — no row created.
-func TestReplicationLinkRequestApplyRefusesReplicationToSelf(t *testing.T) {
+// TestReplicationLinkRequestApplyFromExistingHostResurfaces: a
+// link-request from a peer already in the host set means that host was
+// wiped (keeping its per-server libp2p key) and is asking to re-pull
+// the account — a healthy replica never re-runs signup. The request
+// must surface as pending so the user can re-approve; and because the
+// wiped peer re-approves with a reset replication.db, it is dropped
+// from the host set (approval re-adds it), its already-queued bulk
+// replication is purged, and our dedup state for it is cleared so its
+// restarted sequence numbers are not mistaken for duplicates.
+func TestReplicationLinkRequestApplyFromExistingHostResurfaces(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	setup_users_test_schema()
@@ -112,6 +117,16 @@ func TestReplicationLinkRequestApplyRefusesReplicationToSelf(t *testing.T) {
 
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into hosts (user, peer, added) values ('u-alice', 'peer-B', 0)")
+	// Stale dedup rows from before the wipe, plus rows for another peer
+	// and another user that must survive.
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-B', 'app', 'u-alice', 5, 0)")
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-C', 'app', 'u-alice', 5, 0)")
+
+	qdb := queue_test_table()
+	qdb.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority) values ('bulk-1', 'direct', 'peer-B', '', '', 'replication', 'sql/op', 0, 0, ?)", priority_bulk)
+	qdb.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority) values ('bulk-2', 'direct', 'peer-B', '', '', 'replication', 'sql/op', 0, 0, ?)", priority_bulk)
+	qdb.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority) values ('control-1', 'direct', 'peer-B', '', '', 'replication', 'link/approved', 0, 0, ?)", priority_control)
+	qdb.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority) values ('other-peer', 'direct', 'peer-C', '', '', 'replication', 'sql/op', 0, 0, ?)", priority_bulk)
 
 	replication_link_request_apply("peer-B", &LinkRequest{
 		TargetUser:  "alice",
@@ -119,8 +134,33 @@ func TestReplicationLinkRequestApplyRefusesReplicationToSelf(t *testing.T) {
 	})
 
 	exists, _ := rdb.exists("select 1 from links where user='u-alice' and peer='peer-B'")
-	if exists {
-		t.Error("link-request from already-hosting peer should be refused (no row written)")
+	if !exists {
+		t.Error("link-request from an already-hosting peer must surface as a pending request (wiped-replica recovery)")
+	}
+	// The wiped host is dropped from the set — approval re-adds it.
+	if n := rdb.integer("select count(*) from hosts where user='u-alice' and peer='peer-B'"); n != 0 {
+		t.Errorf("hosts rows for (u-alice, peer-B) = %d, want 0 (wiped host dropped)", n)
+	}
+	// Bulk replication queued to the wiped peer is purged...
+	if n := qdb.integer("select count(*) from queue where target='peer-B' and priority<=?", priority_bulk); n != 0 {
+		t.Errorf("bulk messages queued to peer-B = %d, want 0 (purged)", n)
+	}
+	// ...but control messages to it survive...
+	if n := qdb.integer("select count(*) from queue where target='peer-B' and priority>?", priority_bulk); n != 1 {
+		t.Errorf("control messages queued to peer-B = %d, want 1 (preserved)", n)
+	}
+	// ...and other peers' messages are untouched.
+	if n := qdb.integer("select count(*) from queue where target='peer-C'"); n != 1 {
+		t.Errorf("messages queued to peer-C = %d, want 1 (untouched)", n)
+	}
+	// Stale dedup rows for the wiped peer are cleared, so its restarted
+	// sequence numbers are not dropped as duplicates...
+	if n := rdb.integer("select count(*) from seen where peer='peer-B'"); n != 0 {
+		t.Errorf("seen rows for peer-B = %d, want 0 (dedup state cleared)", n)
+	}
+	// ...while another peer's dedup state is left intact.
+	if n := rdb.integer("select count(*) from seen where peer='peer-C'"); n != 1 {
+		t.Errorf("seen rows for peer-C = %d, want 1 (untouched)", n)
 	}
 }
 

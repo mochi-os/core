@@ -30,6 +30,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_50()
 	db_upgrade_55()
 	db_upgrade_62()
+	db_upgrade_66()
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise
@@ -680,6 +681,114 @@ func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
 	count := db.integer("select count(*) from pending")
 	if count != 0 {
 		t.Errorf("malformed payload must be dropped from pending; got %d rows", count)
+	}
+}
+
+// TestReplicationGatedStreamAppliesInSequenceOrder is the Stage 19
+// regression: a gated inbound stream applies buffered ops strictly in
+// sequence order, so a create→delete pair on one row can't be
+// reordered by a backlog draining out of order. The pending rows are
+// inserted delete-first (the bug's arrival order); a correct drain
+// still applies insert(seq 1) then delete(seq 2), leaving the row
+// gone. See claude/plans/replication-test.md Stage 19.
+func TestReplicationGatedStreamAppliesInSequenceOrder(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-gate", "gate@example.com")
+
+	db := db_open("db/replication.db")
+	// Gate the stream: a cursor row at 0 means "expecting sequence 1".
+	replication_cursor_set(db, "peerG", repl_scope_app, "uid-gate", 0)
+
+	insert := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-gate",
+		Database: "sessions", Table: "sessions", Operation: repl_op_insert,
+		Sequence: 1,
+		Payload: cbor_encode(&SessionInsert{
+			UserUID: "uid-gate", Code: "sess-G", Secret: "x",
+			Expires: 100, Created: 50, Accessed: 50,
+		}),
+	}
+	del := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-gate",
+		Database: "sessions", Table: "sessions", Operation: repl_op_delete,
+		Sequence: 2,
+		Payload:  cbor_encode(&SessionDelete{Code: "sess-G"}),
+	}
+
+	// Buffer them delete-first, so received-order is the wrong order.
+	db.exec(
+		"insert into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, 0, ?, ?)",
+		"peerG", del.Scope, del.User, del.Sequence, cbor_encode(del), now())
+	db.exec(
+		"insert into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, 0, ?, ?)",
+		"peerG", insert.Scope, insert.User, insert.Sequence, cbor_encode(insert), now())
+
+	replication_pending_drain()
+
+	sdb := db_open("db/sessions.db")
+	if n := sdb.integer("select count(*) from sessions where code='sess-G'"); n != 0 {
+		t.Errorf("session must be gone — delete must apply after insert; got %d rows", n)
+	}
+	if n := db.integer("select count(*) from pending where peer='peerG'"); n != 0 {
+		t.Errorf("pending must be empty after in-order drain; got %d rows", n)
+	}
+	if seq, gated := replication_cursor(db, "peerG", repl_scope_app, "uid-gate"); !gated || seq != 2 {
+		t.Errorf("cursor must advance to 2; got seq=%d gated=%v", seq, gated)
+	}
+}
+
+// TestReplicationGatedStreamGapStopsDrain: a gated stream stops at the
+// first missing sequence (head-of-line). With seq 1 and seq 3 buffered
+// but seq 2 absent, the drain applies 1, leaves 3 in pending, and the
+// cursor does not advance past the gap.
+func TestReplicationGatedStreamGapStopsDrain(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	setup_sessions_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values (?, ?)", "uid-gap", "gap@example.com")
+
+	db := db_open("db/replication.db")
+	replication_cursor_set(db, "peerH", repl_scope_app, "uid-gap", 0)
+
+	op := func(seq int64, code string) *ReplicationOp {
+		return &ReplicationOp{
+			Scope: repl_scope_app, User: "uid-gap",
+			Database: "sessions", Table: "sessions", Operation: repl_op_insert,
+			Sequence: seq,
+			Payload: cbor_encode(&SessionInsert{
+				UserUID: "uid-gap", Code: code, Secret: "x",
+				Expires: 100, Created: 50, Accessed: 50,
+			}),
+		}
+	}
+	for _, o := range []*ReplicationOp{op(1, "sess-1"), op(3, "sess-3")} {
+		db.exec(
+			"insert into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, 0, ?, ?)",
+			"peerH", o.Scope, o.User, o.Sequence, cbor_encode(o), now())
+	}
+
+	replication_pending_drain()
+
+	sdb := db_open("db/sessions.db")
+	if n := sdb.integer("select count(*) from sessions where code='sess-1'"); n != 1 {
+		t.Errorf("seq 1 must apply; got %d rows", n)
+	}
+	if n := sdb.integer("select count(*) from sessions where code='sess-3'"); n != 0 {
+		t.Errorf("seq 3 must stay buffered behind the gap; got %d rows", n)
+	}
+	if n := db.integer("select count(*) from pending where peer='peerH' and sequence=3"); n != 1 {
+		t.Errorf("seq 3 must remain in pending; got %d rows", n)
+	}
+	if seq, _ := replication_cursor(db, "peerH", repl_scope_app, "uid-gap"); seq != 1 {
+		t.Errorf("cursor must stop at 1 (the gap is at 2); got seq=%d", seq)
 	}
 }
 

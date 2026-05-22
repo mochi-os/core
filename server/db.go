@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	schema_version = 65
+	schema_version = 66
 )
 
 var (
@@ -299,6 +299,11 @@ func db_create() {
 	replication.exec("create index pending_received on pending(received)")
 	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, primary key (user, peer))")
 	replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	// cursor: the contiguous in-order apply watermark per inbound
+	// (peer, scope, user) stream. Ops apply strictly in sequence
+	// order so a same-row op chain can't be reordered by a backlog
+	// drain. See claude/plans/replication-test.md Stage 19.
+	replication.exec("create table cursor (peer text not null, scope text not null, user text not null default '', sequence integer not null default 0, primary key (peer, scope, user))")
 	replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
 	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index leadership_expires on leadership(expires)")
@@ -676,6 +681,8 @@ func db_upgrade() {
 			db_upgrade_64()
 		case 65:
 			db_upgrade_65()
+		case 66:
+			db_upgrade_66()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -894,6 +901,21 @@ func db_upgrade_65() {
 	q := db_open("db/queue.db")
 	if has, _ := q.exists("select 1 from pragma_table_info('queue') where name='priority'"); !has {
 		q.exec("alter table queue add column priority integer not null default 20")
+	}
+}
+
+// db_upgrade_66 adds the replication apply-cursor table — the
+// contiguous in-order apply watermark per inbound (peer, scope, user)
+// stream — and seeds it from the existing `seen` high-water so every
+// pair/link with replication history is gated on the first restart
+// after upgrade. Streams with no `seen` rows (a replica that
+// bootstraps after the upgrade) get their cursor from the bootstrap
+// DB manifest instead. See claude/plans/replication-test.md Stage 19.
+func db_upgrade_66() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from sqlite_master where type='table' and name='cursor'"); !has {
+		r.exec("create table cursor (peer text not null, scope text not null, user text not null default '', sequence integer not null default 0, primary key (peer, scope, user))")
+		r.exec("insert or ignore into cursor (peer, scope, user, sequence) select peer, scope, user, max(sequence) from seen group by peer, scope, user")
 	}
 }
 

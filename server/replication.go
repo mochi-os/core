@@ -347,24 +347,132 @@ func replication_op_event(e *Event) {
 		return
 	}
 
-	switch replication_apply_op(&op) {
+	// In-order gate. A stream with a cursor row is gated: ops apply
+	// strictly in sequence order, so a create→update→delete chain on
+	// one row can't be reordered by the queue draining a post-outage
+	// backlog (claude/plans/replication-test.md Stage 19). An op ahead
+	// of the cursor is buffered in `pending` until the gap fills; one
+	// at the cursor's successor falls through and applies. A stream
+	// with no cursor row (a fresh replica not yet seeded from the
+	// bootstrap manifest) is un-gated and applies on arrival — the
+	// pre-gate behaviour.
+	cursor, gated := replication_cursor(db, e.peer, op.Scope, op.User)
+	if gated {
+		if op.Sequence <= cursor {
+			debug("Replication op below cursor: peer=%q scope=%q user=%q seq=%d cursor=%d",
+				e.peer, op.Scope, op.User, op.Sequence, cursor)
+			return
+		}
+		if op.Sequence > cursor+1 {
+			payload := cbor_encode(&op)
+			db.exec(
+				"insert or ignore into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?)",
+				e.peer, op.Scope, op.User, op.Sequence, op.Schema, payload, now())
+			debug("Replication op buffered out-of-order: peer=%q scope=%q user=%q seq=%d cursor=%d",
+				e.peer, op.Scope, op.User, op.Sequence, cursor)
+			return
+		}
+	}
+
+	if replication_op_land(db, e.peer, &op, gated) != ApplyDeferred && gated {
+		replication_stream_drain(db, e.peer, op.Scope, op.User)
+	}
+}
+
+// replication_cursor returns the contiguous in-order apply watermark
+// for an inbound (peer, scope, user) stream and whether the stream is
+// gated at all. A cursor row is seeded by the schema-66 migration for
+// every stream that had `seen` history at upgrade time, and by the
+// bootstrap DB manifest for a freshly-replicated user. A stream with
+// no cursor row is un-gated and applies ops on arrival (legacy path).
+func replication_cursor(db *DB, peer, scope, user string) (int64, bool) {
+	row, err := db.row("select sequence from cursor where peer=? and scope=? and user=?", peer, scope, user)
+	if err != nil || row == nil {
+		return 0, false
+	}
+	seq, _ := row["sequence"].(int64)
+	return seq, true
+}
+
+// replication_cursor_set advances (or creates) the apply watermark for
+// a gated stream.
+func replication_cursor_set(db *DB, peer, scope, user string, sequence int64) {
+	db.exec(
+		"insert into cursor (peer, scope, user, sequence) values (?, ?, ?, ?) "+
+			"on conflict(peer, scope, user) do update set sequence=excluded.sequence",
+		peer, scope, user, sequence)
+}
+
+// replication_op_land applies one verified, fence-passed op and records
+// the outcome: `seen` on success, `pending` when deferred. For a gated
+// stream the caller has already ensured op.Sequence is the cursor's
+// immediate successor; on a successful — or unrecognised — op the
+// cursor steps forward, so a malformed op can't wedge the stream.
+func replication_op_land(db *DB, peer string, op *ReplicationOp, gated bool) ApplyResult {
+	res := replication_apply_op(op)
+	switch res {
 	case ApplyApplied:
 		db.exec(
 			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
-			e.peer, op.Scope, op.User, op.Sequence, now())
+			peer, op.Scope, op.User, op.Sequence, now())
+		if gated {
+			replication_cursor_set(db, peer, op.Scope, op.User, op.Sequence)
+		}
 		debug("Replication op applied: peer=%q scope=%q user=%q seq=%d db=%q table=%q op=%q",
-			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
+			peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
 		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, "")
 	case ApplyDeferred:
-		payload := cbor_encode(&op)
+		payload := cbor_encode(op)
 		db.exec(
 			"insert or ignore into pending (peer, scope, user, sequence, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?)",
-			e.peer, op.Scope, op.User, op.Sequence, op.Schema, payload, now())
+			peer, op.Scope, op.User, op.Sequence, op.Schema, payload, now())
 		debug("Replication op deferred: peer=%q scope=%q user=%q seq=%d db=%q table=%q op=%q",
-			e.peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
+			peer, op.Scope, op.User, op.Sequence, op.Database, op.Table, op.Operation)
 	case ApplyInvalid:
 		info("Replication op dropping: unrecognised shape peer=%q scope=%q db=%q table=%q op=%q",
-			e.peer, op.Scope, op.Database, op.Table, op.Operation)
+			peer, op.Scope, op.Database, op.Table, op.Operation)
+		if gated {
+			replication_cursor_set(db, peer, op.Scope, op.User, op.Sequence)
+		}
+	}
+	return res
+}
+
+// replication_stream_drain applies buffered ops for one gated inbound
+// stream in strict sequence order from cursor+1, stopping at the first
+// gap or still-deferred op (head-of-line). Called after a live op
+// advances the cursor and from the periodic pending-buffer drain.
+func replication_stream_drain(db *DB, peer, scope, user string) {
+	for {
+		cursor, gated := replication_cursor(db, peer, scope, user)
+		if !gated {
+			return
+		}
+		row, err := db.row(
+			"select payload from pending where peer=? and scope=? and user=? and sequence=?",
+			peer, scope, user, cursor+1)
+		if err != nil || row == nil {
+			return
+		}
+		payload, _ := row["payload"].([]byte)
+		if len(payload) == 0 {
+			if s, ok := row["payload"].(string); ok {
+				payload = []byte(s)
+			}
+		}
+		var op ReplicationOp
+		if err := cbor.Unmarshal(payload, &op); err != nil {
+			info("Replication stream drain: malformed payload, dropping (peer=%q scope=%q user=%q seq=%d): %v",
+				peer, scope, user, cursor+1, err)
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, user, cursor+1)
+			replication_cursor_set(db, peer, scope, user, cursor+1)
+			continue
+		}
+		if replication_op_land(db, peer, &op, true) == ApplyDeferred {
+			replication_pending_kick(&op)
+			return
+		}
+		db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, user, cursor+1)
 	}
 }
 
@@ -623,17 +731,35 @@ func replication_pending_kick_due(appID string) bool {
 	return true
 }
 
-// replication_pending_drain walks `replication.db.pending` in arrival
-// order and re-evaluates each buffered op against the current local
-// state. Ops that now apply move to `seen`; ops that are still deferred
-// stay in pending until the next drain.
+// replication_pending_drain re-evaluates buffered ops against current
+// local state. Gated streams (those with a cursor row) drain strictly
+// in sequence order from the cursor; un-gated streams (a fresh replica
+// not yet cursor-seeded) keep the legacy arrival-order drain. Ops that
+// now apply move to `seen`; ops still deferred stay in `pending`.
 //
 // Called automatically after a keys-transfer (when a new user lands,
-// pending session inserts for that user become applyable) and on a
-// periodic background tick.
+// pending ops for that user become applyable) and on a periodic
+// background tick.
 func replication_pending_drain() {
 	db := db_open("db/replication.db")
-	rows, err := db.rows("select peer, scope, user, sequence, payload from pending order by received limit 100")
+
+	// Gated streams: drain in strict sequence order from the cursor.
+	if streams, err := db.rows(
+		"select distinct p.peer, p.scope, p.user from pending p " +
+			"join cursor c on c.peer=p.peer and c.scope=p.scope and c.user=p.user"); err == nil {
+		for _, s := range streams {
+			peer, _ := s["peer"].(string)
+			scope, _ := s["scope"].(string)
+			user, _ := s["user"].(string)
+			replication_stream_drain(db, peer, scope, user)
+		}
+	}
+
+	// Un-gated streams: legacy arrival-order drain.
+	rows, err := db.rows(
+		"select p.peer, p.scope, p.user, p.sequence, p.payload from pending p " +
+			"where not exists (select 1 from cursor c where c.peer=p.peer and c.scope=p.scope and c.user=p.user) " +
+			"order by p.received limit 100")
 	if err != nil {
 		return
 	}

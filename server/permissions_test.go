@@ -370,6 +370,44 @@ func TestPermissionRevoke(t *testing.T) {
 	}
 }
 
+// TestPermissionRevokeSurvivesResetup locks the soft-delete behaviour of
+// permission_revoke. app_user_setup re-applies an app's default
+// permissions with `insert or ignore` whenever the default set changes
+// (a server update). When revoke removed the row, a revoked default was
+// silently re-granted on the next re-setup; revoke now writes a
+// granted=0 row, which insert-or-ignore leaves untouched.
+func TestPermissionRevokeSurvivesResetup(t *testing.T) {
+	setupTestDataDir(t)
+	defer cleanupTestDataDir(t)
+
+	user := createTestUser(t, "u1")
+	appsAppID := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
+
+	// First app access grants the app's default permissions.
+	app_user_setup(user, appsAppID)
+	if !permission_granted(user, appsAppID, "permissions/manage") {
+		t.Fatal("default permission not granted by app_user_setup")
+	}
+
+	// The user revokes one of those defaults.
+	permission_revoke(user, appsAppID, "permissions/manage")
+	if permission_granted(user, appsAppID, "permissions/manage") {
+		t.Fatal("permission still granted after revoke")
+	}
+
+	// Simulate a server update changing the default set: clear the
+	// recorded setup count so app_user_setup re-runs its grant loop.
+	db := db_user(user, "user")
+	db.exec("update apps set setup=0 where app=?", appsAppID)
+	app_user_setup(user, appsAppID)
+
+	// The revoke must survive the re-setup — a removed row would have
+	// been re-granted here.
+	if permission_granted(user, appsAppID, "permissions/manage") {
+		t.Error("revoked default permission was re-granted by app_user_setup re-run")
+	}
+}
+
 func TestPermissionsList(t *testing.T) {
 	setupTestDataDir(t)
 	defer cleanupTestDataDir(t)

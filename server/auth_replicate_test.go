@@ -214,6 +214,12 @@ func TestAuthReplicateSuccess(t *testing.T) {
 	if u.Username != "new@example.com" {
 		t.Errorf("username = %q, want new@example.com", u.Username)
 	}
+	// First user on a fresh server — even though created via per-user
+	// replication — must get the administrator role, or the server
+	// ends up with no admin and no way to mint one.
+	if u.Role != "administrator" {
+		t.Errorf("role = %q, want administrator (first user on an empty server)", u.Role)
+	}
 
 	if emit_calls != 1 {
 		t.Errorf("emit_calls = %d, want 1", emit_calls)
@@ -222,6 +228,34 @@ func TestAuthReplicateSuccess(t *testing.T) {
 	// Session cookie should be set (look for the Set-Cookie header).
 	if got := w.Header().Get("Set-Cookie"); got == "" || !strings.Contains(got, "session=") {
 		t.Errorf("Set-Cookie header should include session; got %q", got)
+	}
+}
+
+// TestAuthReplicateSecondUserNotAdmin: when the server already has a
+// user, a per-user replication placeholder is created as a plain user
+// — the first-user-becomes-administrator rule has already been spent.
+func TestAuthReplicateSecondUserNotAdmin(t *testing.T) {
+	cleanup := setup_auth_replicate_test(t)
+	defer cleanup()
+
+	// An existing user already holds the server.
+	db_open("db/users.db").exec(
+		"insert into users (uid, username, role, status) values ('u-existing', 'boss@example.com', 'administrator', 'active')")
+
+	w, _ := auth_replicate_post(t, map[string]string{
+		"email": "new@example.com", "source": "peer-A", "source_username": "alice",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	udb := db_open("db/users.db")
+	var u User
+	if !udb.scan(&u, "select uid, username, role, methods, status from users where uid=?", "u-alice") {
+		t.Fatal("placeholder row should exist")
+	}
+	if u.Role != "user" {
+		t.Errorf("role = %q, want user (server already had a user — admin rule spent)", u.Role)
 	}
 }
 

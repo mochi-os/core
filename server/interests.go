@@ -83,7 +83,11 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(user, "user")
-	db.exec("insert or replace into interests (qid, weight, updated) values (?, ?, ?)", qid, weight, now())
+	// Replicated: the interest profile is account-global user data —
+	// the user's personalised ranking should follow them to every host
+	// of their account. Timestamps are computed in Go and passed as
+	// bound parameters, so the replayed statement stays deterministic.
+	db.exec_replicated("insert or replace into interests (qid, weight, updated) values (?, ?, ?)", qid, weight, now())
 
 	return sl.None, nil
 }
@@ -109,7 +113,7 @@ func api_interests_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
-	db.exec("delete from interests where qid=?", qid)
+	db.exec_replicated("delete from interests where qid=?", qid)
 
 	return sl.None, nil
 }
@@ -185,7 +189,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			if w > 100 {
 				w = 100
 			}
-			db.exec("update interests set weight=?, updated=? where qid=?", w, ts, qid)
+			db.exec_replicated("update interests set weight=?, updated=? where qid=?", w, ts, qid)
 		} else if delta != 0 {
 			// New interest: insert with delta as initial weight (clamped)
 			w := delta
@@ -195,7 +199,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			if w > 100 {
 				w = 100
 			}
-			db.exec("insert or ignore into interests (qid, weight, updated) values (?, ?, ?)", qid, w, ts)
+			db.exec_replicated("insert or ignore into interests (qid, weight, updated) values (?, ?, ?)", qid, w, ts)
 		}
 	}
 

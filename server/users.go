@@ -377,13 +377,16 @@ func (u *User) class_app(class string) string {
 	return row["app"].(string)
 }
 
-// set_class_app sets the user's preferred app for a class
+// set_class_app sets the user's preferred app for a class.
+// Replicated: per-user app routing is an account-global preference —
+// it must take effect on every host of the account, not just the one
+// the user changed it on.
 func (u *User) set_class_app(class, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.exec("delete from classes where class = ?", class)
+		db.exec_replicated("delete from classes where class = ?", class)
 	} else {
-		db.exec("replace into classes (class, app) values (?, ?)", class, app)
+		db.exec_replicated("replace into classes (class, app) values (?, ?)", class, app)
 	}
 	audit_user_routing_changed(u.Username, "class", class, app)
 }
@@ -398,13 +401,14 @@ func (u *User) service_app(service string) string {
 	return row["app"].(string)
 }
 
-// set_service_app sets the user's preferred app for a service
+// set_service_app sets the user's preferred app for a service.
+// Replicated — account-global routing preference (see set_class_app).
 func (u *User) set_service_app(service, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.exec("delete from services where service = ?", service)
+		db.exec_replicated("delete from services where service = ?", service)
 	} else {
-		db.exec("replace into services (service, app) values (?, ?)", service, app)
+		db.exec_replicated("replace into services (service, app) values (?, ?)", service, app)
 	}
 	audit_user_routing_changed(u.Username, "service", service, app)
 }
@@ -419,13 +423,14 @@ func (u *User) path_app(path string) string {
 	return row["app"].(string)
 }
 
-// set_path_app sets the user's preferred app for a path
+// set_path_app sets the user's preferred app for a path.
+// Replicated — account-global routing preference (see set_class_app).
 func (u *User) set_path_app(path, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.exec("delete from paths where path = ?", path)
+		db.exec_replicated("delete from paths where path = ?", path)
 	} else {
-		db.exec("replace into paths (path, app) values (?, ?)", path, app)
+		db.exec_replicated("replace into paths (path, app) values (?, ?)", path, app)
 	}
 	audit_user_routing_changed(u.Username, "path", path, app)
 }
@@ -440,13 +445,15 @@ func (u *User) app_version(app string) (version, track string) {
 	return row["version"].(string), row["track"].(string)
 }
 
-// set_app_version sets the user's preferred version or track for an app
+// set_app_version sets the user's preferred version or track for an app.
+// Replicated: the user's per-app version/track pin is account-global —
+// it must apply on every host of the account.
 func (u *User) set_app_version(app, version, track string) {
 	db := db_user(u, "user")
 	if version == "" && track == "" {
-		db.exec("delete from versions where app = ?", app)
+		db.exec_replicated("delete from versions where app = ?", app)
 	} else {
-		db.exec("replace into versions (app, version, track) values (?, ?, ?)", app, version, track)
+		db.exec_replicated("replace into versions (app, version, track) values (?, ?, ?)", app, version, track)
 	}
 	audit_user_version_changed(u.Username, app, version, track)
 }

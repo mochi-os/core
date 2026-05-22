@@ -8,24 +8,24 @@
 // coarser view; the Starlark API is for app-level rendering.
 //
 // Surface:
-//   mochi.replication.status()            -> dict (whole-server view)
-//   mochi.replication.links()             -> list (pending inbound link-requests for the calling user)
-//   mochi.replication.hosts()             -> list (active per-user peers for the calling user)
-//   mochi.replication.link_approve(peer)  -> str  ("approved" | "already-approved")
-//   mochi.replication.link_deny(peer)     -> str  ("denied"   | "already-handled")
-//   mochi.replication.host_remove(peer)   -> str  ("removed"  | "not-found")
-//   mochi.replication.joins()             -> list (pending whole-server join-requests)
-//   mochi.replication.join_approve(peer)  -> str  ("approved" | "already-handled")
-//   mochi.replication.join_deny(peer)     -> str  ("denied"   | "already-handled")
-//   mochi.replication.pair_remove(peer)   -> str  ("removed"  | "not-found")
-//   mochi.replication.bootstrap_progress() -> list (per-(peer, scope) progress)
+//   mochi.replication.status()              -> dict (whole-server view)
+//   mochi.replication.links()               -> list (pending inbound link-requests for the calling user)
+//   mochi.replication.hosts()               -> list (active per-user peers for the calling user)
+//   mochi.replication.link.approve(peer)    -> str  ("approved" | "already-approved")
+//   mochi.replication.link.deny(peer)       -> str  ("denied"   | "already-handled")
+//   mochi.replication.host.remove(peer)     -> str  ("removed"  | "not-found")
+//   mochi.replication.joins()               -> list (pending whole-server join-requests)
+//   mochi.replication.join.approve(peer)    -> str  ("approved" | "already-handled")
+//   mochi.replication.join.deny(peer)       -> str  ("denied"   | "already-handled")
+//   mochi.replication.pair.remove(peer)     -> str  ("removed"  | "not-found")
+//   mochi.replication.bootstrap.progress()  -> list (per-(peer, scope) progress)
 //
 // All per-user functions operate on the calling user (resolved from
 // t.Local("user")). The settings app cannot read or mutate another
 // user's replication state through this API.
 //
-// The whole-server join/pair functions (joins / join_approve /
-// join_deny / pair_remove) are role-agnostic at the API level; the
+// The whole-server join/pair functions (joins / join.approve /
+// join.deny / pair.remove) are role-agnostic at the API level; the
 // settings app's `system/replication.star` action wrapper enforces
 // require_admin before calling them — same pattern as
 // mochi.server.update.install. Apps without an admin context must not
@@ -41,22 +41,33 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// api_replication exposes mochi.replication.{status, links, hosts,
-// link_approve, link_deny, host_remove, joins, join_approve, join_deny,
-// pair_remove}.
+// api_replication exposes mochi.replication.{status, links, hosts, joins}
+// plus the link, host, join, pair, and bootstrap sub-namespaces. Two-word
+// operations are sub-namespaced (host.remove), not glued (host_remove) —
+// API names are single-word dotted segments.
 var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.StringDict{
-	"status":             sl.NewBuiltin("mochi.replication.status", api_replication_status),
-	"links":              sl.NewBuiltin("mochi.replication.links", api_replication_links),
-	"hosts":              sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
-	"link_approve":       sl.NewBuiltin("mochi.replication.link_approve", api_replication_link_approve),
-	"link_deny":          sl.NewBuiltin("mochi.replication.link_deny", api_replication_link_deny),
-	"host_remove":        sl.NewBuiltin("mochi.replication.host_remove", api_replication_host_remove),
-	"joins":              sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
-	"join_approve":       sl.NewBuiltin("mochi.replication.join_approve", api_replication_join_approve),
-	"join_deny":          sl.NewBuiltin("mochi.replication.join_deny", api_replication_join_deny),
-	"pair_remove":        sl.NewBuiltin("mochi.replication.pair_remove", api_replication_pair_remove),
-	"bootstrap_progress": sl.NewBuiltin("mochi.replication.bootstrap_progress", api_replication_bootstrap_progress),
-	"bootstrap_serving":  sl.NewBuiltin("mochi.replication.bootstrap_serving", api_replication_bootstrap_serving),
+	"status": sl.NewBuiltin("mochi.replication.status", api_replication_status),
+	"links":  sl.NewBuiltin("mochi.replication.links", api_replication_links),
+	"hosts":  sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
+	"joins":  sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
+	"link": sls.FromStringDict(sl.String("mochi.replication.link"), sl.StringDict{
+		"approve": sl.NewBuiltin("mochi.replication.link.approve", api_replication_link_approve),
+		"deny":    sl.NewBuiltin("mochi.replication.link.deny", api_replication_link_deny),
+	}),
+	"host": sls.FromStringDict(sl.String("mochi.replication.host"), sl.StringDict{
+		"remove": sl.NewBuiltin("mochi.replication.host.remove", api_replication_host_remove),
+	}),
+	"join": sls.FromStringDict(sl.String("mochi.replication.join"), sl.StringDict{
+		"approve": sl.NewBuiltin("mochi.replication.join.approve", api_replication_join_approve),
+		"deny":    sl.NewBuiltin("mochi.replication.join.deny", api_replication_join_deny),
+	}),
+	"pair": sls.FromStringDict(sl.String("mochi.replication.pair"), sl.StringDict{
+		"remove": sl.NewBuiltin("mochi.replication.pair.remove", api_replication_pair_remove),
+	}),
+	"bootstrap": sls.FromStringDict(sl.String("mochi.replication.bootstrap"), sl.StringDict{
+		"progress": sl.NewBuiltin("mochi.replication.bootstrap.progress", api_replication_bootstrap_progress),
+		"serving":  sl.NewBuiltin("mochi.replication.bootstrap.serving", api_replication_bootstrap_serving),
+	}),
 })
 
 // api_replication_status returns a dict describing this server's

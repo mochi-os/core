@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	schema_version = 64
+	schema_version = 65
 )
 
 var (
@@ -257,7 +257,7 @@ func db_create() {
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
-	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null )")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
 	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 
@@ -674,6 +674,8 @@ func db_upgrade() {
 			db_upgrade_63()
 		case 64:
 			db_upgrade_64()
+		case 65:
+			db_upgrade_65()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -877,6 +879,21 @@ func db_upgrade_64() {
 	r := db_open("db/replication.db")
 	if has, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='failed'"); !has {
 		r.exec("alter table bootstrap add column failed integer not null default 0")
+	}
+}
+
+// db_upgrade_65 adds a priority column to the outbound queue so
+// queue_process can deliver replication coordination (link approvals,
+// membership changes, key transfers) ahead of bulk replication data.
+// Without it a large sync flood — e.g. subscribing to a big project,
+// which emits one sql/op per inserted row — buries a pending
+// link/approved behind thousands of messages and the destination sits
+// on "waiting for approval". Existing rows default to 20 (interactive);
+// queue_priority reclassifies each new row at enqueue.
+func db_upgrade_65() {
+	q := db_open("db/queue.db")
+	if has, _ := q.exists("select 1 from pragma_table_info('queue') where name='priority'"); !has {
+		q.exec("alter table queue add column priority integer not null default 20")
 	}
 }
 

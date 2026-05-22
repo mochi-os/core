@@ -164,7 +164,7 @@ func admin_replica_status(c *gin.Context) {
 			// the status endpoint, the pending state can drop. The
 			// per-scope bulk-bootstrap progress is reported via
 			// `mochi.replication.status()` (aggregate `bootstrap_pending`)
-			// and `mochi.replication.bootstrap_progress()` (drill-down).
+			// and `mochi.replication.bootstrap.progress()` (drill-down).
 			setting_delete("replica.join.peer")
 			setting_delete("replica.join.state")
 			setting_delete("replica.join.reason")

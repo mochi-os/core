@@ -246,7 +246,10 @@ type BootstrapDBEntry struct {
 }
 
 // BootstrapDBChunk is the sender→receiver chunk of a DB snapshot.
-// Offset + len(Data) == EOF position when EOF=true.
+// Offset + len(Data) == EOF position when EOF=true. The EOF chunk also
+// carries Seed — the sender's replication tail for this DB's stream,
+// read just before the snapshot — so the receiver can seed the
+// in-order apply cursor at the snapshot's exact sequence point.
 type BootstrapDBChunk struct {
 	Scope  string `cbor:"scope"`
 	User   string `cbor:"user,omitempty"`
@@ -255,6 +258,33 @@ type BootstrapDBChunk struct {
 	Offset int64  `cbor:"offset"`
 	Data   []byte `cbor:"data"`
 	EOF    bool   `cbor:"eof,omitempty"`
+	Seed   int64  `cbor:"seed,omitempty"`
+}
+
+// bootstrap_stream_key maps a bootstrapped DB file — by its relative
+// path under data_dir — to the replication stream key the in-order
+// gate uses for that file, matching repl_op_stream:
+//
+//	users/<u>/<app>/db/<file>  → <app>        (app data DB)
+//	users/<u>/<app>/app.db     → <app>/app    (per-app config DB)
+//	users/<u>/<file>.db        → <file>       (per-user infra DB:
+//	                                          user.db, notifications.db)
+//
+// Returns "" for a file no replication stream targets. Keyed off the
+// path structure (not the basename) so an app whose data file is
+// itself named app.db can't collide with the config DB.
+func bootstrap_stream_key(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	if len(parts) >= 5 && parts[0] == "users" && parts[3] == "db" {
+		return parts[2]
+	}
+	if len(parts) == 4 && parts[0] == "users" && parts[3] == "app.db" {
+		return parts[2] + "/app"
+	}
+	if len(parts) == 3 && parts[0] == "users" {
+		return strings.TrimSuffix(parts[2], ".db")
+	}
+	return ""
 }
 
 // BootstrapScopeDone is the receiver→source ack that a bulk-bootstrap
@@ -1333,12 +1363,23 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
 
+	// Read this DB's replication tail before snapshotting, so the EOF
+	// chunk can carry it as the receiver's apply-cursor seed. Reading
+	// before the snapshot guarantees the seed is at — or just behind —
+	// the snapshot's sequence point: a tiny idempotent re-apply window,
+	// never a gap that would drop ops.
+	rel := strings.TrimPrefix(srcPath, data_dir+string(os.PathSeparator))
+	var seedSeq int64
+	if stream := bootstrap_stream_key(rel); stream != "" {
+		seedSeq = replication_tail(user, repl_scope_app, stream)
+	}
+
 	size, err := snapshot_copy_db(srcPath, tmpPath)
 	if err != nil {
 		info("Replication bootstrap-db-fetch: backup %q failed (from=%q): %v", srcPath, e.peer, err)
 		return
 	}
-	debug("Replication bootstrap-db-fetch: source=%q size=%d to=%q", srcPath, size, e.peer)
+	debug("Replication bootstrap-db-fetch: source=%q size=%d seed=%d to=%q", srcPath, size, seedSeq, e.peer)
 
 	f, err := os.Open(tmpPath)
 	if err != nil {
@@ -1360,7 +1401,7 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			if writeErr := e.stream.write(&BootstrapDBChunk{
+			c := &BootstrapDBChunk{
 				Scope:  scope,
 				User:   user,
 				App:    app,
@@ -1368,7 +1409,11 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 				Offset: offset,
 				Data:   chunk,
 				EOF:    eof,
-			}); writeErr != nil {
+			}
+			if eof {
+				c.Seed = seedSeq
+			}
+			if writeErr := e.stream.write(c); writeErr != nil {
 				info("Replication bootstrap-db-fetch: write chunk failed at %d (from=%q): %v", offset, e.peer, writeErr)
 				return
 			}
@@ -1439,6 +1484,7 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 		return fmt.Errorf("bootstrap-db-fetch: write request: %w", err)
 	}
 
+	var seed int64
 	for {
 		var chunk BootstrapDBChunk
 		if err := s.read(&chunk); err != nil {
@@ -1455,6 +1501,7 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 			return fmt.Errorf("bootstrap-db-fetch: short write at offset %d: wrote %d of %d", chunk.Offset, n, len(chunk.Data))
 		}
 		if chunk.EOF {
+			seed = chunk.Seed
 			break
 		}
 	}
@@ -1462,7 +1509,31 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: close partial %q: %w", partial, err)
 	}
-	return bootstrap_db_land(partial, target)
+	if err := bootstrap_db_land(partial, target); err != nil {
+		return err
+	}
+	bootstrap_db_seed_cursor(peer, target, seed)
+	return nil
+}
+
+// bootstrap_db_seed_cursor seeds the in-order apply cursor for a
+// just-landed bootstrap DB at the snapshot's sequence point, then
+// drains any live ops that buffered for that stream while the
+// transfer was in flight. `target` is the absolute landed path; the
+// stream key and owning user are derived from it so source and
+// receiver agree without trusting the request fields.
+func bootstrap_db_seed_cursor(peer, target string, seed int64) {
+	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
+	stream := bootstrap_stream_key(rel)
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if stream == "" || len(parts) < 2 || parts[0] != "users" {
+		return
+	}
+	user := parts[1]
+	rdb := db_open("db/replication.db")
+	replication_cursor_set(rdb, peer, repl_scope_app, user, stream, seed)
+	replication_stream_drain(rdb, peer, repl_scope_app, user, stream)
+	debug("Replication bootstrap: seeded cursor peer=%q user=%q db=%q seq=%d", peer, user, stream, seed)
 }
 
 // bootstrap_db_land atomically installs the completed snapshot at

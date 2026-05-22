@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	schema_version = 66
+	schema_version = 67
 )
 
 var (
@@ -295,15 +295,20 @@ func db_create() {
 	replication := db_open("db/replication.db")
 	replication.exec("create table seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
 	replication.exec("create index seen_applied on seen(applied)")
-	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', sequence integer not null, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
 	replication.exec("create index pending_received on pending(received)")
+	replication.exec("create index pending_chain on pending(peer, scope, user, db, prev)")
 	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, primary key (user, peer))")
 	replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
 	// cursor: the contiguous in-order apply watermark per inbound
-	// (peer, scope, user) stream. Ops apply strictly in sequence
-	// order so a same-row op chain can't be reordered by a backlog
-	// drain. See claude/plans/replication-test.md Stage 19.
-	replication.exec("create table cursor (peer text not null, scope text not null, user text not null default '', sequence integer not null default 0, primary key (peer, scope, user))")
+	// (peer, scope, user, db) stream. Each op chains onto its db
+	// stream via op.Prev so a same-row op chain can't be reordered
+	// by a backlog drain. See claude/plans/replication-test.md
+	// Stage 19.
+	replication.exec("create table cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	// tail: sender-side last-emitted sequence per (user, scope, db),
+	// stamped onto each outbound op as Prev — the per-db ordering chain.
+	replication.exec("create table tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
 	replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
 	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index leadership_expires on leadership(expires)")
@@ -683,6 +688,8 @@ func db_upgrade() {
 			db_upgrade_65()
 		case 66:
 			db_upgrade_66()
+		case 67:
+			db_upgrade_67()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -917,6 +924,26 @@ func db_upgrade_66() {
 		r.exec("create table cursor (peer text not null, scope text not null, user text not null default '', sequence integer not null default 0, primary key (peer, scope, user))")
 		r.exec("insert or ignore into cursor (peer, scope, user, sequence) select peer, scope, user, max(sequence) from seen group by peer, scope, user")
 	}
+}
+
+// db_upgrade_67 re-keys the in-order apply gate per DB. `pending` gains
+// db + prev columns — the per-db ordering chain. `cursor` is re-keyed
+// (peer, scope, user, db): dropped and recreated, since the gate
+// re-anchors each stream from its first post-upgrade op (Prev==0) and
+// the bootstrap manifest seeds fresh replicas. `tail` is new: the
+// sender's last-emitted sequence per db-stream.
+func db_upgrade_67() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from pragma_table_info('pending') where name='db'"); !has {
+		r.exec("alter table pending add column db text not null default ''")
+	}
+	if has, _ := r.exists("select 1 from pragma_table_info('pending') where name='prev'"); !has {
+		r.exec("alter table pending add column prev integer not null default 0")
+	}
+	r.exec("create index if not exists pending_chain on pending(peer, scope, user, db, prev)")
+	r.exec("drop table if exists cursor")
+	r.exec("create table cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	r.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

@@ -268,6 +268,16 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 		"insert or replace into hosts (user, peer, added, ack) values (?, ?, ?, 0)",
 		placeholder, originPeer, now())
 
+	// Seed the in-order apply cursors for the user's non-file streams
+	// (users, sessions) at the source's tail snapshot. Live ops that
+	// arrived already — buffered with no cursor — drain now; later
+	// ones chain. File-bootstrapped streams seed per-file from the DB
+	// snapshot instead (bootstrap_db_seed_cursor).
+	for stream, seq := range kt.Seeds {
+		replication_cursor_set(rdb, originPeer, repl_scope_app, placeholder, stream, seq)
+		replication_stream_drain(rdb, originPeer, repl_scope_app, placeholder, stream)
+	}
+
 	// Backfill this user's existing data from the source. Without
 	// this the placeholder would have the schema in place (via lazy
 	// database_upgrade on first request) but zero rows — only writes
@@ -819,14 +829,21 @@ func replication_link_approve(user, peer string) (string, error) {
 	}
 	replication_link_collect_extras(udb, user, keys)
 
-	replication_emit_link_approved(peer, placeholder, keys)
-	audit_replication_link_approved(user, peer)
-
-	// Add peer to user's host set + emit membership-change so any
-	// existing per-user peers also learn about the new member.
+	// Add peer to the user's host set before emitting link-approved,
+	// and snapshot the non-file replication streams' tails at that
+	// instant. The replica seeds its in-order apply cursors from
+	// keys.Seeds so the first op it receives on each stream — emitted
+	// at or after this point — chains onto the seed.
 	rdb.exec(
 		"insert or replace into hosts (user, peer, added, ack) values (?, ?, ?, 0)",
 		user, peer, now())
+	keys.Seeds = map[string]int64{
+		"users":    replication_tail(user, repl_scope_app, "users"),
+		"sessions": replication_tail(user, repl_scope_app, "sessions"),
+	}
+
+	replication_emit_link_approved(peer, placeholder, keys)
+	audit_replication_link_approved(user, peer)
 
 	var current []string
 	if rows, err := rdb.rows("select peer from hosts where user=?", user); err == nil {

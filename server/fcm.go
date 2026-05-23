@@ -80,7 +80,7 @@ var (
 //     no token at all) and api_account_notify should delete the row.
 //   - detail is a short human-readable failure reason for surfaces like
 //     the connected-accounts "Test" button. Empty on success.
-func account_deliver_fcm(data map[string]any, title, body, link, tag, app string) (success bool, retire bool, detail string) {
+func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id string) (success bool, retire bool, detail string) {
 	token, _ := data["token"].(string)
 	if token == "" {
 		return false, true, "Account has no token"
@@ -117,6 +117,7 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app string
 				"link":  link,
 				"tag":   tag,
 				"app":   app,
+				"id":    id,
 			},
 		},
 	}

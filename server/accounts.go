@@ -1184,7 +1184,7 @@ func account_test_fcm(data map[string]any, language string, account_label string
 	}
 	title := resolve_core_label(language, "push.test.title", nil)
 	body := resolve_core_label(language, "push.test.body", map[string]any{"account": account_label})
-	success, retire, detail := account_deliver_fcm(data, title, body, "", "notifications-test-", "notifications")
+	success, retire, detail := account_deliver_fcm(data, title, body, "", "notifications-test-", "notifications", "")
 	if success {
 		return AccountTestResult{Success: true, Message: "Test notification sent"}, false
 	}
@@ -1439,10 +1439,14 @@ func account_test_url(url, secret string) AccountTestResult {
 	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
 }
 
-// mochi.account.notify(app, category, object, title, body, link, urgency?, account?) -> dict:
+// mochi.account.notify(app, category, object, title, body, link, urgency?, account?, id?) -> dict:
 // Notify the user across one or all of their verified notification accounts. Iterates
 // accounts with the "notify" capability and dispatches via the matching provider driver
 // (browser push, email, pushbullet, ntfy, external URL). Returns {sent, failed} counts.
+//
+// id (optional): the notification row id from the notifications app. When set, it is
+// echoed in unifiedpush / fcm push payloads so the device can call -/read on tap and
+// clear the matching row from the user's web bell.
 //
 // Dispatch runs in core because account secrets (push subscriptions, API tokens, HMAC
 // signing keys) are never exposed to apps. For policy-aware notification routing
@@ -1458,7 +1462,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no user")
 	}
 
-	var app, category, object, title, body, link, urgency string
+	var app, category, object, title, body, link, urgency, id string
 	var account int
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
 		"app", &app,
@@ -1469,6 +1473,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		"link?", &link,
 		"urgency?", &urgency,
 		"account?", &account,
+		"id?", &id,
 	); err != nil {
 		return nil, err
 	}
@@ -1535,10 +1540,10 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			token, _ := data["token"].(string)
 			success = account_deliver_ntfy(server, topic, token, title, body, link)
 		case "unifiedpush":
-			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app)
+			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app, id)
 		case "fcm":
 			var retire bool
-			success, retire, _ = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app)
+			success, retire, _ = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app, id)
 			if !success && retire {
 				// Google reported UNREGISTERED / INVALID_ARGUMENT — the
 				// token is permanently dead. Drop the row so the next
@@ -1639,7 +1644,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 //     instead of HTTP self-call + Web Push round-trip.
 //   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
 //     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
-func account_deliver_unifiedpush(user *User, accountID int64, data map[string]any, title, body, link, tag, app string) bool {
+func account_deliver_unifiedpush(user *User, accountID int64, data map[string]any, title, body, link, tag, app, id string) bool {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
 		return false
@@ -1651,6 +1656,7 @@ func account_deliver_unifiedpush(user *User, accountID int64, data map[string]an
 		"link":  link,
 		"tag":   tag,
 		"app":   app,
+		"id":    id,
 	})
 
 	// Local fast-path: path-only endpoint synthesised by our own register

@@ -312,6 +312,14 @@ func init() {
 	a.event_anonymous("bootstrap/db/manifest", replication_bootstrap_db_manifest_event)
 	a.event_anonymous("bootstrap/db/fetch", replication_bootstrap_db_fetch_event)
 	a.event_anonymous("bootstrap/scope/done", replication_bootstrap_scope_done_event)
+	// Cross-host leader election (see leader.go). The claim event is a
+	// sync stream RPC: proposer opens, writes LeaderClaimRequest, reads
+	// LeaderClaimResponse on the same stream. The granted event is a
+	// fire-and-forget queue message: proposer pushes post-success so
+	// other peers in the membership mirror the new lease in their
+	// leadership row.
+	a.event_anonymous("replica/leader/claim", replica_leader_claim_event)
+	a.event_anonymous("replica/leader/granted", replica_leader_granted_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the

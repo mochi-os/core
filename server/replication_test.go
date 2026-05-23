@@ -1309,6 +1309,247 @@ func TestLeaderFenceAndRelease(t *testing.T) {
 	}
 }
 
+// ----------------------------------------------------------------------
+// Cross-host election RPC tests (Stage 22 follow-up).
+// p2p_id in the test stub is "self"; alphabetic order: "aaa" < "self" < "zzz".
+// ----------------------------------------------------------------------
+
+func TestLeaderVoteVacantGrants(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	granted, leader, fence, exp := replication_leader_vote("platform", "k1", "any-proposer", now()+60)
+	if !granted {
+		t.Errorf("vacant row must grant any proposer")
+	}
+	if leader != "" || fence != 0 || exp != 0 {
+		t.Errorf("vacant vote should report empty state, got leader=%q fence=%d exp=%d", leader, fence, exp)
+	}
+}
+
+func TestLeaderVoteRenewalGrants(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'k1', 'p-aaa', ?, 5)", now()+60)
+
+	granted, leader, fence, _ := replication_leader_vote("platform", "k1", "p-aaa", now()+60)
+	if !granted {
+		t.Errorf("renewal by current holder must grant")
+	}
+	if leader != "p-aaa" || fence != 5 {
+		t.Errorf("renewal response must report current state (leader=%q fence=%d)", leader, fence)
+	}
+}
+
+func TestLeaderVoteTieBreakLowerProposerWins(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	// We (self) hold an alive lease.
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'k1', ?, ?, 1)", p2p_id, now()+60)
+
+	// Lower-id proposer wins the tie-break — self defers.
+	if g, _, _, _ := replication_leader_vote("platform", "k1", "aaa", now()+60); !g {
+		t.Errorf("lower-id proposer (aaa < self) must beat current holder")
+	}
+	// Higher-id proposer denied.
+	if g, leader, _, _ := replication_leader_vote("platform", "k1", "zzz", now()+60); g {
+		t.Errorf("higher-id proposer (zzz > self) must be denied; got grant with leader=%q", leader)
+	}
+	// Expired alive lease — anyone grants.
+	db.exec("update leadership set expires=? where scope='platform' and key='k1'", now()-1)
+	if g, _, _, _ := replication_leader_vote("platform", "k1", "zzz", now()+60); !g {
+		t.Errorf("expired lease must grant any proposer")
+	}
+}
+
+func TestLeaderMembershipFromScopePrefix(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added) values ('pair-peer', ?)", now())
+	db.exec("insert into pair (peer, added) values (?, ?)", p2p_id, now()) // self should be filtered
+	db.exec("insert into hosts (user, peer, added) values ('user-x', 'host-peer', ?)", now())
+	db.exec("insert into hosts (user, peer, added) values ('user-x', ?, ?)", p2p_id, now()) // self filtered
+
+	if m := replication_leader_membership("user:user-x"); len(m) != 1 || m[0] != "host-peer" {
+		t.Errorf("user-scoped membership: got %v, want [host-peer]", m)
+	}
+	if m := replication_leader_membership("user:unknown"); len(m) != 0 {
+		t.Errorf("unknown user membership: got %v, want empty", m)
+	}
+	if m := replication_leader_membership("platform"); len(m) != 1 || m[0] != "pair-peer" {
+		t.Errorf("platform membership: got %v, want [pair-peer]", m)
+	}
+	if m := replication_leader_membership("credential:abc"); len(m) != 1 || m[0] != "pair-peer" {
+		t.Errorf("non-user-prefix scope must fall back to pair; got %v", m)
+	}
+}
+
+func TestLeaderClaimRPCGrantedSucceeds(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	notified := 0
+	replication_leader_notify = func(scope, key string, fence, expires int64) { notified++ }
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		return &LeaderClaimResponse{Granted: true}
+	}
+
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
+
+	if !replication_leader_claim("platform", "k1") {
+		t.Fatalf("claim must succeed when remote grants")
+	}
+	if notified != 1 {
+		t.Errorf("notify must fire exactly once on success, got %d", notified)
+	}
+
+	// Fast-path renewal on the next call — no fan-out, fence bumps to 2.
+	calls := 0
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		calls++
+		return &LeaderClaimResponse{Granted: true}
+	}
+	if !replication_leader_claim("platform", "k1") {
+		t.Errorf("fast-path renewal must succeed")
+	}
+	if calls != 0 {
+		t.Errorf("fast-path renewal must not fire RPC; got %d calls", calls)
+	}
+	if f := replication_leader_fence("platform", "k1"); f != 2 {
+		t.Errorf("renewal must bump fence to 2, got %d", f)
+	}
+}
+
+func TestLeaderClaimRPCDeniedMirrorsAndFails(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	replication_leader_notify = func(scope, key string, fence, expires int64) {
+		t.Errorf("notify must NOT fire on a denied claim")
+	}
+	denyExp := now() + 60
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		return &LeaderClaimResponse{Granted: false, CurrentLeader: "remote-leader", CurrentFence: 7, CurrentExpires: denyExp}
+	}
+
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
+
+	if replication_leader_claim("platform", "k1") {
+		t.Fatalf("claim must NOT succeed when remote denies with a current leader")
+	}
+	row, _ := db.row("select peer, fence, expires from leadership where scope='platform' and key='k1'")
+	if p, _ := row["peer"].(string); p != "remote-leader" {
+		t.Errorf("mirror failed: expected peer='remote-leader', got %q", p)
+	}
+	if f, _ := row["fence"].(int64); f != 7 {
+		t.Errorf("mirror failed: expected fence=7, got %d", f)
+	}
+
+	// Fast-path-deny on the next call — no RPC fired.
+	calls := 0
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		calls++
+		return nil
+	}
+	if replication_leader_claim("platform", "k1") {
+		t.Errorf("fast-path-deny expected after mirroring active peer lease")
+	}
+	if calls != 0 {
+		t.Errorf("fast-path-deny must not fire RPC; got %d calls", calls)
+	}
+}
+
+func TestLeaderClaimRPCPartitionFallbackSucceeds(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	replication_leader_notify = func(scope, key string, fence, expires int64) {}
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		return nil // every peer unreachable
+	}
+
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
+
+	if !replication_leader_claim("platform", "k1") {
+		t.Errorf("partition fallback: claim must succeed when no peers respond")
+	}
+}
+
+func TestLeaderGrantedNoticeMirrors(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Build a synthetic Event for the granted handler.
+	expires := now() + 60
+	e := &Event{
+		content: map[string]any{
+			"scope":   "platform",
+			"key":     "k1",
+			"peer":    "remote-leader",
+			"fence":   int64(9),
+			"expires": expires,
+		},
+	}
+	replica_leader_granted_event(e)
+
+	db := db_open("db/replication.db")
+	row, _ := db.row("select peer, fence, expires from leadership where scope='platform' and key='k1'")
+	if row == nil {
+		t.Fatal("granted handler must insert a leadership row")
+	}
+	if p, _ := row["peer"].(string); p != "remote-leader" {
+		t.Errorf("mirrored peer: got %q, want 'remote-leader'", p)
+	}
+	if f, _ := row["fence"].(int64); f != 9 {
+		t.Errorf("mirrored fence: got %d, want 9", f)
+	}
+
+	// A later notice with a higher fence overwrites.
+	e.content["fence"] = int64(10)
+	e.content["expires"] = expires + 30
+	replica_leader_granted_event(e)
+	row, _ = db.row("select fence from leadership where scope='platform' and key='k1'")
+	if f, _ := row["fence"].(int64); f != 10 {
+		t.Errorf("higher-fence notice must overwrite, got %d", f)
+	}
+
+	// A stale notice with an older fence/expires is ignored.
+	e.content["fence"] = int64(8)
+	e.content["expires"] = expires - 30
+	replica_leader_granted_event(e)
+	row, _ = db.row("select fence from leadership where scope='platform' and key='k1'")
+	if f, _ := row["fence"].(int64); f != 10 {
+		t.Errorf("stale notice must NOT overwrite (expected 10, got %d)", f)
+	}
+}
+
 func TestBroadcastNextMonotonic(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_test")
 	if err != nil {

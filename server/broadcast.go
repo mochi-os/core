@@ -72,7 +72,7 @@ func broadcast_acknowledged_table_create(db *DB) {
 // paired host its own sequence space.
 func broadcast_next_local(db *DB, key, peer string) int64 {
 	broadcast_sequence_table_create(db)
-	db.exec("insert into _sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = _sequence.last + 1", key, peer)
+	db.exec_app_user("insert into _sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = _sequence.last + 1", key, peer)
 	return int64(db.integer("select last from _sequence where key=? and peer=?", key, peer))
 }
 
@@ -86,7 +86,7 @@ func broadcast_received_get(db *DB, sender, key string) int64 {
 
 func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
-	db.exec("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
+	db.exec_app_user("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
 }
 
 // broadcast_log_append writes one log row in the same transaction as
@@ -95,14 +95,14 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
 	sequence := broadcast_next_local(db, key, peer)
-	db.exec("insert into _log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
+	db.exec_app_user("insert into _log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
 	return sequence
 }
 
 // broadcast_log_age_trim deletes log rows older than the age cap for
 // the given (key, peer). Called on send; no-op when nothing's aged out.
 func broadcast_log_age_trim(db *DB, key, peer string) {
-	db.exec("delete from _log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
+	db.exec_app_user("delete from _log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
 }
 
 // broadcast_log_ack_trim deletes log rows below the min ack across all
@@ -117,7 +117,7 @@ func broadcast_log_ack_trim(db *DB, key, peer string) {
 	if !ok || last <= 0 {
 		return
 	}
-	db.exec("delete from _log where key=? and peer=? and sequence < ?", key, peer, last)
+	db.exec_app_user("delete from _log where key=? and peer=? and sequence < ?", key, peer, last)
 }
 
 // mochi.broadcast.next(key) -> int: allocate the next outbound sequence
@@ -412,7 +412,7 @@ func (e *Event) broadcast_acknowledge() error {
 	}
 
 	broadcast_acknowledged_table_create(e.db)
-	e.db.exec("insert into _acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(_acknowledged.last, excluded.last)", key, peer, e.from, sequence)
+	e.db.exec_app_user("insert into _acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(_acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
 	return nil
 }
@@ -470,6 +470,60 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 		"key":   key,
 		"peer":  peer,
 		"after": last,
+	}
+	m.send_peer(peer)
+}
+
+// broadcast_send_ack delivers a broadcast/acknowledge event back to
+// the originating host of a broadcast we've just applied. Fired by
+// the receiver wrapper in events.go after each successful advance;
+// the owner's broadcast_acknowledge handler upserts _acknowledged
+// for (key, peer, subscriber=us) and runs broadcast_log_ack_trim,
+// which drops _log rows below the slowest subscriber's progress.
+//
+// Self-loops (peer == p2p_id) are skipped: the owner is its own
+// subscriber and already knows its state; the 7d age trim handles
+// _log cleanup for self-loop streams without needing a network
+// round-trip.
+//
+// Fire-and-forget: the message goes to the queue and retries; an
+// ack that fails to deliver is harmless because the next applied
+// event will trigger a fresh ack carrying an equal-or-higher
+// sequence (each ack is the latest _received.last, not a delta).
+//
+// from: the local subscriber entity (e.to of the inbound broadcast —
+//
+//	the local entity that received the event).
+//
+// to:   the broadcast owner entity (e.from of the inbound — who
+//
+//	broadcast it).
+//
+// peer: the originating libp2p peer ID (e.peer of the inbound — the
+//
+//	host to send the ack back to).
+func broadcast_send_ack(user *User, a *App, from, to, key, peer string, sequence int64) {
+	if user == nil || a == nil {
+		return
+	}
+	if from == "" || to == "" || key == "" || peer == "" || sequence <= 0 {
+		return
+	}
+	if peer == p2p_id {
+		return
+	}
+	services := app_services(a, user)
+	service := ""
+	if len(services) > 0 {
+		service = services[0]
+	}
+	m := message(from, to, service, "broadcast/acknowledge")
+	m.FromApp = a.id
+	m.Services = services
+	m.content = map[string]any{
+		"key":      key,
+		"peer":     peer,
+		"sequence": sequence,
 	}
 	m.send_peer(peer)
 }

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"strings"
+
 	sl "go.starlark.net/starlark"
 )
 
@@ -16,21 +18,41 @@ const leader_lease_seconds = 60
 // is the current leader for the (scope, key) lease. Apps gate scheduled
 // work on the return so only one replica fires per logical event.
 //
-// V1: each host claims locally via INSERT … ON CONFLICT. The ON CONFLICT
-// WHERE clause refuses to overwrite an active lease held by a different
-// peer, so the per-(scope, key) lease is single-owner within one host's
-// view of the world. Cross-host conflict (two peers each thinking they
-// hold the lease during a partition) is resolved at receive time by the
-// fence-token check on emitted ops — leaders attach their current fence,
-// receivers honour the highest fence seen and drop ops bearing a stale
-// one. The fence-token-on-ops + quorum-acquisition protocol lands as a
-// follow-up; the local lease semantics work today and the helper API
-// stays stable.
+// Three-tier flow inside replication_leader_claim:
 //
-// Scope is a free-form string carrying a structured prefix:
+//  1. Fast path: local row says we hold an alive lease → renew (bump
+//     fence, push expires) + return True. Local row says another peer
+//     holds an alive lease → return False without any RPC.
+//
+//  2. Else fan out a sync RPC (replica/leader/claim) to each peer in
+//     the (scope, key) membership. Any explicit denial with a current-
+//     leader pointer vetoes the claim and we mirror that leader into
+//     our local row so future calls go fast-path-deny.
+//
+//  3. If all peers grant (or are unreachable — optimistic partition
+//     policy), commit the lease locally with an incremented fence and
+//     fire a fire-and-forget replica/leader/granted notice to every
+//     peer so their views stay consistent.
+//
+// Scope membership is parsed from the prefix: "user:<uid>" resolves
+// to replication.db.hosts.peer for that uid; everything else uses
+// replication.db.pair.peer. Scope examples:
 //   - "user:<uid>" — events scoped to one user (feeds AI tagging, etc.)
 //   - "credential:<id>" — passkey sign_count delegation (task #10)
 //   - "platform" — server-wide periodic ticks (cleanup, broadcasts)
+//
+// Tie-break for simultaneous claims: lower peer id wins. The vote rule
+// in replication_leader_vote grants if (a) the row is vacant or
+// expired, (b) the proposer is the current holder (renewal), or (c)
+// the proposer's peer id sorts before the current holder's. Combined
+// with a tentative local write that lands before fan-out, simultaneous
+// claims converge on the lowest-id host as leader.
+//
+// Concurrent claims that both reach step 3 (cross-host partition with
+// stale views) are caught at apply time by the fence-token check in
+// replication_op_event: only one leader's emitted ops carry the higher
+// fence, the other's are dropped as superseded. Write correctness
+// survives even when compute briefly runs twice during a partition.
 func api_schedule_leader(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var scope, key string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "scope", &scope, "key", &key); err != nil {
@@ -47,20 +69,33 @@ func api_schedule_leader(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 }
 
 // replication_leader_claim attempts to acquire or renew the lease for
-// (scope, key) on the local host. Returns true if the local host now
-// holds the lease. The implementation is a single SQL statement so the
-// claim is atomic against concurrent local callers; cross-host races
-// resolve via the fence token (see api_schedule_leader doc comment).
+// (scope, key). See api_schedule_leader's doc comment for the
+// three-tier flow + design notes.
 func replication_leader_claim(scope, key string) bool {
 	db := db_open("db/replication.db")
 	n := now()
 	expires := n + leader_lease_seconds
 
-	// INSERT new row when no lease exists; UPDATE only when we already
-	// hold the lease (renewal) or the existing lease is expired. The
-	// fence increments on every grant, including renewals, so any op
-	// the leader stamps with the current fence is strictly newer than
-	// anything any prior leader emitted.
+	// Fast path: local row decides without RPC if it's authoritative.
+	row, _ := db.row("select peer, expires from leadership where scope=? and key=?", scope, key)
+	if row != nil {
+		cur_peer, _ := row["peer"].(string)
+		cur_exp, _ := row["expires"].(int64)
+		if cur_peer == p2p_id && cur_exp > n {
+			db.exec("update leadership set expires=?, fence=fence+1 where scope=? and key=? and peer=?", expires, scope, key, p2p_id)
+			return true
+		}
+		if cur_peer != "" && cur_peer != p2p_id && cur_exp > n {
+			return false
+		}
+	}
+
+	// Tentative-write: claim locally before fanning out so concurrent
+	// RPCs from peers see our intent. With the lower-id tie-break in
+	// replication_leader_vote, simultaneous claims converge on the
+	// lowest-id host deterministically — that host's tentative row
+	// makes its peer the current holder when the other host's vote
+	// arrives, and the tie-break favours the lower id.
 	db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, 1)
 		on conflict(scope, key) do update set
 			peer = excluded.peer,
@@ -69,13 +104,46 @@ func replication_leader_claim(scope, key string) bool {
 		where leadership.peer = excluded.peer or leadership.expires < ?`,
 		scope, key, p2p_id, expires, n)
 
-	row, _ := db.row("select peer, expires from leadership where scope=? and key=?", scope, key)
+	// Fan out: any explicit denial with a current-leader pointer vetoes
+	// the claim. Unreachable peers (nil response) count as "no veto" —
+	// optimistic partition policy. Write convergence under a partition
+	// is guaranteed by the fence-on-ops check in replication_op_event.
+	for _, peer := range replication_leader_membership(scope) {
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		res := replication_leader_claim_rpc(peer, scope, key, expires)
+		if res == nil {
+			continue
+		}
+		if !res.Granted && res.CurrentLeader != "" && res.CurrentLeader != p2p_id {
+			db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, ?)
+				on conflict(scope, key) do update set
+					peer = excluded.peer,
+					expires = excluded.expires,
+					fence = excluded.fence`,
+				scope, key, res.CurrentLeader, res.CurrentExpires, res.CurrentFence)
+			return false
+		}
+	}
+
+	// Verify our tentative row still stands — a concurrent caller on
+	// the same host (rare goroutine race) or a notify from a competing
+	// peer could have overwritten it during fan-out.
+	row, _ = db.row("select peer, expires, fence from leadership where scope=? and key=?", scope, key)
 	if row == nil {
 		return false
 	}
-	peer, _ := row["peer"].(string)
-	exp, _ := row["expires"].(int64)
-	return peer == p2p_id && exp > n
+	cur_peer, _ := row["peer"].(string)
+	cur_exp, _ := row["expires"].(int64)
+	cur_fence, _ := row["fence"].(int64)
+	if cur_peer != p2p_id || cur_exp <= n {
+		return false
+	}
+
+	// Notify peers so their views mirror the new leader.
+	replication_leader_notify(scope, key, cur_fence, cur_exp)
+	return true
 }
 
 // replication_leader_fence returns the current fence token for the
@@ -155,4 +223,208 @@ func replication_fence_current(scope, key string) (int64, string) {
 	fence, _ := row["fence"].(int64)
 	peer, _ := row["peer"].(string)
 	return fence, peer
+}
+
+// ----------------------------------------------------------------------
+// Cross-host election RPC layer (Stage 22 follow-up).
+// ----------------------------------------------------------------------
+
+// LeaderClaimRequest is the proposer's claim-time RPC payload: "may I
+// hold (scope, key) until expires?" The proposer's own peer id arrives
+// implicitly as e.peer on the recipient's side; no need to send it.
+type LeaderClaimRequest struct {
+	Scope   string `cbor:"scope"`
+	Key     string `cbor:"key"`
+	Expires int64  `cbor:"expires"`
+}
+
+// LeaderClaimResponse is the recipient's vote. Granted=true means the
+// recipient sees no obstacle (vacant/expired row, proposer is current
+// holder, or proposer's id wins the lower-id tie-break). On denial the
+// CurrentLeader/Fence/Expires fields tell the proposer who actually
+// holds the lease so the proposer can mirror that row locally and
+// fast-path-deny on the next call.
+type LeaderClaimResponse struct {
+	Granted        bool   `cbor:"granted"`
+	CurrentLeader  string `cbor:"leader,omitempty"`
+	CurrentFence   int64  `cbor:"fence,omitempty"`
+	CurrentExpires int64  `cbor:"expires,omitempty"`
+}
+
+// LeaderGrantedNotice is the proposer's post-claim broadcast to peers
+// in the membership: "I now hold (scope, key) at this fence until this
+// expires." Fire-and-forget; peers mirror the row so their views stay
+// in sync with the new leader. The mirror's WHERE clause refuses to
+// overwrite a row with later expires or higher fence, so out-of-order
+// notices converge on the most recent.
+type LeaderGrantedNotice struct {
+	Scope   string `cbor:"scope"`
+	Key     string `cbor:"key"`
+	Peer    string `cbor:"peer"`
+	Fence   int64  `cbor:"fence"`
+	Expires int64  `cbor:"expires"`
+}
+
+// replication_leader_membership returns the peers that vote on a
+// (scope, key) claim. Self is excluded. Empty for single-host setups
+// where there's nobody else to ask — the optimistic policy then
+// auto-grants every claim.
+//
+// Scope prefix dispatch:
+//   - "user:<uid>" → replication.db.hosts.peer where user=<uid>
+//   - anything else → replication.db.pair.peer (whole-server pair)
+func replication_leader_membership(scope string) []string {
+	db := db_open("db/replication.db")
+	var rows []map[string]any
+	if strings.HasPrefix(scope, "user:") {
+		uid := strings.TrimPrefix(scope, "user:")
+		rows, _ = db.rows("select peer from hosts where user=? and peer != ?", uid, p2p_id)
+	} else {
+		rows, _ = db.rows("select peer from pair where peer != ?", p2p_id)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p, ok := r["peer"].(string); ok && p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// replication_leader_vote computes this host's vote on an inbound
+// claim. Returns granted plus the current leader / fence / expires so
+// the proposer can mirror on a denial.
+//
+// Voting rules:
+//   - row vacant → grant
+//   - row expired → grant
+//   - row alive, held by proposer → grant (renewal)
+//   - row alive, held by anyone else: grant iff proposer < current
+//     (lexicographic peer-id tie-break)
+//
+// Tie-break is intentionally applied even when the recipient itself
+// holds the lease: simultaneous claims converge on the lowest-id host
+// because each higher-id host's vote on a lower-id proposer is a grant.
+func replication_leader_vote(scope, key, proposer string, proposed_expires int64) (granted bool, leader string, fence int64, expires int64) {
+	db := db_open("db/replication.db")
+	n := now()
+	row, _ := db.row("select peer, fence, expires from leadership where scope=? and key=?", scope, key)
+	if row == nil {
+		return true, "", 0, 0
+	}
+	cur_peer, _ := row["peer"].(string)
+	cur_fence, _ := row["fence"].(int64)
+	cur_exp, _ := row["expires"].(int64)
+	if cur_exp <= n {
+		return true, cur_peer, cur_fence, cur_exp
+	}
+	if proposer == cur_peer {
+		return true, cur_peer, cur_fence, cur_exp
+	}
+	if proposer < cur_peer {
+		return true, cur_peer, cur_fence, cur_exp
+	}
+	return false, cur_peer, cur_fence, cur_exp
+}
+
+// replication_leader_claim_rpc is a stub-overridable function pointer
+// so tests can drive vote scenarios without spinning up real peers.
+var replication_leader_claim_rpc = replication_leader_claim_rpc_impl
+
+// replication_leader_claim_rpc_impl opens a sync stream to peer and
+// fetches that peer's vote on the proposer's claim. Returns nil on any
+// transport or protocol error; the optimistic partition policy in the
+// caller treats nil as "no veto" (count as unreachable, not as deny).
+func replication_leader_claim_rpc_impl(peer, scope, key string, expires int64) *LeaderClaimResponse {
+	s, err := stream_to_peer(peer, "", "", "replication", "replica/leader/claim", "", nil)
+	if err != nil {
+		return nil
+	}
+	defer s.close()
+	if err := s.write(&LeaderClaimRequest{Scope: scope, Key: key, Expires: expires}); err != nil {
+		return nil
+	}
+	var res LeaderClaimResponse
+	if err := s.read(&res); err != nil {
+		return nil
+	}
+	return &res
+}
+
+// replica_leader_claim_event is the inbound stream-RPC handler for a
+// peer's leader-claim request. Reads the request, votes via
+// replication_leader_vote, writes the response back on the same stream.
+func replica_leader_claim_event(e *Event) {
+	if e.stream == nil {
+		info("Replica leader-claim: no stream — dropping")
+		return
+	}
+	scope, _ := e.content["scope"].(string)
+	key, _ := e.content["key"].(string)
+	expires := event_int64(e.content["expires"])
+	if scope == "" || key == "" || expires <= 0 {
+		_ = e.stream.write(&LeaderClaimResponse{Granted: false})
+		return
+	}
+	granted, leader, fence, exp := replication_leader_vote(scope, key, e.peer, expires)
+	_ = e.stream.write(&LeaderClaimResponse{
+		Granted:        granted,
+		CurrentLeader:  leader,
+		CurrentFence:   fence,
+		CurrentExpires: exp,
+	})
+}
+
+// replication_leader_notify is a stub-overridable function pointer for
+// the post-claim fire-and-forget notification so tests can capture or
+// suppress outbound side-effects.
+var replication_leader_notify = replication_leader_notify_impl
+
+// replication_leader_notify_impl sends a replica/leader/granted notice
+// to every peer in the (scope, key) membership. Best-effort: send_peer
+// queues if the connection is down and the receiver-side mirror's
+// WHERE clause makes out-of-order arrivals converge on the latest
+// fence/expires anyway.
+func replication_leader_notify_impl(scope, key string, fence, expires int64) {
+	for _, peer := range replication_leader_membership(scope) {
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		m := message("", "", "replication", "replica/leader/granted")
+		m.content = map[string]any{
+			"scope":   scope,
+			"key":     key,
+			"peer":    p2p_id,
+			"fence":   fence,
+			"expires": expires,
+		}
+		m.send_peer(peer)
+	}
+}
+
+// replica_leader_granted_event is the inbound handler for a peer's
+// post-claim notification. Mirrors the new lease in our local
+// leadership row so the next mochi.schedule.leader call here goes
+// straight to fast-path-deny without firing a redundant claim RPC.
+//
+// The WHERE clause refuses to overwrite a row with a later expires or
+// higher fence — out-of-order notices (rare; same peer renewing twice
+// during a network blip) converge on the most recent.
+func replica_leader_granted_event(e *Event) {
+	scope, _ := e.content["scope"].(string)
+	key, _ := e.content["key"].(string)
+	peer, _ := e.content["peer"].(string)
+	fence := event_int64(e.content["fence"])
+	expires := event_int64(e.content["expires"])
+	if scope == "" || key == "" || peer == "" || expires <= 0 {
+		return
+	}
+	db := db_open("db/replication.db")
+	db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, ?)
+		on conflict(scope, key) do update set
+			peer = excluded.peer,
+			expires = excluded.expires,
+			fence = excluded.fence
+		where excluded.expires > leadership.expires or excluded.fence > leadership.fence`,
+		scope, key, peer, expires, fence)
 }

@@ -291,6 +291,7 @@ func (e *Event) route() error {
 
 	if broadcast_check && handler_err == nil {
 		broadcast_advance_local(e.db, e.peer, bkey, bseq)
+		broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
 	}
 	return handler_err
 }

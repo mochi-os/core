@@ -427,6 +427,7 @@ func db_app(u *User, app *App) *DB {
 		return nil
 	}
 	db.user = u
+	db.app = app
 
 	if reused {
 		return db
@@ -1592,6 +1593,28 @@ func (db *DB) exec_replicated(query string, values ...any) {
 	case db_kind_user_core:
 		replication_emit_user_core_exec(db.user, query, values)
 	}
+}
+
+// exec_app_user runs a write against a per-user app DB and emits a
+// sql/op so the same statement re-executes on every paired host.
+// Used by Go-side internals that need to mutate per-user app DBs and
+// have those changes converge across hosts — currently the broadcast
+// log helpers (_log / _sequence / _received / _acknowledged), which
+// broadcast.md says MUST be replicated so any host in the pair can
+// serve a resync for any peer's stream.
+//
+// Schema DDL stays on plain exec — receivers create their own tables
+// on first open via the `create table if not exists` helpers.
+func (db *DB) exec_app_user(query string, values ...any) {
+	must(db.internal.Exec(query, values...))
+	if db.user == nil || db.user.UID == "" || db.app == nil {
+		return
+	}
+	av := db.app.active(db.user)
+	if av == nil {
+		return
+	}
+	replication_emit_sql_command(db.user, db.app, av, query, values)
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {

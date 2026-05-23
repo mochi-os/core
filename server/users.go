@@ -67,6 +67,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	}),
 	"suspend": sl.NewBuiltin("mochi.user.suspend", api_user_suspend),
 	"totp":    api_user_totp,
+	"uid":     sl.NewBuiltin("mochi.user.uid", api_user_uid),
 	"update":  sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 
@@ -785,6 +786,22 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	return sl_encode(row["count"]), nil
+}
+
+// mochi.user.uid() -> string: Return the calling user's UID.
+// Useful from commit hooks and other contexts where the user object is
+// not directly accessible as a Starlark variable, typically to build a
+// per-user leader scope (e.g. "user:" + mochi.user.uid()). Returns the
+// empty string when no user is in context.
+func api_user_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs); err != nil {
+		return nil, err
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl.String(""), nil
+	}
+	return sl.String(user.UID), nil
 }
 
 // mochi.user.search(query, limit) -> list: Search users by username prefix (admin only)

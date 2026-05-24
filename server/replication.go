@@ -543,6 +543,8 @@ func replication_apply_sql(op *ReplicationOp) ApplyResult {
 		return users_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && (op.Operation == "sessions-row.set" || op.Operation == "sessions-row.delete"):
 		return sessions_row_decode_and_apply(op.Payload, op.User)
+	case op.Scope == repl_scope_app && op.Database == "schedule" && (op.Operation == "schedule-row.set" || op.Operation == "schedule-row.delete"):
+		return schedule_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
 		var w WebpushDelivered
 		if err := cbor.Unmarshal(op.Payload, &w); err != nil {

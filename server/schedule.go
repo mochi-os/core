@@ -42,15 +42,22 @@ func schedule_db() *DB {
 	return db_open("db/schedule.db")
 }
 
-// schedule_create inserts a new scheduled event and returns its ID
+// schedule_create inserts a new scheduled event and returns its ID.
+// Replicates the new row to every host in the user's set so paired
+// replicas agree on what is scheduled; the leader-gate on the firing
+// side dedups handler execution. System events (user == "") stay
+// local - they have no scope identifier for the replication pipeline.
 func schedule_create(user string, app string, due int64, event string, data string, interval int64) int64 {
+	created := now()
 	db := schedule_db()
 	result := must(db.internal.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
-		user, app, due, event, data, interval, now()))
+		user, app, due, event, data, interval, created))
 	id, _ := result.LastInsertId()
 	if id == 0 {
 		return 0
 	}
+
+	replication_emit_schedule_insert(user, app, due, event, data, interval, created)
 
 	// Wake up the scheduler to check for the new event
 	schedule_notify()
@@ -68,10 +75,24 @@ func schedule_get(id int64) *ScheduledEvent {
 	return &se
 }
 
-// schedule_delete removes a scheduled event by ID
+// schedule_delete removes a scheduled event by ID and replicates the
+// removal keyed on the natural composite identifier so paired hosts
+// drop the matching row. Looks the row up first because the
+// autoincrement id is local-only.
 func schedule_delete(id int64) {
 	db := schedule_db()
+	var user, app, event string
+	var created int64
+	if row, _ := db.row("select user, app, event, created from schedule where id=?", id); row != nil {
+		user, _ = row["user"].(string)
+		app, _ = row["app"].(string)
+		event, _ = row["event"].(string)
+		created, _ = row["created"].(int64)
+	}
 	db.exec("delete from schedule where id=?", id)
+	if user != "" && app != "" && event != "" {
+		replication_emit_schedule_delete(user, app, event, created)
+	}
 }
 
 // schedule_list returns all scheduled events for an app and user
@@ -192,8 +213,19 @@ func schedule_run_due(t time.Time) {
 	}
 }
 
-// schedule_claim atomically claims a scheduled event for execution
-// Returns true if this call claimed the event, false if it was already claimed
+// schedule_claim atomically claims a scheduled event for execution.
+// Returns true if this call claimed the event, false if it was already
+// claimed.
+//
+// Recurring case: the "due = due + interval" UPDATE is intentionally
+// NOT replicated. Both replicas hit schedule_due at the same instant
+// and apply the same deterministic advance; replicating would just
+// duplicate the wire traffic with no convergence benefit.
+//
+// One-shot case: when the local delete actually fires (rows-affected
+// > 0) we look up the natural-key fields and replicate a delete so
+// paired replicas drop the row. Skipped if a concurrent claim on
+// another goroutine already removed it (rows-affected = 0).
 func schedule_claim(id int64, interval int64) bool {
 	db := schedule_db()
 	var result int64
@@ -207,10 +239,22 @@ func schedule_claim(id int64, interval int64) bool {
 			result, err = res.RowsAffected()
 		}
 	} else {
-		// One-shot: delete the event
+		// One-shot: look up natural-key fields first so we can emit a
+		// keyed delete after the local DELETE commits.
+		var user, app, event string
+		var created int64
+		if row, _ := db.row("select user, app, event, created from schedule where id=?", id); row != nil {
+			user, _ = row["user"].(string)
+			app, _ = row["app"].(string)
+			event, _ = row["event"].(string)
+			created, _ = row["created"].(int64)
+		}
 		res, e := db.internal.Exec("delete from schedule where id = ? and due <= ?", id, now())
 		if e == nil {
 			result, err = res.RowsAffected()
+		}
+		if err == nil && result > 0 && user != "" && app != "" && event != "" {
+			replication_emit_schedule_delete(user, app, event, created)
 		}
 	}
 

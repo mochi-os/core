@@ -827,6 +827,376 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 	}
 }
 
+// ===== 4-host topologies =====
+//
+// Mochi supports topologies of arbitrary size, but 4 hosts is the
+// first size where new failure modes appear that 3 hosts cannot:
+//
+//   - Strict-quorum math is non-trivial: 4 hosts means membership=3
+//     for any proposer, total=4, floor(total/2)=2 peer grants needed.
+//     The strict path returns false if any one peer is unreachable
+//     AND another denies.
+//
+//   - Partition shapes include 2-2 splits (no majority either side)
+//     and 3-1 splits (clear majority). The 2-2 case is the canonical
+//     "split-brain prevented by strict mode" scenario.
+//
+//   - Fan-out is O(N²) for an op flood: 4 hosts each emitting one op
+//     produces 12 deliveries (3 receivers per emit, 4 emits). Useful
+//     for catching naive O(N) assumptions buried in the routing code.
+
+const (
+	fh_h1 = "h1"
+	fh_h2 = "h2"
+	fh_h3 = "h3"
+	fh_h4 = "h4"
+	fhUID = "uid-fourway"
+)
+
+// seed_four_hosts mirrors seed_three_hosts but for the 4-host
+// topology. Sets up schedule + sessions + settings schemas and the
+// shared user.
+func seed_four_hosts(t *testing.T, h *harness) {
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		h.setup_harness_user(fhUID, "fourway@example.com", mm_entity_id('f'))
+		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+		setup_sessions_test_schema()
+		mm_settings_schema()
+	}
+}
+
+// TestFourHostPairConvergence: pair quadruple, default routing.
+// schedule + setting + document edited on one host reach the other
+// three after a single flush.
+func TestFourHostPairConvergence(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	seed_four_hosts(t, h)
+
+	h.switchTo(fh_h1)
+	if schedule_create(fhUID, "feeds", 1000, "tick", "{}", 60) == 0 {
+		t.Fatal("schedule_create returned 0")
+	}
+	setting_set("operator_name", "FourwayOp")
+	if err := document_set("terms", "en", "fourway terms"); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	h.flush()
+
+	for _, name := range []string{fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		if exists, _ := schedule_db().exists("select 1 from schedule where user=? and event='tick'", fhUID); !exists {
+			t.Errorf("%s: missing schedule row", name)
+		}
+		if got := setting_get("operator_name", ""); got != "FourwayOp" {
+			t.Errorf("%s: setting = %q, want FourwayOp", name, got)
+		}
+		row, _ := db_open("db/settings.db").row(
+			"select body from documents where name='terms' and language='en'")
+		if got, _ := row["body"].(string); got != "fourway terms" {
+			t.Errorf("%s: document body = %q, want %q", name, got, "fourway terms")
+		}
+	}
+}
+
+// TestFourHostPair2v2PartitionHealConverges: split the wire into a
+// 2-2 partition (h1+h2 vs h3+h4), each side writes concurrently,
+// heal, flush, every host ends up with the union of all four hosts'
+// rows. The 2-2 split is the case where neither side has a strict
+// majority - relevant for leader scenarios but for plain row
+// replication (which has no quorum requirement) both sides keep
+// writing and the heal merges them.
+func TestFourHostPair2v2PartitionHealConverges(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	seed_four_hosts(t, h)
+
+	h.partition()
+
+	// Each host produces one distinct schedule row during the
+	// partition (different event names so the natural-key dedup
+	// keeps them as separate rows even if now() returns the same
+	// epoch second for all four).
+	for i, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		event := fmt.Sprintf("event-from-%d", i+1)
+		if schedule_create(fhUID, "feeds", int64(1000+i), event, "{}", 0) == 0 {
+			t.Fatalf("%s: schedule_create returned 0", name)
+		}
+	}
+
+	// Pending during the partition: each host emitted 1 op to 3
+	// receivers = 12 deliveries total, 3 per receiver.
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		if got := h.pending(name); got != 12 {
+			t.Errorf("%s: pending = %d, want 12 (3 from each of 4 emitters across all queues)", name, got)
+		}
+	}
+
+	h.heal()
+	h.flush()
+
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		var n int64
+		row, _ := schedule_db().row("select count(*) as n from schedule where user=?", fhUID)
+		if row != nil {
+			n, _ = row["n"].(int64)
+		}
+		if n != 4 {
+			t.Errorf("%s: rows = %d, want 4 (one per host after heal)", name, n)
+		}
+	}
+}
+
+// TestFourHostUserUserUserUserSchedule: per-user link of 4 different
+// operators sharing one user. Per-user-scope ops fan out to all
+// linked hosts.
+func TestFourHostUserUserUserUserSchedule(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	h.set_pair_members() // no operator pair
+	h.set_user_hosts(fhUID, fh_h1, fh_h2, fh_h3, fh_h4)
+	seed_four_hosts(t, h)
+
+	h.switchTo(fh_h2)
+	if schedule_create(fhUID, "crm", 1000, "linked", "{}", 0) == 0 {
+		t.Fatal("h2 schedule_create returned 0")
+	}
+	h.flush()
+
+	for _, name := range []string{fh_h1, fh_h3, fh_h4} {
+		h.switchTo(name)
+		if exists, _ := schedule_db().exists("select 1 from schedule where user=? and event='linked'", fhUID); !exists {
+			t.Errorf("%s: missing linked schedule row", name)
+		}
+	}
+}
+
+// TestFourHostUserUserUserUserPairOnlyStaysLocal: a pair-scope emit
+// from one host of a 4-host link MUST NOT reach the other three (all
+// different operators). Same property as the 3-host version but
+// scaled.
+func TestFourHostUserUserUserUserPairOnlyStaysLocal(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	h.set_pair_members()
+	h.set_user_hosts(fhUID, fh_h1, fh_h2, fh_h3, fh_h4)
+	seed_four_hosts(t, h)
+
+	h.switchTo(fh_h1)
+	setting_set("signup_enabled", "h1-only-fourway")
+	replication_emit_users_users_pair_set(fhUID, map[string]string{"username": "renamed-on-h1-fourway"})
+	h.flush()
+
+	for _, name := range []string{fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		if got := setting_get("signup_enabled", ""); got == "h1-only-fourway" {
+			t.Errorf("%s: setting leaked across operator boundary: %q", name, got)
+		}
+		row, _ := db_open("db/users.db").row("select username from users where uid=?", fhUID)
+		if got, _ := row["username"].(string); got == "renamed-on-h1-fourway" {
+			t.Errorf("%s: pair-only username leaked across per-user link: %q", name, got)
+		}
+	}
+}
+
+// TestFourHostLeaderStrictQuorum: in a pair quadruple, strict mode
+// requires floor(4/2) = 2 peer grants. When all three peers grant,
+// strict succeeds.
+func TestFourHostLeaderStrictQuorum(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		db_upgrade_50()
+		rdb := db_open("db/replication.db")
+		for _, peer := range []string{"peer-" + fh_h1, "peer-" + fh_h2, "peer-" + fh_h3, "peer-" + fh_h4} {
+			rdb.exec("insert or ignore into pair (peer, added) values (?, ?)", peer, now())
+		}
+	}
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	replication_leader_notify = func(scope, key string, fence, expires int64) {}
+	// All peers grant - the strict path needs >= 2 grants out of 3.
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		return &LeaderClaimResponse{Granted: true}
+	}
+
+	h.switchTo(fh_h1)
+	if !replication_leader_claim("platform", "fourway-strict", true) {
+		t.Error("strict claim must succeed when all peers grant")
+	}
+}
+
+// TestFourHostLeader2v2PartitionStrictNoQuorum: a 2-2 partition in
+// strict mode: the proposer sees one reachable peer (its partition
+// partner) and two unreachable (nil). 1 grant < 2 needed → fails.
+// Optimistic mode succeeds in the same conditions. Documents the
+// difference operators are paying for with strict=true.
+func TestFourHostLeader2v2PartitionStrictNoQuorum(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		db_upgrade_50()
+		rdb := db_open("db/replication.db")
+		for _, peer := range []string{"peer-" + fh_h1, "peer-" + fh_h2, "peer-" + fh_h3, "peer-" + fh_h4} {
+			rdb.exec("insert or ignore into pair (peer, added) values (?, ?)", peer, now())
+		}
+	}
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	replication_leader_notify = func(scope, key string, fence, expires int64) {}
+	// Simulate the 2-2 partition: h1 (proposer) can reach h2 (grants);
+	// h3 and h4 are unreachable (nil response).
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		if peer == "peer-"+fh_h2 {
+			return &LeaderClaimResponse{Granted: true}
+		}
+		return nil // unreachable
+	}
+
+	h.switchTo(fh_h1)
+	// Strict: 1 grant from 3 peers needed; partition gives 1; need 2.
+	// Strict mode requires floor((membership+1)/2) = 2 peer grants;
+	// only 1 reachable → fails. This prevents split-brain.
+	if replication_leader_claim("platform", "split-brain", true) {
+		t.Error("strict claim must FAIL under 2-2 partition (split-brain prevention)")
+	}
+
+	// Reset the leadership state so the next claim isn't fast-pathed.
+	db_open("db/replication.db").exec("delete from leadership where scope='platform' and key='split-brain'")
+
+	// Optimistic: any explicit grant + no veto succeeds, even with
+	// unreachable peers. Documents the trade-off operators are
+	// paying for with strict=true: optimistic accepts partition-
+	// loser writes that would be fence-dropped on heal; strict
+	// refuses to elect at all.
+	if !replication_leader_claim("platform", "split-brain", false) {
+		t.Error("optimistic claim must SUCCEED under same partition (any grant + no veto)")
+	}
+}
+
+// TestFourHostBootstrapToFreshFourth: three operator-paired hosts
+// already in sync; a fourth host joins fresh and catches up via the
+// per-row backfill pipeline. Same shape as the 3-host bootstrap test
+// but with 3 hosts holding the source-of-truth state.
+func TestFourHostBootstrapToFreshFourth(t *testing.T) {
+	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	defer h.cleanup()
+	// All four schemas set up; only h1-h3 hold state, h4 is fresh.
+	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
+		h.switchTo(name)
+		mm_settings_schema()
+		setup_users_test_schema()
+		setup_sessions_test_schema()
+		db_open("db/apps.db").exec("create table if not exists apps (app text primary key, installed integer not null default 0)")
+	}
+
+	// h1 (and via auto-replication, h2 and h3) hold the canonical
+	// state.
+	h.switchTo(fh_h1)
+	setting_set("signup_enabled", "true")
+	setting_set("operator_name", "QuadAlice")
+	if err := document_set("rules", "en", "fourway rules"); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	db_open("db/apps.db").exec("insert or replace into apps (app, installed) values (?, ?)", "feeds", int64(1000))
+	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-quad", "quad@example.com")
+	db_open("db/sessions.db").exec("insert into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
+		"uid-quad", "sess-quad", "secret-q", now()+3600, now(), now(), "1.2.3.4", "ua")
+	h.flush() // replicate h1 -> h2 and h3 via the normal pair-broadcast path
+
+	// h4 needs the user row before sessions-row apply succeeds.
+	h.switchTo(fh_h4)
+	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-quad", "quad@example.com")
+
+	// Stub the per-peer backfill emit hooks to apply on h4.
+	orig_system_set := replication_system_set_to_peer_var
+	orig_system_row := replication_system_row_to_peer_var
+	orig_session := replication_emit_session_insert_to_peer_var
+	defer func() {
+		replication_system_set_to_peer_var = orig_system_set
+		replication_system_row_to_peer_var = orig_system_row
+		replication_emit_session_insert_to_peer_var = orig_session
+	}()
+	applyOnH4 := func(fn func()) {
+		prior := h.current
+		h.switchTo(fh_h4)
+		fn()
+		h.switchTo(prior)
+	}
+	replication_system_set_to_peer_var = func(peer, database, table, row, field, value string) {
+		if peer != "peer-"+fh_h4 {
+			t.Errorf("system_set: wrong peer %q", peer)
+			return
+		}
+		applyOnH4(func() {
+			replication_system_set_apply("peer-"+fh_h1, &SystemSet{
+				Database: database, Table: table, Row: row, Field: field, Value: value,
+			})
+		})
+	}
+	replication_system_row_to_peer_var = func(peer, database, table string, key, cols map[string]string, del bool) {
+		if peer != "peer-"+fh_h4 {
+			t.Errorf("system_row: wrong peer %q", peer)
+			return
+		}
+		applyOnH4(func() {
+			replication_system_row_apply("peer-"+fh_h1, &SystemRow{
+				Database: database, Table: table, Key: key, Cols: cols, Delete: del,
+			})
+		})
+	}
+	replication_emit_session_insert_to_peer_var = func(peer, userUID, code, secret string, expires, created, accessed int64, address, agent string) {
+		if peer != "peer-"+fh_h4 {
+			t.Errorf("session_insert: wrong peer %q", peer)
+			return
+		}
+		applyOnH4(func() {
+			replication_session_apply_insert(&SessionInsert{
+				UserUID: userUID, Code: code, Secret: secret,
+				Expires: expires, Created: created, Accessed: accessed,
+				Address: address, Agent: agent,
+			})
+		})
+	}
+
+	// h1 ships its state to h4.
+	h.switchTo(fh_h1)
+	replication_pair_backfill_system("peer-" + fh_h4)
+
+	// h4 now has the canonical state.
+	h.switchTo(fh_h4)
+	if got := setting_get("operator_name", ""); got != "QuadAlice" {
+		t.Errorf("h4: operator_name = %q, want QuadAlice", got)
+	}
+	row, _ := db_open("db/settings.db").row("select body from documents where name='rules' and language='en'")
+	if got, _ := row["body"].(string); got != "fourway rules" {
+		t.Errorf("h4: document rules/en = %q, want %q", got, "fourway rules")
+	}
+	row, _ = db_open("db/apps.db").row("select installed from apps where app='feeds'")
+	if got, _ := row["installed"].(int64); got != 1000 {
+		t.Errorf("h4: apps.feeds installed = %d, want 1000", got)
+	}
+	row, _ = db_open("db/sessions.db").row("select code from sessions where user=?", "uid-quad")
+	if got, _ := row["code"].(string); got != "sess-quad" {
+		t.Errorf("h4: session code = %q, want sess-quad", got)
+	}
+}
+
 // TestThreeHostUserUserUserSessionsAndUserStatus: in the per-user
 // link topology, app-scope per-user ops (sessions, users.users
 // methods/status/preferences) DO follow the user across all linked

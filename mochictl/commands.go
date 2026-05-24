@@ -374,6 +374,13 @@ func cmd_rsync_filter(args []string) error {
 // file to its sibling without the .snap suffix. Run after rsync brings a
 // backup to a destination, before starting the server there. The server
 // must be stopped during this operation.
+//
+// Replication state (db/replication.db) is stripped after the rename
+// pass: the restored host comes back unpaired so it won't auto-reconnect
+// to its previous pair partner with stale cursors and silently lose
+// self-emitted ops between the snapshot and the crash. Re-establishing
+// the pair is an explicit operator step after restore; see the
+// backup-restore wiki page for the documented procedure.
 func cmd_restore(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("restore <dir>: directory argument required")
@@ -397,7 +404,32 @@ func cmd_restore(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Strip replication.db (and its WAL / SHM siblings if present).
+	// The server creates a fresh one on startup. Any previously-paired
+	// state - pair members, cursors, seen dedup table, sequence
+	// counters, leadership rows - is gone. The host comes back
+	// unpaired.
+	replication_path := filepath.Join(root, "db", "replication.db")
+	stripped := false
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		path := replication_path + suffix
+		if _, err := os.Stat(path); err == nil {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("strip replication state %s: %w", path, err)
+			}
+			stripped = true
+		}
+	}
+
 	fmt.Printf("Renamed %d snapshot file(s) under %s\n", count, root)
+	if stripped {
+		fmt.Println()
+		fmt.Println("Replication state stripped: the restored host will come back unpaired.")
+		fmt.Println("To re-establish replication, see the backup-restore wiki page for the")
+		fmt.Println("post-restore procedure (decide which side is canonical, reinstall the")
+		fmt.Println("others as fresh replicas, mochictl replica join against the canonical).")
+	}
 	return nil
 }
 

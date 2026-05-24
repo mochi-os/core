@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"strings"
 
 	sl "go.starlark.net/starlark"
@@ -41,12 +43,15 @@ const leader_lease_seconds = 60
 //   - "credential:<id>" — passkey sign_count delegation (task #10)
 //   - "platform" — server-wide periodic ticks (cleanup, broadcasts)
 //
-// Tie-break for simultaneous claims: lower peer id wins. The vote rule
-// in replication_leader_vote grants if (a) the row is vacant or
-// expired, (b) the proposer is the current holder (renewal), or (c)
-// the proposer's peer id sorts before the current holder's. Combined
-// with a tentative local write that lands before fan-out, simultaneous
-// claims converge on the lowest-id host as leader.
+// Tie-break for simultaneous claims: sha256(scope|key|peer) lowest
+// digest wins. The vote rule in replication_leader_vote grants if
+// (a) the row is vacant or expired, (b) the proposer is the current
+// holder (renewal), or (c) replication_leader_prefer picks the
+// proposer over the current holder. Combined with a tentative local
+// write that lands before fan-out, simultaneous claims converge on
+// the hash-favoured host for that (scope, key). The hash-per-key
+// distribution means leadership spreads across the peerset by key
+// rather than concentrating on the lowest-id host.
 //
 // Concurrent claims that both reach step 3 (cross-host partition with
 // stale views) are caught at apply time by the fence-token check in
@@ -55,14 +60,19 @@ const leader_lease_seconds = 60
 // survives even when compute briefly runs twice during a partition.
 func api_schedule_leader(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var scope, key string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "scope", &scope, "key", &key); err != nil {
+	var strict bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs,
+		"scope", &scope,
+		"key", &key,
+		"strict?", &strict,
+	); err != nil {
 		return nil, err
 	}
 	if scope == "" || key == "" {
 		return sl_error(fn, "scope and key must be non-empty")
 	}
 
-	if replication_leader_claim(scope, key) {
+	if replication_leader_claim(scope, key, strict) {
 		return sl.True, nil
 	}
 	return sl.False, nil
@@ -71,7 +81,18 @@ func api_schedule_leader(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // replication_leader_claim attempts to acquire or renew the lease for
 // (scope, key). See api_schedule_leader's doc comment for the
 // three-tier flow + design notes.
-func replication_leader_claim(scope, key string) bool {
+//
+// strict controls partition policy:
+//   - false (default, optimistic): any explicit denial vetoes; nil
+//     responses (unreachable peers) count as no-veto. A partition-
+//     isolated minority can elect itself; fence-on-ops drops the
+//     loser's writes when the partition heals.
+//   - true: require a strict majority of (self + membership) to
+//     grant. Nil responses count against the proposer. A minority
+//     partition cannot elect at all - useful when external side
+//     effects (charges, irrevocable emails) make the partition-loser
+//     drop-on-heal semantics unacceptable.
+func replication_leader_claim(scope, key string, strict bool) bool {
 	db := db_open("db/replication.db")
 	n := now()
 	expires := n + leader_lease_seconds
@@ -91,11 +112,12 @@ func replication_leader_claim(scope, key string) bool {
 	}
 
 	// Tentative-write: claim locally before fanning out so concurrent
-	// RPCs from peers see our intent. With the lower-id tie-break in
+	// RPCs from peers see our intent. With the hash tie-break in
 	// replication_leader_vote, simultaneous claims converge on the
-	// lowest-id host deterministically — that host's tentative row
-	// makes its peer the current holder when the other host's vote
-	// arrives, and the tie-break favours the lower id.
+	// host whose sha256(scope|key|peer) is smallest for this lease -
+	// the tentative row makes the proposer the current holder when
+	// the other host's vote arrives, and the hash tie-break favours
+	// the proposer iff its digest beats the current holder's.
 	db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, 1)
 		on conflict(scope, key) do update set
 			peer = excluded.peer,
@@ -104,11 +126,14 @@ func replication_leader_claim(scope, key string) bool {
 		where leadership.peer = excluded.peer or leadership.expires < ?`,
 		scope, key, p2p_id, expires, n)
 
-	// Fan out: any explicit denial with a current-leader pointer vetoes
-	// the claim. Unreachable peers (nil response) count as "no veto" —
-	// optimistic partition policy. Write convergence under a partition
-	// is guaranteed by the fence-on-ops check in replication_op_event.
-	for _, peer := range replication_leader_membership(scope) {
+	// Fan out + count grants. In optimistic mode any explicit denial
+	// with a current-leader pointer vetoes the claim; unreachable
+	// peers (nil response) count as no-veto. In strict mode we
+	// require a strict majority of (self + membership) to grant; any
+	// nil response counts against the proposer.
+	membership := replication_leader_membership(scope)
+	grants := 0
+	for _, peer := range membership {
 		if peer == "" || peer == p2p_id {
 			continue
 		}
@@ -116,13 +141,30 @@ func replication_leader_claim(scope, key string) bool {
 		if res == nil {
 			continue
 		}
-		if !res.Granted && res.CurrentLeader != "" && res.CurrentLeader != p2p_id {
+		if res.Granted {
+			grants++
+			continue
+		}
+		if res.CurrentLeader != "" && res.CurrentLeader != p2p_id {
 			db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, ?)
 				on conflict(scope, key) do update set
 					peer = excluded.peer,
 					expires = excluded.expires,
 					fence = excluded.fence`,
 				scope, key, res.CurrentLeader, res.CurrentExpires, res.CurrentFence)
+			return false
+		}
+	}
+
+	// Strict mode: enforce strict majority of (self + membership).
+	// Self counts as 1 grant; need len(membership)/2 more grants
+	// from peers to clear the majority threshold. (For membership
+	// of 1 peer we need 1 peer grant; for 2 peers, 1; for 3, 2;
+	// for 4, 2; ie. floor(total/2) peer grants where total =
+	// len(membership) + 1.)
+	if strict {
+		total := len(membership) + 1
+		if grants < total/2 {
 			return false
 		}
 	}
@@ -299,12 +341,21 @@ func replication_leader_membership(scope string) []string {
 //   - row vacant → grant
 //   - row expired → grant
 //   - row alive, held by proposer → grant (renewal)
-//   - row alive, held by anyone else: grant iff proposer < current
-//     (lexicographic peer-id tie-break)
+//   - row alive, held by anyone else: grant iff the hash tie-break
+//     picks the proposer over the current holder.
+//
+// Tie-break is hash-based: sha256(scope|key|peer) deciding, lowest
+// hash wins. Replaces the lex-by-peer-id tie-break used in V2 so
+// leadership distributes across peers based on the key instead of
+// always favouring the lowest peer-id host - a peer with the
+// lexicographically-smallest id was winning every leader election in
+// V2, concentrating all the scheduled work on one host. Hash tie-break
+// makes the winner-per-key essentially uniform across peers while
+// staying deterministic for any given (scope, key, peer-set).
 //
 // Tie-break is intentionally applied even when the recipient itself
-// holds the lease: simultaneous claims converge on the lowest-id host
-// because each higher-id host's vote on a lower-id proposer is a grant.
+// holds the lease: simultaneous claims converge because each peer's
+// vote on a proposer with a smaller hash is a grant.
 func replication_leader_vote(scope, key, proposer string, proposed_expires int64) (granted bool, leader string, fence int64, expires int64) {
 	db := db_open("db/replication.db")
 	n := now()
@@ -321,10 +372,25 @@ func replication_leader_vote(scope, key, proposer string, proposed_expires int64
 	if proposer == cur_peer {
 		return true, cur_peer, cur_fence, cur_exp
 	}
-	if proposer < cur_peer {
+	if replication_leader_prefer(scope, key, proposer, cur_peer) {
 		return true, cur_peer, cur_fence, cur_exp
 	}
 	return false, cur_peer, cur_fence, cur_exp
+}
+
+// replication_leader_prefer reports whether candidate `a` should win
+// the tie-break over candidate `b` for the (scope, key) lease. Hash
+// sha256(scope || "|" || key || "|" || peer) for each candidate and
+// pick the smaller digest. Deterministic for any given input so all
+// peers vote identically; uniform across the peerset so leadership
+// distributes evenly when many keys are in play.
+func replication_leader_prefer(scope, key, a, b string) bool {
+	return bytes.Compare(replication_leader_hash(scope, key, a), replication_leader_hash(scope, key, b)) < 0
+}
+
+func replication_leader_hash(scope, key, peer string) []byte {
+	digest := sha256.Sum256([]byte(scope + "|" + key + "|" + peer))
+	return digest[:]
 }
 
 // replication_leader_claim_rpc is a stub-overridable function pointer

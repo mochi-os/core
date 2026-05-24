@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1278,7 +1279,7 @@ func TestLeaderClaimFromVacant(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	if !replication_leader_claim("user:u1", "k1") {
+	if !replication_leader_claim("user:u1", "k1", false) {
 		t.Errorf("first claim on a vacant lease must succeed")
 	}
 
@@ -1299,10 +1300,10 @@ func TestLeaderClaimRenewalIncrementsFence(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	if !replication_leader_claim("platform", "tick") {
+	if !replication_leader_claim("platform", "tick", false) {
 		t.Fatal("first claim failed")
 	}
-	if !replication_leader_claim("platform", "tick") {
+	if !replication_leader_claim("platform", "tick", false) {
 		t.Fatal("renewal must succeed when we already hold the lease")
 	}
 
@@ -1322,7 +1323,7 @@ func TestLeaderClaimBlockedByActivePeer(t *testing.T) {
 	expires := now() + 60
 	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('user:u', 'job', 'other-peer', ?, 5)", expires)
 
-	if replication_leader_claim("user:u", "job") {
+	if replication_leader_claim("user:u", "job", false) {
 		t.Errorf("must NOT claim while another peer holds an active lease")
 	}
 
@@ -1343,7 +1344,7 @@ func TestLeaderClaimTakesOverExpired(t *testing.T) {
 	db := db_open("db/replication.db")
 	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('user:u', 'job', 'other-peer', ?, 3)", now()-1)
 
-	if !replication_leader_claim("user:u", "job") {
+	if !replication_leader_claim("user:u", "job", false) {
 		t.Errorf("must claim an expired lease")
 	}
 
@@ -1360,7 +1361,7 @@ func TestLeaderFenceAndRelease(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	replication_leader_claim("scope", "key")
+	replication_leader_claim("scope", "key", false)
 	if f := replication_leader_fence("scope", "key"); f != 1 {
 		t.Errorf("fence after first claim: expected 1, got %d", f)
 	}
@@ -1371,7 +1372,7 @@ func TestLeaderFenceAndRelease(t *testing.T) {
 	}
 
 	// Re-claim after release succeeds and starts a fresh fence.
-	if !replication_leader_claim("scope", "key") {
+	if !replication_leader_claim("scope", "key", false) {
 		t.Errorf("re-claim after release must succeed")
 	}
 }
@@ -1410,7 +1411,10 @@ func TestLeaderVoteRenewalGrants(t *testing.T) {
 	}
 }
 
-func TestLeaderVoteTieBreakLowerProposerWins(t *testing.T) {
+// TestLeaderVoteHashTieBreak — vote agrees with the hash tie-break
+// (sha256(scope|key|peer) lowest wins), and an expired lease grants
+// any proposer regardless of hash.
+func TestLeaderVoteHashTieBreak(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
@@ -1418,18 +1422,66 @@ func TestLeaderVoteTieBreakLowerProposerWins(t *testing.T) {
 	// We (self) hold an alive lease.
 	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'k1', ?, ?, 1)", p2p_id, now()+60)
 
-	// Lower-id proposer wins the tie-break — self defers.
-	if g, _, _, _ := replication_leader_vote("platform", "k1", "aaa", now()+60); !g {
-		t.Errorf("lower-id proposer (aaa < self) must beat current holder")
+	// For each candidate, the vote outcome must equal the prefer
+	// helper's decision (the source of truth for the tie-break).
+	for _, candidate := range []string{"aaa", "zzz", "peerA", "peerB", "peerC"} {
+		want := replication_leader_prefer("platform", "k1", candidate, p2p_id)
+		got, _, _, _ := replication_leader_vote("platform", "k1", candidate, now()+60)
+		if got != want {
+			t.Errorf("candidate %q: vote=%v, expected %v from hash tie-break",
+				candidate, got, want)
+		}
 	}
-	// Higher-id proposer denied.
-	if g, leader, _, _ := replication_leader_vote("platform", "k1", "zzz", now()+60); g {
-		t.Errorf("higher-id proposer (zzz > self) must be denied; got grant with leader=%q", leader)
-	}
-	// Expired alive lease — anyone grants.
+
+	// Expired lease grants every proposer regardless of hash.
 	db.exec("update leadership set expires=? where scope='platform' and key='k1'", now()-1)
 	if g, _, _, _ := replication_leader_vote("platform", "k1", "zzz", now()+60); !g {
 		t.Errorf("expired lease must grant any proposer")
+	}
+}
+
+// TestLeaderHashDistribution — across many keys, the hash tie-break
+// spreads winners across the peerset rather than concentrating on one
+// peer. Guards against the V2 lex regression where the lowest-id host
+// always won.
+func TestLeaderHashDistribution(t *testing.T) {
+	candidates := []string{"peer-alpha", "peer-bravo", "peer-charlie", "peer-delta"}
+	wins := map[string]int{}
+	const keys = 200
+	for i := 0; i < keys; i++ {
+		key := fmt.Sprintf("k%d", i)
+		winner := candidates[0]
+		for _, c := range candidates[1:] {
+			if replication_leader_prefer("platform", key, c, winner) {
+				winner = c
+			}
+		}
+		wins[winner]++
+	}
+	// Uniform-ish: each candidate should win at least 10% of keys
+	// (uniform would be 25%; 10% guards against pathological).
+	for _, c := range candidates {
+		if wins[c] < keys/10 {
+			t.Errorf("candidate %q won %d / %d keys; hash tie-break not distributing (wins map: %v)",
+				c, wins[c], keys, wins)
+		}
+	}
+}
+
+// TestLeaderPreferDeterministic — the same inputs produce the same
+// preference every call; (a, b) and (b, a) are mirror outcomes.
+func TestLeaderPreferDeterministic(t *testing.T) {
+	for _, scope := range []string{"platform", "user:abc"} {
+		for _, key := range []string{"k1", "k2", "long-key-name"} {
+			forward := replication_leader_prefer(scope, key, "peer-a", "peer-b")
+			if forward != replication_leader_prefer(scope, key, "peer-a", "peer-b") {
+				t.Errorf("not deterministic for (%q, %q, peer-a, peer-b)", scope, key)
+			}
+			reverse := replication_leader_prefer(scope, key, "peer-b", "peer-a")
+			if forward == reverse {
+				t.Errorf("(a,b) and (b,a) must be mirror outcomes for (%q, %q); both returned %v", scope, key, forward)
+			}
+		}
 	}
 }
 
@@ -1476,7 +1528,7 @@ func TestLeaderClaimRPCGrantedSucceeds(t *testing.T) {
 	db := db_open("db/replication.db")
 	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
 
-	if !replication_leader_claim("platform", "k1") {
+	if !replication_leader_claim("platform", "k1", false) {
 		t.Fatalf("claim must succeed when remote grants")
 	}
 	if notified != 1 {
@@ -1489,7 +1541,7 @@ func TestLeaderClaimRPCGrantedSucceeds(t *testing.T) {
 		calls++
 		return &LeaderClaimResponse{Granted: true}
 	}
-	if !replication_leader_claim("platform", "k1") {
+	if !replication_leader_claim("platform", "k1", false) {
 		t.Errorf("fast-path renewal must succeed")
 	}
 	if calls != 0 {
@@ -1521,7 +1573,7 @@ func TestLeaderClaimRPCDeniedMirrorsAndFails(t *testing.T) {
 	db := db_open("db/replication.db")
 	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
 
-	if replication_leader_claim("platform", "k1") {
+	if replication_leader_claim("platform", "k1", false) {
 		t.Fatalf("claim must NOT succeed when remote denies with a current leader")
 	}
 	row, _ := db.row("select peer, fence, expires from leadership where scope='platform' and key='k1'")
@@ -1538,7 +1590,7 @@ func TestLeaderClaimRPCDeniedMirrorsAndFails(t *testing.T) {
 		calls++
 		return nil
 	}
-	if replication_leader_claim("platform", "k1") {
+	if replication_leader_claim("platform", "k1", false) {
 		t.Errorf("fast-path-deny expected after mirroring active peer lease")
 	}
 	if calls != 0 {
@@ -1564,8 +1616,73 @@ func TestLeaderClaimRPCPartitionFallbackSucceeds(t *testing.T) {
 	db := db_open("db/replication.db")
 	db.exec("insert into pair (peer, added) values ('remote', ?)", now())
 
-	if !replication_leader_claim("platform", "k1") {
+	if !replication_leader_claim("platform", "k1", false) {
 		t.Errorf("partition fallback: claim must succeed when no peers respond")
+	}
+}
+
+// TestLeaderClaimStrictRequiresMajority — strict mode demands more
+// than half of (self + membership) to grant. Nil RPC responses
+// (unreachable peers) count against the proposer.
+func TestLeaderClaimStrictRequiresMajority(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	orig_rpc := replication_leader_claim_rpc
+	orig_notify := replication_leader_notify
+	defer func() {
+		replication_leader_claim_rpc = orig_rpc
+		replication_leader_notify = orig_notify
+	}()
+	replication_leader_notify = func(scope, key string, fence, expires int64) {}
+
+	db := db_open("db/replication.db")
+
+	// Three peers in the pair (total participants with self = 4;
+	// strict majority needs ceil(5/2) = 3 grants total, so need 2
+	// peer grants since self contributes 1).
+	db.exec("insert into pair (peer, added) values ('peer-a', ?)", now())
+	db.exec("insert into pair (peer, added) values ('peer-b', ?)", now())
+	db.exec("insert into pair (peer, added) values ('peer-c', ?)", now())
+
+	// Case: 2 peers grant, 1 unreachable - clears the threshold.
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		if peer == "peer-c" {
+			return nil
+		}
+		return &LeaderClaimResponse{Granted: true}
+	}
+	if !replication_leader_claim("platform", "ka", true) {
+		t.Errorf("strict: 2 of 3 peer grants must win (self + 2 = majority of 4)")
+	}
+	db.exec("delete from leadership")
+
+	// Case: 1 peer grants, 2 unreachable - below threshold; strict
+	// claim fails. Optimistic claim still wins (no veto).
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		if peer == "peer-a" {
+			return &LeaderClaimResponse{Granted: true}
+		}
+		return nil
+	}
+	if replication_leader_claim("platform", "kb", true) {
+		t.Errorf("strict: 1 of 3 peer grants must fail (self + 1 = 2, below majority of 4)")
+	}
+	db.exec("delete from leadership")
+	if !replication_leader_claim("platform", "kb", false) {
+		t.Errorf("optimistic: 1 of 3 peer grants (rest nil = no veto) must win")
+	}
+	db.exec("delete from leadership")
+
+	// Case: zero peers in membership - strict trivially wins (just
+	// self).
+	db.exec("delete from pair")
+	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
+		t.Errorf("rpc must not be called when membership is empty")
+		return nil
+	}
+	if !replication_leader_claim("platform", "kc", true) {
+		t.Errorf("strict: single-host (no peers) must always win")
 	}
 }
 
@@ -2177,7 +2294,7 @@ func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
 
 	// Host 1 claims the lease for (scope, key) — fence=1.
 	switchTo("h1")
-	if !replication_leader_claim("user:u", "tick") {
+	if !replication_leader_claim("user:u", "tick", false) {
 		t.Fatal("h1 lease claim failed")
 	}
 	h1_fence := replication_leader_fence("user:u", "tick")

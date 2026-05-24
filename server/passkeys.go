@@ -323,7 +323,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	// integer remains authoritative — but the leadership row is in place
 	// so cross-host coordination can be turned on without touching this
 	// site again. See claude/plans/replication.md pattern 1.4.
-	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID))
+	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID), false)
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return

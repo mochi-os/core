@@ -251,6 +251,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/replica/status", admin_replica_status)
 	admin.GET("/replication/status", admin_replication_status)
 	admin.GET("/replication/pair", admin_replication_pair)
+	admin.GET("/replication/pairs", admin_replication_pairs)
 	admin.GET("/replication/progress", admin_replication_progress)
 	admin.GET("/replication/ops", admin_replication_ops)
 	admin.GET("/replication/stalled", admin_replication_stalled)

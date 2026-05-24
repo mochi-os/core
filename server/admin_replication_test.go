@@ -300,3 +300,108 @@ func TestAdminReplicationPairRemoveLastMember(t *testing.T) {
 		t.Errorf("full = %v, want [self] (kicked peer not in new set)", got_full)
 	}
 }
+
+// TestAdminReplicationPairsEmpty: no pairs configured -> empty pairs
+// array, host id still surfaced.
+func TestAdminReplicationPairsEmpty(t *testing.T) {
+	cleanup := setup_admin_replication_test(t)
+	defer cleanup()
+
+	_, resp := admin_replication_call(t, "GET", "/_/admin/replication/pairs", nil, admin_replication_pairs)
+	if got, _ := resp["host"].(string); got == "" {
+		t.Error("host field missing")
+	}
+	pairs, _ := resp["pairs"].([]any)
+	if len(pairs) != 0 {
+		t.Errorf("pairs = %v, want empty", pairs)
+	}
+}
+
+// TestAdminReplicationPairsRollup: with rows in pair / bootstrap /
+// tail / cursor / pending / seen / leadership tables, the rollup
+// surfaces them per-peer with the documented shape.
+func TestAdminReplicationPairsRollup(t *testing.T) {
+	cleanup := setup_admin_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 100, '')")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-B', 200, '')")
+	rdb.exec("insert into bootstrap (scope, peer, state) values ('users', 'peer-A', 'done')")
+	rdb.exec("insert into bootstrap (scope, peer, state) values ('sessions', 'peer-A', 'active')")
+	rdb.exec("insert into bootstrap (scope, peer, state) values ('users', 'peer-B', 'queued')")
+	rdb.exec("insert into tail (user, scope, db, last) values ('uid-1', 'app', 'feeds', 47)")
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values ('peer-A', 'app', 'uid-1', 'feeds', 45)")
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values ('peer-B', 'app', 'uid-1', 'feeds', 30)")
+	// Pending rows on peer-A only; min(received) for oldest_age.
+	rdb.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-A', 'app', 'uid-1', 'feeds', 50, 47, 0, x'', ?)", now()-30)
+	rdb.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-A', 'app', 'uid-1', 'feeds', 51, 50, 0, x'', ?)", now()-10)
+	// Seen rows: count + last apply per peer.
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-A', 'app', 'uid-1', 45, ?)", now()-5)
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-A', 'app', 'uid-1', 44, ?)", now()-15)
+	// Leadership: self holds one lease, peer-A holds another.
+	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'cleanup', ?, ?, 1)", p2p_id, now()+3600)
+	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'reporter', 'peer-A', ?, 2)", now()+3600)
+	// An expired lease must NOT appear.
+	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'stale', 'peer-A', ?, 3)", now()-3600)
+
+	_, resp := admin_replication_call(t, "GET", "/_/admin/replication/pairs", nil, admin_replication_pairs)
+	pairs, _ := resp["pairs"].([]any)
+	if len(pairs) != 2 {
+		t.Fatalf("pairs = %d, want 2", len(pairs))
+	}
+
+	byPeer := map[string]map[string]any{}
+	for _, p := range pairs {
+		pd := p.(map[string]any)
+		byPeer[pd["peer"].(string)] = pd
+	}
+	a := byPeer["peer-A"]
+	if a == nil {
+		t.Fatal("peer-A missing")
+	}
+	bs := a["bootstrap"].(map[string]any)
+	if bs["users"] != "done" || bs["sessions"] != "active" {
+		t.Errorf("peer-A bootstrap = %v, want users=done sessions=active", bs)
+	}
+	cursors := a["inbound_cursor"].(map[string]any)
+	if cursors["app/uid-1/feeds"].(float64) != 45 {
+		t.Errorf("peer-A cursor = %v, want 45", cursors["app/uid-1/feeds"])
+	}
+	tails := a["outbound_tail"].(map[string]any)
+	if tails["app/uid-1/feeds"].(float64) != 47 {
+		t.Errorf("peer-A tail = %v, want 47", tails["app/uid-1/feeds"])
+	}
+	pending := a["pending"].(map[string]any)
+	if pending["count"].(float64) != 2 {
+		t.Errorf("peer-A pending.count = %v, want 2", pending["count"])
+	}
+	if age := pending["oldest_age"].(float64); age < 25 || age > 35 {
+		t.Errorf("peer-A pending.oldest_age = %v, want roughly 30", age)
+	}
+	if a["seen_count"].(float64) != 2 {
+		t.Errorf("peer-A seen_count = %v, want 2", a["seen_count"])
+	}
+	heldSelf := a["leases_held_by_self"].([]any)
+	if len(heldSelf) != 1 {
+		t.Errorf("peer-A leases_held_by_self = %v, want 1", heldSelf)
+	}
+	heldPeer := a["leases_held_by_peer"].([]any)
+	if len(heldPeer) != 1 {
+		t.Errorf("peer-A leases_held_by_peer = %v, want 1 (stale lease must be excluded)", heldPeer)
+	}
+
+	// peer-B has cursor data but no pending / no seen.
+	b := byPeer["peer-B"]
+	if pending := b["pending"].(map[string]any); pending["count"].(float64) != 0 {
+		t.Errorf("peer-B pending.count = %v, want 0", pending["count"])
+	}
+	if b["seen_count"].(float64) != 0 {
+		t.Errorf("peer-B seen_count = %v, want 0", b["seen_count"])
+	}
+	// Outbound tail is global, so peer-B sees it too (the same wire
+	// stream is sent to both peers).
+	if tails := b["outbound_tail"].(map[string]any); tails["app/uid-1/feeds"].(float64) != 47 {
+		t.Errorf("peer-B tail = %v, want 47", tails["app/uid-1/feeds"])
+	}
+}

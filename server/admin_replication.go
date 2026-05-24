@@ -10,8 +10,10 @@
 //
 //   GET  /_/admin/replication/status         — pair + per-user-host + bootstrap-pending summary
 //   GET  /_/admin/replication/pair           — current pair members
+//   GET  /_/admin/replication/pairs          — per-pair health rollup (bootstrap, cursors, pending, leases)
 //   GET  /_/admin/replication/progress       — per-(peer, scope) bootstrap progress
 //   GET  /_/admin/replication/ops[?user=]    — per-(user, scope) op-replication snapshot
+//   GET  /_/admin/replication/stalled        — stuck inbound streams (pending buffer cannot drain)
 //   POST /_/admin/replication/pair/remove    — kick a specific pair member
 //   POST /_/admin/replication/resync         — re-run bulk bootstrap against a peer
 //
@@ -25,6 +27,7 @@ package main
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/gin-gonic/gin"
 )
@@ -351,6 +354,204 @@ func admin_replication_pair_remove(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"removed": removed,
 		"members": remaining,
+	})
+}
+
+// admin_replication_pairs is GET /_/admin/replication/pairs.
+// Per-pair-member rollup of the operator-facing health signals: where
+// each peer is in bootstrap, how much we've sent outbound to it
+// (tail), how much we've applied from it (cursor), how many ops are
+// buffered waiting on a gap (pending count + oldest age), how many
+// distinct ops we've recorded from it (seen count), when it last
+// delivered something we accepted (last_op_at), and what leases
+// currently exist between us and this peer. Aimed at the operator
+// who's investigating why two paired hosts have diverged in
+// row counts and wants a single screen of "is the wire alive, is
+// bootstrap done, am I behind, is there a stuck stream?".
+func admin_replication_pairs(c *gin.Context) {
+	rdb := db_open("db/replication.db")
+	n := now()
+
+	type peerData struct {
+		Peer           string                       `json:"peer"`
+		Added          int64                        `json:"added"`
+		Role           string                       `json:"role"`
+		Bootstrap      map[string]string            `json:"bootstrap"`
+		OutboundTail   map[string]int64             `json:"outbound_tail"`
+		InboundCursor  map[string]int64             `json:"inbound_cursor"`
+		Pending        map[string]any               `json:"pending"`
+		SeenCount      int64                        `json:"seen_count"`
+		LastOpAt       int64                        `json:"last_op_at"`
+		LeasesHeldBy   []map[string]any             `json:"leases_held_by_self"`
+		LeasesHeldPeer []map[string]any             `json:"leases_held_by_peer"`
+	}
+
+	pairs := map[string]*peerData{}
+
+	// Seed pairs from replication.db.pair so an idle / not-yet-talked-
+	// to peer still shows up.
+	if rows, err := rdb.rows("select peer, added, role from pair"); err == nil {
+		for _, r := range rows {
+			peer, _ := r["peer"].(string)
+			if peer == "" {
+				continue
+			}
+			added, _ := r["added"].(int64)
+			role, _ := r["role"].(string)
+			pairs[peer] = &peerData{
+				Peer: peer, Added: added, Role: role,
+				Bootstrap:      map[string]string{},
+				OutboundTail:   map[string]int64{},
+				InboundCursor:  map[string]int64{},
+				LeasesHeldBy:   []map[string]any{},
+				LeasesHeldPeer: []map[string]any{},
+			}
+		}
+	}
+
+	get := func(peer string) *peerData {
+		if pd, ok := pairs[peer]; ok {
+			return pd
+		}
+		pd := &peerData{
+			Peer:           peer,
+			Bootstrap:      map[string]string{},
+			OutboundTail:   map[string]int64{},
+			InboundCursor:  map[string]int64{},
+			LeasesHeldBy:   []map[string]any{},
+			LeasesHeldPeer: []map[string]any{},
+		}
+		pairs[peer] = pd
+		return pd
+	}
+
+	if rows, err := rdb.rows("select scope, peer, state from bootstrap"); err == nil {
+		for _, r := range rows {
+			peer, _ := r["peer"].(string)
+			scope, _ := r["scope"].(string)
+			state, _ := r["state"].(string)
+			if peer == "" || peer == p2p_id {
+				continue
+			}
+			get(peer).Bootstrap[scope] = state
+		}
+	}
+
+	// outbound tail is per-(user, scope, db) and not naturally per-peer
+	// (the same op stream is sent to every recipient). Roll it up here
+	// keyed by "scope/user/db" so the operator sees per-stream
+	// outbound progress; it's the same across pairs, so duplicate
+	// under each pair entry to keep the JSON self-contained.
+	tailRows := map[string]int64{}
+	if rows, err := rdb.rows("select user, scope, db, last from tail"); err == nil {
+		for _, r := range rows {
+			user, _ := r["user"].(string)
+			scope, _ := r["scope"].(string)
+			database, _ := r["db"].(string)
+			last, _ := r["last"].(int64)
+			key := scope + "/" + user + "/" + database
+			tailRows[key] = last
+		}
+	}
+	for _, pd := range pairs {
+		for k, v := range tailRows {
+			pd.OutboundTail[k] = v
+		}
+	}
+
+	if rows, err := rdb.rows("select peer, scope, user, db, sequence from cursor"); err == nil {
+		for _, r := range rows {
+			peer, _ := r["peer"].(string)
+			scope, _ := r["scope"].(string)
+			user, _ := r["user"].(string)
+			database, _ := r["db"].(string)
+			seq, _ := r["sequence"].(int64)
+			if peer == "" || peer == p2p_id {
+				continue
+			}
+			get(peer).InboundCursor[scope+"/"+user+"/"+database] = seq
+		}
+	}
+
+	pendingRows := map[string]struct {
+		count  int64
+		oldest int64
+	}{}
+	if rows, err := rdb.rows("select peer, count(*) as c, min(received) as oldest from pending group by peer"); err == nil {
+		for _, r := range rows {
+			peer, _ := r["peer"].(string)
+			count, _ := r["c"].(int64)
+			oldest, _ := r["oldest"].(int64)
+			if peer == "" {
+				continue
+			}
+			pendingRows[peer] = struct {
+				count  int64
+				oldest int64
+			}{count, oldest}
+		}
+	}
+	for peer, pd := range pairs {
+		if pr, ok := pendingRows[peer]; ok {
+			pd.Pending = map[string]any{
+				"count":      pr.count,
+				"oldest_age": n - pr.oldest,
+			}
+		} else {
+			pd.Pending = map[string]any{"count": int64(0), "oldest_age": int64(0)}
+		}
+	}
+
+	if rows, err := rdb.rows("select peer, count(*) as c, max(applied) as last from seen group by peer"); err == nil {
+		for _, r := range rows {
+			peer, _ := r["peer"].(string)
+			count, _ := r["c"].(int64)
+			last, _ := r["last"].(int64)
+			if peer == "" || peer == p2p_id {
+				continue
+			}
+			pd := get(peer)
+			pd.SeenCount = count
+			pd.LastOpAt = last
+		}
+	}
+
+	if rows, err := rdb.rows("select scope, key, peer, expires, fence from leadership where expires > ?", n); err == nil {
+		for _, r := range rows {
+			scope, _ := r["scope"].(string)
+			key, _ := r["key"].(string)
+			peer, _ := r["peer"].(string)
+			expires, _ := r["expires"].(int64)
+			fence, _ := r["fence"].(int64)
+			entry := map[string]any{
+				"scope":   scope,
+				"key":     key,
+				"expires": expires,
+				"fence":   fence,
+			}
+			if peer == p2p_id {
+				// We hold this lease; surface it under every peer
+				// so the operator sees what THIS host owns relative
+				// to each partner.
+				for _, pd := range pairs {
+					pd.LeasesHeldBy = append(pd.LeasesHeldBy, entry)
+				}
+			} else if pd, ok := pairs[peer]; ok {
+				pd.LeasesHeldPeer = append(pd.LeasesHeldPeer, entry)
+			}
+		}
+	}
+
+	out := make([]*peerData, 0, len(pairs))
+	for _, pd := range pairs {
+		out = append(out, pd)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Peer < out[j].Peer })
+
+	c.JSON(http.StatusOK, gin.H{
+		"host":  p2p_id,
+		"now":   n,
+		"pairs": out,
 	})
 }
 

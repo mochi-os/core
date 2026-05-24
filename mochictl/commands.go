@@ -148,6 +148,12 @@ func init() {
 				return get_dump("/_/admin/replication/pair", "members")
 			},
 		},
+		"replication pairs": {
+			help: "Per-pair health rollup (bootstrap, cursors, pending, leases) - what each pair partner looks like from here",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/pairs", "host", "now", "pairs")
+			},
+		},
 		"replication progress": {
 			help: "Per-(peer, scope) bulk-bootstrap progress",
 			run:  cmd_replication_progress,

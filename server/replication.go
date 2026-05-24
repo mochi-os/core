@@ -738,13 +738,13 @@ const stall_warn_seconds = 15 * 60
 func replication_pending_warn_stalled() {
 	threshold := now() - stall_warn_seconds
 	for _, s := range replication_pending_stalled() {
-		if s.OldestRecv > threshold {
+		if s.Oldest > threshold {
 			continue
 		}
-		warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v min_prev=%d max_prev=%d count=%d oldest_age=%ds",
+		warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d age=%ds",
 			s.Peer, s.Scope, s.User, s.Database,
-			s.Cursor, s.Anchored, s.MinPrev, s.MaxPrev, s.Count,
-			now()-s.OldestRecv)
+			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count,
+			now()-s.Oldest)
 	}
 }
 
@@ -830,16 +830,24 @@ func replication_pending_kick_due(appID string) bool {
 // row state from the sender, advancing the cursor past the missing
 // sequences and accepting that the intervening per-op deltas are lost.
 type StalledStream struct {
-	Peer       string `json:"peer"`
-	Scope      string `json:"scope"`
-	User       string `json:"user"`
-	Database   string `json:"database"`
-	Cursor     int64  `json:"cursor"`
-	Anchored   bool   `json:"anchored"`
-	MinPrev    int64  `json:"min_prev"`
-	MaxPrev    int64  `json:"max_prev"`
-	Count      int64  `json:"count"`
-	OldestRecv int64  `json:"oldest_received"`
+	Peer        string            `json:"peer"`
+	Scope       string            `json:"scope"`
+	User        string            `json:"user"`
+	Database    string            `json:"database"`
+	Cursor      int64             `json:"cursor"`
+	Anchored    bool              `json:"anchored"`
+	Predecessor PredecessorRange  `json:"predecessor"`
+	Count       int64             `json:"count"`
+	Oldest      int64             `json:"oldest"`
+}
+
+// PredecessorRange holds the minimum and maximum predecessor sequence
+// values across a stalled stream's pending ops. The pending table's
+// internal column is `prev`; the external surfaces spell it out so
+// admin / mochictl callers don't have to know the abbreviation.
+type PredecessorRange struct {
+	Minimum int64 `json:"minimum"`
+	Maximum int64 `json:"maximum"`
 }
 
 // replication_pending_stalled returns the (peer, scope, user, db)
@@ -879,16 +887,15 @@ func replication_pending_stalled() []StalledStream {
 			}
 		}
 		stalled = append(stalled, StalledStream{
-			Peer:       peer,
-			Scope:      scope,
-			User:       user,
-			Database:   database,
-			Cursor:     cursor,
-			Anchored:   anchored,
-			MinPrev:    minPrev,
-			MaxPrev:    maxPrev,
-			Count:      count,
-			OldestRecv: oldest,
+			Peer:        peer,
+			Scope:       scope,
+			User:        user,
+			Database:    database,
+			Cursor:      cursor,
+			Anchored:    anchored,
+			Predecessor: PredecessorRange{Minimum: minPrev, Maximum: maxPrev},
+			Count:       count,
+			Oldest:      oldest,
 		})
 	}
 	return stalled

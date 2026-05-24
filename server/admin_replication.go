@@ -356,28 +356,28 @@ func admin_replication_pair_remove(c *gin.Context) {
 
 // admin_replication_stalled is GET /_/admin/replication/stalled.
 // Returns the (peer, scope, user, db) streams whose pending buffer
-// cannot drain - either anchored with a gap (smallest prev > cursor)
-// or unanchored with no Prev==0 op present. Each entry carries the
-// cursor, the smallest/largest pending Prev, the count of pending
-// rows, and the age of the oldest in seconds. Aimed at operator
-// triage when users report missing data on a paired host.
+// cannot drain - either anchored with a gap (smallest predecessor >
+// cursor) or unanchored with no zero-predecessor stream-start op
+// present. Each entry carries the cursor, the predecessor range
+// (minimum / maximum) across pending rows, the row count, and the
+// age of the oldest pending row in seconds. Aimed at operator triage
+// when users report missing data on a paired host.
 func admin_replication_stalled(c *gin.Context) {
 	stalled := replication_pending_stalled()
 	out := make([]map[string]any, 0, len(stalled))
 	n := now()
 	for _, s := range stalled {
 		out = append(out, map[string]any{
-			"peer":             s.Peer,
-			"scope":            s.Scope,
-			"user":             s.User,
-			"database":         s.Database,
-			"cursor":           s.Cursor,
-			"anchored":         s.Anchored,
-			"min_prev":         s.MinPrev,
-			"max_prev":         s.MaxPrev,
-			"count":            s.Count,
-			"oldest_received":  s.OldestRecv,
-			"oldest_age_secs":  n - s.OldestRecv,
+			"peer":        s.Peer,
+			"scope":       s.Scope,
+			"user":        s.User,
+			"database":    s.Database,
+			"cursor":      s.Cursor,
+			"anchored":    s.Anchored,
+			"predecessor": map[string]int64{"minimum": s.Predecessor.Minimum, "maximum": s.Predecessor.Maximum},
+			"count":       s.Count,
+			"oldest":      s.Oldest,
+			"age":         n - s.Oldest,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"stalled": out})

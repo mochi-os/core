@@ -930,7 +930,7 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		db.exec("update users set username=? where uid=?", username, id)
 		if old != username {
 			audit_email_changed(user.Username, id, old, username)
-			replication_emit_users_users_set(id, map[string]string{"username": username})
+			replication_emit_users_users_pair_set(id, map[string]string{"username": username})
 		}
 	}
 
@@ -947,7 +947,7 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		db.exec("update users set role=? where uid=?", role, id)
 		if old != role {
-			replication_emit_users_users_set(id, map[string]string{"role": role})
+			replication_emit_users_users_pair_set(id, map[string]string{"role": role})
 			if role == "administrator" {
 				audit_admin_escalation(user.Username, id, "promote")
 			} else if old == "administrator" {

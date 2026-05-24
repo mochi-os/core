@@ -26,6 +26,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 )
 
 // SystemSet is the wire payload for a single field-level write to a
@@ -225,10 +226,59 @@ func replication_system_row_apply(originPeer string, s *SystemRow) {
 		replication_system_row_apply_apps_tracks(originPeer, s)
 	case "domains.delegations":
 		replication_system_row_apply_delegations(originPeer, s)
+	case "users.users":
+		replication_system_row_apply_users_users(originPeer, s)
 	default:
 		warn("Replication system-row: unsupported destination %q.%q (from peer %q)",
 			s.Database, s.Table, originPeer)
 	}
+}
+
+// replication_system_users_users_mutable is the column whitelist for
+// pair-scope replication into users.db.users. Columns listed here flow
+// between operator-paired hosts (sharing one operator's full identity
+// state); other users.users columns either replicate via the per-user
+// path (preferences, methods, status — see replication_users_users_mutable)
+// or stay strictly local per host.
+var replication_system_users_users_mutable = map[string]bool{
+	"username": true,
+	"role":     true,
+}
+
+// replication_system_row_apply_users_users handles users.db.users for
+// the pair-scope columns (username, role). Per-user link partners must
+// not receive these — username is a per-host namespace affordance and
+// role is the local operator's authority decision — so the emit-side
+// uses the pair-only system-row pipeline and this handler is the
+// receiver counterpart. The per-user replication_users_users_apply path
+// silently ignores these columns via its own narrower whitelist.
+func replication_system_row_apply_users_users(originPeer string, s *SystemRow) {
+	uid := s.Key["uid"]
+	if uid == "" {
+		info("Replication system-row users.users dropping: missing uid key (from peer %q)", originPeer)
+		return
+	}
+	if s.Delete {
+		// User deletion is a server-pair operation, not a row op —
+		// no-op so an errant emitter can't lose accounts.
+		return
+	}
+	sets := []string{}
+	vals := []any{}
+	for col, v := range s.Cols {
+		if !replication_system_users_users_mutable[col] {
+			continue
+		}
+		sets = append(sets, col+"=?")
+		vals = append(vals, v)
+	}
+	if len(sets) == 0 {
+		return
+	}
+	vals = append(vals, uid)
+	db := db_open("db/users.db")
+	db.exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
+	debug("Replication system-row users.users applied: uid=%q cols=%v (from %q)", uid, s.Cols, originPeer)
 }
 
 // replication_system_row_apply_domains handles domains.db.domains.

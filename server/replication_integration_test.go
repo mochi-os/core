@@ -85,7 +85,37 @@ func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
 	}
 }
 
+// TestIntegrationUsersUsersRoleAcrossHosts verifies that role
+// propagation between paired hosts goes via the pair-only system-row
+// path (not the per-user users-row.set path). Role replicates between
+// the same operator's paired hosts but not across per-user link
+// partners - admin authority is per-operator.
 func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
+	switchTo, cleanup := integration_setup(t)
+	defer cleanup()
+
+	switchTo("h2")
+	setup_users_test_schema()
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username, role) values (?, ?, 'user')", "uid-alice", "alice@example.com")
+
+	replication_system_row_apply("h1", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": "uid-alice"},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	row, _ := udb.row("select role from users where uid=?", "uid-alice")
+	if v, _ := row["role"].(string); v != "administrator" {
+		t.Errorf("role: want administrator, got %q", v)
+	}
+}
+
+// TestIntegrationUsersUsersRoleNotOnPerUserPath defends the
+// other side of the rule: a role op arriving on the per-user
+// users-row.set pipeline (e.g. a misbehaving per-user link partner) is
+// silently dropped. Protects against cross-operator privilege
+// escalation.
+func TestIntegrationUsersUsersRoleNotOnPerUserPath(t *testing.T) {
 	switchTo, cleanup := integration_setup(t)
 	defer cleanup()
 
@@ -102,12 +132,13 @@ func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
 			Cols:  map[string]string{"role": "administrator"},
 		}),
 	}
-	if got := replication_apply_op(op); got != ApplyApplied {
-		t.Fatalf("apply: want ApplyApplied, got %v", got)
-	}
+	// The apply path returns ApplyInvalid for an op whose only column
+	// is outside the per-user whitelist - the dispatcher logs and
+	// drops without touching the row.
+	_ = replication_apply_op(op)
 	row, _ := udb.row("select role from users where uid=?", "uid-alice")
-	if v, _ := row["role"].(string); v != "administrator" {
-		t.Errorf("role: want administrator, got %q", v)
+	if v, _ := row["role"].(string); v == "administrator" {
+		t.Error("role MUST NOT escalate via the per-user replication path")
 	}
 }
 

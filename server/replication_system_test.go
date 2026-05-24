@@ -394,3 +394,104 @@ func TestSystemRowApplyRejectsMissingKey(t *testing.T) {
 		t.Errorf("empty-key op should not write; got %d rows", len(rows))
 	}
 }
+
+// setup_users_users_system_test seeds db/users.db with the columns the
+// pair-only system-row path writes against. Matches setup_users_row_apply_test
+// but lives in this file so the system-row tests don't depend on the
+// other file's helper.
+func setup_users_users_system_test(t *testing.T) (cleanup func(), uid string) {
+	t.Helper()
+	cleanup = setup_system_replication_test(t)
+	setup_users_test_schema()
+	uid = "uid-system-users"
+	db_open("db/users.db").exec("insert into users (uid, username, role) values (?, ?, ?)", uid, "alice", "user")
+	return
+}
+
+// TestSystemRowApplyUsersUsersRole: role applies via the pair-only
+// system-row path.
+func TestSystemRowApplyUsersUsersRole(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
+	if got, _ := row["role"].(string); got != "administrator" {
+		t.Errorf("role = %q, want administrator", got)
+	}
+}
+
+// TestSystemRowApplyUsersUsersUsername: username applies via the
+// pair-only system-row path.
+func TestSystemRowApplyUsersUsersUsername(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"username": "alicia"},
+	})
+	row, _ := db_open("db/users.db").row("select username from users where uid=?", uid)
+	if got, _ := row["username"].(string); got != "alicia" {
+		t.Errorf("username = %q, want alicia", got)
+	}
+}
+
+// TestSystemRowApplyUsersUsersIgnoresUnknownColumn: arbitrary columns
+// outside the pair-scope whitelist are silently skipped. Prevents a
+// misbehaving peer from injecting writes against (for example) status
+// or preferences via the wrong pipeline.
+func TestSystemRowApplyUsersUsersIgnoresUnknownColumn(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"status": "suspended", "evil": "x"},
+	})
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got == "suspended" {
+		t.Error("status MUST NOT apply via the system-row path - per-user column")
+	}
+}
+
+// TestSystemRowApplyUsersUsersMissingUID: an op without a uid key drops
+// silently rather than UPDATE-ing every row.
+func TestSystemRowApplyUsersUsersMissingUID(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
+	if got, _ := row["role"].(string); got == "administrator" {
+		t.Error("missing-uid op MUST NOT promote the seeded user")
+	}
+}
+
+// TestSystemRowApplyUsersUsersDeleteIsNoop: a delete-flag op against
+// users.users is a no-op. User deletion is a server-pair operation,
+// never a row replication op.
+func TestSystemRowApplyUsersUsersDeleteIsNoop(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:    map[string]string{"uid": uid},
+		Delete: true,
+	})
+	exists, _ := db_open("db/users.db").exists("select 1 from users where uid=?", uid)
+	if !exists {
+		t.Error("delete-op MUST NOT remove the user row")
+	}
+}

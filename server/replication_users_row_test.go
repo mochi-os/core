@@ -29,17 +29,56 @@ func setup_users_row_apply_test(t *testing.T) (cleanup func(), uid string) {
 	return
 }
 
-func TestReplicationUsersUsersApplyRole(t *testing.T) {
+// TestReplicationUsersUsersApplyRoleIgnoredOnPerUserPath asserts that
+// role does NOT flow via the per-user (host-set) path - it must arrive
+// via the pair-only system-row pipeline so it doesn't leak across
+// operators (different operators decide admin authority independently).
+func TestReplicationUsersUsersApplyRoleIgnoredOnPerUserPath(t *testing.T) {
 	cleanup, uid := setup_users_row_apply_test(t)
 	defer cleanup()
 
 	op := &UsersRow{Table: "users", Cols: map[string]string{"role": "administrator"}}
-	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
-		t.Fatalf("role apply: want ApplyApplied, got %v", got)
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Fatalf("role on per-user path: want ApplyInvalid (silently ignored), got %v", got)
 	}
 	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
-	if got, _ := row["role"].(string); got != "administrator" {
-		t.Errorf("role: want administrator, got %q", got)
+	if got, _ := row["role"].(string); got == "administrator" {
+		t.Error("role MUST NOT apply via the per-user path - pair-only column")
+	}
+}
+
+// TestReplicationUsersUsersApplyUsernameIgnoredOnPerUserPath asserts
+// the same exclusion for username, which is a per-operator namespace
+// affordance rather than per-user data.
+func TestReplicationUsersUsersApplyUsernameIgnoredOnPerUserPath(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"username": "evil@elsewhere"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Fatalf("username on per-user path: want ApplyInvalid, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select username from users where uid=?", uid)
+	if got, _ := row["username"].(string); got == "evil@elsewhere" {
+		t.Error("username MUST NOT apply via the per-user path - pair-only column")
+	}
+}
+
+// TestReplicationUsersUsersApplyStatus covers the per-user path's
+// remaining valid column - status (suspend / activate) does propagate
+// to every host in the user's set, including per-user link partners,
+// because the user is suspended everywhere or active everywhere.
+func TestReplicationUsersUsersApplyStatus(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("status apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got != "suspended" {
+		t.Errorf("status: want suspended, got %q", got)
 	}
 }
 
@@ -75,13 +114,13 @@ func TestReplicationUsersUsersApplyIgnoresUnknownColumn(t *testing.T) {
 	}
 
 	// A real column alongside an unknown column applies just the known.
-	op = &UsersRow{Table: "users", Cols: map[string]string{"role": "administrator", "evil": "x"}}
+	op = &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended", "evil": "x"}}
 	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
 		t.Fatalf("mixed: want ApplyApplied, got %v", got)
 	}
-	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
-	if got, _ := row["role"].(string); got != "administrator" {
-		t.Errorf("role: want administrator, got %q", got)
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got != "suspended" {
+		t.Errorf("status: want suspended, got %q", got)
 	}
 }
 
@@ -89,7 +128,7 @@ func TestReplicationUsersUsersApplyDeferUnknownUser(t *testing.T) {
 	cleanup, _ := setup_users_row_apply_test(t)
 	defer cleanup()
 
-	op := &UsersRow{Table: "users", Cols: map[string]string{"role": "administrator"}}
+	op := &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended"}}
 	if got := replication_users_row_apply("uid-missing", op); got != ApplyDeferred {
 		t.Errorf("unknown user: want ApplyDeferred, got %v", got)
 	}

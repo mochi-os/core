@@ -30,24 +30,45 @@ import (
 )
 
 // replication_users_users_mutable lists the columns of users.db.users
-// that may be updated via row replication. Other columns (uid) are
-// keys; columns added later that should NOT replicate stay off this
-// list and are silently ignored by the apply path.
+// that may be updated via the per-user row-replication path (delivered
+// to every host in the user's host set, including per-user link
+// partners). Other columns are either replicated on the pair-only path
+// (username, role — see replication_emit_users_users_pair_set and
+// replication_system_users_users_mutable) or stay strictly server-local
+// (uid is the row key; role/username belong on the pair-only path
+// because they're per-operator decisions, not per-user data).
 var replication_users_users_mutable = map[string]bool{
-	"username": true,
-	"role":     true,
-	"methods":  true,
-	"status":   true,
+	"methods": true,
+	"status":  true,
 }
 
-// replication_emit_users_users_set emits a partial update for one
-// row of users.db.users. Callers pass only the columns they changed;
-// the receiver runs UPDATE … SET <col>=?, … WHERE uid=?.
+// replication_emit_users_users_set emits a partial update for one row
+// of users.db.users to the user's whole host set (operator-paired
+// members AND per-user link partners). Use this for columns that
+// represent the user's own choices and follow them across replicas —
+// preferences, auth methods, account status. For per-operator columns
+// (username, role) use replication_emit_users_users_pair_set instead.
 func replication_emit_users_users_set(uid string, fields map[string]string) {
 	if uid == "" || len(fields) == 0 {
 		return
 	}
 	replication_emit_users_row(uid, &UsersRow{Table: "users", Cols: fields})
+}
+
+// replication_emit_users_users_pair_set emits a partial update for one
+// row of users.db.users to the operator-paired hosts only — NOT to
+// per-user link partners. Used for columns that are per-operator
+// affordances rather than per-user data: username (each operator
+// chooses their own per-host namespace) and role (admin authority is
+// granted independently on each operator's servers; replicating it
+// across operators would be a privilege-escalation footgun). Pair
+// members share full identity state because they're the same
+// operator's hosts.
+func replication_emit_users_users_pair_set(uid string, fields map[string]string) {
+	if uid == "" || len(fields) == 0 {
+		return
+	}
+	replication_emit_system_row("users", "users", map[string]string{"uid": uid}, fields, false)
 }
 
 // replication_users_entities_mutable lists the columns of

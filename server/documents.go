@@ -129,6 +129,8 @@ func document_setting(name, language string) string {
 }
 
 // document_set writes an operator override into the documents table.
+// Replicates to operator-paired hosts so a terms / rules / privacy
+// edit on one side reaches the others; LWW per (name, language).
 func document_set(name, language, body string) error {
 	if !document_name_valid(name) {
 		return fmt.Errorf("unknown document name %q", name)
@@ -136,9 +138,14 @@ func document_set(name, language, body string) error {
 	if language == "" {
 		return fmt.Errorf("language required")
 	}
+	updated := now()
 	db := db_open("db/settings.db")
 	db.exec("replace into documents ( name, language, body, updated ) values ( ?, ?, ?, ? )",
-		name, language, body, now())
+		name, language, body, updated)
+	replication_emit_system_row("settings", "documents",
+		map[string]string{"name": name, "language": language},
+		map[string]string{"body": body, "updated": fmt.Sprintf("%d", updated)},
+		false)
 	return nil
 }
 

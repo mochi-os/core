@@ -495,3 +495,130 @@ func TestSystemRowApplyUsersUsersDeleteIsNoop(t *testing.T) {
 		t.Error("delete-op MUST NOT remove the user row")
 	}
 }
+
+// setup_documents_system_test seeds db/settings.db with the documents
+// table the apply path writes against. Settings DB already exists from
+// the parent helper.
+func setup_documents_system_test(t *testing.T) func() {
+	cleanup := setup_system_replication_test(t)
+	db_open("db/settings.db").exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	return cleanup
+}
+
+// TestSystemRowApplySettingsDocumentsFresh: a brand-new
+// (name, language) row lands on the receiver.
+func TestSystemRowApplySettingsDocumentsFresh(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "terms", "language": "en"},
+		Cols: map[string]string{"body": "Custom operator terms.", "updated": "150"},
+	})
+	row, _ := db_open("db/settings.db").row("select body, updated from documents where name=? and language=?", "terms", "en")
+	if row == nil {
+		t.Fatal("documents row missing after apply")
+	}
+	if got, _ := row["body"].(string); got != "Custom operator terms." {
+		t.Errorf("body = %q, want %q", got, "Custom operator terms.")
+	}
+	if got, _ := row["updated"].(int64); got != 150 {
+		t.Errorf("updated = %d, want 150", got)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsReplacesExisting: a subsequent
+// op overwrites the row (LWW per name+language; later updated wins
+// because the emitter is the operator).
+func TestSystemRowApplySettingsDocumentsReplacesExisting(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+	db := db_open("db/settings.db")
+	db.exec("replace into documents (name, language, body, updated) values ('rules', 'fr', 'old', 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "rules", "language": "fr"},
+		Cols: map[string]string{"body": "new", "updated": "200"},
+	})
+	row, _ := db.row("select body, updated from documents where name=? and language=?", "rules", "fr")
+	if got, _ := row["body"].(string); got != "new" {
+		t.Errorf("body = %q, want new", got)
+	}
+	if got, _ := row["updated"].(int64); got != 200 {
+		t.Errorf("updated = %d, want 200", got)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsDelete: Delete=true removes the
+// row. Lets an operator revert a customised page back to the bundled
+// default by removing the override on every paired host.
+func TestSystemRowApplySettingsDocumentsDelete(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+	db := db_open("db/settings.db")
+	db.exec("replace into documents (name, language, body, updated) values ('privacy', 'en', 'override', 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:    map[string]string{"name": "privacy", "language": "en"},
+		Delete: true,
+	})
+	if exists, _ := db.exists("select 1 from documents where name=? and language=?", "privacy", "en"); exists {
+		t.Error("document should be removed after delete-op")
+	}
+}
+
+// TestDocumentSetEmits: an operator document_set fires a system-row
+// op so the override reaches paired hosts.
+func TestDocumentSetEmits(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	calls := 0
+	orig := replication_emit_system_row
+	replication_emit_system_row = func(database, table string, key, cols map[string]string, del bool) {
+		calls++
+		if database != "settings" || table != "documents" {
+			t.Errorf("emit destination: db=%q table=%q", database, table)
+		}
+		if key["name"] != "terms" || key["language"] != "en" {
+			t.Errorf("emit key: %v", key)
+		}
+		if cols["body"] != "Customised terms." {
+			t.Errorf("emit body: %q", cols["body"])
+		}
+		if cols["updated"] == "" {
+			t.Error("emit updated is empty")
+		}
+		if del {
+			t.Error("emit delete=true on a set call")
+		}
+	}
+	defer func() { replication_emit_system_row = orig }()
+
+	if err := document_set("terms", "en", "Customised terms."); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsMissingKey: an op without both
+// key parts drops silently rather than writing a degenerate row.
+func TestSystemRowApplySettingsDocumentsMissingKey(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "terms"}, // language missing
+		Cols: map[string]string{"body": "x", "updated": "1"},
+	})
+	rows, _ := db_open("db/settings.db").rows("select 1 from documents")
+	if len(rows) != 0 {
+		t.Errorf("missing-language op should not write; got %d rows", len(rows))
+	}
+}

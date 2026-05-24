@@ -228,6 +228,8 @@ func replication_system_row_apply(originPeer string, s *SystemRow) {
 		replication_system_row_apply_delegations(originPeer, s)
 	case "users.users":
 		replication_system_row_apply_users_users(originPeer, s)
+	case "settings.documents":
+		replication_system_row_apply_settings_documents(originPeer, s)
 	default:
 		warn("Replication system-row: unsupported destination %q.%q (from peer %q)",
 			s.Database, s.Table, originPeer)
@@ -279,6 +281,32 @@ func replication_system_row_apply_users_users(originPeer string, s *SystemRow) {
 	db := db_open("db/users.db")
 	db.exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
 	debug("Replication system-row users.users applied: uid=%q cols=%v (from %q)", uid, s.Cols, originPeer)
+}
+
+// replication_system_row_apply_settings_documents handles
+// settings.db.documents - operator-edited markdown overrides for the
+// server's rules / terms / privacy pages. Composite key
+// (name, language) with body + updated as the row data. LWW per
+// (name, language): a later replace from any pair member wins.
+func replication_system_row_apply_settings_documents(originPeer string, s *SystemRow) {
+	name := s.Key["name"]
+	language := s.Key["language"]
+	if name == "" || language == "" {
+		info("Replication system-row settings.documents dropping: missing key (from peer %q)", originPeer)
+		return
+	}
+	db := db_open("db/settings.db")
+	if s.Delete {
+		db.exec("delete from documents where name=? and language=?", name, language)
+		debug("Replication system-row settings.documents deleted: %q/%q (from %q)", name, language, originPeer)
+		return
+	}
+	body := s.Cols["body"]
+	var updated int64
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	db.exec("replace into documents (name, language, body, updated) values (?, ?, ?, ?)",
+		name, language, body, updated)
+	debug("Replication system-row settings.documents applied: %q/%q updated=%d (from %q)", name, language, updated, originPeer)
 }
 
 // replication_system_row_apply_domains handles domains.db.domains.

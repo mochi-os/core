@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -36,12 +35,10 @@ type DB struct {
 	app      *App
 	kind     string
 	// closed is the unix timestamp when this handle was last marked
-	// idle, or 0 while in use. The pruning loop in db_close_manager
-	// reads it without the cache lock; touch-back-to-zero writes from
-	// db_open_work likewise happen outside the lock. Atomic so the
-	// race detector stays clean (single int64; no torn reads even on
-	// 32-bit, and no benign-but-undefined-behaviour race).
-	closed atomic.Int64
+	// idle, or 0 while in use. Always read and written under
+	// databases_lock - same primitive that guards the cache map this
+	// DB lives in, so no new synchronisation primitive is introduced.
+	closed int64
 }
 
 // db_kind_* tag a DB handle with the per-host file role so the
@@ -554,8 +551,7 @@ func db_manager() {
 
 		databases_lock.Lock()
 		for _, db := range databases {
-			c := db.closed.Load()
-			if c > 0 && c < now-60 {
+			if db.closed > 0 && db.closed < now-60 {
 				closers = append(closers, db.internal, db.starlark)
 				delete(databases, db.key)
 			}
@@ -582,10 +578,14 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 
 	databases_lock.Lock()
 	db, found := databases[key]
+	if found {
+		// Touch back to in-use while still under the lock the
+		// pruning loop reads `closed` under.
+		db.closed = 0
+	}
 	databases_lock.Unlock()
 	if found {
 		//debug("Database reusing already open %q", path)
-		db.closed.Store(0)
 		return db, false, true
 	}
 
@@ -626,10 +626,10 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 
 	databases_lock.Lock()
 	if existing, found := databases[key]; found {
+		existing.closed = 0
 		databases_lock.Unlock()
 		db.internal.Close()
 		db.starlark.Close()
-		existing.closed.Store(0)
 		return existing, false, true
 	}
 	databases[key] = db
@@ -1537,7 +1537,9 @@ func db_upgrade_50() {
 }
 
 func (db *DB) close() {
-	db.closed.Store(now())
+	databases_lock.Lock()
+	db.closed = now()
+	databases_lock.Unlock()
 }
 
 // db_purge_prefix closes and evicts every cached DB whose on-disk path lives

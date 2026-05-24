@@ -83,6 +83,7 @@ type harness struct {
 	origEmitTo        func(user string, op *ReplicationOp, peers []string)
 	origEmitSystemSet func(database, table, row, field, value string)
 	origEmitSystemRow func(database, table string, key, cols map[string]string, del bool)
+	origDrainAsync    func(user, appID string)
 }
 
 // newHarness mints N host contexts, swaps the three emit vars for
@@ -105,6 +106,7 @@ func newHarness(t *testing.T, names ...string) *harness {
 		origEmitTo:        replication_emit_to,
 		origEmitSystemSet: replication_emit_system_set,
 		origEmitSystemRow: replication_emit_system_row,
+		origDrainAsync:    post_migration_drain_async,
 	}
 	for _, name := range names {
 		dir, err := os.MkdirTemp("", "mochi_harness_"+name)
@@ -118,6 +120,11 @@ func newHarness(t *testing.T, names ...string) *harness {
 	replication_emit_to = h.captureEmitTo
 	replication_emit_system_set = h.captureSystemSet
 	replication_emit_system_row = h.captureSystemRow
+	// Suppress the post-migration drain goroutine. It reads data_dir
+	// asynchronously, which races with switchTo. The drain is a
+	// performance prefetch the harness doesn't need - flush() drains
+	// every queue deterministically.
+	post_migration_drain_async = func(user, appID string) {}
 	return h
 }
 
@@ -157,6 +164,7 @@ func (h *harness) cleanup() {
 	replication_emit_to = h.origEmitTo
 	replication_emit_system_set = h.origEmitSystemSet
 	replication_emit_system_row = h.origEmitSystemRow
+	post_migration_drain_async = h.origDrainAsync
 	for _, ctx := range h.hosts {
 		os.RemoveAll(ctx.dir)
 	}

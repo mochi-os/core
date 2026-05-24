@@ -1961,6 +1961,12 @@ func integration_setup(t *testing.T) (func(string), func()) {
 	}
 	orig_data := data_dir
 	orig_p2p := p2p_id
+	// Replace the post-migration background drain with a no-op for the
+	// duration of the test. The production goroutine reads data_dir
+	// asynchronously, which races with switchTo's host swap; the drain
+	// itself is a performance optimization that the test doesn't need.
+	orig_drain := post_migration_drain_async
+	post_migration_drain_async = func(user, appID string) {}
 
 	hosts := map[string]struct {
 		dir string
@@ -1984,6 +1990,7 @@ func integration_setup(t *testing.T) (func(string), func()) {
 	cleanup := func() {
 		data_dir = orig_data
 		p2p_id = orig_p2p
+		post_migration_drain_async = orig_drain
 		os.RemoveAll(dir1)
 		os.RemoveAll(dir2)
 	}

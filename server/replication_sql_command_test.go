@@ -262,6 +262,10 @@ func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID st
 	}
 	orig := data_dir
 	data_dir = tmp
+	// Suppress the post-migration background drain: it reads data_dir
+	// asynchronously and races with the cleanup's data_dir restore.
+	orig_drain := post_migration_drain_async
+	post_migration_drain_async = func(user, appID string) {}
 
 	udb := db_open("db/users.db")
 	udb.exec(`create table if not exists users (id integer primary key, uid text not null unique, username text not null unique)`)
@@ -291,6 +295,7 @@ func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID st
 		delete(apps, appID)
 		apps_lock.Unlock()
 		data_dir = orig
+		post_migration_drain_async = orig_drain
 		os.RemoveAll(tmp)
 	}
 	return

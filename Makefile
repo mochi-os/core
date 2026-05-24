@@ -406,4 +406,15 @@ format:
 run: $(bin)/mochi-server
 	$(bin)/mochi-server
 
+# Run the server test suite. test is the fast pass (CGO disabled, no
+# race detector); test-race adds the race detector at the cost of
+# requiring cgo and roughly 8x slower test execution. test-race must
+# pass before any commit that touches replication or other shared
+# mutable state.
+test:
+	CGO_ENABLED=0 go test -count=1 -timeout 180s ./server
+
+test-race:
+	CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./server
+
 -include local/Makefile

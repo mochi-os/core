@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -34,7 +35,13 @@ type DB struct {
 	user     *User
 	app      *App
 	kind     string
-	closed   int64
+	// closed is the unix timestamp when this handle was last marked
+	// idle, or 0 while in use. The pruning loop in db_close_manager
+	// reads it without the cache lock; touch-back-to-zero writes from
+	// db_open_work likewise happen outside the lock. Atomic so the
+	// race detector stays clean (single int64; no torn reads even on
+	// 32-bit, and no benign-but-undefined-behaviour race).
+	closed atomic.Int64
 }
 
 // db_kind_* tag a DB handle with the per-host file role so the
@@ -488,7 +495,12 @@ func db_app(u *User, app *App) *DB {
 	// ops were deferred for schema-skew and the migration above just
 	// caught us up, the drain finds them and applies without waiting
 	// for the 30s manager tick. No-op when there's nothing pending.
-	go replication_app_drain(u.UID, app.id)
+	//
+	// Routed through a package-level variable so test harnesses that
+	// mutate data_dir (integration_setup, harness) can install a
+	// no-op stub - the production goroutine reads data_dir
+	// asynchronously, which races with the harness's host switches.
+	post_migration_drain_async(u.UID, app.id)
 
 	return db
 }
@@ -542,7 +554,8 @@ func db_manager() {
 
 		databases_lock.Lock()
 		for _, db := range databases {
-			if db.closed > 0 && db.closed < now-60 {
+			c := db.closed.Load()
+			if c > 0 && c < now-60 {
 				closers = append(closers, db.internal, db.starlark)
 				delete(databases, db.key)
 			}
@@ -572,7 +585,7 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	databases_lock.Unlock()
 	if found {
 		//debug("Database reusing already open %q", path)
-		db.closed = 0
+		db.closed.Store(0)
 		return db, false, true
 	}
 
@@ -616,7 +629,7 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 		databases_lock.Unlock()
 		db.internal.Close()
 		db.starlark.Close()
-		existing.closed = 0
+		existing.closed.Store(0)
 		return existing, false, true
 	}
 	databases[key] = db
@@ -1524,7 +1537,7 @@ func db_upgrade_50() {
 }
 
 func (db *DB) close() {
-	db.closed = now()
+	db.closed.Store(now())
 }
 
 // db_purge_prefix closes and evicts every cached DB whose on-disk path lives

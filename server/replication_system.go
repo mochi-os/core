@@ -279,7 +279,15 @@ func replication_system_row_apply_users_users(originPeer string, s *SystemRow) {
 	}
 	vals = append(vals, uid)
 	db := db_open("db/users.db")
-	db.exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
+	// Use db.internal.Exec directly so a UNIQUE-constraint refusal
+	// (the documented collision-at-apply case for username changes)
+	// surfaces as a log line instead of panicking the receiver. The
+	// local row stays at its pre-replication value; no data is
+	// destroyed.
+	if _, err := db.internal.Exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...); err != nil {
+		warn("Replication system-row users.users refused: uid=%q cols=%v err=%v (from %q)", uid, s.Cols, err, originPeer)
+		return
+	}
 	debug("Replication system-row users.users applied: uid=%q cols=%v (from %q)", uid, s.Cols, originPeer)
 }
 

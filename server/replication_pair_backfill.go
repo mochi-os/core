@@ -123,6 +123,24 @@ func replication_pair_backfill_system(peer string) {
 		}
 	}
 
+	// settings.db.documents: operator-edited rules / terms / privacy
+	// overrides. Composite key (name, language); body + updated as the
+	// row data.
+	if rows, err := sdb.rows("select name, language, body, updated from documents"); err == nil {
+		for _, r := range rows {
+			name, _ := r["name"].(string)
+			language, _ := r["language"].(string)
+			if name == "" || language == "" {
+				continue
+			}
+			body, _ := r["body"].(string)
+			updated, _ := r["updated"].(int64)
+			replication_system_row_to_peer_var(peer, "settings", "documents",
+				map[string]string{"name": name, "language": language},
+				map[string]string{"body": body, "updated": strconv.FormatInt(updated, 10)}, false)
+		}
+	}
+
 	// apps.db two-column key tables (classes / services / paths).
 	adb := db_apps()
 	for _, t := range []struct{ table, keyCol string }{

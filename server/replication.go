@@ -354,14 +354,23 @@ func replication_op_event(e *Event) {
 		info("Replication op dropping: cannot decode payload")
 		return
 	}
+	replication_op_receive(e.peer, &op)
+}
 
+// replication_op_receive is the framework-layer entry point for an
+// inbound op once it has been decoded. Production calls it from
+// replication_op_event after CBOR-decoding the Event payload; the
+// multi-master test harness calls it directly so the dedup / fence /
+// per-stream gate / pending-buffer / cursor-advance machinery is
+// exercised end-to-end.
+func replication_op_receive(peer string, op *ReplicationOp) {
 	db := db_open("db/replication.db")
 	seen, _ := db.exists(
 		"select 1 from seen where peer=? and scope=? and user=? and sequence=?",
-		e.peer, op.Scope, op.User, op.Sequence)
+		peer, op.Scope, op.User, op.Sequence)
 	if seen {
 		debug("Replication op duplicate: peer=%q scope=%q user=%q seq=%d",
-			e.peer, op.Scope, op.User, op.Sequence)
+			peer, op.Scope, op.User, op.Sequence)
 		return
 	}
 
@@ -369,14 +378,14 @@ func replication_op_event(e *Event) {
 	// (op.LeaderScope/Key/Fence) and our witness for that lease has
 	// already seen a higher fence, the emitter has been superseded and
 	// we drop the op silently. Stamp-less ops pass through.
-	if !replication_fence_observe(op.LeaderScope, op.LeaderKey, e.peer, op.Fence) {
+	if !replication_fence_observe(op.LeaderScope, op.LeaderKey, peer, op.Fence) {
 		info("Replication op dropped: stale leader fence %d for scope=%q key=%q from peer=%q",
-			op.Fence, op.LeaderScope, op.LeaderKey, e.peer)
+			op.Fence, op.LeaderScope, op.LeaderKey, peer)
 		// Record as seen so the sender's queue drops it; further
 		// retries with the same fence will just hit the same check.
 		db.exec(
 			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
-			e.peer, op.Scope, op.User, op.Sequence, now())
+			peer, op.Scope, op.User, op.Sequence, now())
 		return
 	}
 
@@ -386,8 +395,8 @@ func replication_op_event(e *Event) {
 	// extends it; Prev<cursor is already applied; Prev>cursor — or no
 	// cursor yet — is a gap, buffered in `pending` until the link
 	// arrives (claude/plans/replication-test.md Stage 19).
-	stream := repl_op_stream(&op)
-	cursor, anchored := replication_cursor(db, e.peer, op.Scope, op.User, stream)
+	stream := repl_op_stream(op)
+	cursor, anchored := replication_cursor(db, peer, op.Scope, op.User, stream)
 	switch {
 	case op.Prev == 0:
 		// Stream (re)start — apply unconditionally and anchor.
@@ -395,17 +404,17 @@ func replication_op_event(e *Event) {
 		// Chains onto the cursor.
 	case anchored && op.Prev < cursor:
 		debug("Replication op below cursor: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d",
-			e.peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor)
+			peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor)
 		return
 	default:
-		replication_pending_buffer(db, e.peer, &op)
+		replication_pending_buffer(db, peer, op)
 		debug("Replication op buffered out-of-order: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d anchored=%v",
-			e.peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor, anchored)
+			peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor, anchored)
 		return
 	}
 
-	if replication_op_land(db, e.peer, &op) != ApplyDeferred {
-		replication_stream_drain(db, e.peer, op.Scope, op.User, stream)
+	if replication_op_land(db, peer, op) != ApplyDeferred {
+		replication_stream_drain(db, peer, op.Scope, op.User, stream)
 	}
 }
 
@@ -752,6 +761,20 @@ func replication_pending_warn_stalled() {
 }
 
 // replication_app_drain re-attempts pending-buffer drain for one
+// post_migration_drain_async spawns the per-(user, app) drain in a
+// background goroutine. Production points it at the spawning version;
+// tests that mutate data_dir override it with a no-op so the
+// goroutine doesn't race with host-switching. Assigned in init() to
+// break a static-initialization cycle (replication_app_drain
+// transitively references db_app which calls this var).
+var post_migration_drain_async func(user, appID string)
+
+func init() {
+	post_migration_drain_async = func(user, appID string) {
+		go replication_app_drain(user, appID)
+	}
+}
+
 // (user, app) tuple, called opportunistically when the app's per-user
 // DB is opened (db_app). Covers the schema-just-upgraded case: if
 // pending ops were deferred for schema-skew and the local app then

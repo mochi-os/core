@@ -123,6 +123,10 @@ func init() {
 				return post_action("/_/admin/restart", "Restarting server")
 			},
 		},
+		"replica reset": {
+			help: "Wipe replicated DBs + per-user trees and print the rejoin command. Server must be stopped. Use when a replica is too far behind to catch up via incremental replication. Args: --from=<peer-id> --confirm",
+			run:  cmd_replica_reset,
+		},
 		"replica join": {
 			help: "Join an existing server as a pair replica (fresh installs only)",
 			run:  cmd_replica_join,

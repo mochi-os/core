@@ -29,8 +29,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"core/common/ini"
 )
 
 // cmd_replica_join handles `mochictl replica join <source-id>`. POSTs
@@ -155,6 +158,135 @@ func cmd_replica_leave(args []string) error {
 // cmd_replica_status is the one-shot diagnostic read.
 func cmd_replica_status(args []string) error {
 	return get_dump("/_/admin/replica/status", "state", "peer", "source", "members", "reason")
+}
+
+// cmd_replica_reset handles `mochictl replica reset --from=<peer-id> --confirm`.
+// The escape hatch for a replica that's too far behind to catch up via
+// incremental replication: wipes the local replicated state and prints
+// the rejoin command. Preserves the libp2p host key so the peer identity
+// stays stable - rejoin reuses the same identity, the partner sees the
+// same peer-id.
+//
+// Refuses without --confirm (destructive), without --from (the reset
+// only makes sense paired with a partner to rejoin against), and if
+// the admin socket is reachable (server must be stopped first).
+//
+// Backs up replication.db to db/replication.db.pre-reset so the operator
+// can inspect the prior pair / cursor / leadership state before it's
+// gone. Local-only DBs (queue, peers, external, directory, identities)
+// are preserved - they're not part of the replication contract and may
+// hold in-flight messages or libp2p discovery cache that the operator
+// would rather not lose.
+func cmd_replica_reset(args []string) error {
+	var from string
+	confirm := false
+	for _, arg := range args {
+		switch {
+		case arg == "--confirm":
+			confirm = true
+		case strings.HasPrefix(arg, "--from="):
+			from = strings.TrimPrefix(arg, "--from=")
+		default:
+			return fmt.Errorf("unknown argument %q", arg)
+		}
+	}
+	if from == "" {
+		return fmt.Errorf("usage: mochictl replica reset --from=<peer-id> --confirm")
+	}
+	if !confirm {
+		return fmt.Errorf("--confirm required: reset is destructive (wipes all replicated DBs and the per-user trees)")
+	}
+
+	// Server must be stopped. Probe the admin socket: if it responds,
+	// the server is alive and reset would race file-mutation with live
+	// writes.
+	if replica_server_alive() {
+		return fmt.Errorf("server is running on the admin socket; stop it before resetting")
+	}
+
+	data := ini.String("directories", "data", "/var/lib/mochi")
+	if _, err := os.Stat(data); err != nil {
+		return fmt.Errorf("data directory %q not accessible: %w", data, err)
+	}
+
+	// Back up replication.db so the operator can inspect pre-reset state.
+	src := filepath.Join(data, "db", "replication.db")
+	if _, err := os.Stat(src); err == nil {
+		dst := src + ".pre-reset"
+		if err := replica_reset_copy(src, dst); err != nil {
+			return fmt.Errorf("backup replication.db -> %s: %w", dst, err)
+		}
+		fmt.Printf("Backed up %s to %s\n", src, dst)
+	}
+
+	// Wipe the replicated DBs (per the core DB audit, task #44) plus
+	// their WAL / SHM siblings. Preserves local-only DBs and the
+	// libp2p host key.
+	replicated := []string{
+		"db/users.db",
+		"db/sessions.db",
+		"db/settings.db",
+		"db/apps.db",
+		"db/domains.db",
+		"db/schedule.db",
+		"db/replication.db",
+	}
+	wiped := 0
+	for _, t := range replicated {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			p := filepath.Join(data, t+suffix)
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			if err := os.Remove(p); err != nil {
+				return fmt.Errorf("wipe %s: %w", p, err)
+			}
+			wiped++
+		}
+	}
+
+	// Per-user trees hold every user's app DBs and uploaded files;
+	// all replicated by user replication.
+	users_dir := filepath.Join(data, "users")
+	if _, err := os.Stat(users_dir); err == nil {
+		if err := os.RemoveAll(users_dir); err != nil {
+			return fmt.Errorf("wipe users tree %s: %w", users_dir, err)
+		}
+	}
+
+	fmt.Printf("Wiped %d file(s) under %s/db plus the users/ tree. Local-only state (queue.db, peers.db, external.db, directory.db, identities.db) and the libp2p host key (p2p/private.key) preserved.\n",
+		wiped, data)
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Start the server (e.g. systemctl --user start mochi1).")
+	fmt.Printf("  2. mochictl replica join %s\n", from)
+	fmt.Println()
+	fmt.Println("The partner's admin will see the fresh join request and can approve.")
+	return nil
+}
+
+// replica_server_alive probes the admin socket with a short-timeout
+// GET to /_/admin/replica/status. A success or any HTTP response means
+// the server is running; only a transport error counts as "stopped".
+func replica_server_alive() bool {
+	resp, err := client(2 * time.Second).Get("/_/admin/replica/status")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return true
+}
+
+// replica_reset_copy copies src to dst. Used to back up replication.db
+// before wipe. Simple read-all + write-all - replication.db is on the
+// order of MBs at most, no need for streaming.
+func replica_reset_copy(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
 }
 
 // replica_status_read is the polling-loop helper used by cmd_replica_join.

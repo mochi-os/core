@@ -515,10 +515,17 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 // _log cleanup for self-loop streams without needing a network
 // round-trip.
 //
-// Fire-and-forget: the message goes to the queue and retries; an
-// ack that fails to deliver is harmless because the next applied
-// event will trigger a fresh ack carrying an equal-or-higher
-// sequence (each ack is the latest _received.last, not a delta).
+// Bursts coalesce within broadcast_acknowledge_coalesce_window per
+// (user, key, peer) - a chat full of messages or a fast game's move
+// sequence sends one outbound ack per window per stream instead of
+// one per applied event. Semantically equivalent because each ack
+// carries the latest applied sequence (not a delta); a single ack at
+// seq=N is the same as N individual acks at seqs 1..N. The owner
+// upserts max(existing, new) in either case.
+//
+// Fire-and-forget: the flushed message goes to the queue and retries;
+// an ack that fails to deliver is harmless because the next applied
+// event will trigger a fresh ack carrying an equal-or-higher sequence.
 //
 // from: the local subscriber entity (e.to of the inbound broadcast —
 //
@@ -541,18 +548,95 @@ func broadcast_send_ack(user *User, a *App, from, to, key, peer string, sequence
 	if peer == p2p_id {
 		return
 	}
+	broadcast_acknowledge_enqueue(user.UID, a.id, from, to, key, peer, sequence)
+}
+
+// broadcast_acknowledge_coalesce_window bounds how long a pending ack
+// is held before flushing. Larger = more batching; smaller = lower
+// latency to the owner's log trim. 250ms means bursty subscribers
+// emit one ack per quarter-second per stream; an idle stream sees
+// no extra latency because the first applied event after idle starts
+// the timer fresh.
+const broadcast_acknowledge_coalesce_window = 250 * time.Millisecond
+
+// broadcast_acknowledge_pending holds one pending ack between its
+// first scheduling and the timer flush. The pending entry's sequence
+// is bumped by later inbound applies to the same (user, key, peer)
+// tuple within the coalesce window; the timer always sends the latest.
+type broadcast_acknowledge_pending struct {
+	user     string
+	app      string
+	from     string
+	to       string
+	key      string
+	peer     string
+	sequence int64
+}
+
+var (
+	broadcast_acknowledge_lock    sync.Mutex
+	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
+)
+
+// broadcast_acknowledge_enqueue accumulates the latest applied seq for
+// one (user, key, peer) tuple and starts a flush timer if none exists.
+// Subsequent enqueues within the window bump the sequence and ride the
+// existing timer.
+func broadcast_acknowledge_enqueue(user, app, from, to, key, peer string, sequence int64) {
+	tag := user + "|" + key + "|" + peer
+	broadcast_acknowledge_lock.Lock()
+	pending, exists := broadcast_acknowledge_pending_map[tag]
+	if exists {
+		if sequence > pending.sequence {
+			pending.sequence = sequence
+		}
+		broadcast_acknowledge_lock.Unlock()
+		return
+	}
+	broadcast_acknowledge_pending_map[tag] = &broadcast_acknowledge_pending{
+		user:     user,
+		app:      app,
+		from:     from,
+		to:       to,
+		key:      key,
+		peer:     peer,
+		sequence: sequence,
+	}
+	broadcast_acknowledge_lock.Unlock()
+	time.AfterFunc(broadcast_acknowledge_coalesce_window, func() {
+		broadcast_acknowledge_flush(tag)
+	})
+}
+
+// broadcast_acknowledge_flush sends the coalesced ack for one tag and
+// clears the pending entry. Called from the timer goroutine.
+func broadcast_acknowledge_flush(tag string) {
+	broadcast_acknowledge_lock.Lock()
+	pending := broadcast_acknowledge_pending_map[tag]
+	if pending == nil {
+		broadcast_acknowledge_lock.Unlock()
+		return
+	}
+	delete(broadcast_acknowledge_pending_map, tag)
+	broadcast_acknowledge_lock.Unlock()
+
+	user := user_by_uid(pending.user)
+	a := app_by_id(pending.app)
+	if user == nil || a == nil {
+		return
+	}
 	services := app_services(a, user)
 	service := ""
 	if len(services) > 0 {
 		service = services[0]
 	}
-	m := message(from, to, service, "broadcast/acknowledge")
-	m.FromApp = a.id
+	m := message(pending.from, pending.to, service, "broadcast/acknowledge")
+	m.FromApp = pending.app
 	m.Services = services
 	m.content = map[string]any{
-		"key":      key,
-		"peer":     peer,
-		"sequence": sequence,
+		"key":      pending.key,
+		"peer":     pending.peer,
+		"sequence": pending.sequence,
 	}
-	m.send_peer(peer)
+	m.send_peer(pending.peer)
 }

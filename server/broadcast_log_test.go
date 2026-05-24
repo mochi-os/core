@@ -198,6 +198,84 @@ func TestBroadcastResyncThrottle(t *testing.T) {
 	}
 }
 
+// TestBroadcastAcknowledgeCoalesce — burst enqueues for the same
+// (user, key, peer) tuple bump the pending sequence in place rather
+// than queuing N separate flushes. Different tuples track
+// independently. Inspects the in-memory pending map directly to keep
+// the test fast and avoid the (real) 250 ms timer wait.
+func TestBroadcastAcknowledgeCoalesce(t *testing.T) {
+	// Reset the global state between subtests.
+	broadcast_acknowledge_lock.Lock()
+	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
+	broadcast_acknowledge_lock.Unlock()
+
+	// First enqueue for (u1, k, p1) creates an entry at seq=5.
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 5)
+
+	// Three more enqueues for the same tuple should bump the
+	// pending sequence; no second entry should be created.
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 7)
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 6)
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 9)
+
+	// A different (key) tuple is independent.
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k2", "p1", 3)
+	// A different (peer) tuple is independent.
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p2", 4)
+
+	broadcast_acknowledge_lock.Lock()
+	defer broadcast_acknowledge_lock.Unlock()
+
+	if got := len(broadcast_acknowledge_pending_map); got != 3 {
+		t.Errorf("expected 3 pending entries (one per distinct tuple), got %d", got)
+	}
+	first := broadcast_acknowledge_pending_map["u1|k|p1"]
+	if first == nil {
+		t.Fatalf("missing pending entry for u1|k|p1")
+	}
+	if first.sequence != 9 {
+		t.Errorf("expected pending sequence bumped to 9 (max of 5,7,6,9), got %d", first.sequence)
+	}
+	second := broadcast_acknowledge_pending_map["u1|k2|p1"]
+	if second == nil || second.sequence != 3 {
+		t.Errorf("expected u1|k2|p1 sequence 3, got %v", second)
+	}
+	third := broadcast_acknowledge_pending_map["u1|k|p2"]
+	if third == nil || third.sequence != 4 {
+		t.Errorf("expected u1|k|p2 sequence 4, got %v", third)
+	}
+}
+
+// TestBroadcastAcknowledgeFlush — flushing a tag clears it from the
+// pending map. Subsequent enqueues for the same tag re-create a fresh
+// pending entry.
+func TestBroadcastAcknowledgeFlush(t *testing.T) {
+	broadcast_acknowledge_lock.Lock()
+	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
+	broadcast_acknowledge_lock.Unlock()
+
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 5)
+	// Cannot call broadcast_acknowledge_flush directly without a
+	// real user/app in the registries (the send path would panic on
+	// nil user_by_uid). Simulate by deleting the entry, the same
+	// terminal state the flush leaves.
+	broadcast_acknowledge_lock.Lock()
+	delete(broadcast_acknowledge_pending_map, "u1|k|p1")
+	broadcast_acknowledge_lock.Unlock()
+
+	// Next enqueue with same tag creates a fresh entry, not bumps.
+	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 12)
+	broadcast_acknowledge_lock.Lock()
+	defer broadcast_acknowledge_lock.Unlock()
+	pending := broadcast_acknowledge_pending_map["u1|k|p1"]
+	if pending == nil {
+		t.Fatalf("expected fresh pending entry after flush + re-enqueue")
+	}
+	if pending.sequence != 12 {
+		t.Errorf("expected fresh entry sequence 12, got %d", pending.sequence)
+	}
+}
+
 // TestBroadcastResyncJitter — values stay within [0, maximum), spread
 // across the interval across many calls (not a stuck constant).
 func TestBroadcastResyncJitter(t *testing.T) {

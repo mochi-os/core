@@ -362,3 +362,216 @@ func TestMultiMasterScheduleReorderedDelivery(t *testing.T) {
 		t.Errorf("h2 after reorder: rows = %d, want 5", n)
 	}
 }
+
+// ===== 3-host topologies =====
+//
+// Mochi supports two replication shapes that can scale beyond two
+// hosts:
+//
+//   - whole-server pair triple ("server-server-server"): three
+//     operator-paired hosts. The pair_members set covers all three;
+//     pair-scope ops (settings, apps, domains, users.users pair-only
+//     columns, settings.documents) fan out to every other pair
+//     member. Per-user-scope ops likewise reach every host because
+//     every host hosts the user.
+//
+//   - per-user link triple ("user-user-user"): three hosts owned by
+//     different operators, linked only by one shared user. No
+//     operator pair (pair_members = {}); per-user-scope ops fan out
+//     to the link partners via user_hosts. Pair-scope ops do NOT
+//     cross link boundaries - operator decisions stay local.
+
+const (
+	tt_h1   = "h1"
+	tt_h2   = "h2"
+	tt_h3   = "h3"
+	ttUID   = "uid-triple"
+	ttUname = "triple@example.com"
+)
+
+// seed_three_hosts seeds the named hosts with the same user + schedule
+// + sessions + settings schemas so each host is ready to apply ops.
+func seed_three_hosts(t *testing.T, h *harness) {
+	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
+		h.switchTo(name)
+		h.setup_harness_user(ttUID, ttUname, mm_entity_id('t'))
+		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+		setup_sessions_test_schema()
+		mm_settings_schema()
+	}
+}
+
+// TestThreeHostServerServerServerSchedule: three-host operator pair.
+// h1 creates a schedule; both h2 and h3 receive it.
+func TestThreeHostServerServerServerSchedule(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	// pair_members defaults to all three, user_hosts defaults to all
+	// three - server-server-server is the default routing.
+	seed_three_hosts(t, h)
+
+	h.switchTo(tt_h1)
+	if schedule_create(ttUID, "feeds", 1000, "tick", "{}", 60) == 0 {
+		t.Fatal("h1 schedule_create returned 0")
+	}
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switchTo(name)
+		exists, _ := schedule_db().exists(
+			"select 1 from schedule where user=? and app='feeds' and event='tick'", ttUID)
+		if !exists {
+			t.Errorf("%s: missing replicated schedule row from h1", name)
+		}
+	}
+}
+
+// TestThreeHostServerServerServerSettings: pair-scope setting set on
+// one operator-paired host reaches all other pair members.
+func TestThreeHostServerServerServerSettings(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	seed_three_hosts(t, h)
+
+	h.switchTo(tt_h2)
+	setting_set("signup_enabled", "false")
+	h.flush()
+
+	for _, name := range []string{tt_h1, tt_h3} {
+		h.switchTo(name)
+		if got := setting_get("signup_enabled", ""); got != "false" {
+			t.Errorf("%s: setting = %q, want %q", name, got, "false")
+		}
+	}
+}
+
+// TestThreeHostServerServerServerPartitionHeal: partition one host
+// off, do ops on the remaining two AND on the partitioned one, heal,
+// assert all three converge to the union.
+func TestThreeHostServerServerServerPartitionHeal(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	seed_three_hosts(t, h)
+
+	h.partition()
+
+	h.switchTo(tt_h1)
+	schedule_create(ttUID, "feeds", 1000, "from-h1", "{}", 0)
+	h.switchTo(tt_h2)
+	schedule_create(ttUID, "feeds", 2000, "from-h2", "{}", 0)
+	h.switchTo(tt_h3)
+	schedule_create(ttUID, "feeds", 3000, "from-h3", "{}", 0)
+
+	h.heal()
+	h.flush()
+
+	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
+		h.switchTo(name)
+		var n int64
+		row, _ := schedule_db().row(
+			"select count(*) as n from schedule where user=? and app='feeds'", ttUID)
+		if row != nil {
+			n, _ = row["n"].(int64)
+		}
+		if n != 3 {
+			t.Errorf("%s: rows = %d, want 3 (one per host after heal)", name, n)
+		}
+	}
+}
+
+// TestThreeHostUserUserUserSchedule: three-host per-user-link
+// topology, no operator pair. h1 creates a schedule for the linked
+// user; per-user-scope routing carries it to h2 and h3.
+func TestThreeHostUserUserUserSchedule(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	// No operator pair, but the user is linked across all three hosts.
+	h.set_pair_members() // empty: each host is its own operator
+	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
+	seed_three_hosts(t, h)
+
+	h.switchTo(tt_h1)
+	if schedule_create(ttUID, "feeds", 1000, "linked-tick", "{}", 60) == 0 {
+		t.Fatal("h1 schedule_create returned 0")
+	}
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switchTo(name)
+		exists, _ := schedule_db().exists(
+			"select 1 from schedule where user=? and event='linked-tick'", ttUID)
+		if !exists {
+			t.Errorf("%s: missing schedule row via per-user link", name)
+		}
+	}
+}
+
+// TestThreeHostUserUserUserPairOnlyStaysLocal: in the user-user-user
+// topology, pair-scope emits (settings, system-row writes against
+// users.users, settings.documents, etc.) MUST NOT cross link
+// boundaries because the other hosts belong to different operators.
+// Asserts a setting_set on h1 does not appear on h2 or h3, and a
+// pair-only username change is likewise contained.
+func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	h.set_pair_members() // no operator pair
+	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
+	seed_three_hosts(t, h)
+
+	// Pair-scope: setting only the operator on h1 cares about.
+	h.switchTo(tt_h1)
+	setting_set("signup_enabled", "h1-only")
+	// Pair-scope: a username change goes via the pair-only path. h2
+	// and h3 must NOT receive it - each operator chose their own
+	// username for the user.
+	replication_emit_users_users_pair_set(ttUID, map[string]string{"username": "renamed-on-h1"})
+
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switchTo(name)
+		if got := setting_get("signup_enabled", ""); got == "h1-only" {
+			t.Errorf("%s: setting leaked across operator boundary: %q", name, got)
+		}
+		row, _ := db_open("db/users.db").row("select username from users where uid=?", ttUID)
+		if got, _ := row["username"].(string); got == "renamed-on-h1" {
+			t.Errorf("%s: pair-only username leaked across per-user link: %q", name, got)
+		}
+	}
+}
+
+// TestThreeHostUserUserUserSessionsAndUserStatus: in the per-user
+// link topology, app-scope per-user ops (sessions, users.users
+// methods/status/preferences) DO follow the user across all linked
+// hosts. Cookie issued on h1 validates on h2 and h3.
+func TestThreeHostUserUserUserSessionsAndUserStatus(t *testing.T) {
+	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	defer h.cleanup()
+	h.set_pair_members()
+	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
+	seed_three_hosts(t, h)
+
+	h.switchTo(tt_h1)
+	code := login_create(ttUID, "1.2.3.4", "test-agent")
+	if code == "" {
+		t.Fatal("h1 login_create returned empty code")
+	}
+	// status change goes via the per-user path - should reach h2/h3.
+	replication_emit_users_users_set(ttUID, map[string]string{"status": "suspended"})
+
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switchTo(name)
+		exists, _ := db_open("db/sessions.db").exists(
+			"select 1 from sessions where user=? and code=?", ttUID, code)
+		if !exists {
+			t.Errorf("%s: session cookie did not replicate via per-user link", name)
+		}
+		row, _ := db_open("db/users.db").row("select status from users where uid=?", ttUID)
+		if got, _ := row["status"].(string); got != "suspended" {
+			t.Errorf("%s: user status = %q, want suspended", name, got)
+		}
+	}
+}

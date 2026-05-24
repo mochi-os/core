@@ -60,40 +60,93 @@ type harness struct {
 	held        []harnessDelivery            // partitioned-but-not-yet-healed
 	partitioned bool
 
-	origData         string
-	origP2P          string
-	origEmitTo       func(user string, op *ReplicationOp, peers []string)
+	// Topology metadata controls capture-time routing. pair_members is
+	// the set of hosts that share pair-scope state (system-set /
+	// system-row); user_hosts[user] is the set of hosts that share
+	// per-user-scope state (users-row / sessions-row / schedule-row /
+	// session insert/delete) for a specific user. Per-user emits route
+	// to (pair_members union user_hosts[user]) minus the sender,
+	// matching the production recipients(user) resolver.
+	//
+	// Defaults match the "everyone with everyone" symmetric setup -
+	// what 2-host pair tests expect. set_pair_members and
+	// set_user_hosts override per topology:
+	//   - server-server-server: pair_members = {all}, user_hosts left
+	//     unset (default to all)
+	//   - user-user-user: pair_members = {} (no operator pair),
+	//     set_user_hosts(user, all)
+	pair_members map[string]bool
+	user_hosts   map[string]map[string]bool
+
+	origData          string
+	origP2P           string
+	origEmitTo        func(user string, op *ReplicationOp, peers []string)
 	origEmitSystemSet func(database, table, row, field, value string)
 	origEmitSystemRow func(database, table string, key, cols map[string]string, del bool)
 }
 
-// newHarness mints two host contexts, swaps the three emit vars for
+// newHarness mints N host contexts, swaps the three emit vars for
 // queue-capturing stubs, and returns the harness. Always defer
-// h.cleanup() immediately after the call.
-func newHarness(t *testing.T) *harness {
+// h.cleanup() immediately after the call. With no names supplied
+// defaults to {"h1", "h2"} for the historical 2-host shape.
+func newHarness(t *testing.T, names ...string) *harness {
 	t.Helper()
+	if len(names) == 0 {
+		names = []string{"h1", "h2"}
+	}
 	h := &harness{
 		t:                 t,
 		hosts:             map[string]*harnessHost{},
 		queues:            map[string][]harnessDelivery{},
+		pair_members:      map[string]bool{},
+		user_hosts:        map[string]map[string]bool{},
 		origData:          data_dir,
 		origP2P:           p2p_id,
 		origEmitTo:        replication_emit_to,
 		origEmitSystemSet: replication_emit_system_set,
 		origEmitSystemRow: replication_emit_system_row,
 	}
-	for _, name := range []string{"h1", "h2"} {
+	for _, name := range names {
 		dir, err := os.MkdirTemp("", "mochi_harness_"+name)
 		if err != nil {
 			t.Fatalf("temp dir %s: %v", name, err)
 		}
 		h.hosts[name] = &harnessHost{name: name, p2p: "peer-" + name, dir: dir}
 		h.queues[name] = nil
+		h.pair_members[name] = true // default: every host is pair-paired with every other
 	}
 	replication_emit_to = h.captureEmitTo
 	replication_emit_system_set = h.captureSystemSet
 	replication_emit_system_row = h.captureSystemRow
 	return h
+}
+
+// set_pair_members declares which hosts are operator-paired. Pair-scope
+// emits (system_set / system_row) route only among these hosts.
+// Replaces any previous setting. For a user-user-user topology call
+// with no names (or just the local host) to disable pair-scope
+// fan-out entirely.
+func (h *harness) set_pair_members(names ...string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pair_members = map[string]bool{}
+	for _, name := range names {
+		h.pair_members[name] = true
+	}
+}
+
+// set_user_hosts declares the per-user link membership for the given
+// user. Per-user-scope emits with op.User == user route to these
+// hosts (minus the sender). For users without an explicit entry the
+// harness falls back to "every host" - matching the 2-host default.
+func (h *harness) set_user_hosts(user string, names ...string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	set := map[string]bool{}
+	for _, name := range names {
+		set[name] = true
+	}
+	h.user_hosts[user] = set
 }
 
 // cleanup restores all originals and removes both host data_dirs.
@@ -132,35 +185,72 @@ func (h *harness) enqueue(d harnessDelivery) {
 	h.queues[d.receiver] = append(h.queues[d.receiver], d)
 }
 
-func (h *harness) captureEmitTo(user string, op *ReplicationOp, peers []string) {
-	sender := h.current
-	for name := range h.hosts {
+// recipients_per_user computes the per-user-scope recipient set for
+// the given user. Mirrors production recipients(user): pair members
+// UNION the user's host set, minus the sender. When user_hosts has
+// no explicit entry for the user, falls back to "every host" so
+// historical 2-host tests keep working without calling set_user_hosts.
+func (h *harness) recipients_per_user(user, sender string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	set := map[string]bool{}
+	for name := range h.pair_members {
+		set[name] = true
+	}
+	if hosts, ok := h.user_hosts[user]; ok {
+		for name := range hosts {
+			set[name] = true
+		}
+	} else {
+		// Default: every host is in the user's host set. Preserves
+		// the 2-host default where tests don't call set_user_hosts.
+		for name := range h.hosts {
+			set[name] = true
+		}
+	}
+	delete(set, sender)
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	return out
+}
+
+// recipients_pair computes the pair-scope recipient set. Mirrors the
+// "select peer from pair" loop in replication_emit_system_set/_row.
+func (h *harness) recipients_pair(sender string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.pair_members))
+	for name := range h.pair_members {
 		if name == sender {
 			continue
 		}
-		h.enqueue(harnessDelivery{sender: sender, receiver: name, op: op})
+		out = append(out, name)
+	}
+	return out
+}
+
+func (h *harness) captureEmitTo(user string, op *ReplicationOp, peers []string) {
+	sender := h.current
+	for _, receiver := range h.recipients_per_user(user, sender) {
+		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, op: op})
 	}
 }
 
 func (h *harness) captureSystemSet(database, table, row, field, value string) {
 	payload := &SystemSet{Database: database, Table: table, Row: row, Field: field, Value: value}
 	sender := h.current
-	for name := range h.hosts {
-		if name == sender {
-			continue
-		}
-		h.enqueue(harnessDelivery{sender: sender, receiver: name, sysSet: payload})
+	for _, receiver := range h.recipients_pair(sender) {
+		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, sysSet: payload})
 	}
 }
 
 func (h *harness) captureSystemRow(database, table string, key, cols map[string]string, del bool) {
 	payload := &SystemRow{Database: database, Table: table, Key: key, Cols: cols, Delete: del}
 	sender := h.current
-	for name := range h.hosts {
-		if name == sender {
-			continue
-		}
-		h.enqueue(harnessDelivery{sender: sender, receiver: name, sysRow: payload})
+	for _, receiver := range h.recipients_pair(sender) {
+		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, sysRow: payload})
 	}
 }
 

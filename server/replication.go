@@ -718,10 +718,57 @@ func web_replication_progress(c *gin.Context) {
 // replication_manager drives the periodic pending-buffer drain.
 // Deferred ops not unblocked by a keys-transfer (e.g. an app schema
 // upgrade that catches the local version up to a sender's, once the
-// schema-coordination path lands) get retried on every tick.
+// schema-coordination path lands) get retried on every tick. Also
+// surfaces stalled streams to the log when their oldest pending op
+// has been stuck longer than stall_warn_seconds, so operators see the
+// drift before users notice missing data.
 func replication_manager() {
 	for range time.Tick(30 * time.Second) {
 		replication_pending_drain()
+		replication_pending_warn_stalled()
+	}
+}
+
+// stall_warn_seconds is how long a stream may keep a pending op before
+// it gets a periodic warning in the log. Tuned to be loud enough for
+// operators to notice without spamming on transient gaps that drain
+// naturally within a minute.
+const stall_warn_seconds = 15 * 60
+
+func replication_pending_warn_stalled() {
+	threshold := now() - stall_warn_seconds
+	for _, s := range replication_pending_stalled() {
+		if s.OldestRecv > threshold {
+			continue
+		}
+		warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v min_prev=%d max_prev=%d count=%d oldest_age=%ds",
+			s.Peer, s.Scope, s.User, s.Database,
+			s.Cursor, s.Anchored, s.MinPrev, s.MaxPrev, s.Count,
+			now()-s.OldestRecv)
+	}
+}
+
+// replication_app_drain re-attempts pending-buffer drain for one
+// (user, app) tuple, called opportunistically when the app's per-user
+// DB is opened (db_app). Covers the schema-just-upgraded case: if
+// pending ops were deferred for schema-skew and the local app then
+// migrated forward, the next request to the app triggers a fresh
+// drain attempt without waiting for the 30 s manager tick.
+func replication_app_drain(user, appID string) {
+	if user == "" || appID == "" {
+		return
+	}
+	db := db_open("db/replication.db")
+	streams, err := db.rows(
+		"select distinct peer, scope from pending where user=? and db=?",
+		user, appID)
+	if err != nil {
+		return
+	}
+	for _, s := range streams {
+		peer, _ := s["peer"].(string)
+		scope, _ := s["scope"].(string)
+		replication_stream_drain(db, peer, scope, user, appID)
 	}
 }
 
@@ -767,6 +814,84 @@ func replication_pending_kick_due(appID string) bool {
 	}
 	replication_pending_kick_last[appID] = now_ts
 	return true
+}
+
+// StalledStream describes one (peer, scope, user, db) stream whose
+// pending buffer cannot drain because the next-applicable op's
+// predecessor is missing (or the stream has never been anchored at
+// all).
+//
+// Reported by replication_pending_stalled() for operator visibility -
+// these stalls accumulate silently otherwise: writes on the sender
+// succeed, ops arrive at the receiver, but the apply gate can't chain
+// them past the gap. Recovery in V1 is operator-driven (the dropped
+// predecessor ops aren't replayable from the sender's current state);
+// future delta-bootstrap work will fill the gap by shipping current
+// row state from the sender, advancing the cursor past the missing
+// sequences and accepting that the intervening per-op deltas are lost.
+type StalledStream struct {
+	Peer       string `json:"peer"`
+	Scope      string `json:"scope"`
+	User       string `json:"user"`
+	Database   string `json:"database"`
+	Cursor     int64  `json:"cursor"`
+	Anchored   bool   `json:"anchored"`
+	MinPrev    int64  `json:"min_prev"`
+	MaxPrev    int64  `json:"max_prev"`
+	Count      int64  `json:"count"`
+	OldestRecv int64  `json:"oldest_received"`
+}
+
+// replication_pending_stalled returns the (peer, scope, user, db)
+// streams whose pending buffer cannot drain - either anchored with a
+// gap (smallest prev > cursor) or unanchored with no Prev==0 op
+// present. Streams whose pending will drain on the next tick (op with
+// prev=cursor, or an unanchored stream-start with prev=0) are
+// excluded.
+func replication_pending_stalled() []StalledStream {
+	db := db_open("db/replication.db")
+	rows, err := db.rows(
+		"select peer, scope, user, db, count(*) as count, min(prev) as min_prev, max(prev) as max_prev, min(received) as oldest from pending where db != '' group by peer, scope, user, db")
+	if err != nil {
+		return nil
+	}
+	var stalled []StalledStream
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		scope, _ := r["scope"].(string)
+		user, _ := r["user"].(string)
+		database, _ := r["db"].(string)
+		minPrev, _ := r["min_prev"].(int64)
+		maxPrev, _ := r["max_prev"].(int64)
+		count, _ := r["count"].(int64)
+		oldest, _ := r["oldest"].(int64)
+		cursor, anchored := replication_cursor(db, peer, scope, user, database)
+		// Will drain naturally on the next tick: anchored chain has
+		// the next op (prev=cursor) present, or the unanchored stream
+		// has a Prev==0 start available.
+		if anchored {
+			if minPrev <= cursor {
+				continue
+			}
+		} else {
+			if minPrev == 0 {
+				continue
+			}
+		}
+		stalled = append(stalled, StalledStream{
+			Peer:       peer,
+			Scope:      scope,
+			User:       user,
+			Database:   database,
+			Cursor:     cursor,
+			Anchored:   anchored,
+			MinPrev:    minPrev,
+			MaxPrev:    maxPrev,
+			Count:      count,
+			OldestRecv: oldest,
+		})
+	}
+	return stalled
 }
 
 // replication_pending_drain re-evaluates buffered ops: each

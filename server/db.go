@@ -483,6 +483,13 @@ func db_app(u *User, app *App) *DB {
 		}
 	}
 
+	// Opportunistic resync probe: kick the replication pending-buffer
+	// drain for this (user, app) tuple in the background. If a sender's
+	// ops were deferred for schema-skew and the migration above just
+	// caught us up, the drain finds them and applies without waiting
+	// for the 30s manager tick. No-op when there's nothing pending.
+	go replication_app_drain(u.UID, app.id)
+
 	return db
 }
 

@@ -668,6 +668,73 @@ func TestReplicationPendingBufferAndDrain(t *testing.T) {
 	}
 }
 
+// TestReplicationPendingStalled verifies the stalled-stream detector
+// classifies pending rows correctly: anchored streams with the next-
+// op present and unanchored streams with a Prev==0 op present are
+// not stalled (they'll drain on the next tick); anchored streams with
+// a gap and unanchored streams whose pending all has prev>0 are.
+func TestReplicationPendingStalled(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	ts := now()
+
+	// Stream 1: unanchored, all pending rows have prev>0 (the Prev==0
+	// stream-start never arrived). Stalled.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerA', 'app', 'u1', 'dbA', 7, 6, 1, ?, ?)",
+		[]byte{0x00}, ts)
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerA', 'app', 'u1', 'dbA', 8, 7, 1, ?, ?)",
+		[]byte{0x00}, ts)
+
+	// Stream 2: unanchored but has a Prev==0 stream-start in pending.
+	// Will drain naturally, not stalled.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerB', 'app', 'u2', 'dbB', 1, 0, 1, ?, ?)",
+		[]byte{0x00}, ts)
+
+	// Stream 3: anchored at cursor=5, has the next op (prev=5) in
+	// pending. Will drain naturally, not stalled.
+	db.exec(
+		"insert into cursor (peer, scope, user, db, sequence) values ('peerC', 'app', 'u3', 'dbC', 5)")
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerC', 'app', 'u3', 'dbC', 6, 5, 1, ?, ?)",
+		[]byte{0x00}, ts)
+
+	// Stream 4: anchored at cursor=10, but pending starts at prev=15.
+	// Stalled (gap between cursor and the chain head).
+	db.exec(
+		"insert into cursor (peer, scope, user, db, sequence) values ('peerD', 'app', 'u4', 'dbD', 10)")
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerD', 'app', 'u4', 'dbD', 16, 15, 1, ?, ?)",
+		[]byte{0x00}, ts)
+
+	stalled := replication_pending_stalled()
+
+	// Expect exactly stream 1 (peerA) and stream 4 (peerD).
+	got := map[string]bool{}
+	for _, s := range stalled {
+		got[s.Peer+"/"+s.Database] = true
+	}
+	if !got["peerA/dbA"] {
+		t.Errorf("expected peerA/dbA to be stalled (unanchored, no Prev==0)")
+	}
+	if got["peerB/dbB"] {
+		t.Errorf("peerB/dbB should NOT be stalled (has Prev==0 stream-start)")
+	}
+	if got["peerC/dbC"] {
+		t.Errorf("peerC/dbC should NOT be stalled (next op prev=cursor present)")
+	}
+	if !got["peerD/dbD"] {
+		t.Errorf("expected peerD/dbD to be stalled (gap between cursor=10 and min_prev=15)")
+	}
+	if len(stalled) != 2 {
+		t.Errorf("expected exactly 2 stalled streams, got %d: %+v", len(stalled), stalled)
+	}
+}
+
 func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

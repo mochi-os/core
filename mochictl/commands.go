@@ -152,6 +152,12 @@ func init() {
 			help: "Per-(peer, scope) bulk-bootstrap progress",
 			run:  cmd_replication_progress,
 		},
+		"replication stalled": {
+			help: "Per-stream pending-buffer stalls (replication drift not healing on its own)",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/stalled", "stalled")
+			},
+		},
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",
 			run:  cmd_replication_pair_remove,

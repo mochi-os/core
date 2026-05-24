@@ -59,6 +59,25 @@ func broadcast_received_table_create(db *DB) {
 	db.exec("create table if not exists _received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
 }
 
+// broadcast_log_table_create lazily creates _log for an app DB on
+// first emission. Replication carries the table to paired hosts two
+// ways:
+//   - Bulk bootstrap: a new pair member receives the per-app DB
+//     snapshot (db_snapshot.go) which page-copies the entire file
+//     including _log + the BootstrapDBChunk.Seed cursor seed, so
+//     subsequent live ops chain correctly from where the snapshot
+//     ended. The new member can serve resync requests for any of
+//     the (key, peer) streams the existing pair members had logged.
+//   - Live: each broadcast_log_append uses exec_app_user, which
+//     emits a sql/op that replays as the same insert on every paired
+//     host. Both pair members converge in steady state.
+//
+// Apps that adopt mochi.broadcast.send after their per-app DB
+// already has data don't get a retroactive _log for pre-upgrade
+// events (claude/plans/broadcast.md: "No backfill on migration").
+// Subscribers reaching for those older sequences fall back to the
+// per-app request_resync helper, which pulls a fresh schema dump
+// from the owner instead of a per-op replay.
 func broadcast_log_table_create(db *DB) {
 	db.exec("create table if not exists _log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
 	db.exec("create index if not exists _log_created on _log(created)")

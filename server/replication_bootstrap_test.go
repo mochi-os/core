@@ -513,6 +513,96 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	}
 }
 
+// TestBootstrapDBSnapshotShipsBroadcastLog: a per-app DB with rows in
+// the broadcast subsystem's reserved tables (_log, _sequence,
+// _received, _acknowledged) round-trips through snapshot_copy_db.
+// Demonstrates the answer to task #21 in concrete code: bulk
+// bootstrap of a new pair member carries the full broadcast log so
+// the new member can serve resync requests for any (key, peer)
+// stream the existing pair members had been logging - no separate
+// backfill needed. Regression guard if the snapshot path ever
+// changes to selectively skip tables.
+func TestBootstrapDBSnapshotShipsBroadcastLog(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	srcDir := filepath.Join(data_dir, "users", "alice", "feed", "db")
+	_ = os.MkdirAll(srcDir, 0o755)
+
+	source := db_open("users/alice/feed/db/feed.db")
+	// Match the production schema verbatim (broadcast_log_table_create
+	// + siblings in broadcast.go). The test asserts the bootstrap path
+	// preserves these tables and their rows; if the production schema
+	// changes, update both places.
+	source.exec("create table _log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
+	source.exec("create table _sequence (key text not null, peer text not null, last integer not null default 0, primary key (key, peer))")
+	source.exec("create table _received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
+	source.exec("create table _acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
+	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerA', 1, 'post/create', '{}', 1700000000)")
+	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerA', 2, 'post/edit', '{}', 1700000005)")
+	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerB', 1, 'comment/create', '{}', 1700000010)")
+	source.exec("insert into _sequence (key, peer, last) values ('feed1', 'peerA', 2)")
+	source.exec("insert into _sequence (key, peer, last) values ('feed1', 'peerB', 1)")
+	source.exec("insert into _received (sender, key, last) values ('peerC', 'feed1', 5)")
+	source.exec("insert into _acknowledged (key, peer, subscriber, last) values ('feed1', 'peerA', 'subX', 2)")
+
+	source_path, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "", "alice", "feed", "feed.db")
+	if err != nil {
+		t.Fatalf("source path: %v", err)
+	}
+
+	snapshot_relative := "feed-snapshot.db"
+	snapshot_absolute := filepath.Join(data_dir, snapshot_relative)
+	if _, err := snapshot_copy_db(source_path, snapshot_absolute); err != nil {
+		t.Fatalf("snapshot_copy_db: %v", err)
+	}
+
+	databases = map[string]*DB{}
+	defer func() { databases = map[string]*DB{} }()
+	destination := db_open(snapshot_relative)
+
+	// _log rows: every (key, peer, sequence) round-trips.
+	log_rows, _ := destination.rows("select key, peer, sequence, event from _log order by key, peer, sequence")
+	if len(log_rows) != 3 {
+		t.Errorf("_log rows = %d, want 3 (snapshot dropped or skipped _log)", len(log_rows))
+	}
+	for index, expected := range []struct {
+		key, peer, event string
+		sequence         int64
+	}{
+		{"feed1", "peerA", "post/create", 1},
+		{"feed1", "peerA", "post/edit", 2},
+		{"feed1", "peerB", "comment/create", 1},
+	} {
+		if index >= len(log_rows) {
+			break
+		}
+		row := log_rows[index]
+		if row["key"] != expected.key || row["peer"] != expected.peer ||
+			row["event"] != expected.event || row["sequence"].(int64) != expected.sequence {
+			t.Errorf("_log row %d: got %v, want %+v", index, row, expected)
+		}
+	}
+
+	// _sequence: per-(key, peer) last sequence preserved.
+	if destination.integer("select last from _sequence where key='feed1' and peer='peerA'") != 2 {
+		t.Errorf("_sequence (feed1, peerA) did not round-trip as 2")
+	}
+	if destination.integer("select last from _sequence where key='feed1' and peer='peerB'") != 1 {
+		t.Errorf("_sequence (feed1, peerB) did not round-trip as 1")
+	}
+
+	// _received: per-(sender, key) cursor preserved.
+	if destination.integer("select last from _received where sender='peerC' and key='feed1'") != 5 {
+		t.Errorf("_received (peerC, feed1) did not round-trip as 5")
+	}
+
+	// _acknowledged: per-(key, peer, subscriber) progress preserved.
+	if destination.integer("select last from _acknowledged where key='feed1' and peer='peerA' and subscriber='subX'") != 2 {
+		t.Errorf("_acknowledged (feed1, peerA, subX) did not round-trip as 2")
+	}
+}
+
 // TestBootstrapStartSeedsScopesAndEmitsManifests: bootstrap_start
 // seeds 'queued' rows for all four scopes (files, apps, userdbs,
 // sysdbs) and fires the corresponding manifest-request to the source

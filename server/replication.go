@@ -57,6 +57,7 @@ type ReplicationOp struct {
 	User        string `cbor:"user,omitempty"`
 	Database    string `cbor:"db"`
 	Table       string `cbor:"table,omitempty"`
+	UID         string `cbor:"uid,omitempty"`
 	Operation   string `cbor:"operation"`
 	Payload     []byte `cbor:"payload"`
 	Sequence    int64  `cbor:"sequence"`
@@ -456,7 +457,7 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		replication_cursor_set(db, peer, op.Scope, op.User, repl_op_stream(op), op.Sequence)
 		debug("Replication op applied: peer=%q scope=%q user=%q db=%q seq=%d prev=%d table=%q op=%q",
 			peer, op.Scope, op.User, op.Database, op.Sequence, op.Prev, op.Table, op.Operation)
-		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, "")
+		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, op.UID)
 	case ApplyDeferred:
 		replication_pending_buffer(db, peer, op)
 		debug("Replication op deferred: peer=%q scope=%q user=%q db=%q seq=%d",

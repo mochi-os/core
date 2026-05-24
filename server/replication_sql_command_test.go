@@ -6,6 +6,8 @@ package main
 import (
 	"os"
 	"testing"
+
+	cbor "github.com/fxamacker/cbor/v2"
 )
 
 func TestSQLTargetTable(t *testing.T) {
@@ -57,6 +59,160 @@ func TestSQLTargetTable(t *testing.T) {
 		if got != c.want {
 			t.Errorf("sql_target_table(%q) = %q; want %q", c.sql, got, c.want)
 		}
+	}
+}
+
+func TestSQLTargetUID(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		args []any
+		want string
+	}{
+		// Explicit (id, ...) column list - first column is id, args[0]
+		// is the row uid.
+		{"insert id-first",
+			"INSERT INTO posts (id, title) VALUES (?, ?)",
+			[]any{"abc123", "hello"},
+			"abc123"},
+		{"replace id-first",
+			"REPLACE INTO posts (id, title) VALUES (?, ?)",
+			[]any{"xyz", "hi"},
+			"xyz"},
+		{"insert or ignore id-first",
+			"INSERT OR IGNORE INTO posts (id, title) VALUES (?, ?)",
+			[]any{"u1", "t"},
+			"u1"},
+		{"insert or replace id-first",
+			"INSERT OR REPLACE INTO posts (id, n) VALUES (?, ?)",
+			[]any{"u2", 1},
+			"u2"},
+
+		// Implicit positional values - args[0] is the row uid by
+		// convention (Mochi's CREATE TABLE puts id first).
+		{"insert positional",
+			"INSERT INTO posts VALUES (?, ?, ?)",
+			[]any{"pos1", "t", "b"},
+			"pos1"},
+		{"replace positional",
+			"REPLACE INTO posts VALUES (?, ?)",
+			[]any{"rp1", "n"},
+			"rp1"},
+
+		// (id, ...) column list with quoted table and case variations.
+		{"insert quoted table id-first",
+			`INSERT INTO "posts" (id, title) VALUES (?, ?)`,
+			[]any{"quoted", "t"},
+			"quoted"},
+		{"lowercase keywords",
+			"insert into posts (id, title) values (?, ?)",
+			[]any{"lower", "t"},
+			"lower"},
+
+		// First column is NOT id - no extraction (apps using non-id
+		// PK fall back to empty uid).
+		{"insert non-id first column",
+			"INSERT INTO posts (slug, title) VALUES (?, ?)",
+			[]any{"hello-world", "t"},
+			""},
+
+		// UPDATE / DELETE with WHERE id = ?.
+		{"update where id",
+			"UPDATE posts SET title = ? WHERE id = ?",
+			[]any{"new", "abc"},
+			"abc"},
+		{"delete where id",
+			"DELETE FROM posts WHERE id = ?",
+			[]any{"abc"},
+			"abc"},
+		{"update where id no spaces",
+			"UPDATE posts SET title=? WHERE id=?",
+			[]any{"new", "row7"},
+			"row7"},
+		{"update multiple set args",
+			"UPDATE posts SET title = ?, body = ?, updated = ? WHERE id = ?",
+			[]any{"t", "b", 123, "row9"},
+			"row9"},
+
+		// WHERE clause keyed on a different column or compound - no
+		// extraction.
+		{"update where non-id",
+			"UPDATE posts SET title = ? WHERE slug = ?",
+			[]any{"t", "hello"},
+			""},
+		{"update where compound",
+			"UPDATE posts SET title = ? WHERE id = ? AND author = ?",
+			[]any{"t", "abc", "user"},
+			""},
+		{"delete no where",
+			"DELETE FROM posts",
+			[]any{},
+			""},
+
+		// Non-string args (e.g. integer PK) aren't returned as row
+		// uids - Mochi uses string uids via mochi.uid().
+		{"insert integer pk",
+			"INSERT INTO posts (id, title) VALUES (?, ?)",
+			[]any{int64(42), "t"},
+			""},
+
+		// Empty / unparseable input.
+		{"empty sql", "", nil, ""},
+		{"select read-only", "SELECT * FROM posts WHERE id = ?", []any{"x"}, ""},
+		{"create table", "CREATE TABLE posts (id INTEGER)", nil, ""},
+	}
+	for _, c := range cases {
+		got := sql_target_uid(c.sql, c.args)
+		if got != c.want {
+			t.Errorf("%s: sql_target_uid(%q, %v) = %q; want %q",
+				c.name, c.sql, c.args, got, c.want)
+		}
+	}
+}
+
+// TestReplicationOpUIDRoundtrip verifies the UID field survives a
+// cbor encode / decode cycle (the wire path between sender and
+// receiver) and that an op encoded by an older sender (no UID field)
+// decodes cleanly with an empty UID.
+func TestReplicationOpUIDRoundtrip(t *testing.T) {
+	sent := ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      "uid-user",
+		Database:  "posts",
+		Table:     "posts",
+		UID:       "row-abc",
+		Operation: repl_op_exec,
+		Payload:   []byte("body"),
+		Sequence:  1,
+		Prev:      0,
+	}
+	encoded := cbor_encode(&sent)
+	var received ReplicationOp
+	if err := cbor.Unmarshal(encoded, &received); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if received.UID != "row-abc" {
+		t.Errorf("UID lost in roundtrip: got %q want %q", received.UID, sent.UID)
+	}
+
+	// Older sender shape: encode without setting UID, decode, expect "".
+	older := ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     "uid-user",
+		Database: "posts",
+		Table:    "posts",
+		// UID intentionally unset.
+		Operation: repl_op_exec,
+		Payload:   []byte("body"),
+		Sequence:  2,
+		Prev:      1,
+	}
+	var olderDecoded ReplicationOp
+	if err := cbor.Unmarshal(cbor_encode(&older), &olderDecoded); err != nil {
+		t.Fatalf("older-shape decode failed: %v", err)
+	}
+	if olderDecoded.UID != "" {
+		t.Errorf("missing UID must decode as empty string, got %q", olderDecoded.UID)
 	}
 }
 

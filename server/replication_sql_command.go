@@ -84,6 +84,96 @@ func sql_target_table(sql string) string {
 	return ""
 }
 
+// sql_target_uid extracts the row identifier value bound to a
+// mutating SQL statement, used as the row uid passed to
+// commit_hook_fire on replication apply. App-side commit hooks then
+// know which specific row a replicated write created or changed.
+//
+// Recognised shapes (cover the bulk of app SQL written under the
+// Mochi single-word PK convention where the row id column is named
+// "id" and bound as a string):
+//
+//   INSERT|REPLACE INTO <table> (id, ...) VALUES (?, ...)
+//   INSERT|REPLACE INTO <table> VALUES (?, ...)
+//   UPDATE <table> SET ... WHERE id = ?
+//   DELETE FROM <table> WHERE id = ?
+//
+// Returns "" for any other shape. Apps whose row PK isn't "id", or
+// whose WHERE clause carries more than a single id-equality, fall
+// back to the empty-uid behaviour (commit hooks still fire on
+// replication apply, just without a specific row identifier).
+func sql_target_uid(sql string, args []any) string {
+	s := sql_strip_lead(sql)
+	verb, rest := sql_take_word(s)
+	switch strings.ToUpper(verb) {
+	case "INSERT", "REPLACE":
+		rest = sql_strip_lead(rest)
+		// Skip OR <conflict-action>.
+		if word, after := sql_take_word(rest); strings.ToUpper(word) == "OR" {
+			_, after = sql_take_word(sql_strip_lead(after))
+			rest = sql_strip_lead(after)
+		}
+		word, after := sql_take_word(rest)
+		if strings.ToUpper(word) != "INTO" {
+			return ""
+		}
+		_, after = sql_take_ident(sql_strip_lead(after))
+		after = sql_strip_lead(after)
+		// Either an explicit "(id, ...) values (?, ...)" or the
+		// implicit positional "values (?, ...)" - both have args[0]
+		// bound to the row id.
+		if strings.HasPrefix(after, "(") {
+			column, _ := sql_take_ident(sql_strip_lead(after[1:]))
+			if !strings.EqualFold(column, "id") {
+				return ""
+			}
+		} else {
+			keyword, _ := sql_take_word(after)
+			if strings.ToUpper(keyword) != "VALUES" {
+				return ""
+			}
+		}
+		if len(args) == 0 {
+			return ""
+		}
+		if uid, ok := args[0].(string); ok {
+			return uid
+		}
+		return ""
+
+	case "UPDATE", "DELETE":
+		// Recognised only when the WHERE clause is exactly "id = ?".
+		// The bound value is then the last entry in args.
+		lower := strings.ToLower(sql)
+		where := strings.LastIndex(lower, " where ")
+		if where < 0 {
+			return ""
+		}
+		clause := strings.TrimSpace(lower[where+len(" where "):])
+		clause = strings.TrimRight(clause, " \t;")
+		column, rest := sql_take_ident(clause)
+		if !strings.EqualFold(column, "id") {
+			return ""
+		}
+		rest = strings.TrimLeft(rest, " \t")
+		if !strings.HasPrefix(rest, "=") {
+			return ""
+		}
+		rest = strings.TrimLeft(rest[1:], " \t")
+		if rest != "?" {
+			return ""
+		}
+		if len(args) == 0 {
+			return ""
+		}
+		if uid, ok := args[len(args)-1].(string); ok {
+			return uid
+		}
+		return ""
+	}
+	return ""
+}
+
 // sql_strip_lead skips over leading whitespace and line / block comments.
 func sql_strip_lead(s string) string {
 	for {
@@ -198,6 +288,7 @@ func replication_emit_sql_command(user *User, app *App, av *AppVersion, sql stri
 		User:      user.UID,
 		Database:  app.id,
 		Table:     table,
+		UID:       sql_target_uid(sql, args),
 		Operation: repl_op_exec,
 		Payload:   payload,
 		Schema:    av.Database.Schema,

@@ -1721,7 +1721,13 @@ func replication_emit_to_peer(user string, op *ReplicationOp, peer string) {
 	replication_emit_to(user, op, []string{peer})
 }
 
-func replication_emit_to(user string, op *ReplicationOp, peers []string) {
+// replication_emit_to is the package-level emit function variable so
+// tests (notably the multi-master harness) can intercept every
+// per-user-scope op and route via a deterministic in-memory wire model.
+// Production points it at replication_emit_to_real.
+var replication_emit_to = replication_emit_to_real
+
+func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	if peers == nil {
 		peers = recipients(user)
 	}

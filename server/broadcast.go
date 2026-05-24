@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -438,6 +439,29 @@ func broadcast_resync_throttle(user_uid, peer, key string) bool {
 	return true
 }
 
+// broadcast_resync_jitter_maximum bounds the random delay added before
+// a resync request leaves the subscriber. Spreads simultaneous gap
+// detections - after a server restart, a sleep / wake cycle, or any
+// event that causes thousands of subscribers to detect a gap on their
+// first inbound event - across the interval, so the owner doesn't get
+// every subscriber's resync request landing in the same second. The
+// 60-second per-(user, peer, key) throttle above prevents same-stream
+// churn; jitter prevents cross-subscriber thundering-herd at the
+// owner.
+const broadcast_resync_jitter_maximum = 5 * time.Second
+
+// broadcast_resync_jitter returns a uniform random delay in
+// [0, broadcast_resync_jitter_maximum). Uses crypto/rand because it's
+// the rand source the rest of the package already imports; the jitter
+// only needs randomness, not unpredictability.
+func broadcast_resync_jitter() time.Duration {
+	var buffer [2]byte
+	if _, err := rand.Read(buffer[:]); err != nil {
+		return 0
+	}
+	return time.Duration(int(buffer[0])<<8|int(buffer[1])) * time.Millisecond % broadcast_resync_jitter_maximum
+}
+
 // broadcast_request_resync sends a fire-and-forget broadcast/resync to
 // the originating host asking for replay of (key, peer) starting after
 // the receiver's current last. Called from the gap-detection wrapper
@@ -458,6 +482,11 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 	if !broadcast_resync_throttle(user.UID, peer, key) {
 		return
 	}
+	// Jitter the send to spread simultaneous gap detections across
+	// subscribers - see broadcast_resync_jitter_maximum's comment. The
+	// caller is already in a goroutine (events.go fires this with a
+	// `go` statement), so the sleep doesn't block the apply path.
+	time.Sleep(broadcast_resync_jitter())
 	services := app_services(a, user)
 	service := ""
 	if len(services) > 0 {

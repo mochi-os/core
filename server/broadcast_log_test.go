@@ -197,3 +197,28 @@ func TestBroadcastResyncThrottle(t *testing.T) {
 		t.Errorf("different key should pass")
 	}
 }
+
+// TestBroadcastResyncJitter — values stay within [0, maximum), spread
+// across the interval across many calls (not a stuck constant).
+func TestBroadcastResyncJitter(t *testing.T) {
+	const samples = 1000
+	seen := make(map[int64]int)
+	for i := 0; i < samples; i++ {
+		jitter := broadcast_resync_jitter()
+		if jitter < 0 {
+			t.Errorf("jitter must be non-negative, got %v", jitter)
+		}
+		if jitter >= broadcast_resync_jitter_maximum {
+			t.Errorf("jitter must be < %v, got %v", broadcast_resync_jitter_maximum, jitter)
+		}
+		// Bucket by 500ms slice so we don't expect every nanosecond.
+		seen[int64(jitter/(500*1_000_000))]++
+	}
+	// With 1000 samples and 5s/500ms = 10 buckets, every bucket
+	// should see at least a few hits. Guard against the rand path
+	// returning a stuck constant.
+	if len(seen) < 5 {
+		t.Errorf("jitter not spread across the interval: only %d distinct 500ms buckets across %d samples (%v)",
+			len(seen), samples, seen)
+	}
+}

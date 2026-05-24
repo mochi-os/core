@@ -52,24 +52,28 @@ func admin_replica_join(c *gin.Context) {
 		Source string `json:"source"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Source == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "source is required"})
+		respond_error(c, http.StatusBadRequest, "source_required", "errors.source_required", nil)
 		return
 	}
 
 	udb := db_open("db/users.db")
 	if has, _ := udb.exists("select 1 from users limit 1"); has {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "this server has users; replication requires a fresh install",
-		})
+		respond_error(c, http.StatusForbidden, "users_db_not_empty", "errors.users_db_not_empty", nil)
 		return
 	}
 
 	current := setting_get("replica.join.peer", "")
 	if current != "" && current != input.Source {
+		// respond_error returns the fixed {error, message} shape; this
+		// callsite needs an extra `current_source` field so the operator
+		// can see which source is currently in flight.
+		lang := request_language(c, nil)
 		c.JSON(http.StatusConflict, gin.H{
-			"error":          "another join attempt is already in progress",
+			"error":          "join_in_progress",
+			"message":        resolve_core_label(lang, "errors.join_in_progress", nil),
 			"current_source": current,
 		})
+		c.Abort()
 		return
 	}
 

@@ -1,0 +1,175 @@
+// Mochi server: /_/admin/broadcast/* handlers
+// Copyright Alistair Cunningham 2026
+//
+// Operator visibility into the broadcast subsystem. Today: lag
+// detection (task #83) - scan every per-user-app DB for _received
+// vs _log to surface subscribers that have fallen behind the owner
+// without firing user-visible errors. The original broadcast
+// investigation report (claude/sessions/2026-05-25-broadcast-resync-
+// stuck-diagnosis.md) called this out as fix #5 - drift that the
+// gap-detector can't self-detect (idle owner) was invisible to the
+// operator and only surfaced when a user noticed wrong data.
+
+//go:build linux
+
+package main
+
+import (
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/gin-gonic/gin"
+)
+
+// BroadcastLagRow is the per-stream lag report. owner_log_max is the
+// owner-side _log.max(sequence) for the same (key, peer) when this
+// host happens to own that broadcast (the (key, peer) pair lives in
+// the local _log too). It's null when this host is a pure subscriber
+// for the stream, in which case lag has to be computed cross-host -
+// the receiver-side report alone shows "we're at N", not "we should
+// be at M". Operator follows up with a remote query if needed.
+type BroadcastLagRow struct {
+	User         string  `json:"user"`
+	App          string  `json:"app"`
+	Peer         string  `json:"peer"`
+	Key          string  `json:"key"`
+	ReceivedLast int64   `json:"received_last"`
+	OwnerLogMax  *int64  `json:"owner_log_max,omitempty"`
+	Lag          *int64  `json:"lag,omitempty"`
+	Pending      int     `json:"pending"`
+}
+
+// admin_broadcast_lag is GET /_/admin/broadcast/lag. Scans every
+// per-user-app DB under users/<uid>/<app>/db/*.db, gathers _received
+// and _log rows, and produces a single flat list keyed on
+// (user, app, peer, key). When the local host is also the owner of
+// the stream (same (key, peer) appears in _log on this same DB),
+// lag = _log.max - _received.last; otherwise omitted.
+//
+// Query param: ?threshold=N reports only rows with Lag > N. Default
+// 0 = all rows including healthy ones, useful for a periodic
+// dashboard scrape.
+func admin_broadcast_lag(c *gin.Context) {
+	threshold := int64(0)
+	if v := c.Query("threshold"); v != "" {
+		if n := atoi(v, 0); n > 0 {
+			threshold = int64(n)
+		}
+	}
+	rows := broadcast_lag_scan()
+	out := make([]BroadcastLagRow, 0, len(rows))
+	for _, r := range rows {
+		if r.Lag != nil && *r.Lag < threshold {
+			continue
+		}
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].User != out[j].User {
+			return out[i].User < out[j].User
+		}
+		if out[i].App != out[j].App {
+			return out[i].App < out[j].App
+		}
+		if out[i].Lag != nil && out[j].Lag != nil && *out[i].Lag != *out[j].Lag {
+			return *out[i].Lag > *out[j].Lag
+		}
+		return out[i].Key < out[j].Key
+	})
+	c.JSON(http.StatusOK, gin.H{"rows": out})
+}
+
+// broadcast_lag_scan walks the user tree and assembles one
+// BroadcastLagRow per (user, app, peer, key) in _received. Tables
+// that don't exist are skipped silently - most apps don't use the
+// broadcast subsystem, so absent tables are the common case.
+func broadcast_lag_scan() []BroadcastLagRow {
+	var out []BroadcastLagRow
+	users_root := filepath.Join(data_dir, "users")
+	users, err := os.ReadDir(users_root)
+	if err != nil {
+		return out
+	}
+	for _, u := range users {
+		if !u.IsDir() {
+			continue
+		}
+		user := u.Name()
+		user_dir := filepath.Join(users_root, user)
+		apps, err := os.ReadDir(user_dir)
+		if err != nil {
+			continue
+		}
+		for _, a := range apps {
+			if !a.IsDir() {
+				continue
+			}
+			app := a.Name()
+			db_dir := filepath.Join(user_dir, app, "db")
+			db_files, err := os.ReadDir(db_dir)
+			if err != nil {
+				continue
+			}
+			for _, f := range db_files {
+				if !f.Type().IsRegular() {
+					continue
+				}
+				path := filepath.Join("users", user, app, "db", f.Name())
+				out = append(out, broadcast_lag_scan_db(user, app, path)...)
+			}
+		}
+	}
+	return out
+}
+
+// broadcast_lag_scan_db reads one app DB's _received table and joins
+// against _log when present. Per-row lag is omitted when the local
+// DB doesn't have the matching _log entry (the host isn't the owner
+// of the stream).
+func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
+	var out []BroadcastLagRow
+	db := db_open(db_path)
+	if db == nil {
+		return out
+	}
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_received'")
+	if !exists {
+		return out
+	}
+	received_rows, err := db.rows("select sender, key, last from _received")
+	if err != nil {
+		return out
+	}
+	has_log, _ := db.exists("select 1 from sqlite_master where type='table' and name='_log'")
+	has_pending, _ := db.exists("select 1 from sqlite_master where type='table' and name='_broadcast_pending'")
+	for _, r := range received_rows {
+		peer, _ := r["sender"].(string)
+		key, _ := r["key"].(string)
+		last, _ := r["last"].(int64)
+		row := BroadcastLagRow{
+			User:         user,
+			App:          app,
+			Peer:         peer,
+			Key:          key,
+			ReceivedLast: last,
+		}
+		if has_log {
+			log_row, _ := db.row("select max(sequence) as m from _log where key=? and peer=?", key, peer)
+			if log_row != nil {
+				if m, ok := log_row["m"].(int64); ok && m > 0 {
+					owner_max := m
+					lag := owner_max - last
+					row.OwnerLogMax = &owner_max
+					row.Lag = &lag
+				}
+			}
+		}
+		if has_pending {
+			row.Pending = db.integer("select count(*) from _broadcast_pending where peer=? and key=?", peer, key)
+		}
+		out = append(out, row)
+	}
+	return out
+}

@@ -115,6 +115,15 @@ func main() {
 			}
 		}
 	}
+	// Allow 'broadcast lag'. Same shape as the replication two-token
+	// dispatch; one subcommand today, the conditional grows as more
+	// land.
+	if !ok && name == "broadcast" && len(args) > 0 {
+		if c, found := commands["broadcast "+args[0]]; found {
+			cmd, ok = c, true
+			args = args[1:]
+		}
+	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "mochictl: unknown subcommand %q\n", name)
 		usage()

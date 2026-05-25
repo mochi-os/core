@@ -173,19 +173,23 @@ func TestBroadcastReplayQuery(t *testing.T) {
 	}
 }
 
-// TestBroadcastResyncThrottle — same (user, peer, key) within 60s
-// blocks; different tags pass through.
+// TestBroadcastResyncThrottle — same (user, peer, key) with a
+// resync already in flight blocks; different tags pass through.
+// Updated for task #81: the gate is now per-in-flight rather than
+// time-based. Independent-tags coverage is duplicated in
+// broadcast_test.go's TestBroadcastResyncThrottleIndependentTags but
+// kept here too so the legacy test name still surfaces in a grep.
 func TestBroadcastResyncThrottle(t *testing.T) {
 	// Reset the global cache between subtests.
 	broadcast_resync_lock.Lock()
-	broadcast_resync_last = map[string]int64{}
+	broadcast_resync_inflight = map[string]int64{}
 	broadcast_resync_lock.Unlock()
 
 	if !broadcast_resync_throttle("u1", "peerA", "k") {
 		t.Errorf("first call should pass")
 	}
 	if broadcast_resync_throttle("u1", "peerA", "k") {
-		t.Errorf("immediate second call should be throttled")
+		t.Errorf("immediate second call should be blocked while previous is in flight")
 	}
 	if !broadcast_resync_throttle("u1", "peer_b", "k") {
 		t.Errorf("different peer should pass")

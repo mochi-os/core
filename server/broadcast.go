@@ -138,6 +138,16 @@ func broadcast_received_get(db *DB, sender, key string) int64 {
 func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
 	db.exec_app_user("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
+	// Any advance is evidence the resync request (if any) is
+	// producing replies, so the in-flight gate clears and the next
+	// gap-detection can fire its follow-up batch immediately rather
+	// than waiting out a fixed time window. db.user can be nil for
+	// the api_broadcast_advance Starlark callsite without a user
+	// context - skip the clear there; the throttle has its own
+	// timeout fallback for the no-user case.
+	if db.user != nil && db.user.UID != "" {
+		broadcast_resync_clear(db.user.UID, sender, key)
+	}
 }
 
 // broadcast_log_append writes one log row in the same transaction as
@@ -468,25 +478,66 @@ func (e *Event) broadcast_acknowledge() error {
 	return nil
 }
 
-// broadcast_resync_throttle gates resync requests per (peer, key, user)
-// to one every 60 seconds — bursts of out-of-order events should fire a
-// single resync, not N. Live across goroutines.
+// broadcast_resync_throttle gates resync requests per (user, peer, key)
+// to at most ONE IN FLIGHT, not one per time window. Previous design
+// locked out for 60 seconds after every request regardless of whether
+// the request succeeded - a 300-event gap took 3+ minutes minimum
+// even on a fast link, because four sequential 100-event resyncs
+// each waited out 60s of throttle. New design tracks "request out,
+// no advance yet" as a bool; clears it on any _received.last advance
+// for the (user, peer, key) tuple (broadcast_advance_local calls
+// broadcast_resync_clear). A timeout fallback covers the case where
+// the resync reply never arrives - same throttle behaviour as before
+// but only when something is actually stuck, not after every success.
+//
+// Burst dedup (the original throttle's load-bearing property) still
+// holds: if 50 inbound events trip the gap detector in 200ms, only
+// the first sees broadcast_resync_inflight=false and proceeds; the
+// other 49 see the flag and return. Once that resync's replies start
+// advancing _received, the flag clears and the next gap-detection
+// request fires immediately.
+//
+// See claude/sessions/2026-05-25-broadcast-resync-seq-643-
+// investigation.md and follow-up task #81.
+const broadcast_resync_timeout = 30 * time.Second
+
 var (
-	broadcast_resync_lock sync.Mutex
-	broadcast_resync_last = map[string]int64{}
+	broadcast_resync_lock     sync.Mutex
+	broadcast_resync_inflight = map[string]int64{} // tag -> request unix time
 )
+
+func broadcast_resync_tag(user_uid, peer, key string) string {
+	return fmt.Sprintf("%s|%s|%s", user_uid, peer, key)
+}
 
 func broadcast_resync_throttle(user_uid, peer, key string) bool {
 	broadcast_resync_lock.Lock()
 	defer broadcast_resync_lock.Unlock()
+	tag := broadcast_resync_tag(user_uid, peer, key)
 	now_ts := time.Now().Unix()
-	tag := fmt.Sprintf("%s|%s|%s", user_uid, peer, key)
-	last := broadcast_resync_last[tag]
-	if now_ts-last < 60 {
-		return false
+	if last, inflight := broadcast_resync_inflight[tag]; inflight {
+		// Timeout fallback: if the resync reply never arrived
+		// (link flapped, owner offline at the moment), clear the
+		// in-flight flag so the next gap-detection can retry. Keeps
+		// the subsystem from wedging on a lost reply.
+		if now_ts-last < int64(broadcast_resync_timeout/time.Second) {
+			return false
+		}
 	}
-	broadcast_resync_last[tag] = now_ts
+	broadcast_resync_inflight[tag] = now_ts
 	return true
+}
+
+// broadcast_resync_clear marks the in-flight resync for the given
+// (user, peer, key) tuple complete - subsequent gap-detections can
+// fire the next request without waiting. Called from
+// broadcast_advance_local on every _received.last advance; idempotent
+// when no flag is set, so safe to call on every advance whether or
+// not a resync was in flight.
+func broadcast_resync_clear(user_uid, peer, key string) {
+	broadcast_resync_lock.Lock()
+	defer broadcast_resync_lock.Unlock()
+	delete(broadcast_resync_inflight, broadcast_resync_tag(user_uid, peer, key))
 }
 
 // broadcast_resync_jitter_maximum bounds the random delay added before

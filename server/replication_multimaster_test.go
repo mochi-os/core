@@ -1512,3 +1512,227 @@ func TestThreeHostUserUserUserSessionsAndUserStatus(t *testing.T) {
 		}
 	}
 }
+
+// mm_seed_attachments creates the attachments table on the currently-
+// switched-to host and inserts (a,b,c) at ranks (1,2,3) scoped to the
+// given object/entity. Mirrors setup_attachment_move_test in
+// attachments_test.go but operates on whatever data_dir / DB the
+// harness has switched to, so the same seed can run on h1, h2, h_c1
+// and h_c2 with one helper.
+func mm_seed_attachments(t *testing.T, object, entity string) {
+	t.Helper()
+	db := db_open("db/attachments.db")
+	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	for i, id := range []string{"a", "b", "c"} {
+		db.exec("insert or ignore into attachments (id, object, entity, name, size, rank, created) values (?, ?, ?, ?, ?, ?, ?)", id, object, entity, fmt.Sprintf("%s.txt", id), int64(10), int64(i+1), int64(1700000000))
+	}
+}
+
+// mm_move_locally runs the same SQL the api_attachment_move builtin
+// runs, then returns the post-move absolute-rank snapshot. Sits in
+// the multimaster test file because the harness-driven test below
+// uses it on h1 / h2 to mimic the producer side of a federation
+// emit. See attachments_test.go for the unit-level variant.
+func mm_move_locally(t *testing.T, object, entity, id string, position int) ([]map[string]any, int) {
+	t.Helper()
+	db := db_open("db/attachments.db")
+	row, err := db.row("select rank from attachments where id = ? and entity = ?", id, entity)
+	if err != nil || row == nil {
+		t.Fatalf("read pre-move rank for %q: row=%v err=%v", id, row, err)
+	}
+	old := int(row["rank"].(int64))
+	new := position
+	if old != new {
+		if new < old {
+			db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, entity, new, old)
+		} else {
+			db.exec("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, entity, old, new)
+		}
+		db.exec("update attachments set rank = ? where id = ? and entity = ?", new, id, entity)
+	}
+	rows, err := db.rows("select id, rank from attachments where object = ? and entity = ?", object, entity)
+	if err != nil {
+		t.Fatalf("read post-move snapshot: %v", err)
+	}
+	ranks := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		ranks = append(ranks, map[string]any{
+			"id":   r["id"].(string),
+			"rank": r["rank"].(int64),
+		})
+	}
+	return ranks, old
+}
+
+// mm_ranks_by_id reads back the current rank table on the switched-to
+// host for assertions.
+func mm_ranks_by_id(t *testing.T, entity string) map[string]int64 {
+	t.Helper()
+	rows, err := db_open("db/attachments.db").rows("select id, rank from attachments where entity = ?", entity)
+	if err != nil {
+		t.Fatalf("rank readback: %v", err)
+	}
+	out := map[string]int64{}
+	for _, r := range rows {
+		out[r["id"].(string)] = r["rank"].(int64)
+	}
+	return out
+}
+
+// TestMultiMasterAttachmentMoveTwoHostFederatedConverges is the
+// Path-B / harness-driven test for task #79. Models a four-host wire
+// model: federated entity B (hosts h1, h2) emits _attachment/move
+// events to federated entity C (hosts h_c1, h_c2). Both B-replicas
+// fire concurrent moves on the same object, both notifies fan out to
+// both C-replicas, flush() drains the queues in receiver order, and
+// the per-replica final state must equal whichever payload arrived
+// last there (LWW per id - the Option B contract from #76).
+//
+// This is the convergence claim Option B makes: per-id REPLACE is
+// idempotent and order-independent at the rank level, so two C
+// replicas processing the same payload set in different orders both
+// land on the SAME state when the harness flushes deterministically
+// (both queues drain in the same order). For genuinely-different
+// arrival orders across C-replicas (an asymmetric network), see
+// TestMultiMasterAttachmentMoveDivergesOnAsymmetricDelivery below.
+func TestMultiMasterAttachmentMoveTwoHostFederatedConverges(t *testing.T) {
+	h := new_harness(t, "h1", "h2", "h_c1", "h_c2")
+	defer h.cleanup()
+
+	// Federation topology: B owns (h1, h2), C owns (h_c1, h_c2). B's
+	// own hosts are NOT in the recipient set (the federation emit
+	// fires only to OTHER entities); C's hosts are.
+	entity_b := mm_entity_id('B')
+	entity_c := mm_entity_id('C')
+	h.set_federation_hosts(entity_b, "h1", "h2")
+	h.set_federation_hosts(entity_c, "h_c1", "h_c2")
+
+	// Seed the same (a,b,c at 1,2,3) state on every replica that
+	// holds the object. In production the seed arrives via prior
+	// _attachment/create events; the harness shortcuts that with a
+	// direct insert so this test focuses on move convergence.
+	for _, name := range []string{"h1", "h2", "h_c1", "h_c2"} {
+		h.switch_to(name)
+		mm_seed_attachments(t, "obj1", entity_c)
+	}
+
+	// h1: move b 2 -> 1 (a,b,c become 2,1,3) and notify C.
+	h.switch_to("h1")
+	ranks_h1, old_h1 := mm_move_locally(t, "obj1", entity_c, "b", 1)
+	attachment_notify_move(nil, nil, map[string]any{"id": "b", "object": "obj1", "rank": int64(1)}, old_h1, ranks_h1, []string{entity_c})
+
+	// h2: move c 3 -> 1 (a,b,c become 2,3,1) and notify C.
+	h.switch_to("h2")
+	ranks_h2, old_h2 := mm_move_locally(t, "obj1", entity_c, "c", 1)
+	attachment_notify_move(nil, nil, map[string]any{"id": "c", "object": "obj1", "rank": int64(1)}, old_h2, ranks_h2, []string{entity_c})
+
+	// Drain. flush() processes receivers in map-iteration order which
+	// is non-deterministic across runs, but within each receiver's
+	// queue events apply in arrival order. Both C-replicas receive
+	// [h1's payload, h2's payload] in that order (h1 emitted first),
+	// so both end at h2's snapshot.
+	h.flush()
+
+	want := map[string]int64{"a": 2, "b": 3, "c": 1}
+	for _, name := range []string{"h_c1", "h_c2"} {
+		h.switch_to(name)
+		got := mm_ranks_by_id(t, entity_c)
+		for id, w := range want {
+			if got[id] != w {
+				t.Errorf("%s rank for %q: got %d, want %d (last-applied = h2)", name, id, got[id], w)
+			}
+		}
+	}
+
+	// B-side replicas are NOT in C's federation set, so they keep
+	// their locally-shifted state. h1 stays at its local move
+	// (a,b,c = 2,1,3); h2 stays at its local move (a,b,c = 2,3,1).
+	// This isn't a divergence bug - it's exactly the production
+	// model where pair replication (B's hosts -> each other) lives
+	// on the per-user / system-scope channels, NOT on the federation
+	// channel. Test asserts the harness models this faithfully.
+	h.switch_to("h1")
+	if got := mm_ranks_by_id(t, entity_c); got["b"] != 1 || got["c"] != 3 {
+		t.Errorf("h1 (B-replica) was unexpectedly updated by C-bound emits: %v", got)
+	}
+	h.switch_to("h2")
+	if got := mm_ranks_by_id(t, entity_c); got["b"] != 3 || got["c"] != 1 {
+		t.Errorf("h2 (B-replica) was unexpectedly updated by C-bound emits: %v", got)
+	}
+}
+
+// TestMultiMasterAttachmentMoveDivergesOnAsymmetricDelivery is the
+// honest-failure case the audit's finding A flagged: when two
+// concurrent producers fan out to a multi-host subscriber and the
+// arrival order DIFFERS across that subscriber's replicas, Option B
+// converges within each replica (no rank arithmetic divergence) but
+// the two replicas land on different snapshots. This is a documented
+// limitation of last-write-wins per-id without per-rank timestamps;
+// the only real fix is a CRDT or vector clocks. Test pins the current
+// behaviour so future "let's add timestamps" work has a regression
+// target.
+//
+// Uses reorder() to make h_c2 process h2-then-h1 while h_c1 processes
+// h1-then-h2.
+func TestMultiMasterAttachmentMoveDivergesOnAsymmetricDelivery(t *testing.T) {
+	h := new_harness(t, "h1", "h2", "h_c1", "h_c2")
+	defer h.cleanup()
+
+	entity_c := mm_entity_id('C')
+	h.set_federation_hosts(entity_c, "h_c1", "h_c2")
+
+	for _, name := range []string{"h1", "h2", "h_c1", "h_c2"} {
+		h.switch_to(name)
+		mm_seed_attachments(t, "obj1", entity_c)
+	}
+
+	h.switch_to("h1")
+	ranks_h1, old_h1 := mm_move_locally(t, "obj1", entity_c, "b", 1)
+	attachment_notify_move(nil, nil, map[string]any{"id": "b", "object": "obj1", "rank": int64(1)}, old_h1, ranks_h1, []string{entity_c})
+
+	h.switch_to("h2")
+	ranks_h2, old_h2 := mm_move_locally(t, "obj1", entity_c, "c", 1)
+	attachment_notify_move(nil, nil, map[string]any{"id": "c", "object": "obj1", "rank": int64(1)}, old_h2, ranks_h2, []string{entity_c})
+
+	// Reverse h_c2's queue so its arrival order is h2-then-h1 while
+	// h_c1's stays h1-then-h2. Seed 2 is the smallest that produces
+	// a swap on the 2-element queue with Go's rand.Shuffle - verified
+	// by hand to keep the test deterministic across Go versions.
+	h.reorder("h_c2", 2)
+	h.flush()
+
+	want_c1 := map[string]int64{"a": 2, "b": 3, "c": 1} // last-applied = h2
+	want_c2 := map[string]int64{"a": 2, "b": 1, "c": 3} // last-applied = h1
+	h.switch_to("h_c1")
+	for id, w := range want_c1 {
+		got := mm_ranks_by_id(t, entity_c)
+		if got[id] != w {
+			t.Errorf("h_c1 rank for %q: got %d, want %d", id, got[id], w)
+		}
+	}
+	h.switch_to("h_c2")
+	for id, w := range want_c2 {
+		got := mm_ranks_by_id(t, entity_c)
+		if got[id] != w {
+			t.Errorf("h_c2 rank for %q: got %d, want %d (asymmetric delivery means h_c2 lands on h1's snapshot)", id, got[id], w)
+		}
+	}
+
+	// Confirm the divergence: at least one id has different ranks on
+	// h_c1 vs h_c2. If a future change makes them converge (per-id
+	// timestamps, CRDT), this test starts failing and the docs at
+	// the top need updating.
+	h.switch_to("h_c1")
+	got_c1 := mm_ranks_by_id(t, entity_c)
+	h.switch_to("h_c2")
+	got_c2 := mm_ranks_by_id(t, entity_c)
+	diverged := false
+	for id := range got_c1 {
+		if got_c1[id] != got_c2[id] {
+			diverged = true
+		}
+	}
+	if !diverged {
+		t.Fatalf("Option B unexpectedly converged under asymmetric delivery; c1=%v c2=%v - if this was intentional, update the test docs and the #76 follow-up", got_c1, got_c2)
+	}
+}

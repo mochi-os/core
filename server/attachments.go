@@ -1462,7 +1462,11 @@ func attachment_notify_update(app *App, owner *User, attachment map[string]any, 
 // moves; old receivers ignore the new field and fall through to the
 // legacy rank-relative shift path. After the next release cycle the
 // legacy fields can drop.
-func attachment_notify_move(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
+//
+// Package-level var so the multi-master test harness can intercept
+// federation emits without spinning up libp2p / queue.db. See task
+// #79 in claude/plans/replication-test.md.
+var attachment_notify_move = func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
 	for _, entity := range notify {
 		if !valid(entity, "entity") {
 			continue

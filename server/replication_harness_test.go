@@ -15,12 +15,19 @@
 //   - heal()        move the held bucket back into the live queue
 //   - reorder()     shuffle a receiver's pending queue
 //
-// Intercepts the three emit paths used in production:
+// Intercepts the four emit paths used in production:
 //   - replication_emit_to     per-user-scope ops (users-row, sessions-
 //                             row, schedule-row, session insert/delete)
 //   - replication_emit_system_set   pair-scope field writes (settings)
 //   - replication_emit_system_row   pair-scope row writes (domains,
 //                                   apps, users.users, settings.documents)
+//   - attachment_notify_move        federation-scope events emitted on
+//                                   mochi.attachment.move (task #79).
+//                                   Routes to federation_hosts[entity]
+//                                   minus the sender. Other
+//                                   _attachment/* notifiers follow the
+//                                   same shape and can be added on demand
+//                                   when a test needs them.
 //
 // For a 2-host pair the recipient set is always "the other host", so
 // the harness skips the production recipient-resolver (which would
@@ -30,6 +37,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"os"
 	"sync"
@@ -48,6 +56,19 @@ type harness_delivery struct {
 	op       *ReplicationOp
 	sys_set   *SystemSet
 	sys_row   *SystemRow
+	fed_move *harness_federation_move
+}
+
+// harness_federation_move carries one captured attachment_notify_move
+// emit through the harness queue. Mirrors the wire payload the
+// federation event would carry, including the legacy old_rank header
+// (so the legacy fallback path can be exercised too if a test wants
+// to set fed_move.legacy=true and clear the ranks list).
+type harness_federation_move struct {
+	entity     string
+	attachment map[string]any
+	old_rank   int
+	ranks      []map[string]any
 }
 
 type harness struct {
@@ -78,12 +99,23 @@ type harness struct {
 	pair_members map[string]bool
 	user_hosts   map[string]map[string]bool
 
-	original_data              string
-	original_p2p               string
-	original_emit_to           func(user string, op *ReplicationOp, peers []string)
-	original_emit_system_set   func(database, table, row, field, value string)
-	original_emit_system_row   func(database, table string, key, cols map[string]string, del bool)
-	original_drain_async       func(user, app_id string)
+	// federation_hosts[entity] is the set of host names that own a
+	// replica of the named entity. Federation emits (attachment_notify_*)
+	// route to (federation_hosts[entity] minus sender) - matching how
+	// federation messages in production go to every host of the
+	// recipient entity. Unset entity means "no federation routing for
+	// this entity"; the capture is dropped silently rather than fanned
+	// out to all hosts (federation defaults to "no one" because the
+	// entity may genuinely have zero subscribers).
+	federation_hosts map[string]map[string]bool
+
+	original_data                    string
+	original_p2p                     string
+	original_emit_to                 func(user string, op *ReplicationOp, peers []string)
+	original_emit_system_set         func(database, table, row, field, value string)
+	original_emit_system_row         func(database, table string, key, cols map[string]string, del bool)
+	original_drain_async             func(user, app_id string)
+	original_attachment_notify_move  func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string)
 }
 
 // new_harness mints N host contexts, swaps the three emit vars for
@@ -96,17 +128,19 @@ func new_harness(t *testing.T, names ...string) *harness {
 		names = []string{"h1", "h2"}
 	}
 	h := &harness{
-		t:                 t,
-		hosts:             map[string]*harness_host{},
-		queues:            map[string][]harness_delivery{},
-		pair_members:      map[string]bool{},
-		user_hosts:        map[string]map[string]bool{},
-		original_data:            data_dir,
-		original_p2p:             p2p_id,
-		original_emit_to:         replication_emit_to,
-		original_emit_system_set: replication_emit_system_set,
-		original_emit_system_row: replication_emit_system_row,
-		original_drain_async:     post_migration_drain_async,
+		t:                               t,
+		hosts:                           map[string]*harness_host{},
+		queues:                          map[string][]harness_delivery{},
+		pair_members:                    map[string]bool{},
+		user_hosts:                      map[string]map[string]bool{},
+		federation_hosts:                map[string]map[string]bool{},
+		original_data:                   data_dir,
+		original_p2p:                    p2p_id,
+		original_emit_to:                replication_emit_to,
+		original_emit_system_set:        replication_emit_system_set,
+		original_emit_system_row:        replication_emit_system_row,
+		original_drain_async:            post_migration_drain_async,
+		original_attachment_notify_move: attachment_notify_move,
 	}
 	for _, name := range names {
 		dir, err := os.MkdirTemp("", "mochi_harness_"+name)
@@ -120,6 +154,7 @@ func new_harness(t *testing.T, names ...string) *harness {
 	replication_emit_to = h.capture_emit_to
 	replication_emit_system_set = h.capture_system_set
 	replication_emit_system_row = h.capture_system_row
+	attachment_notify_move = h.capture_attachment_notify_move
 	// Suppress the post-migration drain goroutine. It reads data_dir
 	// asynchronously, which races with switch_to. The drain is a
 	// performance prefetch the harness doesn't need - flush() drains
@@ -165,6 +200,7 @@ func (h *harness) cleanup() {
 	replication_emit_system_set = h.original_emit_system_set
 	replication_emit_system_row = h.original_emit_system_row
 	post_migration_drain_async = h.original_drain_async
+	attachment_notify_move = h.original_attachment_notify_move
 	for _, ctx := range h.hosts {
 		os.RemoveAll(ctx.dir)
 	}
@@ -224,6 +260,42 @@ func (h *harness) recipients_per_user(user, sender string) []string {
 	return out
 }
 
+// set_federation_hosts declares which host names own a replica of the
+// named entity for federation routing. Repeated calls overwrite the
+// previous set for that entity. Without an entry, federation emits
+// for that entity are dropped (matches production behaviour where an
+// entity unknown to the local directory gets no fan-out).
+func (h *harness) set_federation_hosts(entity string, names ...string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	set := map[string]bool{}
+	for _, name := range names {
+		set[name] = true
+	}
+	h.federation_hosts[entity] = set
+}
+
+// recipients_federation computes the federation-scope recipient set for
+// the given entity. Mirrors entity_peers() in production but reads from
+// the harness's declared federation_hosts table rather than the libp2p
+// directory.
+func (h *harness) recipients_federation(entity, sender string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	hosts, ok := h.federation_hosts[entity]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(hosts))
+	for name := range hosts {
+		if name == sender {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // recipients_pair computes the pair-scope recipient set. Mirrors the
 // "select peer from pair" loop in replication_emit_system_set/_row.
 func (h *harness) recipients_pair(sender string) []string {
@@ -259,6 +331,29 @@ func (h *harness) capture_system_row(database, table string, key, cols map[strin
 	sender := h.current
 	for _, receiver := range h.recipients_pair(sender) {
 		h.enqueue(harness_delivery{sender: sender, receiver: receiver, sys_row: payload})
+	}
+}
+
+// capture_attachment_notify_move intercepts the federation emit for
+// _attachment/move and routes one delivery to every peer host listed
+// in federation_hosts[entity]. The app + owner args are not threaded
+// through to the receiver - the harness opens the receiver's
+// attachment DB by path in apply_one rather than going through
+// db_app_system, because the receiver doesn't have a real User /
+// App. Tests that need richer dispatch can set up Users/Apps and
+// extend apply_one accordingly.
+func (h *harness) capture_attachment_notify_move(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
+	sender := h.current
+	for _, entity := range notify {
+		payload := &harness_federation_move{
+			entity:     entity,
+			attachment: attachment,
+			old_rank:   old_rank,
+			ranks:      ranks,
+		}
+		for _, receiver := range h.recipients_federation(entity, sender) {
+			h.enqueue(harness_delivery{sender: sender, receiver: receiver, fed_move: payload})
+		}
 	}
 }
 
@@ -313,7 +408,38 @@ func (h *harness) apply_one(d harness_delivery) {
 		replication_system_set_apply(h.hosts[d.sender].p2p, d.sys_set)
 	case d.sys_row != nil:
 		replication_system_row_apply(h.hosts[d.sender].p2p, d.sys_row)
+	case d.fed_move != nil:
+		h.apply_federation_move(d)
 	}
+}
+
+// apply_federation_move synthesises the receiver's Event the way the
+// p2p stack would, then dispatches to attachment_event_move. The
+// receiver is the host the harness has just switched to via the flush
+// loop, so db_open here opens the receiver's attachment DB. Tests are
+// responsible for ensuring the attachments table exists on every host
+// (the harness doesn't seed it; see setup_attachment_move_test in
+// attachments_test.go).
+func (h *harness) apply_federation_move(d harness_delivery) {
+	db := db_open("db/attachments.db")
+	if db == nil {
+		h.t.Fatalf("federation move at %s: cannot open attachments DB", d.receiver)
+	}
+	e := &Event{
+		from: d.fed_move.entity,
+		db:   db,
+		content: map[string]any{
+			"old_rank": fmt.Sprintf("%d", d.fed_move.old_rank),
+		},
+	}
+	if len(d.fed_move.ranks) > 0 {
+		entries := make([]any, 0, len(d.fed_move.ranks))
+		for _, r := range d.fed_move.ranks {
+			entries = append(entries, map[string]any{"id": r["id"], "rank": r["rank"]})
+		}
+		e.content["ranks"] = entries
+	}
+	e.attachment_event_move()
 }
 
 // partition stops new emits from being queued. Captured emits land in

@@ -226,6 +226,154 @@ func TestAttachmentMoveEventConcurrentApplyConverges(t *testing.T) {
 	}
 }
 
+// move_locally runs the same SQL the api_attachment_move builtin does -
+// shifts the affected siblings, rewrites the moved row, then queries
+// the post-shift absolute-rank snapshot the federation event would
+// carry. Bypasses Starlark and message.send so two-host concurrent-
+// move scenarios can be exercised in-process without the libp2p / queue
+// stack. Returns (ranks, old_rank) the way attachment_notify_move would
+// see them.
+func move_locally(t *testing.T, db *DB, entity, object, id string, position int) ([]map[string]any, int) {
+	t.Helper()
+	row, err := db.row("select rank from attachments where id = ? and entity = ?", id, entity)
+	if err != nil || row == nil {
+		t.Fatalf("read pre-move rank for %q: row=%v err=%v", id, row, err)
+	}
+	old_rank := int(row["rank"].(int64))
+	new_rank := position
+	if old_rank != new_rank {
+		if new_rank < old_rank {
+			db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, entity, new_rank, old_rank)
+		} else {
+			db.exec("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, entity, old_rank, new_rank)
+		}
+		db.exec("update attachments set rank = ? where id = ? and entity = ?", new_rank, id, entity)
+	}
+	rows, err := db.rows("select id, rank from attachments where object = ? and entity = ?", object, entity)
+	if err != nil {
+		t.Fatalf("read post-move snapshot: %v", err)
+	}
+	ranks := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		ranks = append(ranks, map[string]any{
+			"id":   r["id"].(string),
+			"rank": r["rank"].(int64),
+		})
+	}
+	return ranks, old_rank
+}
+
+// TestAttachmentMoveRoundTripConvergesOnSubscriber is the Path-A
+// integration test for task #79 / validation of #76. Models a
+// two-host federated entity B (hosts h1, h2) where both replicas
+// independently call api_attachment_move on the same object, AND a
+// downstream subscriber C that receives both notify events. Asserts
+// C's final rank state matches the last-applied event exactly (LWW
+// per id) and that swapping the arrival order at C changes C to the
+// other producer's snapshot. That's the contract Option B promises:
+// no rank divergence under concurrent producers; per-replica order of
+// arrival determines whose snapshot wins.
+func TestAttachmentMoveRoundTripConvergesOnSubscriber(t *testing.T) {
+	// Seed three independent DBs sharing the same entity owner key.
+	// Entity owner identity is what attachment_event_move keys writes
+	// against (the `entity = ?` predicate on the UPDATE), so all three
+	// DBs must agree on the entity id for h1 and h2's payloads to
+	// land on C's rows.
+	entity := test_entity_id('e')
+
+	h1, cleanup1 := setup_attachment_move_test(t, entity)
+	defer cleanup1()
+	h2, cleanup2 := setup_attachment_move_test(t, entity)
+	defer cleanup2()
+	c, cleanup3 := setup_attachment_move_test(t, entity)
+	defer cleanup3()
+
+	// h1: move b 2 -> 1 (a 1->2, b 2->1, c 3->3).
+	ranks_h1, _ := move_locally(t, h1, entity, "obj1", "b", 1)
+	// h2: move c 3 -> 1 (a 1->2, b 2->3, c 3->1).
+	ranks_h2, _ := move_locally(t, h2, entity, "obj1", "c", 1)
+
+	// Verify producer-side snapshots are what we'd expect.
+	want_h1 := map[string]int64{"a": 2, "b": 1, "c": 3}
+	want_h2 := map[string]int64{"a": 2, "b": 3, "c": 1}
+	for _, r := range ranks_h1 {
+		if w := want_h1[r["id"].(string)]; r["rank"].(int64) != w {
+			t.Errorf("h1 snapshot %q: got %d, want %d", r["id"], r["rank"], w)
+		}
+	}
+	for _, r := range ranks_h2 {
+		if w := want_h2[r["id"].(string)]; r["rank"].(int64) != w {
+			t.Errorf("h2 snapshot %q: got %d, want %d", r["id"], r["rank"], w)
+		}
+	}
+
+	// Cross-apply both events at C in arrival order h1-then-h2. Final
+	// state must equal h2's snapshot.
+	deliver := func(db *DB, ranks []map[string]any) {
+		entries := make([]any, 0, len(ranks))
+		for _, r := range ranks {
+			entries = append(entries, map[string]any{"id": r["id"], "rank": r["rank"]})
+		}
+		e := &Event{from: entity, db: db, content: map[string]any{"ranks": entries}}
+		e.attachment_event_move()
+	}
+	deliver(c, ranks_h1)
+	deliver(c, ranks_h2)
+	got_c1 := ranks_by_id(t, c, entity)
+	for id, w := range want_h2 {
+		if got_c1[id] != w {
+			t.Errorf("C after h1->h2 delivery, rank for %q: got %d, want %d (last-applied = h2)", id, got_c1[id], w)
+		}
+	}
+
+	// Swap arrival order on a fresh C. h2-then-h1 must leave C at h1.
+	c.exec("update attachments set rank = ? where id = 'a' and entity = ?", int64(1), entity)
+	c.exec("update attachments set rank = ? where id = 'b' and entity = ?", int64(2), entity)
+	c.exec("update attachments set rank = ? where id = 'c' and entity = ?", int64(3), entity)
+	deliver(c, ranks_h2)
+	deliver(c, ranks_h1)
+	got_c2 := ranks_by_id(t, c, entity)
+	for id, w := range want_h1 {
+		if got_c2[id] != w {
+			t.Errorf("C after h2->h1 delivery, rank for %q: got %d, want %d (last-applied = h1)", id, got_c2[id], w)
+		}
+	}
+}
+
+// TestAttachmentNotifyMoveStubCaptures is the wiring check for the
+// new package-level var that the test harness (Path B / task #79) and
+// future federation tests use to intercept the federation emit. If
+// this test breaks, attachment_notify_move was inlined back to a
+// regular func and the harness lost its hook point.
+func TestAttachmentNotifyMoveStubCaptures(t *testing.T) {
+	original := attachment_notify_move
+	defer func() { attachment_notify_move = original }()
+
+	var captured struct {
+		called bool
+		ranks  []map[string]any
+		notify []string
+	}
+	attachment_notify_move = func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
+		captured.called = true
+		captured.ranks = ranks
+		captured.notify = notify
+	}
+
+	ranks := []map[string]any{{"id": "a", "rank": int64(2)}, {"id": "b", "rank": int64(1)}}
+	attachment_notify_move(nil, nil, map[string]any{"id": "b"}, 2, ranks, []string{test_entity_id('f')})
+
+	if !captured.called {
+		t.Fatal("stub didn't capture the call")
+	}
+	if len(captured.ranks) != 2 || captured.ranks[1]["id"].(string) != "b" {
+		t.Errorf("stub captured wrong ranks: %v", captured.ranks)
+	}
+	if len(captured.notify) != 1 {
+		t.Errorf("stub captured wrong notify: %v", captured.notify)
+	}
+}
+
 // Test attachment_content_type detection
 func TestAttachmentContentType(t *testing.T) {
 	tests := []struct {

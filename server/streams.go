@@ -105,7 +105,7 @@ func stream(from string, to string, service string, event string, from_app strin
 		}
 
 		id := uid()
-		signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
+		signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", "", services, challenge)))
 		if err := s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature}); err != nil {
 			s.close()
 			last_err = err
@@ -133,7 +133,7 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 	//debug("Stream %d open to peer %q: from %q, to %q, service %q, event %q", s.id, peer, from, to, service, event)
 
 	id := uid()
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", services, challenge)))
+	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", "", services, challenge)))
 	err = s.write(Headers{Type: "msg", From: from, To: to, Service: service, Event: event, FromApp: from_app, Services: services, ID: id, Signature: signature})
 	if err != nil {
 		s.close()
@@ -260,7 +260,7 @@ func stream_receive(s *Stream, version int, peer string) {
 	if h.ID != "" && message_seen(h.ID) {
 		debug("Stream %d duplicate message %q, sending ACK only", s.id, h.ID)
 		if s.writer != nil {
-			s.send_ack("ack", h.ID, h.To, h.From)
+			s.send_ack("ack", h.ID, h.To, h.From, "")
 		}
 		return
 	}
@@ -273,7 +273,7 @@ func stream_receive(s *Stream, version int, peer string) {
 		// events (From="") need NACKs too, otherwise the sender's queue
 		// retries forever on a permanent decode error.
 		if h.ID != "" && s.writer != nil {
-			s.send_ack("nack", h.ID, h.To, h.From)
+			s.send_ack("nack", h.ID, h.To, h.From, nack_reason_decode_failed)
 		}
 		return
 	}
@@ -299,23 +299,28 @@ func stream_receive(s *Stream, version int, peer string) {
 	// before SQLite signalled "database or disk is full").
 	if h.ID != "" && s.writer != nil {
 		if route_err == nil {
-			s.send_ack("ack", h.ID, h.To, h.From)
+			s.send_ack("ack", h.ID, h.To, h.From, "")
 		} else {
-			s.send_ack("nack", h.ID, h.To, h.From)
+			s.send_ack("nack", h.ID, h.To, h.From, nack_reason_from_error(route_err))
 		}
 	}
 }
 
 // Send ACK/NACK on existing stream (no challenge - TLS provides security)
-func (s *Stream) send_ack(ack_type, ack_id, from, to string) {
-	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", "", ack_id, nil, nil)))
+// send_ack writes an ACK or NACK frame back to the sender. reason is
+// a machine-readable hint used on NACKs (e.g. "broadcast-gap") so the
+// sender can decide between retry and drop without parsing the
+// (info-only) error string. Pass "" for ACKs and for unspecified
+// NACKs - the wire field is omitempty and old peers ignore it.
+func (s *Stream) send_ack(ack_type, ack_id, from, to, reason string) {
+	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", "", ack_id, reason, nil, nil)))
 
 	headers := cbor_encode(Headers{
-		Type: ack_type, From: from, To: to, AckID: ack_id, Signature: signature,
+		Type: ack_type, From: from, To: to, AckID: ack_id, Reason: reason, Signature: signature,
 	})
 
 	if s.write_raw(headers) == nil {
-		// debug("Stream %d sent %s for ID %q", s.id, ack_type, ack_id)
+		// debug("Stream %d sent %s for ID %q (reason=%q)", s.id, ack_type, ack_id, reason)
 	}
 
 	if s.writer != nil {

@@ -282,7 +282,13 @@ func (e *Event) route() error {
 		if bseq > last+1 {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); requesting resync", bseq, last+1, e.peer, bkey)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
-			return fmt.Errorf("broadcast gap detected (peer=%s, key=%s, last=%d, seq=%d)", e.peer, bkey, last, bseq)
+			// Wrap the sentinel so the stream-layer NACK responder
+			// (streams.go) can map this to the broadcast-gap reason
+			// hint and the sender's queue drops the message rather
+			// than retrying it for 7 days. The hint is wire-level
+			// (Headers.Reason); the error string here stays for log
+			// readability.
+			return fmt.Errorf("broadcast gap detected (peer=%s, key=%s, last=%d, seq=%d): %w", e.peer, bkey, last, bseq, ErrBroadcastGap)
 		}
 	}
 

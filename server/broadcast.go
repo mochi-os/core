@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,36 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
+
+// NACK reason hints. Receiver populates Headers.Reason on the
+// outbound NACK frame; sender's NACK handler reads it to decide
+// between retry (the legacy unconditional behaviour) and drop. New
+// reasons can be added freely - the omitempty wire field falls back
+// to "" on older peers, which maps to the legacy retry-everything
+// path. See claude/sessions/2026-05-25-broadcast-resync-seq-643-
+// investigation.md for context.
+const (
+	nack_reason_broadcast_gap  = "broadcast-gap"
+	nack_reason_decode_failed  = "decode-failed"
+)
+
+// ErrBroadcastGap is the sentinel the gap detector wraps its returned
+// error with so the stream-layer NACK responder can map it to the
+// nack_reason_broadcast_gap wire hint without parsing the (info-only)
+// error string. Other apply paths that want a non-retry NACK should
+// define their own sentinel and extend nack_reason_from_error.
+var ErrBroadcastGap = errors.New("broadcast gap")
+
+// nack_reason_from_error maps a route() error to the wire Reason
+// hint. Unknown errors return "" which preserves legacy retry
+// behaviour at the sender. Called from the stream-receive NACK path
+// in streams.go.
+func nack_reason_from_error(err error) string {
+	if errors.Is(err, ErrBroadcastGap) {
+		return nack_reason_broadcast_gap
+	}
+	return ""
+}
 
 // mochi.broadcast.* — sequenced broadcast with a durable log per
 // (app, key, peer) so subscribers can replay gaps from the owner.

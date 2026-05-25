@@ -115,7 +115,7 @@ func (m *Message) publish(allow_queue bool) {
 
 	if peers_sufficient() {
 		// Broadcasts: sign without challenge (untrusted anyway)
-		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", m.Services, nil)))
+		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", "", m.Services, nil)))
 		headers := cbor_encode(Headers{
 			Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
 			FromApp: m.FromApp, Services: m.Services, ID: m.ID, Signature: signature,
@@ -249,7 +249,7 @@ func message_attempt_send_real(m *Message, peer string, content []byte) {
 		return
 	}
 
-	signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", m.Services, challenge)))
+	signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", "", m.Services, challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
@@ -294,8 +294,15 @@ func message_attempt_send_real(m *Message, peer string, content []byte) {
 	}
 
 	if h.msg_type() == "nack" && h.AckID == m.ID {
-		debug("Message %q received NACK", m.ID)
-		queue_fail(m.ID, "NACK received")
+		debug("Message %q received NACK reason=%q", m.ID, h.Reason)
+		// Reason-aware: drop on hints that say "retrying won't
+		// help" (broadcast gap, malformed payload). Default still
+		// goes to queue_fail with retry/backoff.
+		if nack_should_drop(h.Reason) {
+			queue_drop(m.ID, h.Reason)
+		} else {
+			queue_fail(m.ID, "NACK received")
+		}
 		return
 	}
 

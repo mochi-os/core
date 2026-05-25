@@ -149,6 +149,33 @@ func queue_ack(id string) {
 	//debug("Queue ACK received for %q", id)
 }
 
+// queue_drop removes a queue row without scheduling a retry. Use when
+// the receiver's NACK carries a Reason hint that further attempts
+// would deterministically NACK with the same outcome - e.g.
+// "broadcast-gap" means the subscriber is already requesting catch-up
+// via its own resync path and re-sending the same in-order live event
+// is wasted work that just floods the queue. queue_fail is the
+// default for unspecified failures (network blip, peer offline);
+// queue_drop is the explicit-give-up path keyed off a known reason.
+func queue_drop(id, reason string) {
+	db := db_open("db/queue.db")
+	db.exec("delete from queue where id = ?", id)
+	debug("Queue dropping message %q on NACK reason %q (no retry)", id, reason)
+}
+
+// nack_should_drop returns true when a NACK's Reason hint means
+// retrying is pointless and the queue row should be dropped instead
+// of scheduling another attempt. Falls back to "" -> retry which
+// preserves the legacy behaviour for older receivers that don't set
+// a reason at all.
+func nack_should_drop(reason string) bool {
+	switch reason {
+	case nack_reason_broadcast_gap, nack_reason_decode_failed:
+		return true
+	}
+	return false
+}
+
 // Mark a message as being sent (prevents other processors from picking it up)
 func queue_sending(id string) {
 	db := db_open("db/queue.db")
@@ -232,7 +259,7 @@ func queue_send_direct(q *QueueEntry) bool {
 		services = strings.Split(q.FromServices, ",")
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, challenge)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
@@ -274,7 +301,17 @@ func queue_send_direct(q *QueueEntry) bool {
 	}
 
 	if h.msg_type() == "nack" && h.AckID == q.ID {
-		debug("Queue direct %q received NACK", q.ID)
+		// Reason-aware NACK handling: a "broadcast-gap" NACK means
+		// the subscriber is already requesting catch-up via its own
+		// resync path, so retrying the same in-order live event for
+		// 7 days just floods the queue. Drop the row instead and
+		// return true so the caller's delete-on-ack is the visible
+		// outcome (idempotent - row's gone).
+		if nack_should_drop(h.Reason) {
+			queue_drop(q.ID, h.Reason)
+			return true
+		}
+		debug("Queue direct %q received NACK reason=%q", q.ID, h.Reason)
 		return false
 	}
 
@@ -293,7 +330,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		services = strings.Split(q.FromServices, ",")
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, nil)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, nil)))
 
 	msg := Message{
 		ID: q.ID, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,

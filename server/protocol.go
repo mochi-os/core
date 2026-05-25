@@ -9,7 +9,11 @@ import (
 
 const max_id_length = 64
 
-// Signable portion of headers
+// Signable portion of headers. Reason is optional and carries a
+// machine-readable hint on NACKs so the sender can route the failure
+// without parsing the (info-only, unsigned-on-the-wire-otherwise)
+// error string. Empty Reason is treated as "unspecified failure",
+// which is the legacy behaviour.
 type SignableHeaders struct {
 	Type      string   `cbor:"type,omitempty"`
 	From      string   `cbor:"from,omitempty"`
@@ -20,15 +24,16 @@ type SignableHeaders struct {
 	Services  []string `cbor:"from-services,omitempty"`
 	ID        string   `cbor:"id,omitempty"`
 	AckID     string   `cbor:"ack,omitempty"`
+	Reason    string   `cbor:"reason,omitempty"`
 	Challenge []byte   `cbor:"challenge,omitempty"`
 }
 
 // Create signable headers
-func signable_headers(msg_type, from, to, service, event, from_app, id, ack_id string, services []string, challenge []byte) []byte {
+func signable_headers(msg_type, from, to, service, event, from_app, id, ack_id, reason string, services []string, challenge []byte) []byte {
 	return cbor_encode(SignableHeaders{
 		Type: msg_type, From: from, To: to, Service: service, Event: event,
 		FromApp: from_app, Services: services,
-		ID: id, AckID: ack_id, Challenge: challenge,
+		ID: id, AckID: ack_id, Reason: reason, Challenge: challenge,
 	})
 }
 
@@ -43,6 +48,7 @@ type Headers struct {
 	Services  []string `cbor:"from-services,omitempty"`
 	ID        string   `cbor:"id,omitempty"`
 	AckID     string   `cbor:"ack,omitempty"`
+	Reason    string   `cbor:"reason,omitempty"`
 	Signature string   `cbor:"signature,omitempty"`
 }
 
@@ -137,7 +143,7 @@ func (h *Headers) verify(challenge []byte) bool {
 
 	sig := base58_decode(h.Signature, "")
 
-	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Services, challenge)
+	signable := signable_headers(h.msg_type(), h.From, h.To, h.Service, h.Event, h.FromApp, h.ID, h.AckID, h.Reason, h.Services, challenge)
 	if ed25519.Verify(public, signable, sig) {
 		return true
 	}

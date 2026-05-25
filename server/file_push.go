@@ -307,7 +307,7 @@ func queue_send_file_push(q *QueueEntry) bool {
 		services = split_services(q.FromServices)
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, challenge)))
+	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, challenge)))
 
 	headers := cbor_encode(Headers{
 		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
@@ -350,7 +350,13 @@ func queue_send_file_push(q *QueueEntry) bool {
 		return true
 	}
 	if h.msg_type() == "nack" && h.AckID == q.ID {
-		debug("Queue file-push %q received NACK", q.ID)
+		debug("Queue file-push %q received NACK reason=%q", q.ID, h.Reason)
+		// Same reason-aware handling as queue_send_direct - drop on
+		// hints that retrying won't help.
+		if nack_should_drop(h.Reason) {
+			queue_drop(q.ID, h.Reason)
+			return true
+		}
 		return false
 	}
 	return false

@@ -70,33 +70,42 @@ func TestSignableHeaders(t *testing.T) {
 	challenge := []byte("test_challenge_16")
 
 	// Same inputs should produce same output
-	h1 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", nil, challenge)
-	h2 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", nil, challenge)
+	h1 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", "", nil, challenge)
+	h2 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", "", nil, challenge)
 
 	if string(h1) != string(h2) {
 		t.Error("signable_headers should be deterministic")
 	}
 
 	// Different inputs should produce different output
-	h3 := signable_headers("msg", "from", "to", "service", "other", "", "id", "", nil, challenge)
+	h3 := signable_headers("msg", "from", "to", "service", "other", "", "id", "", "", nil, challenge)
 	if string(h1) == string(h3) {
 		t.Error("Different inputs should produce different signable headers")
 	}
 
 	// Different challenge should produce different output
-	h4 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", nil, []byte("other_challenge_16"))
+	h4 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", "", nil, []byte("other_challenge_16"))
 	if string(h1) == string(h4) {
 		t.Error("Different challenge should produce different signable headers")
 	}
 
 	// Phase 2: FromApp and Services are now included in signable headers
-	h5 := signable_headers("msg", "from", "to", "service", "event", "myapp", "id", "", nil, challenge)
+	h5 := signable_headers("msg", "from", "to", "service", "event", "myapp", "id", "", "", nil, challenge)
 	if string(h1) == string(h5) {
 		t.Error("Different from-app should produce different signable headers")
 	}
-	h6 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", []string{"wikis"}, challenge)
+	h6 := signable_headers("msg", "from", "to", "service", "event", "", "id", "", "", []string{"wikis"}, challenge)
 	if string(h1) == string(h6) {
 		t.Error("Different services should produce different signable headers")
+	}
+
+	// Reason is part of the signable surface so a NACK's hint can't
+	// be flipped on the wire without invalidating the signature.
+	// h1 has reason="", h7 has reason="broadcast-gap".
+	h7 := signable_headers("nack", "from", "to", "", "", "", "id", "ack-target", "broadcast-gap", nil, challenge)
+	h8 := signable_headers("nack", "from", "to", "", "", "", "id", "ack-target", "", nil, challenge)
+	if string(h7) == string(h8) {
+		t.Error("Different reason should produce different signable headers")
 	}
 }
 
@@ -114,7 +123,7 @@ func BenchmarkSignableHeaders(b *testing.B) {
 	challenge := []byte("benchmark_challen")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		signable_headers("msg", "from_entity", "to_entity", "service", "event", "", "message_id", "", nil, challenge)
+		signable_headers("msg", "from_entity", "to_entity", "service", "event", "", "message_id", "", "", nil, challenge)
 	}
 }
 

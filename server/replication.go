@@ -1384,23 +1384,39 @@ func replication_transfer_keys(userUID string, peer string) bool {
 	if peer == "" || peer == p2p_id {
 		return false
 	}
+	kt, ok := build_keys_transfer(userUID)
+	if !ok {
+		return false
+	}
+	from := kt.Entities[0].ID
+	m := message(from, "", "replication", "keys/transfer")
+	m.add(kt)
+	m.send_peer(peer)
+	return true
+}
 
+// build_keys_transfer assembles the KeysTransfer payload for a user
+// without sending it. Split out from replication_transfer_keys so the
+// multi-master bootstrap test (#57) can exercise the real payload-build
+// and feed the result straight into replication_keys_transfer_apply on
+// a receiver host - no wire mock, no duplicated SQL.
+func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 	udb := db_open("db/users.db")
 
 	var u User
 	if !udb.scan(&u, "select uid, username, role, methods, status from users where uid=?", userUID) {
 		warn("Replication transfer-keys: user %q not found", userUID)
-		return false
+		return nil, false
 	}
 
 	rows, err := udb.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", userUID)
 	if err != nil {
 		warn("Replication transfer-keys: failed to read entities for user %q: %v", userUID, err)
-		return false
+		return nil, false
 	}
 	if len(rows) == 0 {
 		warn("Replication transfer-keys: no entities for user %q", userUID)
-		return false
+		return nil, false
 	}
 
 	kt := KeysTransfer{
@@ -1443,12 +1459,11 @@ func replication_transfer_keys(userUID string, peer string) bool {
 				Name:       toString(cr["name"]),
 				Transports: toString(cr["transports"]),
 			}
-			if id, ok := cr["id"].([]byte); ok {
-				c.ID = id
-			}
-			if pk, ok := cr["public_key"].([]byte); ok {
-				c.PublicKey = pk
-			}
+			// db.rows() converts []byte to string defensively; use
+			// toBytes to recover the raw BLOB bytes for the
+			// credential id + public key.
+			c.ID = toBytes(cr["id"])
+			c.PublicKey = toBytes(cr["public_key"])
 			if v, ok := cr["sign_count"].(int64); ok {
 				c.SignCount = v
 			}
@@ -1533,14 +1548,9 @@ func replication_transfer_keys(userUID string, peer string) bool {
 	}
 	if len(kt.Entities) == 0 {
 		warn("Replication transfer-keys: user %q has no valid entities", userUID)
-		return false
+		return nil, false
 	}
-
-	from := kt.Entities[0].ID
-	m := message(from, "", "replication", "keys/transfer")
-	m.add(&kt)
-	m.send_peer(peer)
-	return true
+	return &kt, true
 }
 
 // toString converts a SQLite map value to a string, handling both []byte
@@ -1553,6 +1563,24 @@ func toString(v any) string {
 		return string(x)
 	}
 	return ""
+}
+
+// toBytes is the symmetric helper for BLOB columns. db.rows() converts
+// all []byte to string defensively (TEXT columns can come back as
+// []byte from some SQLite paths, the catch-all simplifies consumers)
+// so a callsite reading a real BLOB column sees `string` rather than
+// `[]byte`. Go strings are byte-sequence-equivalent to []byte, so the
+// round-trip preserves every byte; this helper just makes the
+// conversion explicit at the BLOB-reading site. Returns nil for nil
+// or unconvertible values.
+func toBytes(v any) []byte {
+	switch x := v.(type) {
+	case []byte:
+		return x
+	case string:
+		return []byte(x)
+	}
+	return nil
 }
 
 // replication_membership_update is the local side: bumps the user's

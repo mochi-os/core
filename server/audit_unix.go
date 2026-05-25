@@ -136,6 +136,15 @@ func audit_message_rejected(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("message_rejected from=%s reason=%s", from, reason))
 }
 
+// audit_replication_pending_purged logs a unfillable-pending row drop
+// from the GC. One entry per dropped row so operators investigating
+// "what did we lose" can grep the audit trail by (peer, scope, user,
+// db, sequence). age is the row's lifetime in pending before drop.
+func audit_replication_pending_purged(peer, scope, user, database string, sequence int64, age int64) {
+	audit_log_ops(fmt.Sprintf("replication_pending_purged peer=%s scope=%s user=%s db=%s sequence=%d age=%d",
+		peer, scope, user, database, sequence, age))
+}
+
 // audit_key_generated logs key generation events
 func audit_key_generated(entity string, class string) {
 	audit_log_auth(fmt.Sprintf("key_generated entity=%s class=%s", entity, class))

@@ -734,12 +734,28 @@ func web_replication_progress(c *gin.Context) {
 // surfaces stalled streams to the log when their oldest pending op
 // has been stuck longer than stall_warn_seconds, so operators see the
 // drift before users notice missing data.
+//
+// Once per pending_gc_period_seconds (default 1h) it also runs the
+// unfillable-pending GC so months of intermittent peer churn don't
+// silently accumulate dropped-but-buffered rows in replication.db.pending.
+// See replication_pending_gc.
 func replication_manager() {
+	last_gc := now()
 	for range time.Tick(30 * time.Second) {
 		replication_pending_drain()
 		replication_pending_warn_stalled()
+		if now()-last_gc >= pending_gc_period_seconds {
+			replication_pending_gc()
+			last_gc = now()
+		}
 	}
 }
+
+// pending_gc_period_seconds is the interval between automatic
+// unfillable-pending GC passes. GC is cheap (scans the stalled-stream
+// list, deletes per-row), but no point running it every 30s when the
+// TTL is measured in days.
+const pending_gc_period_seconds = 60 * 60
 
 // stall_warn_seconds is how long a stream may keep a pending op before
 // it gets a periodic warning in the log. Tuned to be loud enough for
@@ -925,6 +941,65 @@ func replication_pending_stalled() []StalledStream {
 		})
 	}
 	return stalled
+}
+
+// pending_gc_default_ttl_days is the default age above which an
+// unfillable pending row is purged. Overridable via setting
+// `replication.pending.unfillable_ttl_days`. A month is conservative -
+// operator intervention via `mochictl replication resync` or
+// `mochictl replica reset` should have happened by then if the stuck
+// stream mattered.
+const pending_gc_default_ttl_days = 30
+
+// replication_pending_gc walks the stalled-stream list (same classifier
+// the warning loop uses) and deletes pending rows whose `received`
+// timestamp is older than the configured TTL. Every drop emits an
+// audit event with (peer, scope, user, db, sequence, age_seconds) so
+// the operator can grep the audit log for "what did we lose".
+//
+// Returns the total number of rows dropped. Safe to call on demand
+// (mochictl replication pending gc) as well as from the manager loop.
+func replication_pending_gc() int {
+	ttl_days := int64(pending_gc_default_ttl_days)
+	if s := setting_get("replication.pending.unfillable_ttl_days", ""); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
+			ttl_days = v
+		}
+	}
+	cutoff := now() - ttl_days*86400
+	stalled := replication_pending_stalled()
+	if len(stalled) == 0 {
+		return 0
+	}
+	db := db_open("db/replication.db")
+	dropped := 0
+	for _, s := range stalled {
+		// Per-stream scan of just the aged rows. Cheap: pending is
+		// bounded by the stalled-stream count and the rows we want are
+		// the long-tail end of each.
+		rows, err := db.rows(
+			"select sequence, received from pending where peer=? and scope=? and user=? and db=? and received<?",
+			s.Peer, s.Scope, s.User, s.Database, cutoff)
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			sequence, _ := r["sequence"].(int64)
+			received, _ := r["received"].(int64)
+			db.exec(
+				"delete from pending where peer=? and scope=? and user=? and db=? and sequence=?",
+				s.Peer, s.Scope, s.User, s.Database, sequence)
+			age := now() - received
+			info("Replication pending GC: dropped peer=%q scope=%q user=%q db=%q seq=%d age=%ds",
+				s.Peer, s.Scope, s.User, s.Database, sequence, age)
+			audit_replication_pending_purged(s.Peer, s.Scope, s.User, s.Database, sequence, age)
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		info("Replication pending GC: dropped %d unfillable row(s) older than %d days", dropped, ttl_days)
+	}
+	return dropped
 }
 
 // replication_pending_drain re-evaluates buffered ops: each

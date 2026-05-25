@@ -736,6 +736,131 @@ func TestReplicationPendingStalled(t *testing.T) {
 	}
 }
 
+// setup_replication_test creates replication.db but not settings.db;
+// the GC reads its TTL via setting_get so the tests need both. Single
+// helper to keep the per-test setup compact.
+func setup_replication_pending_gc_test(t *testing.T) func() {
+	cleanup := setup_replication_test(t)
+	settings := db_open("db/settings.db")
+	settings.exec("create table if not exists settings (name text primary key, value text not null)")
+	return cleanup
+}
+
+// TestReplicationPendingGcDropsAgedUnfillable: rows in a stalled
+// stream older than the TTL get purged. Recent rows in the same
+// stream stay. Same stream classification as
+// replication_pending_stalled.
+func TestReplicationPendingGcDropsAgedUnfillable(t *testing.T) {
+	cleanup := setup_replication_pending_gc_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	// 1-day TTL via setting override.
+	setting_set("replication.pending.unfillable_ttl_days", "1")
+	old_ts := now() - 5*86400      // 5 days old -> dropped
+	recent_ts := now() - 1*3600    // 1 hour old -> kept
+
+	// Stalled stream (unanchored, no Prev==0). Two old rows + one
+	// recent row.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 7, 6, 1, ?, ?)",
+		[]byte{0x00}, old_ts)
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 8, 7, 1, ?, ?)",
+		[]byte{0x00}, old_ts)
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 9, 8, 1, ?, ?)",
+		[]byte{0x00}, recent_ts)
+
+	dropped := replication_pending_gc()
+	if dropped != 2 {
+		t.Errorf("dropped = %d, want 2 (two old rows in a stalled stream)", dropped)
+	}
+
+	var remaining int64
+	row, _ := db.row("select count(*) as n from pending where peer='peer_a'")
+	if row != nil {
+		remaining, _ = row["n"].(int64)
+	}
+	if remaining != 1 {
+		t.Errorf("remaining rows for peer_a = %d, want 1 (the recent row)", remaining)
+	}
+}
+
+// TestReplicationPendingGcKeepsRecentRows: even on a stalled stream,
+// rows younger than the TTL stay - the operator might still recover
+// them via resync.
+func TestReplicationPendingGcKeepsRecentRows(t *testing.T) {
+	cleanup := setup_replication_pending_gc_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	setting_set("replication.pending.unfillable_ttl_days", "30")
+	// Two recent rows in a stalled stream.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 7, 6, 1, ?, ?)",
+		[]byte{0x00}, now()-1*3600)
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 8, 7, 1, ?, ?)",
+		[]byte{0x00}, now()-2*3600)
+
+	dropped := replication_pending_gc()
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0 (rows younger than TTL)", dropped)
+	}
+}
+
+// TestReplicationPendingGcKeepsHealthyStreams: a stream that's NOT
+// stalled (has its Prev==0 stream-start in pending, or next-op
+// prev=cursor) keeps all its rows regardless of age. The classifier
+// must match replication_pending_stalled exactly.
+func TestReplicationPendingGcKeepsHealthyStreams(t *testing.T) {
+	cleanup := setup_replication_pending_gc_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	setting_set("replication.pending.unfillable_ttl_days", "1")
+	old_ts := now() - 5*86400
+
+	// Stream WITH Prev==0 stream-start -> not stalled even though
+	// rows are old.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 1, 0, 1, ?, ?)",
+		[]byte{0x00}, old_ts)
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 2, 1, 1, ?, ?)",
+		[]byte{0x00}, old_ts)
+
+	dropped := replication_pending_gc()
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0 (healthy stream, no GC even on old rows)", dropped)
+	}
+}
+
+// TestReplicationPendingGcRespectsSetting: setting override changes
+// the cutoff. Default is 30 days; override to 1 day cuts more.
+func TestReplicationPendingGcRespectsSetting(t *testing.T) {
+	cleanup := setup_replication_pending_gc_test(t)
+	defer cleanup()
+
+	db := db_open("db/replication.db")
+	// 5-day-old row in a stalled stream.
+	db.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_a', 'app', 'u1', 'db_a', 7, 6, 1, ?, ?)",
+		[]byte{0x00}, now()-5*86400)
+
+	// Default TTL (30 days): the 5-day-old row is NOT yet aged out.
+	if dropped := replication_pending_gc(); dropped != 0 {
+		t.Errorf("default TTL: dropped = %d, want 0 (row only 5 days old)", dropped)
+	}
+
+	// Operator shrinks the TTL to 1 day.
+	setting_set("replication.pending.unfillable_ttl_days", "1")
+	if dropped := replication_pending_gc(); dropped != 1 {
+		t.Errorf("after TTL=1: dropped = %d, want 1", dropped)
+	}
+}
+
 func TestReplicationPendingDrainMalformedDropped(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

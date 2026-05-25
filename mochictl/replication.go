@@ -109,6 +109,37 @@ func cmd_replication_backfill(args []string) error {
 	return nil
 }
 
+// cmd_replication_pending_gc handles `mochictl replication pending gc`.
+// Runs the unfillable-pending GC on demand and reports the number of
+// rows dropped. No arguments. Use after cleaning up a removed-and-
+// rejoined peer to flush the now-orphaned pending rows immediately
+// instead of waiting for the next hourly pass.
+func cmd_replication_pending_gc(args []string) error {
+	resp, err := client().Post("/_/admin/replication/pending/gc", "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, raw)
+	}
+	if flag_json {
+		fmt.Println(string(raw))
+		return nil
+	}
+	var result struct {
+		Dropped int `json:"dropped"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	if flag_verbose || result.Dropped > 0 {
+		fmt.Printf("Dropped %d unfillable pending row(s).\n", result.Dropped)
+	}
+	return nil
+}
+
 // cmd_replication_pair_remove handles `mochictl replication pair remove <peer-id>`.
 // POSTs the peer-id to the admin endpoint; the server kicks that member
 // from the local pair table and announces the new set to the rest.

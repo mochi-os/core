@@ -15,6 +15,7 @@
 //   GET  /_/admin/replication/ops[?user=]    — per-(user, scope) op-replication snapshot
 //   GET  /_/admin/replication/stalled        — stuck inbound streams (pending buffer cannot drain)
 //   POST /_/admin/replication/pair/remove    — kick a specific pair member
+//   POST /_/admin/replication/pending/gc     — on-demand purge of aged unfillable pending rows
 //   POST /_/admin/replication/resync         — re-run bulk bootstrap against a peer
 //
 // Per-(user, scope) lag is a future addition; the current status
@@ -582,4 +583,15 @@ func admin_replication_stalled(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"stalled": out})
+}
+
+// admin_replication_pending_gc is POST /_/admin/replication/pending/gc.
+// Runs the unfillable-pending GC pass on demand and returns the count
+// of rows dropped. Same logic the manager loop runs hourly, exposed so
+// an operator who's just finished cleaning up a peer can immediately
+// flush the now-orphaned pending rows instead of waiting for the next
+// scheduled pass.
+func admin_replication_pending_gc(c *gin.Context) {
+	dropped := replication_pending_gc()
+	c.JSON(http.StatusOK, gin.H{"dropped": dropped})
 }

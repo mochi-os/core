@@ -405,3 +405,24 @@ func TestAdminReplicationPairsRollup(t *testing.T) {
 		t.Errorf("peer-B tail = %v, want 47", tails["app/uid-1/feeds"])
 	}
 }
+
+// TestAdminReplicationPendingGc: POST returns the dropped count.
+func TestAdminReplicationPendingGc(t *testing.T) {
+	cleanup := setup_admin_replication_test(t)
+	defer cleanup()
+
+	// Settings table needed for the GC TTL setting read.
+	db_open("db/settings.db").exec("create table if not exists settings (name text primary key, value text not null)")
+	setting_set("replication.pending.unfillable_ttl_days", "1")
+
+	// One aged row in a stalled stream.
+	rdb := db_open("db/replication.db")
+	rdb.exec(
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"peer_a", "app", "u1", "db_a", 7, 6, 1, []byte{0x00}, now()-5*86400)
+
+	_, resp := admin_replication_call(t, "POST", "/_/admin/replication/pending/gc", nil, admin_replication_pending_gc)
+	if got, _ := resp["dropped"].(float64); got != 1 {
+		t.Errorf("dropped = %v, want 1", got)
+	}
+}

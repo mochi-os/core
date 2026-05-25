@@ -168,6 +168,10 @@ func init() {
 				return get_dump("/_/admin/replication/stalled", "stalled")
 			},
 		},
+		"replication pending gc": {
+			help: "On-demand purge of aged unfillable pending rows (same logic the manager runs hourly). Reports count dropped.",
+			run:  cmd_replication_pending_gc,
+		},
 		"replication pair remove": {
 			help: "Kick a specific peer from the pair set",
 			run:  cmd_replication_pair_remove,

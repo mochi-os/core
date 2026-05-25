@@ -135,9 +135,13 @@ func broadcast_received_get(db *DB, sender, key string) int64 {
 	return int64(db.integer("select last from _received where sender=? and key=?", sender, key))
 }
 
+// broadcast_advance_local is the public advance: bumps _received,
+// clears the in-flight resync gate, then drains any pending-buffer
+// rows that chain onto the new _received.last. Callers (events.go,
+// api_broadcast_advance) just want "this seq is done, do all
+// follow-ups" - the drain is part of that.
 func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
-	broadcast_received_table_create(db)
-	db.exec_app_user("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
+	broadcast_advance_local_simple(db, sender, key, sequence)
 	// Any advance is evidence the resync request (if any) is
 	// producing replies, so the in-flight gate clears and the next
 	// gap-detection can fire its follow-up batch immediately rather
@@ -148,6 +152,19 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	if db.user != nil && db.user.UID != "" {
 		broadcast_resync_clear(db.user.UID, sender, key)
 	}
+	// Pull in any buffered events that now chain onto _received.last.
+	// Common case is "nothing pending" - one indexed SELECT.
+	broadcast_pending_drain_chain(db, sender, key)
+}
+
+// broadcast_advance_local_simple is the bare advance with no drain
+// recursion. broadcast_pending_drain_chain calls this directly after
+// dispatching a buffered row, so the drain's own advance doesn't
+// re-enter the drain loop. Keep this in sync with the SQL in the
+// public advance above.
+func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
+	broadcast_received_table_create(db)
+	db.exec_app_user("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
 }
 
 // broadcast_log_append writes one log row in the same transaction as

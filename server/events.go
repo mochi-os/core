@@ -9,6 +9,8 @@ import (
 	rd "runtime/debug"
 	"strings"
 	"sync"
+
+	"github.com/fxamacker/cbor/v2"
 )
 
 type Event struct {
@@ -39,6 +41,68 @@ func event_id() int64 {
 	event_next = event_next + 1
 	events_lock.Unlock()
 	return id
+}
+
+func init() {
+	// Wire the broadcast pending-drain dispatcher (task #82). The
+	// drain loop in broadcast_pending_drain_chain calls this for
+	// each in-order buffered row; we synthesise an Event from the
+	// stored fields and re-run the matching app event handler.
+	// Decoupled via a package-level var so broadcast_pending.go
+	// doesn't have to depend on the routing graph.
+	broadcast_pending_dispatch = broadcast_pending_dispatch_run
+}
+
+// broadcast_pending_dispatch_run is the dispatcher installed at
+// init. Returns true if the row's handler ran cleanly (caller
+// advances + deletes); false on lookup or handler failure (caller
+// leaves the row in pending for a future drain attempt).
+func broadcast_pending_dispatch_run(row *broadcast_pending_row, db *DB) bool {
+	if db == nil || db.user == nil {
+		return false
+	}
+	a := app_for_service(db.user, row.Service)
+	if a == nil {
+		return false
+	}
+	av := a.active(db.user)
+	if av == nil {
+		return false
+	}
+	apps_lock.Lock()
+	ae, ok := av.Events[row.Event]
+	if !ok {
+		ae, ok = av.Events[""]
+	}
+	apps_lock.Unlock()
+	if !ok {
+		return false
+	}
+	var content map[string]any
+	if err := cbor.Unmarshal(row.Content, &content); err != nil {
+		info("Broadcast pending drain: decode content failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
+		return false
+	}
+	e := &Event{
+		id:              event_id(),
+		msg_id:          row.MsgID,
+		from:            row.Source,
+		to:              row.Target,
+		service:         row.Service,
+		event:           row.Event,
+		sender_app:      row.SenderApp,
+		sender_services: split_services(row.SenderServices),
+		peer:            row.Peer,
+		content:         content,
+		user:            db.user,
+		app:             a,
+		db:              db,
+	}
+	if err := e.run_handler(a, av, ae); err != nil {
+		debug("Broadcast pending drain: handler failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
+		return false
+	}
+	return true
 }
 
 // Get a string field from the content segment of a received event
@@ -267,9 +331,17 @@ func (e *Event) route() error {
 
 	// Broadcast gap detection. Events carrying _key + _sequence in
 	// content are part of a sequenced broadcast stream from e.peer.
-	// We dedup duplicates, NACK on gap (sender retries; meanwhile we
-	// asynchronously request a replay from the owner to fill it), and
-	// advance _received after a successful handler.
+	// We dedup duplicates, BUFFER out-of-order events in
+	// _broadcast_pending and ACK them (sender can drop the queue
+	// row, subscriber's resync path fills the missing predecessors,
+	// drain replays the buffered ones in chain order), and advance
+	// _received after a successful handler.
+	//
+	// Pre-task-#82 we returned a gap NACK here; that pushed the
+	// "fill the gap" problem onto the sender's retry path and the
+	// queue.go per-bucket cap=1 throttled it to ~1 msg/sec/bucket.
+	// Task #82's defer-not-NACK keeps the events on the receiver
+	// where they already are.
 	bkey, _ := e.content["_key"].(string)
 	bseq := event_int64(e.content["_sequence"])
 	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.db != nil
@@ -280,15 +352,17 @@ func (e *Event) route() error {
 			return nil
 		}
 		if bseq > last+1 {
-			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); requesting resync", bseq, last+1, e.peer, bkey)
+			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
-			// Wrap the sentinel so the stream-layer NACK responder
-			// (streams.go) can map this to the broadcast-gap reason
-			// hint and the sender's queue drops the message rather
-			// than retrying it for 7 days. The hint is wire-level
-			// (Headers.Reason); the error string here stays for log
-			// readability.
-			return fmt.Errorf("broadcast gap detected (peer=%s, key=%s, last=%d, seq=%d): %w", e.peer, bkey, last, bseq, ErrBroadcastGap)
+			broadcast_pending_insert(e.db, e.peer, bkey, bseq,
+				e.from, e.to, e.service, e.event, e.msg_id, e.sender_app,
+				strings.Join(e.sender_services, ","),
+				cbor_encode(e.content))
+			// ACK to the sender (return nil) - we have the event
+			// stored; the sender's queue can delete the row. The
+			// gap fills as resync replies arrive and advance
+			// _received, at which point the buffered tail drains.
+			return nil
 		}
 	}
 

@@ -1083,13 +1083,13 @@ func url_extract_preview(body io.Reader, pageURL string) string {
 		}
 		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
 			tn, hasAttr := tokenizer.TagName()
-			tagName := string(tn)
+			tag_name := string(tn)
 
-			if tagName == "body" {
+			if tag_name == "body" {
 				break
 			}
 
-			if tagName == "meta" && hasAttr {
+			if tag_name == "meta" && hasAttr {
 				var property, name, content string
 				for {
 					key, val, more := tokenizer.TagAttr()

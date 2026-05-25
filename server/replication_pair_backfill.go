@@ -366,9 +366,9 @@ func replication_pair_backfill_sessions(peer string) {
 	}
 	count := 0
 	for _, r := range rows {
-		userUID, _ := r["user"].(string)
+		user_uid, _ := r["user"].(string)
 		code, _ := r["code"].(string)
-		if userUID == "" || code == "" {
+		if user_uid == "" || code == "" {
 			continue
 		}
 		secret, _ := r["secret"].(string)
@@ -377,7 +377,7 @@ func replication_pair_backfill_sessions(peer string) {
 		accessed, _ := r["accessed"].(int64)
 		address, _ := r["address"].(string)
 		agent, _ := r["agent"].(string)
-		replication_emit_session_insert_to_peer_var(peer, userUID, code, secret, expires, created, accessed, address, agent)
+		replication_emit_session_insert_to_peer_var(peer, user_uid, code, secret, expires, created, accessed, address, agent)
 		count++
 	}
 	debug("Replication pair-backfill: %d session rows queued to peer %q", count, peer)
@@ -390,18 +390,18 @@ func replication_pair_backfill_sessions(peer string) {
 // Package-level variable so tests can stub the wire emission.
 var replication_emit_session_insert_to_peer_var = replication_emit_session_insert_to_peer_impl
 
-func replication_emit_session_insert_to_peer_impl(peer, userUID, code, secret string, expires, created, accessed int64, address, agent string) {
-	if peer == "" || peer == p2p_id || userUID == "" {
+func replication_emit_session_insert_to_peer_impl(peer, user_uid, code, secret string, expires, created, accessed int64, address, agent string) {
+	if peer == "" || peer == p2p_id || user_uid == "" {
 		return
 	}
 	payload := cbor_encode(&SessionInsert{
-		UserUID: userUID, Code: code, Secret: secret,
+		UserUID: user_uid, Code: code, Secret: secret,
 		Expires: expires, Created: created, Accessed: accessed,
 		Address: address, Agent: agent,
 	})
-	replication_emit_to_peer(userUID, &ReplicationOp{
+	replication_emit_to_peer(user_uid, &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  "sessions",
 		Table:     "sessions",
 		Operation: repl_op_insert,

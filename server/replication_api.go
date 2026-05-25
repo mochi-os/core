@@ -130,14 +130,14 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		}
 	}
 
-	pairValues := make([]sl.Value, 0, len(pair))
+	pair_values := make([]sl.Value, 0, len(pair))
 	for _, p := range pair {
-		pairValues = append(pairValues, sl.String(p))
+		pair_values = append(pair_values, sl.String(p))
 	}
 
 	result := sl.NewDict(6)
 	_ = result.SetKey(sl.String("peer"), sl.String(p2p_id))
-	_ = result.SetKey(sl.String("pair"), sl.NewList(pairValues))
+	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
 	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
 	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))

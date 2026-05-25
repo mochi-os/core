@@ -866,7 +866,7 @@ func account_send_verification_email(to string, code string, language string) {
 	tagline := resolve_core_label(language, "email.verification.tagline", nil)
 	expiry := resolve_core_label(language, "email.verification.expiry", nil)
 	ignore := resolve_core_label(language, "email.verification.ignore", nil)
-	htmlBody := `<!DOCTYPE html>
+	html_body := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -902,7 +902,7 @@ func account_send_verification_email(to string, code string, language string) {
   </table>
 </body>
 </html>`
-	email_send_html(to, subject, htmlBody)
+	email_send_html(to, subject, html_body)
 }
 
 // AccountTestResult represents the result of testing an account
@@ -1042,7 +1042,7 @@ func account_test_email(address string, language string, account_label string) A
 	subject := resolve_core_label(language, "email.test.subject", nil)
 	heading := resolve_core_label(language, "email.test.heading", nil)
 	body := resolve_core_label(language, "email.test.body", map[string]any{"account": account_label})
-	htmlBody := `<!DOCTYPE html>
+	html_body := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -1065,7 +1065,7 @@ func account_test_email(address string, language string, account_label string) A
   </table>
 </body>
 </html>`
-	email_send_html(address, subject, htmlBody)
+	email_send_html(address, subject, html_body)
 	return AccountTestResult{Success: true, Message: "Test email sent"}
 }
 
@@ -1225,8 +1225,8 @@ func account_test_pushbullet(token string, language string, account_label string
 	body, _ := io.ReadAll(resp.Body)
 	var data map[string]any
 	json.Unmarshal(body, &data)
-	if errMap, ok := data["error"].(map[string]any); ok {
-		if msg, ok := errMap["message"].(string); ok {
+	if error_map, ok := data["error"].(map[string]any); ok {
+		if msg, ok := error_map["message"].(string); ok {
 			return AccountTestResult{Success: false, Message: msg}
 		}
 	}
@@ -1271,8 +1271,8 @@ func account_test_claude(api_key string) AccountTestResult {
 	body, _ := io.ReadAll(resp.Body)
 	var data map[string]any
 	json.Unmarshal(body, &data)
-	if errMap, ok := data["error"].(map[string]any); ok {
-		if msg, ok := errMap["message"].(string); ok {
+	if error_map, ok := data["error"].(map[string]any); ok {
+		if msg, ok := error_map["message"].(string); ok {
 			return AccountTestResult{Success: false, Message: msg}
 		}
 	}
@@ -1350,8 +1350,8 @@ func account_test_mcp(url, token string) AccountTestResult {
 			if _, ok := result["result"]; ok {
 				return AccountTestResult{Success: true, Message: "Server connected"}
 			}
-			if errMap, ok := result["error"].(map[string]any); ok {
-				if msg, ok := errMap["message"].(string); ok {
+			if error_map, ok := result["error"].(map[string]any); ok {
+				if msg, ok := error_map["message"].(string); ok {
 					return AccountTestResult{Success: false, Message: msg}
 				}
 			}
@@ -1665,12 +1665,12 @@ func account_deliver_unifiedpush(user *User, accountID int64, data map[string]an
 	// distributor can ack the matching push_pending row on receipt — without
 	// it, every live event leaves a stuck row until the 7-day TTL sweep.
 	if strings.HasPrefix(endpoint, "/") {
-		subId := endpoint
+		sub_id := endpoint
 		if i := strings.LastIndex(endpoint, "/"); i >= 0 {
-			subId = endpoint[i+1:]
+			sub_id = endpoint[i+1:]
 		}
 		websockets_send(user, "unifiedpush", map[string]any{
-			"subId":   subId,
+			"sub_id":   sub_id,
 			"payload": string(payload),
 			"account": accountID,
 		})

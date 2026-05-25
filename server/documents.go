@@ -281,19 +281,19 @@ func api_document_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	out := []map[string]any{}
 	for _, name := range document_names {
 		for _, lang := range languages {
-			defaultBody := document_bundled(name, lang)
-			if defaultBody == "" {
+			default_body := document_bundled(name, lang)
+			if default_body == "" {
 				continue
 			}
 			body := document_override(name, lang)
 			if body == "" {
-				body = defaultBody
+				body = default_body
 			}
 			out = append(out, map[string]any{
 				"name":     name,
 				"language": lang,
 				"body":     body,
-				"default":  defaultBody,
+				"default":  default_body,
 				"updated":  document_updated(name, lang),
 			})
 		}

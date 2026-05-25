@@ -33,8 +33,8 @@ func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 	}
 }
 
-func append_radius_variables_from_base(styleParts *[]string, baseRadius string) {
-	*styleParts = append(*styleParts,
+func append_radius_variables_from_base(style_parts *[]string, baseRadius string) {
+	*style_parts = append(*style_parts,
 		fmt.Sprintf("--radius: %s", baseRadius),
 		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
 		fmt.Sprintf("--radius-md: calc(%s - 2px)", baseRadius),
@@ -43,10 +43,10 @@ func append_radius_variables_from_base(styleParts *[]string, baseRadius string) 
 	)
 }
 
-func append_radius_preset(styleParts *[]string, preset string) {
+func append_radius_preset(style_parts *[]string, preset string) {
 	switch preset {
 	case "none":
-		*styleParts = append(*styleParts,
+		*style_parts = append(*style_parts,
 			"--radius: 0rem",
 			"--radius-sm: 0rem",
 			"--radius-md: 0rem",
@@ -54,7 +54,7 @@ func append_radius_preset(styleParts *[]string, preset string) {
 			"--radius-xl: 0rem",
 		)
 	case "small":
-		*styleParts = append(*styleParts,
+		*style_parts = append(*style_parts,
 			"--radius: 0.375rem",
 			"--radius-sm: 0.125rem",
 			"--radius-md: 0.25rem",
@@ -62,7 +62,7 @@ func append_radius_preset(styleParts *[]string, preset string) {
 			"--radius-xl: 0.625rem",
 		)
 	case "medium":
-		*styleParts = append(*styleParts,
+		*style_parts = append(*style_parts,
 			"--radius: 0.75rem",
 			"--radius-sm: 0.5rem",
 			"--radius-md: 0.625rem",
@@ -70,7 +70,7 @@ func append_radius_preset(styleParts *[]string, preset string) {
 			"--radius-xl: 1rem",
 		)
 	case "large":
-		*styleParts = append(*styleParts,
+		*style_parts = append(*style_parts,
 			"--radius: 1.75rem",
 			"--radius-sm: 1.5rem",
 			"--radius-md: 1.625rem",
@@ -174,7 +174,7 @@ func style_preset_vars(density string) map[string]string {
 	return vars
 }
 
-func append_style_preset(styleParts *[]string, density string) {
+func append_style_preset(style_parts *[]string, density string) {
 	vars := style_preset_vars(density)
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
@@ -182,7 +182,7 @@ func append_style_preset(styleParts *[]string, density string) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		*styleParts = append(*styleParts, fmt.Sprintf("%s: %s", k, vars[k]))
+		*style_parts = append(*style_parts, fmt.Sprintf("%s: %s", k, vars[k]))
 	}
 }
 
@@ -210,10 +210,10 @@ func web_user_theme_style(user *User) string {
 		}
 	}
 
-	styleParts := []string{}
+	style_parts := []string{}
 
 	if t != nil {
-		styleParts = append(styleParts,
+		style_parts = append(style_parts,
 			fmt.Sprintf("--hue: %g", t.Hue),
 			fmt.Sprintf("--hue-chroma: %g", t.Chroma),
 			fmt.Sprintf("--hue-bg: %g", t.HueBG),
@@ -228,7 +228,7 @@ func web_user_theme_style(user *User) string {
 		radius = t.BorderRadius
 	}
 	if radius != "" && !strings.ContainsAny(radius, `;<>"`) {
-		append_radius_variables_from_base(&styleParts, radius)
+		append_radius_variables_from_base(&style_parts, radius)
 	}
 
 	// Background image, suppressed when the user opts out.
@@ -241,10 +241,10 @@ func web_user_theme_style(user *User) string {
 			if av != nil && len(av.Paths) > 0 {
 				base := av.Paths[0]
 				if !strings.ContainsAny(t.Background, `<>"`) {
-					styleParts = append(styleParts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
+					style_parts = append(style_parts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
 				}
 				if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-					styleParts = append(styleParts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
+					style_parts = append(style_parts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
 				}
 			}
 		}
@@ -253,7 +253,7 @@ func web_user_theme_style(user *User) string {
 	if t != nil {
 		for key, val := range t.Overrides {
 			if strings.HasPrefix(key, "--") && !strings.ContainsAny(key, `;<>"`) && !strings.ContainsAny(val, `;<>"`) {
-				styleParts = append(styleParts, fmt.Sprintf("%s: %s", key, val))
+				style_parts = append(style_parts, fmt.Sprintf("%s: %s", key, val))
 			}
 		}
 	}
@@ -266,7 +266,7 @@ func web_user_theme_style(user *User) string {
 		density = t.Spacing
 	}
 	if density != "" {
-		append_style_preset(&styleParts, density)
+		append_style_preset(&style_parts, density)
 	}
 
 	// Font family overrides: theme's font_sans/font_mono override the
@@ -275,35 +275,35 @@ func web_user_theme_style(user *User) string {
 	// here win.
 	if t != nil {
 		if t.FontSans != "" && !strings.ContainsAny(t.FontSans, `;<>"`) {
-			styleParts = append(styleParts, fmt.Sprintf("--font-sans: %s", t.FontSans))
+			style_parts = append(style_parts, fmt.Sprintf("--font-sans: %s", t.FontSans))
 		}
 		if t.FontMono != "" && !strings.ContainsAny(t.FontMono, `;<>"`) {
-			styleParts = append(styleParts, fmt.Sprintf("--font-mono: %s", t.FontMono))
+			style_parts = append(style_parts, fmt.Sprintf("--font-mono: %s", t.FontMono))
 		}
 	}
 	if font_sans, font_mono := font_stacks(user_font); font_sans != "" {
-		styleParts = append(styleParts, fmt.Sprintf("--font-sans: %s", font_sans))
+		style_parts = append(style_parts, fmt.Sprintf("--font-sans: %s", font_sans))
 		if font_mono != "" {
-			styleParts = append(styleParts, fmt.Sprintf("--font-mono: %s", font_mono))
+			style_parts = append(style_parts, fmt.Sprintf("--font-mono: %s", font_mono))
 		}
 	}
 
 	// Font size scales the html root, so all rem-based sizing follows.
 	switch user_font_size {
 	case "small":
-		styleParts = append(styleParts, "font-size: 87.5%")
+		style_parts = append(style_parts, "font-size: 87.5%")
 	case "normal":
-		styleParts = append(styleParts, "font-size: 100%")
+		style_parts = append(style_parts, "font-size: 100%")
 	case "large":
-		styleParts = append(styleParts, "font-size: 112.5%")
+		style_parts = append(style_parts, "font-size: 112.5%")
 	case "extra-large":
-		styleParts = append(styleParts, "font-size: 125%")
+		style_parts = append(style_parts, "font-size: 125%")
 	}
 
-	if len(styleParts) == 0 {
+	if len(style_parts) == 0 {
 		return ""
 	}
-	return `style="` + strings.Join(styleParts, "; ") + `"`
+	return `style="` + strings.Join(style_parts, "; ") + `"`
 }
 
 // web_apply_user_document_theme injects user appearance/theme into a full

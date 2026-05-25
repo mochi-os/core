@@ -285,15 +285,15 @@ func qid_fetch_labels(qids []string, lang string) map[string]string {
 			}
 
 			// Try requested language first, then English, then QID itself
-			if langObj, ok := labels[lang].(map[string]any); ok {
-				if val, ok := langObj["value"].(string); ok {
+			if lang_object, ok := labels[lang].(map[string]any); ok {
+				if val, ok := lang_object["value"].(string); ok {
 					result[qid] = val
 					continue
 				}
 			}
 			if lang != "en" {
-				if enObj, ok := labels["en"].(map[string]any); ok {
-					if val, ok := enObj["value"].(string); ok {
+				if en_object, ok := labels["en"].(map[string]any); ok {
+					if val, ok := en_object["value"].(string); ok {
 						result[qid] = val
 						continue
 					}
@@ -323,23 +323,23 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := qid_db()
-	nowTime := time.Now()
-	cutoffFull := nowTime.Add(-qid_search_ttl).Unix()
-	cutoffEmpty := nowTime.Add(-qid_search_empty_ttl).Unix()
+	now_time := time.Now()
+	cutoff_full := now_time.Add(-qid_search_ttl).Unix()
+	cutoff_empty := now_time.Add(-qid_search_empty_ttl).Unix()
 
 	// Serve from cache if fresh. Empty results use a shorter TTL so a transient
 	// Wikidata glitch doesn't lock out a term that really does have a match.
 	if row, err := db.row("select results, fetched from qid_searches where query=? and lang=?", query, lang); err == nil && row != nil {
 		fetched, _ := row["fetched"].(int64)
-		resultsJSON, _ := row["results"].(string)
+		results_json, _ := row["results"].(string)
 		var cached []map[string]any
-		if resultsJSON != "" && json.Unmarshal([]byte(resultsJSON), &cached) == nil {
+		if results_json != "" && json.Unmarshal([]byte(results_json), &cached) == nil {
 			if cached == nil {
 				cached = []map[string]any{}
 			}
-			cutoff := cutoffFull
+			cutoff := cutoff_full
 			if len(cached) == 0 {
-				cutoff = cutoffEmpty
+				cutoff = cutoff_empty
 			}
 			if fetched >= cutoff {
 				return sl_encode(cached), nil
@@ -420,8 +420,8 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	// Cache the result set. Empty results use a short TTL on read so transient
 	// Wikidata issues clear quickly, while genuine "no match" terms don't re-query constantly.
-	if resultsJSON, err := json.Marshal(results); err == nil {
-		db.exec("replace into qid_searches (query, lang, results, fetched) values (?, ?, ?, ?)", query, lang, string(resultsJSON), now)
+	if results_json, err := json.Marshal(results); err == nil {
+		db.exec("replace into qid_searches (query, lang, results, fetched) values (?, ?, ?, ?)", query, lang, string(results_json), now)
 	}
 
 	return sl_encode(results), nil

@@ -88,7 +88,7 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // via replication_manager) retries later. Crash between the commit and
 // the log insert is the documented V1 gap — the underlying SQL write is
 // already durable but the hook fire would be lost.
-func commit_hook_fire(userUID, appID, table, kind, rowUID string) {
+func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 	u, a, av := commit_hook_resolve(userUID, appID)
 	if u == nil || a == nil || av == nil {
 		return
@@ -98,18 +98,18 @@ func commit_hook_fire(userUID, appID, table, kind, rowUID string) {
 		return
 	}
 
-	appDB := db_app(u, a)
-	if appDB == nil {
+	app_db := db_app(u, a)
+	if app_db == nil {
 		return
 	}
 	// Opportunistic retry of any previously-failed hooks before logging
 	// the new one — keeps the log from growing unboundedly while the
 	// app is active.
-	commit_hook_drain(appDB, av, a, u, function)
+	commit_hook_drain(app_db, av, a, u, function)
 
-	seq := commit_log_append(appDB, table, kind, rowUID)
-	if commit_hook_invoke(av, a, u, function, table, kind, rowUID) {
-		commit_log_mark_fired(appDB, seq)
+	seq := commit_log_append(app_db, table, kind, row_uid)
+	if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
+		commit_log_mark_fired(app_db, seq)
 	}
 }
 
@@ -126,8 +126,8 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string)
 		seq, _ := r["seq"].(int64)
 		table, _ := r["name"].(string)
 		kind, _ := r["kind"].(string)
-		rowUID, _ := r["row_uid"].(string)
-		if commit_hook_invoke(av, a, u, function, table, kind, rowUID) {
+		row_uid, _ := r["row_uid"].(string)
+		if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
 			commit_log_mark_fired(db, seq)
 		}
 	}
@@ -137,7 +137,7 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string)
 // completed cleanly. Errors are logged but don't propagate; the caller
 // uses the return to decide whether to mark the log row fired or leave
 // it for the drainer to retry.
-func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, rowUID string) bool {
+func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, row_uid string) bool {
 	if av.Architecture.Engine != "starlark" {
 		return true
 	}
@@ -146,7 +146,7 @@ func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, 
 	s.set("user", u)
 	s.set("owner", u)
 
-	if _, err := s.call(function, sl.Tuple{sl.String(table), sl.String(kind), sl.String(rowUID)}); err != nil {
+	if _, err := s.call(function, sl.Tuple{sl.String(table), sl.String(kind), sl.String(row_uid)}); err != nil {
 		warn("Commit hook %q in app %q failed: %v", function, a.id, err)
 		return false
 	}
@@ -193,11 +193,11 @@ func commit_log_table_create(db *DB) {
 // commit_log_append writes a pending row and returns its seq. The
 // "name" column holds the table that committed (renamed from the
 // parameter so it doesn't collide with SQL reserved-word handling).
-func commit_log_append(db *DB, table, kind, rowUID string) int64 {
+func commit_log_append(db *DB, table, kind, row_uid string) int64 {
 	commit_log_table_create(db)
-	db.exec("insert into _commit_log (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, rowUID, now())
+	db.exec("insert into _commit_log (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, row_uid, now())
 	var seq int64
-	if row, _ := db.row("select seq from _commit_log where name=? and kind=? and row_uid=? and fired=0 order by seq desc limit 1", table, kind, rowUID); row != nil {
+	if row, _ := db.row("select seq from _commit_log where name=? and kind=? and row_uid=? and fired=0 order by seq desc limit 1", table, kind, row_uid); row != nil {
 		if v, ok := row["seq"].(int64); ok {
 			seq = v
 		}

@@ -153,11 +153,11 @@ func email_login_code(user *User, to string, code string, language string) {
 	tagline := resolve_core_label(language, "email.login_code.tagline", nil)
 	expiry := resolve_core_label(language, "email.login_code.expiry", nil)
 	ignore := resolve_core_label(language, "email.login_code.ignore", nil)
-	textIntro := resolve_core_label(language, "email.login_code.text_intro", map[string]any{"code": code})
-	textBody := resolve_core_label(language, "email.login_code.text_body", nil)
+	text_intro := resolve_core_label(language, "email.login_code.text_intro", map[string]any{"code": code})
+	text_body := resolve_core_label(language, "email.login_code.text_body", nil)
 
-	text := textIntro + "\n\n" + textBody + "\n\n" + ignore + "\n"
-	htmlBody := `<!DOCTYPE html>
+	text := text_intro + "\n\n" + text_body + "\n\n" + ignore + "\n"
+	html_body := `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -193,7 +193,7 @@ func email_login_code(user *User, to string, code string, language string) {
   </table>
 </body>
 </html>`
-	email_send_multipart(to, subject, text, htmlBody)
+	email_send_multipart(to, subject, text, html_body)
 	if user != nil {
 		email_mark_delivered(user, to, "login:"+code)
 	}

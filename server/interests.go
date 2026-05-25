@@ -335,13 +335,13 @@ func interests_generate_summary(user *User, db *DB) string {
 		}
 	}
 
-	negRows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
+	neg_rows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
 	if err != nil {
-		negRows = []map[string]any{}
+		neg_rows = []map[string]any{}
 	}
 
 	var negQids []string
-	for _, row := range negRows {
+	for _, row := range neg_rows {
 		qid, _ := row["qid"].(string)
 		if qid != "" {
 			negQids = append(negQids, qid)
@@ -354,8 +354,8 @@ func interests_generate_summary(user *User, db *DB) string {
 
 	// Resolve QID labels and the AI summary in the user's preferred language.
 	language := user_language(user)
-	allQids := append(posQids, negQids...)
-	labels := qid_fetch_labels(allQids, qid_lang_for_fetch(language))
+	all_qids := append(posQids, negQids...)
+	labels := qid_fetch_labels(all_qids, qid_lang_for_fetch(language))
 
 	// Try AI summary first
 	summary := interests_ai_summary(user, db, posQids, negQids, labels, language)

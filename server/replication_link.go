@@ -386,9 +386,9 @@ func bootstrap_wait_then_activate_impl(peer, uid string) {
 	}
 	deadline := time.Now().Add(bootstrap_wait_timeout)
 	for time.Now().Before(deadline) {
-		filesState, _ := bootstrap_get_state(bootstrap_scope_files, peer)
-		userdbsState, _ := bootstrap_get_state(bootstrap_scope_userdbs, peer)
-		if filesState == bootstrap_state_done && userdbsState == bootstrap_state_done {
+		files_state, _ := bootstrap_get_state(bootstrap_scope_files, peer)
+		userdbs_state, _ := bootstrap_get_state(bootstrap_scope_userdbs, peer)
+		if files_state == bootstrap_state_done && userdbs_state == bootstrap_state_done {
 			// The userdbs bootstrap copied user.db wholesale, including
 			// the user's per-device push subscriptions. Those are
 			// host-local by design (accounts.go keeps browser/
@@ -469,12 +469,12 @@ func replication_link_resume_pending_activations() {
 		if uid == "" {
 			continue
 		}
-		hostRows, err := rdb.rows("select peer from hosts where user=? order by added asc limit 1", uid)
-		if err != nil || len(hostRows) == 0 {
+		host_rows, err := rdb.rows("select peer from hosts where user=? order by added asc limit 1", uid)
+		if err != nil || len(host_rows) == 0 {
 			info("Replication link resume: pending-replication user %q has no host — skipping", uid)
 			continue
 		}
-		peer, _ := hostRows[0]["peer"].(string)
+		peer, _ := host_rows[0]["peer"].(string)
 		if peer == "" {
 			continue
 		}
@@ -805,9 +805,9 @@ func replication_link_approve(user, peer string) (string, error) {
 
 	var entities []Entity
 	udb.scans(&entities, "select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", user)
-	keysEntities := make([]KeysEntity, 0, len(entities))
+	keys_entities := make([]KeysEntity, 0, len(entities))
 	for _, e := range entities {
-		keysEntities = append(keysEntities, KeysEntity{
+		keys_entities = append(keys_entities, KeysEntity{
 			ID:          e.ID,
 			Private:     e.Private,
 			Fingerprint: e.Fingerprint,
@@ -825,7 +825,7 @@ func replication_link_approve(user, peer string) (string, error) {
 		Methods:  u.Methods,
 		Status:   "active",
 		// Role intentionally omitted — server-local per the plan.
-		Entities: keysEntities,
+		Entities: keys_entities,
 	}
 	replication_link_collect_extras(udb, user, keys)
 

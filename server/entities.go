@@ -566,8 +566,8 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		db := db_open("db/users.db")
 		identity, err := db.row("select id from entities where user=? and class='person' limit 1", e.User)
 		if err == nil && identity != nil {
-			if identityID, ok := identity["id"].(string); ok {
-				row["creator"] = identityID
+			if identity_id, ok := identity["id"].(string); ok {
+				row["creator"] = identity_id
 			}
 		}
 	}

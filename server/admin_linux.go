@@ -392,14 +392,14 @@ func snapshot_walk_snaps(root string) ([]string, error) {
 // concurrent snapshot calls don't race. Linux flock is released automatically
 // if the process exits, so a crashed snapshot won't leave a stale lock.
 func snapshot_acquire_lock() (*os.File, error) {
-	lockPath := filepath.Join(run_dir(), snapshot_lock_name)
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0600)
+	lock_path := filepath.Join(run_dir(), snapshot_lock_name)
+	f, err := os.OpenFile(lock_path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("open lock %s: %w", lockPath, err)
+		return nil, fmt.Errorf("open lock %s: %w", lock_path, err)
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("snapshot already in progress (lock %s busy)", lockPath)
+		return nil, fmt.Errorf("snapshot already in progress (lock %s busy)", lock_path)
 	}
 	return f, nil
 }

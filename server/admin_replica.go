@@ -147,22 +147,22 @@ func admin_replica_status(c *gin.Context) {
 		}
 	}
 
-	pendingPeer := setting_get("replica.join.peer", "")
-	pendingState := setting_get("replica.join.state", "")
+	pending_peer := setting_get("replica.join.peer", "")
+	pending_state := setting_get("replica.join.state", "")
 	reason := setting_get("replica.join.reason", "")
 
 	state := "idle"
-	if pendingPeer != "" {
+	if pending_peer != "" {
 		// Approved? Source landed in our pair table.
-		inPair := false
+		in_pair := false
 		for _, m := range members {
-			if m == pendingPeer {
-				inPair = true
+			if m == pending_peer {
+				in_pair = true
 				break
 			}
 		}
 		switch {
-		case inPair:
+		case in_pair:
 			state = "approved"
 			// Self-clearing: once the operator observes "approved" via
 			// the status endpoint, the pending state can drop. The
@@ -173,7 +173,7 @@ func admin_replica_status(c *gin.Context) {
 			setting_delete("replica.join.state")
 			setting_delete("replica.join.reason")
 			setting_delete("replica.join.started")
-		case pendingState == "denied":
+		case pending_state == "denied":
 			state = "denied"
 		default:
 			state = "waiting"
@@ -185,7 +185,7 @@ func admin_replica_status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"state":   state,
 		"peer":    p2p_id,
-		"source":  pendingPeer,
+		"source":  pending_peer,
 		"members": members,
 		"reason":  reason,
 	})

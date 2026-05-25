@@ -31,21 +31,21 @@ func snapshot_copy_db(srcPath, dstPath string) (int64, error) {
 	_ = os.Remove(dstPath)
 
 	ctx := context.Background()
-	srcConn, err := src.Conn(ctx)
+	source_connection, err := src.Conn(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("source conn: %w", err)
 	}
-	defer srcConn.Close()
+	defer source_connection.Close()
 
-	rawErr := srcConn.Raw(func(driverConn any) error {
+	raw_error := source_connection.Raw(func(driverConn any) error {
 		dc, ok := driverConn.(sqlitedrv.Conn)
 		if !ok {
 			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
 		}
 		return dc.Raw().Backup("main", dstPath)
 	})
-	if rawErr != nil {
-		return 0, fmt.Errorf("backup: %w", rawErr)
+	if raw_error != nil {
+		return 0, fmt.Errorf("backup: %w", raw_error)
 	}
 
 	info, err := os.Stat(dstPath)

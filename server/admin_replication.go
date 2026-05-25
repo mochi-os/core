@@ -194,8 +194,8 @@ func admin_replication_progress(c *gin.Context) {
 	rdb := db_open("db/replication.db")
 	var rows []map[string]any
 	var err error
-	if peerFilter := c.Query("peer"); peerFilter != "" {
-		rows, err = rdb.rows("select peer, scope, state, position from bootstrap where peer=? order by peer, scope", peerFilter)
+	if peer_filter := c.Query("peer"); peer_filter != "" {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap where peer=? order by peer, scope", peer_filter)
 	} else {
 		rows, err = rdb.rows("select peer, scope, state, position from bootstrap order by peer, scope")
 	}
@@ -442,7 +442,7 @@ func admin_replication_pairs(c *gin.Context) {
 	// keyed by "scope/user/db" so the operator sees per-stream
 	// outbound progress; it's the same across pairs, so duplicate
 	// under each pair entry to keep the JSON self-contained.
-	tailRows := map[string]int64{}
+	tail_rows := map[string]int64{}
 	if rows, err := rdb.rows("select user, scope, db, last from tail"); err == nil {
 		for _, r := range rows {
 			user, _ := r["user"].(string)
@@ -450,11 +450,11 @@ func admin_replication_pairs(c *gin.Context) {
 			database, _ := r["db"].(string)
 			last, _ := r["last"].(int64)
 			key := scope + "/" + user + "/" + database
-			tailRows[key] = last
+			tail_rows[key] = last
 		}
 	}
 	for _, pd := range pairs {
-		for k, v := range tailRows {
+		for k, v := range tail_rows {
 			pd.OutboundTail[k] = v
 		}
 	}
@@ -473,7 +473,7 @@ func admin_replication_pairs(c *gin.Context) {
 		}
 	}
 
-	pendingRows := map[string]struct {
+	pending_rows := map[string]struct {
 		count  int64
 		oldest int64
 	}{}
@@ -485,14 +485,14 @@ func admin_replication_pairs(c *gin.Context) {
 			if peer == "" {
 				continue
 			}
-			pendingRows[peer] = struct {
+			pending_rows[peer] = struct {
 				count  int64
 				oldest int64
 			}{count, oldest}
 		}
 	}
 	for peer, pd := range pairs {
-		if pr, ok := pendingRows[peer]; ok {
+		if pr, ok := pending_rows[peer]; ok {
 			pd.Pending = map[string]any{
 				"count":      pr.count,
 				"oldest_age": n - pr.oldest,

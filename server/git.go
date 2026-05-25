@@ -394,24 +394,24 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	err = iter.ForEach(func(ref *plumbing.Reference) error {
 		name := ref.Name().String()
-		refType := "unknown"
-		shortName := name
+		reference_type := "unknown"
+		short_name := name
 
 		if ref.Name().IsBranch() {
-			refType = "branch"
-			shortName = ref.Name().Short()
+			reference_type = "branch"
+			short_name = ref.Name().Short()
 		} else if ref.Name().IsTag() {
-			refType = "tag"
-			shortName = ref.Name().Short()
+			reference_type = "tag"
+			short_name = ref.Name().Short()
 		} else if ref.Name().IsRemote() {
-			refType = "remote"
-			shortName = ref.Name().Short()
+			reference_type = "remote"
+			short_name = ref.Name().Short()
 		}
 
 		refs = append(refs, map[string]any{
-			"name": shortName,
+			"name": short_name,
 			"full": name,
-			"type": refType,
+			"type": reference_type,
 			"sha":  ref.Hash().String(),
 		})
 		return nil
@@ -558,8 +558,8 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	branch_ref := plumbing.NewBranchReferenceName(name)
-	newRef := plumbing.NewHashReference(branch_ref, *hash)
-	err = repo.Storer.SetReference(newRef)
+	new_reference := plumbing.NewHashReference(branch_ref, *hash)
+	err = repo.Storer.SetReference(new_reference)
 	if err != nil {
 		return sl_error(fn, "failed to create branch: %v", err)
 	}
@@ -668,8 +668,8 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	// Set HEAD to point to the branch
-	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, branch_ref.Name())
-	err = repo.Storer.SetReference(headRef)
+	head_reference := plumbing.NewSymbolicReference(plumbing.HEAD, branch_ref.Name())
+	err = repo.Storer.SetReference(head_reference)
 	if err != nil {
 		return sl_error(fn, "failed to set default branch: %v", err)
 	}
@@ -935,17 +935,17 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	// Find commits in head not in base
-	baseAncestors := make(map[plumbing.Hash]bool)
-	baseIter := object.NewCommitIterCTime(base_commit, nil, nil)
-	baseIter.ForEach(func(c *object.Commit) error {
-		baseAncestors[c.Hash] = true
+	base_ancestors := make(map[plumbing.Hash]bool)
+	base_iter := object.NewCommitIterCTime(base_commit, nil, nil)
+	base_iter.ForEach(func(c *object.Commit) error {
+		base_ancestors[c.Hash] = true
 		return nil
 	})
 
 	var commits []map[string]any
-	headIter := object.NewCommitIterCTime(head_commit, nil, nil)
-	headIter.ForEach(func(c *object.Commit) error {
-		if !baseAncestors[c.Hash] {
+	head_iter := object.NewCommitIterCTime(head_commit, nil, nil)
+	head_iter.ForEach(func(c *object.Commit) error {
+		if !base_ancestors[c.Hash] {
 			commits = append(commits, map[string]any{
 				"sha":     c.Hash.String(),
 				"message": strings.TrimSpace(c.Message),
@@ -1021,24 +1021,24 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	var entries []map[string]any
 	for _, entry := range tree.Entries {
-		entryType := "file"
+		entry_type := "file"
 		if entry.Mode == filemode.Dir {
-			entryType = "dir"
+			entry_type = "dir"
 		} else if entry.Mode == filemode.Submodule {
-			entryType = "submodule"
+			entry_type = "submodule"
 		} else if entry.Mode == filemode.Symlink {
-			entryType = "symlink"
+			entry_type = "symlink"
 		}
 
 		e := map[string]any{
 			"name": entry.Name,
-			"type": entryType,
+			"type": entry_type,
 			"sha":  entry.Hash.String(),
 			"mode": fmt.Sprintf("%o", entry.Mode),
 		}
 
 		// Get size for files
-		if entryType == "file" {
+		if entry_type == "file" {
 			blob, err := repo.BlobObject(entry.Hash)
 			if err == nil {
 				e["size"] = blob.Size
@@ -1050,10 +1050,10 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	// Sort: directories first, then alphabetically
 	sort.Slice(entries, func(i, j int) bool {
-		iDir := entries[i]["type"] == "dir"
-		jDir := entries[j]["type"] == "dir"
-		if iDir != jDir {
-			return iDir
+		i_dir := entries[i]["type"] == "dir"
+		j_dir := entries[j]["type"] == "dir"
+		if i_dir != j_dir {
+			return i_dir
 		}
 		return entries[i]["name"].(string) < entries[j]["name"].(string)
 	})

@@ -502,22 +502,22 @@ func web_auth_mfa(c *gin.Context) {
 		// observe the partial-state progression and can complete the
 		// flow if the user lands on a different host for the next
 		// factor.
-		pendingStr := strings.Join(pending, ",")
+		pending_string := strings.Join(pending, ",")
 		db.exec("update partial set completed=?, remaining=? where id=?",
-			completed, pendingStr, input.Partial)
+			completed, pending_string, input.Partial)
 		// Look up the row's expires + user to include in the replace emit.
 		if row, _ := db.row("select user, expires from partial where id=?", input.Partial); row != nil {
-			rowUser, _ := row["user"].(string)
-			rowExpires, _ := row["expires"].(int64)
-			if rowUser != "" {
-				replication_emit_sessions_row(rowUser, &SessionsRow{
+			row_user, _ := row["user"].(string)
+			row_expires, _ := row["expires"].(int64)
+			if row_user != "" {
+				replication_emit_sessions_row(row_user, &SessionsRow{
 					Table: "partial",
 					Key:   map[string]string{"id": input.Partial},
 					Cols: map[string]string{
-						"user":      rowUser,
+						"user":      row_user,
 						"completed": completed,
-						"remaining": pendingStr,
-						"expires":   fmt.Sprintf("%d", rowExpires),
+						"remaining": pending_string,
+						"expires":   fmt.Sprintf("%d", row_expires),
 					},
 				})
 			}
@@ -635,9 +635,9 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	methodsCsv := strings.Join(methods, ",")
-	db.exec("update users set methods=? where uid=?", methodsCsv, user.UID)
-	replication_emit_users_users_set(user.UID, map[string]string{"methods": methodsCsv})
+	methods_csv := strings.Join(methods, ",")
+	db.exec("update users set methods=? where uid=?", methods_csv, user.UID)
+	replication_emit_users_users_set(user.UID, map[string]string{"methods": methods_csv})
 	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }

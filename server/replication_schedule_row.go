@@ -134,12 +134,12 @@ func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult 
 	user := r.Key["user"]
 	app := r.Key["app"]
 	event := r.Key["event"]
-	createdRaw := r.Key["created"]
-	if user == "" || app == "" || event == "" || createdRaw == "" {
+	created_raw := r.Key["created"]
+	if user == "" || app == "" || event == "" || created_raw == "" {
 		return ApplyInvalid
 	}
 	var created int64
-	if _, err := fmt.Sscanf(createdRaw, "%d", &created); err != nil {
+	if _, err := fmt.Sscanf(created_raw, "%d", &created); err != nil {
 		return ApplyInvalid
 	}
 	sdb := schedule_db()

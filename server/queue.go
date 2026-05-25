@@ -384,7 +384,7 @@ func queue_process() {
 	// divide bandwidth).
 	semaphores := map[string]chan struct{}{}
 	var semLock sync.Mutex
-	getSem := func(peer string, cap int) chan struct{} {
+	get_sem := func(peer string, cap int) chan struct{} {
 		semLock.Lock()
 		defer semLock.Unlock()
 		s, ok := semaphores[peer]
@@ -418,7 +418,7 @@ func queue_process() {
 			bucket = "\x00direct\x00" + q.Target + "\x00" + q.FromEntity
 			cap = 1
 		}
-		sem := getSem(bucket, cap)
+		sem := get_sem(bucket, cap)
 		sem <- struct{}{}
 		go func(q QueueEntry, sem chan struct{}) {
 			defer wg.Done()

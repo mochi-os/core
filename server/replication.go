@@ -710,9 +710,9 @@ func web_replication_progress(c *gin.Context) {
 			if row != nil {
 				state, _ := row["state"].(string)
 				entry["state"] = state
-				positionStr, _ := row["position"].(string)
-				if positionStr != "" {
-					remaining, _ := strconv.ParseInt(positionStr, 10, 64)
+				position_string, _ := row["position"].(string)
+				if position_string != "" {
+					remaining, _ := strconv.ParseInt(position_string, 10, 64)
 					entry["remaining"] = remaining
 				}
 				entry["failed"] = row["failed"]
@@ -895,8 +895,8 @@ func replication_pending_stalled() []StalledStream {
 		scope, _ := r["scope"].(string)
 		user, _ := r["user"].(string)
 		database, _ := r["db"].(string)
-		minPrev, _ := r["min_prev"].(int64)
-		maxPrev, _ := r["max_prev"].(int64)
+		min_prev, _ := r["min_prev"].(int64)
+		max_prev, _ := r["max_prev"].(int64)
 		count, _ := r["count"].(int64)
 		oldest, _ := r["oldest"].(int64)
 		cursor, anchored := replication_cursor(db, peer, scope, user, database)
@@ -904,11 +904,11 @@ func replication_pending_stalled() []StalledStream {
 		// the next op (prev=cursor) present, or the unanchored stream
 		// has a Prev==0 start available.
 		if anchored {
-			if minPrev <= cursor {
+			if min_prev <= cursor {
 				continue
 			}
 		} else {
-			if minPrev == 0 {
+			if min_prev == 0 {
 				continue
 			}
 		}
@@ -919,7 +919,7 @@ func replication_pending_stalled() []StalledStream {
 			Database:    database,
 			Cursor:      cursor,
 			Anchored:    anchored,
-			Predecessor: PredecessorRange{Minimum: minPrev, Maximum: maxPrev},
+			Predecessor: PredecessorRange{Minimum: min_prev, Maximum: max_prev},
 			Count:       count,
 			Oldest:      oldest,
 		})
@@ -957,7 +957,7 @@ func replication_pending_drain() {
 	for _, r := range rows {
 		peer, _ := r["peer"].(string)
 		scope, _ := r["scope"].(string)
-		userField, _ := r["user"].(string)
+		user_field, _ := r["user"].(string)
 		sequence, _ := r["sequence"].(int64)
 		payload, _ := r["payload"].([]byte)
 		if len(payload) == 0 {
@@ -969,7 +969,7 @@ func replication_pending_drain() {
 		var op ReplicationOp
 		if err := cbor.Unmarshal(payload, &op); err != nil {
 			info("Replication pending drain: malformed payload, dropping (peer=%q seq=%d): %v", peer, sequence, err)
-			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, user_field, sequence)
 			continue
 		}
 
@@ -977,9 +977,9 @@ func replication_pending_drain() {
 		case ApplyApplied:
 			db.exec(
 				"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
-				peer, scope, userField, sequence, now())
-			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
-			debug("Replication pending drain: applied (peer=%q scope=%q user=%q seq=%d)", peer, scope, userField, sequence)
+				peer, scope, user_field, sequence, now())
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, user_field, sequence)
+			debug("Replication pending drain: applied (peer=%q scope=%q user=%q seq=%d)", peer, scope, user_field, sequence)
 		case ApplyDeferred:
 			// Still not ready — leave in pending. Kick auxiliary
 			// progress where we know it might unblock the op:
@@ -991,7 +991,7 @@ func replication_pending_drain() {
 			replication_pending_kick(&op)
 		case ApplyInvalid:
 			info("Replication pending drain: invalid op dropped (peer=%q seq=%d)", peer, sequence)
-			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, userField, sequence)
+			db.exec("delete from pending where peer=? and scope=? and user=? and sequence=?", peer, scope, user_field, sequence)
 		}
 	}
 }
@@ -1218,14 +1218,14 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 		return 0
 	}
 
-	senderOK := false
+	sender_ok := false
 	for _, ent := range kt.Entities {
 		if ent.ID == signer {
-			senderOK = true
+			sender_ok = true
 			break
 		}
 	}
-	if !senderOK {
+	if !sender_ok {
 		info("Replication keys-transfer dropping: signer %q not in transferred entities (username=%q peer=%q)",
 			signer, kt.Username, originPeer)
 		return 0
@@ -1433,8 +1433,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		"users":    replication_tail(user_uid, repl_scope_app, "users"),
 		"sessions": replication_tail(user_uid, repl_scope_app, "sessions"),
 	}
-	if oauthRows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
-		for _, or := range oauthRows {
+	if oauth_rows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
+		for _, or := range oauth_rows {
 			link := KeysOauth{
 				Provider: to_string(or["provider"]),
 				Subject:  to_string(or["subject"]),
@@ -1453,8 +1453,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 			kt.OAuth = append(kt.OAuth, link)
 		}
 	}
-	if credRows, err := users.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", user_uid); err == nil {
-		for _, cr := range credRows {
+	if cred_rows, err := users.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", user_uid); err == nil {
+		for _, cr := range cred_rows {
 			c := KeysCredential{
 				Name:       to_string(cr["name"]),
 				Transports: to_string(cr["transports"]),
@@ -1482,8 +1482,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 			kt.Credentials = append(kt.Credentials, c)
 		}
 	}
-	if recRows, err := users.rows("select hash, created from recovery where user=?", user_uid); err == nil {
-		for _, rr := range recRows {
+	if rec_rows, err := users.rows("select hash, created from recovery where user=?", user_uid); err == nil {
+		for _, rr := range rec_rows {
 			r := KeysRecovery{Hash: to_string(rr["hash"])}
 			if v, ok := rr["created"].(int64); ok {
 				r.Created = v
@@ -1494,8 +1494,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 			kt.Recovery = append(kt.Recovery, r)
 		}
 	}
-	if tokRows, err := users.rows("select hash, app, name, scopes, created, expires from tokens where user=?", user_uid); err == nil {
-		for _, tr := range tokRows {
+	if token_rows, err := users.rows("select hash, app, name, scopes, created, expires from tokens where user=?", user_uid); err == nil {
+		for _, tr := range token_rows {
 			t := KeysToken{
 				Hash:   to_string(tr["hash"]),
 				App:    to_string(tr["app"]),
@@ -1514,12 +1514,12 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 			kt.Tokens = append(kt.Tokens, t)
 		}
 	}
-	if totpRow, err := users.row("select secret, verified, created from totp where user=?", user_uid); err == nil && totpRow != nil {
-		t := &KeysTotp{Secret: to_string(totpRow["secret"])}
-		if v, ok := totpRow["verified"].(int64); ok {
+	if totp_row, err := users.row("select secret, verified, created from totp where user=?", user_uid); err == nil && totp_row != nil {
+		t := &KeysTotp{Secret: to_string(totp_row["secret"])}
+		if v, ok := totp_row["verified"].(int64); ok {
 			t.Verified = v != 0
 		}
-		if v, ok := totpRow["created"].(int64); ok {
+		if v, ok := totp_row["created"].(int64); ok {
 			t.Created = v
 		}
 		if t.Secret != "" {

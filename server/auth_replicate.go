@@ -82,12 +82,12 @@ func web_auth_replicate(c *gin.Context) {
 	// destination; we don't validate it against any allow-list because
 	// the operator's signup policy (setting_signup_enabled) is the
 	// gate on whether replication-from-anywhere is allowed at all.
-	sourceUID, exists, err := admin_replica_resolve_user(input.Source, input.SourceUsername)
+	source_uid, exists, err := admin_replica_resolve_user(input.Source, input.SourceUsername)
 	if err != nil {
 		respond_error(c, http.StatusBadGateway, "source_unreachable", "errors.source_unreachable", nil)
 		return
 	}
-	if !exists || sourceUID == "" {
+	if !exists || source_uid == "" {
 		respond_error(c, http.StatusNotFound, "source_user_not_found", "errors.source_user_not_found", nil)
 		return
 	}
@@ -95,7 +95,7 @@ func web_auth_replicate(c *gin.Context) {
 	// Replication-to-self check: if the source uid is already a user
 	// on this server (via a prior per-user opt-in or whole-server pair
 	// coverage), refuse with a friendly message.
-	if alreadyHere, _ := udb.exists("select 1 from users where uid=?", sourceUID); alreadyHere {
+	if already_here, _ := udb.exists("select 1 from users where uid=?", source_uid); already_here {
 		respond_error(c, http.StatusConflict, "already_replicated", "errors.already_replicated", nil)
 		return
 	}
@@ -115,27 +115,27 @@ func web_auth_replicate(c *gin.Context) {
 	// to mint one — every later signup also sees a non-empty users
 	// table and is created as a plain user.
 	role := "user"
-	if hasUsers, _ := udb.exists("select uid from users limit 1"); !hasUsers {
+	if has_users, _ := udb.exists("select uid from users limit 1"); !has_users {
 		role = "administrator"
 	}
 	udb.exec(
 		"insert into users (uid, username, role, status) values (?, ?, ?, 'pending-replication')",
-		sourceUID, input.Email, role)
+		source_uid, input.Email, role)
 
 	// Emit the link-request to the source peer. Source's Settings →
 	// Replication page will pick it up; alice approves there.
-	admin_replica_emit_link_request(input.Source, input.SourceUsername, "", sourceUID)
+	admin_replica_emit_link_request(input.Source, input.SourceUsername, "", source_uid)
 
 	// Session for the placeholder. The frontend renders a waiting
 	// banner when it sees status='pending-replication' on the user
 	// object; once the placeholder flips to active (link-approved
 	// arrives), the user has a working account.
-	session := login_create(sourceUID, c.ClientIP(), c.Request.UserAgent())
+	session := login_create(source_uid, c.ClientIP(), c.Request.UserAgent())
 	web_cookie_set(c, "session", session)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":      "pending",
-		"uid":         sourceUID,
+		"uid":         source_uid,
 		"source":      input.Source,
 		"source_user": input.SourceUsername,
 	})

@@ -194,8 +194,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	} else if owner == nil {
 		// Fall back to domain route owner for anonymous requests without entity
-		if routeOwner, ok := c.Get("domain_owner"); ok {
-			if uid, ok := routeOwner.(string); ok && uid != "" {
+		if route_owner, ok := c.Get("domain_owner"); ok {
+			if uid, ok := route_owner.(string); ok && uid != "" {
 				owner = user_by_uid(uid)
 			}
 		}
@@ -203,8 +203,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		if owner == nil && aa.Public {
 			udb := db_open("db/users.db")
 			if row, _ := udb.row("select uid from users where role='administrator' order by uid limit 1"); row != nil {
-				if adminUID, _ := row["uid"].(string); adminUID != "" {
-					owner = user_by_uid(adminUID)
+				if admin_uid, _ := row["uid"].(string); admin_uid != "" {
+					owner = user_by_uid(admin_uid)
 				}
 			}
 		}
@@ -420,14 +420,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// bytes. Restore Request.Body so downstream code (multipart upload,
 	// form parsing) can still read it — io.ReadAll otherwise leaves the
 	// body at EOF and breaks every non-JSON action.
-	contentType := c.Request.Header.Get("Content-Type")
-	if c.Request.Body != nil && (strings.HasPrefix(contentType, "application/json") || strings.HasPrefix(contentType, "text/")) {
+	content_type := c.Request.Header.Get("Content-Type")
+	if c.Request.Body != nil && (strings.HasPrefix(content_type, "application/json") || strings.HasPrefix(content_type, "text/")) {
 		raw, err := io.ReadAll(c.Request.Body)
 		if err == nil {
 			action.body = string(raw)
 			c.Request.Body.Close()
 			c.Request.Body = io.NopCloser(bytes.NewReader(raw))
-			if strings.HasPrefix(contentType, "application/json") {
+			if strings.HasPrefix(content_type, "application/json") {
 				var data map[string]any
 				if jerr := json.Unmarshal(raw, &data); jerr == nil {
 					for key, value := range data {
@@ -751,8 +751,8 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 			content = regexp_replace_meta(content, "twitter:image", image)
 		}
 	}
-	if ogType, ok := og["type"].(string); ok && ogType != "" {
-		content = regexp_replace_meta(content, "og:type", ogType)
+	if og_type, ok := og["type"].(string); ok && og_type != "" {
+		content = regexp_replace_meta(content, "og:type", og_type)
 	}
 
 	// Always set og:url to current URL
@@ -791,13 +791,13 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	// For domain routing, use the matched route path so SPAs on subpath
 	// routes (e.g. acunningham.org/feed → feed entity) resolve assets and
 	// client-side routes under that subpath rather than the domain root.
-	routePath := "/"
+	route_path := "/"
 	if dm == "entity" || dm == "app" {
 		if r, ok := c.Get("domain_route"); ok {
 			if rt, ok := r.(*route); ok && rt.Path != "" {
-				routePath = rt.Path
-				if !strings.HasSuffix(routePath, "/") {
-					routePath += "/"
+				route_path = rt.Path
+				if !strings.HasSuffix(route_path, "/") {
+					route_path += "/"
 				}
 			}
 		}
@@ -807,7 +807,7 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	// Must be a static tag (not JS-generated) so the browser's preload scanner
 	// resolves ./assets/... correctly before any scripts execute.
 	if dm == "entity" || dm == "app" {
-		tags = append(tags, `<base href="`+escape_attr(routePath)+`">`)
+		tags = append(tags, `<base href="`+escape_attr(route_path)+`">`)
 	} else if e != nil && app != "" {
 		tags = append(tags, `<base href="/`+escape_attr(app)+`/`+escape_attr(e.Fingerprint)+`/">`)
 	} else if e != nil {
@@ -828,7 +828,7 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	}
 	if dm == "entity" || dm == "app" {
 		// content carries the matched route path so SPAs can derive their basepath
-		tags = append(tags, `<meta name="mochi:domain" content="`+escape_attr(routePath)+`">`)
+		tags = append(tags, `<meta name="mochi:domain" content="`+escape_attr(route_path)+`">`)
 	}
 	if len(tags) > 0 {
 		injection := "\n    " + strings.Join(tags, "\n    ")
@@ -1284,8 +1284,8 @@ func web_path(c *gin.Context) {
 	if raw == "" {
 		if user == nil && !web_is_iframe_request(c) {
 			// Serve login app for unauthenticated top-level navigations
-			if loginApp := app_for_path(nil, "login"); loginApp != nil {
-				web_action(c, loginApp, "", nil)
+			if login_app := app_for_path(nil, "login"); login_app != nil {
+				web_action(c, login_app, "", nil)
 				return
 			}
 		}

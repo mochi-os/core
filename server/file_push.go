@@ -81,9 +81,9 @@ func replication_emit_file_push(userUID, appID, path string) {
 		Size: stat.Size(),
 	})
 
-	emptyContent := cbor_encode(map[string]any{})
+	empty_content := cbor_encode(map[string]any{})
 	for _, peer := range peers {
-		queue_add_direct(uid(), peer, from, from, "replication", "file/push", "replication", nil, emptyContent, header, full, 0)
+		queue_add_direct(uid(), peer, from, from, "replication", "file/push", "replication", nil, empty_content, header, full, 0)
 	}
 	queue_wake()
 }
@@ -112,9 +112,9 @@ func replication_emit_file_push_delete(userUID, appID, path string) {
 	}
 
 	payload := cbor_encode(&FileDelete{User: userUID, App: appID, Path: path})
-	emptyContent := cbor_encode(map[string]any{})
+	empty_content := cbor_encode(map[string]any{})
 	for _, peer := range peers {
-		queue_add_direct(uid(), peer, from, from, "replication", "file/delete", "replication", nil, emptyContent, payload, "", 0)
+		queue_add_direct(uid(), peer, from, from, "replication", "file/delete", "replication", nil, empty_content, payload, "", 0)
 	}
 	queue_wake()
 }

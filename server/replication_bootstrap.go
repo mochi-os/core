@@ -412,8 +412,8 @@ func bootstrap_pending_add(scope, peer string, delta int64) {
 		if state, _ := row["state"].(string); state == bootstrap_state_done {
 			return
 		}
-		positionStr, _ := row["position"].(string)
-		current, _ = strconv.ParseInt(positionStr, 10, 64)
+		position_string, _ := row["position"].(string)
+		current, _ = strconv.ParseInt(position_string, 10, 64)
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(current+delta, 10))
 }
@@ -447,8 +447,8 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 		bootstrap_pending_lock.Unlock()
 		return 0
 	}
-	positionStr, _ := row["position"].(string)
-	count, _ := strconv.ParseInt(positionStr, 10, 64)
+	position_string, _ := row["position"].(string)
+	count, _ := strconv.ParseInt(position_string, 10, 64)
 	count--
 	if count <= 0 {
 		settled := bootstrap_settled_state(scope, peer)
@@ -589,11 +589,11 @@ func bootstrap_safe_path(root, relative string) (string, error) {
 		// chasing existing symlinks.)
 		resolved = candidate
 	}
-	rootResolved, err := filepath.EvalSymlinks(root)
+	root_resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		rootResolved = root
+		root_resolved = root
 	}
-	if !strings.HasPrefix(resolved+string(filepath.Separator), rootResolved+string(filepath.Separator)) && resolved != rootResolved {
+	if !strings.HasPrefix(resolved+string(filepath.Separator), root_resolved+string(filepath.Separator)) && resolved != root_resolved {
 		return "", fmt.Errorf("bootstrap: path %q escapes scope root", relative)
 	}
 	return candidate, nil
@@ -627,17 +627,17 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 	if err != nil {
 		return nil, err
 	}
-	startDir, err := bootstrap_safe_path(root, prefix)
+	start_dir, err := bootstrap_safe_path(root, prefix)
 	if err != nil {
 		return nil, err
 	}
 
 	var entries []BootstrapFileEntry
-	walkErr := filepath.Walk(startDir, func(absPath string, info os.FileInfo, err error) error {
+	walk_error := filepath.Walk(start_dir, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Missing prefix dir → empty manifest, not an error. Anything
 			// else propagates so the caller can see filesystem trouble.
-			if os.IsNotExist(err) && absPath == startDir {
+			if os.IsNotExist(err) && absPath == start_dir {
 				return io.EOF
 			}
 			return err
@@ -659,7 +659,7 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 		if file_is_sqlite_sidecar(name) {
 			return nil
 		}
-		relPath, err := filepath.Rel(root, absPath)
+		rel_path, err := filepath.Rel(root, absPath)
 		if err != nil {
 			return err
 		}
@@ -668,14 +668,14 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 			return err
 		}
 		entries = append(entries, BootstrapFileEntry{
-			Path:   filepath.ToSlash(relPath),
+			Path:   filepath.ToSlash(rel_path),
 			Size:   info.Size(),
 			Sha256: hash,
 		})
 		return nil
 	})
-	if walkErr != nil && walkErr != io.EOF {
-		return nil, walkErr
+	if walk_error != nil && walk_error != io.EOF {
+		return nil, walk_error
 	}
 	return entries, nil
 }
@@ -812,16 +812,16 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 // the V4 follow-up adds an "ack-list" so the receiver only rehashes
 // candidates it has previously cached as up-to-date.
 func bootstrap_diff_manifest(scope, prefix string, remote []BootstrapFileEntry) ([]BootstrapFileEntry, error) {
-	localEntries, err := bootstrap_walk_manifest(scope, prefix)
+	local_entries, err := bootstrap_walk_manifest(scope, prefix)
 	if err != nil {
 		// Walk failed → treat every remote entry as missing locally.
 		// The receiver's chunk-write path will create the parent dirs
 		// as it goes, so an empty / missing local tree just means we
 		// fetch the lot.
-		localEntries = nil
+		local_entries = nil
 	}
-	local := make(map[string]BootstrapFileEntry, len(localEntries))
-	for _, e := range localEntries {
+	local := make(map[string]BootstrapFileEntry, len(local_entries))
+	for _, e := range local_entries {
 		local[e.Path] = e
 	}
 
@@ -944,8 +944,8 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 			settle = true
 		} else {
 			state, _ := row["state"].(string)
-			positionStr, _ := row["position"].(string)
-			count, _ := strconv.ParseInt(positionStr, 10, 64)
+			position_string, _ := row["position"].(string)
+			count, _ := strconv.ParseInt(position_string, 10, 64)
 			// Pending=0 + Done=true means every needed file across all
 			// pages is already local (or nothing was needed at all).
 			settle = state != bootstrap_state_done && count == 0
@@ -1343,14 +1343,14 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		info("Replication bootstrap-db-fetch rejecting: sysdb %q is server-local and must not be transferred", basename)
 		return
 	}
-	srcPath, err := bootstrap_db_source_path(scope, path, user, app, db)
+	source_path, err := bootstrap_db_source_path(scope, path, user, app, db)
 	if err != nil {
 		info("Replication bootstrap-db-fetch rejecting (scope=%q path=%q user=%q app=%q db=%q from=%q): %v",
 			scope, path, user, app, db, e.peer, err)
 		return
 	}
-	if !file_exists(srcPath) {
-		info("Replication bootstrap-db-fetch: source %q does not exist (from=%q)", srcPath, e.peer)
+	if !file_exists(source_path) {
+		info("Replication bootstrap-db-fetch: source %q does not exist (from=%q)", source_path, e.peer)
 		return
 	}
 
@@ -1359,29 +1359,29 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		info("Replication bootstrap-db-fetch: tempfile create failed (from=%q): %v", e.peer, err)
 		return
 	}
-	tmpPath := tmp.Name()
+	tmp_path := tmp.Name()
 	_ = tmp.Close()
-	defer os.Remove(tmpPath)
+	defer os.Remove(tmp_path)
 
 	// Read this DB's replication tail before snapshotting, so the EOF
 	// chunk can carry it as the receiver's apply-cursor seed. Reading
 	// before the snapshot guarantees the seed is at — or just behind —
 	// the snapshot's sequence point: a tiny idempotent re-apply window,
 	// never a gap that would drop ops.
-	rel := strings.TrimPrefix(srcPath, data_dir+string(os.PathSeparator))
+	rel := strings.TrimPrefix(source_path, data_dir+string(os.PathSeparator))
 	var seedSeq int64
 	if stream := bootstrap_stream_key(rel); stream != "" {
 		seedSeq = replication_tail(user, repl_scope_app, stream)
 	}
 
-	size, err := snapshot_copy_db(srcPath, tmpPath)
+	size, err := snapshot_copy_db(source_path, tmp_path)
 	if err != nil {
-		info("Replication bootstrap-db-fetch: backup %q failed (from=%q): %v", srcPath, e.peer, err)
+		info("Replication bootstrap-db-fetch: backup %q failed (from=%q): %v", source_path, e.peer, err)
 		return
 	}
-	debug("Replication bootstrap-db-fetch: source=%q size=%d seed=%d to=%q", srcPath, size, seedSeq, e.peer)
+	debug("Replication bootstrap-db-fetch: source=%q size=%d seed=%d to=%q", source_path, size, seedSeq, e.peer)
 
-	f, err := os.Open(tmpPath)
+	f, err := os.Open(tmp_path)
 	if err != nil {
 		info("Replication bootstrap-db-fetch: reopen snapshot failed (from=%q): %v", e.peer, err)
 		return
@@ -1413,8 +1413,8 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 			if eof {
 				c.Seed = seedSeq
 			}
-			if writeErr := e.stream.write(c); writeErr != nil {
-				info("Replication bootstrap-db-fetch: write chunk failed at %d (from=%q): %v", offset, e.peer, writeErr)
+			if write_error := e.stream.write(c); write_error != nil {
+				info("Replication bootstrap-db-fetch: write chunk failed at %d (from=%q): %v", offset, e.peer, write_error)
 				return
 			}
 			offset += int64(n)
@@ -1664,7 +1664,7 @@ func bootstrap_peer_user(peer string) string {
 		return ""
 	}
 	rdb := db_open("db/replication.db")
-	if isPair, _ := rdb.exists("select 1 from pair where peer=?", peer); isPair {
+	if is_pair, _ := rdb.exists("select 1 from pair where peer=?", peer); is_pair {
 		return ""
 	}
 	row, _ := rdb.row("select user from hosts where peer=? order by added asc limit 1", peer)
@@ -1842,15 +1842,15 @@ func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, e
 	var entries []BootstrapDBEntry
 	switch scope {
 	case bootstrap_scope_userdbs:
-		usersRoot := filepath.Join(data_dir, "users")
-		userEntries, err := os.ReadDir(usersRoot)
+		users_root := filepath.Join(data_dir, "users")
+		user_entries, err := os.ReadDir(users_root)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return entries, nil
 			}
 			return nil, err
 		}
-		for _, u := range userEntries {
+		for _, u := range user_entries {
 			if !u.IsDir() {
 				continue
 			}
@@ -1858,14 +1858,14 @@ func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, e
 			if userFilter != "" && user != userFilter {
 				continue
 			}
-			userDir := filepath.Join(usersRoot, user)
+			user_dir := filepath.Join(users_root, user)
 			// Per-user infrastructure DBs at the user root
 			// (users/<u>/*.db — e.g. user.db).
-			rootEntries, err := os.ReadDir(userDir)
+			root_entries, err := os.ReadDir(user_dir)
 			if err != nil {
 				continue
 			}
-			for _, r := range rootEntries {
+			for _, r := range root_entries {
 				if !r.Type().IsRegular() {
 					continue
 				}
@@ -1879,19 +1879,19 @@ func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, e
 					DB:   name,
 				})
 			}
-			for _, a := range rootEntries {
+			for _, a := range root_entries {
 				if !a.IsDir() {
 					continue
 				}
 				app := a.Name()
-				appDir := filepath.Join(userDir, app)
+				app_dir := filepath.Join(user_dir, app)
 				// Per-app config DB at the app root
 				// (users/<u>/<app>/app.db).
-				appRootEntries, err := os.ReadDir(appDir)
+				app_root_entries, err := os.ReadDir(app_dir)
 				if err != nil {
 					continue
 				}
-				for _, ar := range appRootEntries {
+				for _, ar := range app_root_entries {
 					if !ar.Type().IsRegular() {
 						continue
 					}
@@ -1907,12 +1907,12 @@ func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, e
 					})
 				}
 				// Per-app data DBs in users/<u>/<app>/db/.
-				dbDir := filepath.Join(appDir, "db")
-				dbFiles, err := os.ReadDir(dbDir)
+				db_dir := filepath.Join(app_dir, "db")
+				db_files, err := os.ReadDir(db_dir)
 				if err != nil {
 					continue
 				}
-				for _, f := range dbFiles {
+				for _, f := range db_files {
 					if !f.Type().IsRegular() {
 						continue
 					}
@@ -1930,8 +1930,8 @@ func bootstrap_walk_db_manifest(scope, userFilter string) ([]BootstrapDBEntry, e
 			}
 		}
 	case bootstrap_scope_sysdbs:
-		dbDir := filepath.Join(data_dir, "db")
-		files, err := os.ReadDir(dbDir)
+		db_dir := filepath.Join(data_dir, "db")
+		files, err := os.ReadDir(db_dir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return entries, nil

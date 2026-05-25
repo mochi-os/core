@@ -686,8 +686,8 @@ func app_check_version(id string) (map[string]string, string, string, bool) {
 
 	// Build tracks map from tracks array
 	tracks := make(map[string]string)
-	if tracksArray, ok := v["tracks"].([]interface{}); ok {
-		for _, t := range tracksArray {
+	if tracks_array, ok := v["tracks"].([]interface{}); ok {
+		for _, t := range tracks_array {
 			if tm, ok := t.(map[string]interface{}); ok {
 				track, _ := tm["track"].(string)
 				version, _ := tm["version"].(string)
@@ -1742,10 +1742,10 @@ func (av *AppVersion) find_action(name string) *AppAction {
 
 	// Sort candidates: files/feature routes first, then more segments first, then more literals first
 	sort.Slice(candidates, func(i, j int) bool {
-		iSpecial := candidates[i].Files != "" || candidates[i].Feature != ""
-		jSpecial := candidates[j].Files != "" || candidates[j].Feature != ""
-		if iSpecial != jSpecial {
-			return iSpecial
+		i_special := candidates[i].Files != "" || candidates[i].Feature != ""
+		j_special := candidates[j].Files != "" || candidates[j].Feature != ""
+		if i_special != j_special {
+			return i_special
 		} else if candidates[i].segments != candidates[j].segments {
 			return candidates[i].segments > candidates[j].segments
 		} else {

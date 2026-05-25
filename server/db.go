@@ -1353,13 +1353,13 @@ func db_upgrade_53_retype_user(db *DB, table, schema, cols string, idmap map[int
 	rows, _ := db.rows(fmt.Sprintf("select %s from %s", cols, table))
 	db.exec(fmt.Sprintf("drop table %s", table))
 	db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
-	colNames := strings.Split(cols, ", ")
-	placeholders := strings.Repeat("?, ", len(colNames))
+	column_names := strings.Split(cols, ", ")
+	placeholders := strings.Repeat("?, ", len(column_names))
 	placeholders = strings.TrimSuffix(placeholders, ", ")
 	for _, r := range rows {
-		vals := make([]any, len(colNames))
+		vals := make([]any, len(column_names))
 		drop := false
-		for i, n := range colNames {
+		for i, n := range column_names {
 			if n == "user" {
 				switch v := r[n].(type) {
 				case int64:
@@ -1394,12 +1394,12 @@ func db_upgrade_53_retype_owner(db *DB, table, schema, cols string, idmap map[in
 	rows, _ := db.rows(fmt.Sprintf("select %s from %s", cols, table))
 	db.exec(fmt.Sprintf("drop table %s", table))
 	db.exec(fmt.Sprintf("create table %s (%s)", table, schema))
-	colNames := strings.Split(cols, ", ")
-	placeholders := strings.Repeat("?, ", len(colNames))
+	column_names := strings.Split(cols, ", ")
+	placeholders := strings.Repeat("?, ", len(column_names))
 	placeholders = strings.TrimSuffix(placeholders, ", ")
 	for _, r := range rows {
-		vals := make([]any, len(colNames))
-		for i, n := range colNames {
+		vals := make([]any, len(column_names))
+		for i, n := range column_names {
 			if n == "owner" {
 				switch v := r[n].(type) {
 				case int64:

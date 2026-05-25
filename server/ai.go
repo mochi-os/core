@@ -191,8 +191,8 @@ func ai_call_claude(api_key, model, prompt string) ai_result {
 	// Check for model not found
 	var errData map[string]any
 	if json.Unmarshal(body, &errData) == nil {
-		if errObj, ok := errData["error"].(map[string]any); ok {
-			if errType, _ := errObj["type"].(string); errType == "not_found_error" {
+		if error_object, ok := errData["error"].(map[string]any); ok {
+			if error_type, _ := error_object["type"].(string); error_type == "not_found_error" {
 				return ai_result{status: 404, text: ""}
 			}
 		}
@@ -251,8 +251,8 @@ func ai_call_openai(api_key, model, prompt string) ai_result {
 	// Check for model not found
 	var errData map[string]any
 	if json.Unmarshal(body, &errData) == nil {
-		if errObj, ok := errData["error"].(map[string]any); ok {
-			if code, _ := errObj["code"].(string); code == "model_not_found" {
+		if error_object, ok := errData["error"].(map[string]any); ok {
+			if code, _ := error_object["code"].(string); code == "model_not_found" {
 				return ai_result{status: 404, text: ""}
 			}
 		}

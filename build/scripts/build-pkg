@@ -18,6 +18,15 @@ COMP_DIR="$BUILD_DIR/comp"
 PRODUCT_DIR="$BUILD_DIR/product"
 PKG_ID="org.mochi-os.server"
 
+# Map Go arch to macOS hostArchitectures value. Without this attribute the
+# installer assumes x86_64 and demands Rosetta 2 on Apple Silicon — even
+# though our scripts are shell and the binary is native ARM64.
+case "$ARCH" in
+	amd64) HOST_ARCH="x86_64" ;;
+	arm64) HOST_ARCH="arm64" ;;
+	*) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+esac
+
 trap "rm -rf $BUILD_DIR" EXIT
 
 # Create payload directory structure.
@@ -82,7 +91,7 @@ cat > "$PRODUCT_DIR/Distribution" << EOF
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
     <title>Mochi Server</title>
-    <options customize="never" require-scripts="false"/>
+    <options customize="never" require-scripts="false" hostArchitectures="$HOST_ARCH"/>
     <choices-outline>
         <line choice="default">
             <line choice="$PKG_ID"/>

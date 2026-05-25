@@ -4,8 +4,227 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
 	"testing"
+
+	"github.com/fxamacker/cbor/v2"
 )
+
+// setup_attachment_move_test opens a fresh attachments DB under a
+// throwaway data_dir, seeds three rows (id=a,b,c with ranks 1,2,3)
+// scoped to the given entity, and returns the DB plus a cleanup
+// closure. Used by the attachment_event_move convergence tests.
+func setup_attachment_move_test(t *testing.T, entity string) (*DB, func()) {
+	t.Helper()
+	tmp, err := os.MkdirTemp("", "mochi_attach_move_test")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	orig_data_dir := data_dir
+	data_dir = tmp
+
+	db := db_open("db/attachments.db")
+	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	for i, id := range []string{"a", "b", "c"} {
+		db.exec("insert into attachments (id, object, entity, name, size, rank, created) values (?, ?, ?, ?, ?, ?, ?)", id, "obj1", entity, fmt.Sprintf("%s.txt", id), int64(10), int64(i+1), int64(1700000000))
+	}
+
+	cleanup := func() {
+		// Mirror the setup_replication_test pattern: leave cached DB
+		// handles in the map (their files vanish when the temp dir
+		// is removed) and reset data_dir last.
+		os.RemoveAll(tmp)
+		data_dir = orig_data_dir
+	}
+	return db, cleanup
+}
+
+func ranks_by_id(t *testing.T, db *DB, entity string) map[string]int64 {
+	t.Helper()
+	rows, err := db.rows("select id, rank from attachments where entity = ? order by id", entity)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	out := map[string]int64{}
+	for _, r := range rows {
+		id, _ := r["id"].(string)
+		rank, _ := r["rank"].(int64)
+		out[id] = rank
+	}
+	return out
+}
+
+// TestAttachmentMoveEventPreferredRanks drives the receiver with the
+// new absolute-rank payload. Per-id UPDATE; no legacy header needed,
+// and the result is independent of arrival order.
+func TestAttachmentMoveEventPreferredRanks(t *testing.T) {
+	entity := test_entity_id('a')
+	db, cleanup := setup_attachment_move_test(t, entity)
+	defer cleanup()
+
+	// Caller is moving b from rank 2 to rank 1 (and a from 1 to 2).
+	e := &Event{
+		from: entity,
+		db:   db,
+		content: map[string]any{
+			"ranks": []any{
+				map[string]any{"id": "a", "rank": int64(2)},
+				map[string]any{"id": "b", "rank": int64(1)},
+				map[string]any{"id": "c", "rank": int64(3)},
+			},
+		},
+	}
+	e.attachment_event_move()
+
+	got := ranks_by_id(t, db, entity)
+	want := map[string]int64{"a": 2, "b": 1, "c": 3}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("rank for %q: got %d, want %d", id, got[id], w)
+		}
+	}
+}
+
+// TestAttachmentMoveEventConvergesUnderRepeat applies the same
+// absolute-rank payload twice. The new path is idempotent — second
+// apply changes nothing because each row is already at the target
+// rank.
+func TestAttachmentMoveEventConvergesUnderRepeat(t *testing.T) {
+	entity := test_entity_id('b')
+	db, cleanup := setup_attachment_move_test(t, entity)
+	defer cleanup()
+
+	payload := []any{
+		map[string]any{"id": "a", "rank": int64(3)},
+		map[string]any{"id": "b", "rank": int64(1)},
+		map[string]any{"id": "c", "rank": int64(2)},
+	}
+	e := &Event{
+		from:    entity,
+		db:      db,
+		content: map[string]any{"ranks": payload},
+	}
+	e.attachment_event_move()
+	first := ranks_by_id(t, db, entity)
+	e.attachment_event_move()
+	second := ranks_by_id(t, db, entity)
+	for id := range first {
+		if first[id] != second[id] {
+			t.Errorf("repeat apply for %q changed: first=%d second=%d", id, first[id], second[id])
+		}
+	}
+	want := map[string]int64{"a": 3, "b": 1, "c": 2}
+	for id, w := range want {
+		if first[id] != w {
+			t.Errorf("rank for %q: got %d, want %d", id, first[id], w)
+		}
+	}
+}
+
+// TestAttachmentMoveEventLegacyFallback exercises the rank-relative
+// shift handler that runs when an older peer omits the ranks list.
+// Required for backward compatibility during the cross-release
+// rollout window: the new sender emits BOTH the legacy old_rank
+// header AND the new ranks list in the same message, so old
+// receivers (which don't know about ranks) fall through here.
+func TestAttachmentMoveEventLegacyFallback(t *testing.T) {
+	entity := test_entity_id('d')
+	db, cleanup := setup_attachment_move_test(t, entity)
+	defer cleanup()
+
+	// Encode the attachment dict the legacy sender put in the
+	// segment: id "b" being moved from rank 2 -> rank 1.
+	var buf bytes.Buffer
+	enc := cbor.NewEncoder(&buf)
+	if err := enc.Encode(map[string]any{
+		"id":     "b",
+		"object": "obj1",
+		"rank":   int64(1),
+	}); err != nil {
+		t.Fatalf("cbor encode: %v", err)
+	}
+
+	stream := &Stream{
+		reader:  io.NopCloser(&buf),
+		decoder: cbor_decode_mode.NewDecoder(&buf),
+	}
+	e := &Event{
+		from:    entity,
+		db:      db,
+		stream:  stream,
+		content: map[string]any{"old_rank": "2"},
+	}
+	e.attachment_event_move()
+
+	got := ranks_by_id(t, db, entity)
+	// a was at 1, b was at 2, c was at 3. Move b 2->1 shifts a down to 2.
+	want := map[string]int64{"a": 2, "b": 1, "c": 3}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("legacy fallback rank for %q: got %d, want %d", id, got[id], w)
+		}
+	}
+}
+
+// TestAttachmentMoveEventConcurrentApplyConverges fires two
+// independent move events against the same DB in different orders
+// and asserts that the final state matches the last-applied payload
+// regardless of interleaving. This is the property the legacy
+// rank-relative shift handler did NOT satisfy and that finding A of
+// the #69 audit called out.
+func TestAttachmentMoveEventConcurrentApplyConverges(t *testing.T) {
+	entity := test_entity_id('c')
+
+	// Two concurrent moves on the same object:
+	//   host-1 moves a from 1 -> 3 (shifts b,c down to 1,2)
+	//   host-2 moves c from 3 -> 1 (shifts a,b down to 2,3)
+	move_one := []any{
+		map[string]any{"id": "a", "rank": int64(3)},
+		map[string]any{"id": "b", "rank": int64(1)},
+		map[string]any{"id": "c", "rank": int64(2)},
+	}
+	move_two := []any{
+		map[string]any{"id": "a", "rank": int64(2)},
+		map[string]any{"id": "b", "rank": int64(3)},
+		map[string]any{"id": "c", "rank": int64(1)},
+	}
+
+	// Replica order one-then-two.
+	db, cleanup := setup_attachment_move_test(t, entity)
+	e1 := &Event{from: entity, db: db, content: map[string]any{"ranks": move_one}}
+	e1.attachment_event_move()
+	e2 := &Event{from: entity, db: db, content: map[string]any{"ranks": move_two}}
+	e2.attachment_event_move()
+	got_a := ranks_by_id(t, db, entity)
+	cleanup()
+
+	// Replica order two-then-one.
+	db, cleanup = setup_attachment_move_test(t, entity)
+	e2b := &Event{from: entity, db: db, content: map[string]any{"ranks": move_two}}
+	e2b.attachment_event_move()
+	e1b := &Event{from: entity, db: db, content: map[string]any{"ranks": move_one}}
+	e1b.attachment_event_move()
+	got_b := ranks_by_id(t, db, entity)
+	cleanup()
+
+	// Last write wins per id is the contract. Either replica's final
+	// state must equal the LAST-applied payload exactly.
+	want_a := map[string]int64{"a": 2, "b": 3, "c": 1}
+	want_b := map[string]int64{"a": 3, "b": 1, "c": 2}
+	for id, w := range want_a {
+		if got_a[id] != w {
+			t.Errorf("order one-then-two, rank for %q: got %d, want %d", id, got_a[id], w)
+		}
+	}
+	for id, w := range want_b {
+		if got_b[id] != w {
+			t.Errorf("order two-then-one, rank for %q: got %d, want %d", id, got_b[id], w)
+		}
+	}
+}
 
 // Test attachment_content_type detection
 func TestAttachmentContentType(t *testing.T) {

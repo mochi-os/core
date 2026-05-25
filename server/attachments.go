@@ -944,9 +944,25 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	db.scan(&att, "select * from attachments where id = ?", id)
 	result := att.to_map(app.url_path(owner))
 
-	// Handle federation notify
+	// Handle federation notify. Build the absolute-rank list of every
+	// attachment in this object so receivers can apply per-id UPDATE
+	// rather than replaying the rank-relative shifts (which diverge
+	// under concurrent moves on multi-host federated entities - the
+	// task #76 fix). Sender computes the post-move state; receivers
+	// REPLACE per id; last-arrival wins per id.
 	if len(notify) > 0 {
-		attachment_notify_move(app, owner, result, old_rank, notify)
+		var ranks []map[string]any
+		if rows, err := db.rows("select id, rank from attachments where object = ?", att.Object); err == nil {
+			for _, r := range rows {
+				row_id, _ := r["id"].(string)
+				row_rank, _ := r["rank"].(int64)
+				if row_id == "" {
+					continue
+				}
+				ranks = append(ranks, map[string]any{"id": row_id, "rank": row_rank})
+			}
+		}
+		attachment_notify_move(app, owner, result, old_rank, ranks, notify)
 	}
 
 	return sl_encode(result), nil
@@ -1439,8 +1455,14 @@ func attachment_notify_update(app *App, owner *User, attachment map[string]any, 
 	}
 }
 
-// Federation: notify entities of moved attachment
-func attachment_notify_move(app *App, owner *User, attachment map[string]any, old_rank int, notify []string) {
+// Federation: notify entities of moved attachment. Sends both the
+// legacy (old_rank header + single attachment dict) shape and the
+// new (ranks list) shape in the same message. New receivers prefer
+// the ranks list - per-id REPLACE that converges under concurrent
+// moves; old receivers ignore the new field and fall through to the
+// legacy rank-relative shift path. After the next release cycle the
+// legacy fields can drop.
+func attachment_notify_move(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
 	for _, entity := range notify {
 		if !valid(entity, "entity") {
 			continue
@@ -1456,6 +1478,7 @@ func attachment_notify_move(app *App, owner *User, attachment map[string]any, ol
 		m := message(from, entity, app.id, "_attachment/move")
 		m.content = map[string]any{
 			"old_rank": fmt.Sprintf("%d", old_rank),
+			"ranks":    ranks,
 		}
 		m.add(attachment)
 		m.send()
@@ -1719,6 +1742,20 @@ func (e *Event) attachment_event_update() {
 }
 
 // Event handler: _attachment/move
+//
+// Two payload shapes:
+//
+//  1. Absolute-rank list (preferred): e.content["ranks"] is a list of
+//     {id, rank} entries. Each entry is a per-id UPDATE; concurrent
+//     moves on multi-host federated entities converge by last-arrival
+//     per id rather than by replaying relative shifts. Task #76 fix.
+//
+//  2. Legacy rank-relative shift: old_rank header + single attachment
+//     dict in the first segment. Pre-#76 senders. Same behaviour as
+//     before; kept for one release cycle while sender + receiver roll
+//     out, then can drop.
+//
+// New receivers prefer (1) when present; (2) is the fallback.
 func (e *Event) attachment_event_move() {
 	source := e.from
 	if source == "" || !valid(source, "entity") {
@@ -1729,27 +1766,57 @@ func (e *Event) attachment_event_move() {
 		return
 	}
 
+	// Preferred path: absolute-rank list. Per-id UPDATE; order of
+	// concurrent moves doesn't matter - last writer wins per id.
+	// Checked before segment() so the legacy attachment dict doesn't
+	// need to be present on the new shape and tests can drive the
+	// handler without setting up a stream decoder.
+	if ranks, ok := e.content["ranks"].([]any); ok && len(ranks) > 0 {
+		for _, entry := range ranks {
+			row, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			row_id, _ := row["id"].(string)
+			if row_id == "" {
+				continue
+			}
+			var row_rank int64
+			switch v := row["rank"].(type) {
+			case int64:
+				row_rank = v
+			case int:
+				row_rank = int64(v)
+			case float64:
+				row_rank = int64(v)
+			}
+			if row_rank > 0 {
+				e.db.exec("update attachments set rank = ? where id = ? and entity = ?", row_rank, row_id, source)
+			}
+		}
+		return
+	}
+
+	// Legacy fallback: rank-relative shift via old_rank header.
+	// segment() is called here (not at the top) because the legacy
+	// shape needs the attachment dict but the preferred path above
+	// doesn't.
 	var att map[string]any
 	if !e.segment(&att) {
 		return
 	}
-
 	id, _ := att["id"].(string)
 	if id == "" {
 		return
 	}
-
 	object, _ := att["object"].(string)
-
 	new_rank := 1
 	if r, ok := att["rank"].(float64); ok {
 		new_rank = int(r)
 	} else if r, ok := att["rank"].(int); ok {
 		new_rank = r
 	}
-
 	old_rank := int(atoi(e.get("old_rank", ""), 0))
-
 	if old_rank > 0 && new_rank > 0 && old_rank != new_rank {
 		if new_rank < old_rank {
 			e.db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)

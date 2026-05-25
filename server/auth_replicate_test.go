@@ -133,7 +133,7 @@ func TestAuthReplicateSourceUnreachable(t *testing.T) {
 	defer cleanup()
 
 	admin_replica_resolve_user = func(peer, username string) (string, bool, error) {
-		return "", false, errStubUnreachable
+		return "", false, err_stub_unreachable
 	}
 
 	w, _ := auth_replicate_post(t, map[string]string{
@@ -259,9 +259,9 @@ func TestAuthReplicateSecondUserNotAdmin(t *testing.T) {
 	}
 }
 
-// errStubUnreachable is a sentinel for the unreachable-source test case.
-var errStubUnreachable = &stubError{msg: "stub: unreachable"}
+// err_stub_unreachable is a sentinel for the unreachable-source test case.
+var err_stub_unreachable = &stub_error{msg: "stub: unreachable"}
 
-type stubError struct{ msg string }
+type stub_error struct{ msg string }
 
-func (e *stubError) Error() string { return e.msg }
+func (e *stub_error) Error() string { return e.msg }

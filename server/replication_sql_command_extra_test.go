@@ -23,14 +23,14 @@ import (
 // in replication.db.sequence as its first side effect. If apply
 // re-emitted, that row would exist with next>=1. We assert it doesn't.
 func TestReplicationApplySQLCommandDoesNotReEmit(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 	db_upgrade_50() // creates replication.db.sequence
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
-		Database:  appID,
+		User:      user_uid,
+		Database:  app_id,
 		Operation: repl_op_exec,
 		Schema:    1,
 		Payload: cbor_encode(&SQLCommand{
@@ -43,10 +43,10 @@ func TestReplicationApplySQLCommandDoesNotReEmit(t *testing.T) {
 	}
 
 	repl := db_open("db/replication.db")
-	row, _ := repl.row("select next from sequence where user=? and scope=?", userUID, repl_scope_app)
+	row, _ := repl.row("select next from sequence where user=? and scope=?", user_uid, repl_scope_app)
 	if row != nil {
 		if next, _ := row["next"].(int64); next > 0 {
-			t.Errorf("apply re-emitted: replication.db.sequence row for user=%q scope=%q advanced to %d (expected 0/absent)", userUID, repl_scope_app, next)
+			t.Errorf("apply re-emitted: replication.db.sequence row for user=%q scope=%q advanced to %d (expected 0/absent)", user_uid, repl_scope_app, next)
 		}
 	}
 }
@@ -57,12 +57,12 @@ func TestReplicationApplySQLCommandDoesNotReEmit(t *testing.T) {
 // ApplyApplied (so the deduper doesn't keep retrying forever); the
 // row state matches what one apply would have produced.
 func TestReplicationApplySQLCommandIdempotentReplay(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title) values (?, ?)",
 			Args:      []any{"idem", "Once"},
@@ -74,8 +74,8 @@ func TestReplicationApplySQLCommandIdempotentReplay(t *testing.T) {
 		}
 	}
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 	count := db.integer("select count(*) from posts where id='idem'")
 	if count != 1 {
@@ -92,12 +92,12 @@ func TestReplicationApplySQLCommandIdempotentReplay(t *testing.T) {
 // op's SQL. The apply must not panic; it logs and returns ApplyApplied
 // so the deduper marks it seen and doesn't re-deliver.
 func TestReplicationApplySQLCommandReceiverFailureLogged(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title, missing) values (?, ?, ?)",
 			Args:      []any{"bad", "X", "Y"},
@@ -117,11 +117,11 @@ func TestReplicationApplySQLCommandReceiverFailureLogged(t *testing.T) {
 // accepts both, so the wire format normalising to uint64 is fine. The
 // test checks stored values, not the intermediate Go types.
 func TestReplicationSQLCommandMixedArgTypesRoundTrip(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 	db.exec("create table mixed (id text primary key, n integer, blob blob, opt text)")
 
@@ -143,8 +143,8 @@ func TestReplicationSQLCommandMixedArgTypesRoundTrip(t *testing.T) {
 	t.Logf("decoded arg types: %T %T %T %T", decoded.Args[0], decoded.Args[1], decoded.Args[2], decoded.Args[3])
 
 	op := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: payload,
 	}
 	if got := replication_apply_op(op); got != ApplyApplied {
@@ -175,18 +175,18 @@ func TestReplicationSQLCommandMixedArgTypesRoundTrip(t *testing.T) {
 // TestReplicationSQLCommandNoParamsStatement covers a statement that
 // uses no bound parameters at all (e.g. a bulk delete).
 func TestReplicationSQLCommandNoParamsStatement(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 	db.exec("insert into posts (id, title) values ('a', 'A')")
 	db.exec("insert into posts (id, title) values ('b', 'B')")
 
 	op := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "delete from posts"}),
 	}
 	if got := replication_apply_op(op); got != ApplyApplied {
@@ -201,12 +201,12 @@ func TestReplicationSQLCommandNoParamsStatement(t *testing.T) {
 // gate: a sender at schema v3 cannot apply on a receiver still at v1.
 // The op must defer, not error out.
 func TestReplicationSQLCommandSchemaDefer(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 99,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 99,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "insert into posts (id, title) values (?, ?)",
 			Args:      []any{"future", "From v99"},

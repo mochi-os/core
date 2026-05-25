@@ -24,15 +24,15 @@ func setup_file_push_test(t *testing.T) (string, string, func()) {
 	orig := data_dir
 	data_dir = tmp_dir
 
-	userUID := "019e1234567890abcdef1234567890ab"
-	appID := "testapp"
+	user_uid := "019e1234567890abcdef1234567890ab"
+	app_id := "testapp"
 
-	base := file_user_app_base(userUID, appID)
+	base := file_user_app_base(user_uid, app_id)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		t.Fatalf("mkdir base: %v", err)
 	}
 
-	return userUID, appID, func() {
+	return user_uid, app_id, func() {
 		data_dir = orig
 		os.RemoveAll(tmp_dir)
 	}
@@ -122,7 +122,7 @@ func TestFilePushCopyZeroBytes(t *testing.T) {
 	defer os.Remove(tmp.Name())
 
 	// A reader that would error if read.
-	failing := &failingReader{}
+	failing := &failing_reader{}
 	written, err := file_push_copy(tmp, failing, 0)
 	if err != nil {
 		t.Errorf("zero-size copy errored: %v", err)
@@ -132,9 +132,9 @@ func TestFilePushCopyZeroBytes(t *testing.T) {
 	}
 }
 
-type failingReader struct{}
+type failing_reader struct{}
 
-func (f *failingReader) Read(p []byte) (int, error) {
+func (f *failing_reader) Read(p []byte) (int, error) {
 	return 0, os.ErrInvalid
 }
 

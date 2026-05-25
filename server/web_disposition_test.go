@@ -8,7 +8,7 @@ import (
 func TestAttachmentDisposition(t *testing.T) {
 	tests := []struct {
 		name       string
-		wantInline bool
+		want_inline bool
 	}{
 		{"photo.jpg", true},
 		{"photo.jpeg", true},
@@ -38,9 +38,9 @@ func TestAttachmentDisposition(t *testing.T) {
 				ct == "application/pdf" {
 				disposition = "inline"
 			}
-			isInline := disposition == "inline"
-			if isInline != tt.wantInline {
-				t.Errorf("%s: ct=%q disposition=%q, wantInline=%v", tt.name, ct, disposition, tt.wantInline)
+			is_inline := disposition == "inline"
+			if is_inline != tt.want_inline {
+				t.Errorf("%s: ct=%q disposition=%q, want_inline=%v", tt.name, ct, disposition, tt.want_inline)
 			}
 		})
 	}

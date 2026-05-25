@@ -14,59 +14,59 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-// testApp is the per-app context the git_* helpers expect. Tests use
+// test_app is the per-app context the git_* helpers expect. Tests use
 // the literal "repositories" id so the expected on-disk paths
 // (users/<uid>/repositories/<repo>) match what the assertions check.
-var testApp = &App{id: "repositories"}
+var test_app = &App{id: "repositories"}
 
 // Helper to create a test environment for git operations
 func create_git_test_env(t *testing.T) (*User, string, func()) {
-	tmpDir, err := os.MkdirTemp("", "mochi_git_test")
+	tmp_dir, err := os.MkdirTemp("", "mochi_git_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	origDataDir := data_dir
-	data_dir = tmpDir
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
 
 	user := &User{UID: "u1"}
 
-	userDir := filepath.Join(tmpDir, "users", "1", "repositories")
-	if err := os.MkdirAll(userDir, 0755); err != nil {
+	user_dir := filepath.Join(tmp_dir, "users", "1", "repositories")
+	if err := os.MkdirAll(user_dir, 0755); err != nil {
 		t.Fatalf("Failed to create user dir: %v", err)
 	}
 
 	cleanup := func() {
-		data_dir = origDataDir
-		os.RemoveAll(tmpDir)
+		data_dir = orig_data_dir
+		os.RemoveAll(tmp_dir)
 	}
 
-	return user, tmpDir, cleanup
+	return user, tmp_dir, cleanup
 }
 
 // Helper to create a repo with a commit
-func create_repo_with_commit(t *testing.T, user *User, repoID string) *git.Repository {
-	err := git_init(user, testApp, repoID)
+func create_repo_with_commit(t *testing.T, user *User, repo_id string) *git.Repository {
+	err := git_init(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
 
-	repo, err := git_open(user, testApp, repoID)
+	repo, err := git_open(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_open failed: %v", err)
 	}
 
 	// Create a commit using worktree
 	// For bare repos, we need to create objects directly
-	repoPath := git_repo_path(user, testApp, repoID)
+	repo_path := git_repo_path(user, test_app, repo_id)
 
 	// Use git CLI to create initial commit and push to bare repo
-	tmpWorkDir, _ := os.MkdirTemp("", "git_work")
-	defer os.RemoveAll(tmpWorkDir)
+	tmp_work_dir, _ := os.MkdirTemp("", "git_work")
+	defer os.RemoveAll(tmp_work_dir)
 
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
-		cmd.Dir = tmpWorkDir
+		cmd.Dir = tmp_work_dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=Test User",
 			"GIT_AUTHOR_EMAIL=test@example.com",
@@ -79,13 +79,13 @@ func create_repo_with_commit(t *testing.T, user *User, repoID string) *git.Repos
 	}
 
 	run("init", "-b", "main")
-	os.WriteFile(filepath.Join(tmpWorkDir, "README.md"), []byte("# Test Repo\n"), 0644)
+	os.WriteFile(filepath.Join(tmp_work_dir, "README.md"), []byte("# Test Repo\n"), 0644)
 	run("add", "README.md")
 	run("commit", "-m", "Initial commit")
-	run("push", repoPath, "main")
+	run("push", repo_path, "main")
 
 	// Re-open the bare repo
-	repo, _ = git_open(user, testApp, repoID)
+	repo, _ = git_open(user, test_app, repo_id)
 	return repo
 }
 
@@ -95,20 +95,20 @@ func TestGitInit(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "test-repo-123"
+	repo_id := "test-repo-123"
 
-	err := git_init(user, testApp, repoID)
+	err := git_init(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_init should succeed: %v", err)
 	}
 
-	repoPath := git_repo_path(user, testApp, repoID)
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+	repo_path := git_repo_path(user, test_app, repo_id)
+	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
 		t.Error("Repository directory should exist after init")
 	}
 
-	headPath := filepath.Join(repoPath, "HEAD")
-	if _, err := os.Stat(headPath); os.IsNotExist(err) {
+	head_path := filepath.Join(repo_path, "HEAD")
+	if _, err := os.Stat(head_path); os.IsNotExist(err) {
 		t.Error("Repository should have HEAD file (bare repo)")
 	}
 }
@@ -117,29 +117,29 @@ func TestGitInitIdempotent(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "idempotent-repo"
+	repo_id := "idempotent-repo"
 
 	// First init
-	err := git_init(user, testApp, repoID)
+	err := git_init(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("First git_init should succeed: %v", err)
 	}
 
 	// Second init should also succeed (or at least not crash)
-	err = git_init(user, testApp, repoID)
+	err = git_init(user, test_app, repo_id)
 	// May return error for already exists, which is fine
 	_ = err
 }
 
 func TestGitRepoPath(t *testing.T) {
 	user := &User{UID: "u42"}
-	repoID := "my-repo"
+	repo_id := "my-repo"
 
-	origDataDir := data_dir
+	orig_data_dir := data_dir
 	data_dir = "/var/lib/mochi"
-	defer func() { data_dir = origDataDir }()
+	defer func() { data_dir = orig_data_dir }()
 
-	path := git_repo_path(user, testApp, repoID)
+	path := git_repo_path(user, test_app, repo_id)
 	expected := "/var/lib/mochi/users/u42/repositories/my-repo"
 
 	if path != expected {
@@ -148,15 +148,15 @@ func TestGitRepoPath(t *testing.T) {
 }
 
 func TestGitRepoPathDifferentUsers(t *testing.T) {
-	origDataDir := data_dir
+	orig_data_dir := data_dir
 	data_dir = "/data"
-	defer func() { data_dir = origDataDir }()
+	defer func() { data_dir = orig_data_dir }()
 
 	user1 := &User{UID: "u1"}
 	user2 := &User{UID: "u999"}
 
-	path1 := git_repo_path(user1, testApp, "repo")
-	path2 := git_repo_path(user2, testApp, "repo")
+	path1 := git_repo_path(user1, test_app, "repo")
+	path2 := git_repo_path(user2, test_app, "repo")
 
 	if path1 == path2 {
 		t.Error("Different users should have different repo paths")
@@ -174,24 +174,24 @@ func TestGitDelete(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "delete-test-repo"
+	repo_id := "delete-test-repo"
 
-	err := git_init(user, testApp, repoID)
+	err := git_init(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
 
-	repoPath := git_repo_path(user, testApp, repoID)
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+	repo_path := git_repo_path(user, test_app, repo_id)
+	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
 		t.Fatal("Repository should exist before delete")
 	}
 
-	err = git_delete(user, testApp, repoID)
+	err = git_delete(user, test_app, repo_id)
 	if err != nil {
 		t.Errorf("git_delete should succeed: %v", err)
 	}
 
-	if _, err := os.Stat(repoPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(repo_path); !os.IsNotExist(err) {
 		t.Error("Repository should not exist after delete")
 	}
 }
@@ -201,7 +201,7 @@ func TestGitDeleteNonExistent(t *testing.T) {
 	defer cleanup()
 
 	// Deleting non-existent repo should not panic
-	err := git_delete(user, testApp, "non-existent-repo")
+	err := git_delete(user, test_app, "non-existent-repo")
 	// May or may not error, but should not panic
 	_ = err
 }
@@ -210,13 +210,13 @@ func TestGitOpen(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "open-test-repo"
-	err := git_init(user, testApp, repoID)
+	repo_id := "open-test-repo"
+	err := git_init(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_init failed: %v", err)
 	}
 
-	repo, err := git_open(user, testApp, repoID)
+	repo, err := git_open(user, test_app, repo_id)
 	if err != nil {
 		t.Fatalf("git_open should succeed: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestGitOpenNonExistent(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	_, err := git_open(user, testApp, "non-existent-repo")
+	_, err := git_open(user, test_app, "non-existent-repo")
 	if err == nil {
 		t.Error("git_open should fail for non-existent repository")
 	}
@@ -239,12 +239,12 @@ func TestGitOpenMultipleTimes(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "multi-open-repo"
-	git_init(user, testApp, repoID)
+	repo_id := "multi-open-repo"
+	git_init(user, test_app, repo_id)
 
 	// Open multiple times should all succeed
 	for i := 0; i < 10; i++ {
-		repo, err := git_open(user, testApp, repoID)
+		repo, err := git_open(user, test_app, repo_id)
 		if err != nil {
 			t.Errorf("git_open iteration %d failed: %v", i, err)
 		}
@@ -260,10 +260,10 @@ func TestGitSizeEmpty(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "size-test-repo"
-	git_init(user, testApp, repoID)
+	repo_id := "size-test-repo"
+	git_init(user, test_app, repo_id)
 
-	size, err := git_size(user, testApp, repoID)
+	size, err := git_size(user, test_app, repo_id)
 	if err != nil {
 		t.Errorf("git_size failed: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestGitSizeNonExistent(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	_, err := git_size(user, testApp, "non-existent")
+	_, err := git_size(user, test_app, "non-existent")
 	if err == nil {
 		t.Error("git_size should fail for non-existent repository")
 	}
@@ -292,8 +292,8 @@ func TestGitResolveRefHEAD(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "resolve-ref-repo"
-	repo := create_repo_with_commit(t, user, repoID)
+	repo_id := "resolve-ref-repo"
+	repo := create_repo_with_commit(t, user, repo_id)
 
 	hash, err := git_resolve_ref(repo, "HEAD")
 	if err != nil {
@@ -309,9 +309,9 @@ func TestGitResolveRefInvalid(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "resolve-invalid-repo"
-	git_init(user, testApp, repoID)
-	repo, _ := git_open(user, testApp, repoID)
+	repo_id := "resolve-invalid-repo"
+	git_init(user, test_app, repo_id)
+	repo, _ := git_open(user, test_app, repo_id)
 
 	_, err := git_resolve_ref(repo, "refs/heads/nonexistent")
 	if err == nil {
@@ -323,22 +323,22 @@ func TestGitResolveRefFullHash(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "resolve-hash-repo"
-	repo := create_repo_with_commit(t, user, repoID)
+	repo_id := "resolve-hash-repo"
+	repo := create_repo_with_commit(t, user, repo_id)
 
 	// Get HEAD hash first
-	headRef, err := repo.Head()
+	head_reference, err := repo.Head()
 	if err != nil {
 		t.Skip("No HEAD in repo, skipping hash resolution test")
 	}
 
-	hashStr := headRef.Hash().String()
-	resolved, err := git_resolve_ref(repo, hashStr)
+	hash_string := head_reference.Hash().String()
+	resolved, err := git_resolve_ref(repo, hash_string)
 	if err != nil {
 		t.Errorf("git_resolve_ref should resolve full hash: %v", err)
 	}
-	if resolved != nil && resolved.String() != hashStr {
-		t.Errorf("Resolved hash mismatch: expected %s, got %s", hashStr, resolved.String())
+	if resolved != nil && resolved.String() != hash_string {
+		t.Errorf("Resolved hash mismatch: expected %s, got %s", hash_string, resolved.String())
 	}
 }
 
@@ -351,68 +351,68 @@ func TestGitMultipleRepos(t *testing.T) {
 	repos := []string{"repo-a", "repo-b", "repo-c"}
 
 	// Create all repos
-	for _, repoID := range repos {
-		err := git_init(user, testApp, repoID)
+	for _, repo_id := range repos {
+		err := git_init(user, test_app, repo_id)
 		if err != nil {
-			t.Errorf("Failed to create %s: %v", repoID, err)
+			t.Errorf("Failed to create %s: %v", repo_id, err)
 		}
 	}
 
 	// Verify all exist
-	for _, repoID := range repos {
-		_, err := git_open(user, testApp, repoID)
+	for _, repo_id := range repos {
+		_, err := git_open(user, test_app, repo_id)
 		if err != nil {
-			t.Errorf("Failed to open %s: %v", repoID, err)
+			t.Errorf("Failed to open %s: %v", repo_id, err)
 		}
 	}
 
 	// Delete one
-	git_delete(user, testApp, "repo-b")
+	git_delete(user, test_app, "repo-b")
 
 	// Verify others still work
-	_, err := git_open(user, testApp, "repo-a")
+	_, err := git_open(user, test_app, "repo-a")
 	if err != nil {
 		t.Error("repo-a should still be accessible")
 	}
-	_, err = git_open(user, testApp, "repo-c")
+	_, err = git_open(user, test_app, "repo-c")
 	if err != nil {
 		t.Error("repo-c should still be accessible")
 	}
-	_, err = git_open(user, testApp, "repo-b")
+	_, err = git_open(user, test_app, "repo-b")
 	if err == nil {
 		t.Error("repo-b should be deleted")
 	}
 }
 
 func TestGitMultipleUsers(t *testing.T) {
-	_, tmpDir, cleanup := create_git_test_env(t)
+	_, tmp_dir, cleanup := create_git_test_env(t)
 	defer cleanup()
 
 	user1 := &User{UID: "u1"}
 	user2 := &User{UID: "u2"}
 
 	// Create directories for user2
-	user2Dir := filepath.Join(tmpDir, "users", "2", "repositories")
+	user2Dir := filepath.Join(tmp_dir, "users", "2", "repositories")
 	os.MkdirAll(user2Dir, 0755)
 
 	// Create same-named repos for different users
-	git_init(user1, testApp, "shared-name")
-	git_init(user2, testApp, "shared-name")
+	git_init(user1, test_app, "shared-name")
+	git_init(user2, test_app, "shared-name")
 
 	// Both should be accessible
-	repo1, err := git_open(user1, testApp, "shared-name")
+	repo1, err := git_open(user1, test_app, "shared-name")
 	if err != nil || repo1 == nil {
 		t.Error("User1's repo should be accessible")
 	}
 
-	repo2, err := git_open(user2, testApp, "shared-name")
+	repo2, err := git_open(user2, test_app, "shared-name")
 	if err != nil || repo2 == nil {
 		t.Error("User2's repo should be accessible")
 	}
 
 	// They should be different paths
-	path1 := git_repo_path(user1, testApp, "shared-name")
-	path2 := git_repo_path(user2, testApp, "shared-name")
+	path1 := git_repo_path(user1, test_app, "shared-name")
+	path2 := git_repo_path(user2, test_app, "shared-name")
 	if path1 == path2 {
 		t.Error("Different users' repos should have different paths")
 	}
@@ -435,12 +435,12 @@ func TestGitRepoSpecialNames(t *testing.T) {
 	}
 
 	for _, name := range names {
-		err := git_init(user, testApp, name)
+		err := git_init(user, test_app, name)
 		if err != nil {
 			t.Errorf("Failed to create repo with name %q: %v", name, err)
 			continue
 		}
-		_, err = git_open(user, testApp, name)
+		_, err = git_open(user, test_app, name)
 		if err != nil {
 			t.Errorf("Failed to open repo with name %q: %v", name, err)
 		}
@@ -453,30 +453,30 @@ func TestGitInitCreatesBareRepo(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "bare-check-repo"
-	git_init(user, testApp, repoID)
+	repo_id := "bare-check-repo"
+	git_init(user, test_app, repo_id)
 
-	repoPath := git_repo_path(user, testApp, repoID)
+	repo_path := git_repo_path(user, test_app, repo_id)
 
 	// Bare repos have these files/dirs directly, not in .git
-	requiredFiles := []string{"HEAD", "config", "objects", "refs"}
-	for _, f := range requiredFiles {
-		path := filepath.Join(repoPath, f)
+	required_files := []string{"HEAD", "config", "objects", "refs"}
+	for _, f := range required_files {
+		path := filepath.Join(repo_path, f)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("Bare repo should have %s at root level", f)
 		}
 	}
 
 	// Should NOT have .git directory
-	dotGit := filepath.Join(repoPath, ".git")
-	if _, err := os.Stat(dotGit); !os.IsNotExist(err) {
+	dot_git := filepath.Join(repo_path, ".git")
+	if _, err := os.Stat(dot_git); !os.IsNotExist(err) {
 		t.Error("Bare repo should not have .git directory")
 	}
 
 	// Verify config says bare = true
-	configPath := filepath.Join(repoPath, "config")
-	configData, _ := os.ReadFile(configPath)
-	if !strings.Contains(string(configData), "bare = true") {
+	config_path := filepath.Join(repo_path, "config")
+	config_data, _ := os.ReadFile(config_path)
+	if !strings.Contains(string(config_data), "bare = true") {
 		t.Error("Bare repo config should have 'bare = true'")
 	}
 }
@@ -487,16 +487,16 @@ func TestGitDefaultBranchNewRepo(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "default-branch-repo"
-	git_init(user, testApp, repoID)
+	repo_id := "default-branch-repo"
+	git_init(user, test_app, repo_id)
 
-	repoPath := git_repo_path(user, testApp, repoID)
-	headContent, err := os.ReadFile(filepath.Join(repoPath, "HEAD"))
+	repo_path := git_repo_path(user, test_app, repo_id)
+	head_content, err := os.ReadFile(filepath.Join(repo_path, "HEAD"))
 	if err != nil {
 		t.Fatalf("Failed to read HEAD: %v", err)
 	}
 
-	head := strings.TrimSpace(string(headContent))
+	head := strings.TrimSpace(string(head_content))
 	// Should be a symbolic ref to main or master
 	if !strings.HasPrefix(head, "ref: refs/heads/") {
 		t.Errorf("HEAD should be symbolic ref, got: %s", head)
@@ -509,14 +509,14 @@ func TestGitConcurrentOpen(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "concurrent-repo"
-	git_init(user, testApp, repoID)
+	repo_id := "concurrent-repo"
+	git_init(user, test_app, repo_id)
 
 	done := make(chan bool, 10)
 
 	for i := 0; i < 10; i++ {
 		go func() {
-			repo, err := git_open(user, testApp, repoID)
+			repo, err := git_open(user, test_app, repo_id)
 			if err != nil {
 				t.Errorf("Concurrent open failed: %v", err)
 			}
@@ -542,7 +542,7 @@ func TestGitNilUser(t *testing.T) {
 	}()
 
 	// This should either panic or return empty/error
-	path := git_repo_path(nil, testApp, "test")
+	path := git_repo_path(nil, test_app, "test")
 	if path != "" {
 		t.Log("git_repo_path with nil user returned:", path)
 	}
@@ -553,7 +553,7 @@ func TestGitEmptyRepoID(t *testing.T) {
 	defer cleanup()
 
 	// Empty repo ID should probably fail
-	err := git_init(user, testApp, "")
+	err := git_init(user, test_app, "")
 	// Implementation dependent, but should handle gracefully
 	_ = err
 }
@@ -590,8 +590,8 @@ func TestGitBranchOperations(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
 
-	repoID := "branch-ops-repo"
-	repo := create_repo_with_commit(t, user, repoID)
+	repo_id := "branch-ops-repo"
+	repo := create_repo_with_commit(t, user, repo_id)
 
 	// List branches
 	branches, err := repo.Branches()

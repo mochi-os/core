@@ -11,13 +11,13 @@ import (
 // write (the path mochi.access.* now uses) lands in the receiver's
 // users/<uid>/<app>/app.db.
 func TestReplicationApplyAppSystemExec(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
-		Database:  appID,
+		User:      user_uid,
+		Database:  app_id,
 		Table:     "access",
 		Operation: repl_op_exec_app_system,
 		Payload: cbor_encode(&SQLCommand{
@@ -29,8 +29,8 @@ func TestReplicationApplyAppSystemExec(t *testing.T) {
 		t.Fatalf("expected ApplyApplied, got %v", got)
 	}
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app_system(u, a)
 	row, err := db.row("select grant from access where subject=? and resource=? and operation=?", "alice", "feed/F1", "view")
 	if err != nil {
@@ -45,12 +45,12 @@ func TestReplicationApplyAppSystemExec(t *testing.T) {
 // when the receiver doesn't have the app installed yet (the bootstrap
 // drain will retry once the app sync lands).
 func TestReplicationApplyAppSystemExecMissingApp(t *testing.T) {
-	cleanup, userUID, _ := setup_sql_replication_test(t)
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  "no-such-app",
 		Operation: repl_op_exec_app_system,
 		Payload: cbor_encode(&SQLCommand{
@@ -67,12 +67,12 @@ func TestReplicationApplyAppSystemExecMissingApp(t *testing.T) {
 // write (the path mochi.group.* now uses) lands in the receiver's
 // users/<uid>/user.db.
 func TestReplicationApplyUserCoreExec(t *testing.T) {
-	cleanup, userUID, _ := setup_sql_replication_test(t)
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  repl_db_user_core_sentinel,
 		Table:     "groups",
 		Operation: repl_op_exec_user_core,
@@ -85,7 +85,7 @@ func TestReplicationApplyUserCoreExec(t *testing.T) {
 		t.Fatalf("expected ApplyApplied, got %v", got)
 	}
 
-	u := &User{UID: userUID}
+	u := &User{UID: user_uid}
 	db := db_user(u, "user")
 	row, err := db.row("select name from groups where id=?", "g-engineering")
 	if err != nil {
@@ -107,12 +107,12 @@ func TestReplicationApplyUserCoreExec(t *testing.T) {
 // exec_replicated, and `preferences` is not in sql_default_excluded,
 // so the write fans out and applies.
 func TestReplicationApplyUserCoreExecPreferences(t *testing.T) {
-	cleanup, userUID, _ := setup_sql_replication_test(t)
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  repl_db_user_core_sentinel,
 		Table:     "preferences",
 		Operation: repl_op_exec_user_core,
@@ -125,7 +125,7 @@ func TestReplicationApplyUserCoreExecPreferences(t *testing.T) {
 		t.Fatalf("expected ApplyApplied, got %v", got)
 	}
 
-	u := &User{UID: userUID}
+	u := &User{UID: user_uid}
 	db := db_user(u, "user")
 	row, err := db.row("select value from preferences where name=?", "language")
 	if err != nil {
@@ -141,7 +141,7 @@ func TestReplicationApplyUserCoreExecPreferences(t *testing.T) {
 	// A delete also replicates and converges.
 	del := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  repl_db_user_core_sentinel,
 		Table:     "preferences",
 		Operation: repl_op_exec_user_core,
@@ -164,12 +164,12 @@ func TestReplicationApplyUserCoreExecPreferences(t *testing.T) {
 // account-global, so mochi.interests.* now uses exec_replicated and
 // `interests` is not in sql_default_excluded — the write fans out.
 func TestReplicationApplyUserCoreExecInterests(t *testing.T) {
-	cleanup, userUID, _ := setup_sql_replication_test(t)
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
+		User:      user_uid,
 		Database:  repl_db_user_core_sentinel,
 		Table:     "interests",
 		Operation: repl_op_exec_user_core,
@@ -182,7 +182,7 @@ func TestReplicationApplyUserCoreExecInterests(t *testing.T) {
 		t.Fatalf("expected ApplyApplied, got %v", got)
 	}
 
-	u := &User{UID: userUID}
+	u := &User{UID: user_uid}
 	db := db_user(u, "user")
 	row, err := db.row("select weight from interests where qid=?", "Q42")
 	if err != nil {

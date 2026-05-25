@@ -229,9 +229,9 @@ func TestAttachmentPath(t *testing.T) {
 
 // Test attachment_files_base helper function
 func TestAttachmentFilesBase(t *testing.T) {
-	origDataDir := data_dir
+	orig_data_dir := data_dir
 	data_dir = "/var/lib/mochi"
-	defer func() { data_dir = origDataDir }()
+	defer func() { data_dir = orig_data_dir }()
 
 	tests := []struct {
 		name     string

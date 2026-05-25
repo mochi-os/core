@@ -134,9 +134,9 @@ func TestVersionCompareMalformed(t *testing.T) {
 func TestAppVersionRequirementMinimum(t *testing.T) {
 	tests := []struct {
 		name          string
-		serverVersion string
-		minRequired   string
-		shouldLoad    bool
+		server_version string
+		min_required   string
+		should_load    bool
 	}{
 		{"server equals minimum", "0.3.0", "0.3", true},
 		{"server above minimum", "0.4.0", "0.3", true},
@@ -149,10 +149,10 @@ func TestAppVersionRequirementMinimum(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			meetsRequirement := version_compare(tc.serverVersion, tc.minRequired) >= 0
-			if meetsRequirement != tc.shouldLoad {
+			meets_requirement := version_compare(tc.server_version, tc.min_required) >= 0
+			if meets_requirement != tc.should_load {
 				t.Errorf("Server %s with minimum %s: expected load=%v, got %v",
-					tc.serverVersion, tc.minRequired, tc.shouldLoad, meetsRequirement)
+					tc.server_version, tc.min_required, tc.should_load, meets_requirement)
 			}
 		})
 	}
@@ -161,9 +161,9 @@ func TestAppVersionRequirementMinimum(t *testing.T) {
 func TestAppVersionRequirementMaximum(t *testing.T) {
 	tests := []struct {
 		name          string
-		serverVersion string
-		maxRequired   string
-		shouldLoad    bool
+		server_version string
+		max_required   string
+		should_load    bool
 	}{
 		{"server equals maximum", "1.0.0", "1.0", true},
 		{"server below maximum", "0.9.0", "1.0", true},
@@ -174,10 +174,10 @@ func TestAppVersionRequirementMaximum(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			meetsRequirement := version_compare(tc.serverVersion, tc.maxRequired) <= 0
-			if meetsRequirement != tc.shouldLoad {
+			meets_requirement := version_compare(tc.server_version, tc.max_required) <= 0
+			if meets_requirement != tc.should_load {
 				t.Errorf("Server %s with maximum %s: expected load=%v, got %v",
-					tc.serverVersion, tc.maxRequired, tc.shouldLoad, meetsRequirement)
+					tc.server_version, tc.max_required, tc.should_load, meets_requirement)
 			}
 		})
 	}
@@ -186,10 +186,10 @@ func TestAppVersionRequirementMaximum(t *testing.T) {
 func TestAppVersionRequirementRange(t *testing.T) {
 	tests := []struct {
 		name          string
-		serverVersion string
-		minRequired   string
-		maxRequired   string
-		shouldLoad    bool
+		server_version string
+		min_required   string
+		max_required   string
+		should_load    bool
 	}{
 		{"in range", "0.5.0", "0.3", "1.0", true},
 		{"at minimum", "0.3.0", "0.3", "1.0", true},
@@ -202,14 +202,14 @@ func TestAppVersionRequirementRange(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			meetsMin := version_compare(tc.serverVersion, tc.minRequired) >= 0
-			meetsMax := version_compare(tc.serverVersion, tc.maxRequired) <= 0
-			meetsRequirement := meetsMin && meetsMax
+			meets_min := version_compare(tc.server_version, tc.min_required) >= 0
+			meets_max := version_compare(tc.server_version, tc.max_required) <= 0
+			meets_requirement := meets_min && meets_max
 
-			if meetsRequirement != tc.shouldLoad {
+			if meets_requirement != tc.should_load {
 				t.Errorf("Server %s with range [%s, %s]: expected load=%v, got %v",
-					tc.serverVersion, tc.minRequired, tc.maxRequired,
-					tc.shouldLoad, meetsRequirement)
+					tc.server_version, tc.min_required, tc.max_required,
+					tc.should_load, meets_requirement)
 			}
 		})
 	}
@@ -217,17 +217,17 @@ func TestAppVersionRequirementRange(t *testing.T) {
 
 func TestAppVersionNoRequirement(t *testing.T) {
 	// Apps without version requirements should always load
-	serverVersions := []string{"0.1", "0.3", "1.0", "2.0", "10.0"}
+	server_versions := []string{"0.1", "0.3", "1.0", "2.0", "10.0"}
 
-	for _, sv := range serverVersions {
+	for _, sv := range server_versions {
 		// Empty requirement means no restriction
-		minReq := ""
-		maxReq := ""
+		min_request := ""
+		max_request := ""
 
-		meetsMin := minReq == "" || version_compare(sv, minReq) >= 0
-		meetsMax := maxReq == "" || version_compare(sv, maxReq) <= 0
+		meets_min := min_request == "" || version_compare(sv, min_request) >= 0
+		meets_max := max_request == "" || version_compare(sv, max_request) <= 0
 
-		if !meetsMin || !meetsMax {
+		if !meets_min || !meets_max {
 			t.Errorf("Server %s should load app with no requirements", sv)
 		}
 	}
@@ -239,29 +239,29 @@ func TestMochiVersionScenarios(t *testing.T) {
 	// Simulate real Mochi version progression
 	scenarios := []struct {
 		name         string
-		appMin       string
-		appMax       string
+		app_min       string
+		app_max       string
 		compatible   []string
 		incompatible []string
 	}{
 		{
 			name:         "repositories app (0.3+)",
-			appMin:       "0.3",
-			appMax:       "",
+			app_min:       "0.3",
+			app_max:       "",
 			compatible:   []string{"0.3.0", "0.3.1", "0.4.0", "1.0.0"},
 			incompatible: []string{"0.2.0", "0.2.37", "0.1.0"},
 		},
 		{
 			name:         "legacy app (0.1-0.2)",
-			appMin:       "0.1",
-			appMax:       "0.2",
+			app_min:       "0.1",
+			app_max:       "0.2",
 			compatible:   []string{"0.1.0", "0.1.5", "0.2.0", "0.2.37"},
 			incompatible: []string{"0.3.0", "1.0.0"},
 		},
 		{
 			name:         "future app (1.0+)",
-			appMin:       "1.0",
-			appMax:       "",
+			app_min:       "1.0",
+			app_max:       "",
 			compatible:   []string{"1.0.0", "1.1.0", "2.0.0"},
 			incompatible: []string{"0.3.0", "0.9.9"},
 		},
@@ -270,16 +270,16 @@ func TestMochiVersionScenarios(t *testing.T) {
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			for _, v := range sc.compatible {
-				meetsMin := sc.appMin == "" || version_compare(v, sc.appMin) >= 0
-				meetsMax := sc.appMax == "" || version_compare(v, sc.appMax) <= 0
-				if !meetsMin || !meetsMax {
+				meets_min := sc.app_min == "" || version_compare(v, sc.app_min) >= 0
+				meets_max := sc.app_max == "" || version_compare(v, sc.app_max) <= 0
+				if !meets_min || !meets_max {
 					t.Errorf("Version %s should be compatible", v)
 				}
 			}
 			for _, v := range sc.incompatible {
-				meetsMin := sc.appMin == "" || version_compare(v, sc.appMin) >= 0
-				meetsMax := sc.appMax == "" || version_compare(v, sc.appMax) <= 0
-				if meetsMin && meetsMax {
+				meets_min := sc.app_min == "" || version_compare(v, sc.app_min) >= 0
+				meets_max := sc.app_max == "" || version_compare(v, sc.app_max) <= 0
+				if meets_min && meets_max {
 					t.Errorf("Version %s should be incompatible", v)
 				}
 			}
@@ -332,23 +332,23 @@ func TestVersionSegmentPrecision(t *testing.T) {
 
 func TestVersionRequirementExactVsFamily(t *testing.T) {
 	// Test the difference between "0.2" (family) and "0.2.0" (exact)
-	serverVersion := "0.2.5"
+	server_version := "0.2.5"
 
 	// With family requirement (0.2), server 0.2.5 should match
-	familyMin := "0.2"
-	familyMax := "0.2"
-	meetsFamily := version_compare(serverVersion, familyMin) >= 0 &&
-		version_compare(serverVersion, familyMax) <= 0
-	if !meetsFamily {
+	family_min := "0.2"
+	family_max := "0.2"
+	meets_family := version_compare(server_version, family_min) >= 0 &&
+		version_compare(server_version, family_max) <= 0
+	if !meets_family {
 		t.Errorf("Server %s should meet family requirement [%s, %s]",
-			serverVersion, familyMin, familyMax)
+			server_version, family_min, family_max)
 	}
 
 	// With exact requirement (0.2.0), server 0.2.5 should NOT match
-	exactMax := "0.2.0"
-	meetsExact := version_compare(serverVersion, exactMax) <= 0
-	if meetsExact {
-		t.Errorf("Server %s should NOT meet exact max %s", serverVersion, exactMax)
+	exact_max := "0.2.0"
+	meets_exact := version_compare(server_version, exact_max) <= 0
+	if meets_exact {
+		t.Errorf("Server %s should NOT meet exact max %s", server_version, exact_max)
 	}
 }
 
@@ -357,8 +357,8 @@ func TestVersionRequirementMinimalPrecision(t *testing.T) {
 	tests := []struct {
 		name       string
 		server     string
-		minReq     string
-		shouldPass bool
+		min_request     string
+		should_pass bool
 	}{
 		// "1" means any 1.x.x version
 		{"1.0.0 meets min 1", "1.0.0", "1", true},
@@ -376,10 +376,10 @@ func TestVersionRequirementMinimalPrecision(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			meetsMin := version_compare(tc.server, tc.minReq) >= 0
-			if meetsMin != tc.shouldPass {
+			meets_min := version_compare(tc.server, tc.min_request) >= 0
+			if meets_min != tc.should_pass {
 				t.Errorf("Server %s with min %s: expected %v, got %v",
-					tc.server, tc.minReq, tc.shouldPass, meetsMin)
+					tc.server, tc.min_request, tc.should_pass, meets_min)
 			}
 		})
 	}
@@ -389,9 +389,9 @@ func TestVersionRequirementRangeWithDifferentPrecision(t *testing.T) {
 	tests := []struct {
 		name       string
 		server     string
-		minReq     string
-		maxReq     string
-		shouldPass bool
+		min_request     string
+		max_request     string
+		should_pass bool
 	}{
 		// Range [0.2, 0.3] should include all 0.2.x and 0.3.x
 		{"0.2.0 in [0.2, 0.3]", "0.2.0", "0.2", "0.3", true},
@@ -416,13 +416,13 @@ func TestVersionRequirementRangeWithDifferentPrecision(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			meetsMin := version_compare(tc.server, tc.minReq) >= 0
-			meetsMax := version_compare(tc.server, tc.maxReq) <= 0
-			meetsRange := meetsMin && meetsMax
+			meets_min := version_compare(tc.server, tc.min_request) >= 0
+			meets_max := version_compare(tc.server, tc.max_request) <= 0
+			meets_range := meets_min && meets_max
 
-			if meetsRange != tc.shouldPass {
+			if meets_range != tc.should_pass {
 				t.Errorf("Server %s in [%s, %s]: expected %v, got %v",
-					tc.server, tc.minReq, tc.maxReq, tc.shouldPass, meetsRange)
+					tc.server, tc.min_request, tc.max_request, tc.should_pass, meets_range)
 			}
 		})
 	}

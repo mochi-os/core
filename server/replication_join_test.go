@@ -260,12 +260,12 @@ func TestReplicationJoinApproveCoreAddsToPair(t *testing.T) {
 		t.Error("joins row should be deleted after approve")
 	}
 	// full set = [self, peer-B, peer-C] (some order)
-	wantFull := map[string]bool{"self": true, "peer-B": true, "peer-C": true}
+	want_full := map[string]bool{"self": true, "peer-B": true, "peer-C": true}
 	if len(full) != 3 {
 		t.Errorf("full = %v, want 3 members", full)
 	}
 	for _, m := range full {
-		if !wantFull[m] {
+		if !want_full[m] {
 			t.Errorf("full has unexpected member %q", m)
 		}
 	}

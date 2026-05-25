@@ -630,9 +630,9 @@ func TestStarlarkSQLPrefixBlocked(t *testing.T) {
 // Bumped from 262_144 pages (1 GB) on 2026-05-15 so legitimate per-user
 // app DBs (e.g. feeds.db on heavy users) don't hit the cap.
 func TestDbMaxPageCountConstant(t *testing.T) {
-	expectedLimit := 6_553_600
-	if db_max_page_count != expectedLimit {
-		t.Errorf("db_max_page_count = %d, expected %d", db_max_page_count, expectedLimit)
+	expected_limit := 6_553_600
+	if db_max_page_count != expected_limit {
+		t.Errorf("db_max_page_count = %d, expected %d", db_max_page_count, expected_limit)
 	}
 }
 
@@ -656,37 +656,37 @@ func TestAppUserSetup(t *testing.T) {
 	user := &User{UID: "u1"}
 
 	// App Manager app ID with permissions/manage default
-	appsAppID := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
+	apps_app_id := "12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL"
 
 	// Verify no permissions exist before app_user_init
 	db1 := db_user(user, "user")
 	db1.permissions_setup()
-	hasPermission, _ := db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", appsAppID)
-	if hasPermission {
+	has_permission, _ := db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", apps_app_id)
+	if has_permission {
 		t.Error("User should not have permissions/manage before app_user_setup")
 	}
 
 	// Run app_user_setup for the Apps app
-	app_user_setup(user, appsAppID)
+	app_user_setup(user, apps_app_id)
 
 	// Verify permissions are now granted
-	hasPermission, _ = db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", appsAppID)
-	if !hasPermission {
+	has_permission, _ = db1.exists("select 1 from permissions where app=? and permission='permissions/manage' and granted=1", apps_app_id)
+	if !has_permission {
 		t.Error("User should have permissions/manage after app_user_setup")
 	}
 
 	// Verify setup timestamp is recorded in apps table
 	db1.apps_setup()
-	setup := db1.integer("select setup from apps where app=?", appsAppID)
+	setup := db1.integer("select setup from apps where app=?", apps_app_id)
 	if setup == 0 {
 		t.Error("Setup timestamp should be non-zero after app_user_setup")
 	}
 
 	// Run app_user_setup again - should be idempotent
-	app_user_setup(user, appsAppID)
+	app_user_setup(user, apps_app_id)
 
 	// Verify only one permission row exists (not duplicated)
-	count := db1.integer("select count(*) from permissions where app=? and permission='permissions/manage'", appsAppID)
+	count := db1.integer("select count(*) from permissions where app=? and permission='permissions/manage'", apps_app_id)
 	if count != 1 {
 		t.Errorf("Expected 1 permission row, got %d", count)
 	}
@@ -1087,7 +1087,7 @@ func TestDbUserForThread(t *testing.T) {
 		owner   *User
 		action  *Action
 		want    *User
-		wantErr bool
+		want_err bool
 	}{
 		{
 			name:  "anonymous_reads_owner_db",
@@ -1099,7 +1099,7 @@ func TestDbUserForThread(t *testing.T) {
 			name:    "anonymous_with_no_owner_errors",
 			user:    nil,
 			owner:   nil,
-			wantErr: true,
+			want_err: true,
 		},
 		{
 			name:  "logged_in_no_entity_uses_own_db",
@@ -1134,7 +1134,7 @@ func TestDbUserForThread(t *testing.T) {
 			user:    alice,
 			owner:   nil,
 			action:  action_with_route("/blog"),
-			wantErr: true,
+			want_err: true,
 		},
 		// An action with an empty domain context is not "domain routing"
 		// — main-site requests carry an Action but no route, so the
@@ -1162,7 +1162,7 @@ func TestDbUserForThread(t *testing.T) {
 			}
 
 			got, err := db_user_for_thread(thread)
-			if tc.wantErr {
+			if tc.want_err {
 				if err == nil {
 					t.Fatalf("db_user_for_thread() = %v, want error", got)
 				}

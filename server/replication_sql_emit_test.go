@@ -17,9 +17,9 @@ import (
 // emit_gate_setup wires up a tmp data_dir + replication.db so we can
 // probe the sequence side-effect, but does NOT register the user or
 // app. Individual tests set up just what they need.
-func emit_gate_setup(t *testing.T) (cleanup func(), userUID, appID string) {
+func emit_gate_setup(t *testing.T) (cleanup func(), user_uid, app_id string) {
 	t.Helper()
-	cleanup, userUID, appID = setup_sql_replication_test(t)
+	cleanup, user_uid, app_id = setup_sql_replication_test(t)
 	db_upgrade_50() // creates replication.db.sequence
 	return
 }
@@ -31,10 +31,10 @@ func sequence_row_exists(user string) bool {
 }
 
 func TestReplicationEmitSQLCommandSilentWithNoUser(t *testing.T) {
-	cleanup, _, appID := emit_gate_setup(t)
+	cleanup, _, app_id := emit_gate_setup(t)
 	defer cleanup()
 
-	a := app_by_id(appID)
+	a := app_by_id(app_id)
 	replication_emit_sql_command(nil, a, a.internal, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
 	if sequence_row_exists("") {
 		t.Error("emit must not advance sequence when user is nil")
@@ -42,10 +42,10 @@ func TestReplicationEmitSQLCommandSilentWithNoUser(t *testing.T) {
 }
 
 func TestReplicationEmitSQLCommandSilentWithEmptyUID(t *testing.T) {
-	cleanup, _, appID := emit_gate_setup(t)
+	cleanup, _, app_id := emit_gate_setup(t)
 	defer cleanup()
 
-	a := app_by_id(appID)
+	a := app_by_id(app_id)
 	u := &User{UID: ""}
 	replication_emit_sql_command(u, a, a.internal, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
 	if sequence_row_exists("") {
@@ -54,52 +54,52 @@ func TestReplicationEmitSQLCommandSilentWithEmptyUID(t *testing.T) {
 }
 
 func TestReplicationEmitSQLCommandSilentWithNoApp(t *testing.T) {
-	cleanup, userUID, _ := emit_gate_setup(t)
+	cleanup, user_uid, _ := emit_gate_setup(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
+	u := &User{UID: user_uid}
 	replication_emit_sql_command(u, nil, nil, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
-	if sequence_row_exists(userUID) {
+	if sequence_row_exists(user_uid) {
 		t.Error("emit must not advance sequence when app is nil")
 	}
 }
 
 func TestReplicationEmitSQLCommandSilentForExcludedTable(t *testing.T) {
-	cleanup, userUID, appID := emit_gate_setup(t)
+	cleanup, user_uid, app_id := emit_gate_setup(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	av := a.internal
 	av.Database.Replicate.Exclude.Tables = []string{"posts"}
 
 	replication_emit_sql_command(u, a, av, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
-	if sequence_row_exists(userUID) {
+	if sequence_row_exists(user_uid) {
 		t.Error("emit must not advance sequence for excluded table")
 	}
 }
 
 func TestReplicationEmitSQLCommandSilentForDefaultExcludedTable(t *testing.T) {
-	cleanup, userUID, appID := emit_gate_setup(t)
+	cleanup, user_uid, app_id := emit_gate_setup(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 
 	// sqlite_* writes (rare but possible if an app does raw bookkeeping)
 	// must never replicate — they're SQLite internals.
 	replication_emit_sql_command(u, a, a.internal, "insert into sqlite_master (name) values (?)", []any{"x"})
-	if sequence_row_exists(userUID) {
+	if sequence_row_exists(user_uid) {
 		t.Error("emit must not advance sequence for sqlite_* tables")
 	}
 }
 
 func TestReplicationEmitSQLCommandSilentForNonMutatingStatement(t *testing.T) {
-	cleanup, userUID, appID := emit_gate_setup(t)
+	cleanup, user_uid, app_id := emit_gate_setup(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 
 	// SELECT / CREATE TABLE / DROP / ALTER aren't mutating data rows.
 	for _, sql := range []string{
@@ -110,7 +110,7 @@ func TestReplicationEmitSQLCommandSilentForNonMutatingStatement(t *testing.T) {
 	} {
 		replication_emit_sql_command(u, a, a.internal, sql, nil)
 	}
-	if sequence_row_exists(userUID) {
+	if sequence_row_exists(user_uid) {
 		t.Error("emit must not advance sequence for non-mutating SQL")
 	}
 }

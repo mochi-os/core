@@ -43,7 +43,7 @@ func mm_entity_id(seed byte) string {
 // schemas the per-user emit paths target.
 func seed_both_hosts(t *testing.T, h *harness) {
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		h.setup_harness_user(mmUID, mmUsername, mm_entity_id('m'))
 		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 		setup_sessions_test_schema()
@@ -59,17 +59,17 @@ func mm_settings_schema() {
 // distinct schedule for the same user at the same time. After flush,
 // both rows exist on both hosts (no double-insert, no loss).
 func TestMultiMasterScheduleCreateBothSides(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	seed_both_hosts(t, h)
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	id1 := schedule_create(mmUID, "feeds", 1000, "refresh", "{}", 60)
 	if id1 == 0 {
 		t.Fatal("h1 schedule_create returned 0")
 	}
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	id2 := schedule_create(mmUID, "crm", 2000, "reminder", "{\"who\":\"alice\"}", 0)
 	if id2 == 0 {
 		t.Fatal("h2 schedule_create returned 0")
@@ -81,7 +81,7 @@ func TestMultiMasterScheduleCreateBothSides(t *testing.T) {
 	// autoincrement ids will differ; the natural key (user, app, event,
 	// created) is what we compare on.
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		rows, _ := schedule_db().rows(
 			"select app, event from schedule where user=? order by app",
 			mmUID)
@@ -108,12 +108,12 @@ func TestMultiMasterScheduleCreateBothSides(t *testing.T) {
 // delivery the receiver-side framework enforces ordering; this test
 // asserts the documented behaviour holds.
 func TestMultiMasterScheduleDeleteWinsOverStaleSet(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	seed_both_hosts(t, h)
 
 	// h1 creates a schedule and h2 ends up holding it.
-	h.switchTo("h1")
+	h.switch_to("h1")
 	id := schedule_create(mmUID, "feeds", 1000, "tick", "{}", 0)
 	if id == 0 {
 		t.Fatal("h1 schedule_create returned 0")
@@ -121,7 +121,7 @@ func TestMultiMasterScheduleDeleteWinsOverStaleSet(t *testing.T) {
 	h.flush()
 
 	// h2 cancels it.
-	h.switchTo("h2")
+	h.switch_to("h2")
 	rows, _ := schedule_db().rows(
 		"select id from schedule where user=? and app='feeds' and event='tick'",
 		mmUID)
@@ -134,7 +134,7 @@ func TestMultiMasterScheduleDeleteWinsOverStaleSet(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		exists, _ := schedule_db().exists(
 			"select 1 from schedule where user=? and app='feeds' and event='tick'",
 			mmUID)
@@ -149,7 +149,7 @@ func TestMultiMasterScheduleDeleteWinsOverStaleSet(t *testing.T) {
 // classic "two-replica long-partition" case from the doc - after the
 // heal both sides see every op from both sides.
 func TestMultiMasterPartitionHealSchedule(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	seed_both_hosts(t, h)
 
@@ -162,14 +162,14 @@ func TestMultiMasterPartitionHealSchedule(t *testing.T) {
 	// same-second-merge case is its own documented limitation
 	// (TestMultiMasterScheduleSameSecondMerge below), not what this
 	// test is exercising.
-	h.switchTo("h1")
+	h.switch_to("h1")
 	for i := 0; i < 5; i++ {
 		if schedule_create(mmUID, "feeds", int64(1000+i), fmt.Sprintf("h1event-%d", i), "{}", 0) == 0 {
 			t.Fatalf("h1: schedule_create %d returned 0", i)
 		}
 	}
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	for i := 0; i < 5; i++ {
 		if schedule_create(mmUID, "crm", int64(2000+i), fmt.Sprintf("h2event-%d", i), "{}", 0) == 0 {
 			t.Fatalf("h2: schedule_create %d returned 0", i)
@@ -192,7 +192,7 @@ func TestMultiMasterPartitionHealSchedule(t *testing.T) {
 	// After heal both hosts hold all ten rows (5 distinct events per
 	// host, each row keyed uniquely).
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		var n int64
 		row, _ := schedule_db().row(
 			"select count(*) as n from schedule where user=?", mmUID)
@@ -213,11 +213,11 @@ func TestMultiMasterPartitionHealSchedule(t *testing.T) {
 // remote host gets one. Documented and accepted behaviour - this
 // test pins it so a future change can't silently break the contract.
 func TestMultiMasterScheduleSameSecondMerge(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	seed_both_hosts(t, h)
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	for i := 0; i < 3; i++ {
 		if schedule_create(mmUID, "feeds", int64(1000+i), "samename", "{}", 0) == 0 {
 			t.Fatalf("h1 schedule_create %d returned 0", i)
@@ -225,7 +225,7 @@ func TestMultiMasterScheduleSameSecondMerge(t *testing.T) {
 	}
 	h.flush()
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	row, _ := schedule_db().row(
 		"select count(*) as n from schedule where user=? and event='samename'",
 		mmUID)
@@ -233,7 +233,7 @@ func TestMultiMasterScheduleSameSecondMerge(t *testing.T) {
 		t.Errorf("h1 local rows: got %d, want 3 (autoincrement keeps locals distinct)", n)
 	}
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	row, _ = schedule_db().row(
 		"select count(*) as n from schedule where user=? and event='samename'",
 		mmUID)
@@ -253,17 +253,17 @@ func TestMultiMasterScheduleSameSecondMerge(t *testing.T) {
 // frequency, operator can resolve). The test documents that the
 // architecture does what it says, not what we might wish it did.
 func TestMultiMasterSettingSetConcurrent(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		mm_settings_schema()
 	}
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	setting_set("signup_enabled", "h1-wins")
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	setting_set("signup_enabled", "h2-wins")
 
 	h.flush()
@@ -272,9 +272,9 @@ func TestMultiMasterSettingSetConcurrent(t *testing.T) {
 	// host's emit on top. Whichever emit arrived second wins. With our
 	// flush ordering both arrive once; the receiver's local value
 	// before flush is what gets overwritten.
-	h.switchTo("h1")
+	h.switch_to("h1")
 	got1 := setting_get("signup_enabled", "")
-	h.switchTo("h2")
+	h.switch_to("h2")
 	got2 := setting_get("signup_enabled", "")
 
 	if got1 == got2 {
@@ -300,19 +300,19 @@ func TestMultiMasterSettingSetConcurrent(t *testing.T) {
 // replication path doesn't lose updates entirely and doesn't crash
 // under concurrent writes.
 func TestMultiMasterDocumentSetConcurrent(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		mm_settings_schema()
 	}
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	if err := document_set("terms", "en", "h1 wrote this"); err != nil {
 		t.Fatalf("h1 document_set: %v", err)
 	}
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	if err := document_set("terms", "en", "h2 wrote this"); err != nil {
 		t.Fatalf("h2 document_set: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestMultiMasterDocumentSetConcurrent(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{"h1", "h2"} {
-		h.switchTo(name)
+		h.switch_to(name)
 		row, _ := db_open("db/settings.db").row(
 			"select body, updated from documents where name='terms' and language='en'")
 		if row == nil {
@@ -340,11 +340,11 @@ func TestMultiMasterDocumentSetConcurrent(t *testing.T) {
 // natural-key-based applies (the task #49 design): re-applying the
 // same row is a no-op, deletes match by key.
 func TestMultiMasterScheduleReorderedDelivery(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	seed_both_hosts(t, h)
 
-	h.switchTo("h1")
+	h.switch_to("h1")
 	for i := 0; i < 5; i++ {
 		schedule_create(mmUID, "feeds", int64(1000+i), fmt.Sprintf("ev-%d", i), "{}", 0)
 	}
@@ -352,7 +352,7 @@ func TestMultiMasterScheduleReorderedDelivery(t *testing.T) {
 	h.reorder("h2", 1)
 	h.flush()
 
-	h.switchTo("h2")
+	h.switch_to("h2")
 	rows, _ := schedule_db().rows(
 		"select count(*) as n from schedule where user=? and app='feeds'", mmUID)
 	if len(rows) == 0 {
@@ -394,7 +394,7 @@ const (
 // + sessions + settings schemas so each host is ready to apply ops.
 func seed_three_hosts(t *testing.T, h *harness) {
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		h.setup_harness_user(ttUID, ttUname, mm_entity_id('t'))
 		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 		setup_sessions_test_schema()
@@ -405,20 +405,20 @@ func seed_three_hosts(t *testing.T, h *harness) {
 // TestThreeHostServerServerServerSchedule: three-host operator pair.
 // h1 creates a schedule; both h2 and h3 receive it.
 func TestThreeHostServerServerServerSchedule(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	// pair_members defaults to all three, user_hosts defaults to all
 	// three - server-server-server is the default routing.
 	seed_three_hosts(t, h)
 
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	if schedule_create(ttUID, "feeds", 1000, "tick", "{}", 60) == 0 {
 		t.Fatal("h1 schedule_create returned 0")
 	}
 	h.flush()
 
 	for _, name := range []string{tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		exists, _ := schedule_db().exists(
 			"select 1 from schedule where user=? and app='feeds' and event='tick'", ttUID)
 		if !exists {
@@ -430,16 +430,16 @@ func TestThreeHostServerServerServerSchedule(t *testing.T) {
 // TestThreeHostServerServerServerSettings: pair-scope setting set on
 // one operator-paired host reaches all other pair members.
 func TestThreeHostServerServerServerSettings(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	seed_three_hosts(t, h)
 
-	h.switchTo(tt_h2)
+	h.switch_to(tt_h2)
 	setting_set("signup_enabled", "false")
 	h.flush()
 
 	for _, name := range []string{tt_h1, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		if got := setting_get("signup_enabled", ""); got != "false" {
 			t.Errorf("%s: setting = %q, want %q", name, got, "false")
 		}
@@ -450,24 +450,24 @@ func TestThreeHostServerServerServerSettings(t *testing.T) {
 // off, do ops on the remaining two AND on the partitioned one, heal,
 // assert all three converge to the union.
 func TestThreeHostServerServerServerPartitionHeal(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	seed_three_hosts(t, h)
 
 	h.partition()
 
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	schedule_create(ttUID, "feeds", 1000, "from-h1", "{}", 0)
-	h.switchTo(tt_h2)
+	h.switch_to(tt_h2)
 	schedule_create(ttUID, "feeds", 2000, "from-h2", "{}", 0)
-	h.switchTo(tt_h3)
+	h.switch_to(tt_h3)
 	schedule_create(ttUID, "feeds", 3000, "from-h3", "{}", 0)
 
 	h.heal()
 	h.flush()
 
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		var n int64
 		row, _ := schedule_db().row(
 			"select count(*) as n from schedule where user=? and app='feeds'", ttUID)
@@ -484,21 +484,21 @@ func TestThreeHostServerServerServerPartitionHeal(t *testing.T) {
 // topology, no operator pair. h1 creates a schedule for the linked
 // user; per-user-scope routing carries it to h2 and h3.
 func TestThreeHostUserUserUserSchedule(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	// No operator pair, but the user is linked across all three hosts.
 	h.set_pair_members() // empty: each host is its own operator
 	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
 	seed_three_hosts(t, h)
 
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	if schedule_create(ttUID, "feeds", 1000, "linked-tick", "{}", 60) == 0 {
 		t.Fatal("h1 schedule_create returned 0")
 	}
 	h.flush()
 
 	for _, name := range []string{tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		exists, _ := schedule_db().exists(
 			"select 1 from schedule where user=? and event='linked-tick'", ttUID)
 		if !exists {
@@ -514,14 +514,14 @@ func TestThreeHostUserUserUserSchedule(t *testing.T) {
 // Asserts a setting_set on h1 does not appear on h2 or h3, and a
 // pair-only username change is likewise contained.
 func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	h.set_pair_members() // no operator pair
 	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
 	seed_three_hosts(t, h)
 
 	// Pair-scope: setting only the operator on h1 cares about.
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	setting_set("signup_enabled", "h1-only")
 	// Pair-scope: a username change goes via the pair-only path. h2
 	// and h3 must NOT receive it - each operator chose their own
@@ -531,7 +531,7 @@ func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		if got := setting_get("signup_enabled", ""); got == "h1-only" {
 			t.Errorf("%s: setting leaked across operator boundary: %q", name, got)
 		}
@@ -551,14 +551,14 @@ func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
 // not silently merged. Asymmetric setup: h1 holds only u2 (bob),
 // h2 holds u1 (alice) + u2 (bob).
 func TestPairUsernameCollisionAtApply(t *testing.T) {
-	h := newHarness(t)
+	h := new_harness(t)
 	defer h.cleanup()
 	// h1: only u2 exists.
-	h.switchTo("h1")
+	h.switch_to("h1")
 	setup_users_test_schema()
 	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "u2", "bob@example.com")
 	// h2: both u1 and u2 exist.
-	h.switchTo("h2")
+	h.switch_to("h2")
 	setup_users_test_schema()
 	udb2 := db_open("db/users.db")
 	udb2.exec("insert into users (uid, username) values (?, ?)", "u1", "alice@example.com")
@@ -566,7 +566,7 @@ func TestPairUsernameCollisionAtApply(t *testing.T) {
 
 	// h1 renames u2 -> alice@example.com. Locally fine (no other
 	// row holds it on h1). The pair-only emit reaches h2.
-	h.switchTo("h1")
+	h.switch_to("h1")
 	db_open("db/users.db").exec("update users set username=? where uid=?", "alice@example.com", "u2")
 	replication_emit_users_users_pair_set("u2", map[string]string{"username": "alice@example.com"})
 
@@ -574,7 +574,7 @@ func TestPairUsernameCollisionAtApply(t *testing.T) {
 
 	// h2: UNIQUE constraint on users_username refuses the UPDATE. u2
 	// must still be bob; u1 must still be alice. No data lost.
-	h.switchTo("h2")
+	h.switch_to("h2")
 	row, _ := db_open("db/users.db").row("select username from users where uid=?", "u2")
 	if got, _ := row["username"].(string); got != "bob@example.com" {
 		t.Errorf("h2 u2 username = %q, want bob@example.com (UNIQUE refusal must leave row unchanged)", got)
@@ -600,7 +600,7 @@ func TestPairUsernameCollisionAtApply(t *testing.T) {
 // columns (credentials.id, credentials.public_key) that round-trip
 // through CBOR.
 func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3)
 	defer h.cleanup()
 
 	// All three hosts have the users.db schema in place plus the
@@ -609,7 +609,7 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 	// the cursor table; that lands in the v67 upgrade). Same migration
 	// chain as setup_replication_test.
 	for _, name := range []string{fh_h1, fh_h2, fh_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		setup_users_test_schema()
 		db_upgrade_50()
 		db_upgrade_55()
@@ -622,7 +622,7 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 	// platform), two recovery codes, one OAuth link, TOTP secret, one
 	// API token, two owned entities. Mixed columns including BLOB PKs
 	// on credentials so the CBOR round-trip is exercised.
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	users := db_open("db/users.db")
 	const transfer_uid = "uid-keystest"
 	const transfer_username = "keystest@example.com"
@@ -678,15 +678,15 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 		}
 		captured_transfer = transfer
 		prior := h.current
-		h.switchTo(fh_h3)
+		h.switch_to(fh_h3)
 		replication_keys_transfer_apply(transfer.Entities[0].ID, "peer-"+fh_h1, transfer)
-		h.switchTo(prior)
+		h.switch_to(prior)
 		return true
 	}
 
 	// h1 runs the keys-transfer pair-backfill against h3. With one
 	// user on h1 the backfill should fire the hook exactly once.
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	replication_pair_backfill_users("peer-" + fh_h3)
 
 	// Wire-shape assertions: the captured payload must populate every
@@ -731,7 +731,7 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 	// Receiver-side assertions: h3's users.db now holds the same auth
 	// state h1 does. Per-table row-for-row equality on the cross-host
 	// stable identifiers.
-	h.switchTo(fh_h3)
+	h.switch_to(fh_h3)
 	users_three := db_open("db/users.db")
 
 	row, _ := users_three.row("select uid, username, role, methods, status from users where uid=?", transfer_uid)
@@ -877,10 +877,10 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 // convergence path because the stub vote consults each host's local
 // tentative-write state via leader_prefer.
 func TestThreeHostLeaderClaimConverges(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		db_upgrade_50() // lazy-create the per-host replication.db schema (pair, leadership, etc.)
 		rdb := db_open("db/replication.db")
 		// Seed pair so each host considers the other two members of
@@ -929,7 +929,7 @@ func TestThreeHostLeaderClaimConverges(t *testing.T) {
 	const claimKey = "feeds-watchdog"
 	results := map[string]bool{}
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		results[name] = replication_leader_claim(claimScope, claimKey, false)
 	}
 
@@ -952,21 +952,21 @@ func TestThreeHostLeaderClaimConverges(t *testing.T) {
 	// Verify all three hosts agree on the winner. The winner's own
 	// leadership row points at peer-winner; the other two should
 	// have mirrored peer-winner via the denial CurrentLeader path.
-	wantLeader := "peer-" + winner
+	want_leader := "peer-" + winner
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		row, _ := db_open("db/replication.db").row(
 			"select peer from leadership where scope=? and key=?",
 			claimScope, claimKey)
 		got, _ := row["peer"].(string)
-		if name == winner && got != wantLeader {
-			t.Errorf("%s (winner): leadership.peer = %q, want %q", name, got, wantLeader)
+		if name == winner && got != want_leader {
+			t.Errorf("%s (winner): leadership.peer = %q, want %q", name, got, want_leader)
 		}
 		// The losers may have mirrored the winner or may simply
 		// have no row. What's not allowed is mirroring a different
 		// non-empty peer.
-		if got != "" && got != wantLeader {
-			t.Errorf("%s: leadership.peer = %q, want either empty or %q (the winner)", name, got, wantLeader)
+		if got != "" && got != want_leader {
+			t.Errorf("%s: leadership.peer = %q, want either empty or %q (the winner)", name, got, want_leader)
 		}
 	}
 }
@@ -985,7 +985,7 @@ func TestThreeHostLeaderClaimConverges(t *testing.T) {
 // payload is larger and the per-user apply path needs a placeholder
 // user row first; covered as a follow-up.
 func TestBootstrapFreshHostCatchesUp(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 
 	// h1 holds settings, documents, apps, and a session for an
@@ -993,14 +993,14 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 	// already. h3 starts fresh with only the schemas needed to
 	// receive bootstrap deliveries.
 	for _, name := range []string{tt_h1, tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		mm_settings_schema()
 		setup_users_test_schema()
 		setup_sessions_test_schema()
 		db_open("db/apps.db").exec("create table if not exists apps (app text primary key, installed integer not null default 0)")
 	}
 
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	// Settings (settings.settings).
 	setting_set("signup_enabled", "true")
 	setting_set("operator_name", "Alice")
@@ -1018,7 +1018,7 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 	// h3 also needs the user row before sessions-row apply will
 	// succeed (replication_session_apply_insert defers on
 	// !user_exists).
-	h.switchTo(tt_h3)
+	h.switch_to(tt_h3)
 	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-boot", "boot@example.com")
 
 	// Stub the per-peer emit hooks: each one captures the payload
@@ -1036,9 +1036,9 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 
 	applyOnH3 := func(fn func()) {
 		prior := h.current
-		h.switchTo(tt_h3)
+		h.switch_to(tt_h3)
 		fn()
-		h.switchTo(prior)
+		h.switch_to(prior)
 	}
 
 	replication_system_set_to_peer_var = func(peer, database, table, row, field, value string) {
@@ -1063,14 +1063,14 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 			})
 		})
 	}
-	replication_emit_session_insert_to_peer_var = func(peer, userUID, code, secret string, expires, created, accessed int64, address, agent string) {
+	replication_emit_session_insert_to_peer_var = func(peer, user_uid, code, secret string, expires, created, accessed int64, address, agent string) {
 		if peer != "peer-"+tt_h3 {
 			t.Errorf("session_insert_to_peer: wrong peer %q", peer)
 			return
 		}
 		applyOnH3(func() {
 			replication_session_apply_insert(&SessionInsert{
-				UserUID: userUID, Code: code, Secret: secret,
+				UserUID: user_uid, Code: code, Secret: secret,
 				Expires: expires, Created: created, Accessed: accessed,
 				Address: address, Agent: agent,
 			})
@@ -1080,11 +1080,11 @@ func TestBootstrapFreshHostCatchesUp(t *testing.T) {
 	// Run the bootstrap from h1's perspective. replication_pair_backfill_system
 	// internally calls _sessions and _accounts, so a single call covers
 	// every replicated table outside the users.db keys-transfer path.
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	replication_pair_backfill_system("peer-" + tt_h3)
 
 	// Assert h3 has every row h1 has.
-	h.switchTo(tt_h3)
+	h.switch_to(tt_h3)
 	if got := setting_get("signup_enabled", ""); got != "true" {
 		t.Errorf("h3 setting signup_enabled = %q, want true", got)
 	}
@@ -1139,7 +1139,7 @@ const (
 // shared user.
 func seed_four_hosts(t *testing.T, h *harness) {
 	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		h.setup_harness_user(fhUID, "fourway@example.com", mm_entity_id('f'))
 		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 		setup_sessions_test_schema()
@@ -1151,11 +1151,11 @@ func seed_four_hosts(t *testing.T, h *harness) {
 // schedule + setting + document edited on one host reach the other
 // three after a single flush.
 func TestFourHostPairConvergence(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	seed_four_hosts(t, h)
 
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	if schedule_create(fhUID, "feeds", 1000, "tick", "{}", 60) == 0 {
 		t.Fatal("schedule_create returned 0")
 	}
@@ -1166,7 +1166,7 @@ func TestFourHostPairConvergence(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		if exists, _ := schedule_db().exists("select 1 from schedule where user=? and event='tick'", fhUID); !exists {
 			t.Errorf("%s: missing schedule row", name)
 		}
@@ -1189,7 +1189,7 @@ func TestFourHostPairConvergence(t *testing.T) {
 // replication (which has no quorum requirement) both sides keep
 // writing and the heal merges them.
 func TestFourHostPair2v2PartitionHealConverges(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	seed_four_hosts(t, h)
 
@@ -1200,7 +1200,7 @@ func TestFourHostPair2v2PartitionHealConverges(t *testing.T) {
 	// keeps them as separate rows even if now() returns the same
 	// epoch second for all four).
 	for i, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		event := fmt.Sprintf("event-from-%d", i+1)
 		if schedule_create(fhUID, "feeds", int64(1000+i), event, "{}", 0) == 0 {
 			t.Fatalf("%s: schedule_create returned 0", name)
@@ -1219,7 +1219,7 @@ func TestFourHostPair2v2PartitionHealConverges(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		var n int64
 		row, _ := schedule_db().row("select count(*) as n from schedule where user=?", fhUID)
 		if row != nil {
@@ -1235,20 +1235,20 @@ func TestFourHostPair2v2PartitionHealConverges(t *testing.T) {
 // operators sharing one user. Per-user-scope ops fan out to all
 // linked hosts.
 func TestFourHostUserUserUserUserSchedule(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	h.set_pair_members() // no operator pair
 	h.set_user_hosts(fhUID, fh_h1, fh_h2, fh_h3, fh_h4)
 	seed_four_hosts(t, h)
 
-	h.switchTo(fh_h2)
+	h.switch_to(fh_h2)
 	if schedule_create(fhUID, "crm", 1000, "linked", "{}", 0) == 0 {
 		t.Fatal("h2 schedule_create returned 0")
 	}
 	h.flush()
 
 	for _, name := range []string{fh_h1, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		if exists, _ := schedule_db().exists("select 1 from schedule where user=? and event='linked'", fhUID); !exists {
 			t.Errorf("%s: missing linked schedule row", name)
 		}
@@ -1260,19 +1260,19 @@ func TestFourHostUserUserUserUserSchedule(t *testing.T) {
 // different operators). Same property as the 3-host version but
 // scaled.
 func TestFourHostUserUserUserUserPairOnlyStaysLocal(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	h.set_pair_members()
 	h.set_user_hosts(fhUID, fh_h1, fh_h2, fh_h3, fh_h4)
 	seed_four_hosts(t, h)
 
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	setting_set("signup_enabled", "h1-only-fourway")
 	replication_emit_users_users_pair_set(fhUID, map[string]string{"username": "renamed-on-h1-fourway"})
 	h.flush()
 
 	for _, name := range []string{fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		if got := setting_get("signup_enabled", ""); got == "h1-only-fourway" {
 			t.Errorf("%s: setting leaked across operator boundary: %q", name, got)
 		}
@@ -1287,10 +1287,10 @@ func TestFourHostUserUserUserUserPairOnlyStaysLocal(t *testing.T) {
 // requires floor(4/2) = 2 peer grants. When all three peers grant,
 // strict succeeds.
 func TestFourHostLeaderStrictQuorum(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		db_upgrade_50()
 		rdb := db_open("db/replication.db")
 		for _, peer := range []string{"peer-" + fh_h1, "peer-" + fh_h2, "peer-" + fh_h3, "peer-" + fh_h4} {
@@ -1310,7 +1310,7 @@ func TestFourHostLeaderStrictQuorum(t *testing.T) {
 		return &LeaderClaimResponse{Granted: true}
 	}
 
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	if !replication_leader_claim("platform", "fourway-strict", true) {
 		t.Error("strict claim must succeed when all peers grant")
 	}
@@ -1322,10 +1322,10 @@ func TestFourHostLeaderStrictQuorum(t *testing.T) {
 // Optimistic mode succeeds in the same conditions. Documents the
 // difference operators are paying for with strict=true.
 func TestFourHostLeader2v2PartitionStrictNoQuorum(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		db_upgrade_50()
 		rdb := db_open("db/replication.db")
 		for _, peer := range []string{"peer-" + fh_h1, "peer-" + fh_h2, "peer-" + fh_h3, "peer-" + fh_h4} {
@@ -1349,7 +1349,7 @@ func TestFourHostLeader2v2PartitionStrictNoQuorum(t *testing.T) {
 		return nil // unreachable
 	}
 
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	// Strict: 1 grant from 3 peers needed; partition gives 1; need 2.
 	// Strict mode requires floor((membership+1)/2) = 2 peer grants;
 	// only 1 reachable → fails. This prevents split-brain.
@@ -1375,11 +1375,11 @@ func TestFourHostLeader2v2PartitionStrictNoQuorum(t *testing.T) {
 // per-row backfill pipeline. Same shape as the 3-host bootstrap test
 // but with 3 hosts holding the source-of-truth state.
 func TestFourHostBootstrapToFreshFourth(t *testing.T) {
-	h := newHarness(t, fh_h1, fh_h2, fh_h3, fh_h4)
+	h := new_harness(t, fh_h1, fh_h2, fh_h3, fh_h4)
 	defer h.cleanup()
 	// All four schemas set up; only h1-h3 hold state, h4 is fresh.
 	for _, name := range []string{fh_h1, fh_h2, fh_h3, fh_h4} {
-		h.switchTo(name)
+		h.switch_to(name)
 		mm_settings_schema()
 		setup_users_test_schema()
 		setup_sessions_test_schema()
@@ -1388,7 +1388,7 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 
 	// h1 (and via auto-replication, h2 and h3) hold the canonical
 	// state.
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	setting_set("signup_enabled", "true")
 	setting_set("operator_name", "QuadAlice")
 	if err := document_set("rules", "en", "fourway rules"); err != nil {
@@ -1401,7 +1401,7 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 	h.flush() // replicate h1 -> h2 and h3 via the normal pair-broadcast path
 
 	// h4 needs the user row before sessions-row apply succeeds.
-	h.switchTo(fh_h4)
+	h.switch_to(fh_h4)
 	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", "uid-quad", "quad@example.com")
 
 	// Stub the per-peer backfill emit hooks to apply on h4.
@@ -1415,9 +1415,9 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 	}()
 	applyOnH4 := func(fn func()) {
 		prior := h.current
-		h.switchTo(fh_h4)
+		h.switch_to(fh_h4)
 		fn()
-		h.switchTo(prior)
+		h.switch_to(prior)
 	}
 	replication_system_set_to_peer_var = func(peer, database, table, row, field, value string) {
 		if peer != "peer-"+fh_h4 {
@@ -1441,14 +1441,14 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 			})
 		})
 	}
-	replication_emit_session_insert_to_peer_var = func(peer, userUID, code, secret string, expires, created, accessed int64, address, agent string) {
+	replication_emit_session_insert_to_peer_var = func(peer, user_uid, code, secret string, expires, created, accessed int64, address, agent string) {
 		if peer != "peer-"+fh_h4 {
 			t.Errorf("session_insert: wrong peer %q", peer)
 			return
 		}
 		applyOnH4(func() {
 			replication_session_apply_insert(&SessionInsert{
-				UserUID: userUID, Code: code, Secret: secret,
+				UserUID: user_uid, Code: code, Secret: secret,
 				Expires: expires, Created: created, Accessed: accessed,
 				Address: address, Agent: agent,
 			})
@@ -1456,11 +1456,11 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 	}
 
 	// h1 ships its state to h4.
-	h.switchTo(fh_h1)
+	h.switch_to(fh_h1)
 	replication_pair_backfill_system("peer-" + fh_h4)
 
 	// h4 now has the canonical state.
-	h.switchTo(fh_h4)
+	h.switch_to(fh_h4)
 	if got := setting_get("operator_name", ""); got != "QuadAlice" {
 		t.Errorf("h4: operator_name = %q, want QuadAlice", got)
 	}
@@ -1483,13 +1483,13 @@ func TestFourHostBootstrapToFreshFourth(t *testing.T) {
 // methods/status/preferences) DO follow the user across all linked
 // hosts. Cookie issued on h1 validates on h2 and h3.
 func TestThreeHostUserUserUserSessionsAndUserStatus(t *testing.T) {
-	h := newHarness(t, tt_h1, tt_h2, tt_h3)
+	h := new_harness(t, tt_h1, tt_h2, tt_h3)
 	defer h.cleanup()
 	h.set_pair_members()
 	h.set_user_hosts(ttUID, tt_h1, tt_h2, tt_h3)
 	seed_three_hosts(t, h)
 
-	h.switchTo(tt_h1)
+	h.switch_to(tt_h1)
 	code := login_create(ttUID, "1.2.3.4", "test-agent")
 	if code == "" {
 		t.Fatal("h1 login_create returned empty code")
@@ -1500,7 +1500,7 @@ func TestThreeHostUserUserUserSessionsAndUserStatus(t *testing.T) {
 	h.flush()
 
 	for _, name := range []string{tt_h2, tt_h3} {
-		h.switchTo(name)
+		h.switch_to(name)
 		exists, _ := db_open("db/sessions.db").exists(
 			"select 1 from sessions where user=? and code=?", ttUID, code)
 		if !exists {

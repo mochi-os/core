@@ -118,13 +118,13 @@ func TestScheduleDatabase(t *testing.T) {
 		id := schedule_create("u1", "test-app", now()+100, "recurring", string(data), 100)
 
 		se := schedule_get(id)
-		originalDue := se.Due
+		original_due := se.Due
 
-		schedule_update_due(id, originalDue+100)
+		schedule_update_due(id, original_due+100)
 
 		se = schedule_get(id)
-		if se.Due != originalDue+100 {
-			t.Errorf("expected due %d, got %d", originalDue+100, se.Due)
+		if se.Due != original_due+100 {
+			t.Errorf("expected due %d, got %d", original_due+100, se.Due)
 		}
 	})
 
@@ -134,21 +134,21 @@ func TestScheduleDatabase(t *testing.T) {
 		schedule_create("u1", "due-app", now()-10, "past_event", string(data), 0)
 		schedule_create("u1", "due-app", now()+3600, "future_event", string(data), 0)
 
-		dueEvents := schedule_due(now())
-		foundPast := false
-		foundFuture := false
-		for _, e := range dueEvents {
+		due_events := schedule_due(now())
+		found_past := false
+		found_future := false
+		for _, e := range due_events {
 			if e.Event == "past_event" {
-				foundPast = true
+				found_past = true
 			}
 			if e.Event == "future_event" {
-				foundFuture = true
+				found_future = true
 			}
 		}
-		if !foundPast {
+		if !found_past {
 			t.Error("expected to find past_event in due events")
 		}
-		if foundFuture {
+		if found_future {
 			t.Error("did not expect to find future_event in due events")
 		}
 	})
@@ -186,41 +186,41 @@ func TestScheduleStarlarkObject(t *testing.T) {
 			Created:  1710435600,
 		}
 
-		slSe := new_starlark_scheduled_event(se)
+		sl_se := new_starlark_scheduled_event(se)
 
 		// Test id
-		idAttr, _ := slSe.Attr("id")
-		if idAttr.String() != "123" {
-			t.Errorf("expected id 123, got %s", idAttr.String())
+		id_attr, _ := sl_se.Attr("id")
+		if id_attr.String() != "123" {
+			t.Errorf("expected id 123, got %s", id_attr.String())
 		}
 
 		// Test event
-		eventAttr, _ := slSe.Attr("event")
-		if eventAttr.String() != `"test_event"` {
-			t.Errorf("expected event test_event, got %s", eventAttr.String())
+		event_attr, _ := sl_se.Attr("event")
+		if event_attr.String() != `"test_event"` {
+			t.Errorf("expected event test_event, got %s", event_attr.String())
 		}
 
 		// Test interval
-		intervalAttr, _ := slSe.Attr("interval")
-		if intervalAttr.String() != "300" {
-			t.Errorf("expected interval 300, got %s", intervalAttr.String())
+		interval_attr, _ := sl_se.Attr("interval")
+		if interval_attr.String() != "300" {
+			t.Errorf("expected interval 300, got %s", interval_attr.String())
 		}
 
 		// Test due
-		dueAttr, _ := slSe.Attr("due")
-		if dueAttr.String() != "1710522000" {
-			t.Errorf("expected due 1710522000, got %s", dueAttr.String())
+		due_attr, _ := sl_se.Attr("due")
+		if due_attr.String() != "1710522000" {
+			t.Errorf("expected due 1710522000, got %s", due_attr.String())
 		}
 
 		// Test created
-		createdAttr, _ := slSe.Attr("created")
-		if createdAttr.String() != "1710435600" {
-			t.Errorf("expected created 1710435600, got %s", createdAttr.String())
+		created_attr, _ := sl_se.Attr("created")
+		if created_attr.String() != "1710435600" {
+			t.Errorf("expected created 1710435600, got %s", created_attr.String())
 		}
 
 		// Test data
-		dataAttr, _ := slSe.Attr("data")
-		if dataAttr == nil {
+		data_attr, _ := sl_se.Attr("data")
+		if data_attr == nil {
 			t.Error("expected data attribute")
 		}
 	})
@@ -237,9 +237,9 @@ func TestScheduleStarlarkObject(t *testing.T) {
 			Created:  1710435600,
 		}
 
-		slSe := new_starlark_scheduled_event(se)
-		dataAttr, _ := slSe.Attr("data")
-		if dataAttr == nil {
+		sl_se := new_starlark_scheduled_event(se)
+		data_attr, _ := sl_se.Attr("data")
+		if data_attr == nil {
 			t.Error("expected data attribute even for empty data")
 		}
 	})
@@ -262,33 +262,33 @@ func TestScheduleEventWrapper(t *testing.T) {
 		}
 
 		// Test source
-		sourceAttr, _ := wrapper.Attr("source")
-		if sourceAttr.String() != `"schedule"` {
-			t.Errorf("expected source schedule, got %s", sourceAttr.String())
+		source_attr, _ := wrapper.Attr("source")
+		if source_attr.String() != `"schedule"` {
+			t.Errorf("expected source schedule, got %s", source_attr.String())
 		}
 
 		// Test due
-		dueAttr, _ := wrapper.Attr("due")
-		if dueAttr.String() != "1710522000" {
-			t.Errorf("expected due 1710522000, got %s", dueAttr.String())
+		due_attr, _ := wrapper.Attr("due")
+		if due_attr.String() != "1710522000" {
+			t.Errorf("expected due 1710522000, got %s", due_attr.String())
 		}
 
 		// Test created
-		createdAttr, _ := wrapper.Attr("created")
-		if createdAttr.String() != "1710435600" {
-			t.Errorf("expected created 1710435600, got %s", createdAttr.String())
+		created_attr, _ := wrapper.Attr("created")
+		if created_attr.String() != "1710435600" {
+			t.Errorf("expected created 1710435600, got %s", created_attr.String())
 		}
 
 		// Test from (should be None for scheduled events)
-		fromAttr, _ := wrapper.Attr("from")
-		if fromAttr.String() != "None" {
-			t.Errorf("expected from None, got %s", fromAttr.String())
+		from_attr, _ := wrapper.Attr("from")
+		if from_attr.String() != "None" {
+			t.Errorf("expected from None, got %s", from_attr.String())
 		}
 
 		// Test headers (should be None for scheduled events)
-		headersAttr, _ := wrapper.Attr("headers")
-		if headersAttr.String() != "None" {
-			t.Errorf("expected headers None, got %s", headersAttr.String())
+		headers_attr, _ := wrapper.Attr("headers")
+		if headers_attr.String() != "None" {
+			t.Errorf("expected headers None, got %s", headers_attr.String())
 		}
 	})
 }
@@ -367,8 +367,8 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 
 	t.Run("recurring event due updated on claim", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
-		originalDue := now()
-		id := schedule_create("u0", "test-app", originalDue, "recurring", string(data), 300)
+		original_due := now()
+		id := schedule_create("u0", "test-app", original_due, "recurring", string(data), 300)
 
 		se := schedule_get(id)
 		if se == nil {
@@ -386,8 +386,8 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 		if se == nil {
 			t.Fatal("expected recurring event to still exist after claim")
 		}
-		if se.Due != originalDue+300 {
-			t.Errorf("expected due to be updated to %d, got %d", originalDue+300, se.Due)
+		if se.Due != original_due+300 {
+			t.Errorf("expected due to be updated to %d, got %d", original_due+300, se.Due)
 		}
 	})
 }
@@ -411,13 +411,13 @@ func TestScheduleEdgeCases(t *testing.T) {
 	})
 
 	t.Run("large data payload", func(t *testing.T) {
-		largeData := make(map[string]any)
+		large_data := make(map[string]any)
 		for i := 0; i < 100; i++ {
-			largeData[string(rune('a'+i%26))+string(rune(i))] = i
+			large_data[string(rune('a'+i%26))+string(rune(i))] = i
 		}
-		dataJSON, _ := json.Marshal(largeData)
+		data_json, _ := json.Marshal(large_data)
 
-		id := schedule_create("u1", "test-app", now()+100, "large_event", string(dataJSON), 0)
+		id := schedule_create("u1", "test-app", now()+100, "large_event", string(data_json), 0)
 		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected event with large data")
@@ -431,20 +431,20 @@ func TestScheduleEdgeCases(t *testing.T) {
 	})
 
 	t.Run("past due time", func(t *testing.T) {
-		pastTime := now() - 3600 // 1 hour ago
-		id := schedule_create("u1", "test-app", pastTime, "past_event", "{}", 0)
+		past_time := now() - 3600 // 1 hour ago
+		id := schedule_create("u1", "test-app", past_time, "past_event", "{}", 0)
 		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected event with past due time")
 		}
-		if se.Due != pastTime {
-			t.Errorf("expected due %d, got %d", pastTime, se.Due)
+		if se.Due != past_time {
+			t.Errorf("expected due %d, got %d", past_time, se.Due)
 		}
 
 		// Should appear in due events
-		dueEvents := schedule_due(now())
+		due_events := schedule_due(now())
 		found := false
-		for _, e := range dueEvents {
+		for _, e := range due_events {
 			if e.ID == id {
 				found = true
 				break
@@ -474,8 +474,8 @@ func TestScheduleManagerTiming(t *testing.T) {
 		db.exec("create index schedule_due on schedule(due)")
 
 		// Create event 30 seconds from now
-		dueTime := now() + 30
-		schedule_create("u1", "test-app", dueTime, "soon_event", "{}", 0)
+		due_time := now() + 30
+		schedule_create("u1", "test-app", due_time, "soon_event", "{}", 0)
 
 		next := schedule_next()
 		if next == nil {
@@ -483,8 +483,8 @@ func TestScheduleManagerTiming(t *testing.T) {
 		}
 
 		// Check that the event is within 1 minute (scheduler precision window)
-		eventTime := time.Unix(next.Due, 0)
-		if eventTime.Before(time.Now().Add(1 * time.Minute)) {
+		event_time := time.Unix(next.Due, 0)
+		if event_time.Before(time.Now().Add(1 * time.Minute)) {
 			// This is the condition where scheduler should sleep until exact time
 			t.Log("Event is imminent, scheduler would sleep until exact time")
 		}

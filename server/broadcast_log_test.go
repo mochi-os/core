@@ -59,8 +59,8 @@ func TestBroadcastLogPerPeerSequence(t *testing.T) {
 	if s := broadcast_log_append(db, "k1", "peerA", "e", []byte(`{}`)); s != 1 {
 		t.Errorf("peerA first: got %d", s)
 	}
-	if s := broadcast_log_append(db, "k1", "peerB", "e", []byte(`{}`)); s != 1 {
-		t.Errorf("peerB first (independent of peerA): got %d", s)
+	if s := broadcast_log_append(db, "k1", "peer_b", "e", []byte(`{}`)); s != 1 {
+		t.Errorf("peer_b first (independent of peerA): got %d", s)
 	}
 	if s := broadcast_log_append(db, "k1", "peerA", "e", []byte(`{}`)); s != 2 {
 		t.Errorf("peerA second: got %d", s)
@@ -157,7 +157,7 @@ func TestBroadcastReplayQuery(t *testing.T) {
 	}
 	// Different peer should not pollute results.
 	for i := 0; i < 3; i++ {
-		broadcast_log_append(db, "k", "peerB", "e", []byte(`{}`))
+		broadcast_log_append(db, "k", "peer_b", "e", []byte(`{}`))
 	}
 
 	rows, _ := db.rows("select sequence from _log where key=? and peer=? and sequence > ? order by sequence limit ?", "k", "peerA", int64(2), 100)
@@ -187,7 +187,7 @@ func TestBroadcastResyncThrottle(t *testing.T) {
 	if broadcast_resync_throttle("u1", "peerA", "k") {
 		t.Errorf("immediate second call should be throttled")
 	}
-	if !broadcast_resync_throttle("u1", "peerB", "k") {
+	if !broadcast_resync_throttle("u1", "peer_b", "k") {
 		t.Errorf("different peer should pass")
 	}
 	if !broadcast_resync_throttle("u2", "peerA", "k") {

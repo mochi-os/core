@@ -321,8 +321,8 @@ func TestReplicationLinkApplyKeysBackfillsUserData(t *testing.T) {
 	var mu sync.Mutex
 	var fileReqs []struct{ peer, scope, prefix string }
 	var dbReqs []struct{ peer, scope, user string }
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		fileReqs = append(fileReqs, struct{ peer, scope, prefix string }{peer, scope, prefix})
@@ -334,7 +334,7 @@ func TestReplicationLinkApplyKeysBackfillsUserData(t *testing.T) {
 		mu.Unlock()
 	}
 	// Stub the activation waiter so the test doesn't race a real goroutine.
-	origWait := bootstrap_wait_then_activate
+	orig_wait := bootstrap_wait_then_activate
 	var waitCalls []struct{ peer, uid string }
 	bootstrap_wait_then_activate = func(peer, uid string) {
 		mu.Lock()
@@ -342,9 +342,9 @@ func TestReplicationLinkApplyKeysBackfillsUserData(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
-		bootstrap_wait_then_activate = origWait
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
+		bootstrap_wait_then_activate = orig_wait
 	}()
 
 	kt := &KeysTransfer{
@@ -413,16 +413,16 @@ func TestReplicationLinkApplyKeysTransfersAuthFactors(t *testing.T) {
 	udb.exec("insert into users (uid, username, methods, status) values ('u-alice', 'alice@local', 'email', 'pending-replication')")
 
 	// Stub bootstrap so the test doesn't spawn real network goroutines.
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
-	origWait := bootstrap_wait_then_activate
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
+	orig_wait := bootstrap_wait_then_activate
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {}
 	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {}
 	bootstrap_wait_then_activate = func(peer, uid string) {}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
-		bootstrap_wait_then_activate = origWait
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
+		bootstrap_wait_then_activate = orig_wait
 	}()
 
 	kt := &KeysTransfer{
@@ -464,14 +464,14 @@ func TestReplicationLinkApplyKeysTransfersAuthFactors(t *testing.T) {
 		t.Errorf("token rows for placeholder = %d, want 1", n)
 	}
 	// TOTP secret.
-	totpRow, _ := udb.row("select secret from totp where user='u-alice'")
-	if totpRow == nil || row_string(totpRow, "secret") != "TOTPSECRET" {
-		t.Errorf("totp secret = %v, want %q", totpRow, "TOTPSECRET")
+	totp_row, _ := udb.row("select secret from totp where user='u-alice'")
+	if totp_row == nil || row_string(totp_row, "secret") != "TOTPSECRET" {
+		t.Errorf("totp secret = %v, want %q", totp_row, "TOTPSECRET")
 	}
 	// methods column mirrors the source.
-	methodsRow, _ := udb.row("select methods from users where uid='u-alice'")
-	if methodsRow == nil || row_string(methodsRow, "methods") != "email,passkey,oauth,totp" {
-		t.Errorf("methods = %v, want %q", methodsRow, "email,passkey,oauth,totp")
+	methods_row, _ := udb.row("select methods from users where uid='u-alice'")
+	if methods_row == nil || row_string(methods_row, "methods") != "email,passkey,oauth,totp" {
+		t.Errorf("methods = %v, want %q", methods_row, "email,passkey,oauth,totp")
 	}
 
 	// Idempotency: a re-applied keys-transfer (apply is not exactly-once)
@@ -504,16 +504,16 @@ func TestReplicationLinkTransfersScheduledEvents(t *testing.T) {
 	sdb := schedule_db()
 	sdb.exec("create table schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
-	origWait := bootstrap_wait_then_activate
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
+	orig_wait := bootstrap_wait_then_activate
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {}
 	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {}
 	bootstrap_wait_then_activate = func(peer, uid string) {}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
-		bootstrap_wait_then_activate = origWait
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
+		bootstrap_wait_then_activate = orig_wait
 	}()
 
 	kt := &KeysTransfer{

@@ -72,7 +72,7 @@ func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
 
 	cases := []struct {
 		relative string
-		wantErr  bool
+		want_err  bool
 		desc     string
 	}{
 		{"alice/files/post.md", false, "ordinary relative path"},
@@ -84,8 +84,8 @@ func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		_, err := bootstrap_safe_path(root, tc.relative)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err=%v, wantErr=%v", tc.desc, err, tc.wantErr)
+		if (err != nil) != tc.want_err {
+			t.Errorf("%s: err=%v, want_err=%v", tc.desc, err, tc.want_err)
 		}
 	}
 }
@@ -95,16 +95,16 @@ func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
 func TestBootstrapWalkManifest(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
-	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
-	_ = os.MkdirAll(filepath.Join(usersRoot, "bob", "feed", "files"), 0o755)
-	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "feed", "files", "post.md"), []byte("hello"), 0o644); err != nil {
+	users_root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(users_root, "alice", "feed", "files"), 0o755)
+	_ = os.MkdirAll(filepath.Join(users_root, "bob", "feed", "files"), 0o755)
+	if err := os.WriteFile(filepath.Join(users_root, "alice", "feed", "files", "post.md"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write alice/post.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "feed", "files", "draft.md"), []byte("draft text"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(users_root, "alice", "feed", "files", "draft.md"), []byte("draft text"), 0o644); err != nil {
 		t.Fatalf("write alice/draft.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(usersRoot, "bob", "feed", "files", "other.md"), []byte("bob"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(users_root, "bob", "feed", "files", "other.md"), []byte("bob"), 0o644); err != nil {
 		t.Fatalf("write bob/other.md: %v", err)
 	}
 
@@ -152,10 +152,10 @@ func TestBootstrapWalkManifest(t *testing.T) {
 func TestBootstrapReadChunkRoundtrip(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
-	_ = os.MkdirAll(filepath.Join(usersRoot, "alice"), 0o755)
+	users_root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(users_root, "alice"), 0o755)
 	original := []byte("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	if err := os.WriteFile(filepath.Join(usersRoot, "alice", "blob"), original, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(users_root, "alice", "blob"), original, 0o644); err != nil {
 		t.Fatalf("write blob: %v", err)
 	}
 
@@ -183,11 +183,11 @@ func TestBootstrapReadChunkRoundtrip(t *testing.T) {
 
 	// Hash check (defense in depth — confirms no off-by-one in our
 	// chunk boundaries).
-	wantHash := sha256.Sum256(original)
-	gotHash := sha256.Sum256(assembled)
-	if hex.EncodeToString(wantHash[:]) != hex.EncodeToString(gotHash[:]) {
+	want_hash := sha256.Sum256(original)
+	got_hash := sha256.Sum256(assembled)
+	if hex.EncodeToString(want_hash[:]) != hex.EncodeToString(got_hash[:]) {
 		t.Errorf("hash mismatch: want %s got %s",
-			hex.EncodeToString(wantHash[:]), hex.EncodeToString(gotHash[:]))
+			hex.EncodeToString(want_hash[:]), hex.EncodeToString(got_hash[:]))
 	}
 }
 
@@ -196,10 +196,10 @@ func TestBootstrapReadChunkRoundtrip(t *testing.T) {
 func TestBootstrapWriteChunkPartialThenRename(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
-	_ = os.MkdirAll(usersRoot, 0o755)
+	users_root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(users_root, 0o755)
 
-	final := filepath.Join(usersRoot, "alice", "feed", "files", "post.md")
+	final := filepath.Join(users_root, "alice", "feed", "files", "post.md")
 	partial := final + ".partial"
 
 	// First chunk — not EOF.
@@ -252,22 +252,22 @@ func TestBootstrapWriteChunkRejectsTraversal(t *testing.T) {
 func TestBootstrapDiffManifestSkipsMatchingFiles(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
-	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+	users_root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(users_root, "alice", "feed", "files"), 0o755)
 
 	// Local copy of post.md matches one of the remote entries.
-	localPath := filepath.Join(usersRoot, "alice", "feed", "files", "post.md")
-	if err := os.WriteFile(localPath, []byte("hello"), 0o644); err != nil {
+	local_path := filepath.Join(users_root, "alice", "feed", "files", "post.md")
+	if err := os.WriteFile(local_path, []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write local post.md: %v", err)
 	}
-	localHash, err := bootstrap_file_sha256(localPath)
+	local_hash, err := bootstrap_file_sha256(local_path)
 	if err != nil {
 		t.Fatalf("hash local: %v", err)
 	}
 
 	remote := []BootstrapFileEntry{
 		// Matches local.
-		{Path: "alice/feed/files/post.md", Size: 5, Sha256: localHash},
+		{Path: "alice/feed/files/post.md", Size: 5, Sha256: local_hash},
 		// Same path, different content → must be fetched.
 		{Path: "alice/feed/files/draft.md", Size: 10, Sha256: "deadbeef"},
 	}
@@ -333,8 +333,8 @@ func TestBootstrapChunkRequestsForEntry(t *testing.T) {
 func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
-	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+	users_root := filepath.Join(data_dir, "users")
+	_ = os.MkdirAll(filepath.Join(users_root, "alice", "feed", "files"), 0o755)
 
 	// Source files on the sender side. Use the same data_dir for both
 	// sides since bootstrap_*_scope_root is just data_dir-rooted; the
@@ -345,7 +345,7 @@ func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 		"alice/feed/files/draft.md": "draft text content",
 	}
 	for rel, body := range contents {
-		full := filepath.Join(usersRoot, rel)
+		full := filepath.Join(users_root, rel)
 		_ = os.MkdirAll(filepath.Dir(full), 0o755)
 		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 			t.Fatalf("write source %q: %v", rel, err)
@@ -375,9 +375,9 @@ func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 			// Write into a different sub-tree so we don't overwrite
 			// the source mid-test. Rewrite the path so the receiver
 			// puts the file under "bob" instead of "alice".
-			recvPath := "bob/" + entry.Path[len("alice/"):]
-			if err := bootstrap_write_chunk(bootstrap_scope_files, recvPath, offset, data, eof); err != nil {
-				t.Fatalf("write %q at %d: %v", recvPath, offset, err)
+			recv_path := "bob/" + entry.Path[len("alice/"):]
+			if err := bootstrap_write_chunk(bootstrap_scope_files, recv_path, offset, data, eof); err != nil {
+				t.Fatalf("write %q at %d: %v", recv_path, offset, err)
 			}
 			if eof {
 				break
@@ -388,18 +388,18 @@ func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 
 	// 3. Verify each received file matches the source byte-for-byte.
 	for rel, want := range contents {
-		recvRel := "bob/" + rel[len("alice/"):]
-		got, err := os.ReadFile(filepath.Join(usersRoot, recvRel))
+		recv_rel := "bob/" + rel[len("alice/"):]
+		got, err := os.ReadFile(filepath.Join(users_root, recv_rel))
 		if err != nil {
-			t.Errorf("read receiver %q: %v", recvRel, err)
+			t.Errorf("read receiver %q: %v", recv_rel, err)
 			continue
 		}
 		if string(got) != want {
-			t.Errorf("receiver %q content = %q, want %q", recvRel, got, want)
+			t.Errorf("receiver %q content = %q, want %q", recv_rel, got, want)
 		}
 		// .partial should have been renamed away.
-		if _, err := os.Stat(filepath.Join(usersRoot, recvRel+".partial")); !os.IsNotExist(err) {
-			t.Errorf(".partial still present for %q after transfer: %v", recvRel, err)
+		if _, err := os.Stat(filepath.Join(users_root, recv_rel+".partial")); !os.IsNotExist(err) {
+			t.Errorf(".partial still present for %q after transfer: %v", recv_rel, err)
 		}
 	}
 }
@@ -439,7 +439,7 @@ func TestBootstrapDBSourcePathRejectsInvalid(t *testing.T) {
 
 	cases := []struct {
 		scope, user, app, db string
-		wantErr              bool
+		want_err              bool
 		desc                 string
 	}{
 		{bootstrap_scope_userdbs, "alice", "feed", "users.db", false, "well-formed user-db"},
@@ -455,8 +455,8 @@ func TestBootstrapDBSourcePathRejectsInvalid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		_, err := bootstrap_db_source_path(tc.scope, "", tc.user, tc.app, tc.db)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err=%v, wantErr=%v", tc.desc, err, tc.wantErr)
+		if (err != nil) != tc.want_err {
+			t.Errorf("%s: err=%v, want_err=%v", tc.desc, err, tc.want_err)
 		}
 	}
 }
@@ -468,8 +468,8 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	srcDir := filepath.Join(data_dir, "users", "alice", "feed", "db")
-	_ = os.MkdirAll(srcDir, 0o755)
+	source_dir := filepath.Join(data_dir, "users", "alice", "feed", "db")
+	_ = os.MkdirAll(source_dir, 0o755)
 
 	// Create a small SQLite DB via the existing db_open path so we
 	// get the project's normal connection setup (busy_timeout etc.).
@@ -478,19 +478,19 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	src.exec("insert into posts (id, body) values ('p1', 'hello world')")
 	src.exec("insert into posts (id, body) values ('p2', 'second post')")
 
-	srcPath, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "", "alice", "feed", "feed.db")
+	source_path, err := bootstrap_db_source_path(bootstrap_scope_userdbs, "", "alice", "feed", "feed.db")
 	if err != nil {
 		t.Fatalf("source path: %v", err)
 	}
-	if _, err := os.Stat(srcPath); err != nil {
-		t.Fatalf("source DB missing at %q: %v", srcPath, err)
+	if _, err := os.Stat(source_path); err != nil {
+		t.Fatalf("source DB missing at %q: %v", source_path, err)
 	}
 
 	// Snapshot to a tempfile (relative to data_dir so db_open can
 	// reopen it via the standard pool).
-	snapRel := "snap.db"
-	snapAbs := filepath.Join(data_dir, snapRel)
-	size, err := snapshot_copy_db(srcPath, snapAbs)
+	snap_rel := "snap.db"
+	snap_abs := filepath.Join(data_dir, snap_rel)
+	size, err := snapshot_copy_db(source_path, snap_abs)
 	if err != nil {
 		t.Fatalf("snapshot_copy_db: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestBootstrapDBSnapshotRoundtrip(t *testing.T) {
 	// the cached one pointing at the old file.
 	databases = map[string]*DB{}
 	defer func() { databases = map[string]*DB{} }()
-	dst := db_open(snapRel)
+	dst := db_open(snap_rel)
 	rows, err := dst.rows("select id, body from posts order by id")
 	if err != nil {
 		t.Fatalf("query snapshot: %v", err)
@@ -526,8 +526,8 @@ func TestBootstrapDBSnapshotShipsBroadcastLog(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	srcDir := filepath.Join(data_dir, "users", "alice", "feed", "db")
-	_ = os.MkdirAll(srcDir, 0o755)
+	source_dir := filepath.Join(data_dir, "users", "alice", "feed", "db")
+	_ = os.MkdirAll(source_dir, 0o755)
 
 	source := db_open("users/alice/feed/db/feed.db")
 	// Match the production schema verbatim (broadcast_log_table_create
@@ -540,9 +540,9 @@ func TestBootstrapDBSnapshotShipsBroadcastLog(t *testing.T) {
 	source.exec("create table _acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerA', 1, 'post/create', '{}', 1700000000)")
 	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerA', 2, 'post/edit', '{}', 1700000005)")
-	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peerB', 1, 'comment/create', '{}', 1700000010)")
+	source.exec("insert into _log (key, peer, sequence, event, data, created) values ('feed1', 'peer_b', 1, 'comment/create', '{}', 1700000010)")
 	source.exec("insert into _sequence (key, peer, last) values ('feed1', 'peerA', 2)")
-	source.exec("insert into _sequence (key, peer, last) values ('feed1', 'peerB', 1)")
+	source.exec("insert into _sequence (key, peer, last) values ('feed1', 'peer_b', 1)")
 	source.exec("insert into _received (sender, key, last) values ('peerC', 'feed1', 5)")
 	source.exec("insert into _acknowledged (key, peer, subscriber, last) values ('feed1', 'peerA', 'subX', 2)")
 
@@ -572,7 +572,7 @@ func TestBootstrapDBSnapshotShipsBroadcastLog(t *testing.T) {
 	}{
 		{"feed1", "peerA", "post/create", 1},
 		{"feed1", "peerA", "post/edit", 2},
-		{"feed1", "peerB", "comment/create", 1},
+		{"feed1", "peer_b", "comment/create", 1},
 	} {
 		if index >= len(log_rows) {
 			break
@@ -588,8 +588,8 @@ func TestBootstrapDBSnapshotShipsBroadcastLog(t *testing.T) {
 	if destination.integer("select last from _sequence where key='feed1' and peer='peerA'") != 2 {
 		t.Errorf("_sequence (feed1, peerA) did not round-trip as 2")
 	}
-	if destination.integer("select last from _sequence where key='feed1' and peer='peerB'") != 1 {
-		t.Errorf("_sequence (feed1, peerB) did not round-trip as 1")
+	if destination.integer("select last from _sequence where key='feed1' and peer='peer_b'") != 1 {
+		t.Errorf("_sequence (feed1, peer_b) did not round-trip as 1")
 	}
 
 	// _received: per-(sender, key) cursor preserved.
@@ -614,8 +614,8 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 	var mu sync.Mutex
 	var fileRequests []struct{ peer, scope, prefix string }
 	var dbRequests []struct{ peer, scope, user string }
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		fileRequests = append(fileRequests, struct{ peer, scope, prefix string }{peer, scope, prefix})
@@ -627,8 +627,8 @@ func TestBootstrapStartSeedsScopesAndEmitsManifests(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
 	}()
 
 	bootstrap_start("source-A")
@@ -684,8 +684,8 @@ func TestBootstrapStartUserFiresFilteredFetches(t *testing.T) {
 	var mu sync.Mutex
 	var fileReqs []struct{ peer, scope, prefix string }
 	var dbReqs []struct{ peer, scope, user string }
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		fileReqs = append(fileReqs, struct{ peer, scope, prefix string }{peer, scope, prefix})
@@ -697,8 +697,8 @@ func TestBootstrapStartUserFiresFilteredFetches(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
 	}()
 
 	bootstrap_start_user("source-peer", "alice-uid")
@@ -746,13 +746,13 @@ func TestBootstrapStartUserRejectsEmpty(t *testing.T) {
 	defer cleanup()
 
 	calls := 0
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) { calls++ }
 	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) { calls++ }
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
 	}()
 
 	bootstrap_start_user("", "alice-uid")
@@ -809,8 +809,8 @@ func TestBootstrapResume(t *testing.T) {
 	var mu sync.Mutex
 	var fileReqs []struct{ peer, scope string }
 	var dbReqs []struct{ peer, scope string }
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		fileReqs = append(fileReqs, struct{ peer, scope string }{peer, scope})
@@ -822,8 +822,8 @@ func TestBootstrapResume(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
 	}()
 
 	// Seed the bootstrap table with a mix of states / scopes.
@@ -862,13 +862,13 @@ func TestBootstrapResumeNoActiveRows(t *testing.T) {
 
 	var mu sync.Mutex
 	called := false
-	origFile := replication_bootstrap_file_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		called = true
 		mu.Unlock()
 	}
-	defer func() { replication_bootstrap_file_manifest_fetch = origFile }()
+	defer func() { replication_bootstrap_file_manifest_fetch = orig_file }()
 
 	bootstrap_resume()
 	time.Sleep(50 * time.Millisecond)
@@ -1173,8 +1173,8 @@ func TestBootstrapRetryIncompleteOnceRefiresAndResets(t *testing.T) {
 	var mu sync.Mutex
 	var fileReqs []struct{ peer, scope, prefix string }
 	var dbReqs []struct{ peer, scope, user string }
-	origFile := replication_bootstrap_file_manifest_fetch
-	origDB := replication_bootstrap_db_manifest_fetch
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
 	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
 		mu.Lock()
 		fileReqs = append(fileReqs, struct{ peer, scope, prefix string }{peer, scope, prefix})
@@ -1186,8 +1186,8 @@ func TestBootstrapRetryIncompleteOnceRefiresAndResets(t *testing.T) {
 		mu.Unlock()
 	}
 	defer func() {
-		replication_bootstrap_file_manifest_fetch = origFile
-		replication_bootstrap_db_manifest_fetch = origDB
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
 	}()
 
 	bootstrap_retry_incomplete_once()
@@ -1345,17 +1345,17 @@ func TestBootstrapDBManifestResultSpawnsDriver(t *testing.T) {
 func TestBootstrapFileScopeAutoDone(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	usersRoot := filepath.Join(data_dir, "users")
+	users_root := filepath.Join(data_dir, "users")
 
-	_ = os.MkdirAll(filepath.Join(usersRoot, "alice", "feed", "files"), 0o755)
+	_ = os.MkdirAll(filepath.Join(users_root, "alice", "feed", "files"), 0o755)
 	contents := map[string]string{
 		"alice/feed/files/post1.md": "first post",
 		"alice/feed/files/post2.md": "second post body",
 		"alice/feed/files/post3.md": "third",
 	}
 	for rel, body := range contents {
-		_ = os.MkdirAll(filepath.Dir(filepath.Join(usersRoot, rel)), 0o755)
-		if err := os.WriteFile(filepath.Join(usersRoot, rel), []byte(body), 0o644); err != nil {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(users_root, rel)), 0o755)
+		if err := os.WriteFile(filepath.Join(users_root, rel), []byte(body), 0o644); err != nil {
 			t.Fatalf("write source %q: %v", rel, err)
 		}
 	}
@@ -1368,8 +1368,8 @@ func TestBootstrapFileScopeAutoDone(t *testing.T) {
 	// Override the chunk-fetch RPC to read from the source side of the
 	// same data_dir. The real implementation goes over a libp2p
 	// stream; this stub keeps the test in-process.
-	origFetch := bootstrap_file_chunk_fetch
-	defer func() { bootstrap_file_chunk_fetch = origFetch }()
+	orig_fetch := bootstrap_file_chunk_fetch
+	defer func() { bootstrap_file_chunk_fetch = orig_fetch }()
 	bootstrap_file_chunk_fetch = func(peer, scope, path string, offset, length int64) (*BootstrapFileChunk, error) {
 		data, eof, err := bootstrap_read_chunk(scope, path, offset, length)
 		if err != nil {
@@ -1379,8 +1379,8 @@ func TestBootstrapFileScopeAutoDone(t *testing.T) {
 	}
 	// Override the driver to run synchronously so the test can assert
 	// state after the apply returns. The real driver is `go`-spawned.
-	origDriver := bootstrap_file_scope_driver
-	defer func() { bootstrap_file_scope_driver = origDriver }()
+	orig_driver := bootstrap_file_scope_driver
+	defer func() { bootstrap_file_scope_driver = orig_driver }()
 	bootstrap_file_scope_driver = bootstrap_file_scope_driver_impl // synchronous from this test's POV
 
 	res := &BootstrapFileManifestResult{

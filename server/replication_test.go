@@ -178,7 +178,7 @@ func TestReplicationRecipientsHosts(t *testing.T) {
 
 	db := db_open("db/replication.db")
 	db.exec("insert into hosts (user, peer, added) values ('user1', 'peerA', 0)")
-	db.exec("insert into hosts (user, peer, added) values ('user1', 'peerB', 0)")
+	db.exec("insert into hosts (user, peer, added) values ('user1', 'peer_b', 0)")
 
 	peers := recipients("user1")
 	if len(peers) != 2 {
@@ -188,8 +188,8 @@ func TestReplicationRecipientsHosts(t *testing.T) {
 	for _, p := range peers {
 		got[p] = true
 	}
-	if !got["peerA"] || !got["peerB"] {
-		t.Errorf("expected peerA + peerB, got %v", peers)
+	if !got["peerA"] || !got["peer_b"] {
+		t.Errorf("expected peerA + peer_b, got %v", peers)
 	}
 }
 
@@ -213,13 +213,13 @@ func TestReplicationRecipientsUnionDedup(t *testing.T) {
 
 	db := db_open("db/replication.db")
 	db.exec("insert into hosts (user, peer, added) values ('user1', 'peerA', 0)")
-	db.exec("insert into hosts (user, peer, added) values ('user1', 'peerB', 0)")
-	db.exec("insert into pair (peer, added) values ('peerB', 0)")
+	db.exec("insert into hosts (user, peer, added) values ('user1', 'peer_b', 0)")
+	db.exec("insert into pair (peer, added) values ('peer_b', 0)")
 	db.exec("insert into pair (peer, added) values ('peerC', 0)")
 
 	peers := recipients("user1")
 	if len(peers) != 3 {
-		t.Errorf("union should dedup peerB; expected 3, got %d: %v", len(peers), peers)
+		t.Errorf("union should dedup peer_b; expected 3, got %d: %v", len(peers), peers)
 	}
 }
 
@@ -272,7 +272,7 @@ func TestReplicationMembershipApplyFresh(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peerB"}, Sequence: 1}
+	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 1}
 	replication_membership_apply("origin", mc)
 
 	db := db_open("db/replication.db")
@@ -286,7 +286,7 @@ func TestReplicationMembershipApplyStaleIgnored(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peerB"}, Sequence: 5}
+	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 5}
 	replication_membership_apply("origin1", mc1)
 
 	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peerC"}, Sequence: 3}
@@ -309,7 +309,7 @@ func TestReplicationMembershipApplyDuplicateIgnored(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peerB"}, Sequence: 1}
+	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 1}
 	replication_membership_apply("origin", mc1)
 
 	// Same (peer, scope, user, sequence) — must be a no-op even though the
@@ -325,8 +325,8 @@ func TestReplicationMembershipApplyDuplicateIgnored(t *testing.T) {
 	if p, _ := rows[0]["peer"].(string); p != "peerA" {
 		t.Errorf("expected peerA in first row, got %q", p)
 	}
-	if p, _ := rows[1]["peer"].(string); p != "peerB" {
-		t.Errorf("expected peerB in second row, got %q", p)
+	if p, _ := rows[1]["peer"].(string); p != "peer_b" {
+		t.Errorf("expected peer_b in second row, got %q", p)
 	}
 }
 
@@ -334,7 +334,7 @@ func TestReplicationMembershipExcludesSelf(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "self", "peerB"}, Sequence: 1}
+	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "self", "peer_b"}, Sequence: 1}
 	replication_membership_apply("origin", mc)
 
 	db := db_open("db/replication.db")
@@ -344,7 +344,7 @@ func TestReplicationMembershipExcludesSelf(t *testing.T) {
 	}
 	total := db.integer("select count(*) from hosts where user='user1'")
 	if total != 2 {
-		t.Errorf("expected 2 hosts (peerA, peerB), got %d", total)
+		t.Errorf("expected 2 hosts (peerA, peer_b), got %d", total)
 	}
 }
 
@@ -358,15 +358,15 @@ func TestReplicationMembershipFullSetIncludesOrigin(t *testing.T) {
 	defer cleanup()
 	// setup_replication_test sets p2p_id = "self".
 
-	got := replication_membership_full_set([]string{"peerA", "peerB"})
+	got := replication_membership_full_set([]string{"peerA", "peer_b"})
 	if len(got) != 3 || got[0] != "self" {
-		t.Fatalf("full set = %v, want [self peerA peerB] (origin first)", got)
+		t.Fatalf("full set = %v, want [self peerA peer_b] (origin first)", got)
 	}
 	found := map[string]bool{}
 	for _, p := range got {
 		found[p] = true
 	}
-	if !found["self"] || !found["peerA"] || !found["peerB"] {
+	if !found["self"] || !found["peerA"] || !found["peer_b"] {
 		t.Errorf("full set %v missing an expected peer", got)
 	}
 
@@ -488,7 +488,7 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 	// User already exists locally (e.g. they signed up here before opt-in).
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, ?, ?)", "uid-dave", "dave@example.com", "user", "email", "active")
-	localUID := "uid-dave"
+	local_uid := "uid-dave"
 
 	a := test_entity_id('a')
 	kt := &KeysTransfer{
@@ -503,8 +503,8 @@ func TestReplicationKeysTransferExistingUser(t *testing.T) {
 	if row, _ := udb.row("select user from entities where id=?", a); row != nil {
 		owner, _ = row["user"].(string)
 	}
-	if owner != localUID {
-		t.Errorf("entity must be linked to existing local user %q, got %q", localUID, owner)
+	if owner != local_uid {
+		t.Errorf("entity must be linked to existing local user %q, got %q", local_uid, owner)
 	}
 }
 
@@ -693,7 +693,7 @@ func TestReplicationPendingStalled(t *testing.T) {
 	// Stream 2: unanchored but has a Prev==0 stream-start in pending.
 	// Will drain naturally, not stalled.
 	db.exec(
-		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peerB', 'app', 'u2', 'dbB', 1, 0, 1, ?, ?)",
+		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer_b', 'app', 'u2', 'dbB', 1, 0, 1, ?, ?)",
 		[]byte{0x00}, ts)
 
 	// Stream 3: anchored at cursor=5, has the next op (prev=5) in
@@ -722,8 +722,8 @@ func TestReplicationPendingStalled(t *testing.T) {
 	if !got["peerA/dbA"] {
 		t.Errorf("expected peerA/dbA to be stalled (unanchored, no Prev==0)")
 	}
-	if got["peerB/dbB"] {
-		t.Errorf("peerB/dbB should NOT be stalled (has Prev==0 stream-start)")
+	if got["peer_b/dbB"] {
+		t.Errorf("peer_b/dbB should NOT be stalled (has Prev==0 stream-start)")
 	}
 	if got["peerC/dbC"] {
 		t.Errorf("peerC/dbC should NOT be stalled (next op prev=cursor present)")
@@ -1069,26 +1069,26 @@ func TestReplicationPendingKickTTL(t *testing.T) {
 
 	// Use a valid-shaped entity id so the kick gate's `valid(_, "entity")`
 	// check passes.
-	appID := test_entity_id('a')
+	app_id := test_entity_id('a')
 
 	// Fresh state: first kick is due.
 	replication_pending_kick_mu.Lock()
-	delete(replication_pending_kick_last, appID)
+	delete(replication_pending_kick_last, app_id)
 	replication_pending_kick_mu.Unlock()
 
-	if !replication_pending_kick_due(appID) {
+	if !replication_pending_kick_due(app_id) {
 		t.Error("first kick on fresh app: want true, got false")
 	}
 	// Immediately re-asking: gated by TTL.
-	if replication_pending_kick_due(appID) {
+	if replication_pending_kick_due(app_id) {
 		t.Error("repeat kick within TTL: want false, got true")
 	}
 
 	// Backdate the last-kick timestamp past the TTL → next call is due.
 	replication_pending_kick_mu.Lock()
-	replication_pending_kick_last[appID] = now() - replication_pending_kick_ttl_s - 1
+	replication_pending_kick_last[app_id] = now() - replication_pending_kick_ttl_s - 1
 	replication_pending_kick_mu.Unlock()
-	if !replication_pending_kick_due(appID) {
+	if !replication_pending_kick_due(app_id) {
 		t.Error("kick after TTL elapsed: want true, got false")
 	}
 }
@@ -1242,7 +1242,7 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	dir := db_open("db/directory.db")
 	now_ts := now()
 	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerA', ?)", now_ts-100)
-	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerB', ?)", now_ts-50)
+	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peer_b', ?)", now_ts-50)
 	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerC', ?)", now_ts) // most recent
 
 	peers := entity_peers("e1")
@@ -1424,7 +1424,7 @@ func TestLeaderVoteHashTieBreak(t *testing.T) {
 
 	// For each candidate, the vote outcome must equal the prefer
 	// helper's decision (the source of truth for the tie-break).
-	for _, candidate := range []string{"aaa", "zzz", "peerA", "peerB", "peerC"} {
+	for _, candidate := range []string{"aaa", "zzz", "peerA", "peer_b", "peerC"} {
 		want := replication_leader_prefer("platform", "k1", candidate, p2p_id)
 		got, _, _, _ := replication_leader_vote("platform", "k1", candidate, now()+60)
 		if got != want {
@@ -1565,9 +1565,9 @@ func TestLeaderClaimRPCDeniedMirrorsAndFails(t *testing.T) {
 	replication_leader_notify = func(scope, key string, fence, expires int64) {
 		t.Errorf("notify must NOT fire on a denied claim")
 	}
-	denyExp := now() + 60
+	deny_exp := now() + 60
 	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
-		return &LeaderClaimResponse{Granted: false, CurrentLeader: "remote-leader", CurrentFence: 7, CurrentExpires: denyExp}
+		return &LeaderClaimResponse{Granted: false, CurrentLeader: "remote-leader", CurrentFence: 7, CurrentExpires: deny_exp}
 	}
 
 	db := db_open("db/replication.db")
@@ -1777,8 +1777,8 @@ func TestBroadcastNextSeparateByKeyAndPeer(t *testing.T) {
 		t.Errorf("key2/peerA first (independent of key1): got %d", n)
 	}
 	// Different peers on the same key are also independent.
-	if n := broadcast_next_local(db, "key1", "peerB"); n != 1 {
-		t.Errorf("key1/peerB first (independent of peerA): got %d", n)
+	if n := broadcast_next_local(db, "key1", "peer_b"); n != 1 {
+		t.Errorf("key1/peer_b first (independent of peerA): got %d", n)
 	}
 	if n := broadcast_next_local(db, "key1", "peerA"); n != 2 {
 		t.Errorf("key1/peerA second: got %d", n)
@@ -1963,10 +1963,10 @@ func integration_setup(t *testing.T) (func(string), func()) {
 	orig_p2p := p2p_id
 	// Replace the post-migration background drain with a no-op for the
 	// duration of the test. The production goroutine reads data_dir
-	// asynchronously, which races with switchTo's host swap; the drain
+	// asynchronously, which races with switch_to's host swap; the drain
 	// itself is a performance optimization that the test doesn't need.
 	orig_drain := post_migration_drain_async
-	post_migration_drain_async = func(user, appID string) {}
+	post_migration_drain_async = func(user, app_id string) {}
 
 	hosts := map[string]struct {
 		dir string
@@ -1976,7 +1976,7 @@ func integration_setup(t *testing.T) (func(string), func()) {
 		"h2": {dir2, "peer2"},
 	}
 
-	switchTo := func(name string) {
+	switch_to := func(name string) {
 		h, ok := hosts[name]
 		if !ok {
 			t.Fatalf("unknown host %q", name)
@@ -1994,15 +1994,15 @@ func integration_setup(t *testing.T) (func(string), func()) {
 		os.RemoveAll(dir1)
 		os.RemoveAll(dir2)
 	}
-	return switchTo, cleanup
+	return switch_to, cleanup
 }
 
 func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
 	// Host 1: alice exists locally and creates a session.
-	switchTo("h1")
+	switch_to("h1")
 	setup_users_test_schema()
 	setup_sessions_test_schema()
 	udb1 := db_open("db/users.db")
@@ -2013,7 +2013,7 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	// Host 2: pre-seed alice so the keys-transfer falls into the "user
 	// already exists" branch and matches the canonical uid the wire op
 	// expects.
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	setup_sessions_test_schema()
 	udb2 := db_open("db/users.db")
@@ -2054,12 +2054,12 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 }
 
 func TestIntegrationMembershipChangePropagates(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
 	// Host 1 announces a host set {peer1, peer2, peer3} for user alice.
 	// Host 2 receives and replaces its local view.
-	switchTo("h1")
+	switch_to("h1")
 	mc := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1", "peer2", "peer3"}, Sequence: 5}
 	replication_membership_apply("peer1", mc)
 	db1 := db_open("db/replication.db")
@@ -2069,7 +2069,7 @@ func TestIntegrationMembershipChangePropagates(t *testing.T) {
 		t.Errorf("h1 hosts count: expected 2 (self excluded), got %d", count)
 	}
 
-	switchTo("h2")
+	switch_to("h2")
 	replication_membership_apply("peer1", mc)
 	db2 := db_open("db/replication.db")
 	count = db2.integer("select count(*) from hosts where user='uid-alice'")
@@ -2079,7 +2079,7 @@ func TestIntegrationMembershipChangePropagates(t *testing.T) {
 	}
 
 	// Stale change must not overwrite either host.
-	switchTo("h1")
+	switch_to("h1")
 	mc2 := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1"}, Sequence: 3}
 	replication_membership_apply("peer1", mc2)
 	count = db1.integer("select count(*) from hosts where user='uid-alice'")
@@ -2170,7 +2170,7 @@ func TestFenceObserveStaleRejects(t *testing.T) {
 
 	replication_fence_observe("credential:x", "fence", "peerA", 5)
 	// Stale fence from another peer — must be rejected.
-	if replication_fence_observe("credential:x", "fence", "peerB", 3) {
+	if replication_fence_observe("credential:x", "fence", "peer_b", 3) {
 		t.Errorf("stale fence (3 < 5) must be rejected")
 	}
 	// Witness must not have been overwritten.
@@ -2185,12 +2185,12 @@ func TestFenceObserveNewerWins(t *testing.T) {
 	defer cleanup()
 
 	replication_fence_observe("scope", "key", "peerA", 3)
-	if !replication_fence_observe("scope", "key", "peerB", 7) {
+	if !replication_fence_observe("scope", "key", "peer_b", 7) {
 		t.Errorf("newer fence (7 > 3) must be accepted")
 	}
 	fence, peer := replication_fence_current("scope", "key")
-	if fence != 7 || peer != "peerB" {
-		t.Errorf("after newer observe: expected (7, peerB), got (%d, %q)", fence, peer)
+	if fence != 7 || peer != "peer_b" {
+		t.Errorf("after newer observe: expected (7, peer_b), got (%d, %q)", fence, peer)
 	}
 }
 
@@ -2240,7 +2240,7 @@ func TestReplicationHealthEndpoint(t *testing.T) {
 	// Populate replication.db with representative state.
 	db := db_open("db/replication.db")
 	db.exec("insert into pair (peer, added) values ('peerA', ?)", now())
-	db.exec("insert into pair (peer, added) values ('peerB', ?)", now())
+	db.exec("insert into pair (peer, added) values ('peer_b', ?)", now())
 	db.exec("insert into hosts (user, peer, added) values ('uid-a', 'peerX', ?)", now())
 	db.exec("insert into hosts (user, peer, added) values ('uid-a', 'peerY', ?)", now())
 	db.exec("insert into hosts (user, peer, added) values ('uid-b', 'peerX', ?)", now())
@@ -2270,9 +2270,9 @@ func TestReplicationHealthEndpoint(t *testing.T) {
 		t.Errorf("peer_id: expected 'self', got %q", peer)
 	}
 
-	pairList, _ := resp["pair"].([]any)
-	if len(pairList) != 2 {
-		t.Errorf("pair: expected 2 entries, got %d (%v)", len(pairList), pairList)
+	pair_list, _ := resp["pair"].([]any)
+	if len(pair_list) != 2 {
+		t.Errorf("pair: expected 2 entries, got %d (%v)", len(pair_list), pair_list)
 	}
 
 	if h, _ := resp["hosts"].(float64); int(h) != 3 {
@@ -2296,11 +2296,11 @@ func TestReplicationHealthEndpoint(t *testing.T) {
 }
 
 func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
 	// Host 1 claims the lease for (scope, key) — fence=1.
-	switchTo("h1")
+	switch_to("h1")
 	if !replication_leader_claim("user:u", "tick", false) {
 		t.Fatal("h1 lease claim failed")
 	}
@@ -2311,7 +2311,7 @@ func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
 
 	// Host 2 sees an op from h1 stamped with fence=1 — accepts and
 	// records the witness.
-	switchTo("h2")
+	switch_to("h2")
 	if !replication_fence_observe("user:u", "tick", "peer1", h1_fence) {
 		t.Fatal("h2 must accept the fresh fence-1 op from peer1")
 	}
@@ -2350,11 +2350,11 @@ func TestIntegrationFenceWitnessLifecycle(t *testing.T) {
 }
 
 func TestIntegrationWebpushDedupReplicates(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
 	// Host 1: alice's webpush_mark_delivered records the row locally.
-	switchTo("h1")
+	switch_to("h1")
 	setup_users_test_schema()
 	udb1 := db_open("db/users.db")
 	udb1.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
@@ -2368,7 +2368,7 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 
 	// Host 2: alice is local too (keys-transfer landed). Apply the
 	// replicated webpush_delivered op directly via the apply path.
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb2 := db_open("db/users.db")
 	udb2.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
@@ -2401,10 +2401,10 @@ func TestIntegrationWebpushDedupReplicates(t *testing.T) {
 }
 
 func TestIntegrationEmailDedupReplicates(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h1")
+	switch_to("h1")
 	setup_users_test_schema()
 	udb1 := db_open("db/users.db")
 	udb1.exec("insert into users (uid, username) values (?, ?)", "uid-bob", "bob@example.com")
@@ -2412,7 +2412,7 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	u1 := &User{UID: "uid-bob"}
 	email_mark_delivered(u1, "bob@example.com", "login:abc")
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb2 := db_open("db/users.db")
 	udb2.exec("insert into users (uid, username) values (?, ?)", "uid-bob", "bob@example.com")
@@ -2446,7 +2446,7 @@ func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA"}, Sequence: 1}
 	replication_membership_apply("origin1", mc1)
 
-	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peerB", "peerC"}, Sequence: 2}
+	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peer_b", "peerC"}, Sequence: 2}
 	replication_membership_apply("origin2", mc2)
 
 	db := db_open("db/replication.db")
@@ -2460,7 +2460,7 @@ func TestReplicationMembershipNewerOverwrites(t *testing.T) {
 			got[p] = true
 		}
 	}
-	if got["peerA"] || !got["peerB"] || !got["peerC"] {
+	if got["peerA"] || !got["peer_b"] || !got["peerC"] {
 		t.Errorf("newer state must replace older; got %v", got)
 	}
 }

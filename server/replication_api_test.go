@@ -66,13 +66,13 @@ func TestApiReplicationStatusPopulated(t *testing.T) {
 	}
 	d := v.(*sl.Dict)
 
-	pairValue, _, _ := d.Get(sl.String("pair"))
-	pairList, ok := pairValue.(*sl.List)
+	pair_value, _, _ := d.Get(sl.String("pair"))
+	pair_list, ok := pair_value.(*sl.List)
 	if !ok {
-		t.Fatalf("pair is not a list: %T", pairValue)
+		t.Fatalf("pair is not a list: %T", pair_value)
 	}
-	if pairList.Len() != 2 {
-		t.Errorf("pair list len = %d, want 2", pairList.Len())
+	if pair_list.Len() != 2 {
+		t.Errorf("pair list len = %d, want 2", pair_list.Len())
 	}
 
 	want := map[string]int64{
@@ -89,8 +89,8 @@ func TestApiReplicationStatusPopulated(t *testing.T) {
 	}
 }
 
-// withUserThread runs fn with t.Local("user") set to u.
-func withUserThread(u *User, fn func(*sl.Thread)) {
+// with_user_thread runs fn with t.Local("user") set to u.
+func with_user_thread(u *User, fn func(*sl.Thread)) {
 	th := &sl.Thread{}
 	th.SetLocal("user", u)
 	fn(th)
@@ -163,7 +163,7 @@ func TestApiReplicationLinksAndHosts(t *testing.T) {
 	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-Z', 200, 1)")
 
 	alice := &User{UID: "u-alice"}
-	withUserThread(alice, func(th *sl.Thread) {
+	with_user_thread(alice, func(th *sl.Thread) {
 		v, err := api_replication_links(th, nil, sl.Tuple{}, nil)
 		if err != nil {
 			t.Fatalf("links: %v", err)
@@ -204,7 +204,7 @@ func TestApiReplicationLinkDeny(t *testing.T) {
 	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-bob', 'peer-A', '', 'ph-2', 0, 9999999999)")
 
 	alice := &User{UID: "u-alice"}
-	withUserThread(alice, func(th *sl.Thread) {
+	with_user_thread(alice, func(th *sl.Thread) {
 		v, err := api_replication_link_deny(th, sl.NewBuiltin("link_deny", api_replication_link_deny), sl.Tuple{sl.String("peer-A")}, nil)
 		if err != nil {
 			t.Fatalf("link_deny: %v", err)
@@ -329,7 +329,7 @@ func TestApiReplicationHostRemove(t *testing.T) {
 	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-A', 300, 0)")
 
 	alice := &User{UID: "u-alice"}
-	withUserThread(alice, func(th *sl.Thread) {
+	with_user_thread(alice, func(th *sl.Thread) {
 		v, err := api_replication_host_remove(th, sl.NewBuiltin("host_remove", api_replication_host_remove), sl.Tuple{sl.String("peer-A")}, nil)
 		if err != nil {
 			t.Fatalf("host_remove: %v", err)

@@ -15,8 +15,8 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-// makeTestDB creates a sqlite db at path with one table and three rows.
-func makeTestDB(t *testing.T, path string) {
+// make_test_db creates a sqlite db at path with one table and three rows.
+func make_test_db(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		t.Fatal(err)
@@ -36,8 +36,8 @@ func makeTestDB(t *testing.T, path string) {
 	}
 }
 
-// readTestDB returns the row count of table t.
-func readTestDB(t *testing.T, path string) int {
+// read_test_db returns the row count of table t.
+func read_test_db(t *testing.T, path string) int {
 	t.Helper()
 	db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
 	if err != nil {
@@ -53,17 +53,17 @@ func readTestDB(t *testing.T, path string) int {
 
 func TestSnapshotInPlaceProducesSnapFiles(t *testing.T) {
 	tmp := t.TempDir()
-	prevDataDir := data_dir
+	prev_data_dir := data_dir
 	data_dir = tmp
-	defer func() { data_dir = prevDataDir }()
+	defer func() { data_dir = prev_data_dir }()
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
 	}
 
 	// Two live DBs in different sub-paths.
-	makeTestDB(t, filepath.Join(tmp, "db", "users.db"))
-	makeTestDB(t, filepath.Join(tmp, "users", "alice", "feeds", "db", "feed.db"))
+	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
+	make_test_db(t, filepath.Join(tmp, "users", "alice", "feeds", "db", "feed.db"))
 
 	out := snapshot_in_place()
 
@@ -83,7 +83,7 @@ func TestSnapshotInPlaceProducesSnapFiles(t *testing.T) {
 			t.Errorf("expected snapshot at %s: %v", snap, err)
 			continue
 		}
-		if got := readTestDB(t, snap); got != 3 {
+		if got := read_test_db(t, snap); got != 3 {
 			t.Errorf("snapshot %s: got %d rows, want 3", snap, got)
 		}
 	}
@@ -99,9 +99,9 @@ func TestSnapshotInPlaceProducesSnapFiles(t *testing.T) {
 
 func TestSnapshotReapsStaleSnap(t *testing.T) {
 	tmp := t.TempDir()
-	prevDataDir := data_dir
+	prev_data_dir := data_dir
 	data_dir = tmp
-	defer func() { data_dir = prevDataDir }()
+	defer func() { data_dir = prev_data_dir }()
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestSnapshotReapsStaleSnap(t *testing.T) {
 	}
 
 	// One real DB so the snapshot routine has something to do.
-	makeTestDB(t, filepath.Join(tmp, "db", "users.db"))
+	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
 
 	out := snapshot_in_place()
 
@@ -131,18 +131,18 @@ func TestSnapshotReapsStaleSnap(t *testing.T) {
 
 func TestSnapshotSkipsRunAndCache(t *testing.T) {
 	tmp := t.TempDir()
-	prevDataDir := data_dir
+	prev_data_dir := data_dir
 	data_dir = tmp
-	defer func() { data_dir = prevDataDir }()
+	defer func() { data_dir = prev_data_dir }()
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
 	}
 
 	// A *.db file in run/ shouldn't be snapshotted.
-	makeTestDB(t, filepath.Join(tmp, "run", "should_be_ignored.db"))
-	makeTestDB(t, filepath.Join(tmp, "cache", "should_be_ignored.db"))
-	makeTestDB(t, filepath.Join(tmp, "db", "users.db"))
+	make_test_db(t, filepath.Join(tmp, "run", "should_be_ignored.db"))
+	make_test_db(t, filepath.Join(tmp, "cache", "should_be_ignored.db"))
+	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
 
 	out := snapshot_in_place()
 

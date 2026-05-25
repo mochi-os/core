@@ -191,13 +191,13 @@ func TestFrameworkStreamRestart(t *testing.T) {
 
 // TestFrameworkPerPeerStreamsIndependent: two peers' sequence streams
 // for the same (scope, user, db) are tracked independently. Cursor on
-// peerA at 5 doesn't affect peerB's gate logic.
+// peerA at 5 doesn't affect peer_b's gate logic.
 func TestFrameworkPerPeerStreamsIndependent(t *testing.T) {
 	cleanup := setup_framework_test(t)
 	defer cleanup()
 
 	replication_op_receive("peerA", build_schedule_op(1, 0, "from-A", 100))
-	replication_op_receive("peerB", build_schedule_op(1, 0, "from-B", 200))
+	replication_op_receive("peer_b", build_schedule_op(1, 0, "from-B", 200))
 	replication_op_receive("peerA", build_schedule_op(2, 1, "from-A2", 300))
 
 	row, _ := schedule_db().row("select count(*) as n from schedule where user=?", fwUID)
@@ -205,12 +205,12 @@ func TestFrameworkPerPeerStreamsIndependent(t *testing.T) {
 		t.Errorf("rows = %d, want 3 (1 per stream + 1 chain on A)", n)
 	}
 	rdb := db_open("db/replication.db")
-	cA, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
-	cB, _ := replication_cursor(rdb, "peerB", repl_scope_app, fwUID, "schedule")
-	if cA != 2 {
-		t.Errorf("peerA cursor = %d, want 2", cA)
+	c_a, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	c_b, _ := replication_cursor(rdb, "peer_b", repl_scope_app, fwUID, "schedule")
+	if c_a != 2 {
+		t.Errorf("peerA cursor = %d, want 2", c_a)
 	}
-	if cB != 1 {
-		t.Errorf("peerB cursor = %d, want 1", cB)
+	if c_b != 1 {
+		t.Errorf("peer_b cursor = %d, want 1", c_b)
 	}
 }

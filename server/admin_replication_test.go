@@ -171,8 +171,8 @@ func TestAdminReplicationOpsUserFilter(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into sequence (user, scope, next) values ('alice', 'app', 12)")
 	rdb.exec("insert into sequence (user, scope, next) values ('bob', 'app', 99)")
-	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peerB', 'app', 'alice', 10, 0)")
-	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peerB', 'app', 'bob', 50, 0)")
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer_b', 'app', 'alice', 10, 0)")
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer_b', 'app', 'bob', 50, 0)")
 
 	_, resp := admin_replication_call(t, "GET", "/_/admin/replication/ops?user=alice", nil, admin_replication_ops)
 
@@ -187,9 +187,9 @@ func TestAdminReplicationOpsUserFilter(t *testing.T) {
 		t.Error("user filter must not leak other users' emitted state")
 	}
 	applied, _ := resp["applied"].(map[string]any)
-	peerB, _ := applied["peerB"].(map[string]any)
-	if got, _ := peerB["app"].(float64); got != 10 {
-		t.Errorf("applied/peerB/app = %v, want 10", got)
+	peer_b, _ := applied["peer_b"].(map[string]any)
+	if got, _ := peer_b["app"].(float64); got != 10 {
+		t.Errorf("applied/peer_b/app = %v, want 10", got)
 	}
 }
 
@@ -351,12 +351,12 @@ func TestAdminReplicationPairsRollup(t *testing.T) {
 		t.Fatalf("pairs = %d, want 2", len(pairs))
 	}
 
-	byPeer := map[string]map[string]any{}
+	by_peer := map[string]map[string]any{}
 	for _, p := range pairs {
 		pd := p.(map[string]any)
-		byPeer[pd["peer"].(string)] = pd
+		by_peer[pd["peer"].(string)] = pd
 	}
-	a := byPeer["peer-A"]
+	a := by_peer["peer-A"]
 	if a == nil {
 		t.Fatal("peer-A missing")
 	}
@@ -382,17 +382,17 @@ func TestAdminReplicationPairsRollup(t *testing.T) {
 	if a["seen_count"].(float64) != 2 {
 		t.Errorf("peer-A seen_count = %v, want 2", a["seen_count"])
 	}
-	heldSelf := a["leases_held_by_self"].([]any)
-	if len(heldSelf) != 1 {
-		t.Errorf("peer-A leases_held_by_self = %v, want 1", heldSelf)
+	held_self := a["leases_held_by_self"].([]any)
+	if len(held_self) != 1 {
+		t.Errorf("peer-A leases_held_by_self = %v, want 1", held_self)
 	}
-	heldPeer := a["leases_held_by_peer"].([]any)
-	if len(heldPeer) != 1 {
-		t.Errorf("peer-A leases_held_by_peer = %v, want 1 (stale lease must be excluded)", heldPeer)
+	held_peer := a["leases_held_by_peer"].([]any)
+	if len(held_peer) != 1 {
+		t.Errorf("peer-A leases_held_by_peer = %v, want 1 (stale lease must be excluded)", held_peer)
 	}
 
 	// peer-B has cursor data but no pending / no seen.
-	b := byPeer["peer-B"]
+	b := by_peer["peer-B"]
 	if pending := b["pending"].(map[string]any); pending["count"].(float64) != 0 {
 		t.Errorf("peer-B pending.count = %v, want 0", pending["count"])
 	}

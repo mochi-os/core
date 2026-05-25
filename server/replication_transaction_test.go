@@ -19,10 +19,10 @@ import (
 // rollback / close paths without spinning up a full Starlark context.
 func new_tx_handle(t *testing.T) (h *TransactionHandle, cleanup func()) {
 	t.Helper()
-	clean, userUID, appID := setup_sql_replication_test(t)
+	clean, user_uid, app_id := setup_sql_replication_test(t)
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	av := a.internal
 	db := db_app(u, a)
 	tx, err := db.starlark.Beginx()

@@ -382,9 +382,9 @@ func BenchmarkSlDecode(b *testing.B) {
 // Test that Starlark timeout properly cancels execution
 func TestStarlarkTimeoutCancellation(t *testing.T) {
 	// Save original timeout and set a short one for testing
-	originalTimeout := starlark_default_timeout
+	original_timeout := starlark_default_timeout
 	starlark_default_timeout = 100 * time.Millisecond
-	defer func() { starlark_default_timeout = originalTimeout }()
+	defer func() { starlark_default_timeout = original_timeout }()
 
 	// Initialize semaphore if not already done
 	if starlark_sem == nil {
@@ -434,9 +434,9 @@ func TestStarlarkStepLimit(t *testing.T) {
 	// Use a long timeout so we know step limit triggered, not timeout.
 	// Generous to absorb -race overhead — under the race detector,
 	// hitting 1B Starlark steps can take >10s on a contended host.
-	originalTimeout := starlark_default_timeout
+	original_timeout := starlark_default_timeout
 	starlark_default_timeout = 30 * time.Second
-	defer func() { starlark_default_timeout = originalTimeout }()
+	defer func() { starlark_default_timeout = original_timeout }()
 
 	// Initialize semaphore if not already done
 	if starlark_sem == nil {

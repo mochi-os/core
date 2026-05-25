@@ -436,45 +436,45 @@ func BenchmarkLikeEscape(b *testing.B) {
 // Test unzip function
 func TestUnzip(t *testing.T) {
 	// Create a temporary directory for testing
-	tmpDir := t.TempDir()
+	tmp_dir := t.TempDir()
 
 	// Create a simple test zip file
-	zipPath := tmpDir + "/test.zip"
-	destDir := tmpDir + "/dest"
+	zip_path := tmp_dir + "/test.zip"
+	dest_dir := tmp_dir + "/dest"
 
 	// Create zip with a normal file
-	zipFile, err := os.Create(zipPath)
+	zip_file, err := os.Create(zip_path)
 	if err != nil {
 		t.Fatalf("Failed to create zip file: %v", err)
 	}
 
-	zipWriter := zip.NewWriter(zipFile)
+	zip_writer := zip.NewWriter(zip_file)
 
 	// Add a normal file
-	w, err := zipWriter.Create("hello.txt")
+	w, err := zip_writer.Create("hello.txt")
 	if err != nil {
 		t.Fatalf("Failed to create file in zip: %v", err)
 	}
 	w.Write([]byte("Hello, World!"))
 
 	// Add a file in a subdirectory
-	w, err = zipWriter.Create("subdir/nested.txt")
+	w, err = zip_writer.Create("subdir/nested.txt")
 	if err != nil {
 		t.Fatalf("Failed to create nested file in zip: %v", err)
 	}
 	w.Write([]byte("Nested content"))
 
-	zipWriter.Close()
-	zipFile.Close()
+	zip_writer.Close()
+	zip_file.Close()
 
 	// Test normal extraction
-	err = unzip(zipPath, destDir)
+	err = unzip(zip_path, dest_dir)
 	if err != nil {
 		t.Fatalf("unzip failed: %v", err)
 	}
 
 	// Verify files were extracted
-	content, err := os.ReadFile(destDir + "/hello.txt")
+	content, err := os.ReadFile(dest_dir + "/hello.txt")
 	if err != nil {
 		t.Errorf("Failed to read extracted file: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestUnzip(t *testing.T) {
 		t.Errorf("Extracted content = %q, want %q", string(content), "Hello, World!")
 	}
 
-	content, err = os.ReadFile(destDir + "/subdir/nested.txt")
+	content, err = os.ReadFile(dest_dir + "/subdir/nested.txt")
 	if err != nil {
 		t.Errorf("Failed to read nested extracted file: %v", err)
 	}
@@ -493,39 +493,39 @@ func TestUnzip(t *testing.T) {
 
 // Test unzip path traversal protection
 func TestUnzipPathTraversal(t *testing.T) {
-	tmpDir := t.TempDir()
-	zipPath := tmpDir + "/malicious.zip"
-	destDir := tmpDir + "/dest"
-	outsideFile := tmpDir + "/outside.txt"
+	tmp_dir := t.TempDir()
+	zip_path := tmp_dir + "/malicious.zip"
+	dest_dir := tmp_dir + "/dest"
+	outside_file := tmp_dir + "/outside.txt"
 
 	// Create zip with path traversal attempt
-	zipFile, err := os.Create(zipPath)
+	zip_file, err := os.Create(zip_path)
 	if err != nil {
 		t.Fatalf("Failed to create zip file: %v", err)
 	}
 
-	zipWriter := zip.NewWriter(zipFile)
+	zip_writer := zip.NewWriter(zip_file)
 
 	// Try to create a file outside the destination using ../
-	w, err := zipWriter.Create("../outside.txt")
+	w, err := zip_writer.Create("../outside.txt")
 	if err != nil {
 		t.Fatalf("Failed to create file in zip: %v", err)
 	}
 	w.Write([]byte("malicious content"))
 
-	zipWriter.Close()
-	zipFile.Close()
+	zip_writer.Close()
+	zip_file.Close()
 
 	// Create destination directory
-	os.MkdirAll(destDir, 0755)
+	os.MkdirAll(dest_dir, 0755)
 
 	// Attempt extraction - os.Root should prevent the traversal
-	err = unzip(zipPath, destDir)
+	err = unzip(zip_path, dest_dir)
 
 	// os.Root returns an error for path traversal attempts
 	if err == nil {
 		// If no error, verify the file was NOT created outside
-		if _, statErr := os.Stat(outsideFile); statErr == nil {
+		if _, statErr := os.Stat(outside_file); statErr == nil {
 			t.Errorf("Path traversal succeeded - file created outside destination")
 		}
 	}

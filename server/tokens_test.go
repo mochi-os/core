@@ -110,13 +110,13 @@ func TestTokenHashEmpty(t *testing.T) {
 
 // Helper to create test database for token tests
 func create_token_test_db(t *testing.T) (*DB, func()) {
-	tmpDir, err := os.MkdirTemp("", "mochi_token_test")
+	tmp_dir, err := os.MkdirTemp("", "mochi_token_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	origDataDir := data_dir
-	data_dir = tmpDir
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
 
 	// Create users database with tokens table
 	db := db_open("db/users.db")
@@ -139,8 +139,8 @@ func create_token_test_db(t *testing.T) (*DB, func()) {
 
 	cleanup := func() {
 		db.close()
-		data_dir = origDataDir
-		os.RemoveAll(tmpDir)
+		data_dir = orig_data_dir
+		os.RemoveAll(tmp_dir)
 	}
 
 	return db, cleanup
@@ -238,9 +238,9 @@ func TestTokenListForUser(t *testing.T) {
 
 	// Create token for different user
 	db.exec("INSERT INTO users (id, username) VALUES (2, 'otheruser')")
-	otherToken := token_generate()
+	other_token := token_generate()
 	db.exec(`INSERT INTO tokens (hash, user, name, created) VALUES (?, ?, ?, ?)`,
-		token_hash(otherToken), 2, "Other", time.Now().Format("2006-01-02 15:04:05"))
+		token_hash(other_token), 2, "Other", time.Now().Format("2006-01-02 15:04:05"))
 
 	// Count tokens for user 1
 	row, _ := db.row("SELECT COUNT(*) as count FROM tokens WHERE user = ?", 1)

@@ -59,9 +59,9 @@ func TestPairBackfillEmitsForEveryReplicatedRow(t *testing.T) {
 	}
 	var transferred []string
 
-	origSet := replication_system_set_to_peer_var
-	origRow := replication_system_row_to_peer_var
-	origTransfer := replication_transfer_keys_var
+	orig_set := replication_system_set_to_peer_var
+	orig_row := replication_system_row_to_peer_var
+	orig_transfer := replication_transfer_keys_var
 	replication_system_set_to_peer_var = func(peer, db, table, row, field, value string) {
 		setEmits = append(setEmits, struct{ db, table, row, field, value string }{db, table, row, field, value})
 	}
@@ -78,9 +78,9 @@ func TestPairBackfillEmitsForEveryReplicatedRow(t *testing.T) {
 		return true
 	}
 	defer func() {
-		replication_system_set_to_peer_var = origSet
-		replication_system_row_to_peer_var = origRow
-		replication_transfer_keys_var = origTransfer
+		replication_system_set_to_peer_var = orig_set
+		replication_system_row_to_peer_var = orig_row
+		replication_transfer_keys_var = orig_transfer
 	}()
 
 	replication_pair_backfill_impl("peer-NEW")
@@ -100,23 +100,23 @@ func TestPairBackfillEmitsForEveryReplicatedRow(t *testing.T) {
 	}
 
 	// Spot-check a couple of the emit shapes.
-	foundSettings := false
+	found_settings := false
 	for _, e := range setEmits {
 		if e.db == "settings" && e.table == "settings" && e.row == "server_name" && e.field == "value" && e.value == "test-server" {
-			foundSettings = true
+			found_settings = true
 		}
 	}
-	if !foundSettings {
+	if !found_settings {
 		t.Errorf("settings.server_name emit missing from %+v", setEmits)
 	}
 
-	foundRoute := false
+	found_route := false
 	for _, e := range rowEmits {
 		if e.db == "domains" && e.table == "routes" && e.key["domain"] == "example.org" && e.key["path"] == "/" {
-			foundRoute = true
+			found_route = true
 		}
 	}
-	if !foundRoute {
+	if !found_route {
 		t.Errorf("domains.routes emit missing from %+v", rowEmits)
 	}
 }
@@ -127,9 +127,9 @@ func TestPairBackfillSkipsEmptyPeer(t *testing.T) {
 	defer cleanup()
 
 	called := false
-	origTransfer := replication_transfer_keys_var
+	orig_transfer := replication_transfer_keys_var
 	replication_transfer_keys_var = func(uid, peer string) bool { called = true; return true }
-	defer func() { replication_transfer_keys_var = origTransfer }()
+	defer func() { replication_transfer_keys_var = orig_transfer }()
 
 	replication_pair_backfill_impl("")
 	if called {

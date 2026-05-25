@@ -43,12 +43,12 @@ func install_test_app(t *testing.T) (cleanup func()) {
 }
 
 func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 	defer install_test_app(t)()
 
 	// h1: register user, create the app DB by doing a local write.
-	switchTo("h1")
+	switch_to("h1")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
@@ -67,7 +67,7 @@ func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
 	}
 
 	// h2: register the user, apply, verify the row landed.
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb = db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
@@ -91,10 +91,10 @@ func TestIntegrationSQLCommandAcrossHosts(t *testing.T) {
 // the same operator's paired hosts but not across per-user link
 // partners - admin authority is per-operator.
 func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username, role) values (?, ?, 'user')", "uid-alice", "alice@example.com")
@@ -116,10 +116,10 @@ func TestIntegrationUsersUsersRoleAcrossHosts(t *testing.T) {
 // silently dropped. Protects against cross-operator privilege
 // escalation.
 func TestIntegrationUsersUsersRoleNotOnPerUserPath(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username, role) values (?, ?, 'user')", "uid-alice", "alice@example.com")
@@ -143,22 +143,22 @@ func TestIntegrationUsersUsersRoleNotOnPerUserPath(t *testing.T) {
 }
 
 func TestIntegrationUsersEntitiesCreateAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
 
-	entityID := test_entity_id('z')
+	entity_id := test_entity_id('z')
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-alice",
 		Database: "users", Operation: "users-row.set", Sequence: 1,
 		Payload: cbor_encode(&UsersRow{
 			Table: "entities",
 			Cols: map[string]string{
-				"id":          entityID,
+				"id":          entity_id,
 				"private":     "priv-bytes",
 				"fingerprint": "fp-xyz",
 				"parent":      "",
@@ -173,7 +173,7 @@ func TestIntegrationUsersEntitiesCreateAcrossHosts(t *testing.T) {
 	if got := replication_apply_op(op); got != ApplyApplied {
 		t.Fatalf("apply: want ApplyApplied, got %v", got)
 	}
-	row, _ := udb.row("select user, class, name from entities where id=?", entityID)
+	row, _ := udb.row("select user, class, name from entities where id=?", entity_id)
 	if row == nil {
 		t.Fatal("entity row missing after apply")
 	}
@@ -186,10 +186,10 @@ func TestIntegrationUsersEntitiesCreateAcrossHosts(t *testing.T) {
 }
 
 func TestIntegrationUsersEntitiesUpdateAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")
@@ -217,10 +217,10 @@ func TestIntegrationUsersEntitiesUpdateAcrossHosts(t *testing.T) {
 }
 
 func TestIntegrationUsersEntitiesDeleteAcrossHosts(t *testing.T) {
-	switchTo, cleanup := integration_setup(t)
+	switch_to, cleanup := integration_setup(t)
 	defer cleanup()
 
-	switchTo("h2")
+	switch_to("h2")
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values (?, ?)", "uid-alice", "alice@example.com")

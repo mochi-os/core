@@ -14,21 +14,21 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
-// generateSubscriptionKeys returns a valid (auth, p256dh) pair for tests.
+// generate_subscription_keys returns a valid (auth, p256dh) pair for tests.
 // auth is 16 random bytes; p256dh is the public half of an ephemeral P-256
 // keypair in uncompressed form. Both base64url-encoded, matching the
 // format webpush-go expects.
-func generateSubscriptionKeys(t *testing.T) (auth, p256dh string) {
+func generate_subscription_keys(t *testing.T) (auth, p256dh string) {
 	t.Helper()
-	authBytes := make([]byte, 16)
-	if _, err := rand.Read(authBytes); err != nil {
+	auth_bytes := make([]byte, 16)
+	if _, err := rand.Read(auth_bytes); err != nil {
 		t.Fatalf("rand.Read: %v", err)
 	}
 	priv, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("ecdh.GenerateKey: %v", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(authBytes),
+	return base64.RawURLEncoding.EncodeToString(auth_bytes),
 		base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes())
 }
 
@@ -42,13 +42,13 @@ func TestUnifiedPushProviderRegistered(t *testing.T) {
 	if p.Type != "unifiedpush" {
 		t.Errorf("Type = %q, want %q", p.Type, "unifiedpush")
 	}
-	hasNotify := false
+	has_notify := false
 	for _, c := range p.Capabilities {
 		if c == "notify" {
-			hasNotify = true
+			has_notify = true
 		}
 	}
-	if !hasNotify {
+	if !has_notify {
 		t.Error("unifiedpush provider should have notify capability")
 	}
 	if p.Flow != "browser" {
@@ -105,8 +105,8 @@ func TestUnifiedPushDeliverRemote(t *testing.T) {
 	}))
 	defer server.Close()
 
-	setupVAPID(t)
-	auth, p256dh := generateSubscriptionKeys(t)
+	setup_vapid(t)
+	auth, p256dh := generate_subscription_keys(t)
 
 	user := &User{UID: "u1"}
 	data := map[string]any{
@@ -133,8 +133,8 @@ func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
 	}))
 	defer server.Close()
 
-	setupVAPID(t)
-	auth, p256dh := generateSubscriptionKeys(t)
+	setup_vapid(t)
+	auth, p256dh := generate_subscription_keys(t)
 
 	user := &User{UID: "u1"}
 	data := map[string]any{
@@ -148,19 +148,19 @@ func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
 	}
 }
 
-// setupVAPID injects a test VAPID keypair into the package globals and
+// setup_vapid injects a test VAPID keypair into the package globals and
 // consumes webpush_once so the lazy initialiser doesn't later try to
 // write through to a non-existent settings DB. Restored on test cleanup.
-func setupVAPID(t *testing.T) {
+func setup_vapid(t *testing.T) {
 	t.Helper()
 	priv, pub, err := webpush.GenerateVAPIDKeys()
 	if err != nil {
 		t.Fatalf("GenerateVAPIDKeys: %v", err)
 	}
-	origPub, origPriv := webpush_public, webpush_private
+	orig_pub, origPriv := webpush_public, webpush_private
 	webpush_public, webpush_private = pub, priv
 	webpush_once.Do(func() {}) // mark consumed
-	t.Cleanup(func() { webpush_public, webpush_private = origPub, origPriv })
+	t.Cleanup(func() { webpush_public, webpush_private = orig_pub, origPriv })
 }
 
 // TestUnifiedPushDeliverEmptyEndpoint guards against silent success when an
@@ -178,19 +178,19 @@ func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
 // not some hardcoded URL or default. Catches a regression where the path
 // logic accidentally rewrites foreign endpoints.
 func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
-	expectedHost := ""
+	expected_host := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture the host so the test can assert the request landed at our
 		// sentinel and not some default.
-		if expectedHost == "" {
-			expectedHost = r.Host
+		if expected_host == "" {
+			expected_host = r.Host
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
 
-	setupVAPID(t)
-	auth, p256dh := generateSubscriptionKeys(t)
+	setup_vapid(t)
+	auth, p256dh := generate_subscription_keys(t)
 
 	user := &User{UID: "u1"}
 	data := map[string]any{
@@ -202,13 +202,13 @@ func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 	if !account_deliver_unifiedpush(user, 42, data, "T", "B", "", "tag", "", "") {
 		t.Fatal("delivery failed")
 	}
-	if expectedHost == "" {
+	if expected_host == "" {
 		t.Fatal("sentinel server received no requests")
 	}
 	// Strip the http:// off server.URL to extract the host:port for comparison.
-	wantHost := server.URL[len("http://"):]
-	if expectedHost != wantHost {
-		t.Errorf("delivered to host %q, want %q", expectedHost, wantHost)
+	want_host := server.URL[len("http://"):]
+	if expected_host != want_host {
+		t.Errorf("delivered to host %q, want %q", expected_host, want_host)
 	}
 }
 

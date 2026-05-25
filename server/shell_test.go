@@ -133,7 +133,7 @@ func TestShellSkipsSystemEndpoints(t *testing.T) {
 func TestShellRejectsResourceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	newCtx := func(url string) *gin.Context {
+	new_context := func(url string) *gin.Context {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("GET", url, nil)
@@ -150,7 +150,7 @@ func TestShellRejectsResourceRoutes(t *testing.T) {
 		"/repositories/myrepo/git/info/refs",
 	}
 	for _, p := range paths {
-		c := newCtx(p)
+		c := new_context(p)
 		if web_should_serve_shell(c) {
 			t.Errorf("web_should_serve_shell should return false for resource route %q", p)
 		}
@@ -176,7 +176,7 @@ func TestShellRequiresAuth(t *testing.T) {
 func TestIsIframeRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	newCtx := func(url string) *gin.Context {
+	new_context := func(url string) *gin.Context {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("GET", url, nil)
@@ -184,21 +184,21 @@ func TestIsIframeRequest(t *testing.T) {
 	}
 
 	// Case 1: shell sets iframe.src → Sec-Fetch-Dest: iframe
-	c := newCtx("/feeds/")
+	c := new_context("/feeds/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "iframe")
 	if !web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe")
 	}
 
 	// Case 2: navigation within shell iframe → _shell=1 query parameter
-	c = newCtx("/feeds/?_shell=1")
+	c = new_context("/feeds/?_shell=1")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	if !web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return true for _shell=1 query parameter")
 	}
 
 	// Case 3: cross-site top-level navigation (e.g., link from Reddit) → NOT iframe
-	c = newCtx("/")
+	c = new_context("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
 	if web_is_iframe_request(c) {
@@ -206,7 +206,7 @@ func TestIsIframeRequest(t *testing.T) {
 	}
 
 	// Case 4: normal top-level navigation → document + same-origin
-	c = newCtx("/")
+	c = new_context("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	c.Request.Header.Set("Sec-Fetch-Site", "same-origin")
 	if web_is_iframe_request(c) {
@@ -214,7 +214,7 @@ func TestIsIframeRequest(t *testing.T) {
 	}
 
 	// Case 5: document without Sec-Fetch-Site or _shell
-	c = newCtx("/")
+	c = new_context("/")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
 	if web_is_iframe_request(c) {
 		t.Error("web_is_iframe_request should return false for document without Sec-Fetch-Site or _shell")

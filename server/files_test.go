@@ -397,22 +397,22 @@ func BenchmarkFileNameType(b *testing.B) {
 
 // Test dir_size calculation
 func TestDirSize(t *testing.T) {
-	testDir := t.TempDir()
+	test_dir := t.TempDir()
 
-	if err := file_write(testDir+"/file1.txt", []byte("hello")); err != nil {
+	if err := file_write(test_dir+"/file1.txt", []byte("hello")); err != nil {
 		t.Fatalf("file_write failed: %v", err)
 	}
-	if err := file_write(testDir+"/file2.txt", []byte("world!")); err != nil {
+	if err := file_write(test_dir+"/file2.txt", []byte("world!")); err != nil {
 		t.Fatalf("file_write failed: %v", err)
 	}
-	if err := os.MkdirAll(testDir+"/subdir", 0755); err != nil {
+	if err := os.MkdirAll(test_dir+"/subdir", 0755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
 	}
-	if err := file_write(testDir+"/subdir/file3.txt", []byte("test")); err != nil {
+	if err := file_write(test_dir+"/subdir/file3.txt", []byte("test")); err != nil {
 		t.Fatalf("file_write failed: %v", err)
 	}
 
-	size, err := dir_size(testDir)
+	size, err := dir_size(test_dir)
 	if err != nil {
 		t.Fatalf("dir_size failed: %v", err)
 	}
@@ -425,17 +425,17 @@ func TestDirSize(t *testing.T) {
 
 // Test file storage limit is 10GB per user
 func TestFileStorageLimitConstant(t *testing.T) {
-	expectedLimit := int64(10 * 1024 * 1024 * 1024)
-	if file_max_storage != expectedLimit {
-		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_max_storage, expectedLimit)
+	expected_limit := int64(10 * 1024 * 1024 * 1024)
+	if file_max_storage != expected_limit {
+		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_max_storage, expected_limit)
 	}
 }
 
 // Test api_file_base helper function
 func TestApiFileBase(t *testing.T) {
-	origDataDir := data_dir
+	orig_data_dir := data_dir
 	data_dir = "/var/lib/mochi"
-	defer func() { data_dir = origDataDir }()
+	defer func() { data_dir = orig_data_dir }()
 
 	user := &User{UID: "u42"}
 	app := &App{id: "testapp"}
@@ -450,9 +450,9 @@ func TestApiFileBase(t *testing.T) {
 
 // Test api_file_path helper function
 func TestApiFilePath(t *testing.T) {
-	origDataDir := data_dir
+	orig_data_dir := data_dir
 	data_dir = "/var/lib/mochi"
-	defer func() { data_dir = origDataDir }()
+	defer func() { data_dir = orig_data_dir }()
 
 	user := &User{UID: "u42"}
 	app := &App{id: "testapp"}
@@ -467,18 +467,18 @@ func TestApiFilePath(t *testing.T) {
 
 // Test os.Root prevents path traversal for file operations
 func TestOsRootPathTraversalProtection(t *testing.T) {
-	tmpDir := t.TempDir()
-	targetDir := filepath.Join(tmpDir, "target")
-	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	tmp_dir := t.TempDir()
+	target_dir := filepath.Join(tmp_dir, "target")
+	outside_file := filepath.Join(tmp_dir, "outside.txt")
 
 	// Create target directory
-	os.MkdirAll(targetDir, 0755)
+	os.MkdirAll(target_dir, 0755)
 
 	// Create a file outside the target that we'll try to access
-	os.WriteFile(outsideFile, []byte("secret data"), 0644)
+	os.WriteFile(outside_file, []byte("secret data"), 0644)
 
 	// Open root at target directory
-	root, err := os.OpenRoot(targetDir)
+	root, err := os.OpenRoot(target_dir)
 	if err != nil {
 		t.Fatalf("Failed to open root: %v", err)
 	}
@@ -497,19 +497,19 @@ func TestOsRootPathTraversalProtection(t *testing.T) {
 	}
 
 	// Verify the escape file was not created
-	if file_exists(filepath.Join(tmpDir, "escape.txt")) {
+	if file_exists(filepath.Join(tmp_dir, "escape.txt")) {
 		t.Error("File was created outside root despite os.Root protection")
 	}
 }
 
 // Test os.Root prevents absolute path access
 func TestOsRootAbsolutePathProtection(t *testing.T) {
-	tmpDir := t.TempDir()
-	targetDir := filepath.Join(tmpDir, "target")
+	tmp_dir := t.TempDir()
+	target_dir := filepath.Join(tmp_dir, "target")
 
-	os.MkdirAll(targetDir, 0755)
+	os.MkdirAll(target_dir, 0755)
 
-	root, err := os.OpenRoot(targetDir)
+	root, err := os.OpenRoot(target_dir)
 	if err != nil {
 		t.Fatalf("Failed to open root: %v", err)
 	}
@@ -524,25 +524,25 @@ func TestOsRootAbsolutePathProtection(t *testing.T) {
 
 // Test os.Root prevents symlink escape
 func TestOsRootSymlinkProtection(t *testing.T) {
-	tmpDir := t.TempDir()
-	targetDir := filepath.Join(tmpDir, "target")
-	outsideDir := filepath.Join(tmpDir, "outside")
+	tmp_dir := t.TempDir()
+	target_dir := filepath.Join(tmp_dir, "target")
+	outside_dir := filepath.Join(tmp_dir, "outside")
 
-	os.MkdirAll(targetDir, 0755)
-	os.MkdirAll(outsideDir, 0755)
+	os.MkdirAll(target_dir, 0755)
+	os.MkdirAll(outside_dir, 0755)
 
 	// Create a secret file outside target
-	secretFile := filepath.Join(outsideDir, "secret.txt")
-	os.WriteFile(secretFile, []byte("secret"), 0644)
+	secret_file := filepath.Join(outside_dir, "secret.txt")
+	os.WriteFile(secret_file, []byte("secret"), 0644)
 
 	// Create a symlink inside target pointing outside
-	symlinkPath := filepath.Join(targetDir, "link")
-	err := os.Symlink(outsideDir, symlinkPath)
+	symlink_path := filepath.Join(target_dir, "link")
+	err := os.Symlink(outside_dir, symlink_path)
 	if err != nil {
 		t.Skipf("Symlink creation failed (may require privileges): %v", err)
 	}
 
-	root, err := os.OpenRoot(targetDir)
+	root, err := os.OpenRoot(target_dir)
 	if err != nil {
 		t.Fatalf("Failed to open root: %v", err)
 	}
@@ -557,9 +557,9 @@ func TestOsRootSymlinkProtection(t *testing.T) {
 
 // Test os.Root allows normal operations within root
 func TestOsRootNormalOperations(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmp_dir := t.TempDir()
 
-	root, err := os.OpenRoot(tmpDir)
+	root, err := os.OpenRoot(tmp_dir)
 	if err != nil {
 		t.Fatalf("Failed to open root: %v", err)
 	}
@@ -625,34 +625,34 @@ func TestOsRootNormalOperations(t *testing.T) {
 // Test cache cleanup removes old files
 func TestCacheCleanup(t *testing.T) {
 	// Save and restore cache_dir
-	origCacheDir := cache_dir
+	orig_cache_dir := cache_dir
 	cache_dir = t.TempDir()
-	defer func() { cache_dir = origCacheDir }()
+	defer func() { cache_dir = orig_cache_dir }()
 
 	// Create test files
-	oldFile := filepath.Join(cache_dir, "old.txt")
-	newFile := filepath.Join(cache_dir, "new.txt")
-	if err := file_write(oldFile, []byte("old")); err != nil {
+	old_file := filepath.Join(cache_dir, "old.txt")
+	new_file := filepath.Join(cache_dir, "new.txt")
+	if err := file_write(old_file, []byte("old")); err != nil {
 		t.Fatalf("file_write failed: %v", err)
 	}
-	if err := file_write(newFile, []byte("new")); err != nil {
+	if err := file_write(new_file, []byte("new")); err != nil {
 		t.Fatalf("file_write failed: %v", err)
 	}
 
 	// Set old file to 8 days ago (older than cache_max_age of 7 days)
-	oldTime := time.Now().Add(-8 * 24 * time.Hour)
-	os.Chtimes(oldFile, oldTime, oldTime)
+	old_time := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(old_file, old_time, old_time)
 
 	// Run cleanup
 	cache_cleanup()
 
 	// Old file should be removed
-	if file_exists(oldFile) {
+	if file_exists(old_file) {
 		t.Error("cache_cleanup should have removed old file")
 	}
 
 	// New file should still exist
-	if !file_exists(newFile) {
+	if !file_exists(new_file) {
 		t.Error("cache_cleanup should not have removed new file")
 	}
 }

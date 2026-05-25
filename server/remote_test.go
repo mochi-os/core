@@ -17,32 +17,32 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 	tests := []struct {
 		name           string
 		handler        http.HandlerFunc
-		expectErrorNil bool
-		expectContains string
+		expect_error_nil bool
+		expect_contains string
 	}{
 		{
 			name: "server returns 404",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(404)
 			},
-			expectErrorNil: false,
-			expectContains: "server returned status 404",
+			expect_error_nil: false,
+			expect_contains: "server returned status 404",
 		},
 		{
 			name: "server returns 500",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(500)
 			},
-			expectErrorNil: false,
-			expectContains: "server returned status 500",
+			expect_error_nil: false,
+			expect_contains: "server returned status 500",
 		},
 		{
 			name: "server returns invalid JSON",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Write([]byte("not json"))
 			},
-			expectErrorNil: false,
-			expectContains: "failed to parse p2p info",
+			expect_error_nil: false,
+			expect_contains: "failed to parse p2p info",
 		},
 		{
 			name: "server returns empty peer",
@@ -52,8 +52,8 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 					"addresses": []string{"/ip4/127.0.0.1/tcp/1443"},
 				})
 			},
-			expectErrorNil: false,
-			expectContains: "invalid p2p info: missing peer or addresses",
+			expect_error_nil: false,
+			expect_contains: "invalid p2p info: missing peer or addresses",
 		},
 		{
 			name: "server returns empty addresses",
@@ -63,8 +63,8 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 					"addresses": []string{},
 				})
 			},
-			expectErrorNil: false,
-			expectContains: "invalid p2p info: missing peer or addresses",
+			expect_error_nil: false,
+			expect_contains: "invalid p2p info: missing peer or addresses",
 		},
 		{
 			name: "server returns null addresses",
@@ -73,8 +73,8 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 					"peer": "12D3KooWTestPeerIdMockValue123456789",
 				})
 			},
-			expectErrorNil: false,
-			expectContains: "invalid p2p info: missing peer or addresses",
+			expect_error_nil: false,
+			expect_contains: "invalid p2p info: missing peer or addresses",
 		},
 	}
 
@@ -84,14 +84,14 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 			defer server.Close()
 
 			_, err := peer_connect_url(server.URL)
-			if tt.expectErrorNil && err != nil {
+			if tt.expect_error_nil && err != nil {
 				t.Errorf("expected no error, got %v", err)
 			}
-			if !tt.expectErrorNil && err == nil {
-				t.Errorf("expected error containing %q, got nil", tt.expectContains)
+			if !tt.expect_error_nil && err == nil {
+				t.Errorf("expected error containing %q, got nil", tt.expect_contains)
 			}
-			if !tt.expectErrorNil && err != nil && !strings.Contains(err.Error(), tt.expectContains) {
-				t.Errorf("expected error containing %q, got %q", tt.expectContains, err.Error())
+			if !tt.expect_error_nil && err != nil && !strings.Contains(err.Error(), tt.expect_contains) {
+				t.Errorf("expected error containing %q, got %q", tt.expect_contains, err.Error())
 			}
 		})
 	}
@@ -125,11 +125,11 @@ func TestPeerConnectUrlNormalizesScheme(t *testing.T) {
 	defer server.Close()
 
 	// Extract host:port from server URL
-	hostPort := strings.TrimPrefix(server.URL, "http://")
+	host_port := strings.TrimPrefix(server.URL, "http://")
 
 	peer_connect_url(server.URL)
-	if receivedHost != hostPort {
-		t.Errorf("with full URL, expected host %q, got %q", hostPort, receivedHost)
+	if receivedHost != host_port {
+		t.Errorf("with full URL, expected host %q, got %q", host_port, receivedHost)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestRemoteConnectDirectoryLookup(t *testing.T) {
 	// When no peer is provided, remote_connect should look up in directory
 	// With a non-existent entity, entity_peer returns empty string
 
-	validEntityId := strings.Repeat("a", 50) // 50-char entity ID
-	_, err := remote_connect(validEntityId, "")
+	valid_entity_id := strings.Repeat("a", 50) // 50-char entity ID
+	_, err := remote_connect(valid_entity_id, "")
 
 	if err == nil {
 		t.Error("expected error for non-existent entity in directory")
@@ -160,8 +160,8 @@ func TestRemoteConnectInvalidPeer(t *testing.T) {
 	// (peer_connect will panic on nil config)
 	t.Skip("requires P2P subsystem initialization")
 
-	validEntityId := strings.Repeat("a", 50)
-	_, err := remote_connect(validEntityId, "invalid-peer-id")
+	valid_entity_id := strings.Repeat("a", 50)
+	_, err := remote_connect(valid_entity_id, "invalid-peer-id")
 
 	if err == nil {
 		t.Error("expected error for invalid peer")

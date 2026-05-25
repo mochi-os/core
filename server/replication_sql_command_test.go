@@ -254,7 +254,7 @@ func TestSQLTableExcluded(t *testing.T) {
 // apply-side test: a temp data_dir, a registered user, a registered app
 // pointing at a per-(user, app) DB the apply path will exec against,
 // and a fresh schema in that DB.
-func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID string) {
+func setup_sql_replication_test(t *testing.T) (cleanup func(), user_uid, app_id string) {
 	t.Helper()
 	tmp, err := os.MkdirTemp("", "mochi_sql_repl")
 	if err != nil {
@@ -269,10 +269,10 @@ func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID st
 
 	udb := db_open("db/users.db")
 	udb.exec(`create table if not exists users (id integer primary key, uid text not null unique, username text not null unique)`)
-	userUID = "uid-test-sql"
-	udb.exec("insert into users (uid, username) values (?, ?)", userUID, "alice")
+	user_uid = "uid-test-sql"
+	udb.exec("insert into users (uid, username) values (?, ?)", user_uid, "alice")
 
-	appID = "myapp"
+	app_id = "myapp"
 	av := &AppVersion{Version: "1"}
 	av.Architecture.Engine = "starlark"
 	av.Architecture.Version = 4
@@ -281,18 +281,18 @@ func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID st
 	av.Database.create_function = func(db *DB) {
 		db.exec(`create table posts (id text primary key, title text not null)`)
 	}
-	a := &App{id: appID, versions: map[string]*AppVersion{"1": av}, internal: av}
+	a := &App{id: app_id, versions: map[string]*AppVersion{"1": av}, internal: av}
 	av.app = a
 	apps_lock.Lock()
 	if apps == nil {
 		apps = map[string]*App{}
 	}
-	apps[appID] = a
+	apps[app_id] = a
 	apps_lock.Unlock()
 
 	cleanup = func() {
 		apps_lock.Lock()
-		delete(apps, appID)
+		delete(apps, app_id)
 		apps_lock.Unlock()
 		data_dir = orig
 		post_migration_drain_async = orig_drain
@@ -302,13 +302,13 @@ func setup_sql_replication_test(t *testing.T) (cleanup func(), userUID, appID st
 }
 
 func TestReplicationApplySQLCommandInsert(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	op := &ReplicationOp{
 		Scope:     repl_scope_app,
-		User:      userUID,
-		Database:  appID,
+		User:      user_uid,
+		Database:  app_id,
 		Operation: repl_op_exec,
 		Schema:    1,
 		Payload: cbor_encode(&SQLCommand{
@@ -320,8 +320,8 @@ func TestReplicationApplySQLCommandInsert(t *testing.T) {
 		t.Fatalf("expected ApplyApplied, got %v", got)
 	}
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 	row, _ := db.row("select title from posts where id = ?", "p1")
 	if row == nil {
@@ -333,17 +333,17 @@ func TestReplicationApplySQLCommandInsert(t *testing.T) {
 }
 
 func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 	db.exec("insert into posts (id, title) values (?, ?)", "p1", "Old")
 
 	upd := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "update posts set title = ? where id = ?",
 			Args:      []any{"New", "p1"},
@@ -358,8 +358,8 @@ func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
 	}
 
 	del := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{
 			Statement: "delete from posts where id = ?",
 			Args:      []any{"p1"},
@@ -374,36 +374,36 @@ func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
 }
 
 func TestReplicationApplySQLCommandDeferralPaths(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	// Unknown user → deferred.
-	unknownUser := &ReplicationOp{
+	unknown_user := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-missing",
-		Database: appID, Operation: repl_op_exec, Schema: 1,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
-	if got := replication_apply_op(unknownUser); got != ApplyDeferred {
+	if got := replication_apply_op(unknown_user); got != ApplyDeferred {
 		t.Errorf("unknown user: want ApplyDeferred, got %v", got)
 	}
 
 	// Unknown app → deferred.
-	unknownApp := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
+	unknown_app := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
 		Database: "missingapp", Operation: repl_op_exec, Schema: 1,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
-	if got := replication_apply_op(unknownApp); got != ApplyDeferred {
+	if got := replication_apply_op(unknown_app); got != ApplyDeferred {
 		t.Errorf("unknown app: want ApplyDeferred, got %v", got)
 	}
 
 	// Sender schema newer than receiver → deferred.
-	newerSchema := &ReplicationOp{
-		Scope: repl_scope_app, User: userUID,
-		Database: appID, Operation: repl_op_exec, Schema: 99,
+	newer_schema := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 99,
 		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
 	}
-	if got := replication_apply_op(newerSchema); got != ApplyDeferred {
+	if got := replication_apply_op(newer_schema); got != ApplyDeferred {
 		t.Errorf("newer schema: want ApplyDeferred, got %v", got)
 	}
 }
@@ -434,18 +434,18 @@ func TestReplicationApplySQLCommandInvalid(t *testing.T) {
 }
 
 func TestReplicationApplySQLCommandRoundTrip(t *testing.T) {
-	cleanup, userUID, appID := setup_sql_replication_test(t)
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
 	defer cleanup()
 
 	// Two writers replay each other's ops; both ends should converge.
-	u := &User{UID: userUID}
-	a := app_by_id(appID)
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
 	db := db_app(u, a)
 
 	apply := func(sql string, args ...any) {
 		op := &ReplicationOp{
-			Scope: repl_scope_app, User: userUID,
-			Database: appID, Operation: repl_op_exec, Schema: 1,
+			Scope: repl_scope_app, User: user_uid,
+			Database: app_id, Operation: repl_op_exec, Schema: 1,
 			Payload: cbor_encode(&SQLCommand{Statement: sql, Args: args}),
 		}
 		if got := replication_apply_op(op); got != ApplyApplied {

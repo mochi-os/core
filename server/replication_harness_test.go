@@ -36,28 +36,28 @@ import (
 	"testing"
 )
 
-type harnessHost struct {
+type harness_host struct {
 	name string
 	p2p  string
 	dir  string
 }
 
-type harnessDelivery struct {
+type harness_delivery struct {
 	sender   string
 	receiver string
 	op       *ReplicationOp
-	sysSet   *SystemSet
-	sysRow   *SystemRow
+	sys_set   *SystemSet
+	sys_row   *SystemRow
 }
 
 type harness struct {
 	t       *testing.T
-	hosts   map[string]*harnessHost
+	hosts   map[string]*harness_host
 	current string
 
 	mu          sync.Mutex
-	queues      map[string][]harnessDelivery // receiver -> queue
-	held        []harnessDelivery            // partitioned-but-not-yet-healed
+	queues      map[string][]harness_delivery // receiver -> queue
+	held        []harness_delivery            // partitioned-but-not-yet-healed
 	partitioned bool
 
 	// Topology metadata controls capture-time routing. pair_members is
@@ -86,19 +86,19 @@ type harness struct {
 	original_drain_async       func(user, app_id string)
 }
 
-// newHarness mints N host contexts, swaps the three emit vars for
+// new_harness mints N host contexts, swaps the three emit vars for
 // queue-capturing stubs, and returns the harness. Always defer
 // h.cleanup() immediately after the call. With no names supplied
 // defaults to {"h1", "h2"} for the historical 2-host shape.
-func newHarness(t *testing.T, names ...string) *harness {
+func new_harness(t *testing.T, names ...string) *harness {
 	t.Helper()
 	if len(names) == 0 {
 		names = []string{"h1", "h2"}
 	}
 	h := &harness{
 		t:                 t,
-		hosts:             map[string]*harnessHost{},
-		queues:            map[string][]harnessDelivery{},
+		hosts:             map[string]*harness_host{},
+		queues:            map[string][]harness_delivery{},
 		pair_members:      map[string]bool{},
 		user_hosts:        map[string]map[string]bool{},
 		original_data:            data_dir,
@@ -113,15 +113,15 @@ func newHarness(t *testing.T, names ...string) *harness {
 		if err != nil {
 			t.Fatalf("temp dir %s: %v", name, err)
 		}
-		h.hosts[name] = &harnessHost{name: name, p2p: "peer-" + name, dir: dir}
+		h.hosts[name] = &harness_host{name: name, p2p: "peer-" + name, dir: dir}
 		h.queues[name] = nil
 		h.pair_members[name] = true // default: every host is pair-paired with every other
 	}
-	replication_emit_to = h.captureEmitTo
-	replication_emit_system_set = h.captureSystemSet
-	replication_emit_system_row = h.captureSystemRow
+	replication_emit_to = h.capture_emit_to
+	replication_emit_system_set = h.capture_system_set
+	replication_emit_system_row = h.capture_system_row
 	// Suppress the post-migration drain goroutine. It reads data_dir
-	// asynchronously, which races with switchTo. The drain is a
+	// asynchronously, which races with switch_to. The drain is a
 	// performance prefetch the harness doesn't need - flush() drains
 	// every queue deterministically.
 	post_migration_drain_async = func(user, app_id string) {}
@@ -170,9 +170,9 @@ func (h *harness) cleanup() {
 	}
 }
 
-// switchTo flips data_dir + p2p_id to the named host. Records the
+// switch_to flips data_dir + p2p_id to the named host. Records the
 // current host so subsequent emit captures know who to route from.
-func (h *harness) switchTo(name string) {
+func (h *harness) switch_to(name string) {
 	h.t.Helper()
 	ctx, ok := h.hosts[name]
 	if !ok {
@@ -183,7 +183,7 @@ func (h *harness) switchTo(name string) {
 	h.current = name
 }
 
-func (h *harness) enqueue(d harnessDelivery) {
+func (h *harness) enqueue(d harness_delivery) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.partitioned {
@@ -239,26 +239,26 @@ func (h *harness) recipients_pair(sender string) []string {
 	return out
 }
 
-func (h *harness) captureEmitTo(user string, op *ReplicationOp, peers []string) {
+func (h *harness) capture_emit_to(user string, op *ReplicationOp, peers []string) {
 	sender := h.current
 	for _, receiver := range h.recipients_per_user(user, sender) {
-		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, op: op})
+		h.enqueue(harness_delivery{sender: sender, receiver: receiver, op: op})
 	}
 }
 
-func (h *harness) captureSystemSet(database, table, row, field, value string) {
+func (h *harness) capture_system_set(database, table, row, field, value string) {
 	payload := &SystemSet{Database: database, Table: table, Row: row, Field: field, Value: value}
 	sender := h.current
 	for _, receiver := range h.recipients_pair(sender) {
-		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, sysSet: payload})
+		h.enqueue(harness_delivery{sender: sender, receiver: receiver, sys_set: payload})
 	}
 }
 
-func (h *harness) captureSystemRow(database, table string, key, cols map[string]string, del bool) {
+func (h *harness) capture_system_row(database, table string, key, cols map[string]string, del bool) {
 	payload := &SystemRow{Database: database, Table: table, Key: key, Cols: cols, Delete: del}
 	sender := h.current
 	for _, receiver := range h.recipients_pair(sender) {
-		h.enqueue(harnessDelivery{sender: sender, receiver: receiver, sysRow: payload})
+		h.enqueue(harness_delivery{sender: sender, receiver: receiver, sys_row: payload})
 	}
 }
 
@@ -283,7 +283,7 @@ func (h *harness) flush() {
 			h.mu.Unlock()
 			return
 		}
-		snapshot := make(map[string][]harnessDelivery, len(h.queues))
+		snapshot := make(map[string][]harness_delivery, len(h.queues))
 		for receiver, q := range h.queues {
 			snapshot[receiver] = q
 			h.queues[receiver] = nil
@@ -292,27 +292,27 @@ func (h *harness) flush() {
 
 		// Process each receiver's batch under its host context. Restore
 		// the prior host context afterwards so the test's outer
-		// switchTo state survives the flush.
+		// switch_to state survives the flush.
 		prior := h.current
 		for receiver, deliveries := range snapshot {
-			h.switchTo(receiver)
+			h.switch_to(receiver)
 			for _, d := range deliveries {
-				h.applyOne(d)
+				h.apply_one(d)
 			}
 		}
-		h.switchTo(prior)
+		h.switch_to(prior)
 	}
 	h.t.Fatalf("harness flush did not converge after %d iterations", flushIterationLimit)
 }
 
-func (h *harness) applyOne(d harnessDelivery) {
+func (h *harness) apply_one(d harness_delivery) {
 	switch {
 	case d.op != nil:
 		replication_apply_op(d.op)
-	case d.sysSet != nil:
-		replication_system_set_apply(h.hosts[d.sender].p2p, d.sysSet)
-	case d.sysRow != nil:
-		replication_system_row_apply(h.hosts[d.sender].p2p, d.sysRow)
+	case d.sys_set != nil:
+		replication_system_set_apply(h.hosts[d.sender].p2p, d.sys_set)
+	case d.sys_row != nil:
+		replication_system_row_apply(h.hosts[d.sender].p2p, d.sys_row)
 	}
 }
 
@@ -359,11 +359,11 @@ func (h *harness) pending(receiver string) int {
 // user_exists. The user's identity entity is also seeded so the
 // replication signing path (which looks up an entity for the user)
 // has something to find.
-func (h *harness) setup_harness_user(uid, username, entityID string) {
+func (h *harness) setup_harness_user(uid, username, entity_id string) {
 	setup_users_test_schema()
 	udb := db_open("db/users.db")
 	udb.exec("insert or ignore into users (uid, username) values (?, ?)", uid, username)
 	udb.exec(
 		"insert or ignore into entities (id, private, fingerprint, user, class, name, privacy) values (?, 'priv', 'fp', ?, 'person', ?, 'private')",
-		entityID, uid, username)
+		entity_id, uid, username)
 }

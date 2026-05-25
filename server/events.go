@@ -54,18 +54,21 @@ func init() {
 }
 
 // broadcast_pending_dispatch_run is the dispatcher installed at
-// init. Returns true if the row's handler ran cleanly (caller
-// advances + deletes); false on lookup or handler failure (caller
-// leaves the row in pending for a future drain attempt).
-func broadcast_pending_dispatch_run(row *broadcast_pending_row, db *DB) bool {
-	if db == nil || db.user == nil {
+// init. sysdb is the per-app system DB (app.db) where pending rows
+// live; the handler itself runs against the app's data DB (opened
+// here separately) so mochi.db.* calls reach the app's own tables.
+// Returns true if the row's handler ran cleanly (caller advances +
+// deletes); false on lookup or handler failure (caller leaves the
+// row in pending for a future drain attempt).
+func broadcast_pending_dispatch_run(row *broadcast_pending_row, sysdb *DB) bool {
+	if sysdb == nil || sysdb.user == nil {
 		return false
 	}
-	a := app_for_service(db.user, row.Service)
+	a := app_for_service(sysdb.user, row.Service)
 	if a == nil {
 		return false
 	}
-	av := a.active(db.user)
+	av := a.active(sysdb.user)
 	if av == nil {
 		return false
 	}
@@ -83,6 +86,19 @@ func broadcast_pending_dispatch_run(row *broadcast_pending_row, db *DB) bool {
 		info("Broadcast pending drain: decode content failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
 		return false
 	}
+	// Open the data DB so the handler's mochi.db.* writes land in
+	// the app's regular tables. Apps without a declared data DB
+	// (av.Database.File == "") get e.db == nil; the handler is
+	// expected to cope (most don't call mochi.db at all).
+	var datadb *DB
+	if av.Database.File != "" {
+		datadb = db_app(sysdb.user, a)
+		if datadb == nil {
+			debug("Broadcast pending drain: cannot open data DB for app %q (user %q)", a.id, sysdb.user.UID)
+			return false
+		}
+		defer datadb.close()
+	}
 	e := &Event{
 		id:              event_id(),
 		msg_id:          row.MsgID,
@@ -94,9 +110,9 @@ func broadcast_pending_dispatch_run(row *broadcast_pending_row, db *DB) bool {
 		sender_services: split_services(row.SenderServices),
 		peer:            row.Peer,
 		content:         content,
-		user:            db.user,
+		user:            sysdb.user,
 		app:             a,
-		db:              db,
+		db:              datadb,
 	}
 	if err := e.run_handler(a, av, ae); err != nil {
 		debug("Broadcast pending drain: handler failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
@@ -236,10 +252,16 @@ func (e *Event) route() error {
 			info("Event dropping broadcast event for nil user")
 			return fmt.Errorf("broadcast event requires user")
 		}
-		e.db = db_app(e.user, a)
+		// Broadcast tables (_log, _received, _acknowledged, _sequence,
+		// _broadcast_pending) live in the per-app system DB (app.db),
+		// not the app's writable data DB, so apps can't tamper with
+		// the metadata the server reads back trustingly. Same pattern
+		// as attachments and access. Migration target: claude/sessions/
+		// 2026-05-25-broadcast-app-db-move.md.
+		e.db = db_app_system(e.user, a)
 		if e.db == nil {
-			info("Event app %q failed to open database", a.id)
-			return fmt.Errorf("no app database")
+			info("Event app %q failed to open system database", a.id)
+			return fmt.Errorf("no system database")
 		}
 		defer e.db.close()
 		switch e.event {
@@ -337,16 +359,25 @@ func (e *Event) route() error {
 	// drain replays the buffered ones in chain order), and advance
 	// _received after a successful handler.
 	//
-	// Pre-task-#82 we returned a gap NACK here; that pushed the
-	// "fill the gap" problem onto the sender's retry path and the
-	// queue.go per-bucket cap=1 throttled it to ~1 msg/sec/bucket.
-	// Task #82's defer-not-NACK keeps the events on the receiver
-	// where they already are.
+	// Broadcast tracking lives in the per-app SYSTEM DB (app.db)
+	// alongside attachments and access, so apps can't tamper with
+	// the metadata the server reads back trustingly. The handler
+	// itself still runs against e.db (the app's data DB) so
+	// mochi.db.* calls reach the app's own tables. Two DBs open
+	// during a broadcast event; the system DB closes when route()
+	// returns.
 	bkey, _ := e.content["_key"].(string)
 	bseq := event_int64(e.content["_sequence"])
-	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.db != nil
+	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.user != nil
+	var bdb *DB
 	if broadcast_check {
-		last := broadcast_received_get(e.db, e.peer, bkey)
+		bdb = db_app_system(e.user, a)
+		if bdb == nil {
+			info("Event app %q failed to open system database for broadcast tracking", a.id)
+			return fmt.Errorf("no system database")
+		}
+		defer bdb.close()
+		last := broadcast_received_get(bdb, e.peer, bkey)
 		if bseq <= last {
 			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
 			return nil
@@ -354,7 +385,7 @@ func (e *Event) route() error {
 		if bseq > last+1 {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
-			broadcast_pending_insert(e.db, e.peer, bkey, bseq,
+			broadcast_pending_insert(bdb, e.peer, bkey, bseq,
 				e.from, e.to, e.service, e.event, e.msg_id, e.sender_app,
 				strings.Join(e.sender_services, ","),
 				cbor_encode(e.content))
@@ -370,7 +401,7 @@ func (e *Event) route() error {
 	handler_err := e.run_handler(a, av, ae)
 
 	if broadcast_check && handler_err == nil {
-		broadcast_advance_local(e.db, e.peer, bkey, bseq)
+		broadcast_advance_local(bdb, e.peer, bkey, bseq)
 		broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
 	}
 	return handler_err

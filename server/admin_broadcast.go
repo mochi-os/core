@@ -85,6 +85,12 @@ func admin_broadcast_lag(c *gin.Context) {
 // BroadcastLagRow per (user, app, peer, key) in _received. Tables
 // that don't exist are skipped silently - most apps don't use the
 // broadcast subsystem, so absent tables are the common case.
+//
+// The broadcast tables (_received, _log, _broadcast_pending, etc.)
+// live in the per-app system DB (users/<uid>/<app>/app.db), NOT in
+// the app's writable data DB - see task #90 for the architectural
+// rationale. The scanner therefore looks for app.db, not the
+// per-app db/*.db files.
 func broadcast_lag_scan() []BroadcastLagRow {
 	var out []BroadcastLagRow
 	users_root := filepath.Join(data_dir, "users")
@@ -107,27 +113,12 @@ func broadcast_lag_scan() []BroadcastLagRow {
 				continue
 			}
 			app := a.Name()
-			db_dir := filepath.Join(user_dir, app, "db")
-			db_files, err := os.ReadDir(db_dir)
-			if err != nil {
+			path := filepath.Join("users", user, app, "app.db")
+			abs := filepath.Join(data_dir, path)
+			if !file_exists(abs) {
 				continue
 			}
-			for _, f := range db_files {
-				if !f.Type().IsRegular() {
-					continue
-				}
-				// Skip snapshots (`*.db.snap`) and sqlite WAL/SHM
-				// sidecars (`*.db-wal`, `*.db-shm`, etc.); only
-				// open files whose extension is exactly `.db`.
-				// Without the filter the scanner produces duplicate
-				// (often stale) rows for every snapshot copy that
-				// exists alongside a live DB.
-				if filepath.Ext(f.Name()) != ".db" {
-					continue
-				}
-				path := filepath.Join("users", user, app, "db", f.Name())
-				out = append(out, broadcast_lag_scan_db(user, app, path)...)
-			}
+			out = append(out, broadcast_lag_scan_db(user, app, path)...)
 		}
 	}
 	return out

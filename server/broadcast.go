@@ -215,9 +215,9 @@ func api_broadcast_next(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no user/app context")
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
-		return sl_error(fn, "no app database")
+		return sl_error(fn, "no system database")
 	}
 	return sl.MakeInt64(broadcast_next_local(db, key, p2p_id)), nil
 }
@@ -235,7 +235,7 @@ func api_broadcast_received(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl.MakeInt(0), nil
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
 		return sl.MakeInt(0), nil
 	}
@@ -262,9 +262,9 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no user/app context")
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
-		return sl_error(fn, "no app database")
+		return sl_error(fn, "no system database")
 	}
 	broadcast_advance_local(db, sender, key, sequence)
 	return sl.None, nil
@@ -322,9 +322,9 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "from %q not owned by caller", from)
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
-		return sl_error(fn, "no app database")
+		return sl_error(fn, "no system database")
 	}
 
 	payload, _ := sl_decode(data).(map[string]any)
@@ -398,9 +398,9 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no user/app context")
 	}
 
-	db := db_app(user, app)
+	db := db_app_system(user, app)
 	if db == nil {
-		return sl_error(fn, "no app database")
+		return sl_error(fn, "no system database")
 	}
 
 	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_log'")

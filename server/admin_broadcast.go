@@ -116,6 +116,15 @@ func broadcast_lag_scan() []BroadcastLagRow {
 				if !f.Type().IsRegular() {
 					continue
 				}
+				// Skip snapshots (`*.db.snap`) and sqlite WAL/SHM
+				// sidecars (`*.db-wal`, `*.db-shm`, etc.); only
+				// open files whose extension is exactly `.db`.
+				// Without the filter the scanner produces duplicate
+				// (often stale) rows for every snapshot copy that
+				// exists alongside a live DB.
+				if filepath.Ext(f.Name()) != ".db" {
+					continue
+				}
 				path := filepath.Join("users", user, app, "db", f.Name())
 				out = append(out, broadcast_lag_scan_db(user, app, path)...)
 			}

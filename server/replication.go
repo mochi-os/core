@@ -767,11 +767,11 @@ func replication_pending_warn_stalled() {
 // goroutine doesn't race with host-switching. Assigned in init() to
 // break a static-initialization cycle (replication_app_drain
 // transitively references db_app which calls this var).
-var post_migration_drain_async func(user, appID string)
+var post_migration_drain_async func(user, app_id string)
 
 func init() {
-	post_migration_drain_async = func(user, appID string) {
-		go replication_app_drain(user, appID)
+	post_migration_drain_async = func(user, app_id string) {
+		go replication_app_drain(user, app_id)
 	}
 }
 
@@ -1400,22 +1400,22 @@ func replication_transfer_keys(userUID string, peer string) bool {
 // multi-master bootstrap test (#57) can exercise the real payload-build
 // and feed the result straight into replication_keys_transfer_apply on
 // a receiver host - no wire mock, no duplicated SQL.
-func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
-	udb := db_open("db/users.db")
+func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
+	users := db_open("db/users.db")
 
 	var u User
-	if !udb.scan(&u, "select uid, username, role, methods, status from users where uid=?", userUID) {
-		warn("Replication transfer-keys: user %q not found", userUID)
+	if !users.scan(&u, "select uid, username, role, methods, status from users where uid=?", user_uid) {
+		warn("Replication transfer-keys: user %q not found", user_uid)
 		return nil, false
 	}
 
-	rows, err := udb.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", userUID)
+	rows, err := users.rows("select id, private, fingerprint, parent, class, name, privacy, data, published from entities where user=?", user_uid)
 	if err != nil {
-		warn("Replication transfer-keys: failed to read entities for user %q: %v", userUID, err)
+		warn("Replication transfer-keys: failed to read entities for user %q: %v", user_uid, err)
 		return nil, false
 	}
 	if len(rows) == 0 {
-		warn("Replication transfer-keys: no entities for user %q", userUID)
+		warn("Replication transfer-keys: no entities for user %q", user_uid)
 		return nil, false
 	}
 
@@ -1430,10 +1430,10 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 	// in-order apply cursors — the caller has already added `peer` as
 	// a recipient, so the first op it receives chains onto these.
 	kt.Seeds = map[string]int64{
-		"users":    replication_tail(userUID, repl_scope_app, "users"),
-		"sessions": replication_tail(userUID, repl_scope_app, "sessions"),
+		"users":    replication_tail(user_uid, repl_scope_app, "users"),
+		"sessions": replication_tail(user_uid, repl_scope_app, "sessions"),
 	}
-	if oauthRows, err := udb.rows("select provider, subject, email, verified, name, created from oauth where user=?", userUID); err == nil {
+	if oauthRows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauthRows {
 			link := KeysOauth{
 				Provider: toString(or["provider"]),
@@ -1453,17 +1453,17 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 			kt.OAuth = append(kt.OAuth, link)
 		}
 	}
-	if credRows, err := udb.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", userUID); err == nil {
+	if credRows, err := users.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", user_uid); err == nil {
 		for _, cr := range credRows {
 			c := KeysCredential{
 				Name:       toString(cr["name"]),
 				Transports: toString(cr["transports"]),
 			}
 			// db.rows() converts []byte to string defensively; use
-			// toBytes to recover the raw BLOB bytes for the
+			// to_bytes to recover the raw BLOB bytes for the
 			// credential id + public key.
-			c.ID = toBytes(cr["id"])
-			c.PublicKey = toBytes(cr["public_key"])
+			c.ID = to_bytes(cr["id"])
+			c.PublicKey = to_bytes(cr["public_key"])
 			if v, ok := cr["sign_count"].(int64); ok {
 				c.SignCount = v
 			}
@@ -1482,7 +1482,7 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 			kt.Credentials = append(kt.Credentials, c)
 		}
 	}
-	if recRows, err := udb.rows("select hash, created from recovery where user=?", userUID); err == nil {
+	if recRows, err := users.rows("select hash, created from recovery where user=?", user_uid); err == nil {
 		for _, rr := range recRows {
 			r := KeysRecovery{Hash: toString(rr["hash"])}
 			if v, ok := rr["created"].(int64); ok {
@@ -1494,7 +1494,7 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 			kt.Recovery = append(kt.Recovery, r)
 		}
 	}
-	if tokRows, err := udb.rows("select hash, app, name, scopes, created, expires from tokens where user=?", userUID); err == nil {
+	if tokRows, err := users.rows("select hash, app, name, scopes, created, expires from tokens where user=?", user_uid); err == nil {
 		for _, tr := range tokRows {
 			t := KeysToken{
 				Hash:   toString(tr["hash"]),
@@ -1514,7 +1514,7 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 			kt.Tokens = append(kt.Tokens, t)
 		}
 	}
-	if totpRow, err := udb.row("select secret, verified, created from totp where user=?", userUID); err == nil && totpRow != nil {
+	if totpRow, err := users.row("select secret, verified, created from totp where user=?", user_uid); err == nil && totpRow != nil {
 		t := &KeysTotp{Secret: toString(totpRow["secret"])}
 		if v, ok := totpRow["verified"].(int64); ok {
 			t.Verified = v != 0
@@ -1547,7 +1547,7 @@ func build_keys_transfer(userUID string) (*KeysTransfer, bool) {
 		kt.Entities = append(kt.Entities, ent)
 	}
 	if len(kt.Entities) == 0 {
-		warn("Replication transfer-keys: user %q has no valid entities", userUID)
+		warn("Replication transfer-keys: user %q has no valid entities", user_uid)
 		return nil, false
 	}
 	return &kt, true
@@ -1565,7 +1565,7 @@ func toString(v any) string {
 	return ""
 }
 
-// toBytes is the symmetric helper for BLOB columns. db.rows() converts
+// to_bytes is the symmetric helper for BLOB columns. db.rows() converts
 // all []byte to string defensively (TEXT columns can come back as
 // []byte from some SQLite paths, the catch-all simplifies consumers)
 // so a callsite reading a real BLOB column sees `string` rather than
@@ -1573,7 +1573,7 @@ func toString(v any) string {
 // round-trip preserves every byte; this helper just makes the
 // conversion explicit at the BLOB-reading site. Returns nil for nil
 // or unconvertible values.
-func toBytes(v any) []byte {
+func to_bytes(v any) []byte {
 	switch x := v.(type) {
 	case []byte:
 		return x

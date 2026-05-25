@@ -78,12 +78,12 @@ type harness struct {
 	pair_members map[string]bool
 	user_hosts   map[string]map[string]bool
 
-	origData          string
-	origP2P           string
-	origEmitTo        func(user string, op *ReplicationOp, peers []string)
-	origEmitSystemSet func(database, table, row, field, value string)
-	origEmitSystemRow func(database, table string, key, cols map[string]string, del bool)
-	origDrainAsync    func(user, appID string)
+	original_data              string
+	original_p2p               string
+	original_emit_to           func(user string, op *ReplicationOp, peers []string)
+	original_emit_system_set   func(database, table, row, field, value string)
+	original_emit_system_row   func(database, table string, key, cols map[string]string, del bool)
+	original_drain_async       func(user, app_id string)
 }
 
 // newHarness mints N host contexts, swaps the three emit vars for
@@ -101,12 +101,12 @@ func newHarness(t *testing.T, names ...string) *harness {
 		queues:            map[string][]harnessDelivery{},
 		pair_members:      map[string]bool{},
 		user_hosts:        map[string]map[string]bool{},
-		origData:          data_dir,
-		origP2P:           p2p_id,
-		origEmitTo:        replication_emit_to,
-		origEmitSystemSet: replication_emit_system_set,
-		origEmitSystemRow: replication_emit_system_row,
-		origDrainAsync:    post_migration_drain_async,
+		original_data:            data_dir,
+		original_p2p:             p2p_id,
+		original_emit_to:         replication_emit_to,
+		original_emit_system_set: replication_emit_system_set,
+		original_emit_system_row: replication_emit_system_row,
+		original_drain_async:     post_migration_drain_async,
 	}
 	for _, name := range names {
 		dir, err := os.MkdirTemp("", "mochi_harness_"+name)
@@ -124,7 +124,7 @@ func newHarness(t *testing.T, names ...string) *harness {
 	// asynchronously, which races with switchTo. The drain is a
 	// performance prefetch the harness doesn't need - flush() drains
 	// every queue deterministically.
-	post_migration_drain_async = func(user, appID string) {}
+	post_migration_drain_async = func(user, app_id string) {}
 	return h
 }
 
@@ -159,12 +159,12 @@ func (h *harness) set_user_hosts(user string, names ...string) {
 // cleanup restores all originals and removes both host data_dirs.
 // Safe to call multiple times.
 func (h *harness) cleanup() {
-	data_dir = h.origData
-	p2p_id = h.origP2P
-	replication_emit_to = h.origEmitTo
-	replication_emit_system_set = h.origEmitSystemSet
-	replication_emit_system_row = h.origEmitSystemRow
-	post_migration_drain_async = h.origDrainAsync
+	data_dir = h.original_data
+	p2p_id = h.original_p2p
+	replication_emit_to = h.original_emit_to
+	replication_emit_system_set = h.original_emit_system_set
+	replication_emit_system_row = h.original_emit_system_row
+	post_migration_drain_async = h.original_drain_async
 	for _, ctx := range h.hosts {
 		os.RemoveAll(ctx.dir)
 	}

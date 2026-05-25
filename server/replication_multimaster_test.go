@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 )
@@ -622,63 +623,63 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 	// API token, two owned entities. Mixed columns including BLOB PKs
 	// on credentials so the CBOR round-trip is exercised.
 	h.switchTo(fh_h1)
-	udb1 := db_open("db/users.db")
-	const ktUID = "uid-keystest"
-	const ktName = "keystest@example.com"
-	udb1.exec("insert into users (uid, username, role, methods, status) values (?, ?, 'administrator', 'email,passkey,totp', 'active')",
-		ktUID, ktName)
+	users := db_open("db/users.db")
+	const transfer_uid = "uid-keystest"
+	const transfer_username = "keystest@example.com"
+	users.exec("insert into users (uid, username, role, methods, status) values (?, ?, 'administrator', 'email,passkey,totp', 'active')",
+		transfer_uid, transfer_username)
 
-	ent1 := mm_entity_id('k')
-	ent2 := mm_entity_id('l')
-	udb1.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, 'priv-1', 'fp-1', ?, '', 'person', 'Keys User', 'private', '', 100)",
-		ent1, ktUID)
-	udb1.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, 'priv-2', 'fp-2', ?, ?, 'feed', 'Keys Feed', 'public', '', 200)",
-		ent2, ktUID, ent1)
+	entity_one := mm_entity_id('k')
+	entity_two := mm_entity_id('l')
+	users.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, 'priv-1', 'fp-1', ?, '', 'person', 'Keys User', 'private', '', 100)",
+		entity_one, transfer_uid)
+	users.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, 'priv-2', 'fp-2', ?, ?, 'feed', 'Keys Feed', 'public', '', 200)",
+		entity_two, transfer_uid, entity_one)
 
-	credID1 := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
-	credKey1 := []byte{0xaa, 0xbb, 0xcc, 0xdd}
-	credID2 := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
-	credKey2 := []byte{0xee, 0xff, 0x11, 0x22}
-	udb1.exec("insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) values (?, ?, ?, 7, 'YubiKey', 'usb', 1, 0, 100)",
-		credID1, ktUID, credKey1)
-	udb1.exec("insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) values (?, ?, ?, 3, 'Phone', 'internal', 0, 1, 200)",
-		credID2, ktUID, credKey2)
+	credential_one_id := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+	credential_one_key := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	credential_two_id := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
+	credential_two_key := []byte{0xee, 0xff, 0x11, 0x22}
+	users.exec("insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) values (?, ?, ?, 7, 'YubiKey', 'usb', 1, 0, 100)",
+		credential_one_id, transfer_uid, credential_one_key)
+	users.exec("insert into credentials (id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created) values (?, ?, ?, 3, 'Phone', 'internal', 0, 1, 200)",
+		credential_two_id, transfer_uid, credential_two_key)
 
-	udb1.exec("insert into recovery (user, hash, created) values (?, 'hash-recovery-1', 100)", ktUID)
-	udb1.exec("insert into recovery (user, hash, created) values (?, 'hash-recovery-2', 110)", ktUID)
+	users.exec("insert into recovery (user, hash, created) values (?, 'hash-recovery-1', 100)", transfer_uid)
+	users.exec("insert into recovery (user, hash, created) values (?, 'hash-recovery-2', 110)", transfer_uid)
 
-	udb1.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, 'github', 'gh-789', 'keys@example.com', 1, 'Keys User', 100)",
-		ktUID)
+	users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, 'github', 'gh-789', 'keys@example.com', 1, 'Keys User', 100)",
+		transfer_uid)
 
-	udb1.exec("insert into totp (user, secret, verified, created) values (?, 'totp-secret', 1, 100)", ktUID)
+	users.exec("insert into totp (user, secret, verified, created) values (?, 'totp-secret', 1, 100)", transfer_uid)
 
-	udb1.exec("insert into tokens (hash, user, app, name, scopes, created, expires) values ('hash-tok-1', ?, 'feeds', 'mobile', 'read', 100, 0)", ktUID)
+	users.exec("insert into tokens (hash, user, app, name, scopes, created, expires) values ('hash-tok-1', ?, 'feeds', 'mobile', 'read', 100, 0)", transfer_uid)
 
 	// Stub the per-peer keys-transfer hook to apply on h3 instead
 	// of queuing for libp2p send. Mirrors the system_set/_row stubs
 	// the existing bootstrap test uses.
-	orig_transfer := replication_transfer_keys_var
-	defer func() { replication_transfer_keys_var = orig_transfer }()
+	original_transfer := replication_transfer_keys_var
+	defer func() { replication_transfer_keys_var = original_transfer }()
 
 	var (
-		captured_uid  string
-		captured_peer string
-		captured_kt   *KeysTransfer
+		captured_user     string
+		captured_peer     string
+		captured_transfer *KeysTransfer
 	)
-	replication_transfer_keys_var = func(userUID, peer string) bool {
-		captured_uid = userUID
+	replication_transfer_keys_var = func(user, peer string) bool {
+		captured_user = user
 		captured_peer = peer
 		// Build the payload using the production builder so a future
 		// regression in build_keys_transfer (e.g. dropped column,
 		// missing nested array) shows up in this test.
-		kt, ok := build_keys_transfer(userUID)
+		transfer, ok := build_keys_transfer(user)
 		if !ok {
 			return false
 		}
-		captured_kt = kt
+		captured_transfer = transfer
 		prior := h.current
 		h.switchTo(fh_h3)
-		replication_keys_transfer_apply(kt.Entities[0].ID, "peer-"+fh_h1, kt)
+		replication_keys_transfer_apply(transfer.Entities[0].ID, "peer-"+fh_h1, transfer)
 		h.switchTo(prior)
 		return true
 	}
@@ -691,54 +692,54 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 	// Wire-shape assertions: the captured payload must populate every
 	// nested array we seeded. A future change that drops a column from
 	// build_keys_transfer fails here before we even look at h3.
-	if captured_uid != ktUID {
-		t.Errorf("transfer captured uid = %q, want %q", captured_uid, ktUID)
+	if captured_user != transfer_uid {
+		t.Errorf("transfer captured user = %q, want %q", captured_user, transfer_uid)
 	}
 	if captured_peer != "peer-"+fh_h3 {
 		t.Errorf("transfer captured peer = %q, want %q", captured_peer, "peer-"+fh_h3)
 	}
-	if captured_kt == nil {
+	if captured_transfer == nil {
 		t.Fatal("transfer captured no payload")
 	}
-	if captured_kt.UID != ktUID || captured_kt.Username != ktName {
+	if captured_transfer.UID != transfer_uid || captured_transfer.Username != transfer_username {
 		t.Errorf("payload identity: uid=%q username=%q, want %q / %q",
-			captured_kt.UID, captured_kt.Username, ktUID, ktName)
+			captured_transfer.UID, captured_transfer.Username, transfer_uid, transfer_username)
 	}
-	if captured_kt.Role != "administrator" || captured_kt.Methods != "email,passkey,totp" || captured_kt.Status != "active" {
+	if captured_transfer.Role != "administrator" || captured_transfer.Methods != "email,passkey,totp" || captured_transfer.Status != "active" {
 		t.Errorf("payload identity columns: role=%q methods=%q status=%q",
-			captured_kt.Role, captured_kt.Methods, captured_kt.Status)
+			captured_transfer.Role, captured_transfer.Methods, captured_transfer.Status)
 	}
-	if got := len(captured_kt.Entities); got != 2 {
+	if got := len(captured_transfer.Entities); got != 2 {
 		t.Errorf("payload entities = %d, want 2", got)
 	}
-	if got := len(captured_kt.Credentials); got != 2 {
+	if got := len(captured_transfer.Credentials); got != 2 {
 		t.Errorf("payload credentials = %d, want 2", got)
 	}
-	if got := len(captured_kt.Recovery); got != 2 {
+	if got := len(captured_transfer.Recovery); got != 2 {
 		t.Errorf("payload recovery = %d, want 2", got)
 	}
-	if got := len(captured_kt.OAuth); got != 1 {
+	if got := len(captured_transfer.OAuth); got != 1 {
 		t.Errorf("payload oauth = %d, want 1", got)
 	}
-	if got := len(captured_kt.Tokens); got != 1 {
+	if got := len(captured_transfer.Tokens); got != 1 {
 		t.Errorf("payload tokens = %d, want 1", got)
 	}
-	if captured_kt.Totp == nil || captured_kt.Totp.Secret != "totp-secret" {
-		t.Errorf("payload totp missing or wrong secret: %+v", captured_kt.Totp)
+	if captured_transfer.Totp == nil || captured_transfer.Totp.Secret != "totp-secret" {
+		t.Errorf("payload totp missing or wrong secret: %+v", captured_transfer.Totp)
 	}
 
 	// Receiver-side assertions: h3's users.db now holds the same auth
 	// state h1 does. Per-table row-for-row equality on the cross-host
 	// stable identifiers.
 	h.switchTo(fh_h3)
-	udb3 := db_open("db/users.db")
+	users_three := db_open("db/users.db")
 
-	row, _ := udb3.row("select uid, username, role, methods, status from users where uid=?", ktUID)
+	row, _ := users_three.row("select uid, username, role, methods, status from users where uid=?", transfer_uid)
 	if row == nil {
 		t.Fatal("h3 users row missing after keys-transfer apply")
 	}
-	if got, _ := row["username"].(string); got != ktName {
-		t.Errorf("h3 user username = %q, want %q", got, ktName)
+	if got, _ := row["username"].(string); got != transfer_username {
+		t.Errorf("h3 user username = %q, want %q", got, transfer_username)
 	}
 	if got, _ := row["role"].(string); got != "administrator" {
 		t.Errorf("h3 user role = %q, want administrator (KeysTransfer carries role for fresh user, unlike per-user replication path)", got)
@@ -749,133 +750,119 @@ func TestBootstrapFreshHostCatchesUpUsers(t *testing.T) {
 
 	// Entities: both must exist with same private key, fingerprint,
 	// parent, class, privacy.
-	for _, e := range []struct {
+	for _, entity := range []struct {
 		id      string
 		private string
 		parent  string
 		class   string
 		privacy string
 	}{
-		{ent1, "priv-1", "", "person", "private"},
-		{ent2, "priv-2", ent1, "feed", "public"},
+		{entity_one, "priv-1", "", "person", "private"},
+		{entity_two, "priv-2", entity_one, "feed", "public"},
 	} {
-		r, _ := udb3.row("select private, parent, class, privacy from entities where id=? and user=?", e.id, ktUID)
-		if r == nil {
-			t.Errorf("h3 entity %q missing", e.id)
+		row, _ := users_three.row("select private, parent, class, privacy from entities where id=? and user=?", entity.id, transfer_uid)
+		if row == nil {
+			t.Errorf("h3 entity %q missing", entity.id)
 			continue
 		}
-		if got, _ := r["private"].(string); got != e.private {
-			t.Errorf("h3 entity %q private = %q, want %q", e.id, got, e.private)
+		if got, _ := row["private"].(string); got != entity.private {
+			t.Errorf("h3 entity %q private = %q, want %q", entity.id, got, entity.private)
 		}
-		if got, _ := r["parent"].(string); got != e.parent {
-			t.Errorf("h3 entity %q parent = %q, want %q", e.id, got, e.parent)
+		if got, _ := row["parent"].(string); got != entity.parent {
+			t.Errorf("h3 entity %q parent = %q, want %q", entity.id, got, entity.parent)
 		}
-		if got, _ := r["class"].(string); got != e.class {
-			t.Errorf("h3 entity %q class = %q, want %q", e.id, got, e.class)
+		if got, _ := row["class"].(string); got != entity.class {
+			t.Errorf("h3 entity %q class = %q, want %q", entity.id, got, entity.class)
 		}
-		if got, _ := r["privacy"].(string); got != e.privacy {
-			t.Errorf("h3 entity %q privacy = %q, want %q", e.id, got, e.privacy)
+		if got, _ := row["privacy"].(string); got != entity.privacy {
+			t.Errorf("h3 entity %q privacy = %q, want %q", entity.id, got, entity.privacy)
 		}
 	}
 
 	// Credentials: keyed by blob id. public_key blob round-trips
 	// through CBOR. sign_count + backup_eligible + backup_state are
 	// the per-credential state.
-	for _, c := range []struct {
-		id            []byte
-		publicKey     []byte
-		signCount     int64
-		name          string
-		transports    string
-		backupEligibl int64
-		backupState   int64
+	for _, credential := range []struct {
+		id              []byte
+		public_key      []byte
+		sign_count      int64
+		name            string
+		transports      string
+		backup_eligible int64
+		backup_state    int64
 	}{
-		{credID1, credKey1, 7, "YubiKey", "usb", 1, 0},
-		{credID2, credKey2, 3, "Phone", "internal", 0, 1},
+		{credential_one_id, credential_one_key, 7, "YubiKey", "usb", 1, 0},
+		{credential_two_id, credential_two_key, 3, "Phone", "internal", 0, 1},
 	} {
-		r, _ := udb3.row("select public_key, sign_count, name, transports, backup_eligible, backup_state from credentials where id=? and user=?", c.id, ktUID)
-		if r == nil {
-			t.Errorf("h3 credential %x missing", c.id)
+		row, _ := users_three.row("select public_key, sign_count, name, transports, backup_eligible, backup_state from credentials where id=? and user=?", credential.id, transfer_uid)
+		if row == nil {
+			t.Errorf("h3 credential %x missing", credential.id)
 			continue
 		}
 		// db.row converts []byte to string defensively (same conversion
-		// build_keys_transfer has to work around with toBytes). Use the
+		// build_keys_transfer has to work around with to_bytes). Use the
 		// same helper here to recover the raw bytes.
-		gotKey := toBytes(r["public_key"])
-		if !bytes_equal(gotKey, c.publicKey) {
-			t.Errorf("h3 credential %x public_key = %x, want %x (blob round-trip via CBOR)", c.id, gotKey, c.publicKey)
+		got_key := to_bytes(row["public_key"])
+		if !bytes.Equal(got_key, credential.public_key) {
+			t.Errorf("h3 credential %x public_key = %x, want %x (blob round-trip via CBOR)", credential.id, got_key, credential.public_key)
 		}
-		if got, _ := r["sign_count"].(int64); got != c.signCount {
-			t.Errorf("h3 credential %x sign_count = %d, want %d", c.id, got, c.signCount)
+		if got, _ := row["sign_count"].(int64); got != credential.sign_count {
+			t.Errorf("h3 credential %x sign_count = %d, want %d", credential.id, got, credential.sign_count)
 		}
-		if got, _ := r["name"].(string); got != c.name {
-			t.Errorf("h3 credential %x name = %q, want %q", c.id, got, c.name)
+		if got, _ := row["name"].(string); got != credential.name {
+			t.Errorf("h3 credential %x name = %q, want %q", credential.id, got, credential.name)
 		}
-		if got, _ := r["backup_eligible"].(int64); got != c.backupEligibl {
-			t.Errorf("h3 credential %x backup_eligible = %d, want %d", c.id, got, c.backupEligibl)
+		if got, _ := row["backup_eligible"].(int64); got != credential.backup_eligible {
+			t.Errorf("h3 credential %x backup_eligible = %d, want %d", credential.id, got, credential.backup_eligible)
 		}
 	}
 
 	// Recovery codes: keyed by (user, hash).
 	for _, hash := range []string{"hash-recovery-1", "hash-recovery-2"} {
-		if exists, _ := udb3.exists("select 1 from recovery where user=? and hash=?", ktUID, hash); !exists {
+		if exists, _ := users_three.exists("select 1 from recovery where user=? and hash=?", transfer_uid, hash); !exists {
 			t.Errorf("h3 recovery hash %q missing", hash)
 		}
 	}
 
 	// OAuth: keyed by (provider, subject). Verified flag round-trips
 	// from bool to int.
-	r, _ := udb3.row("select email, verified, name from oauth where provider='github' and subject='gh-789' and user=?", ktUID)
-	if r == nil {
+	row, _ = users_three.row("select email, verified, name from oauth where provider='github' and subject='gh-789' and user=?", transfer_uid)
+	if row == nil {
 		t.Error("h3 oauth row missing")
 	} else {
-		if got, _ := r["email"].(string); got != "keys@example.com" {
+		if got, _ := row["email"].(string); got != "keys@example.com" {
 			t.Errorf("h3 oauth email = %q", got)
 		}
-		if got, _ := r["verified"].(int64); got != 1 {
+		if got, _ := row["verified"].(int64); got != 1 {
 			t.Errorf("h3 oauth verified = %d, want 1", got)
 		}
 	}
 
 	// TOTP: single row per user.
-	r, _ = udb3.row("select secret, verified from totp where user=?", ktUID)
-	if r == nil {
+	row, _ = users_three.row("select secret, verified from totp where user=?", transfer_uid)
+	if row == nil {
 		t.Error("h3 totp row missing")
 	} else {
-		if got, _ := r["secret"].(string); got != "totp-secret" {
+		if got, _ := row["secret"].(string); got != "totp-secret" {
 			t.Errorf("h3 totp secret = %q", got)
 		}
-		if got, _ := r["verified"].(int64); got != 1 {
+		if got, _ := row["verified"].(int64); got != 1 {
 			t.Errorf("h3 totp verified = %d, want 1", got)
 		}
 	}
 
 	// Tokens: keyed by hash.
-	r, _ = udb3.row("select app, name, scopes from tokens where hash='hash-tok-1' and user=?", ktUID)
-	if r == nil {
+	row, _ = users_three.row("select app, name, scopes from tokens where hash='hash-tok-1' and user=?", transfer_uid)
+	if row == nil {
 		t.Error("h3 token row missing")
 	} else {
-		if got, _ := r["app"].(string); got != "feeds" {
+		if got, _ := row["app"].(string); got != "feeds" {
 			t.Errorf("h3 token app = %q", got)
 		}
-		if got, _ := r["scopes"].(string); got != "read" {
+		if got, _ := row["scopes"].(string); got != "read" {
 			t.Errorf("h3 token scopes = %q", got)
 		}
 	}
-}
-
-// bytes_equal is a small helper for the credential blob assertions.
-// Avoids dragging bytes into the test file's import list for one call.
-func bytes_equal(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestThreeHostLeaderClaimConverges: three operator-paired hosts each

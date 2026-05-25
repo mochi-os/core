@@ -51,14 +51,14 @@ var (
 	admin_creds_once sync.Once
 )
 
-// peerCredKey is the context key used to attach the peer's Ucred to the
+// peer_credential_key is the context key used to attach the peer's Ucred to the
 // request context so handlers and middleware can read it.
-type peerCredKey struct{}
+type peer_credential_key struct{}
 
 // admin_peer_cred extracts the peer credentials previously attached by
 // admin_listener / ConnContext. Returns nil if not present.
 func admin_peer_cred(ctx context.Context) *unix.Ucred {
-	if cred, ok := ctx.Value(peerCredKey{}).(*unix.Ucred); ok {
+	if cred, ok := ctx.Value(peer_credential_key{}).(*unix.Ucred); ok {
 		return cred
 	}
 	return nil
@@ -218,7 +218,7 @@ func admin_start() error {
 		Handler: admin_router,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if ac, ok := c.(*admin_conn); ok && ac.cred != nil {
-				ctx = context.WithValue(ctx, peerCredKey{}, ac.cred)
+				ctx = context.WithValue(ctx, peer_credential_key{}, ac.cred)
 			}
 			return ctx
 		},

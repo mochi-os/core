@@ -23,13 +23,13 @@ var api_ai = sls.FromStringDict(sl.String("mochi.ai"), sl.StringDict{
 })
 
 // Default models for each AI provider
-var aiProviderDefaults = map[string]string{
+var ai_provider_defaults = map[string]string{
 	"claude": "claude-haiku-4-5-20251001",
 	"openai": "gpt-4o-mini",
 }
 
-// aiResult holds the response from an AI provider call
-type aiResult struct {
+// ai_result holds the response from an AI provider call
+type ai_result struct {
 	status int
 	text   string
 }
@@ -113,11 +113,11 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	// Determine model
 	if model == "" || model == "default" {
-		model = aiProviderDefaults[ptype]
+		model = ai_provider_defaults[ptype]
 	}
 
 	// Call the provider
-	var result aiResult
+	var result ai_result
 	switch ptype {
 	case "claude":
 		result = ai_call_claude(api_key, model, prompt)
@@ -128,13 +128,13 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	// Model fallback: if model not found and not already using default, retry with default
-	if result.status == 404 && model != aiProviderDefaults[ptype] {
-		warn("ai: model %q not found for %s, falling back to default %q", model, ptype, aiProviderDefaults[ptype])
+	if result.status == 404 && model != ai_provider_defaults[ptype] {
+		warn("ai: model %q not found for %s, falling back to default %q", model, ptype, ai_provider_defaults[ptype])
 		switch ptype {
 		case "claude":
-			result = ai_call_claude(api_key, aiProviderDefaults[ptype], prompt)
+			result = ai_call_claude(api_key, ai_provider_defaults[ptype], prompt)
 		case "openai":
-			result = ai_call_openai(api_key, aiProviderDefaults[ptype], prompt)
+			result = ai_call_openai(api_key, ai_provider_defaults[ptype], prompt)
 		}
 	}
 
@@ -142,7 +142,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // ai_call_claude sends a prompt to the Claude (Anthropic) API
-func ai_call_claude(api_key, model, prompt string) aiResult {
+func ai_call_claude(api_key, model, prompt string) ai_result {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      model,
 		"max_tokens": 16384,
@@ -153,7 +153,7 @@ func ai_call_claude(api_key, model, prompt string) aiResult {
 
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(payload))
 	if err != nil {
-		return aiResult{status: 500, text: ""}
+		return ai_result{status: 500, text: ""}
 	}
 	req.Header.Set("x-api-key", api_key)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -162,7 +162,7 @@ func ai_call_claude(api_key, model, prompt string) aiResult {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return aiResult{status: 500, text: ""}
+		return ai_result{status: 500, text: ""}
 	}
 	defer resp.Body.Close()
 
@@ -174,18 +174,18 @@ func ai_call_claude(api_key, model, prompt string) aiResult {
 			if content, ok := data["content"].([]any); ok && len(content) > 0 {
 				if block, ok := content[0].(map[string]any); ok {
 					text, _ := block["text"].(string)
-					return aiResult{status: 200, text: text}
+					return ai_result{status: 200, text: text}
 				}
 			}
 		}
-		return aiResult{status: 200, text: ""}
+		return ai_result{status: 200, text: ""}
 	}
 
 	if resp.StatusCode == 401 {
-		return aiResult{status: 401, text: ""}
+		return ai_result{status: 401, text: ""}
 	}
 	if resp.StatusCode == 429 {
-		return aiResult{status: 429, text: ""}
+		return ai_result{status: 429, text: ""}
 	}
 
 	// Check for model not found
@@ -193,16 +193,16 @@ func ai_call_claude(api_key, model, prompt string) aiResult {
 	if json.Unmarshal(body, &errData) == nil {
 		if errObj, ok := errData["error"].(map[string]any); ok {
 			if errType, _ := errObj["type"].(string); errType == "not_found_error" {
-				return aiResult{status: 404, text: ""}
+				return ai_result{status: 404, text: ""}
 			}
 		}
 	}
 
-	return aiResult{status: resp.StatusCode, text: ""}
+	return ai_result{status: resp.StatusCode, text: ""}
 }
 
 // ai_call_openai sends a prompt to the OpenAI API
-func ai_call_openai(api_key, model, prompt string) aiResult {
+func ai_call_openai(api_key, model, prompt string) ai_result {
 	payload, _ := json.Marshal(map[string]any{
 		"model": model,
 		"messages": []map[string]string{
@@ -212,7 +212,7 @@ func ai_call_openai(api_key, model, prompt string) aiResult {
 
 	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return aiResult{status: 500, text: ""}
+		return ai_result{status: 500, text: ""}
 	}
 	req.Header.Set("Authorization", "Bearer "+api_key)
 	req.Header.Set("Content-Type", "application/json")
@@ -220,7 +220,7 @@ func ai_call_openai(api_key, model, prompt string) aiResult {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return aiResult{status: 500, text: ""}
+		return ai_result{status: 500, text: ""}
 	}
 	defer resp.Body.Close()
 
@@ -233,19 +233,19 @@ func ai_call_openai(api_key, model, prompt string) aiResult {
 				if choice, ok := choices[0].(map[string]any); ok {
 					if msg, ok := choice["message"].(map[string]any); ok {
 						text, _ := msg["content"].(string)
-						return aiResult{status: 200, text: text}
+						return ai_result{status: 200, text: text}
 					}
 				}
 			}
 		}
-		return aiResult{status: 200, text: ""}
+		return ai_result{status: 200, text: ""}
 	}
 
 	if resp.StatusCode == 401 {
-		return aiResult{status: 401, text: ""}
+		return ai_result{status: 401, text: ""}
 	}
 	if resp.StatusCode == 429 {
-		return aiResult{status: 429, text: ""}
+		return ai_result{status: 429, text: ""}
 	}
 
 	// Check for model not found
@@ -253,10 +253,10 @@ func ai_call_openai(api_key, model, prompt string) aiResult {
 	if json.Unmarshal(body, &errData) == nil {
 		if errObj, ok := errData["error"].(map[string]any); ok {
 			if code, _ := errObj["code"].(string); code == "model_not_found" {
-				return aiResult{status: 404, text: ""}
+				return ai_result{status: 404, text: ""}
 			}
 		}
 	}
 
-	return aiResult{status: resp.StatusCode, text: ""}
+	return ai_result{status: resp.StatusCode, text: ""}
 }

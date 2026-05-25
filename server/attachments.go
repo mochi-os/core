@@ -39,7 +39,7 @@ type Attachment struct {
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
 	"save":      sl.NewBuiltin("mochi.attachment.save", api_attachment_save),
-	"create":    &attachmentCreateModule{},
+	"create":    &attachment_create_module{},
 	"insert":    sl.NewBuiltin("mochi.attachment.insert", api_attachment_insert),
 	"update":    sl.NewBuiltin("mochi.attachment.update", api_attachment_update),
 	"move":      sl.NewBuiltin("mochi.attachment.move", api_attachment_move),
@@ -56,30 +56,30 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"fetch":     sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
-// attachmentCreateModule is a callable module that also has a .stream method.
+// attachment_create_module is a callable module that also has a .stream method.
 // Usage: mochi.attachment.create(object, name, data, ...) or mochi.attachment.create.stream(object, name, stream, ...)
-type attachmentCreateModule struct{}
+type attachment_create_module struct{}
 
-func (m *attachmentCreateModule) String() string { return "mochi.attachment.create" }
-func (m *attachmentCreateModule) Type() string   { return "module" }
-func (m *attachmentCreateModule) Freeze()        {}
-func (m *attachmentCreateModule) Truth() sl.Bool { return sl.True }
-func (m *attachmentCreateModule) Hash() (uint32, error) {
+func (m *attachment_create_module) String() string { return "mochi.attachment.create" }
+func (m *attachment_create_module) Type() string   { return "module" }
+func (m *attachment_create_module) Freeze()        {}
+func (m *attachment_create_module) Truth() sl.Bool { return sl.True }
+func (m *attachment_create_module) Hash() (uint32, error) {
 	return 0, fmt.Errorf("unhashable type: module")
 }
 
-func (m *attachmentCreateModule) AttrNames() []string { return []string{"stream"} }
+func (m *attachment_create_module) AttrNames() []string { return []string{"stream"} }
 
-func (m *attachmentCreateModule) Attr(name string) (sl.Value, error) {
+func (m *attachment_create_module) Attr(name string) (sl.Value, error) {
 	if name == "stream" {
 		return sl.NewBuiltin("mochi.attachment.create.stream", api_attachment_create_stream), nil
 	}
 	return nil, nil
 }
 
-func (m *attachmentCreateModule) Name() string { return "mochi.attachment.create" }
+func (m *attachment_create_module) Name() string { return "mochi.attachment.create" }
 
-func (m *attachmentCreateModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_attachment_create(thread, nil, args, kwargs)
 }
 

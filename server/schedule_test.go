@@ -186,7 +186,7 @@ func TestScheduleStarlarkObject(t *testing.T) {
 			Created:  1710435600,
 		}
 
-		slSe := newSlScheduledEvent(se)
+		slSe := new_starlark_scheduled_event(se)
 
 		// Test id
 		idAttr, _ := slSe.Attr("id")
@@ -237,7 +237,7 @@ func TestScheduleStarlarkObject(t *testing.T) {
 			Created:  1710435600,
 		}
 
-		slSe := newSlScheduledEvent(se)
+		slSe := new_starlark_scheduled_event(se)
 		dataAttr, _ := slSe.Attr("data")
 		if dataAttr == nil {
 			t.Error("expected data attribute even for empty data")

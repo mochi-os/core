@@ -91,7 +91,7 @@ func init() {
 				"exists": sl.NewBuiltin("mochi.service.exists", api_service_exists),
 			}),
 			"setting": api_setting,
-			"stream":  &streamModule{},
+			"stream":  &stream_module{},
 			"text":    api_text,
 			"token":   api_token,
 			"user":    api_user,
@@ -534,28 +534,28 @@ func api_server_update_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return sl_encode(map[string]any{"pending": version}), nil
 }
 
-// streamModule is a callable module that also has a .peer method
+// stream_module is a callable module that also has a .peer method
 // Usage: mochi.stream(headers, content) or mochi.stream.peer(peer, headers, content)
-type streamModule struct{}
+type stream_module struct{}
 
-func (m *streamModule) String() string        { return "mochi.stream" }
-func (m *streamModule) Type() string          { return "module" }
-func (m *streamModule) Freeze()               {}
-func (m *streamModule) Truth() sl.Bool        { return sl.True }
-func (m *streamModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *stream_module) String() string        { return "mochi.stream" }
+func (m *stream_module) Type() string          { return "module" }
+func (m *stream_module) Freeze()               {}
+func (m *stream_module) Truth() sl.Bool        { return sl.True }
+func (m *stream_module) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
 
-func (m *streamModule) AttrNames() []string { return []string{"peer"} }
+func (m *stream_module) AttrNames() []string { return []string{"peer"} }
 
-func (m *streamModule) Attr(name string) (sl.Value, error) {
+func (m *stream_module) Attr(name string) (sl.Value, error) {
 	if name == "peer" {
 		return sl.NewBuiltin("mochi.stream.peer", api_stream_peer), nil
 	}
 	return nil, nil
 }
 
-func (m *streamModule) Name() string { return "mochi.stream" }
+func (m *stream_module) Name() string { return "mochi.stream" }
 
-func (m *streamModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_stream(thread, nil, args, kwargs)
 }
 

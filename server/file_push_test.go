@@ -151,14 +151,14 @@ func TestSplitServices(t *testing.T) {
 		{"projects,feeds,wikis", []string{"projects", "feeds", "wikis"}},
 	}
 	for _, c := range cases {
-		got := splitServices(c.in)
+		got := split_services(c.in)
 		if len(got) != len(c.want) {
-			t.Errorf("splitServices(%q): got %v, want %v", c.in, got, c.want)
+			t.Errorf("split_services(%q): got %v, want %v", c.in, got, c.want)
 			continue
 		}
 		for i := range got {
 			if got[i] != c.want[i] {
-				t.Errorf("splitServices(%q)[%d]: got %q, want %q", c.in, i, got[i], c.want[i])
+				t.Errorf("split_services(%q)[%d]: got %q, want %q", c.in, i, got[i], c.want[i])
 			}
 		}
 	}

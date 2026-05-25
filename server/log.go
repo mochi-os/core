@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-type logWriter struct {
+type log_writer struct {
 }
 
 var log_color = isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
@@ -29,7 +29,7 @@ var (
 
 func init() {
 	log.SetFlags(0)
-	log.SetOutput(new(logWriter))
+	log.SetOutput(new(log_writer))
 }
 
 func debug(message string, values ...any) {
@@ -92,7 +92,7 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 	return sl.None, nil
 }
 
-func (writer logWriter) Write(b []byte) (int, error) {
+func (writer log_writer) Write(b []byte) (int, error) {
 	if bytes.HasPrefix(b, []byte("http: TLS handshake error from ")) {
 		return len(b), nil
 	}

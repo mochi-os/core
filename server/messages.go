@@ -46,30 +46,30 @@ func message_seen_cleanup() {
 }
 
 var api_message = sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
-	"send":    &messageSendModule{},
+	"send":    &message_send_module{},
 	"publish": sl.NewBuiltin("mochi.message.publish", api_message_publish),
 })
 
-// messageSendModule is a callable module that also has a .peer method
+// message_send_module is a callable module that also has a .peer method
 // Usage: mochi.message.send(headers, content) or mochi.message.send.peer(peer, headers, content)
-type messageSendModule struct{}
+type message_send_module struct{}
 
-func (m *messageSendModule) String() string        { return "mochi.message.send" }
-func (m *messageSendModule) Type() string          { return "module" }
-func (m *messageSendModule) Freeze()               {}
-func (m *messageSendModule) Truth() sl.Bool        { return sl.True }
-func (m *messageSendModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
-func (m *messageSendModule) AttrNames() []string   { return []string{"peer"} }
-func (m *messageSendModule) Name() string          { return "mochi.message.send" }
+func (m *message_send_module) String() string        { return "mochi.message.send" }
+func (m *message_send_module) Type() string          { return "module" }
+func (m *message_send_module) Freeze()               {}
+func (m *message_send_module) Truth() sl.Bool        { return sl.True }
+func (m *message_send_module) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *message_send_module) AttrNames() []string   { return []string{"peer"} }
+func (m *message_send_module) Name() string          { return "mochi.message.send" }
 
-func (m *messageSendModule) Attr(name string) (sl.Value, error) {
+func (m *message_send_module) Attr(name string) (sl.Value, error) {
 	if name == "peer" {
 		return sl.NewBuiltin("mochi.message.send.peer", api_message_send_peer), nil
 	}
 	return nil, nil
 }
 
-func (m *messageSendModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func (m *message_send_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_message_send(thread, nil, args, kwargs)
 }
 

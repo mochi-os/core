@@ -33,7 +33,7 @@ func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 	}
 }
 
-func appendRadiusVarsFromBase(styleParts *[]string, baseRadius string) {
+func append_radius_variables_from_base(styleParts *[]string, baseRadius string) {
 	*styleParts = append(*styleParts,
 		fmt.Sprintf("--radius: %s", baseRadius),
 		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
@@ -43,7 +43,7 @@ func appendRadiusVarsFromBase(styleParts *[]string, baseRadius string) {
 	)
 }
 
-func appendRadiusPreset(styleParts *[]string, preset string) {
+func append_radius_preset(styleParts *[]string, preset string) {
 	switch preset {
 	case "none":
 		*styleParts = append(*styleParts,
@@ -174,7 +174,7 @@ func style_preset_vars(density string) map[string]string {
 	return vars
 }
 
-func appendStylePreset(styleParts *[]string, density string) {
+func append_style_preset(styleParts *[]string, density string) {
 	vars := style_preset_vars(density)
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
@@ -228,7 +228,7 @@ func web_user_theme_style(user *User) string {
 		radius = t.BorderRadius
 	}
 	if radius != "" && !strings.ContainsAny(radius, `;<>"`) {
-		appendRadiusVarsFromBase(&styleParts, radius)
+		append_radius_variables_from_base(&styleParts, radius)
 	}
 
 	// Background image, suppressed when the user opts out.
@@ -266,7 +266,7 @@ func web_user_theme_style(user *User) string {
 		density = t.Spacing
 	}
 	if density != "" {
-		appendStylePreset(&styleParts, density)
+		append_style_preset(&styleParts, density)
 	}
 
 	// Font family overrides: theme's font_sans/font_mono override the

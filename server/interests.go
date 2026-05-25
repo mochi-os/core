@@ -440,7 +440,7 @@ func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string
 	}
 
 	if model == "" || model == "default" {
-		model = aiProviderDefaults[ptype]
+		model = ai_provider_defaults[ptype]
 	}
 
 	// Build interest list for prompt
@@ -480,7 +480,7 @@ func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string
 	}
 	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences in BCP 47 language %q. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in, and what they dislike if applicable. Respond only with the summary text, in language %q.\n\n%s", lang, lang, strings.Join(sections, "\n\n"))
 
-	var result aiResult
+	var result ai_result
 	switch ptype {
 	case "claude":
 		result = ai_call_claude(api_key, model, prompt)

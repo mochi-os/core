@@ -51,7 +51,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
 	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
 	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
-	"get":      &userGetModule{},
+	"get":      &user_get_module{},
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
 	}),
@@ -71,22 +71,22 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"update":  sl.NewBuiltin("mochi.user.update", api_user_update),
 })
 
-// userGetModule is a callable module exposing the alternate-key user lookups.
+// user_get_module is a callable module exposing the alternate-key user lookups.
 // Usage: mochi.user.get(id) for the primary-key lookup, or
 // mochi.user.get.{username, identity, fingerprint}(value) for alternate keys.
-type userGetModule struct{}
+type user_get_module struct{}
 
-func (m *userGetModule) String() string        { return "mochi.user.get" }
-func (m *userGetModule) Type() string          { return "module" }
-func (m *userGetModule) Freeze()               {}
-func (m *userGetModule) Truth() sl.Bool        { return sl.True }
-func (m *userGetModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *user_get_module) String() string        { return "mochi.user.get" }
+func (m *user_get_module) Type() string          { return "module" }
+func (m *user_get_module) Freeze()               {}
+func (m *user_get_module) Truth() sl.Bool        { return sl.True }
+func (m *user_get_module) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
 
-func (m *userGetModule) AttrNames() []string {
+func (m *user_get_module) AttrNames() []string {
 	return []string{"fingerprint", "identity", "username"}
 }
 
-func (m *userGetModule) Attr(name string) (sl.Value, error) {
+func (m *user_get_module) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "fingerprint":
 		return sl.NewBuiltin("mochi.user.get.fingerprint", api_user_get_fingerprint), nil
@@ -98,9 +98,9 @@ func (m *userGetModule) Attr(name string) (sl.Value, error) {
 	return nil, nil
 }
 
-func (m *userGetModule) Name() string { return "mochi.user.get" }
+func (m *user_get_module) Name() string { return "mochi.user.get" }
 
-func (m *userGetModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func (m *user_get_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_user_get_id(thread, nil, args, kwargs)
 }
 

@@ -62,7 +62,7 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 		"content": sl.NewBuiltin("mochi.git.blob.content", api_git_blob_content),
 		"get":     sl.NewBuiltin("mochi.git.blob.get", api_git_blob_get),
 	}),
-	"diff": &gitDiffModule{},
+	"diff": &git_diff_module{},
 	"merge": sls.FromStringDict(sl.String("mochi.git.merge"), sl.StringDict{
 		"base":    sl.NewBuiltin("mochi.git.merge.base", api_git_merge_base),
 		"check":   sl.NewBuiltin("mochi.git.merge.check", api_git_merge_check),
@@ -95,25 +95,25 @@ type git_storage struct {
 // git_transport is the go-git server transport for handling git protocol
 var git_transport = server.NewServer(&git_loader{})
 
-// gitDiffModule is a callable module that also has a .stats method
-type gitDiffModule struct{}
+// git_diff_module is a callable module that also has a .stats method
+type git_diff_module struct{}
 
-func (m *gitDiffModule) String() string        { return "mochi.git.diff" }
-func (m *gitDiffModule) Type() string          { return "module" }
-func (m *gitDiffModule) Freeze()               {}
-func (m *gitDiffModule) Truth() sl.Bool        { return sl.True }
-func (m *gitDiffModule) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
-func (m *gitDiffModule) Name() string          { return "mochi.git.diff" }
-func (m *gitDiffModule) AttrNames() []string   { return []string{"stats"} }
+func (m *git_diff_module) String() string        { return "mochi.git.diff" }
+func (m *git_diff_module) Type() string          { return "module" }
+func (m *git_diff_module) Freeze()               {}
+func (m *git_diff_module) Truth() sl.Bool        { return sl.True }
+func (m *git_diff_module) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *git_diff_module) Name() string          { return "mochi.git.diff" }
+func (m *git_diff_module) AttrNames() []string   { return []string{"stats"} }
 
-func (m *gitDiffModule) Attr(name string) (sl.Value, error) {
+func (m *git_diff_module) Attr(name string) (sl.Value, error) {
 	if name == "stats" {
 		return sl.NewBuiltin("mochi.git.diff.stats", api_git_diff_stats), nil
 	}
 	return nil, nil
 }
 
-func (m *gitDiffModule) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func (m *git_diff_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return api_git_diff(thread, nil, args, kwargs)
 }
 

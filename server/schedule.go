@@ -492,8 +492,8 @@ func (se *SlScheduledEvent) sl_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	return sl.None, nil
 }
 
-// newSlScheduledEvent creates a Starlark scheduled event object from database record
-func newSlScheduledEvent(se *ScheduledEvent) *SlScheduledEvent {
+// new_starlark_scheduled_event creates a Starlark scheduled event object from database record
+func new_starlark_scheduled_event(se *ScheduledEvent) *SlScheduledEvent {
 	var data map[string]any
 	if se.Data != "" {
 		json.Unmarshal([]byte(se.Data), &data)
@@ -557,7 +557,7 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "failed to create scheduled event")
 	}
 
-	return newSlScheduledEvent(&ScheduledEvent{
+	return new_starlark_scheduled_event(&ScheduledEvent{
 		ID: id, User: uid, App: app.id, Due: due_time,
 		Event: event, Data: string(data_json), Created: now(),
 	}), nil
@@ -611,7 +611,7 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "failed to create scheduled event")
 	}
 
-	return newSlScheduledEvent(&ScheduledEvent{
+	return new_starlark_scheduled_event(&ScheduledEvent{
 		ID: id, User: uid, App: app.id, Due: due_time,
 		Event: event, Data: string(data_json), Created: now(),
 	}), nil
@@ -672,7 +672,7 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		Event: event, Data: string(data_json), Interval: int64(interval), Created: now(),
 	}
 
-	return newSlScheduledEvent(se), nil
+	return new_starlark_scheduled_event(se), nil
 }
 
 // mochi.schedule.get(id) -> ScheduledEvent | None: Get a scheduled event by ID
@@ -706,7 +706,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl.None, nil
 	}
 
-	return newSlScheduledEvent(se), nil
+	return new_starlark_scheduled_event(se), nil
 }
 
 // mochi.schedule.cancel(id) -> bool: Cancel a previously scheduled event.
@@ -761,7 +761,7 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	events := schedule_list(app.id, uid)
 	result := make([]sl.Value, len(events))
 	for i, se := range events {
-		result[i] = newSlScheduledEvent(&se)
+		result[i] = new_starlark_scheduled_event(&se)
 	}
 
 	return sl.NewList(result), nil

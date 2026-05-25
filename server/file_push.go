@@ -304,7 +304,7 @@ func queue_send_file_push(q *QueueEntry) bool {
 
 	var services []string
 	if q.FromServices != "" {
-		services = splitServices(q.FromServices)
+		services = split_services(q.FromServices)
 	}
 
 	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", services, challenge)))
@@ -372,9 +372,9 @@ func file_push_send_body(s *Stream, path string) error {
 	return err
 }
 
-// splitServices is a small helper to split a comma-separated services
+// split_services is a small helper to split a comma-separated services
 // string into a slice; same logic queue_send_direct uses inline.
-func splitServices(s string) []string {
+func split_services(s string) []string {
 	if s == "" {
 		return nil
 	}

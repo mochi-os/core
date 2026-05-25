@@ -1436,10 +1436,10 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	if oauthRows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauthRows {
 			link := KeysOauth{
-				Provider: toString(or["provider"]),
-				Subject:  toString(or["subject"]),
-				Email:    toString(or["email"]),
-				Name:     toString(or["name"]),
+				Provider: to_string(or["provider"]),
+				Subject:  to_string(or["subject"]),
+				Email:    to_string(or["email"]),
+				Name:     to_string(or["name"]),
 			}
 			if v, ok := or["verified"].(int64); ok {
 				link.Verified = v != 0
@@ -1456,8 +1456,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	if credRows, err := users.rows("select id, public_key, sign_count, name, transports, backup_eligible, backup_state, created from credentials where user=?", user_uid); err == nil {
 		for _, cr := range credRows {
 			c := KeysCredential{
-				Name:       toString(cr["name"]),
-				Transports: toString(cr["transports"]),
+				Name:       to_string(cr["name"]),
+				Transports: to_string(cr["transports"]),
 			}
 			// db.rows() converts []byte to string defensively; use
 			// to_bytes to recover the raw BLOB bytes for the
@@ -1484,7 +1484,7 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	}
 	if recRows, err := users.rows("select hash, created from recovery where user=?", user_uid); err == nil {
 		for _, rr := range recRows {
-			r := KeysRecovery{Hash: toString(rr["hash"])}
+			r := KeysRecovery{Hash: to_string(rr["hash"])}
 			if v, ok := rr["created"].(int64); ok {
 				r.Created = v
 			}
@@ -1497,10 +1497,10 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	if tokRows, err := users.rows("select hash, app, name, scopes, created, expires from tokens where user=?", user_uid); err == nil {
 		for _, tr := range tokRows {
 			t := KeysToken{
-				Hash:   toString(tr["hash"]),
-				App:    toString(tr["app"]),
-				Name:   toString(tr["name"]),
-				Scopes: toString(tr["scopes"]),
+				Hash:   to_string(tr["hash"]),
+				App:    to_string(tr["app"]),
+				Name:   to_string(tr["name"]),
+				Scopes: to_string(tr["scopes"]),
 			}
 			if v, ok := tr["created"].(int64); ok {
 				t.Created = v
@@ -1515,7 +1515,7 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		}
 	}
 	if totpRow, err := users.row("select secret, verified, created from totp where user=?", user_uid); err == nil && totpRow != nil {
-		t := &KeysTotp{Secret: toString(totpRow["secret"])}
+		t := &KeysTotp{Secret: to_string(totpRow["secret"])}
 		if v, ok := totpRow["verified"].(int64); ok {
 			t.Verified = v != 0
 		}
@@ -1533,13 +1533,13 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		}
 		ent := KeysEntity{
 			ID:          id,
-			Private:     toString(r["private"]),
-			Fingerprint: toString(r["fingerprint"]),
-			Parent:      toString(r["parent"]),
-			Class:       toString(r["class"]),
-			Name:        toString(r["name"]),
-			Privacy:     toString(r["privacy"]),
-			Data:        toString(r["data"]),
+			Private:     to_string(r["private"]),
+			Fingerprint: to_string(r["fingerprint"]),
+			Parent:      to_string(r["parent"]),
+			Class:       to_string(r["class"]),
+			Name:        to_string(r["name"]),
+			Privacy:     to_string(r["privacy"]),
+			Data:        to_string(r["data"]),
 		}
 		if pub, ok := r["published"].(int64); ok {
 			ent.Published = pub
@@ -1553,9 +1553,9 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	return &kt, true
 }
 
-// toString converts a SQLite map value to a string, handling both []byte
+// to_string converts a SQLite map value to a string, handling both []byte
 // and string cases. Returns "" for nil or unconvertible values.
-func toString(v any) string {
+func to_string(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x

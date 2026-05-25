@@ -417,8 +417,8 @@ func bootstrap_wait_then_activate_impl(peer, uid string) {
 	}
 	info("Replication bootstrap-wait: gave up after %v on placeholder=%q peer=%q (files=%q userdbs=%q)",
 		bootstrap_wait_timeout, uid, peer,
-		bootstrapStateOrEmpty(bootstrap_scope_files, peer),
-		bootstrapStateOrEmpty(bootstrap_scope_userdbs, peer))
+		bootstrap_state_or_empty(bootstrap_scope_files, peer),
+		bootstrap_state_or_empty(bootstrap_scope_userdbs, peer))
 }
 
 // replication_link_prune_devices deletes per-device push subscriptions
@@ -436,7 +436,7 @@ func replication_link_prune_devices(uid string) {
 	udb.exec("delete from accounts where type in ('browser', 'unifiedpush', 'fcm')")
 }
 
-func bootstrapStateOrEmpty(scope, peer string) string {
+func bootstrap_state_or_empty(scope, peer string) string {
 	s, _ := bootstrap_get_state(scope, peer)
 	return s
 }

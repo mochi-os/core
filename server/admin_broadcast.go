@@ -2,8 +2,8 @@
 // Copyright Alistair Cunningham 2026
 //
 // Operator visibility into the broadcast subsystem. Today: lag
-// detection (task #83) - scan every per-user-app DB for _received
-// vs _log to surface subscribers that have fallen behind the owner
+// detection (task #83) - scan every per-user-app DB for received
+// vs log to surface subscribers that have fallen behind the owner
 // without firing user-visible errors. The original broadcast
 // investigation report (claude/sessions/2026-05-25-broadcast-resync-
 // stuck-diagnosis.md) called this out as fix #5 - drift that the
@@ -24,9 +24,9 @@ import (
 )
 
 // BroadcastLagRow is the per-stream lag report. owner_log_max is the
-// owner-side _log.max(sequence) for the same (key, peer) when this
+// owner-side log.max(sequence) for the same (key, peer) when this
 // host happens to own that broadcast (the (key, peer) pair lives in
-// the local _log too). It's null when this host is a pure subscriber
+// the local log too). It's null when this host is a pure subscriber
 // for the stream, in which case lag has to be computed cross-host -
 // the receiver-side report alone shows "we're at N", not "we should
 // be at M". Operator follows up with a remote query if needed.
@@ -42,11 +42,11 @@ type BroadcastLagRow struct {
 }
 
 // admin_broadcast_lag is GET /_/admin/broadcast/lag. Scans every
-// per-user-app DB under users/<uid>/<app>/db/*.db, gathers _received
-// and _log rows, and produces a single flat list keyed on
+// per-user-app DB under users/<uid>/<app>/db/*.db, gathers received
+// and log rows, and produces a single flat list keyed on
 // (user, app, peer, key). When the local host is also the owner of
-// the stream (same (key, peer) appears in _log on this same DB),
-// lag = _log.max - _received.last; otherwise omitted.
+// the stream (same (key, peer) appears in log on this same DB),
+// lag = log.max - received.last; otherwise omitted.
 //
 // Query param: ?threshold=N reports only rows with Lag > N. Default
 // 0 = all rows including healthy ones, useful for a periodic
@@ -82,11 +82,11 @@ func admin_broadcast_lag(c *gin.Context) {
 }
 
 // broadcast_lag_scan walks the user tree and assembles one
-// BroadcastLagRow per (user, app, peer, key) in _received. Tables
+// BroadcastLagRow per (user, app, peer, key) in received. Tables
 // that don't exist are skipped silently - most apps don't use the
 // broadcast subsystem, so absent tables are the common case.
 //
-// The broadcast tables (_received, _log, _broadcast_pending, etc.)
+// The broadcast tables (received, log, pending, etc.)
 // live in the per-app system DB (users/<uid>/<app>/app.db), NOT in
 // the app's writable data DB - see task #90 for the architectural
 // rationale. The scanner therefore looks for app.db, not the
@@ -124,9 +124,9 @@ func broadcast_lag_scan() []BroadcastLagRow {
 	return out
 }
 
-// broadcast_lag_scan_db reads one app DB's _received table and joins
-// against _log when present. Per-row lag is omitted when the local
-// DB doesn't have the matching _log entry (the host isn't the owner
+// broadcast_lag_scan_db reads one app DB's received table and joins
+// against log when present. Per-row lag is omitted when the local
+// DB doesn't have the matching log entry (the host isn't the owner
 // of the stream).
 func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 	var out []BroadcastLagRow
@@ -134,16 +134,16 @@ func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 	if db == nil {
 		return out
 	}
-	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_received'")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='received'")
 	if !exists {
 		return out
 	}
-	received_rows, err := db.rows("select sender, key, last from _received")
+	received_rows, err := db.rows("select sender, key, last from received")
 	if err != nil {
 		return out
 	}
-	has_log, _ := db.exists("select 1 from sqlite_master where type='table' and name='_log'")
-	has_pending, _ := db.exists("select 1 from sqlite_master where type='table' and name='_broadcast_pending'")
+	has_log, _ := db.exists("select 1 from sqlite_master where type='table' and name='log'")
+	has_pending, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
 	for _, r := range received_rows {
 		peer, _ := r["sender"].(string)
 		key, _ := r["key"].(string)
@@ -156,7 +156,7 @@ func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 			ReceivedLast: last,
 		}
 		if has_log {
-			log_row, _ := db.row("select max(sequence) as m from _log where key=? and peer=?", key, peer)
+			log_row, _ := db.row("select max(sequence) as m from log where key=? and peer=?", key, peer)
 			if log_row != nil {
 				if m, ok := log_row["m"].(int64); ok && m > 0 {
 					owner_max := m
@@ -167,7 +167,7 @@ func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 			}
 		}
 		if has_pending {
-			row.Pending = db.integer("select count(*) from _broadcast_pending where peer=? and key=?", peer, key)
+			row.Pending = db.integer("select count(*) from pending where peer=? and key=?", peer, key)
 		}
 		out = append(out, row)
 	}

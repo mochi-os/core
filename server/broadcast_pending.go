@@ -1,7 +1,7 @@
 // Mochi server: broadcast pending buffer
 // Copyright Alistair Cunningham 2026
 //
-// Per-app `_broadcast_pending` table that buffers out-of-order
+// Per-app `pending` table that buffers out-of-order
 // broadcast events on the subscriber side. Replaces the previous
 // "NACK on gap" behaviour with "buffer + drain in chain order",
 // mirroring the per-row replication pending pattern in replication.go.
@@ -9,7 +9,7 @@
 // Why: the queue.go per-(target, from_entity) bucket has cap=1 for
 // FK ordering on sql/op replication. Broadcast events were caught in
 // the same restriction even though their ordering is enforced
-// receiver-side by _sequence. With this buffer, the sender can blast
+// receiver-side by sequence. With this buffer, the sender can blast
 // multiple events to a subscriber out of order; the receiver drains
 // them in chain order via this table. Combined with task #80 (drop
 // on gap NACK) and task #81 (one-in-flight resync gate), this closes
@@ -28,7 +28,7 @@ const broadcast_pending_max = 1000
 // broadcast_pending_table_create lazily creates the table; the call
 // is idempotent and the schema matches the comment block above.
 func broadcast_pending_table_create(db *DB) {
-	db.exec(`create table if not exists _broadcast_pending (
+	db.exec(`create table if not exists pending (
 		peer text not null,
 		key text not null,
 		sequence integer not null,
@@ -49,11 +49,11 @@ func broadcast_pending_table_create(db *DB) {
 // (peer, key) stream. Used by the insert path to enforce the per-
 // stream cap and by the operator visibility surface (task #83).
 func broadcast_pending_count(db *DB, peer, key string) int {
-	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_broadcast_pending'")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
 	if !exists {
 		return 0
 	}
-	return db.integer("select count(*) from _broadcast_pending where peer=? and key=?", peer, key)
+	return db.integer("select count(*) from pending where peer=? and key=?", peer, key)
 }
 
 // broadcast_pending_insert buffers one out-of-order event. Returns
@@ -68,7 +68,7 @@ func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, 
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_max)
 		return false
 	}
-	db.exec_app_user(`insert or ignore into _broadcast_pending
+	db.exec_app_user(`insert or ignore into pending
 		(peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, received)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, now())
@@ -97,21 +97,21 @@ type broadcast_pending_row struct {
 // drain loop in broadcast_pending_drain_chain calls this for
 // last+1 after every advance.
 func broadcast_pending_next(db *DB, peer, key string, sequence int64) *broadcast_pending_row {
-	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_broadcast_pending'")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
 	if !exists {
 		return nil
 	}
 	var row broadcast_pending_row
-	if !db.scan(&row, "select * from _broadcast_pending where peer=? and key=? and sequence=?", peer, key, sequence) {
+	if !db.scan(&row, "select * from pending where peer=? and key=? and sequence=?", peer, key, sequence) {
 		return nil
 	}
 	return &row
 }
 
 // broadcast_pending_delete removes one drained row. Caller deletes
-// only after the handler ran successfully and _received was advanced.
+// only after the handler ran successfully and received was advanced.
 func broadcast_pending_delete(db *DB, peer, key string, sequence int64) {
-	db.exec_app_user("delete from _broadcast_pending where peer=? and key=? and sequence=?", peer, key, sequence)
+	db.exec_app_user("delete from pending where peer=? and key=? and sequence=?", peer, key, sequence)
 }
 
 // broadcast_pending_dispatch is the package-level callback the drain
@@ -128,8 +128,8 @@ func broadcast_pending_delete(db *DB, peer, key string, sequence int64) {
 var broadcast_pending_dispatch func(row *broadcast_pending_row, db *DB) bool
 
 // broadcast_pending_drain_chain walks the pending buffer for one
-// (peer, key) stream starting at the current _received.last+1.
-// Each row that dispatches cleanly is removed, _received advances,
+// (peer, key) stream starting at the current received.last+1.
+// Each row that dispatches cleanly is removed, received advances,
 // then the loop looks for the next chain link. Stops at the first
 // missing link or first dispatch failure. Bounded by the per-stream
 // cap so it can't run forever.

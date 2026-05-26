@@ -1,7 +1,7 @@
 // Mochi server: broadcast pending buffer tests
 // Copyright Alistair Cunningham 2026
 //
-// Tests for the per-app _broadcast_pending table and the chain-drain
+// Tests for the per-app pending table and the chain-drain
 // loop. The dispatcher itself (broadcast_pending_dispatch_run in
 // events.go) requires a registered app + user; here we stub the
 // dispatcher with a simple synchronous callback so the buffer +
@@ -104,7 +104,7 @@ func TestBroadcastPendingDrainChainAppliesInOrder(t *testing.T) {
 	broadcast_pending_insert(db, "p", "k", 4, "", "", "", "", "", "", "", []byte{})
 
 	// Simulate seq=1 arriving and applying cleanly (this is what the
-	// gap-fill resync reply would do): advance _received to 1. The
+	// gap-fill resync reply would do): advance received to 1. The
 	// drain inside broadcast_advance_local picks up 2, 3, 4 in order.
 	broadcast_advance_local(db, "p", "k", 1)
 
@@ -117,9 +117,9 @@ func TestBroadcastPendingDrainChainAppliesInOrder(t *testing.T) {
 		}
 	}
 
-	// _received.last must be at the last drained seq.
+	// received.last must be at the last drained seq.
 	if got := broadcast_received_get(db, "p", "k"); got != 4 {
-		t.Errorf("_received.last after drain: got %d, want 4", got)
+		t.Errorf("received.last after drain: got %d, want 4", got)
 	}
 	// Buffer must be empty.
 	if got := broadcast_pending_count(db, "p", "k"); got != 0 {
@@ -152,7 +152,7 @@ func TestBroadcastPendingDrainStopsAtGap(t *testing.T) {
 		t.Errorf("drain past gap: applied=%v, want [2]", applied)
 	}
 	if got := broadcast_received_get(db, "p", "k"); got != 2 {
-		t.Errorf("_received.last: got %d, want 2 (stop at gap)", got)
+		t.Errorf("received.last: got %d, want 2 (stop at gap)", got)
 	}
 	if got := broadcast_pending_count(db, "p", "k"); got != 1 {
 		t.Errorf("buffer count: got %d, want 1 (seq=4 still pending)", got)
@@ -180,7 +180,7 @@ func TestBroadcastPendingDrainHaltsOnDispatchFailure(t *testing.T) {
 		t.Errorf("buffer count after failed drain: got %d, want 1 (row stays)", got)
 	}
 	if got := broadcast_received_get(db, "p", "k"); got != 1 {
-		t.Errorf("_received.last after failed drain: got %d, want 1 (no advance past failure)", got)
+		t.Errorf("received.last after failed drain: got %d, want 1 (no advance past failure)", got)
 	}
 }
 

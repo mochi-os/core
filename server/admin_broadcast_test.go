@@ -12,10 +12,10 @@ import (
 )
 
 // TestBroadcastLagScanDB exercises the per-DB scanner against a
-// seeded _received + _log pair. Verifies:
+// seeded received + log pair. Verifies:
 //   - lag math when both tables exist for the same (key, peer)
-//   - lag absent when only _received exists (this host is pure
-//     subscriber, owner _log is remote)
+//   - lag absent when only received exists (this host is pure
+//     subscriber, owner log is remote)
 //   - pending buffer count is reported when the table exists
 func TestBroadcastLagScanDB(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_lag")
@@ -33,20 +33,20 @@ func TestBroadcastLagScanDB(t *testing.T) {
 		t.Fatal("db_open returned nil")
 	}
 
-	// Seed _received with two streams: one will have matching _log
+	// Seed received with two streams: one will have matching log
 	// (we're the owner), one won't (we're a pure subscriber).
 	broadcast_received_table_create(db)
-	db.exec("insert into _received (sender, key, last) values (?, ?, ?)", "peer-self", "key-owned", 42)
-	db.exec("insert into _received (sender, key, last) values (?, ?, ?)", "peer-remote", "key-subscribed", 5)
+	db.exec("insert into received (sender, key, last) values (?, ?, ?)", "peer-self", "key-owned", 42)
+	db.exec("insert into received (sender, key, last) values (?, ?, ?)", "peer-remote", "key-subscribed", 5)
 
-	// Seed _log only for the owned stream.
+	// Seed log only for the owned stream.
 	broadcast_log_table_create(db)
-	db.exec("insert into _log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", "key-owned", "peer-self", 100, "e", "{}", now())
+	db.exec("insert into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", "key-owned", "peer-self", 100, "e", "{}", now())
 
 	// Seed pending buffer for the subscribed stream (3 events waiting).
 	broadcast_pending_table_create(db)
 	for seq := int64(7); seq <= 9; seq++ {
-		db.exec("insert into _broadcast_pending (peer, key, sequence, source, target, service, event, content, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		db.exec("insert into pending (peer, key, sequence, source, target, service, event, content, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			"peer-remote", "key-subscribed", seq, "", "", "", "", []byte{}, now())
 	}
 
@@ -82,7 +82,7 @@ func TestBroadcastLagScanDB(t *testing.T) {
 		t.Errorf("key-subscribed received_last: got %d, want 5", sub.ReceivedLast)
 	}
 	if sub.OwnerLogMax != nil {
-		t.Errorf("key-subscribed owner_log_max: got %v, want nil (no local _log row)", sub.OwnerLogMax)
+		t.Errorf("key-subscribed owner_log_max: got %v, want nil (no local log row)", sub.OwnerLogMax)
 	}
 	if sub.Lag != nil {
 		t.Errorf("key-subscribed lag: got %v, want nil", sub.Lag)
@@ -96,7 +96,7 @@ func TestBroadcastLagScanDB(t *testing.T) {
 }
 
 // TestBroadcastLagScanDBNoReceived returns an empty result when the
-// app DB has no broadcast traffic - apps without _received are the
+// app DB has no broadcast traffic - apps without received are the
 // common case across the scan.
 func TestBroadcastLagScanDBNoReceived(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_lag2")
@@ -114,6 +114,6 @@ func TestBroadcastLagScanDBNoReceived(t *testing.T) {
 
 	rows := broadcast_lag_scan_db("u1", "noisyapp", rel)
 	if len(rows) != 0 {
-		t.Errorf("expected empty scan (no _received table), got %d rows", len(rows))
+		t.Errorf("expected empty scan (no received table), got %d rows", len(rows))
 	}
 }

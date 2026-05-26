@@ -51,7 +51,7 @@ func nack_reason_from_error(err error) string {
 // Sender side:
 //
 //	mochi.broadcast.send(key, [subscriber, ...], event, data) -> int
-//	  allocates seq, writes _log row, fans out to subscribers.
+//	  allocates seq, writes log row, fans out to subscribers.
 //	mochi.broadcast.replay(key, peer, after, limit) -> [{sequence, event, data}, ...]
 //	  reads the log for a (key, peer) stream starting after `after`.
 //
@@ -62,16 +62,16 @@ func nack_reason_from_error(err error) string {
 //	mochi.broadcast.advance(sender, key, sequence)
 //
 // Core's events.go auto-applies gap detection on inbound events
-// carrying `_key` + `_sequence` in content + `peer` header: dedups
-// against `_received`, NACKs on gap (with async resync request),
-// advances `_received` after a successful handler.
+// carrying `_key` + `sequence` in content + `peer` header: dedups
+// against `received`, NACKs on gap (with async resync request),
+// advances `received` after a successful handler.
 //
 // Tables (per app DB, lazy-created):
 //
-//	_sequence(key, peer, last)               — sender outbound counter per (key, this_host)
-//	_log(key, peer, sequence, event, data, created)
-//	_acknowledged(key, peer, subscriber, last)
-//	_received(sender, key, last)             — receiver-side dedup
+//	sequence(key, peer, last)               — sender outbound counter per (key, this_host)
+//	log(key, peer, sequence, event, data, created)
+//	acknowledged(key, peer, subscriber, last)
+//	received(sender, key, last)             — receiver-side dedup
 var api_broadcast = sls.FromStringDict(sl.String("mochi.broadcast"), sl.StringDict{
 	"next":     sl.NewBuiltin("mochi.broadcast.next", api_broadcast_next),
 	"received": sl.NewBuiltin("mochi.broadcast.received", api_broadcast_received),
@@ -83,19 +83,19 @@ var api_broadcast = sls.FromStringDict(sl.String("mochi.broadcast"), sl.StringDi
 const broadcast_log_age = 7 * 86400
 
 func broadcast_sequence_table_create(db *DB) {
-	db.exec("create table if not exists _sequence (key text not null, peer text not null, last integer not null default 0, primary key (key, peer))")
+	db.exec("create table if not exists sequence (key text not null, peer text not null, last integer not null default 0, primary key (key, peer))")
 }
 
 func broadcast_received_table_create(db *DB) {
-	db.exec("create table if not exists _received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
+	db.exec("create table if not exists received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
 }
 
-// broadcast_log_table_create lazily creates _log for an app DB on
+// broadcast_log_table_create lazily creates log for an app DB on
 // first emission. Replication carries the table to paired hosts two
 // ways:
 //   - Bulk bootstrap: a new pair member receives the per-app DB
 //     snapshot (db_snapshot.go) which page-copies the entire file
-//     including _log + the BootstrapDBChunk.Seed cursor seed, so
+//     including log + the BootstrapDBChunk.Seed cursor seed, so
 //     subsequent live ops chain correctly from where the snapshot
 //     ended. The new member can serve resync requests for any of
 //     the (key, peer) streams the existing pair members had logged.
@@ -104,40 +104,64 @@ func broadcast_received_table_create(db *DB) {
 //     host. Both pair members converge in steady state.
 //
 // Apps that adopt mochi.broadcast.send after their per-app DB
-// already has data don't get a retroactive _log for pre-upgrade
+// already has data don't get a retroactive log for pre-upgrade
 // events (claude/plans/broadcast.md: "No backfill on migration").
 // Subscribers reaching for those older sequences fall back to the
 // per-app request_resync helper, which pulls a fresh schema dump
 // from the owner instead of a per-op replay.
 func broadcast_log_table_create(db *DB) {
-	db.exec("create table if not exists _log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
-	db.exec("create index if not exists _log_created on _log(created)")
+	db.exec("create table if not exists log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
+	db.exec("create index if not exists log_created on log(created)")
 }
 
 func broadcast_acknowledged_table_create(db *DB) {
-	db.exec("create table if not exists _acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
+	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 }
 
 // broadcast_next_local allocates and returns the next outbound sequence
 // number on the given DB for (key, peer). Per-(key, peer) PK gives each
 // paired host its own sequence space.
+//
+// Atomic via RETURNING. The previous UPSERT-then-SELECT pair raced
+// when two goroutines hit the same (key, peer) concurrently: both
+// SELECTs read the higher of the two interleaved UPSERTs, emit
+// duplicate sequences, fail UNIQUE on the matching log INSERT. See
+// wasabi 2026-05-24..26 event_ai_tag panics (468 occurrences over
+// ~48h). RETURNING reports the post-UPSERT value as part of the same
+// atomic statement, so each goroutine sees its own allocation.
+//
+// The replication mirror to paired hosts is fired separately (the
+// exec_app_user wrapper does Exec+emit; we already did the local
+// apply via QueryRow). RETURNING is stripped from the wire copy -
+// receivers just apply the UPSERT; they don't read the result.
 func broadcast_next_local(db *DB, key, peer string) int64 {
 	broadcast_sequence_table_create(db)
-	db.exec_app_user("insert into _sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = _sequence.last + 1", key, peer)
-	return int64(db.integer("select last from _sequence where key=? and peer=?", key, peer))
+	const allocate = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1 returning last"
+	var seq int64
+	if err := db.internal.QueryRow(allocate, key, peer).Scan(&seq); err != nil {
+		warn("Broadcast next_local: RETURNING failed for (key=%q, peer=%q): %v", key, peer, err)
+		return 0
+	}
+	if db.user != nil && db.user.UID != "" && db.app != nil {
+		if av := db.app.active(db.user); av != nil {
+			const mirror = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1"
+			replication_emit_sql_command(db.user, db.app, av, mirror, []any{key, peer})
+		}
+	}
+	return seq
 }
 
 func broadcast_received_get(db *DB, sender, key string) int64 {
-	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_received'")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='received'")
 	if !exists {
 		return 0
 	}
-	return int64(db.integer("select last from _received where sender=? and key=?", sender, key))
+	return int64(db.integer("select last from received where sender=? and key=?", sender, key))
 }
 
-// broadcast_advance_local is the public advance: bumps _received,
+// broadcast_advance_local is the public advance: bumps received,
 // clears the in-flight resync gate, then drains any pending-buffer
-// rows that chain onto the new _received.last. Callers (events.go,
+// rows that chain onto the new received.last. Callers (events.go,
 // api_broadcast_advance) just want "this seq is done, do all
 // follow-ups" - the drain is part of that.
 func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
@@ -152,7 +176,7 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	if db.user != nil && db.user.UID != "" {
 		broadcast_resync_clear(db.user.UID, sender, key)
 	}
-	// Pull in any buffered events that now chain onto _received.last.
+	// Pull in any buffered events that now chain onto received.last.
 	// Common case is "nothing pending" - one indexed SELECT.
 	broadcast_pending_drain_chain(db, sender, key)
 }
@@ -164,7 +188,7 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // public advance above.
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
-	db.exec_app_user("insert into _received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(_received.last, excluded.last)", sender, key, sequence)
+	db.exec_app_user("insert into received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last)", sender, key, sequence)
 }
 
 // broadcast_log_append writes one log row in the same transaction as
@@ -173,21 +197,21 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
 	sequence := broadcast_next_local(db, key, peer)
-	db.exec_app_user("insert into _log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
+	db.exec_app_user("insert into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
 	return sequence
 }
 
 // broadcast_log_age_trim deletes log rows older than the age cap for
 // the given (key, peer). Called on send; no-op when nothing's aged out.
 func broadcast_log_age_trim(db *DB, key, peer string) {
-	db.exec_app_user("delete from _log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
+	db.exec_app_user("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
 }
 
 // broadcast_log_ack_trim deletes log rows below the min ack across all
 // subscribers for (key, peer). Called from the acknowledge handler
-// after _acknowledged is updated.
+// after acknowledged is updated.
 func broadcast_log_ack_trim(db *DB, key, peer string) {
-	row, _ := db.row("select min(last) as m from _acknowledged where key=? and peer=?", key, peer)
+	row, _ := db.row("select min(last) as m from acknowledged where key=? and peer=?", key, peer)
 	if row == nil {
 		return
 	}
@@ -195,7 +219,7 @@ func broadcast_log_ack_trim(db *DB, key, peer string) {
 	if !ok || last <= 0 {
 		return
 	}
-	db.exec_app_user("delete from _log where key=? and peer=? and sequence < ?", key, peer, last)
+	db.exec_app_user("delete from log where key=? and peer=? and sequence < ?", key, peer, last)
 }
 
 // mochi.broadcast.next(key) -> int: allocate the next outbound sequence
@@ -273,8 +297,8 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // mochi.broadcast.send(from, key, subscribers, service, event, data, exclude=None) -> int
 //
 // Allocates a sequence for (key, this_host), writes the event to the
-// per-app _log table, and fans out one mochi.message.send per
-// subscriber. Each outbound message carries _key and _sequence in
+// per-app log table, and fans out one mochi.message.send per
+// subscriber. Each outbound message carries _key and sequence in
 // content; the receiver's peer header identifies the originating host.
 //
 // `from` is the sender entity ID (must be owned by the calling user).
@@ -346,7 +370,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		content[k] = v
 	}
 	content["_key"] = key
-	content["_sequence"] = sequence
+	content["sequence"] = sequence
 
 	services := app_services(app, user)
 	iter := subscribers.Iterate()
@@ -369,7 +393,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 // mochi.broadcast.replay(key, peer, after, limit=100) -> [{sequence, event, data}, ...]
 //
-// Reads log rows from the per-app _log table for the given (key, peer)
+// Reads log rows from the per-app log table for the given (key, peer)
 // stream starting at sequence > after, capped at limit. Used by the
 // broadcast/resync event handler to feed a resync request — apps
 // shouldn't normally call this directly.
@@ -403,12 +427,12 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no system database")
 	}
 
-	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='_log'")
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='log'")
 	if !exists {
 		return sl.NewList(nil), nil
 	}
 
-	rows, _ := db.rows("select sequence, event, data from _log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, limit)
+	rows, _ := db.rows("select sequence, event, data from log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, limit)
 	out := make([]sl.Value, 0, len(rows))
 	for _, row := range rows {
 		sequence, _ := row["sequence"].(int64)
@@ -427,7 +451,7 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // broadcast_resync handles an inbound broadcast/resync event. The
 // subscriber's content has {key, peer, after}: we read the matching
-// rows from _log and re-emit each one to the requester via
+// rows from log and re-emit each one to the requester via
 // send_peer (direct libp2p delivery, not fanned). Replayed events
 // flow through the normal event pipeline at the receiver, where the
 // gap wrapper applies them in order.
@@ -441,12 +465,12 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		return fmt.Errorf("broadcast/resync requires key and peer")
 	}
 
-	exists, _ := e.db.exists("select 1 from sqlite_master where type='table' and name='_log'")
+	exists, _ := e.db.exists("select 1 from sqlite_master where type='table' and name='log'")
 	if !exists {
 		return nil
 	}
 
-	rows, _ := e.db.rows("select sequence, event, data from _log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, broadcast_replay_limit)
+	rows, _ := e.db.rows("select sequence, event, data from log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, broadcast_replay_limit)
 	if len(rows) == 0 {
 		return nil
 	}
@@ -466,7 +490,7 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 			content[k] = v
 		}
 		content["_key"] = key
-		content["_sequence"] = sequence
+		content["sequence"] = sequence
 
 		m := message(e.to, e.from, e.service, event_name)
 		m.FromApp = a.id
@@ -479,7 +503,7 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 
 // broadcast_acknowledge handles an inbound broadcast/acknowledge event.
 // The subscriber's content has {key, peer, sequence}: we update
-// _acknowledged for (key, peer, subscriber=e.from) and run the
+// acknowledged for (key, peer, subscriber=e.from) and run the
 // log-trim step.
 func (e *Event) broadcast_acknowledge() error {
 	key, _ := e.content["key"].(string)
@@ -490,7 +514,7 @@ func (e *Event) broadcast_acknowledge() error {
 	}
 
 	broadcast_acknowledged_table_create(e.db)
-	e.db.exec_app_user("insert into _acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(_acknowledged.last, excluded.last)", key, peer, e.from, sequence)
+	e.db.exec_app_user("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
 	return nil
 }
@@ -501,7 +525,7 @@ func (e *Event) broadcast_acknowledge() error {
 // the request succeeded - a 300-event gap took 3+ minutes minimum
 // even on a fast link, because four sequential 100-event resyncs
 // each waited out 60s of throttle. New design tracks "request out,
-// no advance yet" as a bool; clears it on any _received.last advance
+// no advance yet" as a bool; clears it on any received.last advance
 // for the (user, peer, key) tuple (broadcast_advance_local calls
 // broadcast_resync_clear). A timeout fallback covers the case where
 // the resync reply never arrives - same throttle behaviour as before
@@ -511,7 +535,7 @@ func (e *Event) broadcast_acknowledge() error {
 // holds: if 50 inbound events trip the gap detector in 200ms, only
 // the first sees broadcast_resync_inflight=false and proceeds; the
 // other 49 see the flag and return. Once that resync's replies start
-// advancing _received, the flag clears and the next gap-detection
+// advancing received, the flag clears and the next gap-detection
 // request fires immediately.
 //
 // See claude/sessions/2026-05-25-broadcast-resync-seq-643-
@@ -548,7 +572,7 @@ func broadcast_resync_throttle(user_uid, peer, key string) bool {
 // broadcast_resync_clear marks the in-flight resync for the given
 // (user, peer, key) tuple complete - subsequent gap-detections can
 // fire the next request without waiting. Called from
-// broadcast_advance_local on every _received.last advance; idempotent
+// broadcast_advance_local on every received.last advance; idempotent
 // when no flag is set, so safe to call on every advance whether or
 // not a resync was in flight.
 func broadcast_resync_clear(user_uid, peer, key string) {
@@ -624,13 +648,13 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 // broadcast_send_ack delivers a broadcast/acknowledge event back to
 // the originating host of a broadcast we've just applied. Fired by
 // the receiver wrapper in events.go after each successful advance;
-// the owner's broadcast_acknowledge handler upserts _acknowledged
+// the owner's broadcast_acknowledge handler upserts acknowledged
 // for (key, peer, subscriber=us) and runs broadcast_log_ack_trim,
-// which drops _log rows below the slowest subscriber's progress.
+// which drops log rows below the slowest subscriber's progress.
 //
 // Self-loops (peer == p2p_id) are skipped: the owner is its own
 // subscriber and already knows its state; the 7d age trim handles
-// _log cleanup for self-loop streams without needing a network
+// log cleanup for self-loop streams without needing a network
 // round-trip.
 //
 // Bursts coalesce within broadcast_acknowledge_coalesce_window per

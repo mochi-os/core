@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -36,12 +37,12 @@ func TestBroadcastLogAppend(t *testing.T) {
 		t.Errorf("sequences: got %d, %d; want 1, 2", s1, s2)
 	}
 
-	count := db.integer("select count(*) from _log where key='k1' and peer='peerA'")
+	count := db.integer("select count(*) from log where key='k1' and peer='peerA'")
 	if count != 2 {
 		t.Errorf("log rows: got %d, want 2", count)
 	}
 
-	row, _ := db.row("select event, data from _log where key='k1' and peer='peerA' and sequence=2")
+	row, _ := db.row("select event, data from log where key='k1' and peer='peerA' and sequence=2")
 	if e, _ := row["event"].(string); e != "event/b" {
 		t.Errorf("event at seq 2: got %q, want event/b", e)
 	}
@@ -67,7 +68,7 @@ func TestBroadcastLogPerPeerSequence(t *testing.T) {
 	}
 
 	// Both peers' rows coexist under the same key.
-	count := db.integer("select count(*) from _log where key='k1'")
+	count := db.integer("select count(*) from log where key='k1'")
 	if count != 3 {
 		t.Errorf("total log rows for k1: got %d, want 3", count)
 	}
@@ -82,17 +83,17 @@ func TestBroadcastLogAgeTrim(t *testing.T) {
 
 	// Insert two rows: one old, one fresh. broadcast_log_append uses
 	// now() so go behind its back for the old one.
-	db.exec("insert into _log (key, peer, sequence, event, data, created) values ('k', 'p', 1, 'e', '', ?)", now()-broadcast_log_age-100)
-	db.exec("insert into _log (key, peer, sequence, event, data, created) values ('k', 'p', 2, 'e', '', ?)", now())
+	db.exec("insert into log (key, peer, sequence, event, data, created) values ('k', 'p', 1, 'e', '', ?)", now()-broadcast_log_age-100)
+	db.exec("insert into log (key, peer, sequence, event, data, created) values ('k', 'p', 2, 'e', '', ?)", now())
 
 	broadcast_log_age_trim(db, "k", "p")
-	count := db.integer("select count(*) from _log where key='k' and peer='p'")
+	count := db.integer("select count(*) from log where key='k' and peer='p'")
 	if count != 1 {
 		t.Errorf("after age trim: got %d rows, want 1 (fresh row only)", count)
 	}
 
 	// The remaining row should be the fresh one (sequence 2).
-	row, _ := db.row("select sequence from _log where key='k' and peer='p'")
+	row, _ := db.row("select sequence from log where key='k' and peer='p'")
 	if s, _ := row["sequence"].(int64); s != 2 {
 		t.Errorf("remaining row sequence: got %d, want 2", s)
 	}
@@ -111,24 +112,24 @@ func TestBroadcastLogAckTrim(t *testing.T) {
 
 	broadcast_acknowledged_table_create(db)
 	// Two subscribers; one has acked through 7, the other through 5.
-	db.exec("insert into _acknowledged (key, peer, subscriber, last) values ('k', 'p', 'subA', 7)")
-	db.exec("insert into _acknowledged (key, peer, subscriber, last) values ('k', 'p', 'subB', 5)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k', 'p', 'subA', 7)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k', 'p', 'subB', 5)")
 
 	broadcast_log_ack_trim(db, "k", "p")
 	// min(7, 5) = 5 → keep rows >= 5, drop 1..4.
-	count := db.integer("select count(*) from _log where key='k' and peer='p'")
+	count := db.integer("select count(*) from log where key='k' and peer='p'")
 	if count != 6 {
 		t.Errorf("after ack trim: got %d, want 6 (sequences 5..10)", count)
 	}
 
-	low := db.integer("select min(sequence) from _log where key='k' and peer='p'")
+	low := db.integer("select min(sequence) from log where key='k' and peer='p'")
 	if low != 5 {
 		t.Errorf("min remaining sequence: got %d, want 5", low)
 	}
 }
 
 // TestBroadcastLogAckTrimNoSubscribers — ack trim is a no-op when no
-// _acknowledged rows exist (avoid wiping the log just because nobody
+// acknowledged rows exist (avoid wiping the log just because nobody
 // has acked yet).
 func TestBroadcastLogAckTrimNoSubscribers(t *testing.T) {
 	db, cleanup := setup_broadcast_log_test(t)
@@ -140,7 +141,7 @@ func TestBroadcastLogAckTrimNoSubscribers(t *testing.T) {
 	broadcast_acknowledged_table_create(db)
 
 	broadcast_log_ack_trim(db, "k", "p")
-	count := db.integer("select count(*) from _log where key='k' and peer='p'")
+	count := db.integer("select count(*) from log where key='k' and peer='p'")
 	if count != 3 {
 		t.Errorf("no-subscribers trim must be a no-op: got %d, want 3", count)
 	}
@@ -160,7 +161,7 @@ func TestBroadcastReplayQuery(t *testing.T) {
 		broadcast_log_append(db, "k", "peer_b", "e", []byte(`{}`))
 	}
 
-	rows, _ := db.rows("select sequence from _log where key=? and peer=? and sequence > ? order by sequence limit ?", "k", "peerA", int64(2), 100)
+	rows, _ := db.rows("select sequence from log where key=? and peer=? and sequence > ? order by sequence limit ?", "k", "peerA", int64(2), 100)
 	if len(rows) != 3 {
 		t.Fatalf("replay rows after seq 2 from peerA: got %d, want 3", len(rows))
 	}
@@ -170,6 +171,57 @@ func TestBroadcastReplayQuery(t *testing.T) {
 		if s != want[i] {
 			t.Errorf("row[%d].sequence: got %d, want %d", i, s, want[i])
 		}
+	}
+}
+
+// TestBroadcastNextLocalConcurrentNoDuplicates is the regression
+// test for the race surfaced on wasabi 2026-05-24..26 (468
+// event_ai_tag panics: "UNIQUE constraint failed: log.key, log.peer,
+// log.sequence"). The previous UPSERT-then-SELECT pair let two
+// goroutines both read the higher of two interleaved updates and
+// emit the same sequence number. Fix uses RETURNING so each call
+// sees its own atomic post-update value. Test fires N goroutines,
+// collects every returned sequence, asserts:
+//   - all sequences are unique (no duplicates -> no log UNIQUE
+//     violation)
+//   - the set of sequences is exactly {1..N}
+//   - the final sequence.last equals N
+func TestBroadcastNextLocalConcurrentNoDuplicates(t *testing.T) {
+	db, cleanup := setup_broadcast_log_test(t)
+	defer cleanup()
+
+	const N = 200
+	results := make([]int64, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i] = broadcast_next_local(db, "k", "p")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := map[int64]int{}
+	for _, s := range results {
+		seen[s]++
+	}
+	for seq, count := range seen {
+		if count > 1 {
+			t.Errorf("sequence %d emitted %d times (race regression)", seq, count)
+		}
+	}
+	if len(seen) != N {
+		t.Errorf("got %d distinct sequences, want %d (some lost to race)", len(seen), N)
+	}
+	for seq := int64(1); seq <= int64(N); seq++ {
+		if seen[seq] == 0 {
+			t.Errorf("sequence %d missing from allocation set", seq)
+			break
+		}
+	}
+	if last := db.integer("select last from sequence where key='k' and peer='p'"); last != N {
+		t.Errorf("final sequence.last = %d, want %d", last, N)
 	}
 }
 

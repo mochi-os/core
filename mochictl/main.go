@@ -124,6 +124,13 @@ func main() {
 			args = args[1:]
 		}
 	}
+	// Allow 'check starlark' (pre-deploy parse validation).
+	if !ok && name == "check" && len(args) > 0 {
+		if c, found := commands["check "+args[0]]; found {
+			cmd, ok = c, true
+			args = args[1:]
+		}
+	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "mochictl: unknown subcommand %q\n", name)
 		usage()

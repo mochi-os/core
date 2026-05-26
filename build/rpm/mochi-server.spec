@@ -1,12 +1,12 @@
 Name:           mochi-server
 Version:        %{_version}
 Release:        1%{?dist}
-Summary:        The distributed social operating system
+Summary:        The distributed app platform
 License:        Proprietary
 URL:            https://mochi-os.org
 
 %description
-Mochi is a decentralized social platform. This package contains the server.
+Mochi is a distributed app platform. This package contains the server.
 
 %install
 mkdir -p %{buildroot}/usr/bin

@@ -11,7 +11,7 @@
                  Compressed="yes"
                  InstallScope="perMachine"
                  Description="Mochi Server $(var.Version)"
-                 Comments="Decentralized social platform server" />
+                 Comments="Distributed app platform" />
 
         <MajorUpgrade DowngradeErrorMessage="A newer version of Mochi Server is already installed." />
         <MediaTemplate EmbedCab="yes" />
@@ -68,7 +68,7 @@
                 <ServiceInstall Id="MochiServiceInstall"
                                 Name="mochi-server"
                                 DisplayName="Mochi Server"
-                                Description="Mochi decentralized social platform server"
+                                Description="Mochi distributed app platform"
                                 Type="ownProcess"
                                 Start="auto"
                                 ErrorControl="normal"

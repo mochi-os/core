@@ -1780,6 +1780,27 @@ func recipients(user string) []string {
 	return out
 }
 
+// replication_emit_locks serialises per-(user, scope, db) emit
+// critical sections. Bounded by the number of distinct streams the
+// server has ever emitted on; locks are cheap (a sync.Mutex each)
+// and the map grows monotonically, so we don't bother evicting.
+var (
+	replication_emit_locks_mu sync.Mutex
+	replication_emit_locks    = map[string]*sync.Mutex{}
+)
+
+func replication_emit_lock(user, scope, database string) *sync.Mutex {
+	tag := user + "|" + scope + "|" + database
+	replication_emit_locks_mu.Lock()
+	defer replication_emit_locks_mu.Unlock()
+	mu, ok := replication_emit_locks[tag]
+	if !ok {
+		mu = &sync.Mutex{}
+		replication_emit_locks[tag] = mu
+	}
+	return mu
+}
+
 // replication_sequence_next allocates and returns the next outbound sequence
 // number for (user, scope). The counter advances on every call, including
 // retries; the receiver dedups by (peer, scope, user, sequence) so re-sent
@@ -1882,10 +1903,25 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		return
 	}
 
+	// Serialise sequence allocation + tail advance per
+	// (user, scope, db). Both helpers use SELECT-then-UPDATE patterns
+	// that race when two goroutines emit concurrently: both read the
+	// same pre-update value, both write, both return the same prev
+	// or sequence. Receiver applies one op cleanly and silently drops
+	// the duplicate as "below cursor" - the stream chain corrupts and
+	// every subsequent op buffers forever waiting for the lost link.
+	// Surfaced on mochi2 as 668/272 entries stalled on feeds/projects;
+	// see task #93. The mutex covers the visible bug; the helpers'
+	// internal SELECT-then-UPDATE patterns should also be rewritten
+	// atomically (sequence_next via UPSERT...RETURNING; tail_advance
+	// via dual-column UPSERT...RETURNING the OLD value) as a follow-up
+	// so callers outside this critical section also stay safe.
+	stream := repl_op_stream(op)
+	stream_mu := replication_emit_lock(user, op.Scope, stream)
+	stream_mu.Lock()
 	op.Sequence = replication_sequence_next(user, op.Scope)
-	// Stamp the per-db ordering chain: Prev is the previous op's
-	// sequence for this user/scope/db-stream (0 for the first).
-	op.Prev = replication_tail_advance(user, op.Scope, repl_op_stream(op), op.Sequence)
+	op.Prev = replication_tail_advance(user, op.Scope, stream, op.Sequence)
+	stream_mu.Unlock()
 
 	// Auto-fill the fence when the caller declared a leader scope/key
 	// but didn't supply the fence explicitly. Receivers compare against

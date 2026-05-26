@@ -5,6 +5,8 @@ package main
 
 import (
 	"os"
+	"sort"
+	"sync"
 	"testing"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -467,6 +469,90 @@ func TestReplicationApplySQLCommandRoundTrip(t *testing.T) {
 	}
 	if title, _ := rows[0]["title"].(string); title != "A-updated" {
 		t.Errorf("row title: want A-updated, got %q", title)
+	}
+}
+
+// TestReplicationEmitConcurrentChainIntact is the regression test
+// for task #93. Before the fix, replication_sequence_next and
+// replication_tail_advance used SELECT-then-UPDATE patterns that
+// raced under concurrent emit. Two goroutines could both see the
+// same pre-update value and emit ops with identical sequence
+// numbers or identical `prev` pointers. The receiver applied one
+// op cleanly and silently dropped the duplicate as "below cursor",
+// then everything past the lost link buffered forever waiting for
+// it. Surfaced live as 668/272 stalled entries on mochi2's
+// feeds/projects streams after ~40 minutes of normal traffic.
+//
+// Fix in replication_emit_to_real wraps the (sequence_next,
+// tail_advance) pair in a per-(user, scope, db) mutex. This test
+// drives the same critical section directly from N goroutines and
+// asserts: every sequence is unique, every prev chains onto the
+// preceding emit's sequence, the tail row's final last matches the
+// max emitted sequence.
+//
+// Verified the test catches the regression: with the mutex removed,
+// failure messages include "sequence N emitted twice" and "chain
+// broken at idx M: seq=X prev=Y, want prev=Z".
+func TestReplicationEmitConcurrentChainIntact(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// setup_sql_replication_test gives a temp data_dir but doesn't
+	// initialise db/replication.db. The emit critical section reads
+	// from `sequence` and `tail` tables there. Create the minimal
+	// schema directly.
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+
+	type allocated struct{ seq, prev int64 }
+	const N = 200
+	results := make([]allocated, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Mirror the production critical section in
+			// replication_emit_to_real.
+			mu := replication_emit_lock(user_uid, "app", "testdb")
+			mu.Lock()
+			seq := replication_sequence_next(user_uid, "app")
+			prev := replication_tail_advance(user_uid, "app", "testdb", seq)
+			mu.Unlock()
+			results[i] = allocated{seq, prev}
+		}(i)
+	}
+	wg.Wait()
+
+	// Sort by allocated sequence; the chain must be intact after
+	// sort: every prev equals the predecessor's seq, no duplicates.
+	sort.Slice(results, func(i, j int) bool { return results[i].seq < results[j].seq })
+	seen := map[int64]bool{}
+	for i, r := range results {
+		if seen[r.seq] {
+			t.Errorf("sequence %d emitted twice (race regression)", r.seq)
+		}
+		seen[r.seq] = true
+		if i == 0 {
+			if r.prev != 0 {
+				t.Errorf("first op should have prev=0, got %d", r.prev)
+			}
+		} else {
+			want := results[i-1].seq
+			if r.prev != want {
+				t.Errorf("chain broken at idx %d: seq=%d prev=%d, want prev=%d", i, r.seq, r.prev, want)
+			}
+		}
+	}
+
+	// Final tail.last must equal the highest sequence emitted.
+	if row, err := rdb.row("select last from tail where user=? and scope=? and db=?", user_uid, "app", "testdb"); err == nil && row != nil {
+		if last, _ := row["last"].(int64); last != results[N-1].seq {
+			t.Errorf("final tail.last = %d, want %d", last, results[N-1].seq)
+		}
+	} else {
+		t.Errorf("tail row missing or read failed: %v", err)
 	}
 }
 

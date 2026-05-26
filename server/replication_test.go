@@ -10,9 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 
+	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 // setup_replication_test creates a fresh data_dir with replication.db
@@ -2822,5 +2826,2654 @@ func TestIntegrationUsersEntitiesDeleteAcrossHosts(t *testing.T) {
 	}
 	if exists, _ := udb.exists("select 1 from entities where id=?", id); exists {
 		t.Error("entity row must be removed on h2")
+	}
+}
+
+// ============================================================
+// mochi.replication.* Starlark API tests
+// ============================================================
+
+// TestApiReplicationStatusEmpty: with no pair / no hosts / no pending
+// requests, status returns zeros for the counts and the local peer-id.
+func TestApiReplicationStatusEmpty(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	thread := &sl.Thread{}
+	v, err := api_replication_status(thread, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("api_replication_status error: %v", err)
+	}
+	d, ok := v.(*sl.Dict)
+	if !ok {
+		t.Fatalf("result is not a dict: %T", v)
+	}
+
+	peer, _, _ := d.Get(sl.String("peer"))
+	if s, _ := peer.(sl.String); string(s) != "self" {
+		t.Errorf("peer = %v, want self", peer)
+	}
+
+	for _, key := range []string{"hosts_count", "links_pending", "joins_pending"} {
+		v, _, _ := d.Get(sl.String(key))
+		n, ok := v.(sl.Int)
+		if !ok {
+			t.Errorf("%s is not an Int: %T", key, v)
+			continue
+		}
+		count, _ := n.Int64()
+		if count != 0 {
+			t.Errorf("%s = %d, want 0", key, count)
+		}
+	}
+}
+
+// TestApiReplicationStatusPopulated: rows in each table reflect in the
+// returned dict.
+func TestApiReplicationStatusPopulated(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-B', 0, '')")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peer-X', 0, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u2', 'peer-Y', 0, 0)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u1', 'peer-K', '', 'ph-1', 0, 9999999999)")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-J', '', 0, 9999999999)")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-K', '', 0, 9999999999)")
+
+	thread := &sl.Thread{}
+	v, err := api_replication_status(thread, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("api_replication_status error: %v", err)
+	}
+	d := v.(*sl.Dict)
+
+	pair_value, _, _ := d.Get(sl.String("pair"))
+	pair_list, ok := pair_value.(*sl.List)
+	if !ok {
+		t.Fatalf("pair is not a list: %T", pair_value)
+	}
+	if pair_list.Len() != 2 {
+		t.Errorf("pair list len = %d, want 2", pair_list.Len())
+	}
+
+	want := map[string]int64{
+		"hosts_count":   2,
+		"links_pending": 1,
+		"joins_pending": 2,
+	}
+	for k, expected := range want {
+		v, _, _ := d.Get(sl.String(k))
+		n, _ := v.(sl.Int).Int64()
+		if n != expected {
+			t.Errorf("%s = %d, want %d", k, n, expected)
+		}
+	}
+}
+
+// with_user_thread runs fn with t.Local("user") set to u.
+func with_user_thread(u *User, fn func(*sl.Thread)) {
+	th := &sl.Thread{}
+	th.SetLocal("user", u)
+	fn(th)
+}
+
+// TestApiReplicationBootstrapProgress: returns per-(peer, scope) rows;
+// peer-filtered arg narrows to one peer.
+func TestApiReplicationBootstrapProgress(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	bootstrap_set_state("files", "peer-A", "done", "")
+	bootstrap_set_state("apps", "peer-A", "active", "12")
+	bootstrap_set_state("files", "peer-B", "queued", "")
+
+	th := &sl.Thread{}
+
+	// No filter — every row.
+	v, err := api_replication_bootstrap_progress(th, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	all := v.(*sl.List)
+	if all.Len() != 3 {
+		t.Errorf("all rows = %d, want 3", all.Len())
+	}
+
+	// Filtered to peer-A.
+	v, err = api_replication_bootstrap_progress(th, sl.NewBuiltin("bootstrap_progress", api_replication_bootstrap_progress), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("progress filtered: %v", err)
+	}
+	filtered := v.(*sl.List)
+	if filtered.Len() != 2 {
+		t.Errorf("peer-A rows = %d, want 2", filtered.Len())
+	}
+
+	// Check entry shape — iterate the first row and look up keys.
+	it := filtered.Iterate()
+	defer it.Done()
+	var first sl.Value
+	if !it.Next(&first) {
+		t.Fatalf("filtered list is empty")
+	}
+	d := first.(*sl.Dict)
+	for _, key := range []string{"peer", "scope", "state", "position"} {
+		v, ok, _ := d.Get(sl.String(key))
+		if !ok {
+			t.Errorf("entry missing key %q", key)
+			continue
+		}
+		if _, ok := v.(sl.String); !ok {
+			t.Errorf("entry %q value is not a string: %T", key, v)
+		}
+	}
+}
+
+// TestApiReplicationLinksAndHosts: per-user link/host queries scope to
+// the calling user. Inserts rows for two users and asserts the API
+// returns only the calling user's rows.
+func TestApiReplicationLinksAndHosts(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-A', 'a.example', 'ph-1', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-B', 'b.example', 'ph-2', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-bob', 'peer-Z', 'z.example', 'ph-9', 0, 9999999999)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-A', 100, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-Z', 200, 1)")
+
+	alice := &User{UID: "u-alice"}
+	with_user_thread(alice, func(th *sl.Thread) {
+		v, err := api_replication_links(th, nil, sl.Tuple{}, nil)
+		if err != nil {
+			t.Fatalf("links: %v", err)
+		}
+		links := v.(*sl.List)
+		if links.Len() != 2 {
+			t.Errorf("links len = %d, want 2 (alice has 2 pending)", links.Len())
+		}
+
+		v, err = api_replication_hosts(th, nil, sl.Tuple{}, nil)
+		if err != nil {
+			t.Fatalf("hosts: %v", err)
+		}
+		hosts := v.(*sl.List)
+		if hosts.Len() != 1 {
+			t.Errorf("hosts len = %d, want 1 (alice has 1 host)", hosts.Len())
+		}
+	})
+
+	// No user — both APIs should error.
+	th := &sl.Thread{}
+	if _, err := api_replication_links(th, sl.NewBuiltin("links", api_replication_links), sl.Tuple{}, nil); err == nil {
+		t.Error("links: expected error for no user")
+	}
+	if _, err := api_replication_hosts(th, sl.NewBuiltin("hosts", api_replication_hosts), sl.Tuple{}, nil); err == nil {
+		t.Error("hosts: expected error for no user")
+	}
+}
+
+// TestApiReplicationLinkDeny: deny removes the link row for the calling
+// user but leaves rows for other users untouched.
+func TestApiReplicationLinkDeny(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-alice', 'peer-A', '', 'ph-1', 0, 9999999999)")
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values ('u-bob', 'peer-A', '', 'ph-2', 0, 9999999999)")
+
+	alice := &User{UID: "u-alice"}
+	with_user_thread(alice, func(th *sl.Thread) {
+		v, err := api_replication_link_deny(th, sl.NewBuiltin("link_deny", api_replication_link_deny), sl.Tuple{sl.String("peer-A")}, nil)
+		if err != nil {
+			t.Fatalf("link_deny: %v", err)
+		}
+		if s, _ := v.(sl.String); string(s) != "denied" {
+			t.Errorf("link_deny first call = %v, want denied", v)
+		}
+
+		// Idempotent: second call returns already-handled.
+		v, _ = api_replication_link_deny(th, sl.NewBuiltin("link_deny", api_replication_link_deny), sl.Tuple{sl.String("peer-A")}, nil)
+		if s, _ := v.(sl.String); string(s) != "already-handled" {
+			t.Errorf("link_deny repeat = %v, want already-handled", v)
+		}
+	})
+
+	// Bob's row must be untouched.
+	exists, _ := rdb.exists("select 1 from links where user='u-bob' and peer='peer-A'")
+	if !exists {
+		t.Error("bob's link row was incorrectly removed by alice's deny")
+	}
+}
+
+// TestApiReplicationJoinsAndDeny: joins() lists all pending whole-server
+// join-requests (no user filter; system-wide). join_deny removes one
+// row idempotently.
+func TestApiReplicationJoinsAndDeny(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	orig_emit_join_denied := replication_emit_join_denied
+	replication_emit_join_denied = func(peer, reason string) {}
+	defer func() { replication_emit_join_denied = orig_emit_join_denied }()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-A', 'a.example', 0, 9999999999)")
+	rdb.exec("insert into joins (peer, label, received, expires) values ('peer-B', 'b.example', 1, 9999999999)")
+
+	th := &sl.Thread{}
+	v, err := api_replication_joins(th, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("joins: %v", err)
+	}
+	joins := v.(*sl.List)
+	if joins.Len() != 2 {
+		t.Errorf("joins len = %d, want 2", joins.Len())
+	}
+
+	// Deny peer-A.
+	v, err = api_replication_join_deny(th, sl.NewBuiltin("join_deny", api_replication_join_deny), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("join_deny: %v", err)
+	}
+	if s, _ := v.(sl.String); string(s) != "denied" {
+		t.Errorf("join_deny first call = %v, want denied", v)
+	}
+
+	// Idempotent.
+	v, _ = api_replication_join_deny(th, sl.NewBuiltin("join_deny", api_replication_join_deny), sl.Tuple{sl.String("peer-A")}, nil)
+	if s, _ := v.(sl.String); string(s) != "already-handled" {
+		t.Errorf("join_deny repeat = %v, want already-handled", v)
+	}
+
+	// peer-B still pending.
+	v, _ = api_replication_joins(th, nil, sl.Tuple{}, nil)
+	if v.(*sl.List).Len() != 1 {
+		t.Errorf("after denying A, joins len = %d, want 1", v.(*sl.List).Len())
+	}
+}
+
+// TestApiReplicationPairRemove: removing a pair member drops the row
+// and informs remaining members via the emit hook.
+func TestApiReplicationPairRemove(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	emitted := false
+	orig_emit := admin_replication_emit_pair_membership
+	admin_replication_emit_pair_membership = func(full, recipients []string) { emitted = true }
+	defer func() { admin_replication_emit_pair_membership = orig_emit }()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-A', 0, '')")
+	rdb.exec("insert into pair (peer, added, role) values ('peer-B', 0, '')")
+
+	th := &sl.Thread{}
+	v, err := api_replication_pair_remove(th, sl.NewBuiltin("pair_remove", api_replication_pair_remove), sl.Tuple{sl.String("peer-A")}, nil)
+	if err != nil {
+		t.Fatalf("pair_remove: %v", err)
+	}
+	if s, _ := v.(sl.String); string(s) != "removed" {
+		t.Errorf("pair_remove = %v, want removed", v)
+	}
+	if !emitted {
+		t.Error("admin_replication_emit_pair_membership was not called for remaining members")
+	}
+
+	// peer-B still present.
+	if exists, _ := rdb.exists("select 1 from pair where peer='peer-B'"); !exists {
+		t.Error("peer-B was incorrectly removed alongside peer-A")
+	}
+
+	// not-found path.
+	v, _ = api_replication_pair_remove(th, sl.NewBuiltin("pair_remove", api_replication_pair_remove), sl.Tuple{sl.String("peer-unknown")}, nil)
+	if s, _ := v.(sl.String); string(s) != "not-found" {
+		t.Errorf("pair_remove unknown = %v, want not-found", v)
+	}
+}
+
+// TestApiReplicationHostRemove: removing a host removes only the calling
+// user's row, leaves other users untouched, and returns not-found when
+// the peer wasn't a host.
+func TestApiReplicationHostRemove(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values ('u-alice', 'alice')")
+	udb.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-alice', '', 'fpa', 'u-alice', 'identity', 'Alice')")
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-A', 100, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-alice', 'peer-B', 200, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u-bob', 'peer-A', 300, 0)")
+
+	alice := &User{UID: "u-alice"}
+	with_user_thread(alice, func(th *sl.Thread) {
+		v, err := api_replication_host_remove(th, sl.NewBuiltin("host_remove", api_replication_host_remove), sl.Tuple{sl.String("peer-A")}, nil)
+		if err != nil {
+			t.Fatalf("host_remove: %v", err)
+		}
+		if s, _ := v.(sl.String); string(s) != "removed" {
+			t.Errorf("host_remove = %v, want removed", v)
+		}
+
+		// not-found path.
+		v, _ = api_replication_host_remove(th, sl.NewBuiltin("host_remove", api_replication_host_remove), sl.Tuple{sl.String("peer-unknown")}, nil)
+		if s, _ := v.(sl.String); string(s) != "not-found" {
+			t.Errorf("host_remove unknown peer = %v, want not-found", v)
+		}
+	})
+
+	// Alice's other host and Bob's row must be intact.
+	if exists, _ := rdb.exists("select 1 from hosts where user='u-alice' and peer='peer-B'"); !exists {
+		t.Error("alice's peer-B host was incorrectly removed")
+	}
+	if exists, _ := rdb.exists("select 1 from hosts where user='u-bob' and peer='peer-A'"); !exists {
+		t.Error("bob's host was incorrectly removed by alice's call")
+	}
+}
+
+// ============================================================
+// Per-DB row replication tests (users / schedule / sessions)
+// + Go-side internal-exec replication tests
+// ============================================================
+
+// ============================================================
+// users.db row tests
+// ============================================================
+
+// setup_users_row_apply_test wires up the data_dir + a registered user
+// with a known UID. Returns a cleanup to restore state, plus the test
+// UID.
+func setup_users_row_apply_test(t *testing.T) (cleanup func(), uid string) {
+	t.Helper()
+	tmp, err := os.MkdirTemp("", "mochi_users_row")
+	if err != nil {
+		t.Fatalf("mktemp: %v", err)
+	}
+	orig := data_dir
+	data_dir = tmp
+	setup_users_test_schema()
+	uid = "uid-users-row"
+	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", uid, "alice@example.com")
+	cleanup = func() {
+		data_dir = orig
+		os.RemoveAll(tmp)
+	}
+	return
+}
+
+// TestReplicationUsersUsersApplyRoleIgnoredOnPerUserPath asserts that
+// role does NOT flow via the per-user (host-set) path - it must arrive
+// via the pair-only system-row pipeline so it doesn't leak across
+// operators (different operators decide admin authority independently).
+func TestReplicationUsersUsersApplyRoleIgnoredOnPerUserPath(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"role": "administrator"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Fatalf("role on per-user path: want ApplyInvalid (silently ignored), got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
+	if got, _ := row["role"].(string); got == "administrator" {
+		t.Error("role MUST NOT apply via the per-user path - pair-only column")
+	}
+}
+
+// TestReplicationUsersUsersApplyUsernameIgnoredOnPerUserPath asserts
+// the same exclusion for username, which is a per-operator namespace
+// affordance rather than per-user data.
+func TestReplicationUsersUsersApplyUsernameIgnoredOnPerUserPath(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"username": "evil@elsewhere"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Fatalf("username on per-user path: want ApplyInvalid, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select username from users where uid=?", uid)
+	if got, _ := row["username"].(string); got == "evil@elsewhere" {
+		t.Error("username MUST NOT apply via the per-user path - pair-only column")
+	}
+}
+
+// TestReplicationUsersUsersApplyStatus covers the per-user path's
+// remaining valid column - status (suspend / activate) does propagate
+// to every host in the user's set, including per-user link partners,
+// because the user is suspended everywhere or active everywhere.
+func TestReplicationUsersUsersApplyStatus(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("status apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got != "suspended" {
+		t.Errorf("status: want suspended, got %q", got)
+	}
+}
+
+func TestReplicationUsersUsersApplyMultipleColumns(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{
+		"status":  "suspended",
+		"methods": "email,passkey",
+	}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("multi-col apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select status, methods from users where uid=?", uid)
+	if got, _ := row["status"].(string); got != "suspended" {
+		t.Errorf("status: want suspended, got %q", got)
+	}
+	if got, _ := row["methods"].(string); got != "email,passkey" {
+		t.Errorf("methods: want email,passkey, got %q", got)
+	}
+}
+
+func TestReplicationUsersUsersApplyIgnoresUnknownColumn(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	// "evil" isn't a real column. The apply must skip it (and skip the
+	// whole UPDATE if no whitelisted columns remain).
+	op := &UsersRow{Table: "users", Cols: map[string]string{"evil": "x"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Errorf("unknown-only column: want ApplyInvalid, got %v", got)
+	}
+
+	// A real column alongside an unknown column applies just the known.
+	op = &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended", "evil": "x"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("mixed: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got != "suspended" {
+		t.Errorf("status: want suspended, got %q", got)
+	}
+}
+
+func TestReplicationUsersUsersApplyDeferUnknownUser(t *testing.T) {
+	cleanup, _ := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Cols: map[string]string{"status": "suspended"}}
+	if got := replication_users_row_apply("uid-missing", op); got != ApplyDeferred {
+		t.Errorf("unknown user: want ApplyDeferred, got %v", got)
+	}
+}
+
+func TestReplicationUsersUsersApplyDeleteIsNoop(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "users", Delete: true}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Errorf("delete: want ApplyApplied (noop), got %v", got)
+	}
+	// User row must still exist.
+	exists, _ := db_open("db/users.db").exists("select 1 from users where uid=?", uid)
+	if !exists {
+		t.Error("delete op must NOT remove user row")
+	}
+}
+
+func TestReplicationUsersEntitiesApplyCreate(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	op := &UsersRow{Table: "entities", Cols: map[string]string{
+		"id":          test_entity_id('a'),
+		"private":     "private-key-bytes",
+		"fingerprint": "fp-abc",
+		"parent":      "",
+		"class":       "feed",
+		"name":        "Alice's Feed",
+		"privacy":     "public",
+		"data":        "",
+		"published":   "0",
+	}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("create: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select user, class, name, privacy from entities where id=?", test_entity_id('a'))
+	if row == nil {
+		t.Fatal("entity row missing after apply")
+	}
+	if got, _ := row["user"].(string); got != uid {
+		t.Errorf("user FK: want %q, got %q", uid, got)
+	}
+	if got, _ := row["name"].(string); got != "Alice's Feed" {
+		t.Errorf("name: want \"Alice's Feed\", got %q", got)
+	}
+}
+
+func TestReplicationUsersEntitiesApplyUpdate(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	id := test_entity_id('b')
+	db_open("db/users.db").exec(
+		"insert into entities (id, private, fingerprint, user, class, name, privacy) values (?, 'priv', 'fp', ?, 'feed', 'Original', 'public')",
+		id, uid)
+
+	op := &UsersRow{Table: "entities", Cols: map[string]string{
+		"id":      id,
+		"name":    "Renamed",
+		"privacy": "private",
+	}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("update: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select name, privacy from entities where id=?", id)
+	if got, _ := row["name"].(string); got != "Renamed" {
+		t.Errorf("name: want Renamed, got %q", got)
+	}
+	if got, _ := row["privacy"].(string); got != "private" {
+		t.Errorf("privacy: want private, got %q", got)
+	}
+}
+
+func TestReplicationUsersEntitiesApplyDelete(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	id := test_entity_id('c')
+	db_open("db/users.db").exec(
+		"insert into entities (id, private, fingerprint, user, class, name) values (?, 'p', 'fp', ?, 'feed', 'X')",
+		id, uid)
+
+	op := &UsersRow{Table: "entities", Cols: map[string]string{"id": id}, Delete: true}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("delete: want ApplyApplied, got %v", got)
+	}
+	if exists, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); exists {
+		t.Error("entity row must be removed")
+	}
+}
+
+func TestReplicationUsersEntitiesApplyScopedToUser(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	// A row owned by user "other-uid" must not be touched by an op
+	// arriving with op.User = uid (our test user).
+	db_open("db/users.db").exec("insert into users (uid, username) values ('other-uid', 'other@example.com')")
+	id := test_entity_id('d')
+	db_open("db/users.db").exec(
+		"insert into entities (id, private, fingerprint, user, class, name) values (?, 'p', 'fp', 'other-uid', 'feed', 'Theirs')",
+		id)
+
+	op := &UsersRow{Table: "entities", Cols: map[string]string{"id": id, "name": "Hijacked"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyApplied {
+		t.Fatalf("apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select name from entities where id=?", id)
+	if got, _ := row["name"].(string); got != "Theirs" {
+		t.Errorf("apply must be scoped to op.User; want untouched 'Theirs', got %q", got)
+	}
+}
+
+func TestReplicationUsersEntitiesApplyIgnoresPublished(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+
+	id := test_entity_id('e')
+	db_open("db/users.db").exec(
+		"insert into entities (id, private, fingerprint, user, class, name, published) values (?, 'p', 'fp', ?, 'feed', 'X', 1000)",
+		id, uid)
+
+	op := &UsersRow{Table: "entities", Cols: map[string]string{"id": id, "published": "9999"}}
+	if got := replication_users_row_apply(uid, op); got != ApplyInvalid {
+		t.Errorf("published-only update: want ApplyInvalid (per-host state), got %v", got)
+	}
+	row, _ := db_open("db/users.db").row("select published from entities where id=?", id)
+	if got, _ := row["published"].(int64); got != 1000 {
+		t.Errorf("published must not replicate; want 1000, got %d", got)
+	}
+}
+
+// ============================================================
+// schedule.db row tests
+// ============================================================
+
+// setup_schedule_row_apply_test wires up data_dir, a registered user,
+// and the schedule.db schema. Returns a cleanup and the user UID.
+func setup_schedule_row_apply_test(t *testing.T) (cleanup func(), uid string) {
+	t.Helper()
+	cleanup = setup_replication_test(t)
+	setup_users_test_schema()
+	uid = "uid-sched"
+	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", uid, "sched@example.com")
+	schedule_db().exec("create table schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+	return
+}
+
+func TestReplicationScheduleRowApplyInsert(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	r := &ScheduleRow{
+		Key: map[string]string{
+			"user": uid, "app": "feeds", "event": "refresh", "created": "100",
+		},
+		Cols: map[string]string{
+			"due": "130", "data": "{}", "interval": "30",
+		},
+	}
+	if got := replication_schedule_row_apply(uid, r); got != ApplyApplied {
+		t.Fatalf("apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := schedule_db().row(
+		"select due, interval from schedule where user=? and app=? and event=? and created=?",
+		uid, "feeds", "refresh", 100)
+	if row == nil {
+		t.Fatal("schedule row missing after apply")
+	}
+	if got, _ := row["due"].(int64); got != 130 {
+		t.Errorf("due = %d, want 130", got)
+	}
+	if got, _ := row["interval"].(int64); got != 30 {
+		t.Errorf("interval = %d, want 30", got)
+	}
+}
+
+// TestReplicationScheduleRowApplyInsertIdempotent: re-applying the
+// same op is a no-op. Same natural key already exists, INSERT is
+// skipped.
+func TestReplicationScheduleRowApplyInsertIdempotent(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	r := &ScheduleRow{
+		Key:  map[string]string{"user": uid, "app": "feeds", "event": "refresh", "created": "100"},
+		Cols: map[string]string{"due": "130", "data": "{}", "interval": "30"},
+	}
+	replication_schedule_row_apply(uid, r)
+	replication_schedule_row_apply(uid, r) // re-deliver
+
+	rows, _ := schedule_db().rows(
+		"select 1 from schedule where user=? and app=? and event=? and created=?",
+		uid, "feeds", "refresh", 100)
+	if len(rows) != 1 {
+		t.Errorf("re-apply created duplicate; rows = %d, want 1", len(rows))
+	}
+}
+
+func TestReplicationScheduleRowApplyDelete(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+	sdb := schedule_db()
+	sdb.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+		uid, "feeds", 130, "refresh", "{}", 30, 100)
+
+	r := &ScheduleRow{
+		Key:    map[string]string{"user": uid, "app": "feeds", "event": "refresh", "created": "100"},
+		Delete: true,
+	}
+	if got := replication_schedule_row_apply(uid, r); got != ApplyApplied {
+		t.Fatalf("delete apply: want ApplyApplied, got %v", got)
+	}
+	exists, _ := sdb.exists(
+		"select 1 from schedule where user=? and app=? and event=? and created=?",
+		uid, "feeds", "refresh", 100)
+	if exists {
+		t.Error("row should have been deleted")
+	}
+}
+
+// TestReplicationScheduleRowApplyDeleteNonExistent: deleting a row
+// that's already gone returns Applied (idempotent).
+func TestReplicationScheduleRowApplyDeleteNonExistent(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	r := &ScheduleRow{
+		Key:    map[string]string{"user": uid, "app": "feeds", "event": "refresh", "created": "100"},
+		Delete: true,
+	}
+	if got := replication_schedule_row_apply(uid, r); got != ApplyApplied {
+		t.Errorf("delete-nonexistent: want ApplyApplied, got %v", got)
+	}
+}
+
+// TestReplicationScheduleRowApplyDeferUnknownUser: when the user
+// hasn't landed yet (per-user link bootstrap incomplete), the op
+// defers so it can replay after the user row arrives.
+func TestReplicationScheduleRowApplyDeferUnknownUser(t *testing.T) {
+	cleanup, _ := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	r := &ScheduleRow{
+		Key:  map[string]string{"user": "uid-missing", "app": "feeds", "event": "refresh", "created": "100"},
+		Cols: map[string]string{"due": "130", "data": "{}", "interval": "30"},
+	}
+	if got := replication_schedule_row_apply("uid-missing", r); got != ApplyDeferred {
+		t.Errorf("unknown user: want ApplyDeferred, got %v", got)
+	}
+}
+
+// TestReplicationScheduleRowApplyMissingKey: a payload that's missing
+// any natural-key field is dropped.
+func TestReplicationScheduleRowApplyMissingKey(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	cases := []map[string]string{
+		{"app": "feeds", "event": "refresh", "created": "100"}, // user missing
+		{"user": uid, "event": "refresh", "created": "100"},    // app missing
+		{"user": uid, "app": "feeds", "created": "100"},        // event missing
+		{"user": uid, "app": "feeds", "event": "refresh"},      // created missing
+	}
+	for i, key := range cases {
+		r := &ScheduleRow{
+			Key:  key,
+			Cols: map[string]string{"due": "130", "data": "{}", "interval": "30"},
+		}
+		if got := replication_schedule_row_apply(uid, r); got != ApplyInvalid {
+			t.Errorf("case %d (%v): want ApplyInvalid, got %v", i, key, got)
+		}
+	}
+}
+
+// TestScheduleCreateEmits: schedule_create fires a schedule-row.set
+// op with the right Key + Cols.
+func TestScheduleCreateEmits(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+	// Need an app row for schedule_valid - not exercised here, but the
+	// real schedule_create path doesn't check app existence so we only
+	// need the schedule table itself, already set up.
+
+	calls := 0
+	orig := replication_emit_schedule_row
+	replication_emit_schedule_row = func(user string, r *ScheduleRow) {
+		calls++
+		if user != uid {
+			t.Errorf("emit user = %q, want %q", user, uid)
+		}
+		if r.Delete {
+			t.Error("emit delete=true on create")
+		}
+		if r.Key["app"] != "feeds" || r.Key["event"] != "refresh" {
+			t.Errorf("emit key: %v", r.Key)
+		}
+		if r.Cols["interval"] != "30" {
+			t.Errorf("emit interval: %q, want 30", r.Cols["interval"])
+		}
+	}
+	defer func() { replication_emit_schedule_row = orig }()
+
+	id := schedule_create(uid, "feeds", now()+60, "refresh", "{}", 30)
+	if id == 0 {
+		t.Fatal("schedule_create returned id=0")
+	}
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// TestScheduleCreateSystemEventDoesNotEmit: system events (empty
+// user) stay local - no emit.
+func TestScheduleCreateSystemEventDoesNotEmit(t *testing.T) {
+	cleanup, _ := setup_schedule_row_apply_test(t)
+	defer cleanup()
+
+	calls := 0
+	orig := replication_emit_schedule_row
+	replication_emit_schedule_row = func(user string, r *ScheduleRow) { calls++ }
+	defer func() { replication_emit_schedule_row = orig }()
+
+	if id := schedule_create("", "platform", now()+60, "tick", "{}", 0); id == 0 {
+		t.Fatal("schedule_create returned id=0 for system event")
+	}
+	if calls != 0 {
+		t.Errorf("system event emit calls = %d, want 0", calls)
+	}
+}
+
+// TestScheduleDeleteEmits: schedule_delete fires a schedule-row.delete
+// op keyed on the row's natural identifier.
+func TestScheduleDeleteEmits(t *testing.T) {
+	cleanup, uid := setup_schedule_row_apply_test(t)
+	defer cleanup()
+	sdb := schedule_db()
+	res := must(sdb.internal.Exec(
+		"insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+		uid, "crm", 200, "reminder", "{}", 0, 100))
+	id, _ := res.LastInsertId()
+
+	calls := 0
+	orig := replication_emit_schedule_row
+	replication_emit_schedule_row = func(user string, r *ScheduleRow) {
+		calls++
+		if !r.Delete {
+			t.Error("emit delete=false on delete")
+		}
+		if r.Key["user"] != uid || r.Key["app"] != "crm" || r.Key["event"] != "reminder" || r.Key["created"] != "100" {
+			t.Errorf("emit key: %v", r.Key)
+		}
+	}
+	defer func() { replication_emit_schedule_row = orig }()
+
+	schedule_delete(id)
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// ============================================================
+// Go-side internal-exec replication tests
+// (matches replication_internal_exec helpers now folded into
+// replication.go for per-user system DB writes from Go callers)
+// ============================================================
+
+// TestReplicationApplyAppSystemExec verifies that a replicated app-system
+// write (the path mochi.access.* now uses) lands in the receiver's
+// users/<uid>/<app>/app.db.
+func TestReplicationApplyAppSystemExec(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  app_id,
+		Table:     "access",
+		Operation: repl_op_exec_app_system,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `replace into access (subject, resource, operation, grant, granter, created) values (?, ?, ?, ?, ?, ?)`,
+			Args:      []any{"alice", "feed/F1", "view", int64(1), "alice", int64(1700000000)},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app_system(u, a)
+	row, err := db.row("select grant from access where subject=? and resource=? and operation=?", "alice", "feed/F1", "view")
+	if err != nil {
+		t.Fatalf("row error: %v", err)
+	}
+	if row == nil {
+		t.Fatal("replicated access row missing on receiver")
+	}
+}
+
+// TestReplicationApplyAppSystemExecMissingApp confirms the apply defers
+// when the receiver doesn't have the app installed yet (the bootstrap
+// drain will retry once the app sync lands).
+func TestReplicationApplyAppSystemExecMissingApp(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  "no-such-app",
+		Operation: repl_op_exec_app_system,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `replace into access (subject, resource, operation, grant, granter, created) values (?, ?, ?, ?, ?, ?)`,
+			Args:      []any{"alice", "feed/F1", "view", int64(1), "alice", int64(1700000000)},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyDeferred {
+		t.Fatalf("expected ApplyDeferred for missing app, got %v", got)
+	}
+}
+
+// TestReplicationApplyUserCoreExec verifies that a replicated user-core
+// write (the path mochi.group.* now uses) lands in the receiver's
+// users/<uid>/user.db.
+func TestReplicationApplyUserCoreExec(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  repl_db_user_core_sentinel,
+		Table:     "groups",
+		Operation: repl_op_exec_user_core,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `replace into groups (id, name, description, created) values (?, ?, ?, ?)`,
+			Args:      []any{"g-engineering", "Engineering", "", int64(1700000000)},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	u := &User{UID: user_uid}
+	db := db_user(u, "user")
+	row, err := db.row("select name from groups where id=?", "g-engineering")
+	if err != nil {
+		t.Fatalf("row error: %v", err)
+	}
+	if row == nil {
+		t.Fatal("replicated groups row missing on receiver")
+	}
+	if got, _ := row["name"].(string); got != "Engineering" {
+		t.Errorf("name: want Engineering, got %q", got)
+	}
+}
+
+// TestReplicationApplyUserCoreExecPreferences: a user preference write
+// replicates via the user-core exec path and lands in the receiver's
+// users/<uid>/user.db `preferences` table. Regression for a language
+// preference changed on one host of an account not reaching the other
+// hosts — user_preference_set / user_preference_delete now use
+// exec_replicated, and `preferences` is not in sql_default_excluded,
+// so the write fans out and applies.
+func TestReplicationApplyUserCoreExecPreferences(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  repl_db_user_core_sentinel,
+		Table:     "preferences",
+		Operation: repl_op_exec_user_core,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `replace into preferences (name, value) values (?, ?)`,
+			Args:      []any{"language", "fr"},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	u := &User{UID: user_uid}
+	db := db_user(u, "user")
+	row, err := db.row("select value from preferences where name=?", "language")
+	if err != nil {
+		t.Fatalf("row error: %v", err)
+	}
+	if row == nil {
+		t.Fatal("replicated preferences row missing on receiver")
+	}
+	if got, _ := row["value"].(string); got != "fr" {
+		t.Errorf("language preference: want fr, got %q", got)
+	}
+
+	// A delete also replicates and converges.
+	del := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  repl_db_user_core_sentinel,
+		Table:     "preferences",
+		Operation: repl_op_exec_user_core,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `delete from preferences where name = ?`,
+			Args:      []any{"language"},
+		}),
+	}
+	if got := replication_apply_op(del); got != ApplyApplied {
+		t.Fatalf("delete: expected ApplyApplied, got %v", got)
+	}
+	if n := db.integer("select count(*) from preferences where name='language'"); n != 0 {
+		t.Errorf("preference rows after replicated delete = %d, want 0", n)
+	}
+}
+
+// TestReplicationApplyUserCoreExecInterests: an interest-profile write
+// replicates via the user-core exec path and lands in the receiver's
+// users/<uid>/user.db `interests` table. The personalised ranking is
+// account-global, so mochi.interests.* now uses exec_replicated and
+// `interests` is not in sql_default_excluded — the write fans out.
+func TestReplicationApplyUserCoreExecInterests(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  repl_db_user_core_sentinel,
+		Table:     "interests",
+		Operation: repl_op_exec_user_core,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `insert or replace into interests (qid, weight, updated) values (?, ?, ?)`,
+			Args:      []any{"Q42", int64(75), int64(1700000000)},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	u := &User{UID: user_uid}
+	db := db_user(u, "user")
+	row, err := db.row("select weight from interests where qid=?", "Q42")
+	if err != nil {
+		t.Fatalf("row error: %v", err)
+	}
+	if row == nil {
+		t.Fatal("replicated interests row missing on receiver")
+	}
+	if got, _ := row["weight"].(int64); got != 75 {
+		t.Errorf("weight: want 75, got %d", got)
+	}
+}
+
+// TestReplicationApplyUserCoreExecMissingUser confirms the apply defers
+// when the user record hasn't yet landed locally.
+func TestReplicationApplyUserCoreExecMissingUser(t *testing.T) {
+	cleanup, _, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      "uid-not-here",
+		Database:  repl_db_user_core_sentinel,
+		Operation: repl_op_exec_user_core,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: `replace into groups (id, name, description, created) values (?, ?, ?, ?)`,
+			Args:      []any{"g1", "G", "", int64(1700000000)},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyDeferred {
+		t.Fatalf("expected ApplyDeferred for missing user, got %v", got)
+	}
+}
+
+// ============================================================
+// SQL command replication tests
+// (basic apply / extra invariants / emit-side gates / transactions)
+// ============================================================
+
+// ============================================================
+// Basic apply tests (was replication_sql_command_test.go)
+// ============================================================
+
+func TestSQLTargetTable(t *testing.T) {
+	cases := []struct {
+		sql  string
+		want string
+	}{
+		{"INSERT INTO posts VALUES (1)", "posts"},
+		{"insert into posts values (1)", "posts"},
+		{"INSERT OR IGNORE INTO posts VALUES (1)", "posts"},
+		{"INSERT OR REPLACE INTO posts (id) VALUES (1)", "posts"},
+		{"REPLACE INTO posts (id) VALUES (1)", "posts"},
+		{"UPDATE posts SET title = ? WHERE id = ?", "posts"},
+		{"update posts set title = ?", "posts"},
+		{"UPDATE OR REPLACE posts SET x = 1", "posts"},
+		{"DELETE FROM posts WHERE id = ?", "posts"},
+		{"delete from posts", "posts"},
+
+		// Identifiers with quoting.
+		{`INSERT INTO "posts" VALUES (1)`, "posts"},
+		{"INSERT INTO `posts` VALUES (1)", "posts"},
+		{"INSERT INTO [posts] VALUES (1)", "posts"},
+
+		// Leading whitespace / comments.
+		{"  \n\t INSERT INTO posts VALUES (1)", "posts"},
+		{"-- header\nINSERT INTO posts VALUES (1)", "posts"},
+		{"/* header */ INSERT INTO posts VALUES (1)", "posts"},
+
+		// Non-mutating statements: not replicated.
+		{"SELECT * FROM posts", ""},
+		{"PRAGMA user_version", ""},
+		{"CREATE TABLE posts (id INTEGER)", ""},
+		{"DROP TABLE posts", ""},
+		{"ALTER TABLE posts ADD COLUMN x", ""},
+
+		// CTE: deliberately not recognised; caller must reshape.
+		{"WITH cte AS (SELECT 1) INSERT INTO posts SELECT * FROM cte", ""},
+
+		// Garbled input.
+		{"", ""},
+		{"   ", ""},
+		{"INSERT", ""},
+		{"UPDATE", ""},
+		{"DELETE FROM", ""},
+		{"INSERT INTO", ""},
+	}
+	for _, c := range cases {
+		got := sql_target_table(c.sql)
+		if got != c.want {
+			t.Errorf("sql_target_table(%q) = %q; want %q", c.sql, got, c.want)
+		}
+	}
+}
+
+func TestSQLTargetUID(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		args []any
+		want string
+	}{
+		// Explicit (id, ...) column list - first column is id, args[0]
+		// is the row uid.
+		{"insert id-first",
+			"INSERT INTO posts (id, title) VALUES (?, ?)",
+			[]any{"abc123", "hello"},
+			"abc123"},
+		{"replace id-first",
+			"REPLACE INTO posts (id, title) VALUES (?, ?)",
+			[]any{"xyz", "hi"},
+			"xyz"},
+		{"insert or ignore id-first",
+			"INSERT OR IGNORE INTO posts (id, title) VALUES (?, ?)",
+			[]any{"u1", "t"},
+			"u1"},
+		{"insert or replace id-first",
+			"INSERT OR REPLACE INTO posts (id, n) VALUES (?, ?)",
+			[]any{"u2", 1},
+			"u2"},
+
+		// Implicit positional values - args[0] is the row uid by
+		// convention (Mochi's CREATE TABLE puts id first).
+		{"insert positional",
+			"INSERT INTO posts VALUES (?, ?, ?)",
+			[]any{"pos1", "t", "b"},
+			"pos1"},
+		{"replace positional",
+			"REPLACE INTO posts VALUES (?, ?)",
+			[]any{"rp1", "n"},
+			"rp1"},
+
+		// (id, ...) column list with quoted table and case variations.
+		{"insert quoted table id-first",
+			`INSERT INTO "posts" (id, title) VALUES (?, ?)`,
+			[]any{"quoted", "t"},
+			"quoted"},
+		{"lowercase keywords",
+			"insert into posts (id, title) values (?, ?)",
+			[]any{"lower", "t"},
+			"lower"},
+
+		// First column is NOT id - no extraction (apps using non-id
+		// PK fall back to empty uid).
+		{"insert non-id first column",
+			"INSERT INTO posts (slug, title) VALUES (?, ?)",
+			[]any{"hello-world", "t"},
+			""},
+
+		// UPDATE / DELETE with WHERE id = ?.
+		{"update where id",
+			"UPDATE posts SET title = ? WHERE id = ?",
+			[]any{"new", "abc"},
+			"abc"},
+		{"delete where id",
+			"DELETE FROM posts WHERE id = ?",
+			[]any{"abc"},
+			"abc"},
+		{"update where id no spaces",
+			"UPDATE posts SET title=? WHERE id=?",
+			[]any{"new", "row7"},
+			"row7"},
+		{"update multiple set args",
+			"UPDATE posts SET title = ?, body = ?, updated = ? WHERE id = ?",
+			[]any{"t", "b", 123, "row9"},
+			"row9"},
+
+		// WHERE clause keyed on a different column or compound - no
+		// extraction.
+		{"update where non-id",
+			"UPDATE posts SET title = ? WHERE slug = ?",
+			[]any{"t", "hello"},
+			""},
+		{"update where compound",
+			"UPDATE posts SET title = ? WHERE id = ? AND author = ?",
+			[]any{"t", "abc", "user"},
+			""},
+		{"delete no where",
+			"DELETE FROM posts",
+			[]any{},
+			""},
+
+		// Non-string args (e.g. integer PK) aren't returned as row
+		// uids - Mochi uses string uids via mochi.uid().
+		{"insert integer pk",
+			"INSERT INTO posts (id, title) VALUES (?, ?)",
+			[]any{int64(42), "t"},
+			""},
+
+		// Empty / unparseable input.
+		{"empty sql", "", nil, ""},
+		{"select read-only", "SELECT * FROM posts WHERE id = ?", []any{"x"}, ""},
+		{"create table", "CREATE TABLE posts (id INTEGER)", nil, ""},
+	}
+	for _, c := range cases {
+		got := sql_target_uid(c.sql, c.args)
+		if got != c.want {
+			t.Errorf("%s: sql_target_uid(%q, %v) = %q; want %q",
+				c.name, c.sql, c.args, got, c.want)
+		}
+	}
+}
+
+// TestReplicationOpUIDRoundtrip verifies the UID field survives a
+// cbor encode / decode cycle (the wire path between sender and
+// receiver) and that an op encoded by an older sender (no UID field)
+// decodes cleanly with an empty UID.
+func TestReplicationOpUIDRoundtrip(t *testing.T) {
+	sent := ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      "uid-user",
+		Database:  "posts",
+		Table:     "posts",
+		UID:       "row-abc",
+		Operation: repl_op_exec,
+		Payload:   []byte("body"),
+		Sequence:  1,
+		Prev:      0,
+	}
+	encoded := cbor_encode(&sent)
+	var received ReplicationOp
+	if err := cbor.Unmarshal(encoded, &received); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if received.UID != "row-abc" {
+		t.Errorf("UID lost in roundtrip: got %q want %q", received.UID, sent.UID)
+	}
+
+	// Older sender shape: encode without setting UID, decode, expect "".
+	older := ReplicationOp{
+		Scope:    repl_scope_app,
+		User:     "uid-user",
+		Database: "posts",
+		Table:    "posts",
+		// UID intentionally unset.
+		Operation: repl_op_exec,
+		Payload:   []byte("body"),
+		Sequence:  2,
+		Prev:      1,
+	}
+	var olderDecoded ReplicationOp
+	if err := cbor.Unmarshal(cbor_encode(&older), &olderDecoded); err != nil {
+		t.Fatalf("older-shape decode failed: %v", err)
+	}
+	if olderDecoded.UID != "" {
+		t.Errorf("missing UID must decode as empty string, got %q", olderDecoded.UID)
+	}
+}
+
+func TestSQLTableExcluded(t *testing.T) {
+	// Default exclusions.
+	if !sql_table_excluded(nil, "sqlite_master") {
+		t.Error("sqlite_master must be excluded by default")
+	}
+	if !sql_table_excluded(nil, "sqlite_sequence") {
+		t.Error("sqlite_sequence must be excluded by default")
+	}
+	if !sql_table_excluded(nil, "_commit_log") {
+		t.Error("_commit_log must be excluded by default")
+	}
+	if sql_table_excluded(nil, "posts") {
+		t.Error("posts must NOT be excluded by default")
+	}
+
+	// Empty / unparseable target: treated as excluded so we don't emit.
+	if !sql_table_excluded(nil, "") {
+		t.Error("empty table must be treated as excluded")
+	}
+
+	// App-declared exclusion.
+	av := &AppVersion{}
+	av.Database.Replicate.Exclude.Tables = []string{"cache_search", "session_local"}
+	if !sql_table_excluded(av, "cache_search") {
+		t.Error("app-excluded table must be excluded")
+	}
+	if !sql_table_excluded(av, "session_local") {
+		t.Error("app-excluded table must be excluded")
+	}
+	if sql_table_excluded(av, "posts") {
+		t.Error("non-excluded app table must replicate")
+	}
+}
+
+// setup_sql_replication_test wires up just enough server state for an
+// apply-side test: a temp data_dir, a registered user, a registered app
+// pointing at a per-(user, app) DB the apply path will exec against,
+// and a fresh schema in that DB.
+func setup_sql_replication_test(t *testing.T) (cleanup func(), user_uid, app_id string) {
+	t.Helper()
+	tmp, err := os.MkdirTemp("", "mochi_sql_repl")
+	if err != nil {
+		t.Fatalf("mktemp: %v", err)
+	}
+	orig := data_dir
+	data_dir = tmp
+	// Suppress the post-migration background drain: it reads data_dir
+	// asynchronously and races with the cleanup's data_dir restore.
+	orig_drain := post_migration_drain_async
+	post_migration_drain_async = func(user, app_id string) {}
+
+	udb := db_open("db/users.db")
+	udb.exec(`create table if not exists users (id integer primary key, uid text not null unique, username text not null unique)`)
+	user_uid = "uid-test-sql"
+	udb.exec("insert into users (uid, username) values (?, ?)", user_uid, "alice")
+
+	app_id = "myapp"
+	av := &AppVersion{Version: "1"}
+	av.Architecture.Engine = "starlark"
+	av.Architecture.Version = 4
+	av.Database.File = "myapp.db"
+	av.Database.Schema = 1
+	av.Database.create_function = func(db *DB) {
+		db.exec(`create table posts (id text primary key, title text not null)`)
+	}
+	a := &App{id: app_id, versions: map[string]*AppVersion{"1": av}, internal: av}
+	av.app = a
+	apps_lock.Lock()
+	if apps == nil {
+		apps = map[string]*App{}
+	}
+	apps[app_id] = a
+	apps_lock.Unlock()
+
+	cleanup = func() {
+		apps_lock.Lock()
+		delete(apps, app_id)
+		apps_lock.Unlock()
+		data_dir = orig
+		post_migration_drain_async = orig_drain
+		os.RemoveAll(tmp)
+	}
+	return
+}
+
+func TestReplicationApplySQLCommandInsert(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  app_id,
+		Operation: repl_op_exec,
+		Schema:    1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "insert into posts (id, title) values (?, ?)",
+			Args:      []any{"p1", "Hello"},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("expected ApplyApplied, got %v", got)
+	}
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+	row, _ := db.row("select title from posts where id = ?", "p1")
+	if row == nil {
+		t.Fatal("inserted row missing")
+	}
+	if got, _ := row["title"].(string); got != "Hello" {
+		t.Errorf("title: want Hello, got %q", got)
+	}
+}
+
+func TestReplicationApplySQLCommandUpdateThenDelete(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+	db.exec("insert into posts (id, title) values (?, ?)", "p1", "Old")
+
+	upd := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "update posts set title = ? where id = ?",
+			Args:      []any{"New", "p1"},
+		}),
+	}
+	if got := replication_apply_op(upd); got != ApplyApplied {
+		t.Fatalf("update apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := db.row("select title from posts where id = ?", "p1")
+	if got, _ := row["title"].(string); got != "New" {
+		t.Errorf("after update: want New, got %q", got)
+	}
+
+	del := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "delete from posts where id = ?",
+			Args:      []any{"p1"},
+		}),
+	}
+	if got := replication_apply_op(del); got != ApplyApplied {
+		t.Fatalf("delete apply: want ApplyApplied, got %v", got)
+	}
+	if r, _ := db.row("select 1 from posts where id = ?", "p1"); r != nil {
+		t.Error("row not deleted")
+	}
+}
+
+func TestReplicationApplySQLCommandDeferralPaths(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// Unknown user → deferred.
+	unknown_user := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-missing",
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
+	}
+	if got := replication_apply_op(unknown_user); got != ApplyDeferred {
+		t.Errorf("unknown user: want ApplyDeferred, got %v", got)
+	}
+
+	// Unknown app → deferred.
+	unknown_app := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: "missingapp", Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
+	}
+	if got := replication_apply_op(unknown_app); got != ApplyDeferred {
+		t.Errorf("unknown app: want ApplyDeferred, got %v", got)
+	}
+
+	// Sender schema newer than receiver → deferred.
+	newer_schema := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 99,
+		Payload: cbor_encode(&SQLCommand{Statement: "insert into posts (id, title) values ('x', 'y')"}),
+	}
+	if got := replication_apply_op(newer_schema); got != ApplyDeferred {
+		t.Errorf("newer schema: want ApplyDeferred, got %v", got)
+	}
+}
+
+func TestReplicationApplySQLCommandInvalid(t *testing.T) {
+	cleanup, _, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// Bad cbor → Invalid.
+	bad := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-test-sql",
+		Database: "myapp", Operation: repl_op_exec, Schema: 1,
+		Payload: []byte{0xff, 0xff, 0xff},
+	}
+	if got := replication_apply_op(bad); got != ApplyInvalid {
+		t.Errorf("bad cbor: want ApplyInvalid, got %v", got)
+	}
+
+	// Empty statement → Invalid.
+	empty := &ReplicationOp{
+		Scope: repl_scope_app, User: "uid-test-sql",
+		Database: "myapp", Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{Statement: ""}),
+	}
+	if got := replication_apply_op(empty); got != ApplyInvalid {
+		t.Errorf("empty statement: want ApplyInvalid, got %v", got)
+	}
+}
+
+func TestReplicationApplySQLCommandRoundTrip(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// Two writers replay each other's ops; both ends should converge.
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+
+	apply := func(sql string, args ...any) {
+		op := &ReplicationOp{
+			Scope: repl_scope_app, User: user_uid,
+			Database: app_id, Operation: repl_op_exec, Schema: 1,
+			Payload: cbor_encode(&SQLCommand{Statement: sql, Args: args}),
+		}
+		if got := replication_apply_op(op); got != ApplyApplied {
+			t.Fatalf("apply %q: %v", sql, got)
+		}
+	}
+
+	apply("insert into posts (id, title) values (?, ?)", "p1", "A")
+	apply("insert into posts (id, title) values (?, ?)", "p2", "B")
+	apply("update posts set title = ? where id = ?", "A-updated", "p1")
+	apply("delete from posts where id = ?", "p2")
+
+	rows, _ := db.rows("select id, title from posts order by id")
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if id, _ := rows[0]["id"].(string); id != "p1" {
+		t.Errorf("row id: want p1, got %q", id)
+	}
+	if title, _ := rows[0]["title"].(string); title != "A-updated" {
+		t.Errorf("row title: want A-updated, got %q", title)
+	}
+}
+
+// TestReplicationEmitConcurrentChainIntact is the regression test
+// for task #93. Before the fix, replication_sequence_next and
+// replication_tail_advance used SELECT-then-UPDATE patterns that
+// raced under concurrent emit. Two goroutines could both see the
+// same pre-update value and emit ops with identical sequence
+// numbers or identical `prev` pointers. The receiver applied one
+// op cleanly and silently dropped the duplicate as "below cursor",
+// then everything past the lost link buffered forever waiting for
+// it. Surfaced live as 668/272 stalled entries on mochi2's
+// feeds/projects streams after ~40 minutes of normal traffic.
+//
+// Fix in replication_emit_to_real wraps the (sequence_next,
+// tail_advance) pair in a per-(user, scope, db) mutex. This test
+// drives the same critical section directly from N goroutines and
+// asserts: every sequence is unique, every prev chains onto the
+// preceding emit's sequence, the tail row's final last matches the
+// max emitted sequence.
+//
+// Verified the test catches the regression: with the mutex removed,
+// failure messages include "sequence N emitted twice" and "chain
+// broken at idx M: seq=X prev=Y, want prev=Z".
+func TestReplicationEmitConcurrentChainIntact(t *testing.T) {
+	cleanup, user_uid, _ := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// setup_sql_replication_test gives a temp data_dir but doesn't
+	// initialise db/replication.db. The emit critical section reads
+	// from `sequence` and `tail` tables there. Create the minimal
+	// schema directly.
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+
+	type allocated struct{ seq, prev int64 }
+	const N = 200
+	results := make([]allocated, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Mirror the production critical section in
+			// replication_emit_to_real.
+			mu := replication_emit_lock(user_uid, "app", "testdb")
+			mu.Lock()
+			seq := replication_sequence_next(user_uid, "app")
+			prev := replication_tail_advance(user_uid, "app", "testdb", seq)
+			mu.Unlock()
+			results[i] = allocated{seq, prev}
+		}(i)
+	}
+	wg.Wait()
+
+	// Sort by allocated sequence; the chain must be intact after
+	// sort: every prev equals the predecessor's seq, no duplicates.
+	sort.Slice(results, func(i, j int) bool { return results[i].seq < results[j].seq })
+	seen := map[int64]bool{}
+	for i, r := range results {
+		if seen[r.seq] {
+			t.Errorf("sequence %d emitted twice (race regression)", r.seq)
+		}
+		seen[r.seq] = true
+		if i == 0 {
+			if r.prev != 0 {
+				t.Errorf("first op should have prev=0, got %d", r.prev)
+			}
+		} else {
+			want := results[i-1].seq
+			if r.prev != want {
+				t.Errorf("chain broken at idx %d: seq=%d prev=%d, want prev=%d", i, r.seq, r.prev, want)
+			}
+		}
+	}
+
+	// Final tail.last must equal the highest sequence emitted.
+	if row, err := rdb.row("select last from tail where user=? and scope=? and db=?", user_uid, "app", "testdb"); err == nil && row != nil {
+		if last, _ := row["last"].(int64); last != results[N-1].seq {
+			t.Errorf("final tail.last = %d, want %d", last, results[N-1].seq)
+		}
+	} else {
+		t.Errorf("tail row missing or read failed: %v", err)
+	}
+}
+
+
+// ============================================================
+// Extra apply / loop-prevention / replay tests
+// (was replication_sql_command_extra_test.go)
+// ============================================================
+
+// TestReplicationApplySQLCommandDoesNotReEmit locks the no-loop
+// invariant: when a SQL exec op is applied on the receiver, the apply
+// path must not call replication_emit_sql_command on the way through.
+// If it did, two-host replication would ping-pong forever.
+//
+// Probe: replication_emit increments a per-(user, scope) sequence row
+// in replication.db.sequence as its first side effect. If apply
+// re-emitted, that row would exist with next>=1. We assert it doesn't.
+func TestReplicationApplySQLCommandDoesNotReEmit(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+	db_upgrade_50() // creates replication.db.sequence
+
+	op := &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user_uid,
+		Database:  app_id,
+		Operation: repl_op_exec,
+		Schema:    1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "insert into posts (id, title) values (?, ?)",
+			Args:      []any{"loop-1", "Hello"},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("apply: want ApplyApplied, got %v", got)
+	}
+
+	repl := db_open("db/replication.db")
+	row, _ := repl.row("select next from sequence where user=? and scope=?", user_uid, repl_scope_app)
+	if row != nil {
+		if next, _ := row["next"].(int64); next > 0 {
+			t.Errorf("apply re-emitted: replication.db.sequence row for user=%q scope=%q advanced to %d (expected 0/absent)", user_uid, repl_scope_app, next)
+		}
+	}
+}
+
+// TestReplicationApplySQLCommandIdempotentReplay re-applies the same
+// op and verifies the receiver doesn't blow up. INSERT replay produces
+// a PK uniqueness violation which the apply path logs and treats as
+// ApplyApplied (so the deduper doesn't keep retrying forever); the
+// row state matches what one apply would have produced.
+func TestReplicationApplySQLCommandIdempotentReplay(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "insert into posts (id, title) values (?, ?)",
+			Args:      []any{"idem", "Once"},
+		}),
+	}
+	for i := 0; i < 3; i++ {
+		if got := replication_apply_op(op); got != ApplyApplied {
+			t.Fatalf("apply #%d: want ApplyApplied, got %v", i, got)
+		}
+	}
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+	count := db.integer("select count(*) from posts where id='idem'")
+	if count != 1 {
+		t.Errorf("replay must be idempotent; row count = %d, want 1", count)
+	}
+	title, _ := db.row("select title from posts where id='idem'")
+	if v, _ := title["title"].(string); v != "Once" {
+		t.Errorf("title: want 'Once', got %q", v)
+	}
+}
+
+// TestReplicationApplySQLCommandReceiverFailureLogged exercises the
+// schema-drift path: a receiver missing a column referenced by the
+// op's SQL. The apply must not panic; it logs and returns ApplyApplied
+// so the deduper marks it seen and doesn't re-deliver.
+func TestReplicationApplySQLCommandReceiverFailureLogged(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "insert into posts (id, title, missing) values (?, ?, ?)",
+			Args:      []any{"bad", "X", "Y"},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("receiver-failure: want ApplyApplied (logged), got %v", got)
+	}
+}
+
+// TestReplicationSQLCommandMixedArgTypesRoundTrip exercises the CBOR
+// encode→decode→exec path with the parameter types apps actually pass:
+// strings, integers, []byte (blob), and nil. The receiver's SQL
+// driver must accept whatever Go types CBOR produces on the other side.
+//
+// CBOR's `any` decode returns positive ints as uint64; the SQL driver
+// accepts both, so the wire format normalising to uint64 is fine. The
+// test checks stored values, not the intermediate Go types.
+func TestReplicationSQLCommandMixedArgTypesRoundTrip(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+	db.exec("create table mixed (id text primary key, n integer, blob blob, opt text)")
+
+	original := &SQLCommand{
+		Statement: "insert into mixed (id, n, blob, opt) values (?, ?, ?, ?)",
+		Args:      []any{"m1", int64(42), []byte{0x01, 0x02, 0x03}, nil},
+	}
+	payload := cbor_encode(original)
+
+	// Probe the decoded Args shape before the apply runs, so we can
+	// pinpoint where any type confusion happens.
+	var decoded SQLCommand
+	if err := cbor.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.Args) != 4 {
+		t.Fatalf("args len: want 4, got %d", len(decoded.Args))
+	}
+	t.Logf("decoded arg types: %T %T %T %T", decoded.Args[0], decoded.Args[1], decoded.Args[2], decoded.Args[3])
+
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: payload,
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("apply: want ApplyApplied, got %v", got)
+	}
+
+	// DB.row() helpfully converts []byte to string for app code, so we
+	// can't .([]byte) the blob column directly. Use length + hex to
+	// verify the stored bytes are correct.
+	row, _ := db.row("select n, length(blob) as blen, hex(blob) as bhex, opt from mixed where id='m1'")
+	if row == nil {
+		t.Fatal("row missing after apply")
+	}
+	if n, _ := row["n"].(int64); n != 42 {
+		t.Errorf("integer column: want 42, got %d (raw %v)", n, row["n"])
+	}
+	if blen, _ := row["blen"].(int64); blen != 3 {
+		t.Errorf("blob length: want 3, got %d", blen)
+	}
+	if bhex, _ := row["bhex"].(string); bhex != "010203" {
+		t.Errorf("blob hex: want 010203, got %q", bhex)
+	}
+	if v := row["opt"]; v != nil {
+		t.Errorf("nil arg: want nil, got %v (%T)", v, v)
+	}
+}
+
+// TestReplicationSQLCommandNoParamsStatement covers a statement that
+// uses no bound parameters at all (e.g. a bulk delete).
+func TestReplicationSQLCommandNoParamsStatement(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app(u, a)
+	db.exec("insert into posts (id, title) values ('a', 'A')")
+	db.exec("insert into posts (id, title) values ('b', 'B')")
+
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 1,
+		Payload: cbor_encode(&SQLCommand{Statement: "delete from posts"}),
+	}
+	if got := replication_apply_op(op); got != ApplyApplied {
+		t.Fatalf("apply: want ApplyApplied, got %v", got)
+	}
+	if n := db.integer("select count(*) from posts"); n != 0 {
+		t.Errorf("post-delete count: want 0, got %d", n)
+	}
+}
+
+// TestReplicationSQLCommandSchemaDefer exercises the cross-host schema
+// gate: a sender at schema v3 cannot apply on a receiver still at v1.
+// The op must defer, not error out.
+func TestReplicationSQLCommandSchemaDefer(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	op := &ReplicationOp{
+		Scope: repl_scope_app, User: user_uid,
+		Database: app_id, Operation: repl_op_exec, Schema: 99,
+		Payload: cbor_encode(&SQLCommand{
+			Statement: "insert into posts (id, title) values (?, ?)",
+			Args:      []any{"future", "From v99"},
+		}),
+	}
+	if got := replication_apply_op(op); got != ApplyDeferred {
+		t.Errorf("op carrying higher sender schema: want ApplyDeferred, got %v", got)
+	}
+}
+
+// ============================================================
+// Emit-side gate tests (was replication_sql_emit_test.go)
+// ============================================================
+
+// emit_gate_setup wires up a tmp data_dir + replication.db so we can
+// probe the sequence side-effect, but does NOT register the user or
+// app. Individual tests set up just what they need.
+func emit_gate_setup(t *testing.T) (cleanup func(), user_uid, app_id string) {
+	t.Helper()
+	cleanup, user_uid, app_id = setup_sql_replication_test(t)
+	db_upgrade_50() // creates replication.db.sequence
+	return
+}
+
+func sequence_row_exists(user string) bool {
+	repl := db_open("db/replication.db")
+	row, _ := repl.row("select next from sequence where user=? and scope=?", user, repl_scope_app)
+	return row != nil
+}
+
+func TestReplicationEmitSQLCommandSilentWithNoUser(t *testing.T) {
+	cleanup, _, app_id := emit_gate_setup(t)
+	defer cleanup()
+
+	a := app_by_id(app_id)
+	replication_emit_sql_command(nil, a, a.internal, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
+	if sequence_row_exists("") {
+		t.Error("emit must not advance sequence when user is nil")
+	}
+}
+
+func TestReplicationEmitSQLCommandSilentWithEmptyUID(t *testing.T) {
+	cleanup, _, app_id := emit_gate_setup(t)
+	defer cleanup()
+
+	a := app_by_id(app_id)
+	u := &User{UID: ""}
+	replication_emit_sql_command(u, a, a.internal, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
+	if sequence_row_exists("") {
+		t.Error("emit must not advance sequence when UID is empty")
+	}
+}
+
+func TestReplicationEmitSQLCommandSilentWithNoApp(t *testing.T) {
+	cleanup, user_uid, _ := emit_gate_setup(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	replication_emit_sql_command(u, nil, nil, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
+	if sequence_row_exists(user_uid) {
+		t.Error("emit must not advance sequence when app is nil")
+	}
+}
+
+func TestReplicationEmitSQLCommandSilentForExcludedTable(t *testing.T) {
+	cleanup, user_uid, app_id := emit_gate_setup(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	av := a.internal
+	av.Database.Replicate.Exclude.Tables = []string{"posts"}
+
+	replication_emit_sql_command(u, a, av, "insert into posts (id, title) values (?, ?)", []any{"x", "y"})
+	if sequence_row_exists(user_uid) {
+		t.Error("emit must not advance sequence for excluded table")
+	}
+}
+
+func TestReplicationEmitSQLCommandSilentForDefaultExcludedTable(t *testing.T) {
+	cleanup, user_uid, app_id := emit_gate_setup(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+
+	// sqlite_* writes (rare but possible if an app does raw bookkeeping)
+	// must never replicate — they're SQLite internals.
+	replication_emit_sql_command(u, a, a.internal, "insert into sqlite_master (name) values (?)", []any{"x"})
+	if sequence_row_exists(user_uid) {
+		t.Error("emit must not advance sequence for sqlite_* tables")
+	}
+}
+
+func TestReplicationEmitSQLCommandSilentForNonMutatingStatement(t *testing.T) {
+	cleanup, user_uid, app_id := emit_gate_setup(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+
+	// SELECT / CREATE TABLE / DROP / ALTER aren't mutating data rows.
+	for _, sql := range []string{
+		"select 1",
+		"create table foo (id text)",
+		"drop table foo",
+		"alter table posts add column x text",
+	} {
+		replication_emit_sql_command(u, a, a.internal, sql, nil)
+	}
+	if sequence_row_exists(user_uid) {
+		t.Error("emit must not advance sequence for non-mutating SQL")
+	}
+}
+
+// ============================================================
+// Transaction emit-buffer lifecycle tests
+// (was replication_transaction_test.go)
+// ============================================================
+
+// new_tx_handle builds a TransactionHandle backed by a real *sqlx.Tx
+// on the test app's per-(user, app) DB. Lets us exercise commit /
+// rollback / close paths without spinning up a full Starlark context.
+func new_tx_handle(t *testing.T) (h *TransactionHandle, cleanup func()) {
+	t.Helper()
+	clean, user_uid, app_id := setup_sql_replication_test(t)
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	av := a.internal
+	db := db_app(u, a)
+	tx, err := db.starlark.Beginx()
+	if err != nil {
+		clean()
+		t.Fatalf("begin tx: %v", err)
+	}
+	h = &TransactionHandle{tx: tx, user: u, app: a, av: av}
+	return h, clean
+}
+
+func TestTransactionCommitFlushesPendingEmits(t *testing.T) {
+	h, cleanup := new_tx_handle(t)
+	defer cleanup()
+
+	h.pending_emits = []sql_pending_emit{
+		{sql: "insert into posts (id, title) values (?, ?)", args: []any{"a", "A"}},
+		{sql: "insert into posts (id, title) values (?, ?)", args: []any{"b", "B"}},
+	}
+
+	if _, err := h.sl_commit(&sl.Thread{}, nil, sl.Tuple{}, nil); err != nil {
+		t.Fatalf("sl_commit: %v", err)
+	}
+	if !h.closed {
+		t.Error("after commit: handle must be closed")
+	}
+	if h.pending_emits != nil {
+		t.Errorf("after commit: pending_emits must be nil, got %d entries", len(h.pending_emits))
+	}
+}
+
+func TestTransactionRollbackDropsPendingEmits(t *testing.T) {
+	h, cleanup := new_tx_handle(t)
+	defer cleanup()
+
+	h.pending_emits = []sql_pending_emit{
+		{sql: "insert into posts (id, title) values (?, ?)", args: []any{"a", "A"}},
+	}
+
+	if _, err := h.sl_rollback(&sl.Thread{}, nil, sl.Tuple{}, nil); err != nil {
+		t.Fatalf("sl_rollback: %v", err)
+	}
+	if !h.closed {
+		t.Error("after rollback: handle must be closed")
+	}
+	if h.pending_emits != nil {
+		t.Errorf("after rollback: pending_emits must be nil, got %d entries", len(h.pending_emits))
+	}
+}
+
+func TestTransactionCloseDropsPendingEmits(t *testing.T) {
+	// transaction_close (auto-cleanup at thread tear-down) iterates
+	// every uncommitted handle and rolls back. After the cleanup any
+	// pending_emits on those handles must be cleared so a forgotten
+	// commit doesn't leak emits.
+	h, cleanup := new_tx_handle(t)
+	defer cleanup()
+
+	h.pending_emits = []sql_pending_emit{
+		{sql: "insert into posts (id, title) values (?, ?)", args: []any{"a", "A"}},
+		{sql: "insert into posts (id, title) values (?, ?)", args: []any{"b", "B"}},
+	}
+
+	th := &sl.Thread{}
+	th.SetLocal("transactions", []*TransactionHandle{h})
+	transaction_close(th)
+
+	if !h.closed {
+		t.Error("after close: handle must be closed")
+	}
+	if h.pending_emits != nil {
+		t.Errorf("after close: pending_emits must be nil, got %d entries", len(h.pending_emits))
+	}
+}
+
+func TestTransactionCloseSkipsAlreadyClosed(t *testing.T) {
+	// An already-committed handle in the auto-cleanup list must be
+	// skipped (we'd panic calling Rollback on a committed tx).
+	h, cleanup := new_tx_handle(t)
+	defer cleanup()
+
+	if _, err := h.sl_commit(&sl.Thread{}, nil, sl.Tuple{}, nil); err != nil {
+		t.Fatalf("sl_commit: %v", err)
+	}
+	th := &sl.Thread{}
+	th.SetLocal("transactions", []*TransactionHandle{h})
+	transaction_close(th) // must not panic
+}
+
+// ============================================================
+// System-scope replication tests (core DBs)
+// ============================================================
+
+// setup_system_replication_test prepares data_dir + settings.db with
+// the schema replication_emit/_apply expects. Returns a cleanup.
+func setup_system_replication_test(t *testing.T) func() {
+	cleanup := setup_replication_test(t)
+	settings := db_open("db/settings.db")
+	settings.exec("create table if not exists settings (name text primary key, value text not null)")
+	return cleanup
+}
+
+// TestSystemSetApplySettings: a settings.settings op with a non-empty
+// value replaces / inserts the row.
+func TestSystemSetApplySettings(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "settings", Table: "settings",
+		Row: "signup_enabled", Field: "value", Value: "true",
+	})
+	if got := setting_get("signup_enabled", ""); got != "true" {
+		t.Errorf("setting_get = %q, want %q", got, "true")
+	}
+}
+
+// TestSystemSetApplySettingsDeleteOnEmpty: an empty value removes the row.
+func TestSystemSetApplySettingsDeleteOnEmpty(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/settings.db")
+	db.exec("replace into settings (name, value) values ('k', 'v')")
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "settings", Table: "settings",
+		Row: "k", Field: "value", Value: "",
+	})
+	if exists, _ := db.exists("select 1 from settings where name='k'"); exists {
+		t.Error("empty-value op should delete the row")
+	}
+}
+
+// TestSystemSetApplyApps verifies apps.classes / services / paths
+// dispatch and write correctly.
+func TestSystemSetApplyApps(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "apps", Table: "classes",
+		Row: "feed", Field: "app", Value: "feeds",
+	})
+	if got := apps_class_get("feed"); got != "feeds" {
+		t.Errorf("classes apply: get = %q, want feeds", got)
+	}
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "apps", Table: "services",
+		Row: "feeds", Field: "app", Value: "feeds",
+	})
+	if got := apps_service_get("feeds"); got != "feeds" {
+		t.Errorf("services apply: get = %q, want feeds", got)
+	}
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "apps", Table: "paths",
+		Row: "/feeds/", Field: "app", Value: "feeds",
+	})
+	if got := apps_path_get("/feeds/"); got != "feeds" {
+		t.Errorf("paths apply: get = %q, want feeds", got)
+	}
+}
+
+// TestSystemSetApplyAppsInstall: apps.apps install registry write.
+func TestSystemSetApplyAppsInstall(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "apps", Table: "apps",
+		Row: "feeds", Field: "installed", Value: "1234567890",
+	})
+	if got := apps_installed("feeds"); got != 1234567890 {
+		t.Errorf("apps_installed = %d, want 1234567890", got)
+	}
+}
+
+// TestSystemSetApplyRejectsUnknownDestination: dispatch warn-drops
+// unknown destinations without affecting other tables.
+func TestSystemSetApplyRejectsUnknownDestination(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	replication_system_set_apply("peer-A", &SystemSet{
+		Database: "nope", Table: "nope",
+		Row: "k", Field: "value", Value: "v",
+	})
+	db := db_open("db/settings.db")
+	if exists, _ := db.exists("select 1 from settings where name='k'"); exists {
+		t.Error("unknown destination should not touch settings")
+	}
+}
+
+// TestSystemSetApplyRejectsMissingFields validates required-field
+// gating: any missing key field silently drops the op.
+func TestSystemSetApplyRejectsMissingFields(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	cases := []SystemSet{
+		{Database: "", Table: "settings", Row: "k", Field: "value", Value: "v"},
+		{Database: "settings", Table: "", Row: "k", Field: "value", Value: "v"},
+		{Database: "settings", Table: "settings", Row: "", Field: "value", Value: "v"},
+		{Database: "settings", Table: "settings", Row: "k", Field: "", Value: "v"},
+	}
+	for _, c := range cases {
+		replication_system_set_apply("peer-A", &c)
+	}
+	db := db_open("db/settings.db")
+	if exists, _ := db.exists("select 1 from settings where name='k'"); exists {
+		t.Error("missing-field op should not write")
+	}
+}
+
+// TestSettingSetEmits: setting_set fires the system-set emit with the
+// expected arguments.
+func TestSettingSetEmits(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	calls := 0
+	orig := replication_emit_system_set
+	replication_emit_system_set = func(database, table, row, field, value string) {
+		calls++
+		if database != "settings" || table != "settings" || row != "k" || field != "value" || value != "v" {
+			t.Errorf("emit args: db=%q table=%q row=%q field=%q value=%q",
+				database, table, row, field, value)
+		}
+	}
+	defer func() { replication_emit_system_set = orig }()
+
+	setting_set("k", "v")
+
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// TestAppsClassSetEmits: apps_class_set fires system-set.
+func TestAppsClassSetEmits(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+
+	calls := 0
+	orig := replication_emit_system_set
+	replication_emit_system_set = func(database, table, row, field, value string) {
+		calls++
+	}
+	defer func() { replication_emit_system_set = orig }()
+
+	apps_class_set("feed", "feeds")
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// setup_domains_test_schema creates a minimal domains.db schema for
+// row-level tests.
+func setup_domains_test_schema() {
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+}
+
+// TestSystemRowApplyDomainsFresh: a row-level op for a new domain
+// inserts cleanly.
+func TestSystemRowApplyDomainsFresh(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "domains",
+		Key: map[string]string{"domain": "example.com"},
+		Cols: map[string]string{
+			"verified": "0", "token": "tok123", "tls": "1",
+			"created": "100", "updated": "100",
+		},
+	})
+	db := db_open("db/domains.db")
+	row, _ := db.row("select token from domains where domain='example.com'")
+	if row == nil {
+		t.Fatal("row should exist after apply")
+	}
+	if got, _ := row["token"].(string); got != "tok123" {
+		t.Errorf("token = %q, want tok123", got)
+	}
+}
+
+// TestSystemRowApplyDomainsReplacesExisting: a subsequent op
+// overwrites the existing row (last-applier-wins).
+func TestSystemRowApplyDomainsReplacesExisting(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	db := db_open("db/domains.db")
+	db.exec("replace into domains (domain, verified, token, tls, created, updated) values ('example.com', 0, 'old', 1, 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "domains",
+		Key: map[string]string{"domain": "example.com"},
+		Cols: map[string]string{
+			"verified": "1", "token": "new", "tls": "1",
+			"created": "100", "updated": "200",
+		},
+	})
+	row, _ := db.row("select token from domains where domain='example.com'")
+	if got, _ := row["token"].(string); got != "new" {
+		t.Errorf("token = %q, want new", got)
+	}
+}
+
+// TestSystemRowApplyDomainsDelete: Delete=true removes the row.
+func TestSystemRowApplyDomainsDelete(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	db := db_open("db/domains.db")
+	db.exec("replace into domains (domain, verified, token, tls, created, updated) values ('example.com', 0, 't', 1, 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "domains",
+		Key:    map[string]string{"domain": "example.com"},
+		Delete: true,
+	})
+	if exists, _ := db.exists("select 1 from domains where domain='example.com'"); exists {
+		t.Error("domain should be deleted after delete-op")
+	}
+}
+
+// TestSystemRowApplyRoutes: composite-key route apply.
+func TestSystemRowApplyRoutes(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path))")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "routes",
+		Key: map[string]string{"domain": "example.com", "path": "/feeds"},
+		Cols: map[string]string{
+			"method": "app", "target": "feeds", "context": "",
+			"owner": "u1", "priority": "10", "enabled": "1",
+			"created": "100", "updated": "100",
+		},
+	})
+	row, _ := domains.row("select target from routes where domain='example.com' and path='/feeds'")
+	if got, _ := row["target"].(string); got != "feeds" {
+		t.Errorf("target = %q, want feeds", got)
+	}
+}
+
+// TestSystemRowApplyRoutesDelete: composite-key delete.
+func TestSystemRowApplyRoutesDelete(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path))")
+	domains.exec("replace into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values ('example.com', '/x', 'app', 'wikis', '', '', 0, 1, 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "routes",
+		Key:    map[string]string{"domain": "example.com", "path": "/x"},
+		Delete: true,
+	})
+	if exists, _ := domains.exists("select 1 from routes where domain='example.com' and path='/x'"); exists {
+		t.Error("route should be deleted")
+	}
+}
+
+// TestSystemRowApplyAppsVersions: apps.versions row apply (single
+// key, two data columns).
+func TestSystemRowApplyAppsVersions(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "apps", Table: "versions",
+		Key:  map[string]string{"app": "feeds"},
+		Cols: map[string]string{"version": "1.2.3", "track": "stable"},
+	})
+	db := db_apps()
+	row, _ := db.row("select version, track from versions where app='feeds'")
+	if row == nil {
+		t.Fatal("versions row should exist after apply")
+	}
+	if got, _ := row["version"].(string); got != "1.2.3" {
+		t.Errorf("version = %q, want 1.2.3", got)
+	}
+	if got, _ := row["track"].(string); got != "stable" {
+		t.Errorf("track = %q, want stable", got)
+	}
+}
+
+// TestSystemRowApplyAppsTracks: apps.tracks composite-key apply.
+func TestSystemRowApplyAppsTracks(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	db_apps()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "apps", Table: "tracks",
+		Key:  map[string]string{"app": "feeds", "track": "beta"},
+		Cols: map[string]string{"version": "2.0.0-rc1"},
+	})
+	db := db_apps()
+	row, _ := db.row("select version from tracks where app='feeds' and track='beta'")
+	if got, _ := row["version"].(string); got != "2.0.0-rc1" {
+		t.Errorf("version = %q, want 2.0.0-rc1", got)
+	}
+}
+
+// TestSystemRowApplyDelegations: domains.delegations composite-key
+// apply with timestamps.
+func TestSystemRowApplyDelegations(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("insert into domains (domain, verified, token, tls, created, updated) values ('example.com', 1, 't', 1, 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "delegations",
+		Key: map[string]string{"domain": "example.com", "path": "/feeds", "owner": "u1"},
+		Cols: map[string]string{
+			"created": "100", "updated": "100",
+		},
+	})
+	row, _ := domains.row("select created, updated from delegations where domain='example.com' and path='/feeds' and owner='u1'")
+	if row == nil {
+		t.Fatal("delegation should exist after apply")
+	}
+	if got, _ := row["created"].(int64); got != 100 {
+		t.Errorf("created = %d, want 100", got)
+	}
+}
+
+// TestSystemRowApplyDelegationsDelete: composite-key delete.
+func TestSystemRowApplyDelegationsDelete(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+	domains.exec("insert into domains (domain, verified, token, tls, created, updated) values ('example.com', 1, 't', 1, 100, 100)")
+	domains.exec("insert into delegations (domain, path, owner, created, updated) values ('example.com', '/x', 'u1', 100, 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "delegations",
+		Key:    map[string]string{"domain": "example.com", "path": "/x", "owner": "u1"},
+		Delete: true,
+	})
+	if exists, _ := domains.exists("select 1 from delegations where domain='example.com'"); exists {
+		t.Error("delegation should be deleted after delete-op")
+	}
+}
+
+// TestSystemRowApplyRejectsMissingKey: empty key map drops silently.
+func TestSystemRowApplyRejectsMissingKey(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_domains_test_schema()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "domains", Table: "domains",
+		Key:  map[string]string{},
+		Cols: map[string]string{"verified": "1"},
+	})
+	// No write should happen.
+	db := db_open("db/domains.db")
+	rows, _ := db.rows("select 1 from domains")
+	if len(rows) != 0 {
+		t.Errorf("empty-key op should not write; got %d rows", len(rows))
+	}
+}
+
+// setup_users_users_system_test seeds db/users.db with the columns the
+// pair-only system-row path writes against. Matches setup_users_row_apply_test
+// but lives in this file so the system-row tests don't depend on the
+// other file's helper.
+func setup_users_users_system_test(t *testing.T) (cleanup func(), uid string) {
+	t.Helper()
+	cleanup = setup_system_replication_test(t)
+	setup_users_test_schema()
+	uid = "uid-system-users"
+	db_open("db/users.db").exec("insert into users (uid, username, role) values (?, ?, ?)", uid, "alice", "user")
+	return
+}
+
+// TestSystemRowApplyUsersUsersRole: role applies via the pair-only
+// system-row path.
+func TestSystemRowApplyUsersUsersRole(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
+	if got, _ := row["role"].(string); got != "administrator" {
+		t.Errorf("role = %q, want administrator", got)
+	}
+}
+
+// TestSystemRowApplyUsersUsersUsername: username applies via the
+// pair-only system-row path.
+func TestSystemRowApplyUsersUsersUsername(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"username": "alicia"},
+	})
+	row, _ := db_open("db/users.db").row("select username from users where uid=?", uid)
+	if got, _ := row["username"].(string); got != "alicia" {
+		t.Errorf("username = %q, want alicia", got)
+	}
+}
+
+// TestSystemRowApplyUsersUsersIgnoresUnknownColumn: arbitrary columns
+// outside the pair-scope whitelist are silently skipped. Prevents a
+// misbehaving peer from injecting writes against (for example) status
+// or preferences via the wrong pipeline.
+func TestSystemRowApplyUsersUsersIgnoresUnknownColumn(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": uid},
+		Cols: map[string]string{"status": "suspended", "evil": "x"},
+	})
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	if got, _ := row["status"].(string); got == "suspended" {
+		t.Error("status MUST NOT apply via the system-row path - per-user column")
+	}
+}
+
+// TestSystemRowApplyUsersUsersMissingUID: an op without a uid key drops
+// silently rather than UPDATE-ing every row.
+func TestSystemRowApplyUsersUsersMissingUID(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	row, _ := db_open("db/users.db").row("select role from users where uid=?", uid)
+	if got, _ := row["role"].(string); got == "administrator" {
+		t.Error("missing-uid op MUST NOT promote the seeded user")
+	}
+}
+
+// TestSystemRowApplyUsersUsersDeleteIsNoop: a delete-flag op against
+// users.users is a no-op. User deletion is a server-pair operation,
+// never a row replication op.
+func TestSystemRowApplyUsersUsersDeleteIsNoop(t *testing.T) {
+	cleanup, uid := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:    map[string]string{"uid": uid},
+		Delete: true,
+	})
+	exists, _ := db_open("db/users.db").exists("select 1 from users where uid=?", uid)
+	if !exists {
+		t.Error("delete-op MUST NOT remove the user row")
+	}
+}
+
+// setup_documents_system_test seeds db/settings.db with the documents
+// table the apply path writes against. Settings DB already exists from
+// the parent helper.
+func setup_documents_system_test(t *testing.T) func() {
+	cleanup := setup_system_replication_test(t)
+	db_open("db/settings.db").exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	return cleanup
+}
+
+// TestSystemRowApplySettingsDocumentsFresh: a brand-new
+// (name, language) row lands on the receiver.
+func TestSystemRowApplySettingsDocumentsFresh(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "terms", "language": "en"},
+		Cols: map[string]string{"body": "Custom operator terms.", "updated": "150"},
+	})
+	row, _ := db_open("db/settings.db").row("select body, updated from documents where name=? and language=?", "terms", "en")
+	if row == nil {
+		t.Fatal("documents row missing after apply")
+	}
+	if got, _ := row["body"].(string); got != "Custom operator terms." {
+		t.Errorf("body = %q, want %q", got, "Custom operator terms.")
+	}
+	if got, _ := row["updated"].(int64); got != 150 {
+		t.Errorf("updated = %d, want 150", got)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsReplacesExisting: a subsequent
+// op overwrites the row (LWW per name+language; later updated wins
+// because the emitter is the operator).
+func TestSystemRowApplySettingsDocumentsReplacesExisting(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+	db := db_open("db/settings.db")
+	db.exec("replace into documents (name, language, body, updated) values ('rules', 'fr', 'old', 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "rules", "language": "fr"},
+		Cols: map[string]string{"body": "new", "updated": "200"},
+	})
+	row, _ := db.row("select body, updated from documents where name=? and language=?", "rules", "fr")
+	if got, _ := row["body"].(string); got != "new" {
+		t.Errorf("body = %q, want new", got)
+	}
+	if got, _ := row["updated"].(int64); got != 200 {
+		t.Errorf("updated = %d, want 200", got)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsDelete: Delete=true removes the
+// row. Lets an operator revert a customised page back to the bundled
+// default by removing the override on every paired host.
+func TestSystemRowApplySettingsDocumentsDelete(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+	db := db_open("db/settings.db")
+	db.exec("replace into documents (name, language, body, updated) values ('privacy', 'en', 'override', 100)")
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:    map[string]string{"name": "privacy", "language": "en"},
+		Delete: true,
+	})
+	if exists, _ := db.exists("select 1 from documents where name=? and language=?", "privacy", "en"); exists {
+		t.Error("document should be removed after delete-op")
+	}
+}
+
+// TestDocumentSetEmits: an operator document_set fires a system-row
+// op so the override reaches paired hosts.
+func TestDocumentSetEmits(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	calls := 0
+	orig := replication_emit_system_row
+	replication_emit_system_row = func(database, table string, key, cols map[string]string, del bool) {
+		calls++
+		if database != "settings" || table != "documents" {
+			t.Errorf("emit destination: db=%q table=%q", database, table)
+		}
+		if key["name"] != "terms" || key["language"] != "en" {
+			t.Errorf("emit key: %v", key)
+		}
+		if cols["body"] != "Customised terms." {
+			t.Errorf("emit body: %q", cols["body"])
+		}
+		if cols["updated"] == "" {
+			t.Error("emit updated is empty")
+		}
+		if del {
+			t.Error("emit delete=true on a set call")
+		}
+	}
+	defer func() { replication_emit_system_row = orig }()
+
+	if err := document_set("terms", "en", "Customised terms."); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("emit calls = %d, want 1", calls)
+	}
+}
+
+// TestSystemRowApplySettingsDocumentsMissingKey: an op without both
+// key parts drops silently rather than writing a degenerate row.
+func TestSystemRowApplySettingsDocumentsMissingKey(t *testing.T) {
+	cleanup := setup_documents_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "settings", Table: "documents",
+		Key:  map[string]string{"name": "terms"}, // language missing
+		Cols: map[string]string{"body": "x", "updated": "1"},
+	})
+	rows, _ := db_open("db/settings.db").rows("select 1 from documents")
+	if len(rows) != 0 {
+		t.Errorf("missing-language op should not write; got %d rows", len(rows))
 	}
 }

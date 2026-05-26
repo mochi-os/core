@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 // Replication scope and op constants. See claude/plans/replication.md.
@@ -2069,4 +2072,1911 @@ func replication_apply_user_core_exec(op *ReplicationOp) ApplyResult {
 		return ApplyApplied
 	}
 	return ApplyApplied
+}
+
+// ============================================================
+// mochi.replication.* Starlark API
+// ============================================================
+//
+// In-Mochi consumers (the Pair page in apps/settings/system, the
+// per-user "My hosts" page in apps/settings/user, mochictl's progress
+// display) query replication state via this API instead of scraping
+// /_/health.
+
+
+// api_replication exposes mochi.replication.{status, links, hosts, joins}
+// plus the link, host, join, pair, and bootstrap sub-namespaces. Two-word
+// operations are sub-namespaced (host.remove), not glued (host_remove) —
+// API names are single-word dotted segments.
+var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.StringDict{
+	"status": sl.NewBuiltin("mochi.replication.status", api_replication_status),
+	"links":  sl.NewBuiltin("mochi.replication.links", api_replication_links),
+	"hosts":  sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
+	"joins":  sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
+	"link": sls.FromStringDict(sl.String("mochi.replication.link"), sl.StringDict{
+		"approve": sl.NewBuiltin("mochi.replication.link.approve", api_replication_link_approve),
+		"deny":    sl.NewBuiltin("mochi.replication.link.deny", api_replication_link_deny),
+	}),
+	"host": sls.FromStringDict(sl.String("mochi.replication.host"), sl.StringDict{
+		"remove": sl.NewBuiltin("mochi.replication.host.remove", api_replication_host_remove),
+	}),
+	"join": sls.FromStringDict(sl.String("mochi.replication.join"), sl.StringDict{
+		"approve": sl.NewBuiltin("mochi.replication.join.approve", api_replication_join_approve),
+		"deny":    sl.NewBuiltin("mochi.replication.join.deny", api_replication_join_deny),
+	}),
+	"pair": sls.FromStringDict(sl.String("mochi.replication.pair"), sl.StringDict{
+		"remove": sl.NewBuiltin("mochi.replication.pair.remove", api_replication_pair_remove),
+	}),
+	"bootstrap": sls.FromStringDict(sl.String("mochi.replication.bootstrap"), sl.StringDict{
+		"progress": sl.NewBuiltin("mochi.replication.bootstrap.progress", api_replication_bootstrap_progress),
+		"serving":  sl.NewBuiltin("mochi.replication.bootstrap.serving", api_replication_bootstrap_serving),
+	}),
+})
+
+// api_replication_status returns a dict describing this server's
+// replication state visible from the local DBs. Same data the
+// /_/admin/replication/status endpoint returns to mochictl, exposed
+// to Starlark callers so apps can render it directly.
+//
+// Returned shape:
+//
+//	{
+//	  "peer":              "<this-peer-id>",
+//	  "pair":              ["<peer-1>", "<peer-2>"],
+//	  "hosts_count":       N,         // total per-user opt-in rows
+//	  "links_pending":     N,         // pending per-user link-requests
+//	  "joins_pending":     N,         // pending whole-server join-requests
+//	  "bootstrap_pending": N,         // (scope, peer) rows still queued/active
+//	}
+//
+// Read-only; no parameters; never returns an error.
+func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	rdb := db_open("db/replication.db")
+
+	var pair []string
+	if rows, err := rdb.rows("select peer from pair"); err == nil {
+		for _, r := range rows {
+			if p, ok := r["peer"].(string); ok && p != "" {
+				pair = append(pair, p)
+			}
+		}
+	}
+
+	hosts_count := int64(0)
+	if row, _ := rdb.row("select count(*) as c from hosts"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			hosts_count = v
+		}
+	}
+
+	links_pending := int64(0)
+	if row, _ := rdb.row("select count(*) as c from links"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			links_pending = v
+		}
+	}
+
+	joins_pending := int64(0)
+	if row, _ := rdb.row("select count(*) as c from joins"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			joins_pending = v
+		}
+	}
+
+	// Bootstrap progress: count any (scope, peer) rows still in
+	// queued/active. Zero means every active scope has reached
+	// 'done' (or there are no peers in bootstrap at all).
+	bootstrap_pending := int64(0)
+	if row, _ := rdb.row("select count(*) as c from bootstrap where state != 'done'"); row != nil {
+		if v, ok := row["c"].(int64); ok {
+			bootstrap_pending = v
+		}
+	}
+
+	pair_values := make([]sl.Value, 0, len(pair))
+	for _, p := range pair {
+		pair_values = append(pair_values, sl.String(p))
+	}
+
+	result := sl.NewDict(6)
+	_ = result.SetKey(sl.String("peer"), sl.String(p2p_id))
+	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
+	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
+	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
+	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))
+	_ = result.SetKey(sl.String("bootstrap_pending"), sl.MakeInt64(bootstrap_pending))
+	return result, nil
+}
+
+// api_replication_links returns pending inbound link-requests for the
+// calling user. Source-side display: "alice on B wants to replicate
+// from A — Approve / Deny".
+//
+// Returned shape: list of dicts {peer, label, expires}.
+func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows(
+		"select peer, label, expires from links where user=? order by received",
+		u.UID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
+		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_hosts returns the active per-user host set for the
+// calling user — the peers that hold a copy of this user's data via
+// the per-user opt-in flow.
+//
+// Returned shape: list of dicts {peer, added, ack}.
+func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows(
+		"select peer, added, ack from hosts where user=? order by added",
+		u.UID)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("added"), sl.MakeInt64(row_int(r, "added")))
+		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_link_approve approves an inbound link-request from
+// `peer` targeting the calling user. Wraps replication_link_approve;
+// the underlying handler runs the freshness probe, emits the
+// keys-transfer, and updates membership.
+//
+// Returns "approved" on success, "already-approved" on the multi-tab
+// loser. Errors surface as Starlark errors.
+func api_replication_link_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	result, err := replication_link_approve(u.UID, peer)
+	if err != nil {
+		return sl_error(fn, "approve: %v", err)
+	}
+	return sl.String(result), nil
+}
+
+// api_replication_link_deny denies an inbound link-request from `peer`
+// targeting the calling user. Wraps replication_link_deny; the
+// underlying handler emits link-denied(reason=denied) to the
+// destination.
+//
+// Returns "denied" on success, "already-handled" on the multi-tab
+// loser. Never returns an error (the underlying call swallows DB
+// failures with a warning).
+func api_replication_link_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	return sl.String(replication_link_deny(u.UID, peer)), nil
+}
+
+// api_replication_host_remove removes `peer` from the calling user's
+// active per-user host set and emits a membership-change to the
+// remaining peers (and the removed one) so the cluster converges on
+// the smaller set. Returns "removed" or "not-found".
+func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists(
+		"select 1 from hosts where user=? and peer=?", u.UID, peer)
+	if !exists {
+		return sl.String("not-found"), nil
+	}
+
+	rows, err := rdb.rows("select peer from hosts where user=? and peer!=?", u.UID, peer)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	remaining := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p := row_string(r, "peer"); p != "" {
+			remaining = append(remaining, p)
+		}
+	}
+
+	// membership-update wipes & rewrites the local hosts table and
+	// broadcasts the new set to every remaining host. The departing
+	// peer learns it's out of the set when it next receives any op
+	// for this user and sees itself missing from the membership list
+	// (or when the periodic reconciler in #66's bootstrap protocol
+	// confirms divergence).
+	replication_membership_update(u.UID, remaining)
+	audit_replication_host_removed(u.UID, peer)
+
+	return sl.String("removed"), nil
+}
+
+// api_replication_joins returns pending inbound whole-server
+// join-requests. Server-wide; the action wrapper must require_admin
+// before calling. Returned shape: list of dicts {peer, label, expires}.
+func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, label, expires from joins order by received")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
+		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_join_approve approves an inbound pair join-request
+// from `peer`. Wraps replication_join_approve: replaces the local pair
+// table with the new member set and emits join-approved + a
+// pair-membership-change to existing members. Returns "approved" or
+// "already-handled".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+func api_replication_join_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+
+	result, err := replication_join_approve(peer)
+	if err != nil {
+		return sl_error(fn, "approve: %v", err)
+	}
+	return sl.String(result), nil
+}
+
+// api_replication_join_deny denies an inbound pair join-request from
+// `peer`. Wraps replication_join_deny: emits join-denied(reason=denied)
+// to the replica on the winner, no-op on the multi-tab loser. Returns
+// "denied" or "already-handled".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+func api_replication_join_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+	return sl.String(replication_join_deny(peer)), nil
+}
+
+// api_replication_pair_remove drops `peer` from the local pair set and
+// announces the new member set to every remaining pair member. Wraps
+// replication_pair_remove (shared with the admin HTTP handler).
+// Returns "removed" or "not-found".
+//
+// Server-wide; the action wrapper must require_admin before calling.
+// The removed peer is intentionally not announced to — it learns of
+// the change via gossip from a remaining member, matching the
+// admin HTTP endpoint behavior.
+func api_replication_pair_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) < 1 {
+		return sl_error(fn, "peer required")
+	}
+	peer, ok := sl.AsString(args[0])
+	if !ok || peer == "" {
+		return sl_error(fn, "invalid peer")
+	}
+	_, _, removed := replication_pair_remove(peer)
+	if !removed {
+		return sl.String("not-found"), nil
+	}
+	return sl.String("removed"), nil
+}
+
+// api_replication_bootstrap_progress returns the per-(peer, scope)
+// bulk-bootstrap progress as a list of dicts. Each entry includes
+// the peer, scope, state ('queued' | 'active' | 'done'), and a
+// position cursor whose meaning depends on the state: for 'active'
+// it's the count of items remaining; for 'done' it's empty.
+//
+// Optional argument: a single peer-id string filters to that peer's
+// rows; omitted returns every peer's rows. Whole-server scope; no
+// per-user filtering. Action wrappers gate to admin.
+//
+// Returned shape: list of dicts {peer, scope, state, position}.
+func api_replication_bootstrap_progress(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var peerFilter string
+	if len(args) > 0 && args[0] != sl.None {
+		if p, ok := sl.AsString(args[0]); ok {
+			peerFilter = p
+		}
+	}
+
+	rdb := db_open("db/replication.db")
+	var rows []map[string]any
+	var err error
+	if peerFilter != "" {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap where peer=? order by peer, scope", peerFilter)
+	} else {
+		rows, err = rdb.rows("select peer, scope, state, position from bootstrap order by peer, scope")
+	}
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(4)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("scope"), sl.String(row_string(r, "scope")))
+		_ = entry.SetKey(sl.String("state"), sl.String(row_string(r, "state")))
+		_ = entry.SetKey(sl.String("position"), sl.String(row_string(r, "position")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// api_replication_bootstrap_serving returns the per-(peer, scope) rows
+// from `bootstrap_served` — scopes this server is currently serving to
+// a joined replica, with each row cleared when the replica acks the
+// scope as done. Counterpart to bootstrap_progress: progress is the
+// inbound view (this server consuming from a source), serving is the
+// outbound view (this server feeding a replica). Both are needed for
+// the operator UI to show symmetric Syncing/Synced status on both sides.
+//
+// Returned shape: list of dicts {peer, scope, started}.
+func api_replication_bootstrap_serving(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer, scope, started from bootstrap_served order by peer, scope")
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+	out := sl.NewList(nil)
+	for _, r := range rows {
+		entry := sl.NewDict(3)
+		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		_ = entry.SetKey(sl.String("scope"), sl.String(row_string(r, "scope")))
+		_ = entry.SetKey(sl.String("started"), sl.MakeInt64(row_int(r, "started")))
+		_ = out.Append(entry)
+	}
+	return out, nil
+}
+
+// row_string / row_int unpack scalar SQL row values defensively. The
+// nil checks let api_replication_* return an empty list cleanly when
+// a row was scanned with an unexpected column type instead of
+// panicking the action.
+func row_string(r map[string]any, key string) string {
+	if v, ok := r[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// row_int extracts a numeric field from a map[string]any returned by
+// a CBOR-decoded payload or a sqlite row scan. The cbor library
+// decodes non-negative integers into uint64 (not int64) when the
+// target is interface{}, so callers like the bootstrap chunk-fetch
+// handler would see length=0 for every non-empty file because the
+// uint64(903) case wasn't matched and fell through to the zero
+// return. That broke file-chunk delivery — every file landed as a
+// zero-byte file on the receiver, including 21,612 entity-id app
+// files whose empty app.json then made the published-apps loader
+// silently skip the entire installed-app set.
+func row_int(r map[string]any, key string) int64 {
+	switch v := r[key].(type) {
+	case int64:
+		return v
+	case uint64:
+		return int64(v)
+	case int:
+		return int64(v)
+	case uint:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case uint32:
+		return int64(v)
+	}
+	return 0
+}
+
+// ============================================================
+// Per-app SQL command replication (envelope format)
+// ============================================================
+
+// SQLCommand is the wire payload for an opt-out app-DB SQL replication
+// op. The receiver re-executes Statement against the same per-(user,
+// app) DB using Args as bound parameters. Convergence is by re-execution:
+// INSERTs dedup on PK conflict, UPDATE/DELETE follow last-write-wins by
+// arrival order. Apps that need stronger semantics use the log-plus-
+// derived-view pattern (see CLAUDE.md replication-safety bullets).
+//
+// Args are encoded as `any` so the same Go-side parameter types that
+// went into the local exec round-trip through cbor and reach the
+// replica's exec untouched (int64, string, []byte, nil).
+type SQLCommand struct {
+	Statement string `cbor:"sql"`
+	Args      []any  `cbor:"args,omitempty"`
+}
+
+// sql_default_excluded names tables that never replicate, no matter
+// what the app declares. SQLite's internal namespace plus the
+// session-local commit log used by the future mochi.db.commit.hook
+// drainer.
+var sql_default_excluded = []string{
+	"sqlite_",
+	"_commit_log",
+}
+
+// sql_target_table extracts the target table from a mutating SQL
+// statement. Returns "" for read-only statements (SELECT, PRAGMA …)
+// and for schema statements (CREATE/DROP/ALTER) — neither replicates.
+// The parser is intentionally simple: skip leading comments + whitespace,
+// match the verb, then take the next identifier as the table name. CTE
+// (WITH …) prefixes are not recognised and stay local; apps that need
+// CTE writes to replicate should reshape to a plain INSERT/UPDATE/DELETE.
+func sql_target_table(sql string) string {
+	s := sql_strip_lead(sql)
+	verb, rest := sql_take_word(s)
+	switch strings.ToUpper(verb) {
+	case "INSERT", "REPLACE":
+		// INSERT [OR IGNORE|REPLACE|...] INTO <table>
+		rest = sql_strip_lead(rest)
+		if w, after := sql_take_word(rest); strings.ToUpper(w) == "OR" {
+			_, after = sql_take_word(sql_strip_lead(after))
+			rest = sql_strip_lead(after)
+			w, after = sql_take_word(rest)
+			if strings.ToUpper(w) != "INTO" {
+				return ""
+			}
+			rest = sql_strip_lead(after)
+		} else if strings.ToUpper(w) == "INTO" {
+			rest = sql_strip_lead(after)
+		} else {
+			return ""
+		}
+		name, _ := sql_take_ident(rest)
+		return name
+	case "UPDATE":
+		// UPDATE [OR ...] <table>
+		rest = sql_strip_lead(rest)
+		if w, after := sql_take_word(rest); strings.ToUpper(w) == "OR" {
+			_, after = sql_take_word(sql_strip_lead(after))
+			rest = sql_strip_lead(after)
+		}
+		name, _ := sql_take_ident(rest)
+		return name
+	case "DELETE":
+		// DELETE FROM <table>
+		rest = sql_strip_lead(rest)
+		w, after := sql_take_word(rest)
+		if strings.ToUpper(w) != "FROM" {
+			return ""
+		}
+		name, _ := sql_take_ident(sql_strip_lead(after))
+		return name
+	}
+	return ""
+}
+
+// sql_target_uid extracts the row identifier value bound to a
+// mutating SQL statement, used as the row uid passed to
+// commit_hook_fire on replication apply. App-side commit hooks then
+// know which specific row a replicated write created or changed.
+//
+// Recognised shapes (cover the bulk of app SQL written under the
+// Mochi single-word PK convention where the row id column is named
+// "id" and bound as a string):
+//
+//   INSERT|REPLACE INTO <table> (id, ...) VALUES (?, ...)
+//   INSERT|REPLACE INTO <table> VALUES (?, ...)
+//   UPDATE <table> SET ... WHERE id = ?
+//   DELETE FROM <table> WHERE id = ?
+//
+// Returns "" for any other shape. Apps whose row PK isn't "id", or
+// whose WHERE clause carries more than a single id-equality, fall
+// back to the empty-uid behaviour (commit hooks still fire on
+// replication apply, just without a specific row identifier).
+func sql_target_uid(sql string, args []any) string {
+	s := sql_strip_lead(sql)
+	verb, rest := sql_take_word(s)
+	switch strings.ToUpper(verb) {
+	case "INSERT", "REPLACE":
+		rest = sql_strip_lead(rest)
+		// Skip OR <conflict-action>.
+		if word, after := sql_take_word(rest); strings.ToUpper(word) == "OR" {
+			_, after = sql_take_word(sql_strip_lead(after))
+			rest = sql_strip_lead(after)
+		}
+		word, after := sql_take_word(rest)
+		if strings.ToUpper(word) != "INTO" {
+			return ""
+		}
+		_, after = sql_take_ident(sql_strip_lead(after))
+		after = sql_strip_lead(after)
+		// Either an explicit "(id, ...) values (?, ...)" or the
+		// implicit positional "values (?, ...)" - both have args[0]
+		// bound to the row id.
+		if strings.HasPrefix(after, "(") {
+			column, _ := sql_take_ident(sql_strip_lead(after[1:]))
+			if !strings.EqualFold(column, "id") {
+				return ""
+			}
+		} else {
+			keyword, _ := sql_take_word(after)
+			if strings.ToUpper(keyword) != "VALUES" {
+				return ""
+			}
+		}
+		if len(args) == 0 {
+			return ""
+		}
+		if uid, ok := args[0].(string); ok {
+			return uid
+		}
+		return ""
+
+	case "UPDATE", "DELETE":
+		// Recognised only when the WHERE clause is exactly "id = ?".
+		// The bound value is then the last entry in args.
+		lower := strings.ToLower(sql)
+		where := strings.LastIndex(lower, " where ")
+		if where < 0 {
+			return ""
+		}
+		clause := strings.TrimSpace(lower[where+len(" where "):])
+		clause = strings.TrimRight(clause, " \t;")
+		column, rest := sql_take_ident(clause)
+		if !strings.EqualFold(column, "id") {
+			return ""
+		}
+		rest = strings.TrimLeft(rest, " \t")
+		if !strings.HasPrefix(rest, "=") {
+			return ""
+		}
+		rest = strings.TrimLeft(rest[1:], " \t")
+		if rest != "?" {
+			return ""
+		}
+		if len(args) == 0 {
+			return ""
+		}
+		if uid, ok := args[len(args)-1].(string); ok {
+			return uid
+		}
+		return ""
+	}
+	return ""
+}
+
+// sql_strip_lead skips over leading whitespace and line / block comments.
+func sql_strip_lead(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		if strings.HasPrefix(s, "--") {
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				s = s[i+1:]
+				continue
+			}
+			return ""
+		}
+		if strings.HasPrefix(s, "/*") {
+			if i := strings.Index(s, "*/"); i >= 0 {
+				s = s[i+2:]
+				continue
+			}
+			return ""
+		}
+		return s
+	}
+}
+
+// sql_take_word reads the next contiguous run of letters as a single
+// keyword. Stops at the first non-letter, returning the word and the
+// remainder.
+func sql_take_word(s string) (string, string) {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			break
+		}
+		i++
+	}
+	return s[:i], s[i:]
+}
+
+// sql_take_ident reads a SQL identifier: bare word, `"quoted"`, or
+// `[bracketed]`. Returns the unquoted name plus the tail.
+func sql_take_ident(s string) (string, string) {
+	if s == "" {
+		return "", s
+	}
+	if s[0] == '"' {
+		if i := strings.IndexByte(s[1:], '"'); i >= 0 {
+			return s[1 : 1+i], s[2+i:]
+		}
+		return "", ""
+	}
+	if s[0] == '[' {
+		if i := strings.IndexByte(s[1:], ']'); i >= 0 {
+			return s[1 : 1+i], s[2+i:]
+		}
+		return "", ""
+	}
+	if s[0] == '`' {
+		if i := strings.IndexByte(s[1:], '`'); i >= 0 {
+			return s[1 : 1+i], s[2+i:]
+		}
+		return "", ""
+	}
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' {
+			i++
+			continue
+		}
+		break
+	}
+	return s[:i], s[i:]
+}
+
+// sql_table_excluded returns true when the given table is in either
+// the core default-excluded set or the app's app.json exclude list.
+func sql_table_excluded(av *AppVersion, table string) bool {
+	if table == "" {
+		return true
+	}
+	for _, prefix := range sql_default_excluded {
+		if strings.HasPrefix(table, prefix) {
+			return true
+		}
+	}
+	if av == nil {
+		return false
+	}
+	for _, t := range av.Database.Replicate.Exclude.Tables {
+		if t == table {
+			return true
+		}
+	}
+	return false
+}
+
+// replication_emit_sql_command fans out a successful local app-DB write
+// to the user's host set. Called from api_db_query (mochi.db.execute)
+// after the local exec returns nil error, and from the deferred-emit
+// flush at transaction commit. Skipped when the user has no UID
+// (anonymous or pre-v51 row) or the table is excluded.
+func replication_emit_sql_command(user *User, app *App, av *AppVersion, sql string, args []any) {
+	if user == nil || user.UID == "" || app == nil || av == nil {
+		return
+	}
+	table := sql_target_table(sql)
+	if sql_table_excluded(av, table) {
+		return
+	}
+	payload := cbor_encode(&SQLCommand{Statement: sql, Args: args})
+	replication_emit(user.UID, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user.UID,
+		Database:  app.id,
+		Table:     table,
+		UID:       sql_target_uid(sql, args),
+		Operation: repl_op_exec,
+		Payload:   payload,
+		Schema:    av.Database.Schema,
+	})
+}
+
+// replication_apply_sql_command re-executes a replicated SQL statement
+// on the local replica's per-(user, app) DB. Defers when the user or
+// app isn't yet present, or when the receiver's schema is older than
+// the sender's (the op will retry on database_upgrade landing).
+func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
+	var cmd SQLCommand
+	if err := cbor.Unmarshal(op.Payload, &cmd); err != nil {
+		info("Replication exec: decode failed: %v", err)
+		return ApplyInvalid
+	}
+	if cmd.Statement == "" {
+		return ApplyInvalid
+	}
+
+	if !user_exists(op.User) {
+		return ApplyDeferred
+	}
+	u := &User{UID: op.User}
+	a := app_by_id(op.Database)
+	if a == nil {
+		return ApplyDeferred
+	}
+	av := a.active(u)
+	if av == nil {
+		return ApplyDeferred
+	}
+	if op.Schema > av.Database.Schema {
+		// Receiver schema older than sender's. Defer; the
+		// database_upgrade triggered by the next app activity
+		// drives a pending-drain.
+		return ApplyDeferred
+	}
+
+	db := db_app(u, a)
+	if db == nil {
+		return ApplyDeferred
+	}
+
+	if _, err := db.starlark.Exec(cmd.Statement, cmd.Args...); err != nil {
+		// FK violations under out-of-order arrival (parallel-queue
+		// send sends N ops to one peer concurrently; receiver applies
+		// in arrival order). The parent row may arrive a fraction of
+		// a second after the child — defer so the next pending-drain
+		// tick retries once the parent has landed. Other errors
+		// (schema drift, real bugs) log + advance dedup as before.
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			debug("Replication exec deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
+			return ApplyDeferred
+		}
+		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
+		return ApplyApplied
+	}
+	debug("Replication exec apply: user=%q app=%q table=%q", op.User, op.Database, op.Table)
+	return ApplyApplied
+}
+
+// ============================================================
+// System-scope replication for core DBs
+// ============================================================
+//
+// Pair-scope replication for operator-tuned tables that live in core
+// DBs (not per-user): settings.db.settings, apps.db routing tables,
+// domains.db domains / routes. Each pair member emits "this row
+// changed" on local write; receivers replay via REPLACE INTO.
+
+// SystemSet is the wire payload for a single field-level write to a
+// core system DB. Database/Table identify the destination
+// (e.g. "settings"/"settings"); Row is the primary-key value (e.g.
+// the setting name); Field is the column being written; Value is the
+// new value. Empty Value means "delete the row" (LWW-tombstone of
+// the binding).
+type SystemSet struct {
+	Database string `cbor:"db"`
+	Table    string `cbor:"table"`
+	Row      string `cbor:"row"`
+	Field    string `cbor:"field"`
+	Value    string `cbor:"value"`
+}
+
+// replication_system_set_event is the receive handler. Decodes the
+// payload and delegates to the apply function below.
+func replication_system_set_event(e *Event) {
+	var s SystemSet
+	if !e.segment(&s) {
+		info("Replication system-set dropping: cannot decode payload")
+		return
+	}
+	replication_system_set_apply(e.peer, &s)
+}
+
+// replication_system_set_apply applies an incoming system-set write
+// to the destination DB. Dispatches by (Database, Table); unknown
+// destinations are silently dropped after a warn. Order-of-arrival
+// determines the winner under concurrent writes — see the file
+// header for the trade-off.
+func replication_system_set_apply(originPeer string, s *SystemSet) {
+	if s.Database == "" || s.Table == "" || s.Row == "" || s.Field == "" {
+		info("Replication system-set dropping: missing key fields")
+		return
+	}
+	switch s.Database + "." + s.Table {
+	case "settings.settings":
+		replication_system_set_apply_settings(originPeer, s)
+	case "apps.classes", "apps.services", "apps.paths":
+		replication_system_set_apply_apps_two_col(originPeer, s)
+	case "apps.apps":
+		replication_system_set_apply_apps_installs(originPeer, s)
+	default:
+		warn("Replication system-set: unsupported destination %q.%q (from peer %q)",
+			s.Database, s.Table, originPeer)
+	}
+}
+
+// replication_system_set_apply_settings handles settings.db.settings.
+// Only the `value` field is replicated. Empty value deletes the row.
+func replication_system_set_apply_settings(originPeer string, s *SystemSet) {
+	if s.Field != "value" {
+		info("Replication system-set settings.settings: unsupported field %q (from peer %q)", s.Field, originPeer)
+		return
+	}
+	db := db_open("db/settings.db")
+	if s.Value == "" {
+		db.exec("delete from settings where name=?", s.Row)
+	} else {
+		db.exec("replace into settings (name, value) values (?, ?)", s.Row, s.Value)
+	}
+	debug("Replication system-set settings.settings applied: name=%q value=%q (from %q)",
+		s.Row, s.Value, originPeer)
+}
+
+// replication_system_set_apply_apps_two_col handles classes / services
+// / paths in apps.db. All three are (key, app) tables — the keying
+// column varies per table. Empty value deletes the row.
+func replication_system_set_apply_apps_two_col(originPeer string, s *SystemSet) {
+	if s.Field != "app" {
+		info("Replication system-set apps.%s: unsupported field %q (from peer %q)", s.Table, s.Field, originPeer)
+		return
+	}
+	var keyCol string
+	switch s.Table {
+	case "classes":
+		keyCol = "class"
+	case "services":
+		keyCol = "service"
+	case "paths":
+		keyCol = "path"
+	default:
+		return
+	}
+	db := db_apps()
+	if s.Value == "" {
+		db.exec(fmt.Sprintf("delete from %s where %s=?", s.Table, keyCol), s.Row)
+	} else {
+		db.exec(
+			fmt.Sprintf("replace into %s (%s, app) values (?, ?)", s.Table, keyCol),
+			s.Row, s.Value)
+	}
+	debug("Replication system-set apps.%s applied: %s=%q value=%q (from %q)",
+		s.Table, keyCol, s.Row, s.Value, originPeer)
+}
+
+// replication_system_set_apply_apps_installs handles apps.db.apps —
+// the install registry. Value carries the install timestamp. A bump
+// (re-broadcast of a newer timestamp) means the source just installed
+// or upgraded the app; the receiver needs the matching code on disk
+// to keep the pair in sync, so app_check_install runs async to pull
+// the latest version from the publisher.
+func replication_system_set_apply_apps_installs(originPeer string, s *SystemSet) {
+	if s.Field != "installed" {
+		info("Replication system-set apps.apps: unsupported field %q (from peer %q)", s.Field, originPeer)
+		return
+	}
+	db := db_apps()
+	if s.Value == "" {
+		db.exec("delete from apps where app=?", s.Row)
+	} else {
+		var installed int64
+		_, _ = fmt.Sscanf(s.Value, "%d", &installed)
+		if installed == 0 {
+			installed = now()
+		}
+		db.exec("replace into apps (app, installed) values (?, ?)", s.Row, installed)
+	}
+	debug("Replication system-set apps.apps applied: app=%q value=%q (from %q)",
+		s.Row, s.Value, originPeer)
+	if s.Value != "" && valid(s.Row, "entity") {
+		go app_check_install(s.Row)
+	}
+}
+
+// replication_emit_system_set is the package-level emit function
+// variable so tests can stub it. Production points it at
+// replication_emit_system_set_real.
+var replication_emit_system_set = replication_emit_system_set_real
+
+// replication_emit_system_set_real emits a system-set write to every
+// pair member. No-op when this server has no pair members.
+func replication_emit_system_set_real(database, table, row, field, value string) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer from pair")
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	payload := &SystemSet{
+		Database: database, Table: table, Row: row, Field: field, Value: value,
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		m := message("", "", "replication", "system/set")
+		m.add(payload)
+		m.send_peer(peer)
+	}
+}
+
+// SystemRow is the row-level companion to SystemSet. Used for tables
+// where field-level is awkward — multi-column rows, or rows with
+// composite primary keys. Key carries the row's primary-key columns
+// (1+ entries); Cols carries the remaining data columns being written.
+// Delete=true signals "remove the row".
+//
+// Wire: replication/system-row. Same order-of-arrival semantics as
+// SystemSet — no LWW conflict resolution.
+type SystemRow struct {
+	Database string            `cbor:"db"`
+	Table    string            `cbor:"table"`
+	Key      map[string]string `cbor:"key"`
+	Cols     map[string]string `cbor:"cols"`
+	Delete   bool              `cbor:"delete,omitempty"`
+}
+
+// replication_system_row_event is the receive handler for row-level
+// ops.
+func replication_system_row_event(e *Event) {
+	var s SystemRow
+	if !e.segment(&s) {
+		info("Replication system-row dropping: cannot decode payload")
+		return
+	}
+	replication_system_row_apply(e.peer, &s)
+}
+
+// replication_system_row_apply dispatches an inbound row-level op to
+// its table-specific handler.
+func replication_system_row_apply(originPeer string, s *SystemRow) {
+	if s.Database == "" || s.Table == "" || len(s.Key) == 0 {
+		info("Replication system-row dropping: missing key fields")
+		return
+	}
+	switch s.Database + "." + s.Table {
+	case "domains.domains":
+		replication_system_row_apply_domains(originPeer, s)
+	case "domains.routes":
+		replication_system_row_apply_routes(originPeer, s)
+	case "apps.versions":
+		replication_system_row_apply_apps_versions(originPeer, s)
+	case "apps.tracks":
+		replication_system_row_apply_apps_tracks(originPeer, s)
+	case "domains.delegations":
+		replication_system_row_apply_delegations(originPeer, s)
+	case "users.users":
+		replication_system_row_apply_users_users(originPeer, s)
+	case "settings.documents":
+		replication_system_row_apply_settings_documents(originPeer, s)
+	default:
+		warn("Replication system-row: unsupported destination %q.%q (from peer %q)",
+			s.Database, s.Table, originPeer)
+	}
+}
+
+// replication_system_users_users_mutable is the column whitelist for
+// pair-scope replication into users.db.users. Columns listed here flow
+// between operator-paired hosts (sharing one operator's full identity
+// state); other users.users columns either replicate via the per-user
+// path (preferences, methods, status — see replication_users_users_mutable)
+// or stay strictly local per host.
+var replication_system_users_users_mutable = map[string]bool{
+	"username": true,
+	"role":     true,
+}
+
+// replication_system_row_apply_users_users handles users.db.users for
+// the pair-scope columns (username, role). Per-user link partners must
+// not receive these — username is a per-host namespace affordance and
+// role is the local operator's authority decision — so the emit-side
+// uses the pair-only system-row pipeline and this handler is the
+// receiver counterpart. The per-user replication_users_users_apply path
+// silently ignores these columns via its own narrower whitelist.
+func replication_system_row_apply_users_users(originPeer string, s *SystemRow) {
+	uid := s.Key["uid"]
+	if uid == "" {
+		info("Replication system-row users.users dropping: missing uid key (from peer %q)", originPeer)
+		return
+	}
+	if s.Delete {
+		// User deletion is a server-pair operation, not a row op —
+		// no-op so an errant emitter can't lose accounts.
+		return
+	}
+	sets := []string{}
+	vals := []any{}
+	for col, v := range s.Cols {
+		if !replication_system_users_users_mutable[col] {
+			continue
+		}
+		sets = append(sets, col+"=?")
+		vals = append(vals, v)
+	}
+	if len(sets) == 0 {
+		return
+	}
+	vals = append(vals, uid)
+	db := db_open("db/users.db")
+	// Use db.internal.Exec directly so a UNIQUE-constraint refusal
+	// (the documented collision-at-apply case for username changes)
+	// surfaces as a log line instead of panicking the receiver. The
+	// local row stays at its pre-replication value; no data is
+	// destroyed.
+	if _, err := db.internal.Exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...); err != nil {
+		warn("Replication system-row users.users refused: uid=%q cols=%v err=%v (from %q)", uid, s.Cols, err, originPeer)
+		return
+	}
+	debug("Replication system-row users.users applied: uid=%q cols=%v (from %q)", uid, s.Cols, originPeer)
+}
+
+// replication_system_row_apply_settings_documents handles
+// settings.db.documents - operator-edited markdown overrides for the
+// server's rules / terms / privacy pages. Composite key
+// (name, language) with body + updated as the row data. LWW per
+// (name, language): a later replace from any pair member wins.
+func replication_system_row_apply_settings_documents(originPeer string, s *SystemRow) {
+	name := s.Key["name"]
+	language := s.Key["language"]
+	if name == "" || language == "" {
+		info("Replication system-row settings.documents dropping: missing key (from peer %q)", originPeer)
+		return
+	}
+	db := db_open("db/settings.db")
+	if s.Delete {
+		db.exec("delete from documents where name=? and language=?", name, language)
+		debug("Replication system-row settings.documents deleted: %q/%q (from %q)", name, language, originPeer)
+		return
+	}
+	body := s.Cols["body"]
+	var updated int64
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	db.exec("replace into documents (name, language, body, updated) values (?, ?, ?, ?)",
+		name, language, body, updated)
+	debug("Replication system-row settings.documents applied: %q/%q updated=%d (from %q)", name, language, updated, originPeer)
+}
+
+// replication_system_row_apply_domains handles domains.db.domains.
+// Single-column key (domain) with multi-column row data.
+func replication_system_row_apply_domains(originPeer string, s *SystemRow) {
+	name := s.Key["domain"]
+	if name == "" {
+		return
+	}
+	db := db_open("db/domains.db")
+	if s.Delete {
+		db.exec("delete from domains where domain=?", name)
+		debug("Replication system-row domains.domains deleted: %q (from %q)", name, originPeer)
+		return
+	}
+	var verified, tls, created, updated int64
+	_, _ = fmt.Sscanf(s.Cols["verified"], "%d", &verified)
+	_, _ = fmt.Sscanf(s.Cols["tls"], "%d", &tls)
+	_, _ = fmt.Sscanf(s.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	token := s.Cols["token"]
+	db.exec(
+		"replace into domains (domain, verified, token, tls, created, updated) values (?, ?, ?, ?, ?, ?)",
+		name, verified, token, tls, created, updated)
+	debug("Replication system-row domains.domains applied: %q (from %q)", name, originPeer)
+}
+
+// replication_system_row_apply_routes handles domains.db.routes —
+// composite key (domain, path) carried via Key map.
+func replication_system_row_apply_routes(originPeer string, s *SystemRow) {
+	domain := s.Key["domain"]
+	path := s.Key["path"]
+	if domain == "" {
+		info("Replication system-row domains.routes dropping: empty domain key (from peer %q)", originPeer)
+		return
+	}
+	db := db_open("db/domains.db")
+	if s.Delete {
+		db.exec("delete from routes where domain=? and path=?", domain, path)
+		debug("Replication system-row domains.routes deleted: %q+%q (from %q)", domain, path, originPeer)
+		return
+	}
+	method := s.Cols["method"]
+	target := s.Cols["target"]
+	context := s.Cols["context"]
+	owner := s.Cols["owner"]
+	var priority, enabled, created, updated int64
+	_, _ = fmt.Sscanf(s.Cols["priority"], "%d", &priority)
+	_, _ = fmt.Sscanf(s.Cols["enabled"], "%d", &enabled)
+	_, _ = fmt.Sscanf(s.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	db.exec(
+		"replace into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		domain, path, method, target, context, owner, priority, enabled, created, updated)
+	debug("Replication system-row domains.routes applied: %q+%q (from %q)", domain, path, originPeer)
+}
+
+// replication_emit_system_row is the package-level emit function
+// variable for the row-level ops; tests can stub it.
+var replication_emit_system_row = replication_emit_system_row_real
+
+// replication_emit_system_row_real emits a row-level op to every pair
+// member.
+func replication_emit_system_row_real(database, table string, key, cols map[string]string, del bool) {
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer from pair")
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	payload := &SystemRow{
+		Database: database, Table: table,
+		Key: key, Cols: cols, Delete: del,
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		if peer == "" || peer == p2p_id {
+			continue
+		}
+		m := message("", "", "replication", "system/row")
+		m.add(payload)
+		m.send_peer(peer)
+	}
+}
+
+// replication_system_row_apply_apps_versions handles apps.db.versions —
+// (app primary key, version, track). Single-column key, two data
+// columns. Empty row → delete.
+func replication_system_row_apply_apps_versions(originPeer string, s *SystemRow) {
+	app := s.Key["app"]
+	if app == "" {
+		return
+	}
+	db := db_apps()
+	if s.Delete {
+		db.exec("delete from versions where app=?", app)
+		return
+	}
+	db.exec("replace into versions (app, version, track) values (?, ?, ?)",
+		app, s.Cols["version"], s.Cols["track"])
+	debug("Replication system-row apps.versions applied: %q (from %q)", app, originPeer)
+	// A version row update for an entity-id app means the source
+	// installed or upgraded a published app. The replica needs the
+	// matching code on disk to actually serve requests against it;
+	// fire app_check_install so the publisher download happens now
+	// instead of waiting for the next 24-hour apps_manager tick.
+	// Skip non-entity ids (dev / internal apps live on the local
+	// filesystem and don't need downloading).
+	if valid(app, "entity") {
+		go app_check_install(app)
+	}
+}
+
+// replication_system_row_apply_apps_tracks handles apps.db.tracks —
+// composite key (app, track), single data column (version). Operator
+// pinning a track to a new version means the source has (or wants)
+// that version locally; the receiver needs it on disk to follow the
+// pin, so app_check_install runs async — same pattern as the
+// versions apply handler above.
+func replication_system_row_apply_apps_tracks(originPeer string, s *SystemRow) {
+	app := s.Key["app"]
+	track := s.Key["track"]
+	if app == "" || track == "" {
+		return
+	}
+	db := db_apps()
+	if s.Delete {
+		db.exec("delete from tracks where app=? and track=?", app, track)
+		return
+	}
+	db.exec("replace into tracks (app, track, version) values (?, ?, ?)",
+		app, track, s.Cols["version"])
+	debug("Replication system-row apps.tracks applied: %q+%q (from %q)", app, track, originPeer)
+	if valid(app, "entity") {
+		go app_check_install(app)
+	}
+}
+
+// replication_system_row_apply_delegations handles domains.db.delegations —
+// composite key (domain, path, owner), two data columns (created, updated).
+// The id integer PK is local-only; receivers let SQLite assign on insert.
+func replication_system_row_apply_delegations(originPeer string, s *SystemRow) {
+	domain := s.Key["domain"]
+	path := s.Key["path"]
+	owner := s.Key["owner"]
+	if domain == "" || owner == "" {
+		return
+	}
+	db := db_open("db/domains.db")
+	if s.Delete {
+		db.exec("delete from delegations where domain=? and path=? and owner=?", domain, path, owner)
+		return
+	}
+	// Insert if not present; the unique(domain, path, owner) index
+	// keeps replays idempotent. An incoming op for an already-present
+	// row updates the timestamps via ON CONFLICT DO UPDATE pattern —
+	// but SQLite doesn't allow direct ON CONFLICT on a non-pk unique
+	// index here. Use a DELETE-then-INSERT instead.
+	var created, updated int64
+	_, _ = fmt.Sscanf(s.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(s.Cols["updated"], "%d", &updated)
+	db.exec("delete from delegations where domain=? and path=? and owner=?", domain, path, owner)
+	db.exec("insert into delegations (domain, path, owner, created, updated) values (?, ?, ?, ?, ?)",
+		domain, path, owner, created, updated)
+	debug("Replication system-row domains.delegations applied: %q+%q+%q (from %q)",
+		domain, path, owner, originPeer)
+}
+
+// ============================================================
+// Per-DB row replication helpers
+// (users.db auth, sessions.db auth-flow, schedule.db)
+// ============================================================
+
+// ============================================================
+// users.db rows
+// ============================================================
+
+// (users.db rationale below was: audit gap #2 V2)
+
+
+// replication_users_users_mutable lists the columns of users.db.users
+// that may be updated via the per-user row-replication path (delivered
+// to every host in the user's host set, including per-user link
+// partners). Other columns are either replicated on the pair-only path
+// (username, role — see replication_emit_users_users_pair_set and
+// replication_system_users_users_mutable) or stay strictly server-local
+// (uid is the row key; role/username belong on the pair-only path
+// because they're per-operator decisions, not per-user data).
+var replication_users_users_mutable = map[string]bool{
+	"methods": true,
+	"status":  true,
+}
+
+// replication_emit_users_users_set emits a partial update for one row
+// of users.db.users to the user's whole host set (operator-paired
+// members AND per-user link partners). Use this for columns that
+// represent the user's own choices and follow them across replicas —
+// preferences, auth methods, account status. For per-operator columns
+// (username, role) use replication_emit_users_users_pair_set instead.
+func replication_emit_users_users_set(uid string, fields map[string]string) {
+	if uid == "" || len(fields) == 0 {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{Table: "users", Cols: fields})
+}
+
+// replication_emit_users_users_pair_set emits a partial update for one
+// row of users.db.users to the operator-paired hosts only — NOT to
+// per-user link partners. Used for columns that are per-operator
+// affordances rather than per-user data: username (each operator
+// chooses their own per-host namespace) and role (admin authority is
+// granted independently on each operator's servers; replicating it
+// across operators would be a privilege-escalation footgun). Pair
+// members share full identity state because they're the same
+// operator's hosts.
+func replication_emit_users_users_pair_set(uid string, fields map[string]string) {
+	if uid == "" || len(fields) == 0 {
+		return
+	}
+	replication_emit_system_row("users", "users", map[string]string{"uid": uid}, fields, false)
+}
+
+// replication_users_entities_mutable lists the columns of
+// users.db.entities that may be updated via row replication. id is the
+// row key. user is the owner FK (re-keyed from op.User on the receiver).
+// private, fingerprint, parent, class are immutable post-create.
+// published is per-host scheduling state (last directory republish ts)
+// and intentionally stays off this list — each host re-republishes on
+// its own cadence.
+var replication_users_entities_mutable = map[string]bool{
+	"name":    true,
+	"privacy": true,
+	"data":    true,
+}
+
+// replication_emit_users_entities_create replicates a new entity row.
+// Called from entity_create after the local INSERT. Carries every
+// column except the user FK (re-keyed on the receiver from op.User).
+func replication_emit_users_entities_create(uid string, e *Entity) {
+	if uid == "" || e == nil || e.ID == "" {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{
+		Table: "entities",
+		Cols: map[string]string{
+			"id":          e.ID,
+			"private":     e.Private,
+			"fingerprint": e.Fingerprint,
+			"parent":      e.Parent,
+			"class":       e.Class,
+			"name":        e.Name,
+			"privacy":     e.Privacy,
+			"data":        e.Data,
+			"published":   fmt.Sprintf("%d", e.Published),
+		},
+	})
+}
+
+// replication_emit_users_entities_update replicates a partial column
+// update against an existing entity row. The id is always included in
+// fields so the receiver can identify the target row.
+func replication_emit_users_entities_update(uid, id string, fields map[string]string) {
+	if uid == "" || id == "" || len(fields) == 0 {
+		return
+	}
+	cols := make(map[string]string, len(fields)+1)
+	for k, v := range fields {
+		cols[k] = v
+	}
+	cols["id"] = id
+	replication_emit_users_row(uid, &UsersRow{Table: "entities", Cols: cols})
+}
+
+// replication_emit_users_entities_delete replicates a row delete.
+func replication_emit_users_entities_delete(uid, id string) {
+	if uid == "" || id == "" {
+		return
+	}
+	replication_emit_users_row(uid, &UsersRow{
+		Table:  "entities",
+		Cols:   map[string]string{"id": id},
+		Delete: true,
+	})
+}
+
+// UsersRow is the wire payload for an insert / delete against a
+// users.db auth table. Key and Cols carry the row's columns split
+// by type; blob columns travel in KeyBytes / ColsBytes.
+type UsersRow struct {
+	Table     string            `cbor:"table"`
+	Key       map[string]string `cbor:"key,omitempty"`
+	KeyBytes  map[string][]byte `cbor:"key_bytes,omitempty"`
+	Cols      map[string]string `cbor:"cols,omitempty"`
+	ColsBytes map[string][]byte `cbor:"cols_bytes,omitempty"`
+	Delete    bool              `cbor:"delete,omitempty"`
+}
+
+// replication_emit_users_row sends a row op for one of the users.db
+// auth tables to every peer in the user's host set. user must be the
+// uid of the row's owner — the op is signed by one of that user's
+// entities so receivers can authenticate cross-host writes against
+// the user's auth state.
+func replication_emit_users_row(user string, r *UsersRow) {
+	if user == "" || r.Table == "" {
+		return
+	}
+	payload := cbor_encode(r)
+	operation := "users-row.set"
+	if r.Delete {
+		operation = "users-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "users",
+		Table:     r.Table,
+		Operation: operation,
+		Payload:   payload,
+	})
+}
+
+// replication_users_row_apply lands a remote users-row op into the
+// local users.db. Each table's apply path uses the natural PK so
+// re-application is idempotent.
+func replication_users_row_apply(userUID string, r *UsersRow) ApplyResult {
+	if !user_exists(userUID) {
+		return ApplyDeferred
+	}
+	udb := db_open("db/users.db")
+	switch r.Table {
+	case "credentials":
+		return replication_users_credentials_apply(udb, userUID, r)
+	case "recovery":
+		return replication_users_recovery_apply(udb, userUID, r)
+	case "tokens":
+		return replication_users_tokens_apply(udb, userUID, r)
+	case "totp":
+		return replication_users_totp_apply(udb, userUID, r)
+	case "users":
+		return replication_users_users_apply(udb, userUID, r)
+	case "entities":
+		return replication_users_entities_apply(udb, userUID, r)
+	}
+	info("Replication users-row dropping: unsupported table %q", r.Table)
+	return ApplyInvalid
+}
+
+// replication_users_entities_apply lands an INSERT / partial UPDATE /
+// DELETE against users.db.entities. The op carries the entity's user
+// FK in op.User; the apply path scopes every statement to
+// (entities.id = ? AND entities.user = ?) so a misbehaving emitter
+// can't touch another user's rows.
+func replication_users_entities_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	id := r.Cols["id"]
+	if id == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		udb.exec("delete from entities where id=? and user=?", id, userUID)
+		return ApplyApplied
+	}
+	// A full-row create carries "private" (immutable post-create).
+	if _, full := r.Cols["private"]; full {
+		var published int64
+		_, _ = fmt.Sscanf(r.Cols["published"], "%d", &published)
+		udb.exec(`insert or ignore into entities
+			(id, private, fingerprint, user, parent, class, name, privacy, data, published)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, r.Cols["private"], r.Cols["fingerprint"], userUID,
+			r.Cols["parent"], r.Cols["class"], r.Cols["name"],
+			r.Cols["privacy"], r.Cols["data"], published)
+		return ApplyApplied
+	}
+	// Partial update: whitelist mutable columns.
+	sets := []string{}
+	vals := []any{}
+	for col, v := range r.Cols {
+		if col == "id" || !replication_users_entities_mutable[col] {
+			continue
+		}
+		if col == "published" {
+			var pub int64
+			_, _ = fmt.Sscanf(v, "%d", &pub)
+			sets = append(sets, col+"=?")
+			vals = append(vals, pub)
+		} else {
+			sets = append(sets, col+"=?")
+			vals = append(vals, v)
+		}
+	}
+	if len(sets) == 0 {
+		return ApplyInvalid
+	}
+	vals = append(vals, id, userUID)
+	udb.exec("update entities set "+strings.Join(sets, ", ")+" where id=? and user=?", vals...)
+	return ApplyApplied
+}
+
+// replication_users_users_apply lands a partial UPDATE against
+// users.db.users. Whitelists the changed columns and runs one UPDATE
+// against the row identified by op.User. Skips silently if the user
+// row isn't local yet — defer so a later keys-transfer lands first.
+func replication_users_users_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	if r.Delete {
+		// Cross-host user delete is a server-pair / link operation,
+		// not a row op. Treat any incoming delete as a no-op so we
+		// can't accidentally lose accounts via row replication.
+		return ApplyApplied
+	}
+	sets := []string{}
+	vals := []any{}
+	for col, v := range r.Cols {
+		if !replication_users_users_mutable[col] {
+			continue
+		}
+		sets = append(sets, col+"=?")
+		vals = append(vals, v)
+	}
+	if len(sets) == 0 {
+		return ApplyInvalid
+	}
+	vals = append(vals, userUID)
+	udb.exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
+	return ApplyApplied
+}
+
+func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	id := r.KeyBytes["id"]
+	if len(id) == 0 {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		udb.exec("delete from credentials where id=? and user=?", id, userUID)
+		return ApplyApplied
+	}
+	pk := r.ColsBytes["public_key"]
+	var signCount, created int64
+	_, _ = fmt.Sscanf(r.Cols["sign_count"], "%d", &signCount)
+	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
+	be, bs := 0, 0
+	if r.Cols["backup_eligible"] == "1" {
+		be = 1
+	}
+	if r.Cols["backup_state"] == "1" {
+		bs = 1
+	}
+	udb.exec(`insert or replace into credentials
+		(id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, userUID, pk, signCount, r.Cols["name"], r.Cols["transports"], be, bs, created)
+	return ApplyApplied
+}
+
+func replication_users_recovery_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	hash := r.Cols["hash"]
+	if hash == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		// Two delete shapes used by the source: by (user, hash) for one
+		// code, or by user only when wiping all codes ahead of a fresh
+		// regenerate. r.Cols["hash"] is empty for the second shape.
+		if hash == "*" {
+			udb.exec("delete from recovery where user=?", userUID)
+		} else {
+			udb.exec("delete from recovery where user=? and hash=?", userUID, hash)
+		}
+		return ApplyApplied
+	}
+	if exists, _ := udb.exists("select 1 from recovery where user=? and hash=?", userUID, hash); exists {
+		return ApplyApplied
+	}
+	var created int64
+	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
+	udb.exec("insert into recovery (user, hash, created) values (?, ?, ?)", userUID, hash, created)
+	return ApplyApplied
+}
+
+func replication_users_tokens_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	hash := r.Cols["hash"]
+	if hash == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		udb.exec("delete from tokens where hash=?", hash)
+		return ApplyApplied
+	}
+	var created, expires int64
+	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	udb.exec(`insert or replace into tokens
+		(hash, user, app, name, scopes, created, expires)
+		values (?, ?, ?, ?, ?, ?, ?)`,
+		hash, userUID, r.Cols["app"], r.Cols["name"], r.Cols["scopes"], created, expires)
+	return ApplyApplied
+}
+
+func replication_users_totp_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	if r.Delete {
+		udb.exec("delete from totp where user=?", userUID)
+		return ApplyApplied
+	}
+	secret := r.Cols["secret"]
+	if secret == "" {
+		return ApplyInvalid
+	}
+	verified := 0
+	if r.Cols["verified"] == "1" {
+		verified = 1
+	}
+	var created int64
+	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
+	udb.exec(`insert or replace into totp (user, secret, verified, created) values (?, ?, ?, ?)`,
+		userUID, secret, verified, created)
+	return ApplyApplied
+}
+
+// users_row_decode_and_apply is the entry point called from
+// replication_apply_op after dispatch detects a users-row op. Decodes
+// the payload and runs the per-table apply.
+func users_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r UsersRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication users-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_users_row_apply(user, &r)
+}
+
+// boolint01 returns "1" for true and "0" for false. Used at emit
+// sites to fit a bool through UsersRow.Cols (map[string]string).
+func boolint01(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// ============================================================
+// schedule.db rows
+// ============================================================
+
+// (schedule.db rationale: paired hosts must agree on what's scheduled)
+
+
+// ScheduleRow is the wire payload for one insert or delete against
+// db/schedule.db. Key carries the natural composite identifier; Cols
+// carries the mutable fields (omitted on delete). Wire shape mirrors
+// UsersRow / SessionsRow.
+type ScheduleRow struct {
+	Key    map[string]string `cbor:"key"`
+	Cols   map[string]string `cbor:"cols,omitempty"`
+	Delete bool              `cbor:"delete,omitempty"`
+}
+
+// replication_emit_schedule_insert fans out a schedule insert to every
+// host in the user's set (operator-paired members and per-user link
+// partners both). Called from schedule_create after the local INSERT
+// commits.
+func replication_emit_schedule_insert(user, app string, due int64, event, data string, interval, created int64) {
+	if user == "" || app == "" || event == "" {
+		return
+	}
+	replication_emit_schedule_row(user, &ScheduleRow{
+		Key: map[string]string{
+			"user":    user,
+			"app":     app,
+			"event":   event,
+			"created": fmt.Sprintf("%d", created),
+		},
+		Cols: map[string]string{
+			"due":      fmt.Sprintf("%d", due),
+			"data":     data,
+			"interval": fmt.Sprintf("%d", interval),
+		},
+	})
+}
+
+// replication_emit_schedule_delete fans out a schedule delete keyed
+// on the natural composite identifier. The caller looks up
+// (user, app, event, created) before performing the local DELETE.
+func replication_emit_schedule_delete(user, app, event string, created int64) {
+	if user == "" || app == "" || event == "" {
+		return
+	}
+	replication_emit_schedule_row(user, &ScheduleRow{
+		Key: map[string]string{
+			"user":    user,
+			"app":     app,
+			"event":   event,
+			"created": fmt.Sprintf("%d", created),
+		},
+		Delete: true,
+	})
+}
+
+// replication_emit_schedule_row is the underlying emit. Package-level
+// variable so tests can stub.
+var replication_emit_schedule_row = replication_emit_schedule_row_real
+
+func replication_emit_schedule_row_real(user string, r *ScheduleRow) {
+	if user == "" || r == nil {
+		return
+	}
+	payload := cbor_encode(r)
+	operation := "schedule-row.set"
+	if r.Delete {
+		operation = "schedule-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "schedule",
+		Table:     "schedule",
+		Operation: operation,
+		Payload:   payload,
+	})
+}
+
+// schedule_row_decode_and_apply decodes a ScheduleRow payload and
+// dispatches to the apply path. Called from replication_apply_op.
+func schedule_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r ScheduleRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication schedule-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_schedule_row_apply(user, &r)
+}
+
+// replication_schedule_row_apply lands a schedule insert or delete
+// against db/schedule.db. Inserts use exists-check + INSERT (same
+// pattern as the KeysSchedule bootstrap path) so a re-applied op or a
+// row already imported by bootstrap is silently skipped. Deletes are
+// unconditional on the natural key.
+func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult {
+	if !user_exists(userUID) {
+		return ApplyDeferred
+	}
+	user := r.Key["user"]
+	app := r.Key["app"]
+	event := r.Key["event"]
+	created_raw := r.Key["created"]
+	if user == "" || app == "" || event == "" || created_raw == "" {
+		return ApplyInvalid
+	}
+	var created int64
+	if _, err := fmt.Sscanf(created_raw, "%d", &created); err != nil {
+		return ApplyInvalid
+	}
+	sdb := schedule_db()
+	if r.Delete {
+		sdb.exec("delete from schedule where user=? and app=? and event=? and created=?",
+			user, app, event, created)
+		return ApplyApplied
+	}
+	exists, _ := sdb.exists(
+		"select 1 from schedule where user=? and app=? and event=? and created=?",
+		user, app, event, created)
+	if exists {
+		return ApplyApplied
+	}
+	var due, interval int64
+	_, _ = fmt.Sscanf(r.Cols["due"], "%d", &due)
+	_, _ = fmt.Sscanf(r.Cols["interval"], "%d", &interval)
+	sdb.exec(
+		"insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+		user, app, due, event, r.Cols["data"], interval, created)
+	schedule_notify()
+	return ApplyApplied
+}
+
+// ============================================================
+// sessions.db rows
+// ============================================================
+
+// (sessions.db rationale: closes audit gap #3 for auth-flow tables)
+
+
+// SessionsRow is the wire payload for an insert / delete against one
+// of the replicated sessions.db tables. Same shape as UsersRow; the
+// receiver dispatches per-table by Table name.
+type SessionsRow struct {
+	Table  string            `cbor:"table"`
+	Key    map[string]string `cbor:"key,omitempty"`
+	Cols   map[string]string `cbor:"cols,omitempty"`
+	Delete bool              `cbor:"delete,omitempty"`
+}
+
+// replication_emit_sessions_row sends a sessions-row op to every peer
+// in the user's host set. user must be the uid of the row's owner.
+// For codes (where the username — not uid — is the relevant identity
+// before the user has actually logged in), look up the uid first;
+// pass empty user to no-op the emit if the user isn't local.
+func replication_emit_sessions_row(user string, r *SessionsRow) {
+	if user == "" || r.Table == "" {
+		return
+	}
+	payload := cbor_encode(r)
+	operation := "sessions-row.set"
+	if r.Delete {
+		operation = "sessions-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "sessions",
+		Table:     r.Table,
+		Operation: operation,
+		Payload:   payload,
+	})
+}
+
+func replication_sessions_row_apply(userUID string, r *SessionsRow) ApplyResult {
+	if !user_exists(userUID) {
+		return ApplyDeferred
+	}
+	sdb := db_open("db/sessions.db")
+	switch r.Table {
+	case "partial":
+		return replication_sessions_partial_apply(sdb, r)
+	case "codes":
+		return replication_sessions_codes_apply(sdb, r)
+	}
+	info("Replication sessions-row dropping: unsupported table %q", r.Table)
+	return ApplyInvalid
+}
+
+func replication_sessions_partial_apply(sdb *DB, r *SessionsRow) ApplyResult {
+	id := r.Key["id"]
+	if id == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		sdb.exec("delete from partial where id=?", id)
+		return ApplyApplied
+	}
+	var expires int64
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	sdb.exec(`insert or replace into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)`,
+		id, r.Cols["user"], r.Cols["completed"], r.Cols["remaining"], expires)
+	return ApplyApplied
+}
+
+func replication_sessions_codes_apply(sdb *DB, r *SessionsRow) ApplyResult {
+	code := r.Key["code"]
+	username := r.Key["username"]
+	if code == "" || username == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		sdb.exec("delete from codes where code=? and username=?", code, username)
+		return ApplyApplied
+	}
+	var expires int64
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	sdb.exec("replace into codes (code, username, expires) values (?, ?, ?)",
+		code, username, expires)
+	return ApplyApplied
+}
+
+func sessions_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r SessionsRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication sessions-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_sessions_row_apply(user, &r)
+}
+
+// partial_create wraps the insert into sessions.db.partial + the
+// cross-host emit. There are five call sites with the same shape;
+// wrapping keeps the emit consistent and the insert SQL in one place.
+func partial_create(sdb *DB, partialID, userUID, completed, remaining string, expires int64) {
+	sdb.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)",
+		partialID, userUID, completed, remaining, expires)
+	replication_emit_sessions_row(userUID, &SessionsRow{
+		Table: "partial",
+		Key:   map[string]string{"id": partialID},
+		Cols: map[string]string{
+			"user":      userUID,
+			"completed": completed,
+			"remaining": remaining,
+			"expires":   fmt.Sprintf("%d", expires),
+		},
+	})
+}
+
+// partial_delete wraps the delete + cross-host emit. userUID is needed
+// only for the emit's signer; the delete itself is by id only (the
+// random 32-char id is globally unique).
+func partial_delete(sdb *DB, partialID, userUID string) {
+	sdb.exec("delete from partial where id=?", partialID)
+	if userUID != "" {
+		replication_emit_sessions_row(userUID, &SessionsRow{
+			Table:  "partial",
+			Key:    map[string]string{"id": partialID},
+			Delete: true,
+		})
+	}
 }

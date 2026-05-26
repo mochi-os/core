@@ -38,6 +38,22 @@ func TestNackReasonFromBroadcastGap(t *testing.T) {
 	}
 }
 
+// TestNackReasonFromPendingFull confirms ErrBroadcastPendingFull
+// wraps through to nack_reason_pending_full on the wire AND that the
+// sender's nack_should_drop gate treats it as retry-not-drop. This
+// pair is the load-bearing contract for the buffer-full fix: ACKing
+// on overflow silently loses the event, so the receiver must signal
+// and the sender must hold the row for retry.
+func TestNackReasonFromPendingFull(t *testing.T) {
+	err := fmt.Errorf("pending buffer full for (peer=p, key=k): %w", ErrBroadcastPendingFull)
+	if got := nack_reason_from_error(err); got != nack_reason_pending_full {
+		t.Errorf("wrapped sentinel: got reason %q, want %q", got, nack_reason_pending_full)
+	}
+	if nack_should_drop(nack_reason_pending_full) {
+		t.Errorf("nack_should_drop(%q) returned true; want false (buffer-full is transient, sender must retry)", nack_reason_pending_full)
+	}
+}
+
 // TestBroadcastResyncThrottleBurstDedup is the load-bearing property
 // the original 60s throttle had: a burst of gap fires within ms must
 // collapse to one outbound resync request. Repeats the call 50 times

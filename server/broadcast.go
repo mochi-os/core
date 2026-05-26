@@ -25,6 +25,7 @@ import (
 const (
 	nack_reason_broadcast_gap  = "broadcast-gap"
 	nack_reason_decode_failed  = "decode-failed"
+	nack_reason_pending_full   = "pending-full"
 )
 
 // ErrBroadcastGap is the sentinel the gap detector wraps its returned
@@ -34,6 +35,17 @@ const (
 // define their own sentinel and extend nack_reason_from_error.
 var ErrBroadcastGap = errors.New("broadcast gap")
 
+// ErrBroadcastPendingFull signals the receiver's per-stream pending
+// buffer was full and a gapped event could not be stored. The sender
+// must NOT drop the row: this is a transient backpressure condition
+// that clears as resync drains the buffer. nack_reason_pending_full
+// is explicitly absent from nack_should_drop so the queue's standard
+// exponential-backoff retry path kicks in. Without this signal the
+// receiver would ACK silently on overflow and the event would be lost
+// (the sender deletes the queue row on ACK; the receiver would never
+// see it again unless a later resync round happened to walk that seq).
+var ErrBroadcastPendingFull = errors.New("broadcast pending buffer full")
+
 // nack_reason_from_error maps a route() error to the wire Reason
 // hint. Unknown errors return "" which preserves legacy retry
 // behaviour at the sender. Called from the stream-receive NACK path
@@ -41,6 +53,9 @@ var ErrBroadcastGap = errors.New("broadcast gap")
 func nack_reason_from_error(err error) string {
 	if errors.Is(err, ErrBroadcastGap) {
 		return nack_reason_broadcast_gap
+	}
+	if errors.Is(err, ErrBroadcastPendingFull) {
+		return nack_reason_pending_full
 	}
 	return ""
 }

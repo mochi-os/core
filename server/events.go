@@ -385,10 +385,21 @@ func (e *Event) route() error {
 		if bseq > last+1 {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
-			broadcast_pending_insert(bdb, e.peer, bkey, bseq,
+			stored := broadcast_pending_insert(bdb, e.peer, bkey, bseq,
 				e.from, e.to, e.service, e.event, e.msg_id, e.sender_app,
 				strings.Join(e.sender_services, ","),
 				cbor_encode(e.content))
+			if !stored {
+				// Buffer is full. NACK with pending-full reason
+				// so the sender keeps the row queued and retries
+				// with exponential backoff; the buffer drains as
+				// resync advances _received and frees slots. ACKing
+				// here would silently lose the event - the sender
+				// deletes the queue row on ACK and the receiver
+				// would never see this seq again unless a later
+				// resync round happened to cover it.
+				return fmt.Errorf("pending buffer full for (peer=%s, key=%s): %w", e.peer, bkey, ErrBroadcastPendingFull)
+			}
 			// ACK to the sender (return nil) - we have the event
 			// stored; the sender's queue can delete the row. The
 			// gap fills as resync replies arrive and advance

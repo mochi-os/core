@@ -170,6 +170,20 @@ func (m *Message) send_peer(peer string) {
 	queue_wake()
 }
 
+// send_peer_priority is send_peer with an explicit queue priority
+// override. Used by broadcast_resync to ship replay messages in the
+// priority_replay lane so they overtake live broadcast traffic in
+// wasabi's outbound queue. See task #96.
+func (m *Message) send_peer_priority(peer string, priority int) {
+	m.target = peer
+	if m.ID == "" {
+		m.ID = uid()
+	}
+	content := cbor_encode(m.content)
+	queue_add_direct_priority(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires, priority)
+	queue_wake()
+}
+
 // Do the work of sending (queue-first, read challenge before sending, wait for ACK)
 //
 // Multi-host fan-out: when the caller didn't pin a specific peer (the

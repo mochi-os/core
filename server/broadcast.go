@@ -504,7 +504,15 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		m.FromApp = a.id
 		m.Services = services
 		m.content = content
-		m.send_peer(e.peer)
+		// Replay messages ride the priority_replay tier so they
+		// overtake the live-broadcast backlog in the requester's
+		// (target, from_entity) outbound queue bucket. Without
+		// this, resync replies serialise behind any pending live
+		// traffic at the per-bucket cap=1 and the subscriber's
+		// catch-up rate degrades to the bucket's drain rate
+		// (~0.7 events/sec observed live with a 12k-deep bucket).
+		// See task #96.
+		m.send_peer_priority(e.peer, priority_replay)
 	}
 	return nil
 }

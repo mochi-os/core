@@ -12,6 +12,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 )
 
@@ -200,5 +201,57 @@ func TestBroadcastReceiverStateHostLocal(t *testing.T) {
 	broadcast_log_append(db, "key1", "peer-A", "object/update", []byte(`{"x":1}`))
 	if emits == 0 {
 		t.Error("broadcast_log_append fired 0 replication emits; want >0 (sender-side state MUST pair-replicate)")
+	}
+}
+
+// TestPriorityReplayAbovesInteractive locks in the relative ordering
+// of the priority tiers (task #96). queue_select orders desc by
+// priority, so for resync replies to overtake the live-broadcast
+// backlog they MUST be strictly greater than priority_interactive.
+// A future refactor that re-numbers the tiers without preserving
+// the ordering would silently regress catch-up rate.
+func TestPriorityReplayAbovesInteractive(t *testing.T) {
+	if priority_replay <= priority_interactive {
+		t.Errorf("priority_replay (%d) must be > priority_interactive (%d)", priority_replay, priority_interactive)
+	}
+	if priority_control <= priority_replay {
+		t.Errorf("priority_control (%d) must be > priority_replay (%d)", priority_control, priority_replay)
+	}
+	if priority_interactive <= priority_bulk {
+		t.Errorf("priority_interactive (%d) must be > priority_bulk (%d)", priority_interactive, priority_bulk)
+	}
+}
+
+// TestQueueAddDirectPriorityOverride pins the wire-level invariant:
+// queue_add_direct_priority writes its argument into the queue.priority
+// column, NOT the (service, event)-derived default. Without this the
+// resync-reply path would silently fall back to priority_interactive
+// and the catch-up rate fix would be a no-op.
+func TestQueueAddDirectPriorityOverride(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_queue_prio")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+	orig := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig }()
+
+	// Initialise queue.db schema.
+	q := db_open("db/queue.db")
+	q.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+
+	// (service="feeds", event="post/create") would default to
+	// priority_interactive (20). Override to priority_replay (30)
+	// and read back from the priority column.
+	queue_add_direct_priority("test-id", "peer-A", "from-entity", "to-entity", "feeds", "post/create", "", nil, nil, nil, "", 0, priority_replay)
+
+	row, err := q.row("select priority from queue where id = ?", "test-id")
+	if err != nil || row == nil {
+		t.Fatalf("queue row missing: %v", err)
+	}
+	got, _ := row["priority"].(int64)
+	if got != int64(priority_replay) {
+		t.Errorf("priority override: got %d, want %d (priority_replay)", got, priority_replay)
 	}
 }

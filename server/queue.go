@@ -33,7 +33,8 @@ const queue_per_peer_file_concurrency = 1
 // so a tier can be inserted between two existing ones (or below bulk)
 // without renumbering, since the values are purely ordinal.
 const (
-	priority_control     = 30 // replication coordination: link/*, membership, keys/transfer
+	priority_control     = 40 // replication coordination: link/*, membership, keys/transfer
+	priority_replay      = 30 // broadcast resync replies: jump live broadcast queue
 	priority_interactive = 20 // normal app and entity messages (the default)
 	priority_bulk        = 10 // replication data: sql/op, system/set, system/row
 )
@@ -122,14 +123,25 @@ func queue_next_retry(attempts int) int64 {
 	return now() + delay + jitter
 }
 
-// Add a direct message to the queue
+// Add a direct message to the queue. Caller can override the default
+// (service+event)-derived priority by calling queue_add_direct_priority
+// instead — used by broadcast_resync to ship replies in the priority_replay
+// lane so they overtake the live-broadcast backlog (task #96).
 func queue_add_direct(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64) {
+	queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app, services, content, data, file, expires, queue_priority(service, event))
+}
+
+// queue_add_direct_priority is queue_add_direct with an explicit priority
+// override. Callers that know the message deserves a different tier
+// (currently only broadcast_resync, which marks replies priority_replay)
+// pass it directly; the (service, event) default is bypassed.
+func queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64, priority int) {
 	db := db_open("db/queue.db")
 	from_services := strings.Join(services, ",")
 	db.exec(`insert or replace into queue
 		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
 		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
-		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), queue_priority(service, event))
+		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), priority)
 }
 
 // Add a broadcast message to the queue

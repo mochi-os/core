@@ -817,10 +817,11 @@ func broadcast_acknowledge_flush(tag string) {
 // broadcast_manager runs the periodic pending GC for unfillable gaps.
 // Hourly cadence matches replication_manager's GC interval: the TTL
 // is days, so a tighter loop just burns CPU on the per-app DB walk
-// without operational benefit. Wired in main.go alongside the other
-// subsystem managers. See broadcast_pending_gc.
+// without operational benefit. Always force=false here - the
+// configured TTL gate is the whole point of the background pass;
+// force-skip is an operator-only path via the admin endpoint.
 func broadcast_manager() {
 	for range time.Tick(time.Duration(broadcast_pending_gc_period_seconds) * time.Second) {
-		broadcast_pending_gc()
+		broadcast_pending_gc(false)
 	}
 }

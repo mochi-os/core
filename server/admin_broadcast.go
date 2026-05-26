@@ -130,9 +130,17 @@ func broadcast_lag_scan() []BroadcastLagRow {
 // an operator who's just shipped a fix can immediately unstick the
 // existing pile of stalled streams instead of waiting for the hourly
 // scheduled pass.
+//
+// ?force=true bypasses the TTL gate. Default false means the endpoint
+// behaves like the background pass: only entries older than the
+// configured TTL get skipped. Set force=true when an operator KNOWS
+// the buffered gap is unfillable (the gap-fill seqs are pruned from
+// the sender's log) and waiting for natural TTL expiry is just a
+// formality.
 func admin_broadcast_pending_gc(c *gin.Context) {
-	skipped := broadcast_pending_gc()
-	c.JSON(http.StatusOK, gin.H{"skipped": skipped})
+	force := c.Query("force") == "true"
+	skipped := broadcast_pending_gc(force)
+	c.JSON(http.StatusOK, gin.H{"skipped": skipped, "force": force})
 }
 
 // broadcast_lag_scan_db reads one app DB's received table and joins

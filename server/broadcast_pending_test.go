@@ -338,6 +338,55 @@ func TestBroadcastPendingStalledWalkFindsMultipleApps(t *testing.T) {
 	}
 }
 
+// TestBroadcastPendingStalledDBStalePendingHidden is the regression
+// test for the bug found during the first force-skip on wasabi: stale
+// pending entries below received.last must NOT hide a genuinely stuck
+// stream from the classifier. Pre-fix, min(sequence)=11 with
+// received.last=866 made the test min_seq <= last+1 trivially true
+// (11 <= 867) and the stream was reported as "drains naturally" -
+// missing the real gap at sequence 1310.
+func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
+	_, cleanup := setup_broadcast_pending_gc_test(t)
+	defer cleanup()
+	// Stream: received.last=866, pending has 1 stale orphan at seq=11
+	// (left over from an earlier buggy code path) PLUS a genuine
+	// gap with relevant min=1310. The fixed classifier must pick
+	// 1310, not 11, when computing min_seq.
+	rel := filepath.Join("users", "u1", "appA", "app.db")
+	abs := filepath.Join(data_dir, rel)
+	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db := db_open(rel)
+	if db == nil {
+		t.Fatal("db_open")
+	}
+	broadcast_pending_table_create(db)
+	broadcast_received_table_create(db)
+	db.exec("insert into received (sender, key, last) values (?, ?, ?)", "peer1", "key1", int64(866))
+	// One stale orphan well below received.last.
+	db.exec(`insert into pending (peer, key, sequence, source, target, service, event, content, received)
+		values (?, ?, ?, '', '', '', '', ?, ?)`,
+		"peer1", "key1", int64(11), []byte{1}, now()-100)
+	// 5 genuinely stuck rows above received.last with a gap below.
+	for i := int64(0); i < 5; i++ {
+		db.exec(`insert into pending (peer, key, sequence, source, target, service, event, content, received)
+			values (?, ?, ?, '', '', '', '', ?, ?)`,
+			"peer1", "key1", 1310+i, []byte{1}, now()-100)
+	}
+	got := broadcast_pending_stalled_db("u1", "appA", rel)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stalled stream (stale orphan must not hide it), got %d", len(got))
+	}
+	s := got[0]
+	if s.MinPending != 1310 {
+		t.Errorf("MinPending: got %d, want 1310 (the relevant min, not the stale orphan at 11)", s.MinPending)
+	}
+	if s.Last != 866 {
+		t.Errorf("Last: got %d, want 866", s.Last)
+	}
+}
+
 // TestBroadcastAdvanceSkipsAndDrains confirms the actual unstick:
 // after broadcast_advance_local jumps received.last past the gap, the
 // chain-drain picks up the now-contiguous tail. This is the core of

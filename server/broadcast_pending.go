@@ -257,10 +257,16 @@ func broadcast_pending_stalled() []BroadcastStalledStream {
 }
 
 // broadcast_pending_stalled_db classifies one app DB's streams. A
-// stream qualifies as stalled when its lowest buffered sequence is
-// greater than received.last+1 - the next applyable sequence is
-// missing entirely (neither buffered nor yet arrived) and the buffer
-// can't drain until something fills it.
+// stream qualifies as stalled when its lowest RELEVANT buffered
+// sequence is greater than received.last+1 - the next applyable
+// sequence is missing entirely (neither buffered nor yet arrived) and
+// the buffer can't drain until something fills it.
+//
+// The "relevant" filter (sequence > received.last) excludes orphan
+// stale entries from old-buggy-code-era inserts. Without it, an
+// orphan at sequence=11 with received.last=866 hides a genuinely
+// stuck stream with min(relevant)=1310; the classifier would see
+// min(sequence)=11 <= 867 and falsely report "would drain naturally."
 func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledStream {
 	var out []BroadcastStalledStream
 	db := db_open(db_path)
@@ -272,8 +278,33 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 		return out
 	}
 	has_received, _ := db.exists("select 1 from sqlite_master where type='table' and name='received'")
-	rows, err := db.rows(
-		"select peer, key, count(*) as count, min(sequence) as min_seq, min(received) as oldest from pending group by peer, key")
+	// LEFT JOIN against received (coalesced to 0 if absent or no row
+	// for this peer/key) lets us filter pending to entries above the
+	// cursor in a single query. has_received determines whether the
+	// JOIN target exists at all.
+	var rows []map[string]any
+	var err error
+	if has_received {
+		rows, err = db.rows(`select p.peer, p.key,
+			count(*) as count,
+			min(p.sequence) as min_seq,
+			min(p.received) as oldest,
+			coalesce(r.last, 0) as last
+			from pending p
+			left join received r on r.sender = p.peer and r.key = p.key
+			where p.sequence > coalesce(r.last, 0)
+			group by p.peer, p.key, coalesce(r.last, 0)`)
+	} else {
+		// No received table - treat every pending entry as above-cursor
+		// (the receiver has never advanced, so any in-buffer seq is
+		// relevant). Same shape so the loop below works uniformly.
+		rows, err = db.rows(`select peer, key,
+			count(*) as count,
+			min(sequence) as min_seq,
+			min(received) as oldest,
+			0 as last
+			from pending group by peer, key`)
+	}
 	if err != nil {
 		return out
 	}
@@ -283,13 +314,7 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 		count, _ := r["count"].(int64)
 		min_seq, _ := r["min_seq"].(int64)
 		oldest, _ := r["oldest"].(int64)
-		var last int64
-		if has_received {
-			received_row, _ := db.row("select last from received where sender=? and key=?", peer, key)
-			if received_row != nil {
-				last, _ = received_row["last"].(int64)
-			}
-		}
+		last, _ := r["last"].(int64)
 		// Drains naturally on the next arrival of received.last+1.
 		if min_seq <= last+1 {
 			continue
@@ -317,7 +342,12 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 // sequence or empties the buffer. Returns the number of gaps skipped
 // (not sequences lost). Safe to call on demand (admin endpoint) as
 // well as from broadcast_manager.
-func broadcast_pending_gc() int {
+//
+// force=true bypasses the TTL gate entirely - every classified-as-
+// stalled stream gets its gap skipped right now. Operator opt-in only:
+// the admin endpoint accepts ?force=true; the background manager
+// always calls with force=false so it respects the configured window.
+func broadcast_pending_gc(force bool) int {
 	ttl_days := int64(broadcast_pending_gc_default_ttl_days)
 	if s := setting_get("broadcast.pending.unfillable_ttl_days", ""); s != "" {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
@@ -331,7 +361,7 @@ func broadcast_pending_gc() int {
 	}
 	skipped := 0
 	for _, s := range stalled {
-		if s.Oldest >= cutoff {
+		if !force && s.Oldest >= cutoff {
 			// Still within the operator window; defer.
 			continue
 		}
@@ -358,6 +388,15 @@ func broadcast_pending_gc() int {
 			continue
 		}
 		broadcast_advance_local(sysdb, s.Peer, s.Key, skip_to)
+		// Sweep any orphan pending rows below the new cursor. The
+		// chain-drain only deletes rows it actually dispatched; rows
+		// that were never re-dispatched (left over from older buggy
+		// code paths) survive and distort the next GC pass's classifier
+		// (the bug that caused the wasabi-self feeds stream to escape
+		// detection on the first force-skip attempt).
+		new_last := broadcast_received_get(sysdb, s.Peer, s.Key)
+		sysdb.exec("delete from pending where peer=? and key=? and sequence<=?",
+			s.Peer, s.Key, new_last)
 		info("Broadcast pending GC: skipped gap user=%q app=%q peer=%q key=%q from_seq=%d to_seq=%d gap=%d age=%ds",
 			s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size, now()-s.Oldest)
 		audit_broadcast_pending_purged(s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size)

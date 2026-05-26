@@ -141,3 +141,64 @@ func TestNackShouldDrop(t *testing.T) {
 		t.Error("unknown reason: want drop=false, got true")
 	}
 }
+
+// TestBroadcastReceiverStateHostLocal is the regression test for
+// task #91. The receiver-side helpers (broadcast_advance_local /
+// broadcast_pending_insert / broadcast_pending_delete) must NOT
+// pair-replicate their writes - each paired subscriber host applies
+// inbound broadcasts independently and tracks its own apply state.
+// Pre-fix, advance_local used exec_app_user and the partner host
+// silently dedup'd events its handler had never actually run.
+//
+// Test stubs the package-level replication_emit_to so we can count
+// every per-user-scope emit, exercises the three receiver-side
+// helpers, asserts zero emits. Then exercises a sender-side helper
+// (broadcast_log_append) and asserts at least one emit - the
+// negative-test for the negative test, so a future refactor that
+// silently disables ALL replication doesn't look like a pass.
+func TestBroadcastReceiverStateHostLocal(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	original := replication_emit_to
+	defer func() { replication_emit_to = original }()
+	var emits int
+	replication_emit_to = func(user string, op *ReplicationOp, peers []string) {
+		emits++
+	}
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app_system(u, a)
+	if db == nil {
+		t.Fatal("db_app_system returned nil")
+	}
+
+	// --- receiver-side: zero emits expected ---
+
+	emits = 0
+	broadcast_advance_local(db, "peer-A", "key1", 5)
+	if emits != 0 {
+		t.Errorf("broadcast_advance_local fired %d replication emit(s); want 0", emits)
+	}
+
+	emits = 0
+	broadcast_pending_insert(db, "peer-A", "key1", 7, "src", "dst", "svc", "ev", "msg", "app", "", []byte{1, 2})
+	if emits != 0 {
+		t.Errorf("broadcast_pending_insert fired %d replication emit(s); want 0", emits)
+	}
+
+	emits = 0
+	broadcast_pending_delete(db, "peer-A", "key1", 7)
+	if emits != 0 {
+		t.Errorf("broadcast_pending_delete fired %d replication emit(s); want 0", emits)
+	}
+
+	// --- sender-side: replication still fires ---
+
+	emits = 0
+	broadcast_log_append(db, "key1", "peer-A", "object/update", []byte(`{"x":1}`))
+	if emits == 0 {
+		t.Error("broadcast_log_append fired 0 replication emits; want >0 (sender-side state MUST pair-replicate)")
+	}
+}

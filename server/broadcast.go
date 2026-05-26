@@ -813,3 +813,14 @@ func broadcast_acknowledge_flush(tag string) {
 	}
 	m.send_peer(pending.peer)
 }
+
+// broadcast_manager runs the periodic pending GC for unfillable gaps.
+// Hourly cadence matches replication_manager's GC interval: the TTL
+// is days, so a tighter loop just burns CPU on the per-app DB walk
+// without operational benefit. Wired in main.go alongside the other
+// subsystem managers. See broadcast_pending_gc.
+func broadcast_manager() {
+	for range time.Tick(time.Duration(broadcast_pending_gc_period_seconds) * time.Second) {
+		broadcast_pending_gc()
+	}
+}

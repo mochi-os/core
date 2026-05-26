@@ -122,6 +122,13 @@ func audit_replication_pending_purged(peer, scope, user, database string, sequen
 		peer, scope, user, database, sequence, age))
 }
 
+// audit_broadcast_pending_purged logs a skipped-gap broadcast GC
+// event. See the Linux counterpart for the field set.
+func audit_broadcast_pending_purged(user, app, peer, key string, from_seq, to_seq, gap_size int64) {
+	audit_write("OPS", fmt.Sprintf("broadcast_pending_purged user=%s app=%s peer=%s key=%s from_sequence=%d to_sequence=%d gap=%d",
+		user, app, peer, key, from_seq, to_seq, gap_size))
+}
+
 // audit_key_generated logs key generation events
 func audit_key_generated(entity string, class string) {
 	audit_write("AUTH", fmt.Sprintf("key_generated entity=%s class=%s", entity, class))

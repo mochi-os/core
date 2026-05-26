@@ -124,6 +124,17 @@ func broadcast_lag_scan() []BroadcastLagRow {
 	return out
 }
 
+// admin_broadcast_pending_gc is POST /_/admin/broadcast/pending/gc.
+// Runs the unfillable-gap skip pass on demand and returns the count
+// of gaps skipped. Mirror of admin_replication_pending_gc - exposed so
+// an operator who's just shipped a fix can immediately unstick the
+// existing pile of stalled streams instead of waiting for the hourly
+// scheduled pass.
+func admin_broadcast_pending_gc(c *gin.Context) {
+	skipped := broadcast_pending_gc()
+	c.JSON(http.StatusOK, gin.H{"skipped": skipped})
+}
+
 // broadcast_lag_scan_db reads one app DB's received table and joins
 // against log when present. Per-row lag is omitted when the local
 // DB doesn't have the matching log entry (the host isn't the owner

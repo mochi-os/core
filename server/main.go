@@ -203,6 +203,7 @@ func main_serve(ready func()) int {
 	go queue_manager()
 	go ratelimit_manager()
 	go replication_manager()
+	go broadcast_manager()
 	go bootstrap_resume()
 	go bootstrap_retry_incomplete_manager()
 	go replication_link_resume_pending_activations()

@@ -5,9 +5,12 @@ package main
 
 import (
 	"math/rand"
+	rd "runtime/debug"
 	"strings"
 	"sync"
 	"time"
+
+	cbor "github.com/fxamacker/cbor/v2"
 )
 
 // queue_per_peer_concurrency caps the number of in-flight sends to a
@@ -288,6 +291,20 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
+	// Self-loop fast path. The wire envelope (CBOR encode + sign + pipe
+	// transit + verify + decode + ACK round-trip) costs ~1-5ms per row,
+	// and every byte of it is wasted ceremony when the receiver is this
+	// process. The queue table is a trusted store: every queue_add_*
+	// call site validates the row's from_entity against the writing
+	// user (messages.go api_message_send line 365 is the canonical
+	// check; internal callers use server-controlled values). So we don't
+	// need to re-prove identity to ourselves via the signature - the
+	// presence of the row in queue.db IS the proof. File sends still
+	// need the slow path to push bytes through the stream API.
+	if peer == p2p_id && q.File == "" {
+		return queue_send_self_loop_fast(q)
+	}
+
 	s := peer_stream(peer)
 	if s == nil {
 		return false
@@ -363,6 +380,71 @@ func queue_send_direct(q *QueueEntry) bool {
 
 	debug("Queue direct %q received unexpected response type=%q ack=%q", q.ID, h.msg_type(), h.AckID)
 	return false
+}
+
+// queue_send_self_loop_fast bypasses the wire envelope when delivering
+// to ourselves. Constructs the Event from the queue row directly and
+// runs e.route() synchronously. See the comment in queue_send_direct
+// for the trust model: the queue table is validated at write time, so
+// the on-wire signature is wasted work in-process.
+//
+// Panic isolation: the slow path implicitly gets it from stream_receive
+// running in its own goroutine. Here we use defer recover to preserve
+// the same "a handler panic doesn't kill the queue manager" property
+// without spending a goroutine per row. NOTE: removing the defer is a
+// process-stability regression - the queue_process per-row goroutine
+// has no recover() of its own.
+//
+// Returns true on successful apply (or NACK-drop-reason), false on
+// retryable error (queue_process then calls queue_fail with standard
+// backoff). Mirrors queue_send_direct's contract exactly.
+func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			warn("Queue self-loop fast path: handler panic for %q: %v\n%s",
+				q.ID, r, rd.Stack())
+			ok = false
+		}
+	}()
+
+	var content map[string]any
+	if len(q.Content) > 0 {
+		if err := cbor.Unmarshal(q.Content, &content); err != nil {
+			info("Queue self-loop fast path: content decode failed for %q: %v", q.ID, err)
+			return false
+		}
+	} else {
+		content = map[string]any{}
+	}
+
+	var services []string
+	if q.FromServices != "" {
+		services = strings.Split(q.FromServices, ",")
+	}
+
+	e := &Event{
+		id:              event_id(),
+		msg_id:          q.ID,
+		from:            q.FromEntity,
+		to:              q.ToEntity,
+		service:         q.Service,
+		event:           q.Event,
+		sender_app:      q.FromApp,
+		sender_services: services,
+		peer:            p2p_id,
+		content:         content,
+	}
+
+	err := e.route()
+	if err != nil {
+		reason := nack_reason_from_error(err)
+		if nack_should_drop(reason) {
+			queue_drop(q.ID, reason)
+			return true
+		}
+		return false
+	}
+	return true
 }
 
 // Send a queued broadcast message (no challenge for broadcasts)

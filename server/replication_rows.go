@@ -1,24 +1,13 @@
-// Mochi server: users.db row replication
+// Mochi server: per-DB row replication helpers
 // Copyright Alistair Cunningham 2026
 //
-// Closes audit gap #2 V2 (#78). The bulk-bootstrap snapshot copies
-// users.db's auth tables (credentials, recovery, tokens, totp) at
-// pair-join time, but any subsequent enrollment on one host doesn't
-// reach the others. This file adds row-level emit + apply so a new
-// passkey / token / TOTP setup / recovery code on host A lands on
-// host B within an op round-trip.
-//
-// Wire format: UsersRow with both string and []byte Key/Cols maps,
-// so credentials.id (BLOB PK) and credentials.public_key (BLOB) can
-// travel safely. Per-table dispatch on the receiver knows which
-// columns live in which map.
-//
-// Conflict resolution: simple last-applied-wins via INSERT OR REPLACE
-// on the natural PK. Acceptable for these tables because (a) the
-// PKs are externally-assigned (WebAuthn credential id, token hash,
-// per-user TOTP secret) so two hosts can't generate distinct rows
-// with the same PK, and (b) the user typically does enrollment on
-// one host at a time.
+// Apply + emit helpers for the system DBs whose rows must replicate
+// across paired hosts (users.db auth tables, sessions.db auth-flow
+// tables, schedule.db). Each table type has its own apply and emit
+// functions; they share the same shape (lookup by stable PK, CBOR-
+// encode the row, replication_emit_internal). Per-table sections
+// preserve the original file's header comment for table-specific
+// rationale.
 
 package main
 
@@ -28,6 +17,13 @@ import (
 
 	cbor "github.com/fxamacker/cbor/v2"
 )
+
+// ============================================================
+// users.db rows
+// ============================================================
+
+// (users.db rationale below was: audit gap #2 V2)
+
 
 // replication_users_users_mutable lists the columns of users.db.users
 // that may be updated via the per-user row-replication path (delivered
@@ -385,4 +381,268 @@ func boolint01(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// ============================================================
+// schedule.db rows
+// ============================================================
+
+// (schedule.db rationale: paired hosts must agree on what's scheduled)
+
+
+// ScheduleRow is the wire payload for one insert or delete against
+// db/schedule.db. Key carries the natural composite identifier; Cols
+// carries the mutable fields (omitted on delete). Wire shape mirrors
+// UsersRow / SessionsRow.
+type ScheduleRow struct {
+	Key    map[string]string `cbor:"key"`
+	Cols   map[string]string `cbor:"cols,omitempty"`
+	Delete bool              `cbor:"delete,omitempty"`
+}
+
+// replication_emit_schedule_insert fans out a schedule insert to every
+// host in the user's set (operator-paired members and per-user link
+// partners both). Called from schedule_create after the local INSERT
+// commits.
+func replication_emit_schedule_insert(user, app string, due int64, event, data string, interval, created int64) {
+	if user == "" || app == "" || event == "" {
+		return
+	}
+	replication_emit_schedule_row(user, &ScheduleRow{
+		Key: map[string]string{
+			"user":    user,
+			"app":     app,
+			"event":   event,
+			"created": fmt.Sprintf("%d", created),
+		},
+		Cols: map[string]string{
+			"due":      fmt.Sprintf("%d", due),
+			"data":     data,
+			"interval": fmt.Sprintf("%d", interval),
+		},
+	})
+}
+
+// replication_emit_schedule_delete fans out a schedule delete keyed
+// on the natural composite identifier. The caller looks up
+// (user, app, event, created) before performing the local DELETE.
+func replication_emit_schedule_delete(user, app, event string, created int64) {
+	if user == "" || app == "" || event == "" {
+		return
+	}
+	replication_emit_schedule_row(user, &ScheduleRow{
+		Key: map[string]string{
+			"user":    user,
+			"app":     app,
+			"event":   event,
+			"created": fmt.Sprintf("%d", created),
+		},
+		Delete: true,
+	})
+}
+
+// replication_emit_schedule_row is the underlying emit. Package-level
+// variable so tests can stub.
+var replication_emit_schedule_row = replication_emit_schedule_row_real
+
+func replication_emit_schedule_row_real(user string, r *ScheduleRow) {
+	if user == "" || r == nil {
+		return
+	}
+	payload := cbor_encode(r)
+	operation := "schedule-row.set"
+	if r.Delete {
+		operation = "schedule-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "schedule",
+		Table:     "schedule",
+		Operation: operation,
+		Payload:   payload,
+	})
+}
+
+// schedule_row_decode_and_apply decodes a ScheduleRow payload and
+// dispatches to the apply path. Called from replication_apply_op.
+func schedule_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r ScheduleRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication schedule-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_schedule_row_apply(user, &r)
+}
+
+// replication_schedule_row_apply lands a schedule insert or delete
+// against db/schedule.db. Inserts use exists-check + INSERT (same
+// pattern as the KeysSchedule bootstrap path) so a re-applied op or a
+// row already imported by bootstrap is silently skipped. Deletes are
+// unconditional on the natural key.
+func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult {
+	if !user_exists(userUID) {
+		return ApplyDeferred
+	}
+	user := r.Key["user"]
+	app := r.Key["app"]
+	event := r.Key["event"]
+	created_raw := r.Key["created"]
+	if user == "" || app == "" || event == "" || created_raw == "" {
+		return ApplyInvalid
+	}
+	var created int64
+	if _, err := fmt.Sscanf(created_raw, "%d", &created); err != nil {
+		return ApplyInvalid
+	}
+	sdb := schedule_db()
+	if r.Delete {
+		sdb.exec("delete from schedule where user=? and app=? and event=? and created=?",
+			user, app, event, created)
+		return ApplyApplied
+	}
+	exists, _ := sdb.exists(
+		"select 1 from schedule where user=? and app=? and event=? and created=?",
+		user, app, event, created)
+	if exists {
+		return ApplyApplied
+	}
+	var due, interval int64
+	_, _ = fmt.Sscanf(r.Cols["due"], "%d", &due)
+	_, _ = fmt.Sscanf(r.Cols["interval"], "%d", &interval)
+	sdb.exec(
+		"insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
+		user, app, due, event, r.Cols["data"], interval, created)
+	schedule_notify()
+	return ApplyApplied
+}
+
+// ============================================================
+// sessions.db rows
+// ============================================================
+
+// (sessions.db rationale: closes audit gap #3 for auth-flow tables)
+
+
+// SessionsRow is the wire payload for an insert / delete against one
+// of the replicated sessions.db tables. Same shape as UsersRow; the
+// receiver dispatches per-table by Table name.
+type SessionsRow struct {
+	Table  string            `cbor:"table"`
+	Key    map[string]string `cbor:"key,omitempty"`
+	Cols   map[string]string `cbor:"cols,omitempty"`
+	Delete bool              `cbor:"delete,omitempty"`
+}
+
+// replication_emit_sessions_row sends a sessions-row op to every peer
+// in the user's host set. user must be the uid of the row's owner.
+// For codes (where the username — not uid — is the relevant identity
+// before the user has actually logged in), look up the uid first;
+// pass empty user to no-op the emit if the user isn't local.
+func replication_emit_sessions_row(user string, r *SessionsRow) {
+	if user == "" || r.Table == "" {
+		return
+	}
+	payload := cbor_encode(r)
+	operation := "sessions-row.set"
+	if r.Delete {
+		operation = "sessions-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "sessions",
+		Table:     r.Table,
+		Operation: operation,
+		Payload:   payload,
+	})
+}
+
+func replication_sessions_row_apply(userUID string, r *SessionsRow) ApplyResult {
+	if !user_exists(userUID) {
+		return ApplyDeferred
+	}
+	sdb := db_open("db/sessions.db")
+	switch r.Table {
+	case "partial":
+		return replication_sessions_partial_apply(sdb, r)
+	case "codes":
+		return replication_sessions_codes_apply(sdb, r)
+	}
+	info("Replication sessions-row dropping: unsupported table %q", r.Table)
+	return ApplyInvalid
+}
+
+func replication_sessions_partial_apply(sdb *DB, r *SessionsRow) ApplyResult {
+	id := r.Key["id"]
+	if id == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		sdb.exec("delete from partial where id=?", id)
+		return ApplyApplied
+	}
+	var expires int64
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	sdb.exec(`insert or replace into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)`,
+		id, r.Cols["user"], r.Cols["completed"], r.Cols["remaining"], expires)
+	return ApplyApplied
+}
+
+func replication_sessions_codes_apply(sdb *DB, r *SessionsRow) ApplyResult {
+	code := r.Key["code"]
+	username := r.Key["username"]
+	if code == "" || username == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		sdb.exec("delete from codes where code=? and username=?", code, username)
+		return ApplyApplied
+	}
+	var expires int64
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	sdb.exec("replace into codes (code, username, expires) values (?, ?, ?)",
+		code, username, expires)
+	return ApplyApplied
+}
+
+func sessions_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r SessionsRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication sessions-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	return replication_sessions_row_apply(user, &r)
+}
+
+// partial_create wraps the insert into sessions.db.partial + the
+// cross-host emit. There are five call sites with the same shape;
+// wrapping keeps the emit consistent and the insert SQL in one place.
+func partial_create(sdb *DB, partialID, userUID, completed, remaining string, expires int64) {
+	sdb.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)",
+		partialID, userUID, completed, remaining, expires)
+	replication_emit_sessions_row(userUID, &SessionsRow{
+		Table: "partial",
+		Key:   map[string]string{"id": partialID},
+		Cols: map[string]string{
+			"user":      userUID,
+			"completed": completed,
+			"remaining": remaining,
+			"expires":   fmt.Sprintf("%d", expires),
+		},
+	})
+}
+
+// partial_delete wraps the delete + cross-host emit. userUID is needed
+// only for the emit's signer; the delete itself is by id only (the
+// random 32-char id is globally unique).
+func partial_delete(sdb *DB, partialID, userUID string) {
+	sdb.exec("delete from partial where id=?", partialID)
+	if userUID != "" {
+		replication_emit_sessions_row(userUID, &SessionsRow{
+			Table:  "partial",
+			Key:    map[string]string{"id": partialID},
+			Delete: true,
+		})
+	}
 }

@@ -45,6 +45,15 @@ const (
 // would defeat the point of replicating.
 const queue_bulk_floor = 10
 
+// queue_silent_defer is how long to push a row's next_retry forward
+// when the target peer is in the silent-failure cache. Longer than the
+// per-peer silence window (peer_silent_skip_window=60s) so silenced
+// rows don't recycle through queue_select every minute and dominate
+// picks (the bug we hit on wasabi after #100: offline-peer rows took
+// 30 of every 50 queue_select slots, starving reachable destinations).
+// Recovery is via queue_resurrect_peer when the peer reconnects.
+const queue_silent_defer = 3600 // 1 hour
+
 // queue_priority classifies an outbound message into a priority tier
 // from its service and event. Replication coordination jumps ahead of
 // everything so an approval is never stuck behind a sync; replication's
@@ -192,6 +201,31 @@ func nack_should_drop(reason string) bool {
 func queue_sending(id string) {
 	db := db_open("db/queue.db")
 	db.exec("update queue set status='sending' where id=?", id)
+}
+
+// queue_defer pushes a row's next_retry forward without incrementing
+// attempts. Use when a row was deliberately skipped (target peer is
+// in the silent-failure cache) - we want it to drop out of the ready
+// set for a while, but the row isn't actually "failing" so the
+// attempts counter / retry-backoff escalation shouldn't escalate.
+func queue_defer(id string, delay int64) {
+	db := db_open("db/queue.db")
+	db.exec("update queue set next_retry = ? where id = ?", now()+delay, id)
+}
+
+// queue_resurrect_peer brings every deferred row for a peer back into
+// the ready set. Called from peer_connect's success path so a reviving
+// peer's backlog drains immediately instead of waiting out the deferred
+// next_retry timer set by queue_process's silent-peer pre-filter. No-op
+// if there are no rows in the future for that peer.
+func queue_resurrect_peer(target string) {
+	if target == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	t := now()
+	db.exec("update queue set next_retry = ? where target = ? and status = 'pending' and next_retry > ?", t, target, t)
+	queue_wake()
 }
 
 // Mark a message as failed and schedule retry or drop
@@ -390,13 +424,17 @@ func queue_select(db *DB) []QueueEntry {
 	return entries
 }
 
-// Process pending queue entries
-func queue_process() {
+// Process pending queue entries. Returns the count of rows acted on
+// (dispatched, silent-deferred, or pre-filtered to deletion) so the
+// caller's drain loop can decide whether to immediately re-enter or
+// sleep on the heartbeat tick.
+func queue_process() int {
 	db := db_open("db/queue.db")
 
 	entries := queue_select(db)
 
 	udb := db_open("db/users.db")
+	processed := 0
 
 	// Pre-filter: drop expired and from-deleted-entity rows serially.
 	// Cheap, no network. The remaining `valid` slice goes through the
@@ -406,20 +444,34 @@ func queue_process() {
 		if q.Expires > 0 && q.Expires < now() {
 			debug("Queue message %q expired", q.ID)
 			db.exec("delete from queue where id = ?", q.ID)
+			processed++
 			continue
 		}
 		if q.FromEntity != "" {
 			if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
 				info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
 				db.exec("delete from queue where id = ?", q.ID)
+				processed++
 				continue
 			}
+		}
+		// Silent-peer pre-filter: defer rows whose target is in the
+		// in-memory silent-failure cache (peer_is_silent) so they
+		// don't waste bucket slots on a peer we know is unreachable.
+		// Defer for queue_silent_defer (1h); resurrected eagerly on
+		// peer_connect via queue_resurrect_peer. Broadcast type has
+		// no specific target (pubsub fan-out), so the check only
+		// applies to direct + file/push.
+		if q.Type != "broadcast" && q.Target != "" && peer_is_silent(q.Target) {
+			queue_defer(q.ID, queue_silent_defer)
+			processed++
+			continue
 		}
 		valid = append(valid, q)
 	}
 
 	if len(valid) == 0 {
-		return
+		return processed
 	}
 
 	// Per-peer semaphore: at most N in-flight sends per target peer.
@@ -491,6 +543,7 @@ func queue_process() {
 		}(q, sem)
 	}
 	wg.Wait()
+	return processed + len(valid)
 }
 
 // Check for sent messages that haven't received ACK (timeout)
@@ -568,25 +621,35 @@ func queue_drain(timeout time.Duration) {
 
 // Queue manager goroutine. Single processing loop owns every outbound
 // send so that fan-out to a peer is serialised — multiple send_peer()
-// callers don't race each other onto the wire. Worst-case latency
-// between send_peer and the wire write is queue_tick_interval (1s) if
-// no wake fires; with wake, it's the wake-pickup roundtrip
-// (sub-millisecond).
+// callers don't race each other onto the wire.
+//
+// Drain shape: while queue_process is finding rows to act on, the loop
+// re-enters immediately with no wait, so a 1.7M-row backlog drains at
+// the SQL+send speed rather than the tick interval. The tick is just a
+// heartbeat safety net for the idle case: if no row enqueue or peer
+// reconnect fires queue_wake_ch, the heartbeat still fires every second
+// so the manager picks up any rows whose next_retry has come due since
+// the last pass. Worst-case latency between send_peer and the wire is
+// the wake-pickup roundtrip (sub-millisecond) for new rows; up to one
+// second for newly-due retries during a fully-idle period.
 func queue_manager() {
-	// Periodic process tick. Picked up to 50 entries per pass; long-
-	// running pair-backfill scenarios (hundreds of system-set ops at
-	// once) drain in a few ticks rather than hammering N concurrent
-	// goroutines.
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	go func() {
 		for {
+			n := queue_process()
+			queue_check_ack_timeout()
+			if n > 0 {
+				// Acted on at least one row. Loop straight back in
+				// to pick up the next batch — no tick-interval cap.
+				continue
+			}
+			// Nothing ready right now. Wait for the tick (heartbeat)
+			// or a wake event (new enqueue / peer reconnect / etc.).
 			select {
 			case <-tick.C:
 			case <-queue_wake_ch:
 			}
-			queue_process()
-			queue_check_ack_timeout()
 		}
 	}()
 

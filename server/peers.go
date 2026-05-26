@@ -283,6 +283,11 @@ func peer_connect(id string) bool {
 	if p.connected {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
+		// Any queue rows deferred by queue_process's silent-peer
+		// pre-filter (1h next_retry push when peer_is_silent) become
+		// ready immediately. Without this the backlog waits out the
+		// deferral despite the peer being back.
+		queue_resurrect_peer(id)
 	}
 
 	peers_lock.Lock()

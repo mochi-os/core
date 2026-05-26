@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 67
+	schema_version = 68
 )
 
 var (
@@ -262,7 +262,14 @@ func db_create() {
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
-	queue.exec("create index if not exists queue_status_retry on queue (status, next_retry)")
+	// (status, priority, next_retry) covers BOTH queue_select queries
+	// (main priority-desc + bulk-floor priority-range). Without the
+	// priority column, the main query's ORDER BY priority forces a
+	// 1.7M-row sort and the bulk query's priority filter scans the
+	// whole "ready" set looking for non-existent priority<=10 rows.
+	// On wasabi 2026-05-26 the missing index pushed queue_select to
+	// 1.3s per call, capping drain at ~50 rows/sec via queue_manager.
+	queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 
 	// Domains
@@ -711,6 +718,8 @@ func db_upgrade() {
 			db_upgrade_66()
 		case 67:
 			db_upgrade_67()
+		case 68:
+			db_upgrade_68()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -965,6 +974,25 @@ func db_upgrade_67() {
 	r.exec("drop table if exists cursor")
 	r.exec("create table cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
 	r.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+}
+
+// db_upgrade_68 fixes the queue_select bottleneck observed on wasabi
+// 2026-05-26 with a 1.77M-row queue. The existing (status, next_retry)
+// index satisfied the WHERE clause but not the `priority desc,
+// next_retry` ORDER BY, so each queue_select needed to sort 1.7M rows
+// before picking the top 50 - 1.3 seconds per call, capping drain at
+// 50/sec via queue_manager. The bulk-floor select had the same problem
+// for `priority <= 10` range filtering. A single (status, priority,
+// next_retry) index covers both queries; SQLite reverse-scans for the
+// DESC order in the main query. After this migration the old index is
+// redundant and gets dropped. ANALYZE refreshes stats so the planner
+// picks the new index immediately rather than waiting for the next
+// background analyze.
+func db_upgrade_68() {
+	q := db_open("db/queue.db")
+	q.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
+	q.exec("drop index if exists queue_status_retry")
+	q.exec("analyze queue")
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

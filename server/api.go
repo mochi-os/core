@@ -404,7 +404,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // service_call_as_server invokes a service function from the running Mochi
 // server itself rather than from a calling app. The handler sees app="" in
 // its v3+ context dict; the notifications app treats that as the reserved
-// "Mochi Server" sender id (see apps/notifications/notifications.star).
+// "Mochi server" sender id (see apps/notifications/notifications.star).
 //
 // target_user is the user whose app context the call runs in — for instance
 // the admin whose notifications.db should receive the row. Suspended users

@@ -309,7 +309,7 @@ func update_install_download(url, dest string) error {
 
 // update_notify_admins dispatches one Mochi notification per administrator
 // for the new version. The notifications service is invoked with app="" so
-// the receiving user sees the sender as "Mochi Server". Title and body are
+// the receiving user sees the sender as "Mochi server". Title and body are
 // resolved per-recipient against core labels so each admin sees the
 // notification in their own language.
 func update_notify_admins(latest string) {

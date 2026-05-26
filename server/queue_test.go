@@ -107,3 +107,93 @@ func TestQueueSelectBulkFloor(t *testing.T) {
 		t.Errorf("bulk messages selected = %d, want %d (the reserved floor) — bulk was starved by interactive traffic", bulk, queue_bulk_floor)
 	}
 }
+
+// TestQueueDeferPushesRetryWithoutBumpingAttempts confirms queue_defer
+// only moves next_retry forward - attempts stays put because a deferred
+// row is NOT a failed attempt. Without this, the silent-peer pre-filter
+// would escalate the backoff just by skipping the row.
+func TestQueueDeferPushesRetryWithoutBumpingAttempts(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := queue_test_table()
+	queue_test_insert(db, "deferme", priority_interactive)
+	// Force attempts to 3 so we can prove the defer didn't touch it.
+	db.exec("update queue set attempts = 3 where id = ?", "deferme")
+	queue_defer("deferme", 600)
+	row, _ := db.row("select attempts, next_retry from queue where id = ?", "deferme")
+	if row == nil {
+		t.Fatal("row vanished")
+	}
+	if a, _ := row["attempts"].(int64); a != 3 {
+		t.Errorf("attempts: got %d, want 3 (defer must not bump attempts)", a)
+	}
+	if nr, _ := row["next_retry"].(int64); nr < now()+599 {
+		t.Errorf("next_retry: got %d, want >= now+599 (defer must move retry forward)", nr-now())
+	}
+}
+
+// TestQueueResurrectPeerPullsDeferredRowsForward confirms the per-peer
+// resurrection covers ALL pending rows for that target whose next_retry
+// is in the future. Load-bearing for "silenced peer comes back" - the
+// deferred rows need to drain immediately, not wait out the deferral.
+func TestQueueResurrectPeerPullsDeferredRowsForward(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := queue_test_table()
+
+	// Two rows for the target peer (one deferred to the future, one
+	// already due) plus one for a different peer.
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values (?, 'direct', 'peer-silent', '', '', 't', 'm', ?, ?, ?)`,
+		"deferred-future", now()+3600, now()-100, priority_interactive)
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values (?, 'direct', 'peer-silent', '', '', 't', 'm', ?, ?, ?)`,
+		"already-due", now()-1, now()-100, priority_interactive)
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values (?, 'direct', 'peer-other', '', '', 't', 'm', ?, ?, ?)`,
+		"other-peer-future", now()+3600, now()-100, priority_interactive)
+
+	queue_resurrect_peer("peer-silent")
+
+	// Both peer-silent rows now have next_retry <= now.
+	for _, id := range []string{"deferred-future", "already-due"} {
+		row, _ := db.row("select next_retry from queue where id = ?", id)
+		if row == nil {
+			t.Fatalf("%s row vanished", id)
+		}
+		if nr, _ := row["next_retry"].(int64); nr > now() {
+			t.Errorf("%s next_retry=%d (>%d=now); resurrect must pull it back", id, nr, now())
+		}
+	}
+	// Other peer's row is untouched.
+	row, _ := db.row("select next_retry from queue where id = ?", "other-peer-future")
+	if nr, _ := row["next_retry"].(int64); nr <= now() {
+		t.Errorf("other-peer-future next_retry=%d; resurrect must not touch other peers", nr)
+	}
+}
+
+// TestQueueProcessReturnsCount confirms queue_process returns the
+// number of rows acted on, so queue_manager's drain-loop can decide
+// whether to re-enter immediately or sleep on the heartbeat. Without
+// this signal the manager would have to time-poll or guess.
+func TestQueueProcessReturnsCount(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+
+	// Empty queue: zero rows acted on.
+	if n := queue_process(); n != 0 {
+		t.Errorf("empty queue: got %d, want 0", n)
+	}
+
+	// Three expired rows: pre-filter drops them, count returns 3.
+	db := db_open("db/queue.db")
+	for i := 0; i < 3; i++ {
+		db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+			values (?, 'direct', 'p', '', '', 't', 'm', ?, ?, ?, ?)`,
+			fmt.Sprintf("expired-%d", i), now()-10, now()-1, now()-100, priority_interactive)
+	}
+	if n := queue_process(); n != 3 {
+		t.Errorf("3 expired rows: got %d, want 3", n)
+	}
+}

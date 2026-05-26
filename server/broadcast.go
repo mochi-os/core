@@ -186,9 +186,17 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // dispatching a buffered row, so the drain's own advance doesn't
 // re-enter the drain loop. Keep this in sync with the SQL in the
 // public advance above.
+//
+// Uses plain db.exec (NOT exec_app_user) - received is receiver-side
+// apply state and each paired host must track its own. If we pair-
+// replicated received, the gap detector on the partner host would
+// see incoming seqs as <= last and dedup them silently, never firing
+// the handler that updates row data. See task #91 for the bug this
+// closes (projects ticket move on mochi1 didn't propagate to mochi2
+// even though both ended up with the same received.last).
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
-	db.exec_app_user("insert into received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last)", sender, key, sequence)
+	db.exec("insert into received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last)", sender, key, sequence)
 }
 
 // broadcast_log_append writes one log row in the same transaction as

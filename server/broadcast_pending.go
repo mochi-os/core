@@ -68,7 +68,13 @@ func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, 
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_max)
 		return false
 	}
-	db.exec_app_user(`insert or ignore into pending
+	// Plain db.exec (NOT exec_app_user) - pending is receiver-side
+	// apply-buffer state and each paired host must track its own.
+	// Pair-replicating the buffer would cross-pollute drain
+	// expectations between hosts that have applied different subsets
+	// of their inbound streams. See task #91 for the related bug on
+	// the received table.
+	db.exec(`insert or ignore into pending
 		(peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, received)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, now())
@@ -110,8 +116,10 @@ func broadcast_pending_next(db *DB, peer, key string, sequence int64) *broadcast
 
 // broadcast_pending_delete removes one drained row. Caller deletes
 // only after the handler ran successfully and received was advanced.
+// Plain db.exec - see broadcast_pending_insert above for why
+// receiver-side buffer state stays host-local.
 func broadcast_pending_delete(db *DB, peer, key string, sequence int64) {
-	db.exec_app_user("delete from pending where peer=? and key=? and sequence=?", peer, key, sequence)
+	db.exec("delete from pending where peer=? and key=? and sequence=?", peer, key, sequence)
 }
 
 // broadcast_pending_dispatch is the package-level callback the drain

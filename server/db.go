@@ -1621,9 +1621,15 @@ func (db *DB) exec_replicated(query string, values ...any) {
 // sql/op so the same statement re-executes on every paired host.
 // Used by Go-side internals that need to mutate per-user app DBs and
 // have those changes converge across hosts — currently the broadcast
-// log helpers (_log / _sequence / _received / _acknowledged), which
-// broadcast.md says MUST be replicated so any host in the pair can
-// serve a resync for any peer's stream.
+// SENDER-side helpers (sequence / log / acknowledged), so a paired
+// host can take over emission and serve resync requests with a
+// consistent log.
+//
+// NOTE: broadcast RECEIVER-side state (received, pending) deliberately
+// does NOT use this helper. Each paired host applies inbound
+// broadcasts independently; pair-replicating received caused the
+// gap detector on the partner to dedup events it never actually
+// applied (task #91). receiver-side writes go through plain db.exec.
 //
 // Schema DDL stays on plain exec — receivers create their own tables
 // on first open via the `create table if not exists` helpers.

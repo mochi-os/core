@@ -46,6 +46,38 @@ type PeerReconnect struct {
 	Attempts  int
 }
 
+// PeerReachability is the in-memory fast-fail signal for outbound
+// sends. queue_process spawns one goroutine per ready queue row;
+// without this, each one independently pays the unbounded libp2p
+// connect timeout on `p2p_me.Connect()` when the target peer is
+// offline. Three consecutive failures within the skip window mean
+// "skip the libp2p attempt and return nil immediately" — the queue
+// row goes back to pending under the usual exponential backoff. A
+// single successful stream-open resets the counter, so a returning
+// peer is picked back up on the next attempt.
+//
+// Not persisted: a server restart starts every peer with zero
+// failures recorded, so every peer gets a fresh trial. The map is
+// bounded by the number of distinct peers we've ever queued for in
+// this process; GC-pressure is negligible (a few thousand entries
+// at most on a busy server).
+type PeerReachability struct {
+	ConsecutiveFailures int
+	LastAttempt         int64
+}
+
+// peer_silent_failure_threshold is the number of consecutive failed
+// stream-opens before peer_is_silent starts returning true. Three is
+// conservative — transient blips (one missed packet, a router
+// reboot, an in-progress reconnect) don't silence the peer.
+const peer_silent_failure_threshold = 3
+
+// peer_silent_skip_window is how long after a failed attempt the peer
+// stays silent before we'll trial another send. Short enough that a
+// reconnecting peer drains its backlog within a couple of minutes;
+// long enough that wasted libp2p timeouts are amortised.
+const peer_silent_skip_window = 60
+
 var (
 	peer_default_publisher = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 	peers_bootstrap        = []Peer{
@@ -54,14 +86,62 @@ var (
 			{Address: "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
 		}},
 	}
-	peers               map[string]Peer = map[string]Peer{}
-	peer_publish_chan                   = make(chan bool)
-	peers_lock                          = &sync.Mutex{}
-	peer_reconnects                     = map[string]PeerReconnect{}
-	peer_reconnect_lock                 = &sync.Mutex{}
-	peer_sems                           = map[string]chan struct{}{}
-	peer_sems_lock                      = &sync.Mutex{}
+	peers                  map[string]Peer = map[string]Peer{}
+	peer_publish_chan                      = make(chan bool)
+	peers_lock                             = &sync.Mutex{}
+	peer_reconnects                        = map[string]PeerReconnect{}
+	peer_reconnect_lock                    = &sync.Mutex{}
+	peer_sems                              = map[string]chan struct{}{}
+	peer_sems_lock                         = &sync.Mutex{}
+	peer_reachability                      = map[string]PeerReachability{}
+	peer_reachability_lock                 = &sync.Mutex{}
 )
+
+// peer_is_silent returns true when the peer has been failing recently
+// and the caller should fast-fail without attempting a libp2p
+// connect. Bootstrap peers are always trusted infrastructure; never
+// silenced. Self never silenced (in-process pipe can't fail).
+func peer_is_silent(id string) bool {
+	if id == "" || id == p2p_id || peer_is_bootstrap(id) {
+		return false
+	}
+	peer_reachability_lock.Lock()
+	defer peer_reachability_lock.Unlock()
+	r, ok := peer_reachability[id]
+	if !ok || r.ConsecutiveFailures < peer_silent_failure_threshold {
+		return false
+	}
+	return now()-r.LastAttempt < peer_silent_skip_window
+}
+
+// peer_mark_send_success clears any silent state. Called when
+// peer_stream successfully opens an outbound stream (the libp2p
+// layer is alive even if the eventual ACK never arrives — the gap
+// we care about is "can we reach this peer at all").
+func peer_mark_send_success(id string) {
+	if id == "" || id == p2p_id {
+		return
+	}
+	peer_reachability_lock.Lock()
+	defer peer_reachability_lock.Unlock()
+	peer_reachability[id] = PeerReachability{ConsecutiveFailures: 0, LastAttempt: now()}
+}
+
+// peer_mark_send_failed records one stream-open failure. Called only
+// from the peer_connect=false branch in peer_stream; other peer_stream
+// failure paths (semaphore timeout, transient stream open error) don't
+// indicate the peer itself is unreachable.
+func peer_mark_send_failed(id string) {
+	if id == "" || id == p2p_id {
+		return
+	}
+	peer_reachability_lock.Lock()
+	defer peer_reachability_lock.Unlock()
+	r := peer_reachability[id]
+	r.ConsecutiveFailures++
+	r.LastAttempt = now()
+	peer_reachability[id] = r
+}
 
 func init() {
 	a := app("peers")
@@ -486,15 +566,27 @@ func peer_stream(id string) *Stream {
 		return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r2}, writer: &pipe_writer{PipeWriter: w1}}
 	}
 
+	// Fast-fail for recently-silent peers. Without this every
+	// queue_process tick re-attempts the libp2p connect for a peer
+	// known to be unreachable, blocking that bucket for the full
+	// connect timeout (tens of seconds). The skip lasts
+	// peer_silent_skip_window; after that we trial one attempt and
+	// either clear the silence (peer back) or re-arm it (still gone).
+	if peer_is_silent(id) {
+		return nil
+	}
+
 	p := peer_by_id(id)
 	if p == nil {
 		// In a future version, rate limit this
 		//debug("Peer %q unknown, sending pubsub request for it", id)
 		message("", "", "peers", "request").set("id", id).publish(false)
+		peer_mark_send_failed(id)
 		return nil
 	}
 
 	if !peer_connect(id) {
+		peer_mark_send_failed(id)
 		return nil
 	}
 
@@ -514,6 +606,7 @@ func peer_stream(id string) *Stream {
 	}
 
 	s.on_close = func() { <-sem }
+	peer_mark_send_success(id)
 	return s
 }
 

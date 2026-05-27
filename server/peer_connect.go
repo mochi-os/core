@@ -188,7 +188,28 @@ func peer_disconnected(id string) {
 		fn(id)
 	}
 
-	// Schedule reconnection if not already scheduled.
+	peer_schedule_reconnect(id)
+}
+
+// peer_schedule_reconnect adds id to peer_reconnects[] with an initial
+// retry delay if not already scheduled. Two callers:
+//
+//   - peer_disconnected (above): libp2p reports a peer we were
+//     connected to has gone away.
+//   - peer_mark_send_failed (peer_reachability.go) when crossing the
+//     silent-failure threshold: a peer we couldn't open a stream to
+//     enough times in a row is treated the same as one that
+//     disconnected, so peer_reconnect_manager probes it periodically.
+//
+// Without the second path, a peer we discovered via DHT but never
+// successfully connected to would stay silent forever — peer_is_silent
+// is durable (no time-based lapse), and only peer_reconnect_manager's
+// successful probe (which goes through peer_connect → peer_mark_reachable)
+// can clear silence. Self and empty id are no-ops.
+func peer_schedule_reconnect(id string) {
+	if id == "" || id == net_id {
+		return
+	}
 	peer_reconnect_lock.Lock()
 	if _, scheduled := peer_reconnects[id]; !scheduled {
 		delay := int64(10) + rand.Int64N(5) // 10-14 seconds initial delay with jitter

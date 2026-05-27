@@ -3,10 +3,40 @@
 // Without this, every queue_process goroutine and every /mochi/2/messages
 // sender_open call would independently pay the unbounded libp2p connect
 // timeout on `net_me.Connect()` when the target peer is offline. Three
-// consecutive failures within the skip window mean "skip the libp2p
-// attempt and return nil immediately" — the queue row stays pending
-// under the usual exponential backoff, Sender open returns
-// errSenderUnreachable, the pull_loop just polls until silence ages out.
+// consecutive stream-open failures mean "skip the libp2p attempt and
+// return nil immediately" — the queue row stays pending, Sender open
+// returns errSenderUnreachable.
+//
+// Silence is DURABLE: once the counter crosses the threshold, the peer
+// stays silent until peer_mark_reachable / peer_mark_send_success
+// clears it. There is no time-based "trial probe" window.
+//
+// Recovery is event-driven via peer_reconnect_manager:
+//   - peer_mark_send_failed schedules the peer for periodic reconnect
+//     probing the first time it crosses the threshold (via
+//     peer_schedule_reconnect — same path used by libp2p disconnect).
+//   - peer_reconnect_manager runs probes with exponential backoff
+//     (10s..300s).
+//   - On success, peer_connect's success path calls peer_mark_reachable
+//     (clears silence) and peer_reconnected (removes from
+//     peer_reconnects), and queue_resurrect_peer wakes any deferred
+//     queue.db rows for that peer.
+//
+// Why durable instead of a 60s window?
+//
+// The earlier design had peer_is_silent return false after 60s of no
+// attempts. Every 60s, the next batch of queue_process picks would
+// trigger fresh libp2p connect attempts to unreachable peers, each
+// blocking for the full ~10s libp2p timeout. queue_process's WaitGroup
+// then waited for those goroutines, dragging the whole tick out to
+// ~10s. Self-loop drain, /mochi/1-only peers, and first-time
+// sender_open for newly-back peers all starved because they were in
+// the same batch as the stalled offline-peer goroutines.
+//
+// The durable model centralises the probing in peer_reconnect_manager
+// (which is designed for it, with backoff and a concurrency cap) and
+// keeps queue_process's tick latency bounded by the actual fast
+// goroutines.
 //
 // Both /mochi/1 (peer_stream) and /mochi/2 (peer_protocol_open) feed
 // this cache; one reachability oracle covers both protocols.
@@ -43,12 +73,6 @@ import "sync"
 // an in-progress reconnect) don't silence the peer.
 const peer_silent_failure_threshold = 3
 
-// peer_silent_skip_window is how long after a failed attempt the peer
-// stays silent before we trial another send. Short enough that a
-// reconnecting peer drains its backlog within a couple of minutes;
-// long enough that wasted libp2p timeouts are amortised.
-const peer_silent_skip_window = 60
-
 type PeerReachability struct {
 	ConsecutiveFailures int
 	LastAttempt         int64
@@ -59,10 +83,14 @@ var (
 	peer_reachability_lock = &sync.Mutex{}
 )
 
-// peer_is_silent returns true when the peer has been failing recently
-// and the caller should fast-fail without attempting a libp2p connect.
-// Bootstrap peers are always trusted infrastructure; never silenced.
-// Self never silenced (in-process pipe can't fail).
+// peer_is_silent returns true when the peer has crossed the failure
+// threshold and the caller should fast-fail without attempting a
+// libp2p connect. Bootstrap peers are always trusted infrastructure;
+// never silenced. Self never silenced (in-process pipe can't fail).
+//
+// Silence is durable: it stays true until peer_mark_reachable or
+// peer_mark_send_success clears the counter. peer_reconnect_manager
+// drives the trial probes that eventually trigger that clearing.
 func peer_is_silent(id string) bool {
 	if id == "" || id == net_id || peer_is_bootstrap(id) {
 		return false
@@ -70,10 +98,7 @@ func peer_is_silent(id string) bool {
 	peer_reachability_lock.Lock()
 	defer peer_reachability_lock.Unlock()
 	r, ok := peer_reachability[id]
-	if !ok || r.ConsecutiveFailures < peer_silent_failure_threshold {
-		return false
-	}
-	return now()-r.LastAttempt < peer_silent_skip_window
+	return ok && r.ConsecutiveFailures >= peer_silent_failure_threshold
 }
 
 // peer_mark_send_success clears any silent state. Called when an
@@ -97,16 +122,26 @@ func peer_mark_send_success(id string) {
 // Transient stream-open errors after a successful connect don't count
 // (the peer IS reachable; the failure is application- or
 // protocol-level, handled separately).
+//
+// On the failure that first crosses the threshold, schedules the peer
+// for periodic reconnect probing via peer_reconnect_manager. Without
+// this, a peer we discovered via DHT but never successfully connected
+// to would stay silent forever (peer_reconnects[] is otherwise only
+// populated by libp2p disconnect events).
 func peer_mark_send_failed(id string) {
 	if id == "" || id == net_id {
 		return
 	}
 	peer_reachability_lock.Lock()
-	defer peer_reachability_lock.Unlock()
 	r := peer_reachability[id]
 	r.ConsecutiveFailures++
 	r.LastAttempt = now()
 	peer_reachability[id] = r
+	crossed := r.ConsecutiveFailures == peer_silent_failure_threshold
+	peer_reachability_lock.Unlock()
+	if crossed {
+		peer_schedule_reconnect(id)
+	}
 }
 
 // peer_mark_reachable resets the silent cache without recording a
@@ -114,13 +149,12 @@ func peer_mark_send_failed(id string) {
 // so that rows woken by queue_resurrect_peer can actually attempt
 // their sends rather than fast-failing on a stale silent flag.
 //
-// Without this, a peer that returned during the 60s silence window
-// stays fast-failed on every outbound until peer_silent_skip_window
-// lapses — even though queue_resurrect_peer has already pulled all
-// deferred rows forward to now(). Each of those resurrected rows
-// then sees peer_is_silent==true and returns errSenderUnreachable
-// without ever opening the stream, so the backlog stalls for up to
-// peer_silent_skip_window after the peer has demonstrably reconnected.
+// Without this, a peer that came back during the silence period would
+// stay fast-failed on every outbound until peer_mark_send_success
+// fired — and peer_mark_send_success only fires on actual stream open,
+// which queue_resurrect_peer's woken rows can't reach if peer_is_silent
+// blocks them. Calling peer_mark_reachable from peer_connect's
+// success path breaks the chicken-and-egg.
 func peer_mark_reachable(id string) {
 	if id == "" || id == net_id {
 		return

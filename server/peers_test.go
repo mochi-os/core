@@ -82,25 +82,69 @@ func TestPeerIsSilentSuccessResetsCounter(t *testing.T) {
 	}
 }
 
-// TestPeerIsSilentSkipWindowExpiry confirms the silence lapses once
-// the skip window passes - the next caller IS allowed to try again
-// even if the consecutive failures count is still above threshold.
-// This is the "trial attempt after silence" mechanism.
-//
-// We exercise this by writing a sufficiently-old LastAttempt directly
-// instead of waiting peer_silent_skip_window seconds in the test.
-func TestPeerIsSilentSkipWindowExpiry(t *testing.T) {
+// TestPeerIsSilentIsDurable: once the silent-failure threshold is
+// crossed, peer_is_silent stays true regardless of how long ago the
+// last attempt was. The earlier "60s skip window" semantics were
+// dropped because the trial probe it enabled was paid by whatever
+// queue_process goroutine happened to pick a silenced row right after
+// the window expired — each probe blocked for the full ~10s libp2p
+// connect timeout, dragging out queue_process's tick and starving
+// every other peer in the same batch. Trial probes are now driven by
+// peer_reconnect_manager (which has proper backoff + concurrency cap);
+// see peer_mark_send_failed → peer_schedule_reconnect.
+func TestPeerIsSilentIsDurable(t *testing.T) {
 	reset_peer_reachability(t)
 	id := "12D3KooWFakePeerForTest5"
 	peer_reachability_lock.Lock()
 	peer_reachability[id] = PeerReachability{
 		ConsecutiveFailures: peer_silent_failure_threshold + 5,
-		LastAttempt:         now() - peer_silent_skip_window - 1,
+		LastAttempt:         now() - 86400, // a day ago — old enough to expose any time-based lapse
 	}
 	peer_reachability_lock.Unlock()
-	if peer_is_silent(id) {
-		t.Error("peer with stale LastAttempt must not be silent (skip window has passed; trial attempt allowed)")
+	if !peer_is_silent(id) {
+		t.Error("peer with stale LastAttempt must STILL be silent (durable until peer_mark_reachable / peer_mark_send_success clears)")
 	}
+}
+
+// TestPeerCrossingThresholdSchedulesReconnect: the failure that first
+// crosses the silent-failure threshold must schedule the peer for
+// periodic reconnect probing via peer_reconnect_manager. Without this,
+// a peer we discovered via DHT but never libp2p-disconnected from
+// would stay silent forever (peer_reconnects[] is otherwise only
+// populated by libp2p disconnect events) and never recover.
+func TestPeerCrossingThresholdSchedulesReconnect(t *testing.T) {
+	reset_peer_reachability(t)
+	id := "12D3KooWFakePeerForReconnectSchedule"
+
+	// Drain any pre-existing schedule entry.
+	peer_reconnect_lock.Lock()
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
+
+	// Below threshold: no schedule.
+	for i := 0; i < peer_silent_failure_threshold-1; i++ {
+		peer_mark_send_failed(id)
+	}
+	peer_reconnect_lock.Lock()
+	_, scheduled_below := peer_reconnects[id]
+	peer_reconnect_lock.Unlock()
+	if scheduled_below {
+		t.Errorf("peer below silent threshold was scheduled for reconnect; want unscheduled")
+	}
+
+	// Crossing the threshold schedules it.
+	peer_mark_send_failed(id)
+	peer_reconnect_lock.Lock()
+	_, scheduled_after := peer_reconnects[id]
+	peer_reconnect_lock.Unlock()
+	if !scheduled_after {
+		t.Error("peer at silent threshold was not scheduled for reconnect; peer_reconnect_manager will never probe it and silence will be permanent")
+	}
+
+	// Cleanup so other tests aren't affected.
+	peer_reconnect_lock.Lock()
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
 }
 
 // TestPeerMarkReachableClearsSilence: a peer that has tripped the

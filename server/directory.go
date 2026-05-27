@@ -194,6 +194,140 @@ func directory_download_event(e *Event) {
 	}
 }
 
+// directory_location_max_age is how long a directory location row may
+// remain un-refreshed before a silenced peer's directory entries get
+// forgotten. Live peers re-publish on every libp2p connect and via
+// peers_publish far more often than this; only a peer that's been
+// dark to us for the full window gets considered.
+const directory_location_max_age = 14 * 86400 // 14 days
+
+// directory_cleanup_manager runs once per hour and forgets peers that
+// have been demonstrably unreachable for a long time. See
+// directory_forget_peer for the cleanup action and
+// directory_cleanup_dead_peers for the selection criteria.
+//
+// Decoupled from directory_manager (which handles downloads + a daily
+// row-level expiry) because this sweep operates at peer granularity:
+// when ONE peer is dead, every entity it hosted needs cleaning, and
+// the queue.db rows targeting it need clearing in the same step.
+func directory_cleanup_manager() {
+	// Stagger the first sweep so it doesn't pile on startup work.
+	time.Sleep(5 * time.Minute)
+	directory_cleanup_dead_peers()
+	for range time.Tick(time.Hour) {
+		directory_cleanup_dead_peers()
+	}
+}
+
+// directory_cleanup_dead_peers scans the locations table grouped by
+// peer and forgets peers that meet ALL of the following:
+//
+//   - Not net_id (self never silenced).
+//   - Not a bootstrap peer (trusted infrastructure; never forget).
+//   - Not a pair-set member (whole-server replication partner; its
+//     lifecycle is operator-controlled via replica join/leave).
+//   - Most recent `seen` for this peer < now - directory_location_max_age.
+//   - peer_is_silent(peer) == true: the in-memory silent-cache has
+//     confirmed via repeated failed stream opens that the peer is
+//     genuinely unreachable, not just absent from the directory due
+//     to a transient announcement gap.
+//
+// Both the time and silent criteria matter — `seen` alone would
+// prematurely forget a peer that's only briefly offline; silent-cache
+// alone would forget a peer that's down for an hour. Together they
+// catch only peers that have been gone long enough to be considered
+// dead, AND that we've recently tried to reach.
+func directory_cleanup_dead_peers() {
+	cutoff := now() - directory_location_max_age
+	ddb := db_open("db/directory.db")
+	rows, err := ddb.rows(
+		"select peer, max(seen) as latest from locations where peer != ? group by peer having latest < ?",
+		net_id, cutoff,
+	)
+	if err != nil {
+		warn("Directory cleanup: locations query: %v", err)
+		return
+	}
+	for _, row := range rows {
+		peer, _ := row["peer"].(string)
+		if peer == "" {
+			continue
+		}
+		if peer_is_bootstrap(peer) {
+			continue
+		}
+		if peer_is_pair(peer) {
+			continue
+		}
+		if !peer_is_silent(peer) {
+			// Stale `seen` but the silent-cache hasn't confirmed
+			// unreachable. Could be transient (we just restarted and
+			// the cache is cold; or the peer hasn't been pinged
+			// recently). Skip this round; the next hourly sweep will
+			// re-evaluate.
+			continue
+		}
+		directory_forget_peer(peer)
+	}
+}
+
+// directory_forget_peer deletes every trace of `peer` from this
+// server's per-host state: directory locations rows that name it as
+// a host, queue rows targeting it, peers.db addresses for it, and
+// the in-memory peer/reachability/reconnect caches.
+//
+// Purely local — directory.db, queue.db, and peers.db are per-host
+// state, not replicated across pair members, so no leader/coordination
+// is needed. The peer can come back later: a fresh libp2p connect
+// drives the directory re-exchange + peers_publish, and the location
+// rows + peers.db addresses re-populate with current data.
+//
+// Logs row counts at info so the operator can see what happened.
+func directory_forget_peer(peer string) {
+	if peer == "" || peer == net_id {
+		return
+	}
+	ddb := db_open("db/directory.db")
+	qdb := db_open("db/queue.db")
+	pdb := db_open("db/peers.db")
+
+	loc_n := count_rows(ddb, "select count(*) from locations where peer=?", peer)
+	queue_n := count_rows(qdb, "select count(*) from queue where target=?", peer)
+	addr_n := count_rows(pdb, "select count(*) from peers where id=?", peer)
+
+	ddb.exec("delete from locations where peer=?", peer)
+	qdb.exec("delete from queue where target=?", peer)
+	pdb.exec("delete from peers where id=?", peer)
+
+	// In-memory caches.
+	peer_mark_reachable(peer)
+	peer_reconnect_lock.Lock()
+	delete(peer_reconnects, peer)
+	peer_reconnect_lock.Unlock()
+	peers_lock.Lock()
+	delete(peers, peer)
+	peers_lock.Unlock()
+
+	info("Directory forgot dead peer %q: %d locations, %d queue rows, %d addresses",
+		peer, loc_n, queue_n, addr_n)
+}
+
+// count_rows is a small helper for directory_forget_peer's row-count
+// logging. Returns 0 on error rather than panicking — the cleanup
+// proceeds either way; the count is just diagnostic.
+func count_rows(db *DB, query string, args ...any) int64 {
+	row, err := db.row(query, args...)
+	if err != nil || row == nil {
+		return 0
+	}
+	for _, v := range row {
+		if n, ok := v.(int64); ok {
+			return n
+		}
+	}
+	return 0
+}
+
 // Manage the directory
 func directory_manager() {
 	time.Sleep(3 * time.Second)

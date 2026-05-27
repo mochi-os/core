@@ -197,6 +197,7 @@ func main_serve(ready func()) int {
 	go cache_manager()
 	go entities_manager()
 	go directory_manager()
+	go directory_cleanup_manager()
 	go peers_manager()
 	go peer_reconnect_manager()
 	go peers_publish()

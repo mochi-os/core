@@ -51,7 +51,7 @@ func read_test_db(t *testing.T, path string) int {
 	return n
 }
 
-func TestSnapshotInPlaceProducesSnapFiles(t *testing.T) {
+func TestSnapshotInPlaceProducesBackupFiles(t *testing.T) {
 	tmp := t.TempDir()
 	prev_data_dir := data_dir
 	data_dir = tmp
@@ -74,30 +74,30 @@ func TestSnapshotInPlaceProducesSnapFiles(t *testing.T) {
 		t.Errorf("unexpected errors: %v", out.Errors)
 	}
 
-	// Both .snap files should exist with the same row count.
-	for _, snap := range []string{
-		filepath.Join(tmp, "db", "users.db.snap"),
-		filepath.Join(tmp, "users", "alice", "feeds", "db", "feed.db.snap"),
+	// Both .backup files should exist with the same row count.
+	for _, backup := range []string{
+		filepath.Join(tmp, "db", "users.db.backup"),
+		filepath.Join(tmp, "users", "alice", "feeds", "db", "feed.db.backup"),
 	} {
-		if _, err := os.Stat(snap); err != nil {
-			t.Errorf("expected snapshot at %s: %v", snap, err)
+		if _, err := os.Stat(backup); err != nil {
+			t.Errorf("expected backup at %s: %v", backup, err)
 			continue
 		}
-		if got := read_test_db(t, snap); got != 3 {
-			t.Errorf("snapshot %s: got %d rows, want 3", snap, got)
+		if got := read_test_db(t, backup); got != 3 {
+			t.Errorf("backup %s: got %d rows, want 3", backup, got)
 		}
 	}
 
-	// No leftover .snap.tmp files.
+	// No leftover .backup.tmp files.
 	_ = filepath.WalkDir(tmp, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".snap.tmp") {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".backup.tmp") {
 			t.Errorf("leftover temp file: %s", p)
 		}
 		return nil
 	})
 }
 
-func TestSnapshotReapsStaleSnap(t *testing.T) {
+func TestSnapshotReapsStaleBackup(t *testing.T) {
 	tmp := t.TempDir()
 	prev_data_dir := data_dir
 	data_dir = tmp
@@ -110,8 +110,8 @@ func TestSnapshotReapsStaleSnap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Stale snap with no live sibling.
-	stale := filepath.Join(tmp, "db", "deleted_app.db.snap")
+	// Stale .backup with no live sibling.
+	stale := filepath.Join(tmp, "db", "deleted_app.db.backup")
 	if err := os.WriteFile(stale, []byte("stale"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,73 @@ func TestSnapshotReapsStaleSnap(t *testing.T) {
 		t.Errorf("Reaped: got %d, want 1", out.Reaped)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("stale snap should have been removed: %v", err)
+		t.Errorf("stale backup should have been removed: %v", err)
+	}
+}
+
+// TestSnapshotReapsStaleLegacySnap covers the compat path: a `.db.snap`
+// from before the 2026-05-27 rename whose live `.db` was deleted should
+// still be reaped.
+func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
+	tmp := t.TempDir()
+	prev_data_dir := data_dir
+	data_dir = tmp
+	defer func() { data_dir = prev_data_dir }()
+
+	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "db"), 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := filepath.Join(tmp, "db", "deleted_app.db.snap")
+	if err := os.WriteFile(stale, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
+
+	out := snapshot_in_place()
+
+	if out.Reaped != 1 {
+		t.Errorf("Reaped: got %d, want 1", out.Reaped)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale legacy snap should have been removed: %v", err)
+	}
+}
+
+// TestSnapshotRemovesLegacySnapAfterWrite covers the case where a live
+// `.db` has a `.db.snap` sibling from before the rename. After the new
+// snapshot writes `.db.backup`, the legacy sibling must be dropped so the
+// tar export does not ship two copies of the same DB.
+func TestSnapshotRemovesLegacySnapAfterWrite(t *testing.T) {
+	tmp := t.TempDir()
+	prev_data_dir := data_dir
+	data_dir = tmp
+	defer func() { data_dir = prev_data_dir }()
+
+	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
+	legacy := filepath.Join(tmp, "db", "users.db.snap")
+	if err := os.WriteFile(legacy, []byte("legacy"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := snapshot_in_place()
+
+	if out.Dbs != 1 {
+		t.Errorf("Dbs: got %d, want 1 (errors: %v)", out.Dbs, out.Errors)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "db", "users.db.backup")); err != nil {
+		t.Errorf("expected new .backup sibling: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy .snap sibling should have been removed: %v", err)
 	}
 }
 
@@ -149,7 +215,7 @@ func TestSnapshotSkipsRunAndCache(t *testing.T) {
 	if out.Dbs != 1 {
 		t.Errorf("expected only 1 DB to be snapshotted (excluding run/, cache/), got %d", out.Dbs)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "run", "should_be_ignored.db.snap")); err == nil {
+	if _, err := os.Stat(filepath.Join(tmp, "run", "should_be_ignored.db.backup")); err == nil {
 		t.Errorf("run/ DB should not have been snapshotted")
 	}
 }

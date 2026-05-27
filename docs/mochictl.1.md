@@ -37,10 +37,12 @@ Subcommands fall into three groups:
 (see **OPTIONS**).
 
 **Maintenance** — *snapshot*, *backup*, *restore*. Drive backup workflows.
-*snapshot* writes transactionally-consistent SQLite copies (`*.db.snap`)
+*snapshot* writes transactionally-consistent SQLite copies (`*.db.backup`)
 alongside each live database; *backup* streams a tar.gz of the entire data
-directory; *restore* renames `*.db.snap` to `*.db` after a directory has
-been rsync'd into place.
+directory; *restore* renames `*.db.backup` to `*.db` after a directory has
+been rsync'd into place. Files left over from before the 2026-05-27 rename
+under the previous `*.db.snap` suffix are still recognised by *restore*
+and by the snapshot reap pass.
 
 **Lifecycle** — *stop*, *restart*, *start*. *stop* exits the server with
 exit code 0 (supervisor will not restart). *restart* exits with code 75
@@ -104,13 +106,13 @@ Global flags can appear before or after the subcommand name; both
 
 **rsync-filter**
 :   Print the canonical rsync exclude rules for backing up *<data_dir>*.
-    Excludes live `*.db`, WAL/SHM siblings, in-flight `*.snap.tmp` files,
-    and the runtime state directory. Pipe into a temp file with
-    `mochictl rsync-filter > rules` and pass to rsync as
+    Excludes live `*.db`, WAL/SHM siblings, in-flight `*.backup.tmp` and
+    `*.snap.tmp` files, and the runtime state directory. Pipe into a temp
+    file with `mochictl rsync-filter > rules` and pass to rsync as
     `--filter='. rules'`.
 
 **snapshot**
-:   Write `*.db.snap` siblings of every live database in the data
+:   Write `*.db.backup` siblings of every live database in the data
     directory, using SQLite's online-backup API for transactional
     consistency. Silent on success — pass **-v** for bytes-written,
     database count, and elapsed time.
@@ -123,9 +125,10 @@ Global flags can appear before or after the subcommand name; both
     automatically; no separate **snapshot** call needed.
 
 **restore** *dir*
-:   Walk *dir* and rename every `*.db.snap` to its corresponding `*.db`,
-    overwriting any live database file. Refuses to run while the admin
-    socket is live (the server must be stopped first).
+:   Walk *dir* and rename every `*.db.backup` (and legacy `*.db.snap`)
+    to its corresponding `*.db`, overwriting any live database file.
+    Refuses to run while the admin socket is live (the server must be
+    stopped first).
 
 **stop**
 :   Graceful shutdown. Server exits 0; the supervisor decides whether to
@@ -177,9 +180,11 @@ Scripted JSON consumer:
 :   Unix domain socket used for all admin requests. Created by
     **mochi-server**(8) at startup, removed at shutdown.
 
-*<data_dir>/db/*.db.snap*, *<data_dir>/users/<id>/<app>/db/*.db.snap*
+*<data_dir>/db/*.db.backup*, *<data_dir>/users/<id>/<app>/db/*.db.backup*
 :   Snapshot files written by **mochictl snapshot** and consumed by
-    **mochictl restore**.
+    **mochictl restore**. Legacy `*.db.snap` files from before the
+    2026-05-27 rename are still recognised by *restore* until the next
+    snapshot run overwrites them.
 
 # DIAGNOSTICS
 

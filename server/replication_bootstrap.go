@@ -607,7 +607,7 @@ func bootstrap_safe_path(root, relative string) (string, error) {
 // any of these up: the userdbs and files scopes would race on the
 // same target file, leaving corruption.
 func file_is_sqlite_sidecar(name string) bool {
-	for _, suffix := range []string{".db", ".db-wal", ".db-shm", ".db-journal", ".db.snap"} {
+	for _, suffix := range []string{".db", ".db-wal", ".db-shm", ".db-journal", ".db.backup", ".db.snap"} {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}
@@ -2074,7 +2074,7 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 var replication_pair_backfill = replication_pair_backfill_impl
 
 func replication_pair_backfill_impl(peer string) {
-	if peer == "" || peer == p2p_id {
+	if peer == "" || peer == net_id {
 		return
 	}
 	replication_pair_backfill_users(peer)
@@ -2336,7 +2336,7 @@ func replication_pair_backfill_accounts(peer string) {
 var replication_emit_user_core_exec_to_peer_var = replication_emit_user_core_exec_to_peer_impl
 
 func replication_emit_user_core_exec_to_peer_impl(peer string, user *User, sql string, args []any) {
-	if peer == "" || peer == p2p_id || user == nil || user.UID == "" {
+	if peer == "" || peer == net_id || user == nil || user.UID == "" {
 		return
 	}
 	table := sql_target_table(sql)
@@ -2397,7 +2397,7 @@ func replication_pair_backfill_sessions(peer string) {
 var replication_emit_session_insert_to_peer_var = replication_emit_session_insert_to_peer_impl
 
 func replication_emit_session_insert_to_peer_impl(peer, user_uid, code, secret string, expires, created, accessed int64, address, agent string) {
-	if peer == "" || peer == p2p_id || user_uid == "" {
+	if peer == "" || peer == net_id || user_uid == "" {
 		return
 	}
 	payload := cbor_encode(&SessionInsert{
@@ -2428,7 +2428,7 @@ func replication_system_set_to_peer(peer, database, table, row, field, value str
 }
 
 func replication_system_set_to_peer_impl(peer, database, table, row, field, value string) {
-	if peer == "" || peer == p2p_id {
+	if peer == "" || peer == net_id {
 		return
 	}
 	m := message("", "", "replication", "system/set")
@@ -2447,7 +2447,7 @@ func replication_system_row_to_peer(peer, database, table string, key, cols map[
 }
 
 func replication_system_row_to_peer_impl(peer, database, table string, key, cols map[string]string, del bool) {
-	if peer == "" || peer == p2p_id {
+	if peer == "" || peer == net_id {
 		return
 	}
 	m := message("", "", "replication", "system/row")

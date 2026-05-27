@@ -7,10 +7,12 @@
 // mochi). On accept, SO_PEERCRED verifies the peer is the mochi user, root,
 // or in the mochi group; any other peer is dropped before reaching Gin.
 //
-// Snapshot writes a `.snap` sibling next to every live `*.db` in the data
+// Snapshot writes a `.backup` sibling next to every live `*.db` in the data
 // dir using SQLite's online backup API (sqlite3_backup_init), so page
 // offsets stay stable and rsync delta is tight. Static files are not
-// touched — rsync transfers them from their live paths directly.
+// touched — rsync transfers them from their live paths directly. The legacy
+// `.snap` suffix from before the 2026-05-27 rename is still recognised by
+// the reap/restore/tar paths so pre-existing on-disk files keep working.
 //
 // Audit middleware records one row per state-changing admin call (snapshot,
 // stop, restart, reload). Read-only routes (status, version, config,
@@ -336,7 +338,9 @@ type snapshot_summary struct {
 }
 
 // snapshot_walk_dbs returns all live *.db file paths under root, skipping the
-// run/ and cache/ top-level directories and any *.snap or *.snap.tmp files.
+// run/ and cache/ top-level directories. Backup siblings (*.db.backup, the
+// legacy *.db.snap, and their *.tmp partials) do not end in .db so the
+// `.db` suffix match excludes them automatically.
 func snapshot_walk_dbs(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -363,8 +367,9 @@ func snapshot_walk_dbs(root string) ([]string, error) {
 	return paths, err
 }
 
-// snapshot_walk_snaps returns all *.db.snap file paths under root.
-func snapshot_walk_snaps(root string) ([]string, error) {
+// snapshot_walk_backups returns all *.db.backup file paths under root, plus
+// any legacy *.db.snap files from before the 2026-05-27 suffix rename.
+func snapshot_walk_backups(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -380,12 +385,26 @@ func snapshot_walk_snaps(root string) ([]string, error) {
 			}
 			return nil
 		}
-		if strings.HasSuffix(d.Name(), ".db.snap") {
+		name := d.Name()
+		if strings.HasSuffix(name, ".db.backup") || strings.HasSuffix(name, ".db.snap") {
 			paths = append(paths, p)
 		}
 		return nil
 	})
 	return paths, err
+}
+
+// snapshot_trim_backup_suffix strips `.backup` or the legacy `.snap` suffix
+// from name and returns the derived live filename plus whether anything was
+// trimmed.
+func snapshot_trim_backup_suffix(name string) (string, bool) {
+	if v, ok := strings.CutSuffix(name, ".backup"); ok {
+		return v, true
+	}
+	if v, ok := strings.CutSuffix(name, ".snap"); ok {
+		return v, true
+	}
+	return name, false
 }
 
 // snapshot_copy_db lives in db_snapshot.go (cross-platform); the
@@ -415,9 +434,10 @@ func snapshot_release_lock(f *os.File) {
 	_ = os.Remove(filepath.Join(run_dir(), snapshot_lock_name))
 }
 
-// snapshot_in_place writes a `.snap` sibling next to every live DB in the
-// data dir, then reaps any stale `.snap` whose live `.db` no longer exists.
-// Acquires the snapshot lock for the duration of the call.
+// snapshot_in_place writes a `.backup` sibling next to every live DB in the
+// data dir, then reaps any stale `.backup` (or legacy `.snap`) whose live
+// `.db` no longer exists. Acquires the snapshot lock for the duration of
+// the call.
 func snapshot_in_place() snapshot_summary {
 	start := time.Now()
 	out := snapshot_summary{}
@@ -441,15 +461,15 @@ func snapshot_in_place() snapshot_summary {
 func snapshot_in_place_locked() snapshot_summary {
 	out := snapshot_summary{}
 
-	// Reap stale snaps first so we know the dir is tidy before writing new ones.
-	snaps, err := snapshot_walk_snaps(data_dir)
+	// Reap stale backups first so we know the dir is tidy before writing new ones.
+	backups, err := snapshot_walk_backups(data_dir)
 	if err != nil {
-		out.Errors = append(out.Errors, fmt.Sprintf("walk snaps: %v", err))
+		out.Errors = append(out.Errors, fmt.Sprintf("walk backups: %v", err))
 	}
-	for _, snap := range snaps {
-		live := strings.TrimSuffix(snap, ".snap")
+	for _, backup := range backups {
+		live, _ := snapshot_trim_backup_suffix(backup)
 		if _, err := os.Stat(live); os.IsNotExist(err) {
-			if err := os.Remove(snap); err == nil {
+			if err := os.Remove(backup); err == nil {
 				out.Reaped++
 			}
 		}
@@ -462,8 +482,8 @@ func snapshot_in_place_locked() snapshot_summary {
 	}
 
 	for _, src := range dbs {
-		tmp := src + ".snap.tmp"
-		final := src + ".snap"
+		tmp := src + ".backup.tmp"
+		final := src + ".backup"
 		bytes, err := snapshot_copy_db(src, tmp)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", src, err))
@@ -475,6 +495,9 @@ func snapshot_in_place_locked() snapshot_summary {
 			_ = os.Remove(tmp)
 			continue
 		}
+		// Drop a legacy `.snap` sibling from before the rename so the tar
+		// export does not ship two copies of the same DB.
+		_ = os.Remove(src + ".snap")
 		out.Dbs++
 		out.Bytes += bytes
 	}
@@ -494,7 +517,7 @@ func admin_snapshot(c *gin.Context) {
 }
 
 // admin_backup is the GET /_/admin/backup handler. Refreshes the in-place
-// `.snap` siblings, then streams a tar.gz of (snapshot DBs + live static
+// `.backup` siblings, then streams a tar.gz of (snapshot DBs + live static
 // files) to the response. Holds the snapshot lock throughout so the tar
 // sees a consistent set of files.
 func admin_backup(c *gin.Context) {
@@ -505,7 +528,7 @@ func admin_backup(c *gin.Context) {
 	}
 	defer snapshot_release_lock(lock)
 
-	// Refresh .snap files in the data dir. They persist after the call —
+	// Refresh .backup files in the data dir. They persist after the call —
 	// useful for subsequent rsync workflows.
 	summary := snapshot_in_place_locked()
 	if summary.Dbs == 0 && len(summary.Errors) > 0 {
@@ -518,8 +541,9 @@ func admin_backup(c *gin.Context) {
 	gz := gzip.NewWriter(c.Writer)
 	tw := tar.NewWriter(gz)
 
-	// Walk the data dir, including .snap files (rewritten to drop the
-	// .snap suffix in the tar) and static files. Skip live DB sidecars,
+	// Walk the data dir, including .backup files (rewritten to drop the
+	// suffix in the tar) and static files. Legacy .snap siblings from
+	// before the rename are handled the same way. Skip live DB sidecars,
 	// in-flight temps, and ephemeral state.
 	_ = filepath.WalkDir(data_dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -537,14 +561,14 @@ func admin_backup(c *gin.Context) {
 		}
 		name := d.Name()
 		switch {
-		case strings.HasSuffix(name, ".snap"):
-			// .db.snap -> .db inside the archive, so a restore lands the
-			// snapshot at the canonical path.
+		case strings.HasSuffix(name, ".backup") || strings.HasSuffix(name, ".snap"):
+			// .db.backup (or legacy .db.snap) -> .db inside the archive,
+			// so a restore lands the snapshot at the canonical path.
 			rel, err := filepath.Rel(data_dir, p)
 			if err != nil {
 				return nil
 			}
-			rel = strings.TrimSuffix(rel, ".snap")
+			rel, _ = snapshot_trim_backup_suffix(rel)
 			if err := backup_tar_file(tw, p, rel); err != nil {
 				warn("backup: tar %s: %v", rel, err)
 			}
@@ -552,8 +576,9 @@ func admin_backup(c *gin.Context) {
 			strings.HasSuffix(name, ".db-wal"),
 			strings.HasSuffix(name, ".db-shm"),
 			strings.HasSuffix(name, ".db-journal"),
+			strings.HasSuffix(name, ".backup.tmp"),
 			strings.HasSuffix(name, ".snap.tmp"):
-			// Live DB files and in-flight temps are excluded; .snap
+			// Live DB files and in-flight temps are excluded; .backup
 			// siblings cover the data.
 			return nil
 		default:

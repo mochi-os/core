@@ -107,9 +107,9 @@ a supervisor configured with **Restart=on-failure** brings it back.
 ## Backups
 
 The supported flow is **mochictl snapshot** (writes transactionally
-consistent SQLite copies as `*.db.snap`) followed by rsync of the data
+consistent SQLite copies as `*.db.backup`) followed by rsync of the data
 directory using the exclude rules from **mochictl rsync-filter**.
-Restore is the reverse plus **mochictl restore** to rename `*.db.snap`
+Restore is the reverse plus **mochictl restore** to rename `*.db.backup`
 back to `*.db`. See **mochictl**(1) and the
 [Backup and restore](https://docs.mochi-os.org/wikis/yuGtwdxVh/backup-restore)
 docs.

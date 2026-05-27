@@ -94,7 +94,7 @@ func init() {
 			run:  cmd_backup,
 		},
 		"snapshot": {
-			help: "Write *.db.snap siblings of every live DB in the data dir",
+			help: "Write *.db.backup siblings of every live DB in the data dir",
 			run: func(args []string) error {
 				return post_silent("/_/admin/snapshot")
 			},
@@ -104,7 +104,7 @@ func init() {
 			run:  cmd_rsync_filter,
 		},
 		"restore": {
-			help: "Walk a directory and rename *.db.snap -> strip .snap (server stopped)",
+			help: "Walk a directory and rename *.db.backup (or legacy *.db.snap) to *.db (server stopped)",
 			run:  cmd_restore,
 		},
 		"stop": {
@@ -372,13 +372,15 @@ func cmd_backup(args []string) error {
 
 // rsync_filter_rules is the canonical filter set for backing up the data dir
 // with rsync (or restic / borg / S3 sync). Live SQLite files, in-flight
-// snapshot temps, and the runtime state directory are excluded; *.db.snap
-// siblings produced by `mochictl snapshot` are kept.
+// snapshot temps, and the runtime state directory are excluded; *.db.backup
+// siblings (and legacy *.db.snap from before the 2026-05-27 rename) produced
+// by `mochictl snapshot` are kept.
 var rsync_filter_rules = []string{
 	"- *.db",
 	"- *.db-wal",
 	"- *.db-shm",
 	"- *.db-journal",
+	"- *.backup.tmp",
 	"- *.snap.tmp",
 	"- run/",
 }
@@ -392,10 +394,11 @@ func cmd_rsync_filter(args []string) error {
 	return nil
 }
 
-// cmd_restore walks the given directory tree and renames every *.db.snap
-// file to its sibling without the .snap suffix. Run after rsync brings a
-// backup to a destination, before starting the server there. The server
-// must be stopped during this operation.
+// cmd_restore walks the given directory tree and renames every *.db.backup
+// file (and any legacy *.db.snap from before the 2026-05-27 rename) to its
+// sibling with the suffix stripped. Run after rsync brings a backup to a
+// destination, before starting the server there. The server must be stopped
+// during this operation.
 //
 // Replication state (db/replication.db) is stripped after the rename
 // pass: the restored host comes back unpaired so it won't auto-reconnect
@@ -413,10 +416,19 @@ func cmd_restore(args []string) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".db.snap") {
+		if d.IsDir() {
 			return nil
 		}
-		live := strings.TrimSuffix(p, ".snap")
+		name := d.Name()
+		var live string
+		switch {
+		case strings.HasSuffix(name, ".db.backup"):
+			live = strings.TrimSuffix(p, ".backup")
+		case strings.HasSuffix(name, ".db.snap"):
+			live = strings.TrimSuffix(p, ".snap")
+		default:
+			return nil
+		}
 		if err := os.Rename(p, live); err != nil {
 			return fmt.Errorf("rename %s -> %s: %w", p, live, err)
 		}

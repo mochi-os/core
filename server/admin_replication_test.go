@@ -238,7 +238,7 @@ func TestAdminReplicationPairRemoveDeletes(t *testing.T) {
 		if len(targets) != 3 {
 			t.Errorf("targets = %v, want 3 (kicked + 2 remaining)", targets)
 		}
-		// `full` includes self (filtered to p2p_id="self" + remaining).
+		// `full` includes self (filtered to net_id="self" + remaining).
 		if len(full) != 3 {
 			t.Errorf("full = %v, want 3 (self + 2 remaining)", full)
 		}
@@ -340,7 +340,7 @@ func TestAdminReplicationPairsRollup(t *testing.T) {
 	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-A', 'app', 'uid-1', 45, ?)", now()-5)
 	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-A', 'app', 'uid-1', 44, ?)", now()-15)
 	// Leadership: self holds one lease, peer-A holds another.
-	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'cleanup', ?, ?, 1)", p2p_id, now()+3600)
+	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'cleanup', ?, ?, 1)", net_id, now()+3600)
 	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'reporter', 'peer-A', ?, 2)", now()+3600)
 	// An expired lease must NOT appear.
 	rdb.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'stale', 'peer-A', ?, 3)", now()-3600)

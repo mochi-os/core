@@ -55,11 +55,11 @@ func peer_connect_url(url string) (string, error) {
 		url = "https://" + url
 	}
 
-	// Fetch P2P info from the server
+	// Fetch Net info from the server
 	info_url := strings.TrimSuffix(url, "/") + "/_/p2p/info"
 	resp, err := url_request("GET", info_url, nil, nil, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch p2p info: %v", err)
+		return "", fmt.Errorf("failed to fetch net info: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -78,11 +78,11 @@ func peer_connect_url(url string) (string, error) {
 		Addresses []string `json:"addresses"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
-		return "", fmt.Errorf("failed to parse p2p info: %v", err)
+		return "", fmt.Errorf("failed to parse net info: %v", err)
 	}
 
 	if info.Peer == "" || len(info.Addresses) == 0 {
-		return "", fmt.Errorf("invalid p2p info: missing peer or addresses")
+		return "", fmt.Errorf("invalid net info: missing peer or addresses")
 	}
 
 	// Add peer and connect

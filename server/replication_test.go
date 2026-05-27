@@ -20,7 +20,7 @@ import (
 )
 
 // setup_replication_test creates a fresh data_dir with replication.db
-// initialised via the v50 migration. Sets p2p_id to "self" so the
+// initialised via the v50 migration. Sets net_id to "self" so the
 // self-exclusion paths can be exercised. Returns a cleanup function.
 func setup_replication_test(t *testing.T) func() {
 	tmp_dir, err := os.MkdirTemp("", "mochi_repl_test")
@@ -29,8 +29,8 @@ func setup_replication_test(t *testing.T) func() {
 	}
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
-	orig_p2p_id := p2p_id
-	p2p_id = "self"
+	orig_p2p_id := net_id
+	net_id = "self"
 
 	db_upgrade_50()
 	db_upgrade_55()
@@ -61,7 +61,7 @@ func setup_replication_test(t *testing.T) func() {
 		db := db_open("db/replication.db")
 		db.exec("delete from hosts where user=?", user)
 		for _, peer := range hosts {
-			if peer == "" || peer == p2p_id {
+			if peer == "" || peer == net_id {
 				continue
 			}
 			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
@@ -122,7 +122,7 @@ func setup_replication_test(t *testing.T) func() {
 		bootstrap_db_scope_driver = orig_db_scope_driver
 		replication_pair_backfill = orig_pair_backfill
 		data_dir = orig_data_dir
-		p2p_id = orig_p2p_id
+		net_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)
 	}
 }
@@ -355,12 +355,12 @@ func TestReplicationMembershipExcludesSelf(t *testing.T) {
 // TestReplicationMembershipFullSetIncludesOrigin: the broadcast
 // membership set must include this server. Callers pass the local
 // hosts table, which never lists self — so the set the function emits
-// must add p2p_id, or replicas applying the MembershipChange drop the
+// must add net_id, or replicas applying the MembershipChange drop the
 // origin and can no longer fan writes back to it.
 func TestReplicationMembershipFullSetIncludesOrigin(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	// setup_replication_test sets p2p_id = "self".
+	// setup_replication_test sets net_id = "self".
 
 	got := replication_membership_full_set([]string{"peerA", "peer_b"})
 	if len(got) != 3 || got[0] != "self" {
@@ -1352,9 +1352,9 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
-	orig_p2p := p2p_id
-	p2p_id = "selfpeer"
-	defer func() { p2p_id = orig_p2p }()
+	orig_p2p := net_id
+	net_id = "selfpeer"
+	defer func() { net_id = orig_p2p }()
 
 	// Set up the v52 directory schema.
 	db_create_directory := func() {
@@ -1508,7 +1508,7 @@ func TestLeaderFenceAndRelease(t *testing.T) {
 
 // ----------------------------------------------------------------------
 // Cross-host election RPC tests (Stage 22 follow-up).
-// p2p_id in the test stub is "self"; alphabetic order: "aaa" < "self" < "zzz".
+// net_id in the test stub is "self"; alphabetic order: "aaa" < "self" < "zzz".
 // ----------------------------------------------------------------------
 
 func TestLeaderVoteVacantGrants(t *testing.T) {
@@ -1549,12 +1549,12 @@ func TestLeaderVoteHashTieBreak(t *testing.T) {
 
 	db := db_open("db/replication.db")
 	// We (self) hold an alive lease.
-	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'k1', ?, ?, 1)", p2p_id, now()+60)
+	db.exec("insert into leadership (scope, key, peer, expires, fence) values ('platform', 'k1', ?, ?, 1)", net_id, now()+60)
 
 	// For each candidate, the vote outcome must equal the prefer
 	// helper's decision (the source of truth for the tie-break).
 	for _, candidate := range []string{"aaa", "zzz", "peerA", "peer_b", "peerC"} {
-		want := replication_leader_prefer("platform", "k1", candidate, p2p_id)
+		want := replication_leader_prefer("platform", "k1", candidate, net_id)
 		got, _, _, _ := replication_leader_vote("platform", "k1", candidate, now()+60)
 		if got != want {
 			t.Errorf("candidate %q: vote=%v, expected %v from hash tie-break",
@@ -1620,9 +1620,9 @@ func TestLeaderMembershipFromScopePrefix(t *testing.T) {
 
 	db := db_open("db/replication.db")
 	db.exec("insert into pair (peer, added) values ('pair-peer', ?)", now())
-	db.exec("insert into pair (peer, added) values (?, ?)", p2p_id, now()) // self should be filtered
+	db.exec("insert into pair (peer, added) values (?, ?)", net_id, now()) // self should be filtered
 	db.exec("insert into hosts (user, peer, added) values ('user-x', 'host-peer', ?)", now())
-	db.exec("insert into hosts (user, peer, added) values ('user-x', ?, ?)", p2p_id, now()) // self filtered
+	db.exec("insert into hosts (user, peer, added) values ('user-x', ?, ?)", net_id, now()) // self filtered
 
 	if m := replication_leader_membership("user:user-x"); len(m) != 1 || m[0] != "host-peer" {
 		t.Errorf("user-scoped membership: got %v, want [host-peer]", m)
@@ -2065,9 +2065,9 @@ func TestWebpushDedupTTLExpires(t *testing.T) {
 // =====================================================================
 //
 // These tests simulate two hosts in a single process by swapping
-// data_dir and p2p_id between turns. Replication ops "travel" between
+// data_dir and net_id between turns. Replication ops "travel" between
 // hosts by being constructed once and applied via replication_apply_op
-// (or its underlying helpers) under each host's context. The real P2P
+// (or its underlying helpers) under each host's context. The real Net
 // transport is bypassed — its role is at-least-once delivery + dedup,
 // both already covered by transport-level unit tests. What these
 // scenarios prove is that the apply pipelines on different hosts
@@ -2089,7 +2089,7 @@ func integration_setup(t *testing.T) (func(string), func()) {
 		t.Fatalf("temp dir 2: %v", err)
 	}
 	orig_data := data_dir
-	orig_p2p := p2p_id
+	orig_p2p := net_id
 	// Replace the post-migration background drain with a no-op for the
 	// duration of the test. The production goroutine reads data_dir
 	// asynchronously, which races with switch_to's host swap; the drain
@@ -2111,14 +2111,14 @@ func integration_setup(t *testing.T) (func(string), func()) {
 			t.Fatalf("unknown host %q", name)
 		}
 		data_dir = h.dir
-		p2p_id = h.id
+		net_id = h.id
 		// Lazy-create the per-host replication schema on first use.
 		db_upgrade_50()
 	}
 
 	cleanup := func() {
 		data_dir = orig_data
-		p2p_id = orig_p2p
+		net_id = orig_p2p
 		post_migration_drain_async = orig_drain
 		os.RemoveAll(dir1)
 		os.RemoveAll(dir2)

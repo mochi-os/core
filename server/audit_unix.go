@@ -131,7 +131,7 @@ func audit_signature_failed(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("signature_failed from=%s reason=%s", from, reason))
 }
 
-// audit_message_rejected logs rejected P2P messages
+// audit_message_rejected logs rejected Net messages
 func audit_message_rejected(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("message_rejected from=%s reason=%s", from, reason))
 }

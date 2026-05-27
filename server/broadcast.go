@@ -266,7 +266,7 @@ func api_broadcast_next(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
-	return sl.MakeInt64(broadcast_next_local(db, key, p2p_id)), nil
+	return sl.MakeInt64(broadcast_next_local(db, key, net_id)), nil
 }
 
 // mochi.broadcast.received(sender, key) -> int: highest applied seq.
@@ -383,7 +383,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "payload not JSON-encodable: %v", err)
 	}
 
-	sequence := broadcast_log_append(db, key, p2p_id, event, body)
+	sequence := broadcast_log_append(db, key, net_id, event, body)
 
 	// Attach broadcast metadata to outbound content. _peer is implicit
 	// via the originating libp2p host (peer header on the receiver
@@ -683,7 +683,7 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 // for (key, peer, subscriber=us) and runs broadcast_log_ack_trim,
 // which drops log rows below the slowest subscriber's progress.
 //
-// Self-loops (peer == p2p_id) are skipped: the owner is its own
+// Self-loops (peer == net_id) are skipped: the owner is its own
 // subscriber and already knows its state; the 7d age trim handles
 // log cleanup for self-loop streams without needing a network
 // round-trip.
@@ -718,7 +718,7 @@ func broadcast_send_ack(user *User, a *App, from, to, key, peer string, sequence
 	if from == "" || to == "" || key == "" || peer == "" || sequence <= 0 {
 		return
 	}
-	if peer == p2p_id {
+	if peer == net_id {
 		return
 	}
 	broadcast_acknowledge_enqueue(user.UID, a.id, from, to, key, peer, sequence)

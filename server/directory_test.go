@@ -15,7 +15,7 @@ import (
 // 2026-05-21 as a market app reporting "Comptroller is not available".
 
 func setup_directory_test(t *testing.T) func() {
-	cleanup := setup_replication_test(t) // sets data_dir + p2p_id="self"
+	cleanup := setup_replication_test(t) // sets data_dir + net_id="self"
 	db := db_open("db/directory.db")
 	db.exec("create table locations (entity text not null, peer text not null, seen integer not null, primary key (entity, peer))")
 	return cleanup

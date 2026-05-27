@@ -907,9 +907,9 @@ func TestThreeHostLeaderClaimConverges(t *testing.T) {
 	}()
 	replication_leader_notify = func(scope, key string, fence, expires int64) {}
 	replication_leader_claim_rpc = func(peer, scope, key string, expires int64) *LeaderClaimResponse {
-		// Vote from peer's perspective: prefer(scope, key, requester=p2p_id, voter=peer).
+		// Vote from peer's perspective: prefer(scope, key, requester=net_id, voter=peer).
 		// If requester wins the hash tie-break against the voter, grant.
-		if replication_leader_prefer(scope, key, p2p_id, peer) {
+		if replication_leader_prefer(scope, key, net_id, peer) {
 			return &LeaderClaimResponse{Granted: true}
 		}
 		// Voter prefers itself; deny.

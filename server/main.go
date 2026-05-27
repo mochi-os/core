@@ -185,10 +185,10 @@ func main_serve(ready func()) int {
 	}
 	domains_init_acme()
 	apps_start()
-	p2p_start()
+	net_start()
 	// setting_set replicates to every pair member via system-set ops
-	// (#68). Must run after p2p_start so the spawned send_peer
-	// goroutines don't dereference a nil p2p_me on a server that
+	// (#68). Must run after net_start so the spawned send_peer
+	// goroutines don't dereference a nil net_me on a server that
 	// already has pair members from a prior run.
 	setting_set("server_started", itoa(int(now())))
 	if err := admin_start(); err != nil {
@@ -254,9 +254,9 @@ loop:
 	// Notify connected peers
 	peers_shutdown()
 
-	// Close P2P host
-	if p2p_me != nil {
-		p2p_me.Close()
+	// Close Net host
+	if net_me != nil {
+		net_me.Close()
 	}
 
 	audit_close()

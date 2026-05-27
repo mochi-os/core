@@ -38,7 +38,7 @@ const sticky_session_cookie = "mochi-server-id"
 // response. Cheap — one cookie read, one optional cookie set.
 func web_sticky_session(c *gin.Context) {
 	existing := web_cookie_get(c, sticky_session_cookie, "")
-	if existing == p2p_id {
+	if existing == net_id {
 		c.Next()
 		return
 	}
@@ -52,6 +52,6 @@ func web_sticky_session(c *gin.Context) {
 	// doesn't match the local peer: simpler, idempotent for the
 	// common case, and assumes that if the request reached US then
 	// the LB (if any) didn't honour the cookie or there isn't one.
-	web_cookie_set(c, sticky_session_cookie, p2p_id)
+	web_cookie_set(c, sticky_session_cookie, net_id)
 	c.Next()
 }

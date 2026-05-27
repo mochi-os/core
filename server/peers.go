@@ -49,7 +49,7 @@ type PeerReconnect struct {
 // PeerReachability is the in-memory fast-fail signal for outbound
 // sends. queue_process spawns one goroutine per ready queue row;
 // without this, each one independently pays the unbounded libp2p
-// connect timeout on `p2p_me.Connect()` when the target peer is
+// connect timeout on `net_me.Connect()` when the target peer is
 // offline. Three consecutive failures within the skip window mean
 // "skip the libp2p attempt and return nil immediately" — the queue
 // row goes back to pending under the usual exponential backoff. A
@@ -102,7 +102,7 @@ var (
 // connect. Bootstrap peers are always trusted infrastructure; never
 // silenced. Self never silenced (in-process pipe can't fail).
 func peer_is_silent(id string) bool {
-	if id == "" || id == p2p_id || peer_is_bootstrap(id) {
+	if id == "" || id == net_id || peer_is_bootstrap(id) {
 		return false
 	}
 	peer_reachability_lock.Lock()
@@ -119,7 +119,7 @@ func peer_is_silent(id string) bool {
 // layer is alive even if the eventual ACK never arrives — the gap
 // we care about is "can we reach this peer at all").
 func peer_mark_send_success(id string) {
-	if id == "" || id == p2p_id {
+	if id == "" || id == net_id {
 		return
 	}
 	peer_reachability_lock.Lock()
@@ -132,7 +132,7 @@ func peer_mark_send_success(id string) {
 // failure paths (semaphore timeout, transient stream open error) don't
 // indicate the peer itself is unreachable.
 func peer_mark_send_failed(id string) {
-	if id == "" || id == p2p_id {
+	if id == "" || id == net_id {
 		return
 	}
 	peer_reachability_lock.Lock()
@@ -171,7 +171,7 @@ func peer_is_bootstrap(id string) bool {
 // them. During bulk bootstrap the file-scope driver can legitimately
 // fire >100 chunk-fetch streams per second on a fast local network,
 // and rate-limiting them stalls the bootstrap with a flood of
-// "P2P rate limited peer" log lines.
+// "Net rate limited peer" log lines.
 func peer_is_pair(id string) bool {
 	if id == "" {
 		return false
@@ -262,7 +262,7 @@ func peer_by_id(id string) *Peer {
 // Connect to a peer if possible
 // Call peer_add_known(), peer_discovered(), or peer_discovered_address() before calling peer_connect()
 func peer_connect(id string) bool {
-	if id == p2p_id {
+	if id == net_id {
 		return true
 	}
 
@@ -277,7 +277,7 @@ func peer_connect(id string) bool {
 	if p.connected {
 		return true
 	}
-	p.connected = p2p_connect(id, peer_address_strings(p.addresses))
+	p.connected = net_connect(id, peer_address_strings(p.addresses))
 
 	// Refresh the timestamp of the address we actually connected on
 	if p.connected {
@@ -304,7 +304,7 @@ func peer_refresh_connected_address(id string) {
 		return
 	}
 
-	conns := p2p_me.Network().ConnsToPeer(pid)
+	conns := net_me.Network().ConnsToPeer(pid)
 	if len(conns) == 0 {
 		return
 	}
@@ -371,7 +371,7 @@ func peer_discovered(id string) {
 		return
 	}
 
-	for _, a := range p2p_me.Peerstore().Addrs(p) {
+	for _, a := range net_me.Peerstore().Addrs(p) {
 		peer_discovered_work(id, a.String()+"/p2p/"+id)
 	}
 
@@ -535,13 +535,13 @@ func peers_publish() {
 
 // Received a peer publish event from another server
 // We don't need to do anything here because we've already
-// marked the peer as discovered in p2p_pubsubs()
+// marked the peer as discovered in net_pubsubs()
 func peer_publish_event(e *Event) {
 }
 
 // Reply to a peer request if for us
 func peer_request_event(e *Event) {
-	if e.get("id", "") == p2p_id {
+	if e.get("id", "") == net_id {
 		peer_publish_chan <- true
 	}
 }
@@ -564,10 +564,10 @@ func peer_stream(id string) *Stream {
 		return nil
 	}
 
-	if id == p2p_id {
+	if id == net_id {
 		r1, w1 := io.Pipe()
 		r2, w2 := io.Pipe()
-		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, p2p_id)
+		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, net_id)
 		return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r2}, writer: &pipe_writer{PipeWriter: w1}}
 	}
 
@@ -600,11 +600,11 @@ func peer_stream(id string) *Stream {
 	select {
 	case sem <- struct{}{}:
 	case <-time.After(10 * time.Second):
-		info("P2P outbound stream to peer %q timed out waiting for slot", id)
+		info("Net outbound stream to peer %q timed out waiting for slot", id)
 		return nil
 	}
 
-	s := p2p_stream(id)
+	s := net_stream(id)
 	if s == nil {
 		<-sem
 		return nil
@@ -617,7 +617,7 @@ func peer_stream(id string) *Stream {
 
 // Check whether we have enough peers in the pubsub mesh to send broadcast messages to
 func peers_sufficient() bool {
-	return len(p2p_pubsub_1.ListPeers()) >= peers_minimum
+	return len(net_pubsub_1.ListPeers()) >= peers_minimum
 }
 
 // Notify peers of shutdown (best effort)
@@ -633,7 +633,7 @@ func peers_shutdown() {
 
 	info("Notifying %d connected peers of shutdown", len(connected))
 	for _, id := range connected {
-		s := p2p_stream(id)
+		s := net_stream(id)
 		if s != nil && s.writer != nil {
 			s.write(Headers{Type: "bye"})
 			s.writer.Close()

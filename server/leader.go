@@ -102,11 +102,11 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 	if row != nil {
 		cur_peer, _ := row["peer"].(string)
 		cur_exp, _ := row["expires"].(int64)
-		if cur_peer == p2p_id && cur_exp > n {
-			db.exec("update leadership set expires=?, fence=fence+1 where scope=? and key=? and peer=?", expires, scope, key, p2p_id)
+		if cur_peer == net_id && cur_exp > n {
+			db.exec("update leadership set expires=?, fence=fence+1 where scope=? and key=? and peer=?", expires, scope, key, net_id)
 			return true
 		}
-		if cur_peer != "" && cur_peer != p2p_id && cur_exp > n {
+		if cur_peer != "" && cur_peer != net_id && cur_exp > n {
 			return false
 		}
 	}
@@ -124,7 +124,7 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 			expires = excluded.expires,
 			fence = leadership.fence + 1
 		where leadership.peer = excluded.peer or leadership.expires < ?`,
-		scope, key, p2p_id, expires, n)
+		scope, key, net_id, expires, n)
 
 	// Fan out + count grants. In optimistic mode any explicit denial
 	// with a current-leader pointer vetoes the claim; unreachable
@@ -134,7 +134,7 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 	membership := replication_leader_membership(scope)
 	grants := 0
 	for _, peer := range membership {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		res := replication_leader_claim_rpc(peer, scope, key, expires)
@@ -145,7 +145,7 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 			grants++
 			continue
 		}
-		if res.CurrentLeader != "" && res.CurrentLeader != p2p_id {
+		if res.CurrentLeader != "" && res.CurrentLeader != net_id {
 			db.exec(`insert into leadership (scope, key, peer, expires, fence) values (?, ?, ?, ?, ?)
 				on conflict(scope, key) do update set
 					peer = excluded.peer,
@@ -179,7 +179,7 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 	cur_peer, _ := row["peer"].(string)
 	cur_exp, _ := row["expires"].(int64)
 	cur_fence, _ := row["fence"].(int64)
-	if cur_peer != p2p_id || cur_exp <= n {
+	if cur_peer != net_id || cur_exp <= n {
 		return false
 	}
 
@@ -195,7 +195,7 @@ func replication_leader_claim(scope, key string, strict bool) bool {
 // fence-aware apply path lands.
 func replication_leader_fence(scope, key string) int64 {
 	db := db_open("db/replication.db")
-	row, _ := db.row("select fence from leadership where scope=? and key=? and peer=? and expires > ?", scope, key, p2p_id, now())
+	row, _ := db.row("select fence from leadership where scope=? and key=? and peer=? and expires > ?", scope, key, net_id, now())
 	if row == nil {
 		return 0
 	}
@@ -210,7 +210,7 @@ func replication_leader_fence(scope, key string) int64 {
 // up work without waiting for the lease to age out.
 func replication_leader_release(scope, key string) {
 	db := db_open("db/replication.db")
-	db.exec("delete from leadership where scope=? and key=? and peer=?", scope, key, p2p_id)
+	db.exec("delete from leadership where scope=? and key=? and peer=?", scope, key, net_id)
 }
 
 // replication_fence_observe records a leader-stamped op's fence for
@@ -320,9 +320,9 @@ func replication_leader_membership(scope string) []string {
 	var rows []map[string]any
 	if strings.HasPrefix(scope, "user:") {
 		uid := strings.TrimPrefix(scope, "user:")
-		rows, _ = db.rows("select peer from hosts where user=? and peer != ?", uid, p2p_id)
+		rows, _ = db.rows("select peer from hosts where user=? and peer != ?", uid, net_id)
 	} else {
-		rows, _ = db.rows("select peer from pair where peer != ?", p2p_id)
+		rows, _ = db.rows("select peer from pair where peer != ?", net_id)
 	}
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
@@ -453,14 +453,14 @@ var replication_leader_notify = replication_leader_notify_impl
 // fence/expires anyway.
 func replication_leader_notify_impl(scope, key string, fence, expires int64) {
 	for _, peer := range replication_leader_membership(scope) {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		m := message("", "", "replication", "replica/leader/granted")
 		m.content = map[string]any{
 			"scope":   scope,
 			"key":     key,
-			"peer":    p2p_id,
+			"peer":    net_id,
 			"fence":   fence,
 			"expires": expires,
 		}

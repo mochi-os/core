@@ -34,8 +34,8 @@ func health_status() (gin.H, int) {
 		overall = http.StatusServiceUnavailable
 	}
 
-	// Network (libp2p) liveness — p2p_me is set by p2p_start.
-	if p2p_me == nil {
+	// Network (libp2p) liveness — net_me is set by net_start.
+	if net_me == nil {
 		network_status = "not started"
 		overall = http.StatusServiceUnavailable
 	}

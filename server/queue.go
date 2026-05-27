@@ -301,7 +301,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	// need to re-prove identity to ourselves via the signature - the
 	// presence of the row in queue.db IS the proof. File sends still
 	// need the slow path to push bytes through the stream API.
-	if peer == p2p_id && q.File == "" {
+	if peer == net_id && q.File == "" {
 		return queue_send_self_loop_fast(q)
 	}
 
@@ -431,7 +431,7 @@ func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
 		event:           q.Event,
 		sender_app:      q.FromApp,
 		sender_services: services,
-		peer:            p2p_id,
+		peer:            net_id,
 		content:         content,
 	}
 
@@ -469,7 +469,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		data = append(data, q.Content...)
 	}
 
-	p2p_pubsub_1.Publish(p2p_context, data)
+	net_pubsub_1.Publish(net_context, data)
 	return true
 }
 

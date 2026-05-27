@@ -88,7 +88,7 @@ func admin_replica_join(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"state":  "waiting",
-		"peer":   p2p_id,
+		"peer":   net_id,
 		"source": input.Source,
 	})
 }
@@ -184,7 +184,7 @@ func admin_replica_status(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"state":   state,
-		"peer":    p2p_id,
+		"peer":    net_id,
 		"source":  pending_peer,
 		"members": members,
 		"reason":  reason,

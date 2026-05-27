@@ -18,9 +18,9 @@ import (
 func run_sticky_middleware(t *testing.T, cookie string) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	orig_p2p_id := p2p_id
-	p2p_id = "self-peer"
-	t.Cleanup(func() { p2p_id = orig_p2p_id })
+	orig_p2p_id := net_id
+	net_id = "self-peer"
+	t.Cleanup(func() { net_id = orig_p2p_id })
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

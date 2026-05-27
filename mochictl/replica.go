@@ -5,7 +5,7 @@
 // for adding a fresh server to an existing pair set. The server-side
 // admin handler (POST /_/admin/replica/join) refuses if the local
 // users.db is non-empty (the empty-replica rule), records the pending
-// join in settings.db, and emits a P2P join-request to the source
+// join in settings.db, and emits a Net join-request to the source
 // peer. This command then polls /_/admin/replica/status until the
 // state flips to approved (the source admin clicked Approve) or
 // denied / errored. Bootstrap progress display is part of #66 — until

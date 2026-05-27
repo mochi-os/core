@@ -123,16 +123,16 @@ func TestPeerIsSilentBootstrap(t *testing.T) {
 // connect can; marking self as silent would break all local fan-out.
 func TestPeerIsSilentSelf(t *testing.T) {
 	reset_peer_reachability(t)
-	// p2p_id may be empty in tests where p2p hasn't initialised;
+	// net_id may be empty in tests where p2p hasn't initialised;
 	// peer_is_silent's id=="" guard covers that case. Test the
-	// explicit p2p_id==id path with a fake-but-equal value.
-	saved := p2p_id
-	p2p_id = "12D3KooWFakeSelf"
-	defer func() { p2p_id = saved }()
+	// explicit net_id==id path with a fake-but-equal value.
+	saved := net_id
+	net_id = "12D3KooWFakeSelf"
+	defer func() { net_id = saved }()
 	for i := 0; i < peer_silent_failure_threshold*10; i++ {
-		peer_mark_send_failed(p2p_id)
+		peer_mark_send_failed(net_id)
 	}
-	if peer_is_silent(p2p_id) {
+	if peer_is_silent(net_id) {
 		t.Error("self peer must never be silent")
 	}
 }

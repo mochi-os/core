@@ -822,7 +822,7 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.None, nil
 }
 
-// a.write.stream(stream) -> int: Pipe P2P stream content directly to HTTP response, returns bytes written
+// a.write.stream(stream) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
 func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: write_from_stream(stream)")

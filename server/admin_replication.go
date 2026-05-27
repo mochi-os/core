@@ -84,7 +84,7 @@ func admin_replication_status(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"peer":              p2p_id,
+		"peer":              net_id,
 		"pair":              pair,
 		"hosts_count":       hosts_count,
 		"links_pending":     links_pending,
@@ -431,7 +431,7 @@ func admin_replication_pairs(c *gin.Context) {
 			peer, _ := r["peer"].(string)
 			scope, _ := r["scope"].(string)
 			state, _ := r["state"].(string)
-			if peer == "" || peer == p2p_id {
+			if peer == "" || peer == net_id {
 				continue
 			}
 			get(peer).Bootstrap[scope] = state
@@ -467,7 +467,7 @@ func admin_replication_pairs(c *gin.Context) {
 			user, _ := r["user"].(string)
 			database, _ := r["db"].(string)
 			seq, _ := r["sequence"].(int64)
-			if peer == "" || peer == p2p_id {
+			if peer == "" || peer == net_id {
 				continue
 			}
 			get(peer).InboundCursor[scope+"/"+user+"/"+database] = seq
@@ -508,7 +508,7 @@ func admin_replication_pairs(c *gin.Context) {
 			peer, _ := r["peer"].(string)
 			count, _ := r["c"].(int64)
 			last, _ := r["last"].(int64)
-			if peer == "" || peer == p2p_id {
+			if peer == "" || peer == net_id {
 				continue
 			}
 			pd := get(peer)
@@ -530,7 +530,7 @@ func admin_replication_pairs(c *gin.Context) {
 				"expires": expires,
 				"fence":   fence,
 			}
-			if peer == p2p_id {
+			if peer == net_id {
 				// We hold this lease; surface it under every peer
 				// so the operator sees what THIS host owns relative
 				// to each partner.
@@ -550,7 +550,7 @@ func admin_replication_pairs(c *gin.Context) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Peer < out[j].Peer })
 
 	c.JSON(http.StatusOK, gin.H{
-		"host":  p2p_id,
+		"host":  net_id,
 		"now":   n,
 		"pairs": out,
 	})

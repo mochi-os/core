@@ -1,4 +1,4 @@
-// Mochi server: replication invite P2P protocols (link + join)
+// Mochi server: replication invite Net protocols (link + join)
 // Copyright Alistair Cunningham 2026
 //
 // This file contains two related-but-distinct wire protocols for
@@ -583,7 +583,7 @@ type FreshnessResult struct {
 	Fresh bool `cbor:"fresh"`
 }
 
-// replication_link_freshness_probe opens a synchronous P2P stream to
+// replication_link_freshness_probe opens a synchronous Net stream to
 // the destination peer holding the named placeholder, sends a probe,
 // and returns the freshness result. Used by replication_link_approve
 // just before sending keys, to confirm the placeholder hasn't
@@ -650,12 +650,12 @@ type UserLookupResult struct {
 	Exists bool   `cbor:"exists"`
 }
 
-// replication_user_lookup opens a synchronous P2P stream to the source
+// replication_user_lookup opens a synchronous Net stream to the source
 // peer, asks "do you have a user named <username>?", and returns the
 // canonical uid (or "" + false if not). Used by the signup-with-
 // Advanced path on B before creating a placeholder row.
 //
-// The lookup is a P2P-only mechanism — there's no HTTPS fallback. If
+// The lookup is a Net-only mechanism — there's no HTTPS fallback. If
 // the source peer is unreachable the caller surfaces the failure as a
 // "couldn't reach <source>" form error; the user can retry. We do not
 // fall back to anonymous directory lookups because the source might
@@ -747,7 +747,7 @@ func replication_link_expire_sweep() {
 //     makes the multi-tab race idempotent: a concurrent second Approve
 //     finds zero rows affected and returns the already-approved status
 //     without re-firing the transfer.
-//  2. Run freshness-probe on the destination peer (synchronous P2P
+//  2. Run freshness-probe on the destination peer (synchronous Net
 //     call). If the placeholder has accumulated activity, abort with
 //     link-denied(reason="freshness-failed").
 //  3. Load the user's identity keys + entities, build the KeysTransfer
@@ -1079,7 +1079,7 @@ func replication_join_approved_apply(originPeer string, ja *JoinApproved) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from pair")
 	for _, peer := range ja.Members {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
@@ -1156,7 +1156,7 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 		// rebuild it as the announced set minus self.
 		in_set := false
 		for _, p := range pmc.Members {
-			if p == p2p_id {
+			if p == net_id {
 				in_set = true
 				break
 			}
@@ -1180,7 +1180,7 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 		db.exec("delete from pair")
 		if in_set {
 			for _, peer := range pmc.Members {
-				if peer == "" || peer == p2p_id {
+				if peer == "" || peer == net_id {
 					continue
 				}
 				db.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
@@ -1251,7 +1251,7 @@ func replication_emit_pair_membership_change(members, targets []string) {
 	seq := replication_sequence_next("", "pair-membership")
 	pmc := &PairMembershipChange{Members: members, Sequence: seq}
 	for _, peer := range targets {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		m := message("", "", "replication", "pair/membership/change")
@@ -1337,7 +1337,7 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 	}
 	// The full set the replica should know (everyone, including self
 	// since the replica needs to fan-out to the source too).
-	full := append([]string{p2p_id}, members...)
+	full := append([]string{net_id}, members...)
 
 	// Existing pair members (everyone except the new joiner) get the
 	// pair-membership-change announcement.
@@ -1437,7 +1437,7 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 	// pair table. Without notifying the kicked peer, an N=2 unpair
 	// would leave the other side believing the pair still exists,
 	// because there are no remaining members to forward the change.
-	full := append([]string{p2p_id}, remaining...)
+	full := append([]string{net_id}, remaining...)
 	recipients := append([]string{peer}, remaining...)
 	admin_replication_emit_pair_membership(full, recipients)
 	audit_replication_pair_removed(peer)

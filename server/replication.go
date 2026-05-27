@@ -629,7 +629,7 @@ func replication_session_apply_delete(p *SessionDelete) ApplyResult {
 // counters for replication outbound flow. Read-only, cheap to call.
 func web_replication_health(c *gin.Context) {
 	db := db_open("db/replication.db")
-	out := gin.H{"peer_id": p2p_id}
+	out := gin.H{"peer_id": net_id}
 
 	// Server-pair members.
 	pairs := []string{}
@@ -658,7 +658,7 @@ func web_replication_health(c *gin.Context) {
 	out["seen_total"] = db.integer("select count(*) from seen")
 
 	// Active leaderships held by this host (informational).
-	out["leases_held"] = db.integer("select count(*) from leadership where peer=? and expires > ?", p2p_id, now())
+	out["leases_held"] = db.integer("select count(*) from leadership where peer=? and expires > ?", net_id, now())
 
 	c.JSON(200, out)
 }
@@ -1247,7 +1247,7 @@ func replication_membership_apply(originPeer string, mc *MembershipChange) {
 	if !stale {
 		db.exec("delete from hosts where user=?", mc.User)
 		for _, peer := range mc.Hosts {
-			if peer == "" || peer == p2p_id {
+			if peer == "" || peer == net_id {
 				continue
 			}
 			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", mc.User, peer, now())
@@ -1460,7 +1460,7 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 // `replication.db.pair`, call this to deliver the keys, then start fanning
 // out ordinary replication ops.
 func replication_transfer_keys(userUID string, peer string) bool {
-	if peer == "" || peer == p2p_id {
+	if peer == "" || peer == net_id {
 		return false
 	}
 	kt, ok := build_keys_transfer(userUID)
@@ -1669,7 +1669,7 @@ func to_bytes(v any) []byte {
 // `hosts` is the host set as the caller knows it. Callers build it from
 // `select peer from hosts` — the local hosts table, which by
 // construction never lists this server itself. This function adds
-// `p2p_id` so the *broadcast* set is complete: a server running a
+// `net_id` so the *broadcast* set is complete: a server running a
 // membership-update is, by definition, a host of that user (it holds
 // their account and manages their host set), so it belongs in the set
 // every replica is told about. Without this the emitted MembershipChange
@@ -1680,7 +1680,7 @@ func to_bytes(v any) []byte {
 // stale peer but not the source server.)
 //
 // The local-table rewrite still filters self out (a server isn't its
-// own host), so adding p2p_id only affects the outbound set.
+// own host), so adding net_id only affects the outbound set.
 //
 // Package-level alias so callers route through this hook; tests can
 // replace it with a no-op to keep the send_peer goroutines (which write
@@ -1688,17 +1688,17 @@ func to_bytes(v any) []byte {
 var replication_membership_update = replication_membership_update_impl
 
 // replication_membership_full_set returns the complete membership set
-// for a user: this server (p2p_id) plus `hosts`, de-duplicated with
+// for a user: this server (net_id) plus `hosts`, de-duplicated with
 // blanks dropped and self first. Callers build `hosts` from the local
 // `hosts` table, which by construction never lists this server — so
-// without prepending p2p_id the broadcast membership set omits the
+// without prepending net_id the broadcast membership set omits the
 // origin, and replicas applying it drop the origin from their own host
 // set. A server running a membership-update is always a host of that
 // user, so it always belongs in the set.
 func replication_membership_full_set(hosts []string) []string {
 	seen := map[string]bool{}
 	full := make([]string, 0, len(hosts)+1)
-	for _, peer := range append([]string{p2p_id}, hosts...) {
+	for _, peer := range append([]string{net_id}, hosts...) {
 		if peer == "" || seen[peer] {
 			continue
 		}
@@ -1718,7 +1718,7 @@ func replication_membership_update_impl(user string, hosts []string) {
 	db := db_open("db/replication.db")
 	db.exec("delete from hosts where user=?", user)
 	for _, peer := range hosts {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
@@ -1741,7 +1741,7 @@ func replication_membership_update_impl(user string, hosts []string) {
 	}
 
 	for _, peer := range hosts {
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		m := message(from, from, "replication", "host/membership/change")
@@ -1763,7 +1763,7 @@ func recipients(user string) []string {
 
 	if rows, err := db.rows("select peer from hosts where user=?", user); err == nil {
 		for _, r := range rows {
-			if p, ok := r["peer"].(string); ok && p != "" && p != p2p_id {
+			if p, ok := r["peer"].(string); ok && p != "" && p != net_id {
 				set[p] = true
 			}
 		}
@@ -1771,7 +1771,7 @@ func recipients(user string) []string {
 
 	if rows, err := db.rows("select peer from pair"); err == nil {
 		for _, r := range rows {
-			if p, ok := r["peer"].(string); ok && p != "" && p != p2p_id {
+			if p, ok := r["peer"].(string); ok && p != "" && p != net_id {
 				set[p] = true
 			}
 		}
@@ -1888,7 +1888,7 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 
 	if op.Scope != repl_scope_app {
 		// TODO: core-scope signing needs a parallel message type that
-		// signs with p2p_private (server_sign) rather than entity_sign.
+		// signs with net_private (server_sign) rather than entity_sign.
 		// See task #34.
 		debug("Replication emit core-scope not yet wired (db=%q table=%q)", op.Database, op.Table)
 		return
@@ -2179,7 +2179,7 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	result := sl.NewDict(6)
-	_ = result.SetKey(sl.String("peer"), sl.String(p2p_id))
+	_ = result.SetKey(sl.String("peer"), sl.String(net_id))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
 	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
@@ -3037,7 +3037,7 @@ func replication_emit_system_set_real(database, table, row, field, value string)
 	}
 	for _, r := range rows {
 		peer, _ := r["peer"].(string)
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		m := message("", "", "replication", "system/set")
@@ -3255,7 +3255,7 @@ func replication_emit_system_row_real(database, table string, key, cols map[stri
 	}
 	for _, r := range rows {
 		peer, _ := r["peer"].(string)
-		if peer == "" || peer == p2p_id {
+		if peer == "" || peer == net_id {
 			continue
 		}
 		m := message("", "", "replication", "system/row")

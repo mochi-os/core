@@ -126,8 +126,8 @@ func (m *Message) publish(allow_queue bool) {
 			data = append(data, m.data...)
 		}
 
-		//debug("Message sending via P2P pubsub")
-		p2p_pubsub_1.Publish(p2p_context, data)
+		//debug("Message sending via Net pubsub")
+		net_pubsub_1.Publish(net_context, data)
 
 		if allow_queue {
 			queue_ack(m.ID)
@@ -335,7 +335,7 @@ func (m *Message) set(in ...string) *Message {
 	}
 }
 
-// mochi.message.send(headers, content?, data?, expires=seconds) -> None: Send a P2P message
+// mochi.message.send(headers, content?, data?, expires=seconds) -> None: Send a Net message
 func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
 		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary], [data: bytes]")
@@ -343,7 +343,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
-	if app != nil && !rate_limit_p2p_send.allow(app.id) {
+	if app != nil && !rate_limit_net_send.allow(app.id) {
 		return sl_error(fn, "rate limit exceeded (1000 messages per second)")
 	}
 
@@ -418,7 +418,7 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.message.send.peer(peer, headers, content?, data?, expires=seconds) -> None: Send a P2P message to a specific peer
+// mochi.message.send.peer(peer, headers, content?, data?, expires=seconds) -> None: Send a Net message to a specific peer
 func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 4 {
 		return sl_error(fn, "syntax: <peer: string>, <headers: dictionary>, [content: dictionary], [data: bytes]")
@@ -431,7 +431,7 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
-	if app != nil && !rate_limit_p2p_send.allow(app.id) {
+	if app != nil && !rate_limit_net_send.allow(app.id) {
 		return sl_error(fn, "rate limit exceeded (1000 messages per second)")
 	}
 

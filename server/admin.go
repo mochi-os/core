@@ -25,12 +25,12 @@ var shutdown_request = make(chan int, 1)
 func admin_status(c *gin.Context) {
 	peers_connected := 0
 	peers_known := 0
-	if p2p_me != nil {
-		peers_connected = len(p2p_me.Network().Peers())
+	if net_me != nil {
+		peers_connected = len(net_me.Network().Peers())
 		// Peerstore tracks every peer libp2p has heard about this run
 		// (including currently-connected, past connections, and DHT/relay
 		// referrals), so peers_known is always >= peers_connected.
-		peers_known = len(p2p_me.Peerstore().Peers())
+		peers_known = len(net_me.Peerstore().Peers())
 	}
 
 	apps_lock.Lock()
@@ -74,14 +74,14 @@ func admin_health(c *gin.Context) {
 // admin_identity returns the libp2p peer ID that identifies this server
 // to the rest of the Mochi network.
 func admin_identity(c *gin.Context) {
-	if p2p_me == nil {
+	if net_me == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "p2p not started",
+			"error": "net not started",
 		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"peer_id":  p2p_id,
+		"peer_id":  net_id,
 		"data_dir": data_dir,
 	})
 }

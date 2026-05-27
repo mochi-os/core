@@ -6,7 +6,7 @@
 // source-side username they want to replicate from. This handler:
 //
 //   1. Validates email locally (well-formed, not already taken on B).
-//   2. P2P-looks up the source username on the source peer via
+//   2. Net-looks up the source username on the source peer via
 //      replication/user-lookup; gets the canonical uid.
 //   3. Refuses if the resolved uid is already on this server (the
 //      replication-to-self rule — covers prior per-user opt-in and
@@ -37,7 +37,7 @@ import (
 )
 
 // admin_replica_resolve_user is a package-level function variable so
-// tests can stub the synchronous P2P lookup out.
+// tests can stub the synchronous Net lookup out.
 var admin_replica_resolve_user = replication_user_lookup
 
 // admin_replica_emit_link_request is a package-level function variable
@@ -78,7 +78,7 @@ func web_auth_replicate(c *gin.Context) {
 		return
 	}
 
-	// P2P lookup the source user. Source peer is treated as a routing
+	// Net lookup the source user. Source peer is treated as a routing
 	// destination; we don't validate it against any allow-list because
 	// the operator's signup policy (setting_signup_enabled) is the
 	// gate on whether replication-from-anywhere is allowed at all.

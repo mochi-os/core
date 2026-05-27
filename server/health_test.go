@@ -26,7 +26,7 @@ func reset_state(t *testing.T) {
 		delete(databases, k)
 	}
 	databases_lock.Unlock()
-	p2p_me = nil
+	net_me = nil
 	build_version = "test"
 	server_started_at = time.Now().Add(-42 * time.Second)
 }
@@ -41,7 +41,7 @@ func decode(t *testing.T, body []byte) map[string]any {
 }
 
 // TestHealthDegradedWhenDbAndP2pMissing covers the cold-start case: neither
-// users.db nor p2p_me is wired up. Should be 503 with both subsystems flagged.
+// users.db nor net_me is wired up. Should be 503 with both subsystems flagged.
 func TestHealthDegradedWhenDbAndP2pMissing(t *testing.T) {
 	reset_state(t)
 

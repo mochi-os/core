@@ -467,7 +467,7 @@ func service_call_as_server(target_user_uid string, service string, function str
 
 // mochi.server.id() -> string: Get the local libp2p peer ID for this server
 func api_server_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.String(p2p_id), nil
+	return sl.String(net_id), nil
 }
 
 // mochi.server.started() -> int: Unix timestamp (seconds) when this server process started
@@ -559,7 +559,7 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 	return api_stream(thread, nil, args, kwargs)
 }
 
-// mochi.stream(headers, content) -> Stream: Create a P2P stream to another entity
+// mochi.stream(headers, content) -> Stream: Create a Net stream to another entity
 func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <headers: dictionary>, <content: dictionary>")
@@ -625,7 +625,7 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	return s, nil
 }
 
-// mochi.stream.peer(peer, headers, content) -> Stream: Create a P2P stream to a specific peer
+// mochi.stream.peer(peer, headers, content) -> Stream: Create a Net stream to a specific peer
 func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <peer: string>, <headers: dictionary>, <content: dictionary>")

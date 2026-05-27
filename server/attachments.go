@@ -2272,7 +2272,7 @@ func (e *Event) attachment_event_fetch() {
 		return
 	}
 
-	// Convert to maps and send back via stream (no URL since this is P2P)
+	// Convert to maps and send back via stream (no URL since this is Net)
 	var results []map[string]any
 	for _, att := range attachments {
 		results = append(results, att.to_map())

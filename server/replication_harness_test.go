@@ -9,7 +9,7 @@
 // memory queue and lets tests:
 //
 //   - flush()       drain everything, switching context per delivery
-//                   so receivers apply in their own data_dir / p2p_id
+//                   so receivers apply in their own data_dir / net_id
 //   - partition()   stop new ops from being delivered; emits land in
 //                   a held bucket
 //   - heal()        move the held bucket back into the live queue
@@ -135,7 +135,7 @@ func new_harness(t *testing.T, names ...string) *harness {
 		user_hosts:                      map[string]map[string]bool{},
 		federation_hosts:                map[string]map[string]bool{},
 		original_data:                   data_dir,
-		original_p2p:                    p2p_id,
+		original_p2p:                    net_id,
 		original_emit_to:                replication_emit_to,
 		original_emit_system_set:        replication_emit_system_set,
 		original_emit_system_row:        replication_emit_system_row,
@@ -195,7 +195,7 @@ func (h *harness) set_user_hosts(user string, names ...string) {
 // Safe to call multiple times.
 func (h *harness) cleanup() {
 	data_dir = h.original_data
-	p2p_id = h.original_p2p
+	net_id = h.original_p2p
 	replication_emit_to = h.original_emit_to
 	replication_emit_system_set = h.original_emit_system_set
 	replication_emit_system_row = h.original_emit_system_row
@@ -206,7 +206,7 @@ func (h *harness) cleanup() {
 	}
 }
 
-// switch_to flips data_dir + p2p_id to the named host. Records the
+// switch_to flips data_dir + net_id to the named host. Records the
 // current host so subsequent emit captures know who to route from.
 func (h *harness) switch_to(name string) {
 	h.t.Helper()
@@ -215,7 +215,7 @@ func (h *harness) switch_to(name string) {
 		h.t.Fatalf("unknown harness host %q", name)
 	}
 	data_dir = ctx.dir
-	p2p_id = ctx.p2p
+	net_id = ctx.p2p
 	h.current = name
 }
 

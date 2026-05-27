@@ -12,7 +12,7 @@ import (
 )
 
 // Test peer_connect_url HTTP request and JSON parsing
-// Note: These tests verify the HTTP/JSON handling but can't test actual P2P connection
+// Note: These tests verify the HTTP/JSON handling but can't test actual Net connection
 func TestPeerConnectUrlHttpHandling(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -42,7 +42,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				w.Write([]byte("not json"))
 			},
 			expect_error_nil: false,
-			expect_contains: "failed to parse p2p info",
+			expect_contains: "failed to parse net info",
 		},
 		{
 			name: "server returns empty peer",
@@ -53,7 +53,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid p2p info: missing peer or addresses",
+			expect_contains: "invalid net info: missing peer or addresses",
 		},
 		{
 			name: "server returns empty addresses",
@@ -64,7 +64,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid p2p info: missing peer or addresses",
+			expect_contains: "invalid net info: missing peer or addresses",
 		},
 		{
 			name: "server returns null addresses",
@@ -74,7 +74,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid p2p info: missing peer or addresses",
+			expect_contains: "invalid net info: missing peer or addresses",
 		},
 	}
 
@@ -156,9 +156,9 @@ func TestRemoteConnectDirectoryLookup(t *testing.T) {
 
 // Test remote_connect with invalid peer
 func TestRemoteConnectInvalidPeer(t *testing.T) {
-	// Skip this test if P2P subsystem isn't initialized
+	// Skip this test if Net subsystem isn't initialized
 	// (peer_connect will panic on nil config)
-	t.Skip("requires P2P subsystem initialization")
+	t.Skip("requires Net subsystem initialization")
 
 	valid_entity_id := strings.Repeat("a", 50)
 	_, err := remote_connect(valid_entity_id, "invalid-peer-id")

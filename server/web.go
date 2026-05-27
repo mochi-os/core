@@ -1379,14 +1379,14 @@ func web_path(c *gin.Context) {
 	respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 }
 
-// Return P2P connection info for this server
+// Return Net connection info for this server
 func web_p2p_info(c *gin.Context) {
 	addresses := []string{}
-	for _, addr := range p2p_me.Addrs() {
-		addresses = append(addresses, addr.String()+"/p2p/"+p2p_id)
+	for _, addr := range net_me.Addrs() {
+		addresses = append(addresses, addr.String()+"/p2p/"+net_id)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"peer":      p2p_id,
+		"peer":      net_id,
 		"addresses": addresses,
 	})
 }

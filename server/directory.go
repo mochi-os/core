@@ -67,17 +67,17 @@ func directory_create(e *Entity) {
 	db := db_open("db/directory.db")
 	exists, _ := db.exists("select 1 from entities where id=?", e.ID)
 	if exists {
-		db.exec("update entities set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, e.ID)
+		db.exec("update entities set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, e.ID)
 	} else {
-		db.exec("insert into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+p2p_id, e.Data, fp, now, now)
+		db.exec("insert into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, now)
 	}
-	db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", e.ID, p2p_id, now)
+	db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", e.ID, net_id, now)
 }
 
 // Ask known peers to send us any updates since the newest update in our copy of the directory
 func directory_download() {
 	for _, p := range peers_bootstrap {
-		if p.ID == p2p_id {
+		if p.ID == net_id {
 			continue // Don't download from self
 		}
 		if directory_download_from_peer(p.ID) {
@@ -130,7 +130,7 @@ func directory_download_from_peer(peer string) bool {
 		// Don't let remote peers override location for local entities
 		local, _ := users.exists("select 1 from entities where id=?", d.ID)
 		if local {
-			d.Location = "p2p/" + p2p_id
+			d.Location = "p2p/" + net_id
 		}
 
 		fp := d.Fingerprint
@@ -196,7 +196,7 @@ func directory_manager() {
 			db.exec("delete from locations where seen<?", now()-30*86400)
 
 			// Clean up local directory entries for deleted entities
-			location := "p2p/" + p2p_id
+			location := "p2p/" + net_id
 			users := db_open("db/users.db")
 			rows, _ := db.rows("select id from entities where location=?", location)
 			for _, row := range rows {
@@ -205,7 +205,7 @@ func directory_manager() {
 				if !exists {
 					debug("Directory removing orphaned local entry %q", id)
 					db.exec("delete from entities where id=?", id)
-					db.exec("delete from locations where entity=? and peer=?", id, p2p_id)
+					db.exec("delete from locations where entity=? and peer=?", id, net_id)
 				}
 			}
 		}
@@ -224,7 +224,7 @@ func directory_publish(e *Entity, allow_queue bool) {
 		created = d.Created
 	}
 
-	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+p2p_id, "data", e.Data, "created", i64toa(created))
+	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+net_id, "data", e.Data, "created", i64toa(created))
 	m.publish(allow_queue)
 }
 
@@ -296,7 +296,7 @@ func directory_publish_event(e *Event) {
 	users := db_open("db/users.db")
 	local, _ := users.exists("select 1 from entities where id=?", id)
 	if local {
-		location = "p2p/" + p2p_id
+		location = "p2p/" + net_id
 	}
 
 	db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
@@ -318,7 +318,7 @@ func directory_publish_event(e *Event) {
 // the record's own `updated` for a bulk-download record so a stale
 // directory entry isn't misreported as just-seen.
 func directory_record_location(db *DB, id, location string, seen int64) {
-	if peer := strings_trim_prefix(location, "p2p/"); peer != "" && peer != p2p_id {
+	if peer := strings_trim_prefix(location, "p2p/"); peer != "" && peer != net_id {
 		db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", id, peer, seen)
 	}
 }

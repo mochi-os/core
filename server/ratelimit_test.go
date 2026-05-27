@@ -263,12 +263,12 @@ func TestRateLimitURLConfig(t *testing.T) {
 	}
 }
 
-// Test rate_limit_p2p_send configuration
+// Test rate_limit_net_send configuration
 func TestRateLimitP2PSendConfig(t *testing.T) {
-	if rate_limit_p2p_send.limit != 1000 {
-		t.Errorf("rate_limit_p2p_send.limit = %d, want 1000", rate_limit_p2p_send.limit)
+	if rate_limit_net_send.limit != 1000 {
+		t.Errorf("rate_limit_net_send.limit = %d, want 1000", rate_limit_net_send.limit)
 	}
-	if rate_limit_p2p_send.window != 1 {
-		t.Errorf("rate_limit_p2p_send.window = %d, want 1", rate_limit_p2p_send.window)
+	if rate_limit_net_send.window != 1 {
+		t.Errorf("rate_limit_net_send.window = %d, want 1", rate_limit_net_send.window)
 	}
 }

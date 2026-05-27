@@ -783,7 +783,7 @@ func TestReplicationJoinApprovedApplyReplacesPair(t *testing.T) {
 		Members: []string{"peer-A", "peer-C", "self"},
 	})
 
-	// p2p_id is "self" in setup_replication_test — must be filtered.
+	// net_id is "self" in setup_replication_test — must be filtered.
 	rows, _ := rdb.rows("select peer from pair order by peer")
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 pair rows after join-approved, got %d", len(rows))
@@ -805,7 +805,7 @@ func TestReplicationPairMembershipApplyFresh(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into pair (peer, added, role) values ('stale', 0, '')")
 
-	// p2p_id is "self" in setup_replication_test — must be in Members.
+	// net_id is "self" in setup_replication_test — must be in Members.
 	replication_pair_membership_apply("peer-A", &PairMembershipChange{
 		Members:  []string{"peer-A", "peer-B", "self"},
 		Sequence: 1,
@@ -1010,7 +1010,7 @@ func TestReplicationPairMembershipApplyClearsSeenForNewMembers(t *testing.T) {
 	db.exec("insert into seen (peer, scope, user, sequence, applied) values ('peer-X', 'app', 'u1', 1, 0)")
 
 	pmc := &PairMembershipChange{
-		Members:  []string{p2p_id, "peer-B", "peer-C"}, // includes self + the new joiner
+		Members:  []string{net_id, "peer-B", "peer-C"}, // includes self + the new joiner
 		Sequence: 1,
 	}
 	replication_pair_membership_apply("peer-Z" /* origin = some other member */, pmc)
@@ -1042,7 +1042,7 @@ func TestReplicationPairMembershipApplyLeaveDoesNotClearSeen(t *testing.T) {
 
 	// Announce a new membership without peer-B (peer-B left).
 	pmc := &PairMembershipChange{
-		Members:  []string{p2p_id, "peer-C"},
+		Members:  []string{net_id, "peer-C"},
 		Sequence: 1,
 	}
 	replication_pair_membership_apply("peer-C", pmc)

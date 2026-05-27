@@ -329,7 +329,7 @@ func TestBootstrapChunkRequestsForEntry(t *testing.T) {
 // TestBootstrapFileTransferEndToEnd: sender walks → emits manifest →
 // receiver "diffs" and chunk-fetches each file → sender reads chunk →
 // receiver writes chunk → atomic rename on EOF. Exercises the V2 hot
-// path without P2P transport (handlers called directly).
+// path without Net transport (handlers called directly).
 func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

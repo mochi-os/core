@@ -38,7 +38,7 @@ var (
 		window:  300,
 	}
 
-	// P2P stream rate limiter: 100 per second per peer
+	// Net stream rate limiter: 100 per second per peer
 	rate_limit_p2p = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   100,
@@ -66,8 +66,8 @@ var (
 		window:  60,
 	}
 
-	// Direct P2P message rate limiter: 1000 per second per app
-	rate_limit_p2p_send = &rate_limiter{
+	// Direct Net message rate limiter: 1000 per second per app
+	rate_limit_net_send = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   1000,
 		window:  1,
@@ -166,6 +166,6 @@ func ratelimit_manager() {
 		rate_limit_pubsub_out.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_url.cleanup()
-		rate_limit_p2p_send.cleanup()
+		rate_limit_net_send.cleanup()
 	}
 }

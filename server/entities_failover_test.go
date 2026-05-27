@@ -114,8 +114,8 @@ func TestEntityPeersFailoverLocalShortCircuit(t *testing.T) {
 	udb.exec("insert into entities (id, private, fingerprint, user, class, name) values ('uid-local-entity', 'p', 'fp', 'u-local', 'feed', 'F')")
 
 	got := entity_peers_failover("uid-local-entity")
-	if len(got) != 1 || got[0] != p2p_id {
-		t.Errorf("local entity: want [%s], got %v", p2p_id, got)
+	if len(got) != 1 || got[0] != net_id {
+		t.Errorf("local entity: want [%s], got %v", net_id, got)
 	}
 }
 

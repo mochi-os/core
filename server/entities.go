@@ -227,7 +227,7 @@ func entity_peer(id string) string {
 	// Check if local
 	var e Entity
 	if db_open("db/users.db").scan(&e, "select * from entities where id=?", id) {
-		return p2p_id
+		return net_id
 	}
 
 	// Check the directory's locations table for an active peer claim.
@@ -249,7 +249,7 @@ func entity_peer(id string) string {
 // back to a broadcast directory request).
 func entity_peers(id string) []string {
 	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
-		return []string{p2p_id}
+		return []string{net_id}
 	}
 	rows, _ := db_open("db/directory.db").rows("select peer from locations where entity=? and seen > ? order by seen desc", id, now()-30*86400)
 	out := make([]string, 0, len(rows))
@@ -277,7 +277,7 @@ func entity_peers(id string) []string {
 // Local entity short-circuits to [self].
 func entity_peers_failover(id string) []string {
 	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
-		return []string{p2p_id}
+		return []string{net_id}
 	}
 	db := db_open("db/directory.db")
 	now_ts := now()

@@ -15,7 +15,7 @@ import (
 )
 
 // setup_auth_replicate_test prepares the DBs the handler reads / writes
-// (users.db, sessions.db, settings.db) and stubs the synchronous P2P
+// (users.db, sessions.db, settings.db) and stubs the synchronous Net
 // helpers so tests don't spawn goroutines that outlive cleanup. Returns
 // a cleanup function.
 func setup_auth_replicate_test(t *testing.T) func() {
@@ -127,7 +127,7 @@ func TestAuthReplicateLocalEmailTaken(t *testing.T) {
 	}
 }
 
-// TestAuthReplicateSourceUnreachable: a P2P lookup failure 502s.
+// TestAuthReplicateSourceUnreachable: a Net lookup failure 502s.
 func TestAuthReplicateSourceUnreachable(t *testing.T) {
 	cleanup := setup_auth_replicate_test(t)
 	defer cleanup()
@@ -144,7 +144,7 @@ func TestAuthReplicateSourceUnreachable(t *testing.T) {
 	}
 }
 
-// TestAuthReplicateSourceUserNotFound: a P2P lookup that returns
+// TestAuthReplicateSourceUserNotFound: a Net lookup that returns
 // exists=false 404s.
 func TestAuthReplicateSourceUserNotFound(t *testing.T) {
 	cleanup := setup_auth_replicate_test(t)

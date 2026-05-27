@@ -112,8 +112,8 @@ type Frame struct {
 	// New per-message fields.
 	Codec    byte           `cbor:"codec,omitempty"`
 	Priority byte           `cbor:"priority,omitempty"`
-	Content  map[string]any `cbor:"content,omitempty"`
-	Data     []byte         `cbor:"data,omitempty"`
+	Content  map[string]any `cbor:"content,omitempty"` // message frames only — /mochi/2/stream ships content as the first post-ack CBOR segment instead
+	Data     []byte         `cbor:"data,omitempty"`    // message frames only — packed post-content CBOR segments (handler reads via e.segment)
 
 	// Handshake-only fields.
 	Challenge []byte   `cbor:"challenge,omitempty"`

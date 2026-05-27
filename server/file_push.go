@@ -344,10 +344,12 @@ func queue_send_file_push(q *QueueEntry) bool {
 			return false
 		}
 	} else {
-		// v2 path: the open frame already shipped Content. The
-		// FilePushHeader still needs to ride as a separate CBOR
-		// segment because that's what the receiver's
-		// replication_file_push_event reads via e.segment().
+		// v2 path: stream_open shipped the (empty) content map as the
+		// first post-ack segment so the receiver's receive_stream sets
+		// e.content. The FilePushHeader still needs to ride as the
+		// next CBOR segment because that's what the handler reads via
+		// e.segment(). q.Data is already CBOR-encoded so we ship it
+		// raw — receiver's decoder reads it as the next value.
 		if len(q.Data) > 0 {
 			if werr := s.write_raw(q.Data); werr != nil {
 				return false

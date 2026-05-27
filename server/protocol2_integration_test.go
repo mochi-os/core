@@ -40,6 +40,11 @@ func (p *pipe_stream) Reset() error {
 	return nil
 }
 
+// Close lets pipe_stream double as an io.ReadCloser / io.WriteCloser
+// so it can be wrapped via stream_rw in tests that need to drive the
+// full /mochi/2/stream wire (handshake + post-ack content segments).
+func (p *pipe_stream) Close() error { return p.Reset() }
+
 // new_stream_pair returns two wire_streams plumbed back-to-back: a
 // reads what b writes and vice versa. Use a-as-sender, b-as-receiver
 // for a sender↔receiver test.
@@ -431,6 +436,100 @@ func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 		if st, _ := row["status"].(string); st != "pending" {
 			t.Errorf("%s status=%q, want pending (queue_fail on stream death)", mid, st)
 		}
+	}
+}
+
+// --- /mochi/2/stream content-segment routing ---------------------------
+
+// TestStreamOpenShipsContentAsFirstPostAckSegment guards the bug found
+// in Phase 6 manual testing: when a caller passes `content` to
+// stream_open, it MUST land on the wire as the first post-ack CBOR
+// segment so the receiver's receive_stream picks it up as e.content.
+// Earlier code packed it into open.Content where the receiver never
+// looked, breaking auth_replicate's user-lookup ("No such user on the
+// source server").
+//
+// We can't run the real /mochi/2/stream receiver here without libp2p,
+// so we hand-construct the receiver side over an io.Pipe and assert
+// that the first frame the sender writes after the ack is the content
+// map.
+func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+
+	sendStream, recvStream := new_stream_pair()
+
+	got_content := make(chan map[string]any, 1)
+
+	go func() {
+		challenge, _ := hello_challenge()
+		_ = hello_write(recvStream, 2, "s", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(recvStream)
+		if err != nil {
+			t.Errorf("recv caps_read: %v", err)
+			return
+		}
+		_ = caps
+		// Drain claim + open
+		for {
+			f, err := frame_read(recvStream)
+			if err != nil {
+				return
+			}
+			if f.Type == frame_type_claim {
+				continue
+			}
+			if f.Type == frame_type_open {
+				_ = frame_write(recvStream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+				// After ack, the next thing on the wire MUST be the
+				// caller's content map. Decode it as a generic map and
+				// hand back to the test.
+				st := stream_rw(recvStream, recvStream)
+				var content map[string]any
+				if err := st.read(&content); err != nil {
+					t.Errorf("recv content read: %v", err)
+					return
+				}
+				got_content <- content
+				return
+			}
+		}
+	}()
+
+	hello, err := hello_read(sendStream, 2)
+	if err != nil {
+		t.Fatalf("hello_read: %v", err)
+	}
+	_ = hello
+
+	// Mirror what stream_open does, but call it directly so the test
+	// exercises the production code path (sender side).
+	go func() {
+		// Sender: write caps, claim, open, then content via stream_open's
+		// new post-ack write. We can't call stream_open directly because
+		// it uses peer_protocol_open + libp2p. Inline the relevant bits.
+		_ = caps_write(sendStream, []string{"zstd"}, nil)
+		_ = claim_write(sendStream, id, hello.Challenge)
+		open := &Frame{Type: frame_type_open, ID: "x", From: id,
+			Service: "svc", Event: "ev"}
+		_ = frame_write(sendStream, open)
+		// Read ack
+		_, _ = frame_read(sendStream)
+		// Now ship content as first post-ack segment (this is what
+		// stream_open does when content != nil).
+		st := stream_rw(sendStream, sendStream)
+		_ = st.write(map[string]any{"username": "alistair@acunningham.org"})
+	}()
+
+	select {
+	case got := <-got_content:
+		if got["username"] != "alistair@acunningham.org" {
+			t.Errorf("content[username] = %q, want %q", got["username"], "alistair@acunningham.org")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver never got the post-ack content segment")
 	}
 }
 

@@ -127,13 +127,28 @@ func receive_stream(s p2p_network.Stream) {
 		return
 	}
 
-	content := open.Content
-	if content == nil {
-		content = map[string]any{}
-	}
-
 	st := stream_rw(s, s)
 	st.remote = s.Conn().RemoteMultiaddr().String()
+
+	// Read the caller's first post-ack CBOR segment as e.content,
+	// matching /mochi/1's stream_receive (which read content via
+	// read_content before dispatching the handler). Callers that
+	// passed `content` to stream_open get it shipped here by
+	// stream_open's post-ack write; callers that go through
+	// stream_to_peer (Starlark mochi.stream, replication_user_lookup,
+	// etc.) write content themselves via s.write right after the call
+	// returns. Either way the receiver reads it the same way.
+	//
+	// st.read() lazy-creates a CBOR decoder backed by the libp2p
+	// stream, so any handler-side e.segment(&v) / e.stream.read(&v)
+	// calls afterwards reuse the same decoder and pick up the next
+	// segments correctly.
+	content := map[string]any{}
+	if err := st.read(&content); err != nil {
+		info("Stream: content read failed peer=%q session=%s: %v", peer, session, err)
+		st.close()
+		return
+	}
 
 	e := &Event{
 		id:              event_id(),
@@ -199,6 +214,14 @@ func stream_open(peer, from, to, service, event, from_app string,
 	}
 
 	id := uid()
+	// The open frame carries routing only. Per-call content is shipped
+	// as the FIRST post-ack CBOR segment below, matching /mochi/1's
+	// "headers then content" wire pattern. The receiver's
+	// receive_stream reads exactly one CBOR segment after the ack as
+	// e.content before dispatching, so any caller that passes
+	// `content` here is wire-compatible with handlers that already
+	// access e.content; callers that pass nil are responsible for
+	// writing their own first segment via s.write after this returns.
 	open := &Frame{
 		Type:     frame_type_open,
 		ID:       id,
@@ -208,7 +231,6 @@ func stream_open(peer, from, to, service, event, from_app string,
 		Event:    event,
 		FromApp:  from_app,
 		Services: services,
-		Content:  content,
 	}
 	if err := frame_write(rawstream, open); err != nil {
 		rawstream.Reset()
@@ -224,6 +246,17 @@ func stream_open(peer, from, to, service, event, from_app string,
 	case frame_type_ack:
 		// Handshake complete; raw bytes from here on.
 		st := stream_rw(io.ReadCloser(rawstream), io.WriteCloser(rawstream))
+		// If the caller passed a content map, ship it as the first
+		// post-ack segment so receive_stream's read picks it up as
+		// e.content. nil-content callers (stream_to_peer) write their
+		// own first segment after the call returns.
+		if content != nil {
+			if err := st.write(content); err != nil {
+				st.close()
+				return nil, hello.Session,
+					fmt.Errorf("stream: content write failed peer=%q: %w", peer, err)
+			}
+		}
 		return st, hello.Session, nil
 	case frame_type_fail:
 		rawstream.Close()

@@ -349,7 +349,7 @@ func net_ping_manager() {
 		peers_lock.Lock()
 		connected := []string{}
 		for id, p := range peers {
-			if p.connected {
+			if p.state == peer_state_connected {
 				connected = append(connected, id)
 			}
 		}

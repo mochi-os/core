@@ -1,10 +1,16 @@
-// Mochi server: Peers
+// Mochi server: Peer registry — identity, addresses, persistence.
+//
+// This file owns the in-memory `peers` map of known libp2p peers and
+// the on-disk peers.db that backs it. Connection lifecycle
+// (peer_connect, peer_disconnected, reconnect manager, shutdown bye)
+// lives in peer_connect.go; the silent-cache fast-fail logic lives in
+// peer_reachability.go.
+//
 // Copyright Alistair Cunningham 2024-2026
 
 package main
 
 import (
-	"io"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -14,14 +20,28 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
+// peer_state is the current libp2p-level connection state for a peer.
+// Transitions are gated by peers_lock; the connecting → connected /
+// disconnected transition happens after a synchronous net_connect call
+// outside the lock (libp2p connect can block for the full TCP
+// timeout). The connecting state prevents two concurrent callers from
+// racing onto net_connect for the same peer.
+type peer_state int
+
+const (
+	peer_state_disconnected peer_state = iota
+	peer_state_connecting
+	peer_state_connected
+)
+
 type Peer struct {
 	ID        string
 	Updated   int64 // throttles peers.db saves to at most once per hour per peer
 	addresses []PeerAddress
-	connected bool
+	state     peer_state
 }
 
-// PeerAddress tracks a peer's address with a last-seen timestamp
+// PeerAddress tracks a peer's address with a last-seen timestamp.
 type PeerAddress struct {
 	Address string
 	Updated int64
@@ -37,7 +57,7 @@ type peer_row struct {
 	Updated int64
 }
 
-// peer_address_strings extracts address strings from a slice of PeerAddress
+// peer_address_strings extracts address strings from a slice of PeerAddress.
 func peer_address_strings(addrs []PeerAddress) []string {
 	out := make([]string, len(addrs))
 	for i, a := range addrs {
@@ -50,47 +70,6 @@ const (
 	peers_minimum          = 1
 	peer_maximum_addresses = 20
 )
-
-// Reconnection state for a disconnected peer
-type PeerReconnect struct {
-	NextRetry int64
-	Attempts  int
-}
-
-// PeerReachability is the in-memory fast-fail signal for outbound
-// sends. Without it every queue_process goroutine and every
-// /mochi/2/messages sender_open call independently pays the unbounded
-// libp2p connect timeout on `net_me.Connect()` when the target peer is
-// offline. Three consecutive failures within the skip window mean
-// "skip the libp2p attempt and return nil immediately" — the queue row
-// stays pending under the usual exponential backoff, the Sender open
-// returns errSenderUnreachable, and the pull_loop just polls until the
-// silence ages out.
-//
-// Both /mochi/1 (peer_stream) and /mochi/2 (peer_protocol_open) feed
-// this cache; one reachability oracle covers both protocols.
-//
-// Not persisted: a server restart starts every peer with zero failures
-// recorded, so every peer gets a fresh trial. The map is bounded by
-// the number of distinct peers we've ever queued for in this process;
-// GC pressure is negligible (a few thousand entries at most on a busy
-// server).
-type PeerReachability struct {
-	ConsecutiveFailures int
-	LastAttempt         int64
-}
-
-// peer_silent_failure_threshold is the number of consecutive failed
-// stream-opens before peer_is_silent starts returning true. Three is
-// conservative — transient blips (one missed packet, a router
-// reboot, an in-progress reconnect) don't silence the peer.
-const peer_silent_failure_threshold = 3
-
-// peer_silent_skip_window is how long after a failed attempt the peer
-// stays silent before we'll trial another send. Short enough that a
-// reconnecting peer drains its backlog within a couple of minutes;
-// long enough that wasted libp2p timeouts are amortised.
-const peer_silent_skip_window = 60
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
 // when mochi.conf doesn't override [publisher] peer. Wasabi's libp2p
@@ -110,73 +89,11 @@ var (
 	// net_start see usable values. peers_bootstrap_load() reruns at
 	// startup and replaces them with whatever mochi.conf specifies (or
 	// the same hardcoded defaults if unset).
-	peer_default_publisher = peer_default_publisher_hardcoded
-	peers_bootstrap        = bootstrap_addresses_parse(bootstrap_addresses_hardcoded)
+	peer_default_publisher                 = peer_default_publisher_hardcoded
+	peers_bootstrap                        = bootstrap_addresses_parse(bootstrap_addresses_hardcoded)
 	peers                  map[string]Peer = map[string]Peer{}
-	peer_publish_chan                      = make(chan bool, 1) // buffer-1 so peer_request_event doesn't block on a slow publisher
 	peers_lock                             = &sync.Mutex{}
-	peer_reconnects                        = map[string]PeerReconnect{}
-	peer_reconnect_lock                    = &sync.Mutex{}
-	peer_reachability                      = map[string]PeerReachability{}
-	peer_reachability_lock                 = &sync.Mutex{}
 )
-
-// peer_is_silent returns true when the peer has been failing recently
-// and the caller should fast-fail without attempting a libp2p
-// connect. Bootstrap peers are always trusted infrastructure; never
-// silenced. Self never silenced (in-process pipe can't fail).
-func peer_is_silent(id string) bool {
-	if id == "" || id == net_id || peer_is_bootstrap(id) {
-		return false
-	}
-	peer_reachability_lock.Lock()
-	defer peer_reachability_lock.Unlock()
-	r, ok := peer_reachability[id]
-	if !ok || r.ConsecutiveFailures < peer_silent_failure_threshold {
-		return false
-	}
-	return now()-r.LastAttempt < peer_silent_skip_window
-}
-
-// peer_mark_send_success clears any silent state. Called when an
-// outbound libp2p stream opens cleanly — by peer_stream on the
-// /mochi/1 path and by peer_protocol_open on the /mochi/2 path. The
-// libp2p layer being alive is what matters here; whether the eventual
-// app-level ACK arrives is a separate concern.
-func peer_mark_send_success(id string) {
-	if id == "" || id == net_id {
-		return
-	}
-	peer_reachability_lock.Lock()
-	defer peer_reachability_lock.Unlock()
-	peer_reachability[id] = PeerReachability{ConsecutiveFailures: 0, LastAttempt: now()}
-}
-
-// peer_mark_send_failed records one stream-open failure. Called from
-// the peer_connect=false branches in peer_stream (/mochi/1) and
-// peer_protocol_open (/mochi/2) when the libp2p connect itself fails
-// — that's the "peer is unreachable" signal we want to silence on.
-// Transient stream-open errors after a successful connect don't count
-// (the peer IS reachable; the failure is application- or
-// protocol-level, handled separately).
-func peer_mark_send_failed(id string) {
-	if id == "" || id == net_id {
-		return
-	}
-	peer_reachability_lock.Lock()
-	defer peer_reachability_lock.Unlock()
-	r := peer_reachability[id]
-	r.ConsecutiveFailures++
-	r.LastAttempt = now()
-	peer_reachability[id] = r
-}
-
-func init() {
-	a := app("peers")
-	a.service("peers")
-	a.event_anonymous("request", peer_request_event) // Unsigned pubsub broadcast
-	a.event_anonymous("publish", peer_publish_event) // Unsigned pubsub broadcast
-}
 
 // bootstrap_addresses_parse turns a comma-separated list of multiaddrs
 // (each carrying its /p2p/<id> suffix) into a slice of Peer entries,
@@ -243,7 +160,7 @@ func peers_bootstrap_load() {
 	})
 }
 
-// peer_is_bootstrap returns true if the peer ID is a bootstrap peer
+// peer_is_bootstrap returns true if the peer ID is a bootstrap peer.
 func peer_is_bootstrap(id string) bool {
 	for _, p := range peers_bootstrap {
 		if p.ID == id {
@@ -270,7 +187,7 @@ func peer_is_pair(id string) bool {
 	return exists
 }
 
-// Add some peers we already know about from the database
+// Add some peers we already know about from the database.
 func peers_add_from_db(limit int) {
 	var ps []peer_row
 	db := db_open("db/peers.db")
@@ -310,7 +227,7 @@ func peer_add_known(id string, addresses []string) {
 	t := now()
 	p, found := peers[id]
 	if !found {
-		p = Peer{ID: id, connected: false}
+		p = Peer{ID: id}
 	}
 	for _, addr := range addresses {
 		exists := false
@@ -340,7 +257,7 @@ func peer_add_known(id string, addresses []string) {
 	peers[id] = p
 }
 
-// Get details of a peer, either from memory, or from database
+// Get details of a peer, either from memory, or from database.
 func peer_by_id(id string) *Peer {
 	peers_lock.Lock()
 	p, found := peers[id]
@@ -350,7 +267,7 @@ func peer_by_id(id string) *Peer {
 	}
 
 	// Load from database
-	p = Peer{ID: id, connected: false}
+	p = Peer{ID: id}
 
 	var ps []peer_row
 	db := db_open("db/peers.db")
@@ -360,7 +277,6 @@ func peer_by_id(id string) *Peer {
 		return nil
 	}
 	if len(ps) == 0 {
-		//debug("Peer %q not found in database", id)
 		return nil
 	}
 	for _, a := range ps {
@@ -376,141 +292,7 @@ func peer_by_id(id string) *Peer {
 	return &p
 }
 
-// Connect to a peer if possible
-// Call peer_add_known(), peer_discovered(), or peer_discovered_address() before calling peer_connect()
-func peer_connect(id string) bool {
-	if id == net_id {
-		return true
-	}
-
-	peers_lock.Lock()
-	p, found := peers[id]
-	peers_lock.Unlock()
-
-	if !found {
-		return false
-	}
-
-	if p.connected {
-		return true
-	}
-	p.connected = net_connect(id, peer_address_strings(p.addresses))
-
-	// Refresh the timestamp of the address we actually connected on
-	if p.connected {
-		peer_refresh_connected_address(id)
-		peer_reconnected(id)
-		// Any queue rows deferred by queue_process's silent-peer
-		// pre-filter (1h next_retry push when peer_is_silent) become
-		// ready immediately. Without this the backlog waits out the
-		// deferral despite the peer being back.
-		queue_resurrect_peer(id)
-	}
-
-	peers_lock.Lock()
-	peers[id] = p
-	peers_lock.Unlock()
-
-	return p.connected
-}
-
-// Refresh the timestamp of the address we actually connected on
-func peer_refresh_connected_address(id string) {
-	pid, err := p2p_peer.Decode(id)
-	if err != nil {
-		return
-	}
-
-	conns := net_me.Network().ConnsToPeer(pid)
-	if len(conns) == 0 {
-		return
-	}
-
-	t := now()
-	addr := conns[0].RemoteMultiaddr().String() + "/p2p/" + id
-
-	peers_lock.Lock()
-	if p, found := peers[id]; found {
-		for i, a := range p.addresses {
-			if a.Address == addr {
-				p.addresses[i].Updated = t
-				peers[id] = p
-				break
-			}
-		}
-	}
-	peers_lock.Unlock()
-
-	db := db_open("db/peers.db")
-	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, addr, t)
-}
-
-// peer_disconnect_hooks fires once per disconnect, in registration
-// order. Subsystems with per-peer state (the /mochi/2 protocol cache,
-// the /mochi/2 Sender registry, future caches) self-register via
-// peer_register_disconnect_hook in their init() so peers.go doesn't
-// have to know about them.
-var (
-	peer_disconnect_hooks      []func(string)
-	peer_disconnect_hooks_lock sync.Mutex
-)
-
-// peer_register_disconnect_hook adds a callback that runs each time
-// peer_disconnected fires. Hooks run synchronously in the order they
-// were registered. Use this for "tear down my per-peer state on
-// disconnect" — typical examples: cache invalidation, in-flight
-// goroutine shutdown, metric counters.
-//
-// Hooks must be cheap (they all run synchronously on the libp2p
-// disconnect event dispatch path); offload anything expensive.
-func peer_register_disconnect_hook(fn func(string)) {
-	if fn == nil {
-		return
-	}
-	peer_disconnect_hooks_lock.Lock()
-	defer peer_disconnect_hooks_lock.Unlock()
-	peer_disconnect_hooks = append(peer_disconnect_hooks, fn)
-}
-
-// Peer has become disconnected
-func peer_disconnected(id string) {
-	if id == "" {
-		return
-	}
-	debug("Peer %q disconnected", id)
-
-	peers_lock.Lock()
-	if p, found := peers[id]; found {
-		p.connected = false
-		peers[id] = p
-	}
-	peers_lock.Unlock()
-
-	peer_disconnect_hooks_lock.Lock()
-	hooks := peer_disconnect_hooks
-	peer_disconnect_hooks_lock.Unlock()
-	for _, fn := range hooks {
-		fn(id)
-	}
-
-	// Schedule reconnection if not already scheduled
-	peer_reconnect_lock.Lock()
-	if _, scheduled := peer_reconnects[id]; !scheduled {
-		delay := int64(10) + rand.Int64N(5) // 10-14 seconds initial delay with jitter
-		peer_reconnects[id] = PeerReconnect{NextRetry: now() + delay, Attempts: 0}
-		//debug("Peer %q scheduled for reconnection in %ds", id, delay)
-	}
-	peer_reconnect_lock.Unlock()
-}
-
-// Clear reconnection state for a peer (called when peer connects by any means)
-func peer_reconnected(id string) {
-	peer_reconnect_lock.Lock()
-	delete(peer_reconnects, id)
-	peer_reconnect_lock.Unlock()
-}
-
-// New or existing peer discovered or re-discovered at unknown address
+// New or existing peer discovered or re-discovered at unknown address.
 func peer_discovered(id string) {
 	p, err := p2p_peer.Decode(id)
 	if err != nil {
@@ -524,13 +306,13 @@ func peer_discovered(id string) {
 	go queue_check_peer(id)
 }
 
-// New or existing peer discovered or re-discovered at known address
+// New or existing peer discovered or re-discovered at known address.
 func peer_discovered_address(id string, address string) {
 	peer_discovered_work(id, address)
 	go queue_check_peer(id)
 }
 
-// Do the work for the above two functions
+// Do the work for the above two functions.
 func peer_discovered_work(id string, address string) {
 	t := now()
 	save := false
@@ -581,7 +363,7 @@ func peer_discovered_work(id string, address string) {
 	}
 }
 
-// Clean up stale peers
+// Clean up stale peers.
 func peers_manager() {
 	for range time.Tick(24 * time.Hour) {
 		expiry := now() - 14*86400
@@ -614,7 +396,7 @@ func peers_manager() {
 			p.addresses = kept
 
 			// Remove peer from memory if no addresses remain and not connected
-			if len(p.addresses) == 0 && !p.connected {
+			if len(p.addresses) == 0 && p.state != peer_state_connected {
 				delete(peers, id)
 			} else {
 				peers[id] = p
@@ -624,166 +406,7 @@ func peers_manager() {
 	}
 }
 
-// Reconnect to disconnected peers with exponential backoff
-func peer_reconnect_manager() {
-	for range time.Tick(10 * time.Second) {
-		t := now()
-		var ready []string
-
-		// Collect peers ready for reconnection (max 3 per tick)
-		peer_reconnect_lock.Lock()
-		for id, r := range peer_reconnects {
-			if r.NextRetry <= t {
-				ready = append(ready, id)
-				if len(ready) >= 3 {
-					break
-				}
-			}
-		}
-		peer_reconnect_lock.Unlock()
-
-		for _, id := range ready {
-			if peer_connect(id) {
-				debug("Peer %q reconnected successfully", id)
-				continue
-			}
-
-			// Backoff: 10s, 20s, 40s, 80s, 160s, 300s (capped at 5 minutes)
-			peer_reconnect_lock.Lock()
-			r := peer_reconnects[id]
-			r.Attempts++
-			delay := int64(10) << min(r.Attempts, 5) // 20, 40, 80, 160, 320
-			if delay > 300 {
-				delay = 300
-			}
-			delay += rand.Int64N(delay/4 + 1) // 0-25% jitter
-			r.NextRetry = now() + delay
-			peer_reconnects[id] = r
-			peer_reconnect_lock.Unlock()
-			//debug("Peer %q reconnect attempt %d failed, next retry in %ds", id, r.Attempts, delay)
-		}
-	}
-}
-
-// Publish our own information to the pubsub regularly or when requested
-func peers_publish() {
-	for {
-		message("", "", "peers", "publish").publish(false)
-
-		select {
-		case <-peer_publish_chan:
-			debug("Peer publish requested")
-		case <-time.After(time.Hour):
-			debug("Peer routine publish")
-		}
-	}
-}
-
-// Received a peer publish event from another server
-// We don't need to do anything here because we've already
-// marked the peer as discovered in net_pubsubs()
-func peer_publish_event(e *Event) {
-}
-
-// Reply to a peer request if for us. Non-blocking — if a publish is
-// already pending the second request collapses with it.
-func peer_request_event(e *Event) {
-	if e.get("id", "") != net_id {
-		return
-	}
-	select {
-	case peer_publish_chan <- true:
-	default:
-	}
-}
-
-// Get a reader and writer to a peer, connecting if necessary
-func peer_stream(id string) *Stream {
-	if id == "" {
-		return nil
-	}
-
-	if id == net_id {
-		r1, w1 := io.Pipe()
-		r2, w2 := io.Pipe()
-		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, net_id)
-		return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r2}, writer: &pipe_writer{PipeWriter: w1}}
-	}
-
-	// Fast-fail for recently-silent peers. Without this every
-	// queue_process tick re-attempts the libp2p connect for a peer
-	// known to be unreachable, blocking that bucket for the full
-	// connect timeout (tens of seconds). The skip lasts
-	// peer_silent_skip_window; after that we trial one attempt and
-	// either clear the silence (peer back) or re-arm it (still gone).
-	if peer_is_silent(id) {
-		return nil
-	}
-
-	p := peer_by_id(id)
-	if p == nil {
-		// In a future version, rate limit this
-		//debug("Peer %q unknown, sending pubsub request for it", id)
-		message("", "", "peers", "request").set("id", id).publish(false)
-		peer_mark_send_failed(id)
-		return nil
-	}
-
-	if !peer_connect(id) {
-		peer_mark_send_failed(id)
-		return nil
-	}
-
-	s := net_stream(id)
-	if s == nil {
-		return nil
-	}
-	peer_mark_send_success(id)
-	return s
-}
-
-// Check whether we have enough peers in the pubsub mesh to send broadcast messages to
+// Check whether we have enough peers in the pubsub mesh to send broadcast messages to.
 func peers_sufficient() bool {
 	return len(net_pubsub_1.ListPeers()) >= peers_minimum
 }
-
-// Notify peers of shutdown (best effort).
-//
-// Two paths: peers that already have an open /mochi/2/messages stream
-// get a `bye` frame on the existing Sender (preserves the in-flight
-// drain semantics). Peers we haven't talked to via /mochi/2 yet — or
-// /mochi/1-only peers — get the legacy fresh-stream bye on /mochi/1.
-//
-// peers_shutdown_drain_timeout caps how long we'll wait for the
-// senders' inflight to empty before forcing the close.
-func peers_shutdown() {
-	// First, drain every open /mochi/2/messages Sender via bye + wait.
-	senders_bye_all(peers_shutdown_drain_timeout)
-
-	peers_lock.Lock()
-	connected := []string{}
-	for id, p := range peers {
-		if p.connected {
-			connected = append(connected, id)
-		}
-	}
-	peers_lock.Unlock()
-
-	// Then send the legacy bye to every still-connected peer that
-	// didn't have a /mochi/2 Sender. peers with both will receive
-	// two bye frames — that's harmless; both paths treat it as
-	// "stop sending us new work".
-	info("Notifying %d connected peers of shutdown", len(connected))
-	for _, id := range connected {
-		s := net_stream(id)
-		if s != nil && s.writer != nil {
-			s.write(Headers{Type: "bye"})
-			s.writer.Close()
-		}
-	}
-}
-
-// peers_shutdown_drain_timeout — how long peers_shutdown waits for
-// senders' inflight to drain on bye. Long enough for most inflight to
-// ack on a healthy link; short enough not to delay shutdown noticeably.
-var peers_shutdown_drain_timeout = 5 * time.Second

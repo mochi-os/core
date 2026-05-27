@@ -223,6 +223,112 @@ func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
 	}
 }
 
+// TestQueueClaimForSelf: queue_claim_for_self must atomically pull
+// direct rows targeting net_id and flip them to status='sending', so
+// queue_process won't double-pick them.
+func TestQueueClaimForSelf(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+
+	saved := net_id
+	net_id = "12D3KooWFakeSelfForClaimTest-aaaaaaaaaaaaaaaaaaaa"
+	defer func() { net_id = saved }()
+
+	db := db_open("db/queue.db")
+	// Three self-loop rows + one row for a different peer (must not
+	// be claimed).
+	for i := 0; i < 3; i++ {
+		db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+			values (?, 'direct', ?, '', '', 't', 'm', 0, ?, ?, ?)`,
+			fmt.Sprintf("self-%d", i), net_id, now()-1, now(), priority_interactive)
+	}
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+		values (?, 'direct', ?, '', '', 't', 'm', 0, ?, ?, ?)`,
+		"other-peer", "12D3KooWOtherPeerNotSelf-bbbbbbbbbbbbbbbbbbbbbbbb", now()-1, now(), priority_interactive)
+
+	rows := queue_claim_for_self(50)
+	if len(rows) != 3 {
+		t.Fatalf("queue_claim_for_self returned %d rows, want 3 (self-loop only)", len(rows))
+	}
+	for _, r := range rows {
+		if r.Target != net_id {
+			t.Errorf("claimed row target = %q, want %q", r.Target, net_id)
+		}
+	}
+
+	// Claimed rows must be 'sending' in queue.db; other-peer untouched.
+	for i := 0; i < 3; i++ {
+		row, _ := db.row("select status from queue where id = ?", fmt.Sprintf("self-%d", i))
+		if status, _ := row["status"].(string); status != "sending" {
+			t.Errorf("self-%d status after claim = %q, want sending", i, status)
+		}
+	}
+	row, _ := db.row("select status from queue where id = ?", "other-peer")
+	if status, _ := row["status"].(string); status != "pending" {
+		t.Errorf("other-peer status after self-claim = %q, want pending (not touched)", status)
+	}
+
+	// Second call returns no rows (all three already 'sending').
+	if rows := queue_claim_for_self(50); len(rows) != 0 {
+		t.Errorf("queue_claim_for_self second call returned %d rows, want 0 (all claimed)", len(rows))
+	}
+}
+
+// TestQueueClaimForSelfNoNetId: when net_id is empty (early startup,
+// pre-net_start), queue_claim_for_self must return nil rather than
+// claiming rows for target=''.
+func TestQueueClaimForSelfNoNetId(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+
+	saved := net_id
+	net_id = ""
+	defer func() { net_id = saved }()
+
+	db := db_open("db/queue.db")
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+		values ('empty-target', 'direct', '', '', '', 't', 'm', 0, ?, ?, ?)`,
+		now()-1, now(), priority_interactive)
+
+	if rows := queue_claim_for_self(50); rows != nil {
+		t.Errorf("queue_claim_for_self with empty net_id returned %d rows; want nil (avoid claiming empty-target rows)", len(rows))
+	}
+}
+
+// TestQueueProcessSkipsSelfLoopRows: queue_process must NOT dispatch
+// direct rows whose target is net_id — self_loop_drain owns them.
+// Same reasoning as TestQueueProcessSkipsRowsWithActiveSender: avoid
+// two paths competing for the same workload, keep queue_process tick
+// fast.
+func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+
+	saved := net_id
+	net_id = "12D3KooWFakeSelfForProcessSkip-cccccccccccccccccc"
+	defer func() { net_id = saved }()
+
+	db := db_open("db/queue.db")
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+		values ('self-row', 'direct', ?, '', '', 't', 'm', 0, ?, ?, ?)`,
+		net_id, now()-1, now(), priority_interactive)
+
+	if n := queue_process(); n != 0 {
+		t.Errorf("self-loop row: queue_process acted on %d, want 0 (self_loop_drain owns it)", n)
+	}
+
+	row, err := db.row("select status from queue where id = ?", "self-row")
+	if err != nil || row == nil {
+		t.Fatal("self-loop row unexpectedly deleted")
+	}
+	if status, _ := row["status"].(string); status != "pending" {
+		t.Errorf("self-loop row status after queue_process skip = %q, want pending", status)
+	}
+}
+
 // TestQueueProcessSkipsRowsWithActiveSender: queue_process must NOT
 // dispatch direct rows whose target has an active /mochi/2/messages
 // Sender — pull_loop owns them. If queue_process competes for the

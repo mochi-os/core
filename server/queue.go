@@ -111,14 +111,28 @@ const (
 // manager to do beyond what queue_process already handles.
 var queue_wake_ch = make(chan struct{}, 1)
 
-// queue_wake nudges the queue manager AND every open /mochi/2/messages
-// Sender. Non-blocking on both — already-pending wakes are dropped.
-// Senders consult queue.db on each tick / wake to pull rows targeting
-// their peer; queue_process handles everything else (broadcasts, file
-// pushes, /mochi/1-fallback peers, empty-target rows).
+// self_loop_wake_ch nudges the self_loop_drain goroutine to claim
+// pending self-loop rows immediately. Same buffer-1 coalescing as
+// queue_wake_ch and Sender.wake — multiple wakes between drains
+// collapse into a single pass.
+var self_loop_wake_ch = make(chan struct{}, 1)
+
+// queue_wake nudges the queue manager, the self_loop drain, AND every
+// open /mochi/2/messages Sender. Non-blocking on all three —
+// already-pending wakes are dropped. Each consumer drains the slice of
+// queue.db it owns:
+//
+//   - Senders' pull_loop: direct rows with target == <its peer>
+//   - self_loop_drain: direct rows with target == net_id
+//   - queue_process: everything else (broadcasts, file pushes,
+//     /mochi/1-only peers, offline-peer fast-fails, empty-target rows)
 func queue_wake() {
 	select {
 	case queue_wake_ch <- struct{}{}:
+	default:
+	}
+	select {
+	case self_loop_wake_ch <- struct{}{}:
 	default:
 	}
 	senders_wake_all()
@@ -170,6 +184,40 @@ func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 		peer, now(), limit)
 	if err != nil {
 		info("queue_claim_for_peer error peer=%q: %v", peer, err)
+		return nil
+	}
+	return rows
+}
+
+// queue_claim_for_self atomically claims up to `limit` direct rows
+// whose target is net_id, marking them status='sending' in the same
+// statement so queue_process won't double-pick them. Used by
+// self_loop_drain (the symmetric counterpart to Sender.pull_loop).
+// Same SQL shape as queue_claim_for_peer; the queue_target_priority_retry
+// index handles both equally well.
+//
+// File pushes are excluded — file/push to self is a no-op nobody
+// emits; if one ever appears, queue_process picks it up.
+func queue_claim_for_self(limit int) []QueueEntry {
+	if net_id == "" || limit <= 0 {
+		return nil
+	}
+	db := db_open("db/queue.db")
+	var rows []QueueEntry
+	err := db.scans(&rows, `update queue set status='sending'
+		where id in (
+			select id from queue
+			where target=? and status='pending' and next_retry<=?
+				and type='direct' and event != 'file/push'
+			order by priority desc, next_retry asc
+			limit ?
+		)
+		returning id, type, target, from_entity, to_entity, service, event,
+			from_app, from_services, content, data, file, expires, status,
+			attempts, next_retry, created, priority`,
+		net_id, now(), limit)
+	if err != nil {
+		info("queue_claim_for_self error: %v", err)
 		return nil
 	}
 	return rows
@@ -697,6 +745,15 @@ func queue_process() int {
 			// deferred, just routed to a different mechanism.
 			continue
 		}
+		// Self-loop pre-filter: same logic for target == net_id.
+		// self_loop_drain claims these rows atomically and dispatches
+		// them straight to the per-(user, app) worker via
+		// queue_send_self_loop_fast — no need (and no benefit) for
+		// queue_process to compete. File pushes to self are a no-op
+		// nobody emits; if one ever appears, queue_process handles it.
+		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && q.Target == net_id {
+			continue
+		}
 		valid = append(valid, q)
 	}
 
@@ -850,6 +907,59 @@ func queue_drain(timeout time.Duration) {
 	remaining := db.integer("select count(*) from queue")
 	if remaining > 0 {
 		info("Queue drain timeout, %d messages still pending", remaining)
+	}
+}
+
+// self_loop_drain owns queue.db's self-loop slice (direct rows with
+// target == net_id). Symmetric with Sender.pull_loop, which owns the
+// per-peer slice. Wakes on a 1-second tick (heartbeat) or a queue_wake
+// nudge; claims a batch via queue_claim_for_self; dispatches each row
+// through queue_send_self_loop_fast (which decodes content, resolves
+// (user, app), and enqueues onto the worker's inbox). The worker's
+// reply target (queue_reply) resolves the row via queue_ack / queue_fail
+// after the handler runs.
+//
+// Why a dedicated goroutine instead of folding into queue_process:
+//
+//   - queue_process's WaitGroup.Wait at end-of-tick blocks until every
+//     dispatched goroutine returns. When the batch includes a slow
+//     /mochi/1 NACK or an offline-peer connect timeout, the tick drags
+//     out to sender_send_timeout (~5s), starving everything else in
+//     the next batch. A dedicated drain only ever handles self-loop
+//     rows — nothing slow can hold it up.
+//   - Backpressure visibility: when the worker pool saturates,
+//     worker_dispatch blocks self_loop_drain and the queue.db depth
+//     for self-loop rows visibly rises (mochictl queue-length /
+//     pipelining status). With the queue_process path the same
+//     backpressure shows up as opaque goroutine stalls.
+//   - Symmetric with pull_loop, so the architecture is "every queue
+//     consumer has its own reader".
+//
+// Batch size mirrors queue_select's 50: large enough to amortise the
+// claim cost, small enough that worker_dispatch back-pressure shows up
+// promptly on the next iteration.
+const self_loop_batch = 50
+
+func self_loop_drain() {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		rows := queue_claim_for_self(self_loop_batch)
+		for i := range rows {
+			// Worker dispatch is blocking; if the worker inbox is full
+			// we wait here. That's the backpressure path — visible as
+			// queue depth growing rather than as an invisible stall.
+			queue_send_self_loop_fast(&rows[i])
+		}
+		if len(rows) >= self_loop_batch {
+			// Saturated batch — likely more rows are due. Don't sleep,
+			// loop immediately (matches queue_manager's drain shape).
+			continue
+		}
+		select {
+		case <-tick.C:
+		case <-self_loop_wake_ch:
+		}
 	}
 }
 

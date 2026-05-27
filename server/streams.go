@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-const peer_max_streams = 32 // Max concurrent outbound streams per peer
-
 const (
 	challenge_size    = 16
 	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size

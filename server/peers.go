@@ -6,22 +6,33 @@ package main
 import (
 	"io"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
 type Peer struct {
 	ID        string
-	Address   string
-	Updated   int64
+	Updated   int64 // throttles peers.db saves to at most once per hour per peer
 	addresses []PeerAddress
 	connected bool
 }
 
 // PeerAddress tracks a peer's address with a last-seen timestamp
 type PeerAddress struct {
+	Address string
+	Updated int64
+}
+
+// peer_row is the sqlx scan target for `select id, address, updated
+// from peers ...` — one row per (peer, address) tuple. Kept separate
+// from Peer so the in-memory Peer struct doesn't carry a singular
+// `Address` field that's only meaningful during SQL scanning.
+type peer_row struct {
+	ID      string
 	Address string
 	Updated int64
 }
@@ -47,20 +58,23 @@ type PeerReconnect struct {
 }
 
 // PeerReachability is the in-memory fast-fail signal for outbound
-// sends. queue_process spawns one goroutine per ready queue row;
-// without this, each one independently pays the unbounded libp2p
-// connect timeout on `net_me.Connect()` when the target peer is
+// sends. Without it every queue_process goroutine and every
+// /mochi/2/messages sender_open call independently pays the unbounded
+// libp2p connect timeout on `net_me.Connect()` when the target peer is
 // offline. Three consecutive failures within the skip window mean
-// "skip the libp2p attempt and return nil immediately" — the queue
-// row goes back to pending under the usual exponential backoff. A
-// single successful stream-open resets the counter, so a returning
-// peer is picked back up on the next attempt.
+// "skip the libp2p attempt and return nil immediately" — the queue row
+// stays pending under the usual exponential backoff, the Sender open
+// returns errSenderUnreachable, and the pull_loop just polls until the
+// silence ages out.
 //
-// Not persisted: a server restart starts every peer with zero
-// failures recorded, so every peer gets a fresh trial. The map is
-// bounded by the number of distinct peers we've ever queued for in
-// this process; GC-pressure is negligible (a few thousand entries
-// at most on a busy server).
+// Both /mochi/1 (peer_stream) and /mochi/2 (peer_protocol_open) feed
+// this cache; one reachability oracle covers both protocols.
+//
+// Not persisted: a server restart starts every peer with zero failures
+// recorded, so every peer gets a fresh trial. The map is bounded by
+// the number of distinct peers we've ever queued for in this process;
+// GC pressure is negligible (a few thousand entries at most on a busy
+// server).
 type PeerReachability struct {
 	ConsecutiveFailures int
 	LastAttempt         int64
@@ -78,21 +92,31 @@ const peer_silent_failure_threshold = 3
 // long enough that wasted libp2p timeouts are amortised.
 const peer_silent_skip_window = 60
 
+// peer_default_publisher_hardcoded is the fallback publisher peer ID
+// when mochi.conf doesn't override [publisher] peer. Wasabi's libp2p
+// id; serves the published-app catalogue.
+const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+
+// bootstrap_addresses_hardcoded is the fallback list of bootstrap
+// multiaddresses when mochi.conf doesn't override [bootstrap]
+// addresses. Comma-separated multiaddrs; each includes /p2p/<peer-id>
+// so the peer identity is recoverable. Out-of-the-box installs need
+// at least one reachable bootstrap to discover the wider network.
+const bootstrap_addresses_hardcoded = "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+
 var (
-	peer_default_publisher = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
-	peers_bootstrap        = []Peer{
-		Peer{ID: "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH", addresses: []PeerAddress{
-			{Address: "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
-			{Address: "/ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"},
-		}},
-	}
+	// peer_default_publisher + peers_bootstrap start at the hardcoded
+	// defaults so package init() and tests that read them before
+	// net_start see usable values. peers_bootstrap_load() reruns at
+	// startup and replaces them with whatever mochi.conf specifies (or
+	// the same hardcoded defaults if unset).
+	peer_default_publisher = peer_default_publisher_hardcoded
+	peers_bootstrap        = bootstrap_addresses_parse(bootstrap_addresses_hardcoded)
 	peers                  map[string]Peer = map[string]Peer{}
-	peer_publish_chan                      = make(chan bool)
+	peer_publish_chan                      = make(chan bool, 1) // buffer-1 so peer_request_event doesn't block on a slow publisher
 	peers_lock                             = &sync.Mutex{}
 	peer_reconnects                        = map[string]PeerReconnect{}
 	peer_reconnect_lock                    = &sync.Mutex{}
-	peer_sems                              = map[string]chan struct{}{}
-	peer_sems_lock                         = &sync.Mutex{}
 	peer_reachability                      = map[string]PeerReachability{}
 	peer_reachability_lock                 = &sync.Mutex{}
 )
@@ -114,10 +138,11 @@ func peer_is_silent(id string) bool {
 	return now()-r.LastAttempt < peer_silent_skip_window
 }
 
-// peer_mark_send_success clears any silent state. Called when
-// peer_stream successfully opens an outbound stream (the libp2p
-// layer is alive even if the eventual ACK never arrives — the gap
-// we care about is "can we reach this peer at all").
+// peer_mark_send_success clears any silent state. Called when an
+// outbound libp2p stream opens cleanly — by peer_stream on the
+// /mochi/1 path and by peer_protocol_open on the /mochi/2 path. The
+// libp2p layer being alive is what matters here; whether the eventual
+// app-level ACK arrives is a separate concern.
 func peer_mark_send_success(id string) {
 	if id == "" || id == net_id {
 		return
@@ -127,10 +152,13 @@ func peer_mark_send_success(id string) {
 	peer_reachability[id] = PeerReachability{ConsecutiveFailures: 0, LastAttempt: now()}
 }
 
-// peer_mark_send_failed records one stream-open failure. Called only
-// from the peer_connect=false branch in peer_stream; other peer_stream
-// failure paths (semaphore timeout, transient stream open error) don't
-// indicate the peer itself is unreachable.
+// peer_mark_send_failed records one stream-open failure. Called from
+// the peer_connect=false branches in peer_stream (/mochi/1) and
+// peer_protocol_open (/mochi/2) when the libp2p connect itself fails
+// — that's the "peer is unreachable" signal we want to silence on.
+// Transient stream-open errors after a successful connect don't count
+// (the peer IS reachable; the failure is application- or
+// protocol-level, handled separately).
 func peer_mark_send_failed(id string) {
 	if id == "" || id == net_id {
 		return
@@ -148,7 +176,68 @@ func init() {
 	a.service("peers")
 	a.event_anonymous("request", peer_request_event) // Unsigned pubsub broadcast
 	a.event_anonymous("publish", peer_publish_event) // Unsigned pubsub broadcast
+}
 
+// bootstrap_addresses_parse turns a comma-separated list of multiaddrs
+// (each carrying its /p2p/<id> suffix) into a slice of Peer entries,
+// grouping addresses that share a peer id. Invalid entries log a
+// warning and are skipped. Caller is responsible for shuffling.
+func bootstrap_addresses_parse(list string) []Peer {
+	parts := strings.Split(list, ",")
+	grouped := map[string][]PeerAddress{}
+	order := []string{}
+	for _, entry := range parts {
+		addr := strings.TrimSpace(entry)
+		if addr == "" {
+			continue
+		}
+		ma, err := multiaddr.NewMultiaddr(addr)
+		if err != nil {
+			warn("Bootstrap: invalid multiaddress %q: %v", addr, err)
+			continue
+		}
+		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			warn("Bootstrap: cannot extract peer id from %q: %v", addr, err)
+			continue
+		}
+		id := info.ID.String()
+		if _, seen := grouped[id]; !seen {
+			order = append(order, id)
+		}
+		grouped[id] = append(grouped[id], PeerAddress{Address: addr})
+	}
+	out := make([]Peer, 0, len(order))
+	for _, id := range order {
+		out = append(out, Peer{ID: id, addresses: grouped[id]})
+	}
+	return out
+}
+
+// peers_bootstrap_load reloads peers_bootstrap + peer_default_publisher
+// from mochi.conf, falling back to the hardcoded defaults. Called from
+// net_start after ini_load so operator overrides take effect; the
+// package-level `var` form is the same defaults so anything that reads
+// peers_bootstrap before net_start (tests, package init) still sees a
+// working list.
+//
+// Each entry in [bootstrap] addresses is a full libp2p multiaddress
+// including /p2p/<id>, so the single config option carries both
+// address and identity. Same multi-address-per-peer grouping as the
+// hardcoded form. [publisher] peer overrides the default publisher
+// peer id used by app version checks.
+func peers_bootstrap_load() {
+	peer_default_publisher = ini_string("publisher", "peer", peer_default_publisher_hardcoded)
+
+	raw := ini_strings_commas("bootstrap", "addresses")
+	list := bootstrap_addresses_hardcoded
+	if len(raw) > 0 {
+		list = strings.Join(raw, ",")
+	}
+	peers_bootstrap = bootstrap_addresses_parse(list)
+
+	// Shuffle so different servers attempt bootstrap peers in different
+	// orders, spreading the initial-connect load across them.
 	rand.Shuffle(len(peers_bootstrap), func(i, j int) {
 		peers_bootstrap[i], peers_bootstrap[j] = peers_bootstrap[j], peers_bootstrap[i]
 	})
@@ -183,7 +272,7 @@ func peer_is_pair(id string) bool {
 
 // Add some peers we already know about from the database
 func peers_add_from_db(limit int) {
-	var ps []Peer
+	var ps []peer_row
 	db := db_open("db/peers.db")
 	err := db.scans(&ps, "select id from peers group by id order by updated desc limit ?", limit)
 	if err != nil {
@@ -192,7 +281,7 @@ func peers_add_from_db(limit int) {
 	}
 	for _, p := range ps {
 		var addresses []string
-		var as []Peer
+		var as []peer_row
 		err := db.scans(&as, "select address from peers where id=?", p.ID)
 		if err != nil {
 			warn("Database error loading addresses for peer %q: %v", p.ID, err)
@@ -207,20 +296,48 @@ func peers_add_from_db(limit int) {
 	}
 }
 
-// Add already known peer to memory if not already present
+// Add already known peer to memory, merging any new addresses with
+// the existing entry. Previously this returned early when the peer was
+// already in memory, silently dropping any newly-discovered addresses
+// (e.g. a known peer reachable on a new IP via a different discovery
+// path). Now matches peer_discovered_work's merge semantics — caps the
+// per-peer address list at peer_maximum_addresses, replacing the
+// oldest when full.
 func peer_add_known(id string, addresses []string) {
 	peers_lock.Lock()
 	defer peers_lock.Unlock()
 
-	if _, found := peers[id]; found {
-		return
-	}
 	t := now()
-	pas := make([]PeerAddress, len(addresses))
-	for i, a := range addresses {
-		pas[i] = PeerAddress{Address: a, Updated: t}
+	p, found := peers[id]
+	if !found {
+		p = Peer{ID: id, connected: false}
 	}
-	peers[id] = Peer{ID: id, addresses: pas, connected: false}
+	for _, addr := range addresses {
+		exists := false
+		for i, a := range p.addresses {
+			if a.Address == addr {
+				exists = true
+				p.addresses[i].Updated = t
+				break
+			}
+		}
+		if exists {
+			continue
+		}
+		pa := PeerAddress{Address: addr, Updated: t}
+		if len(p.addresses) < peer_maximum_addresses {
+			p.addresses = append(p.addresses, pa)
+			continue
+		}
+		oldest := 0
+		for i, a := range p.addresses {
+			if a.Updated < p.addresses[oldest].Updated {
+				oldest = i
+			}
+		}
+		p.addresses[oldest] = pa
+	}
+	peers[id] = p
 }
 
 // Get details of a peer, either from memory, or from database
@@ -235,7 +352,7 @@ func peer_by_id(id string) *Peer {
 	// Load from database
 	p = Peer{ID: id, connected: false}
 
-	var ps []Peer
+	var ps []peer_row
 	db := db_open("db/peers.db")
 	err := db.scans(&ps, "select * from peers where id=?", id)
 	if err != nil {
@@ -328,6 +445,33 @@ func peer_refresh_connected_address(id string) {
 	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, addr, t)
 }
 
+// peer_disconnect_hooks fires once per disconnect, in registration
+// order. Subsystems with per-peer state (the /mochi/2 protocol cache,
+// the /mochi/2 Sender registry, future caches) self-register via
+// peer_register_disconnect_hook in their init() so peers.go doesn't
+// have to know about them.
+var (
+	peer_disconnect_hooks      []func(string)
+	peer_disconnect_hooks_lock sync.Mutex
+)
+
+// peer_register_disconnect_hook adds a callback that runs each time
+// peer_disconnected fires. Hooks run synchronously in the order they
+// were registered. Use this for "tear down my per-peer state on
+// disconnect" — typical examples: cache invalidation, in-flight
+// goroutine shutdown, metric counters.
+//
+// Hooks must be cheap (they all run synchronously on the libp2p
+// disconnect event dispatch path); offload anything expensive.
+func peer_register_disconnect_hook(fn func(string)) {
+	if fn == nil {
+		return
+	}
+	peer_disconnect_hooks_lock.Lock()
+	defer peer_disconnect_hooks_lock.Unlock()
+	peer_disconnect_hooks = append(peer_disconnect_hooks, fn)
+}
+
 // Peer has become disconnected
 func peer_disconnected(id string) {
 	if id == "" {
@@ -342,16 +486,12 @@ func peer_disconnected(id string) {
 	}
 	peers_lock.Unlock()
 
-	// Clean up per-peer stream semaphore
-	peer_sems_lock.Lock()
-	delete(peer_sems, id)
-	peer_sems_lock.Unlock()
-
-	// /mochi/2: drop any cached protocol-support state (peer may have
-	// upgraded or downgraded before reconnecting) and tear down any
-	// open Sender. Both are no-ops if the peer never had v2 state.
-	protocol_known_clear(id)
-	senders_peer_invalidate(id)
+	peer_disconnect_hooks_lock.Lock()
+	hooks := peer_disconnect_hooks
+	peer_disconnect_hooks_lock.Unlock()
+	for _, fn := range hooks {
+		fn(id)
+	}
 
 	// Schedule reconnection if not already scheduled
 	peer_reconnect_lock.Lock()
@@ -545,23 +685,16 @@ func peers_publish() {
 func peer_publish_event(e *Event) {
 }
 
-// Reply to a peer request if for us
+// Reply to a peer request if for us. Non-blocking — if a publish is
+// already pending the second request collapses with it.
 func peer_request_event(e *Event) {
-	if e.get("id", "") == net_id {
-		peer_publish_chan <- true
+	if e.get("id", "") != net_id {
+		return
 	}
-}
-
-// Get or create a per-peer semaphore for outbound stream limiting
-func peer_sem(id string) chan struct{} {
-	peer_sems_lock.Lock()
-	defer peer_sems_lock.Unlock()
-	sem, ok := peer_sems[id]
-	if !ok {
-		sem = make(chan struct{}, peer_max_streams)
-		peer_sems[id] = sem
+	select {
+	case peer_publish_chan <- true:
+	default:
 	}
-	return sem
 }
 
 // Get a reader and writer to a peer, connecting if necessary
@@ -601,22 +734,10 @@ func peer_stream(id string) *Stream {
 		return nil
 	}
 
-	// Limit concurrent outbound streams per peer
-	sem := peer_sem(id)
-	select {
-	case sem <- struct{}{}:
-	case <-time.After(10 * time.Second):
-		info("Net outbound stream to peer %q timed out waiting for slot", id)
-		return nil
-	}
-
 	s := net_stream(id)
 	if s == nil {
-		<-sem
 		return nil
 	}
-
-	s.on_close = func() { <-sem }
 	peer_mark_send_success(id)
 	return s
 }

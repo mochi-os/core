@@ -40,6 +40,16 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
+func init() {
+	// /mochi/2 owns per-peer state in two places — the protocol-support
+	// cache (protocol_known) and the Sender registry. Both need
+	// invalidation on libp2p disconnect so the next reconnect re-probes
+	// cleanly. Register here so peers.go's peer_disconnected stays
+	// decoupled from /mochi/2 internals.
+	peer_register_disconnect_hook(protocol_known_clear)
+	peer_register_disconnect_hook(senders_peer_invalidate)
+}
+
 const (
 	// Sender outbox + inflight defaults. peer.window is the operator
 	// tunable for the inflight cap; outbox is sized the same to absorb

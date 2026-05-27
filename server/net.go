@@ -152,6 +152,11 @@ func net_receive_1(s p2p_network.Stream) {
 
 // Start p2p
 func net_start() {
+	// Load bootstrap peers and the default publisher from mochi.conf
+	// (or the hardcoded defaults if unset). Must run before peer code
+	// reads peers_bootstrap.
+	peers_bootstrap_load()
+
 	// Read or create private/public key pair
 	net_dir := filepath.Join(data_dir, "p2p")
 	key_path := filepath.Join(net_dir, "private.key")

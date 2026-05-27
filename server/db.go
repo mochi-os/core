@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 68
+	schema_version = 69
 )
 
 var (
@@ -271,6 +271,7 @@ func db_create() {
 	// 1.3s per call, capping drain at ~50 rows/sec via queue_manager.
 	queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
+	queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
 
 	// Domains
 	domains := db_open("db/domains.db")
@@ -720,6 +721,8 @@ func db_upgrade() {
 			db_upgrade_67()
 		case 68:
 			db_upgrade_68()
+		case 69:
+			db_upgrade_69()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -992,6 +995,21 @@ func db_upgrade_68() {
 	q := db_open("db/queue.db")
 	q.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	q.exec("drop index if exists queue_status_retry")
+	q.exec("analyze queue")
+}
+
+// db_upgrade_69 adds queue_target_priority_retry so the
+// /mochi/2/messages Sender's pull_loop can pick its peer's rows in
+// (priority desc, next_retry asc) order without sorting. The existing
+// queue_target index (target alone) finds rows quickly but the ORDER BY
+// would force a temp-table sort over every row for the target — at
+// wasabi's per-peer scale that's hundreds of thousands of rows per
+// pull. The new composite lets SQLite walk the index in the requested
+// order and stop at LIMIT. analyze refreshes stats so the planner picks
+// the new index immediately.
+func db_upgrade_69() {
+	q := db_open("db/queue.db")
+	q.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
 	q.exec("analyze queue")
 }
 

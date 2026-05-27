@@ -111,14 +111,68 @@ const (
 // manager to do beyond what queue_process already handles.
 var queue_wake_ch = make(chan struct{}, 1)
 
-// queue_wake nudges the queue manager. Non-blocking; if a wake is
-// already pending, the additional signal is dropped (the manager will
-// pick up new rows when it processes).
+// queue_wake nudges the queue manager AND every open /mochi/2/messages
+// Sender. Non-blocking on both — already-pending wakes are dropped.
+// Senders consult queue.db on each tick / wake to pull rows targeting
+// their peer; queue_process handles everything else (broadcasts, file
+// pushes, /mochi/1-fallback peers, empty-target rows).
 func queue_wake() {
 	select {
 	case queue_wake_ch <- struct{}{}:
 	default:
 	}
+	senders_wake_all()
+}
+
+// senders_wake_all signals every open Sender's pull loop. Non-blocking
+// per Sender — already-pending wakes are dropped. Cheap enough to call
+// from the queue-add hot path because each Sender has a buffer-1
+// wake channel.
+func senders_wake_all() {
+	senders_lock.Lock()
+	defer senders_lock.Unlock()
+	for _, s := range senders {
+		select {
+		case s.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// queue_claim_for_peer atomically pulls up to `limit` rows targeting
+// `peer` from queue.db, marking them status='sending' in the same
+// statement so queue_process won't double-pick them. Used by
+// /mochi/2/messages Senders' pull_loop. Returns claimed rows in
+// (priority desc, next_retry asc) order — same order as the global
+// queue_select.
+//
+// File pushes are excluded — they use /mochi/2/stream with a fresh
+// libp2p stream per file, not the Sender's persistent stream, so the
+// queue_send_file_push code path in queue_process handles them.
+// Broadcasts are implicitly excluded by the type='direct' filter.
+func queue_claim_for_peer(peer string, limit int) []QueueEntry {
+	if peer == "" || limit <= 0 {
+		return nil
+	}
+	db := db_open("db/queue.db")
+	var rows []QueueEntry
+	err := db.scans(&rows, `update queue set status='sending'
+		where id in (
+			select id from queue
+			where target=? and status='pending' and next_retry<=?
+				and type='direct' and event != 'file/push'
+			order by priority desc, next_retry asc
+			limit ?
+		)
+		returning id, type, target, from_entity, to_entity, service, event,
+			from_app, from_services, content, data, file, expires, status,
+			attempts, next_retry, created, priority`,
+		peer, now(), limit)
+	if err != nil {
+		info("queue_claim_for_peer error peer=%q: %v", peer, err)
+		return nil
+	}
+	return rows
 }
 
 // Retry delays: 1m, 2m, 4m, 8m, 15m, 30m, 1h

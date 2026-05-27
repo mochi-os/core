@@ -84,6 +84,7 @@ type Sender struct {
 	claimed      map[string]bool
 	closed       atomic.Bool
 	last_inbound atomic.Int64 // unix ns of last inbound frame; reset by ping_loop
+	wake         chan struct{} // queue_wake routes per-peer nudges here; pull_loop drains
 	lock         sync.Mutex
 	rate_lock    sync.Mutex
 	rate_window  int64 // unix-second of current 1s bucket
@@ -174,6 +175,7 @@ func sender_open(peer string) (*Sender, error) {
 		inflight:  map[string]*pending{},
 		pings:     map[string]int64{},
 		claimed:   map[string]bool{},
+		wake:      make(chan struct{}, 1),
 	}
 
 	senders_lock.Lock()
@@ -193,6 +195,7 @@ func sender_open(peer string) (*Sender, error) {
 	go s.write_loop()
 	go s.read_loop()
 	go s.ping_loop()
+	go s.pull_loop()
 
 	return s, nil
 }
@@ -445,6 +448,58 @@ func (s *Sender) ping_loop() {
 		err := peer_send(s.peer, "", &Frame{Type: frame_type_ping, ID: id})
 		if err != nil {
 			debug("Sender: ping enqueue failed peer=%q: %v", s.peer, err)
+		}
+	}
+}
+
+// pull_loop autonomously drains queue.db rows targeting s.peer into
+// s.outbox, running until s.closed. Each pull batch is sized by
+// remaining outbox capacity (peer_window minus current inflight minus
+// queued outbox) so we never claim more than will fit. Atomic UPDATE
+// RETURNING in queue_claim_for_peer marks claimed rows status='sending'
+// in the same statement, so queue_process won't double-pick them.
+//
+// Wakes on either a 1-second tick (safety net) or a queue_wake nudge
+// routed through s.wake. A busy producer pegs the pull loop to the
+// rate at which the receiver acks free outbox slots; an idle producer
+// just polls every second and finds nothing.
+//
+// On shutdown, any rows the loop has claimed but not yet pushed to
+// outbox are rolled back to status='pending' via queue_unsending so
+// the next Sender open (or queue_process fallback) picks them up.
+func (s *Sender) pull_loop() {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for !s.closed.Load() {
+		capacity := peer_window()
+		s.lock.Lock()
+		capacity -= len(s.inflight)
+		s.lock.Unlock()
+		capacity -= len(s.outbox)
+		if capacity > 0 {
+			rows := queue_claim_for_peer(s.peer, capacity)
+			for _, q := range rows {
+				if s.closed.Load() {
+					queue_unsending(q.ID)
+					continue
+				}
+				f, err := frame_for_queue(&q)
+				if err != nil {
+					queue_drop(q.ID, fmt.Sprintf("frame build failed: %v", err))
+					continue
+				}
+				select {
+				case s.outbox <- &outbound{frame: f, queue: q.ID}:
+				case <-time.After(time.Second):
+					// Outbox stuck — roll back the claim so the next
+					// pull (or queue_process fallback) can retry.
+					queue_unsending(q.ID)
+				}
+			}
+		}
+		select {
+		case <-tick.C:
+		case <-s.wake:
 		}
 	}
 }

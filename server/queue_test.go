@@ -223,6 +223,53 @@ func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
 	}
 }
 
+// TestQueueProcessSkipsRowsWithActiveSender: queue_process must NOT
+// dispatch direct rows whose target has an active /mochi/2/messages
+// Sender — pull_loop owns them. If queue_process competes for the
+// Sender's outbox, peer_send blocks for sender_send_timeout when
+// pull_loop has it full, dragging out the whole tick and starving
+// self-loop / /mochi/1-only / offline-peer work in the same batch.
+//
+// This test installs a synthetic Sender for a peer, queues a row for
+// that peer, runs queue_process, and confirms the row stays pending
+// (untouched) so pull_loop can claim it.
+func TestQueueProcessSkipsRowsWithActiveSender(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+
+	// Install a fake Sender so senders_has(peer) returns true.
+	peer := "12D3KooWFakeSenderTargetTestPeer-aaaaaaaaaaaaaaaa"
+	s := &Sender{peer: peer}
+	senders_lock.Lock()
+	senders[peer] = s
+	senders_lock.Unlock()
+	defer func() {
+		senders_lock.Lock()
+		delete(senders, peer)
+		senders_lock.Unlock()
+	}()
+
+	db := db_open("db/queue.db")
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
+		values (?, 'direct', ?, '', '', 't', 'm', 0, ?, ?, ?)`,
+		"sender-owned", peer, now()-1, now(), priority_interactive)
+
+	// queue_process should skip the row entirely (not acted on).
+	if n := queue_process(); n != 0 {
+		t.Errorf("row with active Sender: queue_process acted on %d, want 0 (pull_loop owns it)", n)
+	}
+
+	// Row must remain pending and unchanged for pull_loop to claim.
+	row, err := db.row("select status from queue where id = ?", "sender-owned")
+	if err != nil || row == nil {
+		t.Fatal("row was unexpectedly deleted")
+	}
+	if status, _ := row["status"].(string); status != "pending" {
+		t.Errorf("row status after skip: %q, want pending", status)
+	}
+}
+
 // TestQueueProcessReturnsCount confirms queue_process returns the
 // number of rows acted on, so queue_manager's drain-loop can decide
 // whether to re-enter immediately or sleep on the heartbeat. Without

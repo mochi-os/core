@@ -113,6 +113,22 @@ var (
 	senders_lock sync.Mutex
 )
 
+// senders_has reports whether an open Sender exists for `peer`. Used by
+// queue_process to skip rows that the Sender's pull_loop owns, so the
+// two paths don't compete for the same outbox slot (which manifests as
+// queue_process tick latency: peer_send blocks for sender_send_timeout
+// when pull_loop has saturated the outbox, dragging out the whole tick
+// and starving self-loop / /mochi/1-only / offline-peer work).
+func senders_has(peer string) bool {
+	if peer == "" {
+		return false
+	}
+	senders_lock.Lock()
+	s := senders[peer]
+	senders_lock.Unlock()
+	return s != nil && !s.closed.Load()
+}
+
 // peer_send is the entry point for /mochi/2/messages outbound. Looks
 // up (or creates) the Sender for `peer` and enqueues `frame` on its
 // outbox. Returns errSenderUnreachable / errSenderFull on failure so

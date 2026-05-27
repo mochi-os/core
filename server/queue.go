@@ -680,6 +680,23 @@ func queue_process() int {
 			processed++
 			continue
 		}
+		// Sender pull_loop pre-filter: skip direct rows whose target
+		// has an active /mochi/2/messages Sender — pull_loop is
+		// claiming them atomically and feeding them onto the Sender's
+		// outbox directly. queue_process attempting the same row would
+		// race for the same outbox slot and block on peer_send for
+		// sender_send_timeout when pull_loop has it full, dragging
+		// out the whole tick and starving self-loop / /mochi/1-only /
+		// offline-peer work in the same batch. Skipping here leaves
+		// the row pending; pull_loop's next tick (≤1s) will claim it.
+		// File pushes don't ride the Sender pipeline (separate
+		// /mochi/2/stream per file), so they stay with queue_process.
+		// Broadcasts have no specific target.
+		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && senders_has(q.Target) {
+			// Don't increment processed — the row isn't drained or
+			// deferred, just routed to a different mechanism.
+			continue
+		}
 		valid = append(valid, q)
 	}
 

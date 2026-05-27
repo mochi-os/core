@@ -26,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	cbor "github.com/fxamacker/cbor/v2"
 )
 
 const (
@@ -114,6 +116,37 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 	}
 	w.last_used.Store(now())
 	w.inbox <- wf
+}
+
+// worker_inbox_offer is a try-once non-blocking enqueue into an
+// already-existing worker's inbox. Returns:
+//
+//	true  — frame accepted; worker will process it
+//	false — no worker for (user, app), OR inbox full
+//
+// Used by message_self_loop_dispatch. Does NOT create a worker, because
+// the worker-create path (worker_create → go w.run() → ...) statically
+// reaches the replication emit chain, which would form an init-cycle
+// through `var replication_emit_to = replication_emit_to_real`. Falling
+// through to the queue.db path on cache miss is fine — the first
+// queue_select pick uses worker_dispatch (which DOES create) and from
+// then on the worker is hot, so direct-dispatch hits on every
+// subsequent send.
+func worker_inbox_offer(user, app string, wf *worker_frame) bool {
+	key := user_app_key{user: user, app: app}
+	app_workers_lock.RLock()
+	w, ok := app_workers[key]
+	app_workers_lock.RUnlock()
+	if !ok || w == nil {
+		return false
+	}
+	w.last_used.Store(now())
+	select {
+	case w.inbox <- wf:
+		return true
+	default:
+		return false
+	}
 }
 
 // worker_create installs a new app_worker into the registry under
@@ -399,4 +432,131 @@ func (q queue_reply) fail(reason string) {
 	default:
 		queue_fail(q.id, fmt.Sprintf("self-loop fast path: %s", reason))
 	}
+}
+
+// local_reply implements reply_target for self-loop frames that never
+// passed through queue.db (message_self_loop_dispatch hot path). No
+// queue row to ack/delete; ack() is a no-op, fail() just logs at the
+// matching severity for the failure-reason class.
+//
+// Why not retry on fail? Self-loop has no network unreliability — the
+// handler runs in-process. A failure is a code error (handler returned
+// fail, panicked, decoded badly): retrying the same code with the same
+// input would deterministically fail again. Better to log loudly and
+// move on than to recycle the row through queue.db's exponential
+// backoff.
+type local_reply struct {
+	id      string
+	service string
+	event   string
+}
+
+func (l local_reply) ack() {}
+
+func (l local_reply) fail(reason string) {
+	if reason == "" {
+		reason = fail_transient
+	}
+	switch reason {
+	case fail_dedup:
+		// Common and benign — same message dispatched twice (e.g. app
+		// retry on its own initiative). Debug only.
+		debug("Self-loop direct dispatch: %s/%s id=%q dedup", l.service, l.event, l.id)
+	case fail_signature_invalid:
+		warn("Self-loop direct dispatch: %s/%s id=%q signature_invalid — local bug",
+			l.service, l.event, l.id)
+	default:
+		info("Self-loop direct dispatch: %s/%s id=%q failed: %s",
+			l.service, l.event, l.id, reason)
+	}
+}
+
+// message_self_loop_dispatch tries to enqueue m onto the local
+// per-(user, app) worker inbox without going through queue.db. Returns
+// true on success. Returns false when:
+//
+//   - m.target is not net_id (caller should use the normal queue path)
+//   - m has a file payload (queue.db owns large-payload tracking)
+//   - the worker inbox is full (caller falls back to queue.db so the
+//     row gets the usual at-least-once retry semantics)
+//
+// `content` is the CBOR-encoded body produced by the caller's
+// `cbor_encode(m.content)`; we decode it once here for the worker
+// frame rather than have the worker re-decode it.
+//
+// Why bypass queue.db at all? Self-loop is in-process — there's no
+// network to fail, no peer to retry against. Insert-into-queue +
+// queue_select pick-up + queue_send_self_loop_fast dispatch +
+// queue_ack-on-success is four SQLite round-trips for a message that
+// never leaves the process. Direct dispatch is zero. At 80k+ self-loop
+// rows backlogged on wasabi this matters; even at idle it shaves the
+// happy-path send latency from "next queue tick" (≤1s) to "next
+// scheduler slice" (μs).
+//
+// Older self-loop rows already in queue.db keep draining via
+// queue_send_self_loop_fast. Worker order: the direct-dispatch path
+// may jump ahead of those queue.db rows for the same (user, app)
+// because both feed the same worker inbox. Self-loop has no FK chain
+// across messages, so this re-ordering is benign — and once the
+// backlog drains, the queue.db source goes silent and direct-dispatch
+// is the only path.
+func message_self_loop_dispatch(m *Message, content []byte) bool {
+	if m.target != net_id || net_id == "" {
+		return false
+	}
+	if m.file != "" {
+		return false
+	}
+
+	var body map[string]any
+	if len(content) > 0 {
+		if err := cbor.Unmarshal(content, &body); err != nil {
+			debug("Self-loop direct dispatch: %s/%s id=%q content decode failed: %v",
+				m.Service, m.Event, m.ID, err)
+			return false
+		}
+	} else {
+		body = map[string]any{}
+	}
+
+	to := m.To
+	if to != "" && valid(to, "fingerprint") {
+		if ent := entity_by_any(to); ent != nil {
+			to = ent.ID
+		}
+	}
+	user := ""
+	if to != "" {
+		if u := user_owning_entity(to); u != nil {
+			user = u.UID
+		}
+	}
+
+	wf := &worker_frame{
+		frame: &Frame{
+			Type:     frame_type_message,
+			ID:       m.ID,
+			From:     m.From,
+			To:       to,
+			Service:  m.Service,
+			Event:    m.Event,
+			FromApp:  m.FromApp,
+			Services: m.Services,
+			Priority: frame_priority_for(queue_priority(m.Service, m.Event)),
+			Content:  body,
+			Data:     m.data,
+		},
+		peer:  net_id,
+		reply: local_reply{id: m.ID, service: m.Service, event: m.Event},
+	}
+
+	// Lookup-only non-blocking enqueue. Two miss cases both fall back
+	// to queue.db:
+	//
+	//   1. No worker yet for (user, app). The queue.db path will create
+	//      one on first pick; subsequent sends hit this hot path.
+	//   2. Inbox full. The worker is saturated; back-pressure shows up
+	//      as queue depth (visible via `mochictl pipelining status` and
+	//      queue length metrics) rather than as a blocked send call.
+	return worker_inbox_offer(user, m.Service, wf)
 }

@@ -176,6 +176,9 @@ func (m *Message) send_peer(peer string) {
 		m.ID = uid()
 	}
 	content := cbor_encode(m.content)
+	if message_self_loop_dispatch(m, content) {
+		return
+	}
 	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 	queue_wake()
 }
@@ -190,6 +193,9 @@ func (m *Message) send_peer_priority(peer string, priority int) {
 		m.ID = uid()
 	}
 	content := cbor_encode(m.content)
+	if message_self_loop_dispatch(m, content) {
+		return
+	}
 	queue_add_direct_priority(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires, priority)
 	queue_wake()
 }
@@ -219,6 +225,9 @@ func (m *Message) send_work() {
 	content := cbor_encode(m.content)
 
 	if m.target != "" {
+		if message_self_loop_dispatch(m, content) {
+			return
+		}
 		queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 		message_attempt_send(m, m.target, content)
 		return
@@ -232,18 +241,43 @@ func (m *Message) send_work() {
 		return
 	}
 
-	for i, peer := range peers {
-		// Each replica gets its own queue row + ID. The original m.ID
-		// becomes the first row; additional peers get fresh ids.
+	// Multi-host fan-out: one peer gets the primary inline send (using
+	// m.ID), the rest queue with fresh uids. Self-loop peers (peer ==
+	// net_id) divert through the direct-dispatch path that skips
+	// queue.db entirely; they fall back to queue_add_direct only when
+	// the worker inbox is full.
+	//
+	// m.ID is held back for the first peer that actually lands a row
+	// in queue.db, because message_attempt_send below uses m.ID to
+	// drive queue_sending / peer_send / queue_ack. Direct-dispatched
+	// rows get fresh uids — they're consumed by the worker and never
+	// touch queue.db, so giving them m.ID would orphan the inline
+	// send (no row for it to ack against, receiver gets a duplicate).
+	primary_peer := ""
+	for _, peer := range peers {
+		if peer == net_id {
+			tmp := *m
+			tmp.ID = uid()
+			tmp.target = peer
+			if message_self_loop_dispatch(&tmp, content) {
+				continue
+			}
+		}
 		id := m.ID
-		if i > 0 {
+		if primary_peer != "" {
 			id = uid()
 		}
 		queue_add_direct(id, peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		if primary_peer == "" {
+			primary_peer = peer
+		}
 	}
-	// Try to send the primary row immediately; additional peer rows ride
-	// the queue tick. Avoids fanning N goroutines from a single send.
-	message_attempt_send(m, peers[0], content)
+	// Try to send the primary row immediately; the rest ride the queue
+	// tick. Avoids fanning N goroutines from a single send. When every
+	// peer was self-loop-dispatched, there's no row left to attempt.
+	if primary_peer != "" {
+		message_attempt_send(m, primary_peer, content)
+	}
 }
 
 // message_attempt_send is the inline send-now path extracted from

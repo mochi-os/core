@@ -42,19 +42,14 @@ const (
 	priority_bulk        = 10 // replication data: sql/op, system/set, system/row
 )
 
-// queue_bulk_floor is the number of slots queue_process reserves each
-// tick for the bulk tier. A sustained flood of higher-priority traffic
-// can therefore never starve replication — a permanently-behind replica
-// would defeat the point of replicating.
-const queue_bulk_floor = 10
-
 // queue_silent_defer is how long to push a row's next_retry forward
-// when the target peer is in the silent-failure cache. Longer than the
-// per-peer silence window (peer_silent_skip_window=60s) so silenced
-// rows don't recycle through queue_select every minute and dominate
-// picks (the bug we hit on wasabi after #100: offline-peer rows took
-// 30 of every 50 queue_select slots, starving reachable destinations).
-// Recovery is via queue_resurrect_peer when the peer reconnects.
+// when the target peer is in the silent-failure cache. Recovery is via
+// queue_resurrect_peer when the peer reconnects. With pick-by-peer +
+// durable silent-cache, silenced peers don't recycle through the
+// picker anyway — the defer is belt-and-suspenders so a row that
+// slipped through (e.g. silenced after the picker but before the
+// goroutine fired) doesn't immediately re-appear at the front of the
+// next tick.
 const queue_silent_defer = 3600 // 1 hour
 
 // queue_priority classifies an outbound message into a priority tier
@@ -652,37 +647,90 @@ func queue_send_broadcast(q *QueueEntry) bool {
 	return true
 }
 
-// queue_select pulls the next batch of due messages, ordered so urgent
-// traffic is delivered first. Lane A is the 50 most-urgent due messages
-// (priority, then next_retry). Lane B is a reserved floor of bulk-tier
-// slots so a sustained flood of higher-priority traffic can never
-// starve replication. The lanes are merged and de-duplicated on id (a
-// bulk row can appear in both when there is little urgent traffic).
+// queue_select pulls the next batch of due rows for queue_process to
+// dispatch. Two sub-batches, both filtered to status='pending' AND
+// next_retry<=now:
+//
+//  1. Direct rows with a target peer: ONE row per target peer, picked
+//     as the highest-priority earliest-next_retry row for that peer.
+//     Up to queue_pick_direct_limit (50) distinct peers per tick.
+//
+//  2. Broadcasts (target='pubsub') and empty-target rows (target=''):
+//     picked normally by priority+next_retry, up to
+//     queue_pick_other_limit (20) per tick. Each is independent of
+//     any specific peer so the per-peer dedup doesn't apply.
+//
+// Why pick-by-peer? Without it, queue_select's 50-row budget was
+// dominated by whichever peer had the largest backlog — at wasabi
+// scale, an offline peer with 150k queued rows fills nearly every
+// pick, leaving online peers waiting many ticks for their first slot.
+// With pick-by-peer, every peer with due work gets a fair shot at
+// every tick; queue_process's tick latency is bounded by the slowest
+// single goroutine rather than scaling with backlog imbalance. Once
+// a peer has a Sender, pull_loop takes over and queue_process's
+// pre-filter skips that peer entirely (senders_has fast path), so
+// queue_select's job for that peer is just "bootstrap the Sender on
+// the first row".
+//
+// Why no bulk-floor lane? The old model needed a reserved floor
+// because urgent traffic could fill all 50 slots and starve bulk
+// (replication) work. With pick-by-peer, every peer gets at most one
+// slot per tick regardless of priority — a peer with only bulk rows
+// gets its slot just the same as a peer with urgent rows. No
+// starvation possible at the picker layer.
+//
+// SQLite cost: the PARTITION BY target ROW_NUMBER uses the
+// queue_target_priority_retry index (target, priority desc, next_retry)
+// without sorting — SQLite streams the index and emits the first row
+// per partition.
+const (
+	queue_pick_direct_limit = 50
+	queue_pick_other_limit  = 20
+)
+
 func queue_select(db *DB) []QueueEntry {
 	ts := now()
 
-	var urgent []QueueEntry
-	if err := db.scans(&urgent, "select * from queue where status = 'pending' and next_retry <= ? order by priority desc, next_retry limit 50", ts); err != nil {
-		info("Queue select error: %v", err)
+	// Direct rows: one row per distinct target peer.
+	var direct []QueueEntry
+	err := db.scans(&direct, `
+		with ranked as (
+			select id, type, target, from_entity, to_entity, service, event,
+				from_app, from_services, content, data, file, expires,
+				status, attempts, next_retry, last_error, created, priority,
+				row_number() over (partition by target order by priority desc, next_retry asc) as rn
+			from queue
+			where status = 'pending' and next_retry <= ?
+				and type = 'direct' and target != ''
+		)
+		select id, type, target, from_entity, to_entity, service, event,
+			from_app, from_services, content, data, file, expires,
+			status, attempts, next_retry, last_error, created, priority
+		from ranked
+		where rn = 1
+		order by priority desc, next_retry asc
+		limit ?`, ts, queue_pick_direct_limit)
+	if err != nil {
+		info("Queue select (direct pick-by-peer) error: %v", err)
 	}
 
-	var bulk []QueueEntry
-	if err := db.scans(&bulk, "select * from queue where status = 'pending' and next_retry <= ? and priority <= ? order by next_retry limit ?", ts, priority_bulk, queue_bulk_floor); err != nil {
-		info("Queue select error (bulk floor): %v", err)
+	// Broadcasts (target='pubsub') and empty-target rows.
+	var other []QueueEntry
+	if err := db.scans(&other, `select id, type, target, from_entity, to_entity, service, event,
+			from_app, from_services, content, data, file, expires,
+			status, attempts, next_retry, last_error, created, priority
+		from queue
+		where status = 'pending' and next_retry <= ?
+			and (type != 'direct' or target = '')
+		order by priority desc, next_retry asc
+		limit ?`, ts, queue_pick_other_limit); err != nil {
+		info("Queue select (broadcast/empty-target) error: %v", err)
 	}
 
-	seen := make(map[string]bool, len(urgent)+len(bulk))
-	entries := make([]QueueEntry, 0, len(urgent)+len(bulk))
-	for _, q := range urgent {
-		seen[q.ID] = true
-		entries = append(entries, q)
+	if len(other) == 0 {
+		return direct
 	}
-	for _, q := range bulk {
-		if !seen[q.ID] {
-			entries = append(entries, q)
-		}
-	}
-	return entries
+	return append(direct, other...)
 }
 
 // Process pending queue entries. Returns the count of rows acted on

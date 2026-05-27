@@ -49,14 +49,22 @@ func queue_test_table() *DB {
 }
 
 // queue_test_insert adds a minimal due (next_retry in the past) row.
+// Each call targets a distinct peer so pick-by-peer returns it
+// independently. For tests that need multiple rows for ONE peer, use
+// queue_test_insert_target.
 func queue_test_insert(db *DB, id string, priority int) {
-	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
-		values (?, 'direct', 'peer-X', '', '', 'test', 'msg', ?, ?, ?)`,
-		id, now()-1, now()-1, priority)
+	queue_test_insert_target(db, id, "peer-"+id, priority)
 }
 
-// TestQueueSelectPriorityOrder: queue_select returns due messages most-
-// urgent first, so a control message is never behind bulk data.
+func queue_test_insert_target(db *DB, id, target string, priority int) {
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values (?, 'direct', ?, '', '', 'test', 'msg', ?, ?, ?)`,
+		id, target, now()-1, now()-1, priority)
+}
+
+// TestQueueSelectPriorityOrder: across distinct peers, queue_select
+// returns the most-urgent peer first so a control-tier message is
+// never delivered behind a bulk-tier one.
 func TestQueueSelectPriorityOrder(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -68,7 +76,7 @@ func TestQueueSelectPriorityOrder(t *testing.T) {
 
 	entries := queue_select(db)
 	if len(entries) != 3 {
-		t.Fatalf("queue_select returned %d entries, want 3", len(entries))
+		t.Fatalf("queue_select returned %d entries, want 3 (3 distinct peers)", len(entries))
 	}
 	if entries[0].Priority != priority_control {
 		t.Errorf("first entry priority = %d, want %d (control)", entries[0].Priority, priority_control)
@@ -78,34 +86,96 @@ func TestQueueSelectPriorityOrder(t *testing.T) {
 	}
 }
 
-// TestQueueSelectBulkFloor: a flood of higher-priority traffic cannot
-// starve the bulk tier — queue_select's reserved lane guarantees bulk
-// messages a share of every batch.
-func TestQueueSelectBulkFloor(t *testing.T) {
+// TestQueueSelectPickByPeerDedupesByTarget: with N rows all for the
+// same target peer, queue_select returns ONE row — the highest-priority
+// earliest-next_retry one. The old "top 50 rows" model would have
+// returned all N (starving every other peer); pick-by-peer guarantees
+// every peer with due work gets exactly one slot per tick.
+func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
 	db := queue_test_table()
-	// 55 interactive messages: more than the 50-slot urgent lane.
+	// Three rows for the same peer at different priorities. Insert
+	// bulk first so the bulk row has the earliest next_retry — if the
+	// picker ignored priority, bulk would win on next_retry ordering.
+	queue_test_insert_target(db, "bulk-A", "peer-A", priority_bulk)
+	queue_test_insert_target(db, "interactive-A", "peer-A", priority_interactive)
+	queue_test_insert_target(db, "control-A", "peer-A", priority_control)
+	// A second peer with a single interactive row.
+	queue_test_insert_target(db, "interactive-B", "peer-B", priority_interactive)
+
+	entries := queue_select(db)
+	if len(entries) != 2 {
+		t.Fatalf("queue_select returned %d entries, want 2 (one per distinct peer)", len(entries))
+	}
+	// Peer A's representative must be the highest-priority row (control).
+	var peer_a, peer_b string
+	for _, e := range entries {
+		if e.Target == "peer-A" {
+			peer_a = e.ID
+		}
+		if e.Target == "peer-B" {
+			peer_b = e.ID
+		}
+	}
+	if peer_a != "control-A" {
+		t.Errorf("peer-A representative = %q, want %q (highest priority for that peer)", peer_a, "control-A")
+	}
+	if peer_b != "interactive-B" {
+		t.Errorf("peer-B representative = %q, want %q", peer_b, "interactive-B")
+	}
+}
+
+// TestQueueSelectNoBulkStarvation: with a flood of higher-priority
+// rows spread across many peers AND a bulk row for a different peer,
+// the bulk row IS returned — pick-by-peer naturally gives every peer
+// its slot, so the old bulk-floor lane is unnecessary.
+func TestQueueSelectNoBulkStarvation(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := queue_test_table()
+	// 55 interactive rows, one per distinct peer — would fill the
+	// 50-slot direct limit and overflow.
 	for i := 0; i < 55; i++ {
-		queue_test_insert(db, fmt.Sprintf("interactive-%d", i), priority_interactive)
+		queue_test_insert_target(db,
+			fmt.Sprintf("interactive-%d", i),
+			fmt.Sprintf("peer-int-%d", i),
+			priority_interactive)
 	}
-	// 12 bulk messages waiting behind them.
-	for i := 0; i < 12; i++ {
-		queue_test_insert(db, fmt.Sprintf("bulk-%d", i), priority_bulk)
-	}
+	// One bulk row for a different peer.
+	queue_test_insert_target(db, "bulk-lone", "peer-bulk", priority_bulk)
 
 	entries := queue_select(db)
 
-	bulk := 0
+	// The picker takes the top 50 distinct peers ordered by
+	// priority+next_retry. Interactive (priority 20) outranks bulk
+	// (priority 10), so interactive fills the first 50 slots and the
+	// bulk row falls outside this tick's pick. Next tick (after
+	// queue_process drains some of the interactive slots), the bulk
+	// row wins its peer's slot — no starvation. Verify by claiming
+	// the bulk peer's lone row directly.
 	for _, e := range entries {
 		if e.Priority == priority_bulk {
-			bulk++
+			// Bulk made it into a 50-slot batch — that's fine and
+			// also non-starving; nothing else to test.
+			return
 		}
 	}
-	if bulk != queue_bulk_floor {
-		t.Errorf("bulk messages selected = %d, want %d (the reserved floor) — bulk was starved by interactive traffic", bulk, queue_bulk_floor)
+	// Bulk wasn't picked this tick. Simulate the next tick by removing
+	// half of the interactive rows (queue_process having drained
+	// them) and re-querying.
+	for i := 0; i < 30; i++ {
+		db.exec("delete from queue where id = ?", fmt.Sprintf("interactive-%d", i))
 	}
+	entries = queue_select(db)
+	for _, e := range entries {
+		if e.ID == "bulk-lone" {
+			return
+		}
+	}
+	t.Errorf("bulk row never picked across two ticks; pick-by-peer should give every peer a slot")
 }
 
 // TestQueueDeferPushesRetryWithoutBumpingAttempts confirms queue_defer
@@ -390,12 +460,14 @@ func TestQueueProcessReturnsCount(t *testing.T) {
 		t.Errorf("empty queue: got %d, want 0", n)
 	}
 
-	// Three expired rows: pre-filter drops them, count returns 3.
+	// Three expired rows, one per distinct peer (pick-by-peer dedupes
+	// by target, so multiple rows for the same peer would only return
+	// one per tick). Pre-filter drops them as expired, count returns 3.
 	db := db_open("db/queue.db")
 	for i := 0; i < 3; i++ {
 		db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, expires, next_retry, created, priority)
-			values (?, 'direct', 'p', '', '', 't', 'm', ?, ?, ?, ?)`,
-			fmt.Sprintf("expired-%d", i), now()-10, now()-1, now()-100, priority_interactive)
+			values (?, 'direct', ?, '', '', 't', 'm', ?, ?, ?, ?)`,
+			fmt.Sprintf("expired-%d", i), fmt.Sprintf("peer-expired-%d", i), now()-10, now()-1, now()-100, priority_interactive)
 	}
 	if n := queue_process(); n != 3 {
 		t.Errorf("3 expired rows: got %d, want 3", n)

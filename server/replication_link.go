@@ -1084,6 +1084,7 @@ func replication_join_approved_apply(originPeer string, ja *JoinApproved) {
 		}
 		rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
 	}
+	pair_membership_refresh()
 	debug("Replication join-approved applied: members=%v (from peer %q)", ja.Members, originPeer)
 	// Start file-tree bulk bootstrap against the approving source.
 	// V5 handles file-scope only; DB-scope bootstrap arrives in a
@@ -1194,6 +1195,10 @@ func replication_pair_membership_apply(originPeer string, pmc *PairMembershipCha
 	db.exec(
 		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, 'pair-membership', '', ?, ?)",
 		originPeer, pmc.Sequence, now())
+
+	if !stale {
+		pair_membership_refresh()
+	}
 
 	if stale {
 		debug("Replication pair-membership-change stale: seq=%d < latest=%d (from peer %q)",
@@ -1308,6 +1313,7 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 	}
 
 	rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
+	pair_membership_refresh()
 
 	// Joining replica is fresh by protocol contract — its sequence
 	// counters restart at 0. Clear any stale `seen` rows from a prior
@@ -1421,6 +1427,7 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 	}
 
 	rdb.exec("delete from pair where peer=?", peer)
+	pair_membership_refresh()
 
 	var remaining []string
 	if rows, err := rdb.rows("select peer from pair"); err == nil {

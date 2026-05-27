@@ -118,6 +118,14 @@ func peer_connect(id string) bool {
 	if ok {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
+		// Clear the silent-cache BEFORE resurrecting deferred rows.
+		// queue_resurrect_peer pulls rows forward to now() so they
+		// run on the next queue_process tick, but peer_protocol_open's
+		// peer_is_silent fast-fail would short-circuit each one for
+		// up to peer_silent_skip_window seconds (60s) after the
+		// reconnect. Resetting reachability lets the resurrected rows
+		// actually trial the new connection.
+		peer_mark_reachable(id)
 		// Any queue rows deferred by queue_process's silent-peer
 		// pre-filter (1h next_retry push when peer_is_silent) become
 		// ready immediately. Without this the backlog waits out the

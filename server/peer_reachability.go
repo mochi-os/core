@@ -17,6 +17,20 @@
 // pressure is negligible (a few thousand entries at most on a busy
 // server).
 //
+// Why not libp2p's ConnectionGater?
+//
+// ConnectionGater.InterceptPeerDial would let us short-circuit silenced
+// peers at the libp2p dial-time entry point — cheaper than our top-of-
+// function map lookup. We don't, because the gater would also block
+// libp2p internals that legitimately want to keep trying: DHT
+// findpeer/Provide, identify-push, mDNS discovery, relay reservations.
+// A peer that's "silent" from our application's send perspective may
+// be perfectly reachable via a fresh address libp2p just learned —
+// blocking it at the gater would prevent us from ever finding out.
+// Silent-cache is a send-path optimisation, not a network policy, so
+// it stays at the send-path entry points (peer_protocol_open and
+// peer_stream).
+//
 // Copyright Alistair Cunningham 2024-2026
 
 package main
@@ -93,4 +107,25 @@ func peer_mark_send_failed(id string) {
 	r.ConsecutiveFailures++
 	r.LastAttempt = now()
 	peer_reachability[id] = r
+}
+
+// peer_mark_reachable resets the silent cache without recording a
+// stream-open success. Called from peer_connect's libp2p-success path
+// so that rows woken by queue_resurrect_peer can actually attempt
+// their sends rather than fast-failing on a stale silent flag.
+//
+// Without this, a peer that returned during the 60s silence window
+// stays fast-failed on every outbound until peer_silent_skip_window
+// lapses — even though queue_resurrect_peer has already pulled all
+// deferred rows forward to now(). Each of those resurrected rows
+// then sees peer_is_silent==true and returns errSenderUnreachable
+// without ever opening the stream, so the backlog stalls for up to
+// peer_silent_skip_window after the peer has demonstrably reconnected.
+func peer_mark_reachable(id string) {
+	if id == "" || id == net_id {
+		return
+	}
+	peer_reachability_lock.Lock()
+	defer peer_reachability_lock.Unlock()
+	delete(peer_reachability, id)
 }

@@ -103,6 +103,29 @@ func TestPeerIsSilentSkipWindowExpiry(t *testing.T) {
 	}
 }
 
+// TestPeerMarkReachableClearsSilence: a peer that has tripped the
+// failure threshold (so peer_is_silent==true) must become non-silent
+// immediately after peer_mark_reachable, NOT wait for
+// peer_silent_skip_window. peer_connect's success path calls
+// peer_mark_reachable so that rows woken by queue_resurrect_peer can
+// actually trial the new connection — without this, every resurrected
+// row fast-failed for up to 60s after the libp2p reconnect, defeating
+// the silent-defer optimisation.
+func TestPeerMarkReachableClearsSilence(t *testing.T) {
+	reset_peer_reachability(t)
+	id := "12D3KooWFakePeerForTest6"
+	for i := 0; i < peer_silent_failure_threshold; i++ {
+		peer_mark_send_failed(id)
+	}
+	if !peer_is_silent(id) {
+		t.Fatal("peer must be silent after threshold failures (precondition)")
+	}
+	peer_mark_reachable(id)
+	if peer_is_silent(id) {
+		t.Error("peer_mark_reachable must immediately clear silence; queue_resurrect_peer needs the next send to actually trial the connection")
+	}
+}
+
 // TestPeerIsSilentBootstrap confirms bootstrap peers are never
 // silenced regardless of failure count. Bootstrap is our default
 // publisher / fallback - silencing it would brick the whole pubsub

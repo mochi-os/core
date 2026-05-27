@@ -815,6 +815,21 @@ func is_v2_unsupported(err error) bool {
 // Per the operational context (< 10 production peers, mixed-version
 // window measured in days), this is intentionally minimal — see
 // claude/plans/protocol2.md → Protocol selection.
+//
+// Why not libp2p's Peerstore.SupportsProtocols / GetProtocols?
+//
+// Peerstore tracks protocols populated by the identify exchange.
+// Identify is pull-only: the remote's advertised protocol set only
+// becomes known after IdentifyConn runs on the connection. The first
+// NewStream attempt for a fresh connection arrives before identify
+// has finished, so Peerstore would return an empty list and we'd
+// have to fall back to probing anyway. We also need a "negative"
+// cache for the rollout window (peer answered ErrNotSupported once
+// → don't reprobe this connection) — Peerstore has no concept of
+// "this peer affirmatively does NOT support X", only "I don't know
+// of it". Once /mochi/1 is gone (Phase 8), this entire cache can be
+// retired in favour of always opening /mochi/2/* and treating
+// ErrNotSupported as a hard error.
 
 type protocol_state int
 

@@ -111,6 +111,7 @@ func admin_replica_leave(c *gin.Context) {
 	}
 
 	rdb.exec("delete from pair")
+	pair_membership_refresh()
 	setting_delete("replica.join.peer")
 	setting_delete("replica.join.state")
 	setting_delete("replica.join.reason")

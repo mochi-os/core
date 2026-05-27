@@ -157,6 +157,10 @@ func net_start() {
 	// reads peers_bootstrap.
 	peers_bootstrap_load()
 
+	// Populate the pair-membership cache so peer_is_pair on every
+	// inbound stream / pubsub message can answer without a SQL hit.
+	pair_membership_refresh()
+
 	// Read or create private/public key pair
 	net_dir := filepath.Join(data_dir, "p2p")
 	key_path := filepath.Join(net_dir, "private.key")

@@ -241,11 +241,13 @@ func TestEndToEndMessageRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Acks should have removed the queue rows.
+	// Acks land in the async batch channel; drain after each polling
+	// tick so the test sees the resulting DELETEs.
 	deadline := time.Now().Add(2 * time.Second)
 	db := db_open("db/queue.db")
 	for _, mid := range want {
 		for time.Now().Before(deadline) {
+			queue_ack_drain()
 			row, _ := db.row("select 1 from queue where id=?", mid)
 			if row == nil {
 				break

@@ -410,7 +410,7 @@ func (q queue_reply) ack() {
 			debug("queue_reply: ack panic for %q: %v", q.id, r)
 		}
 	}()
-	queue_ack(q.id)
+	queue_ack_async(q.id)
 }
 
 func (q queue_reply) fail(reason string) {

@@ -368,7 +368,7 @@ func (s *Sender) handle_inbound(f *Frame) {
 			}
 			delete(s.inflight, id)
 			if p.queue != "" {
-				queue_ack(p.queue)
+				queue_ack_async(p.queue)
 			}
 		}
 		s.lock.Unlock()

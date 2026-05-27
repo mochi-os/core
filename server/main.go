@@ -202,6 +202,7 @@ func main_serve(ready func()) int {
 	go peer_reconnect_manager()
 	go peers_publish()
 	go queue_manager()
+	go queue_ack_batcher()
 	go self_loop_drain()
 	go ratelimit_manager()
 	go replication_manager()

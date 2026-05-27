@@ -270,6 +270,120 @@ func queue_ack(id string) {
 	//debug("Queue ACK received for %q", id)
 }
 
+// queue_ack_ch buffers IDs successfully handled by the worker pool or
+// resolved by /mochi/2 Sender read loops. queue_ack_batcher drains it
+// and collapses the deletes into one DELETE ... WHERE id IN (...) per
+// batch. Capacity is generous so a brief acks-burst from the worker
+// pool doesn't fall through to the synchronous fallback.
+var queue_ack_ch = make(chan string, 4096)
+
+// queue_ack_batch caps a single DELETE's IN-list size; SQLite's default
+// is 999 host parameters. Stay well under that to leave room for any
+// driver-side prepared-statement overhead.
+const queue_ack_batch = 256
+
+// queue_ack_interval is the maximum time a worker's ack can sit in the
+// buffer before being flushed even if the batch isn't full. Short
+// enough that low-traffic acks aren't visibly delayed; long enough to
+// amortise tx overhead under load.
+const queue_ack_interval = 20 * time.Millisecond
+
+// queue_ack_async pushes id onto queue_ack_ch for batched deletion.
+// Non-blocking: if the channel is full (very high sustained ack rate),
+// falls back to the synchronous queue_ack so progress is never lost.
+// Used by queue_reply.ack() in the worker pool and by sender_read's
+// ack-frame handler — the two hot-path ack sources.
+func queue_ack_async(id string) {
+	if id == "" {
+		return
+	}
+	select {
+	case queue_ack_ch <- id:
+	default:
+		queue_ack(id)
+	}
+}
+
+// queue_ack_batcher drains queue_ack_ch, batching IDs into a single
+// DELETE per flush. Saves a SQLite transaction (and the writer-mutex
+// contention behind it) per ack vs the per-row queue_ack path.
+//
+// Flush triggers: batch fills (queue_ack_batch=256), or
+// queue_ack_interval (20ms) elapses with a non-empty batch.
+//
+// Crash-loss window: an ID sitting in the buffer when the process
+// dies will replay on next startup (the row stays 'sending' in
+// queue.db until the timeout, then queue_check_ack_timeout re-pends
+// it). message_seen dedup catches the replay on the receiver. The
+// 20ms ceiling keeps the window small.
+func queue_ack_batcher() {
+	batch := make([]string, 0, queue_ack_batch)
+	timer := time.NewTimer(queue_ack_interval)
+	defer timer.Stop()
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		queue_ack_flush(batch)
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case id := <-queue_ack_ch:
+			batch = append(batch, id)
+			if len(batch) >= queue_ack_batch {
+				flush()
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(queue_ack_interval)
+			}
+		case <-timer.C:
+			flush()
+			timer.Reset(queue_ack_interval)
+		}
+	}
+}
+
+// queue_ack_drain pulls every queued ack from queue_ack_ch and
+// flushes them synchronously. Used by tests that verify queue state
+// after an ack — production has queue_ack_batcher draining the
+// channel, but tests don't start that goroutine.
+func queue_ack_drain() {
+	batch := make([]string, 0, queue_ack_batch)
+	for {
+		select {
+		case id := <-queue_ack_ch:
+			batch = append(batch, id)
+		default:
+			queue_ack_flush(batch)
+			return
+		}
+	}
+}
+
+// queue_ack_flush issues one DELETE for the given IDs. Caller must
+// hold no locks; this opens db/queue.db via the cached handle.
+func queue_ack_flush(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	db := db_open("db/queue.db")
+	placeholders := make([]byte, 0, len(ids)*2)
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args[i] = id
+	}
+	db.exec("delete from queue where id in ("+string(placeholders)+")", args...)
+}
+
 // queue_drop removes a queue row without scheduling a retry. Use when
 // the receiver's NACK carries a Reason hint that further attempts
 // would deterministically NACK with the same outcome - e.g.

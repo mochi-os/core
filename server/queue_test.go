@@ -178,6 +178,69 @@ func TestQueueSelectNoBulkStarvation(t *testing.T) {
 	t.Errorf("bulk row never picked across two ticks; pick-by-peer should give every peer a slot")
 }
 
+// TestQueueAckFlushDeletesAllIds: queue_ack_flush issues a single
+// DELETE that removes every id in the batch and leaves other rows
+// untouched. Load-bearing for the batching savings — if the IN-list
+// is built wrong (off-by-one comma, mis-counted placeholders) we'd
+// lose ack semantics for whole batches.
+func TestQueueAckFlushDeletesAllIds(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := queue_test_table()
+
+	for _, id := range []string{"a", "b", "c", "d"} {
+		queue_test_insert_target(db, id, "peer-"+id, priority_interactive)
+	}
+	queue_ack_flush([]string{"a", "c"})
+	for _, id := range []string{"a", "c"} {
+		if row, _ := db.row("select 1 from queue where id=?", id); row != nil {
+			t.Errorf("id %q still present after flush; want deleted", id)
+		}
+	}
+	for _, id := range []string{"b", "d"} {
+		if row, _ := db.row("select 1 from queue where id=?", id); row == nil {
+			t.Errorf("id %q deleted by flush; want preserved", id)
+		}
+	}
+}
+
+// TestQueueAckFlushEmptyIsNoOp: empty input must not run any SQL
+// (would generate `delete from queue where id in ()` which is a
+// SQLite syntax error).
+func TestQueueAckFlushEmptyIsNoOp(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	queue_test_table()
+	queue_ack_flush(nil)
+	queue_ack_flush([]string{})
+}
+
+// TestQueueAckAsyncFallsBackWhenChannelFull: if queue_ack_ch is
+// saturated, queue_ack_async must fall back to synchronous queue_ack
+// rather than dropping the ack (which would leak a 'sending' row).
+func TestQueueAckAsyncFallsBackWhenChannelFull(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := queue_test_table()
+
+	queue_test_insert_target(db, "synced-ack", "peer-synced", priority_interactive)
+
+	// Fill queue_ack_ch with a sentinel that the batcher won't see in
+	// this test (no batcher goroutine running). The select-default
+	// branch in queue_ack_async should then fire queue_ack inline.
+	saved := queue_ack_ch
+	queue_ack_ch = make(chan string, 1)
+	queue_ack_ch <- "filler"
+	defer func() {
+		queue_ack_ch = saved
+	}()
+
+	queue_ack_async("synced-ack")
+	if row, _ := db.row("select 1 from queue where id=?", "synced-ack"); row != nil {
+		t.Error("queue_ack_async fallback did not delete the row")
+	}
+}
+
 // TestQueueDeferPushesRetryWithoutBumpingAttempts confirms queue_defer
 // only moves next_retry forward - attempts stays put because a deferred
 // row is NOT a failed attempt. Without this, the silent-peer pre-filter

@@ -168,6 +168,9 @@ func TestHandleInboundAckClearsInflight(t *testing.T) {
 
 	// Batched ack frame covering 2 of 3.
 	s.handle_inbound(&Frame{Type: frame_type_ack, Replies: []string{"msg-1", "msg-3"}})
+	// The Sender's ack handler queues the DB-delete via the async
+	// batcher. Tests don't run queue_ack_batcher, so drain manually.
+	queue_ack_drain()
 
 	if _, ok := s.inflight["msg-1"]; ok {
 		t.Error("msg-1 still in inflight after ack")

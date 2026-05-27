@@ -11,11 +11,21 @@ import (
 	"sync"
 )
 
-// Deduplication cache for processed messages
+// Deduplication cache for processed messages.
+//
+// TTL invariant (claude/plans/protocol2.md → Failure recovery →
+// Ack loss): seen_messages_ttl MUST be ≥ 2× the longest gap in
+// retry_delays. queue.go caps retries at 3600s (1h), so the dedup
+// window has to outlive 2× that = 7200s. We pick 8h for the safety
+// margin — a late retry under chained ack-loss + sender-restart can
+// arrive several retry cycles after the original apply, and a 1h
+// TTL was already on the edge. Memory cost is bounded by the cache
+// cleanup that runs hourly; at typical traffic this is single-digit
+// MB. The relation is enforced by TestDedupWindowExceedsMaxRetryInterval.
 var (
 	seen_messages      = make(map[string]int64) // id -> timestamp
 	seen_messages_lock sync.Mutex
-	seen_messages_ttl  = int64(3600) // 1 hour
+	seen_messages_ttl  = int64(8 * 3600) // 8 hours
 )
 
 // Check if message was already processed
@@ -244,7 +254,30 @@ func (m *Message) send_work() {
 var message_attempt_send = message_attempt_send_real
 
 func message_attempt_send_real(m *Message, peer string, content []byte) {
-	// Mark as sending to prevent other queue processors from picking it up
+	// File pushes still go through the legacy slow path (one libp2p
+	// stream per file; bytes don't multiplex through /mochi/2/messages
+	// — too much HOL blocking). All other messages prefer /mochi/2;
+	// peer_send marks the queue row 'sending' and the inflight
+	// resolver (sender_read) will queue_ack/queue_fail.
+	if m.file == "" && protocol_known_get(peer, protocol_messages) != protocol_state_unsupported {
+		f, err := frame_for_message(m, content)
+		if err == nil {
+			queue_sending(m.ID)
+			send_err := peer_send(peer, m.ID, f)
+			if send_err == nil {
+				return
+			}
+			queue_unsending(m.ID)
+			if !is_v2_unsupported(send_err) {
+				queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_err))
+				return
+			}
+			// fall through to legacy
+		}
+	}
+
+	// Legacy /mochi/1 slow path. Mark as sending to prevent other
+	// queue processors from picking it up.
 	queue_sending(m.ID)
 
 	s := peer_stream(peer)

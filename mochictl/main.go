@@ -124,6 +124,13 @@ func main() {
 			args = args[1:]
 		}
 	}
+	// Allow 'pipelining status' (/mochi/2 observability).
+	if !ok && name == "pipelining" && len(args) > 0 {
+		if c, found := commands["pipelining "+args[0]]; found {
+			cmd, ok = c, true
+			args = args[1:]
+		}
+	}
 	// Allow 'check starlark' (pre-deploy parse validation).
 	if !ok && name == "check" && len(args) > 0 {
 		if c, found := commands["check "+args[0]]; found {

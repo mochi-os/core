@@ -347,6 +347,12 @@ func peer_disconnected(id string) {
 	delete(peer_sems, id)
 	peer_sems_lock.Unlock()
 
+	// /mochi/2: drop any cached protocol-support state (peer may have
+	// upgraded or downgraded before reconnecting) and tear down any
+	// open Sender. Both are no-ops if the peer never had v2 state.
+	protocol_known_clear(id)
+	senders_peer_invalidate(id)
+
 	// Schedule reconnection if not already scheduled
 	peer_reconnect_lock.Lock()
 	if _, scheduled := peer_reconnects[id]; !scheduled {
@@ -620,8 +626,19 @@ func peers_sufficient() bool {
 	return len(net_pubsub_1.ListPeers()) >= peers_minimum
 }
 
-// Notify peers of shutdown (best effort)
+// Notify peers of shutdown (best effort).
+//
+// Two paths: peers that already have an open /mochi/2/messages stream
+// get a `bye` frame on the existing Sender (preserves the in-flight
+// drain semantics). Peers we haven't talked to via /mochi/2 yet — or
+// /mochi/1-only peers — get the legacy fresh-stream bye on /mochi/1.
+//
+// peers_shutdown_drain_timeout caps how long we'll wait for the
+// senders' inflight to empty before forcing the close.
 func peers_shutdown() {
+	// First, drain every open /mochi/2/messages Sender via bye + wait.
+	senders_bye_all(peers_shutdown_drain_timeout)
+
 	peers_lock.Lock()
 	connected := []string{}
 	for id, p := range peers {
@@ -631,6 +648,10 @@ func peers_shutdown() {
 	}
 	peers_lock.Unlock()
 
+	// Then send the legacy bye to every still-connected peer that
+	// didn't have a /mochi/2 Sender. peers with both will receive
+	// two bye frames — that's harmless; both paths treat it as
+	// "stop sending us new work".
 	info("Notifying %d connected peers of shutdown", len(connected))
 	for _, id := range connected {
 		s := net_stream(id)
@@ -640,3 +661,8 @@ func peers_shutdown() {
 		}
 	}
 }
+
+// peers_shutdown_drain_timeout — how long peers_shutdown waits for
+// senders' inflight to drain on bye. Long enough for most inflight to
+// ack on a healthy link; short enough not to delay shutdown noticeably.
+var peers_shutdown_drain_timeout = 5 * time.Second

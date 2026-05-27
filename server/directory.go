@@ -86,27 +86,14 @@ func directory_download() {
 	}
 }
 
-// Download directory updates from a specific peer
+// Download directory updates from a specific peer.
+//
+// Prefers /mochi/2/stream (one libp2p stream with an authenticated
+// handshake), falls back to /mochi/1's peer_stream + read_challenge
+// for peers that haven't rolled out the new protocol. The wire
+// content after the handshake is identical in both paths — series of
+// CBOR-encoded Directory rows until EOF.
 func directory_download_from_peer(peer string) bool {
-	s := peer_stream(peer)
-	if s == nil {
-		debug("Stream unable to open to peer %q", peer)
-		return false
-	}
-	defer s.close()
-
-	// Read challenge from receiver (required before sending headers)
-	_, err := s.read_challenge()
-	if err != nil {
-		debug("Stream unable to read challenge: %v", err)
-		return false
-	}
-
-	err = s.write(Headers{Service: "directory", Event: "download"})
-	if err != nil {
-		return false
-	}
-
 	start := int64(0)
 	var u Directory
 	db := db_open("db/directory.db")
@@ -114,7 +101,34 @@ func directory_download_from_peer(peer string) bool {
 		start = u.Updated
 	}
 	debug("Directory downloading updates since %s from peer %q", time_local(nil, start), peer)
-	s.write_content("start", i64toa(start), "version", build_version)
+
+	// Build the content map the receiver's directory_download_event
+	// reads via e.get("start", ...).
+	content := map[string]any{
+		"start":   i64toa(start),
+		"version": build_version,
+	}
+
+	s, v2, err := stream_open_v2_or_legacy(peer, "", "", "directory", "download", "", nil, content)
+	if err != nil || s == nil {
+		debug("Directory stream unable to open to peer %q: %v", peer, err)
+		return false
+	}
+	defer s.close()
+
+	if !v2 {
+		// Legacy /mochi/1 path: read challenge, write headers + content
+		// the old way. stream_open_v2_or_legacy returns the bare
+		// peer_stream — we still need to do the /mochi/1 handshake.
+		if _, cerr := s.read_challenge(); cerr != nil {
+			debug("Directory stream unable to read challenge: %v", cerr)
+			return false
+		}
+		if werr := s.write(Headers{Service: "directory", Event: "download"}); werr != nil {
+			return false
+		}
+		s.write_content("start", i64toa(start), "version", build_version)
+	}
 
 	users := db_open("db/users.db")
 	for {

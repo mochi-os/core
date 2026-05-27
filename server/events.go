@@ -478,8 +478,17 @@ func event_int64(v any) int64 {
 	return 0
 }
 
-// Decode the next segment from a received event
+// Decode the next segment from a received event. Lazy-creates the
+// CBOR decoder if it isn't set up yet — needed for /mochi/2/stream
+// callers where the handshake doesn't go through read_headers (the
+// /mochi/1 path that historically created the decoder).
 func (e *Event) segment(v any) bool {
+	if e.stream == nil || e.stream.reader == nil {
+		return false
+	}
+	if e.stream.decoder == nil {
+		e.stream.decoder = cbor_decode_mode.NewDecoder(e.stream.reader)
+	}
 	err := e.stream.decoder.Decode(v)
 	if err != nil {
 		info("Event unable to decode segment: %v", err)

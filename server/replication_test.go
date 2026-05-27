@@ -13,6 +13,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
@@ -121,6 +122,12 @@ func setup_replication_test(t *testing.T) func() {
 		bootstrap_db_fetch = orig_db_fetch
 		bootstrap_db_scope_driver = orig_db_scope_driver
 		replication_pair_backfill = orig_pair_backfill
+		// Drain any /mochi/2 self-loop workers spawned by this test
+		// before we mutate global state (data_dir, net_id) — otherwise
+		// a worker mid-handler would race the assignments below.
+		// Production code never tears down data_dir; this is a
+		// test-only concern.
+		workers_drain_test(500 * time.Millisecond)
 		data_dir = orig_data_dir
 		net_id = orig_p2p_id
 		os.RemoveAll(tmp_dir)

@@ -254,6 +254,21 @@ func net_start() {
 	// Listen for connecting peers
 	net_me.SetStreamHandler("/mochi/1", net_receive_1)
 
+	// /mochi/2 handlers: messages multiplexes many small messages on
+	// one persistent stream; stream is a raw bidirectional channel
+	// (file transfer, RPC-style). Both share the hello/caps/claim
+	// handshake. /mochi/1 stays registered for fallback during the
+	// rollout (Phase 8 drops it).
+	protocol2_init()
+	net_me.SetStreamHandler(protocol_messages, receive_messages)
+	net_me.SetStreamHandler(protocol_stream, receive_stream)
+
+	// Start the per-host worker reaper and the sender sweeper. Both
+	// are single goroutines for the process; both safe to start before
+	// the first inbound / outbound stream.
+	go worker_reaper()
+	go senders_sweep_manager()
+
 	// Initialize ping service for keepalive
 	net_pinger = p2p_ping.NewPingService(net_me)
 

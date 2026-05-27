@@ -206,6 +206,28 @@ func queue_sending(id string) {
 	db.exec("update queue set status='sending' where id=?", id)
 }
 
+// queue_unsending rolls back queue_sending when the async send path
+// fails before the row enters its inflight tracking (e.g. peer_send
+// returns errSenderUnreachable). Returns the row to 'pending' so the
+// next queue_select picks it up.
+func queue_unsending(id string) {
+	db := db_open("db/queue.db")
+	db.exec("update queue set status='pending' where id=? and status='sending'", id)
+}
+
+// queue_is_inflight returns true when the row is currently owned by
+// the /mochi/2 async resolver (status='sending'). queue_process uses
+// this to skip queue_fail for rows the resolver will resolve itself.
+func queue_is_inflight(id string) bool {
+	db := db_open("db/queue.db")
+	row, err := db.row("select status from queue where id=?", id)
+	if err != nil || row == nil {
+		return false
+	}
+	s, _ := row["status"].(string)
+	return s == "sending"
+}
+
 // queue_defer pushes a row's next_retry forward without incrementing
 // attempts. Use when a row was deliberately skipped (target peer is
 // in the silent-failure cache) - we want it to drop out of the ready
@@ -305,6 +327,36 @@ func queue_send_direct(q *QueueEntry) bool {
 		return queue_send_self_loop_fast(q)
 	}
 
+	// /mochi/2/messages path: build a Frame and hand to peer_send. The
+	// Sender handles claim, codec, framing, ack matching, and updates
+	// the queue row itself (queue_ack / queue_fail) via the inflight
+	// resolver. Returns false from this function so queue_process
+	// doesn't delete or fail the row — the async resolver owns it,
+	// signalled by the 'sending' status set here. /mochi/1 peers fall
+	// through to the legacy slow path below.
+	if q.File == "" && protocol_known_get(peer, protocol_messages) != protocol_state_unsupported {
+		f, err := frame_for_queue(q)
+		if err == nil {
+			// Mark in-flight BEFORE handing off, so queue_process's
+			// post-call status check sees 'sending' and doesn't
+			// queue_fail an in-flight row.
+			queue_sending(q.ID)
+			send_err := peer_send(peer, q.ID, f)
+			if send_err == nil {
+				return false
+			}
+			// peer_send failed before queueing. Roll back the
+			// 'sending' so queue_fail can re-pend the row.
+			queue_unsending(q.ID)
+			if !is_v2_unsupported(send_err) {
+				return false
+			}
+			// fall through to legacy path
+		} else {
+			debug("Queue v2 frame build failed for %q: %v — falling back to legacy", q.ID, err)
+		}
+	}
+
 	s := peer_stream(peer)
 	if s == nil {
 		return false
@@ -383,25 +435,32 @@ func queue_send_direct(q *QueueEntry) bool {
 }
 
 // queue_send_self_loop_fast bypasses the wire envelope when delivering
-// to ourselves. Constructs the Event from the queue row directly and
-// runs e.route() synchronously. See the comment in queue_send_direct
-// for the trust model: the queue table is validated at write time, so
-// the on-wire signature is wasted work in-process.
+// to ourselves. Routes through the per-(user, app) worker pool (same
+// path remote /mochi/2/messages frames take) so self-loop frames
+// serialise with remote frames for the same handler — preserves the
+// "handler invocations for the same (user, app) never overlap"
+// guarantee across both sources.
 //
-// Panic isolation: the slow path implicitly gets it from stream_receive
-// running in its own goroutine. Here we use defer recover to preserve
-// the same "a handler panic doesn't kill the queue manager" property
-// without spending a goroutine per row. NOTE: removing the defer is a
-// process-stability regression - the queue_process per-row goroutine
-// has no recover() of its own.
+// Differences from the pre-/mochi/2 version (which ran e.route()
+// inline):
+//   • Temporal: the call returns after enqueueing, not after the
+//     handler runs. The queue row is resolved later by queue_reply
+//     when the worker finishes (queue_ack / queue_fail / queue_drop).
+//   • Serial guarantee: self-loop now serialises with remote sends
+//     for the same (user, app).
+//   • Panic isolation: now lives in the worker's handle() rather than
+//     here. The defer recover guards only the dispatch path (resolve
+//     user from To, decode Content) — the handler proper runs on the
+//     worker goroutine which has its own recover.
 //
-// Returns true on successful apply (or NACK-drop-reason), false on
-// retryable error (queue_process then calls queue_fail with standard
-// backoff). Mirrors queue_send_direct's contract exactly.
+// Returns true on successful enqueue (the worker will resolve the
+// queue row), false only if the row can't be enqueued at all (decode
+// fails). queue_process's caller treats false the same way as a
+// failed remote send: queue_fail with standard backoff.
 func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			warn("Queue self-loop fast path: handler panic for %q: %v\n%s",
+			warn("Queue self-loop fast path: dispatch panic for %q: %v\n%s",
 				q.ID, r, rd.Stack())
 			ok = false
 		}
@@ -422,29 +481,47 @@ func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
 		services = strings.Split(q.FromServices, ",")
 	}
 
-	e := &Event{
-		id:              event_id(),
-		msg_id:          q.ID,
-		from:            q.FromEntity,
-		to:              q.ToEntity,
-		service:         q.Service,
-		event:           q.Event,
-		sender_app:      q.FromApp,
-		sender_services: services,
-		peer:            net_id,
-		content:         content,
+	// Resolve user from To (or accept "" if no To — anonymous self-loop
+	// is a corner case the worker key copes with).
+	to := q.ToEntity
+	if to != "" && valid(to, "fingerprint") {
+		if ent := entity_by_any(to); ent != nil {
+			to = ent.ID
+		}
+	}
+	user := ""
+	if to != "" {
+		if u := user_owning_entity(to); u != nil {
+			user = u.UID
+		}
 	}
 
-	err := e.route()
-	if err != nil {
-		reason := nack_reason_from_error(err)
-		if nack_should_drop(reason) {
-			queue_drop(q.ID, reason)
-			return true
-		}
-		return false
+	f := &Frame{
+		Type:     frame_type_message,
+		ID:       q.ID,
+		From:     q.FromEntity,
+		To:       to,
+		Service:  q.Service,
+		Event:    q.Event,
+		FromApp:  q.FromApp,
+		Services: services,
+		Priority: frame_priority_for(q.Priority),
+		Content:  content,
+		Data:     q.Data,
 	}
-	return true
+
+	// Mark sending so queue_process knows the resolver owns this row.
+	// Return false (NOT true) so queue_process doesn't delete the row
+	// — the worker's queue_reply will queue_ack on success or
+	// queue_fail/drop on failure.
+	queue_sending(q.ID)
+
+	worker_dispatch(user, q.Service, &worker_frame{
+		frame: f,
+		peer:  net_id, // self-loop: originating peer is us
+		reply: queue_reply{id: q.ID},
+	})
+	return false
 }
 
 // Send a queued broadcast message (no challenge for broadcasts)
@@ -619,7 +696,11 @@ func queue_process() int {
 
 			if ok {
 				db.exec("delete from queue where id = ?", q.ID)
-			} else {
+			} else if !queue_is_inflight(q.ID) {
+				// /mochi/2 paths set status='sending' and return
+				// false; the async resolver (sender_read /
+				// queue_reply) will queue_ack / queue_fail when the
+				// receiver replies. Don't touch in-flight rows here.
 				queue_fail(q.ID, "send failed")
 			}
 		}(q, sem)

@@ -188,6 +188,10 @@ func init() {
 			help: "Per-(user, app, peer, key) broadcast subscriber lag (received_last vs owner _log.max when this host owns the stream)",
 			run:  cmd_broadcast_lag,
 		},
+		"pipelining status": {
+			help: "/mochi/2 transport state: per-peer protocol support, open Senders + inflight, per-host worker pool. Use to confirm every paired peer supports /mochi/2/* before Phase 8 drops /mochi/1.",
+			run:  cmd_pipelining_status,
+		},
 		"check starlark": {
 			help: "Parse every .star file under <path> using the server's go.starlark.net parser. Non-zero exit + file:line:col on the first parse error. Use in deploy.sh before zipping the bundle.",
 			run:  cmd_check_starlark,

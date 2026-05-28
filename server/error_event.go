@@ -171,14 +171,18 @@ func error_code_for_nack(nack string) (code, reason string, ok bool) {
 
 // error_catalogue_validate warns about `errors`-block keys that aren't in
 // the fixed catalogue — almost always a typo, since the catalogue is
-// core-owned and apps only subscribe to codes core emits.
-func error_catalogue_validate(av *AppVersion, id string) {
+// core-owned and apps only subscribe to codes core emits. Returns the
+// unknown codes (for tests; callers may ignore).
+func error_catalogue_validate(av *AppVersion, id string) []string {
+	var unknown []string
 	for code := range av.Errors {
 		if code == "" {
 			continue
 		}
 		if !error_catalogue[code] {
+			unknown = append(unknown, code)
 			info("App %q declares unknown error code %q (not in the core catalogue)", id, code)
 		}
 	}
+	return unknown
 }

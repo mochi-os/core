@@ -408,12 +408,17 @@ func queue_drop(id, reason string) {
 	}
 }
 
-// queue_error_dispatch fires a core error event to the app that queued a
-// row whose send has terminally failed. Resolves the row's owning user and
-// app; cheap when that app declares no handler (the entity_peers lookup for
-// detail.locations runs only when a handler exists, via error_dispatch's
-// thunk). Call AFTER the row is removed from queue.db.
-func queue_error_dispatch(q *QueueEntry, code, reason string) {
+// queue_error_dispatch surfaces a terminal send failure as a core error
+// event to the app that queued the row. Indirected through a var so tests
+// can capture the call sites (reason->code mapping, dedup) without standing
+// up an app/user. Call AFTER the row is removed from queue.db.
+var queue_error_dispatch = queue_error_dispatch_real
+
+// queue_error_dispatch_real resolves the row's owning user and app, then
+// dispatches; cheap when that app declares no handler (the entity_peers
+// lookup for detail.locations runs only when a handler exists, via
+// error_dispatch's thunk).
+func queue_error_dispatch_real(q *QueueEntry, code, reason string) {
 	if q.FromApp == "" || q.FromEntity == "" {
 		return
 	}

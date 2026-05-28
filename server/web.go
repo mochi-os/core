@@ -131,8 +131,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// is wrong (the 35%-files-missing case from the same incident).
 	// The /login/-/* paths are the only ones that need to work while
 	// pending — the user has to be able to cancel or wait.
-	if user != nil && user.Status == "pending-replication" && a.id != "login" {
-		respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+	if user_pending(user) && a.id != "login" {
+		if user.Status == "pending-restore" {
+			respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
+		} else {
+			respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+		}
 		return true
 	}
 
@@ -1463,6 +1467,8 @@ func web_start() {
 	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
 	r.POST("/_/auth/replicate", rate_limit_login_middleware, web_auth_replicate)
+	r.POST("/_/auth/restore", rate_limit_login_middleware, web_auth_restore)
+	r.GET("/_/auth/restore/progress", web_auth_restore_progress)
 	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_oauth_begin)
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
 	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)

@@ -36,14 +36,26 @@ type Session struct {
 }
 
 type User struct {
-	UID         string `db:"uid"`
-	Username    string
-	Role        string
-	Methods     string
-	Status      string
-	Preferences map[string]string
-	Identity    *Entity
-	db          *DB // Used by actions
+	UID           string `db:"uid"`
+	Username      string
+	Role          string
+	Methods       string
+	Status        string
+	RestoreSource string `db:"restore_source"`
+	Preferences   map[string]string
+	Identity      *Entity
+	db            *DB // Used by actions
+}
+
+// user_pending reports whether the user is mid-bootstrap — either a
+// per-user replication backfill or a server-move restore — and so must
+// not run normal app actions yet. During both, the user's DBs are being
+// rename(2)-swapped underneath the request path; opening them mid-swap
+// raised "database disk image is malformed" (the 2026-05-20/21
+// incidents). Only the login app stays reachable so the user can watch
+// the waiting page.
+func user_pending(u *User) bool {
+	return u != nil && (u.Status == "pending-replication" || u.Status == "pending-restore")
 }
 
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
@@ -51,6 +63,7 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
 	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
 	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
+	"export":   sl.NewBuiltin("mochi.user.export", api_user_export),
 	"get":      &user_get_module{},
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),

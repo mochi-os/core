@@ -3,6 +3,7 @@ module core
 go 1.25.0
 
 require (
+	filippo.io/age v1.3.1
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/andybalholm/brotli v1.2.1
 	github.com/btcsuite/btcutil v1.0.2
@@ -20,12 +21,14 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092
 	github.com/jmoiron/sqlx v1.3.5
+	github.com/klauspost/compress v1.18.0
 	github.com/libp2p/go-libp2p v0.43.0
 	github.com/libp2p/go-libp2p-pubsub v0.14.2
 	github.com/mattn/go-isatty v0.0.20
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/multiformats/go-multiaddr v0.16.0
+	github.com/multiformats/go-multistream v0.6.1
 	github.com/ncruces/go-sqlite3 v0.34.0
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
 	github.com/pquerna/otp v1.5.0
@@ -44,6 +47,7 @@ require (
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/PuerkitoBio/goquery v1.8.0 // indirect
@@ -90,7 +94,6 @@ require (
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
@@ -118,7 +121,6 @@ require (
 	github.com/multiformats/go-multibase v0.2.0 // indirect
 	github.com/multiformats/go-multicodec v0.9.1 // indirect
 	github.com/multiformats/go-multihash v0.2.3 // indirect
-	github.com/multiformats/go-multistream v0.6.1 // indirect
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-sqlite3-wasm/v2 v2.1.35300 // indirect

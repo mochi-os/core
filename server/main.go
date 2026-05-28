@@ -210,6 +210,7 @@ func main_serve(ready func()) int {
 	go bootstrap_resume()
 	go bootstrap_retry_incomplete_manager()
 	go replication_link_resume_pending_activations()
+	go restore_cleanup_orphans()
 	go sessions_manager()
 	go update_manager()
 	go web_start()

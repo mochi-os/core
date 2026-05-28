@@ -299,7 +299,7 @@ func app_user_setup(u *User, app_id string) {
 	// (2026-05-21). Setup re-runs harmlessly once the user flips to
 	// active: the `setup != expected` check makes the next call a
 	// real setup pass.
-	if u.Status == "pending-replication" {
+	if user_pending(u) {
 		return
 	}
 

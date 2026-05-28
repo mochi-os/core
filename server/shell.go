@@ -378,6 +378,23 @@ func web_shell_init(c *gin.Context) {
 	// anonymous-public window before login completes.
 	result["language"] = request_language(c, user)
 
+	// Source-server cleanup banner: set when this account arrived via a
+	// server-move restore. Carried here so home/settings render the banner
+	// (and the pending re-link list) without a separate fetch.
+	udb := db_open("db/users.db")
+	if row, _ := udb.row("select restore_source from users where uid=?", user.UID); row != nil {
+		if source := as_string(row["restore_source"]); source != "" {
+			result["restoreSource"] = source
+			relinks := []gin.H{}
+			if links, _ := udb.rows("select service, identifier from relinks where user=? order by service", user.UID); links != nil {
+				for _, l := range links {
+					relinks = append(relinks, gin.H{"service": as_string(l["service"]), "identifier": as_string(l["identifier"])})
+				}
+			}
+			result["relinks"] = relinks
+		}
+	}
+
 	c.JSON(http.StatusOK, result)
 }
 

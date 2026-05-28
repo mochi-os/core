@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 69
+	schema_version = 70
 )
 
 var (
@@ -159,8 +159,13 @@ func db_create() {
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active', restore_source text not null default '')")
 	users.exec("create unique index users_username on users (username)")
+
+	// Services the user must re-link after a server move (restore). Populated
+	// at restore time from the bundle's linked.json; rows clear as the user
+	// re-links each on the destination. Drives the post-restore banner.
+	users.exec("create table relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
 
 	// Passkey credential definitions and sign count. Sign count is WebAuthn
 	// replay-prevention state and lives here so it survives sessions.db
@@ -723,6 +728,8 @@ func db_upgrade() {
 			db_upgrade_68()
 		case 69:
 			db_upgrade_69()
+		case 70:
+			db_upgrade_70()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1011,6 +1018,20 @@ func db_upgrade_69() {
 	q := db_open("db/queue.db")
 	q.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
 	q.exec("analyze queue")
+}
+
+// db_upgrade_70 adds the restore_source column to users (set when an
+// account arrives via a server-move restore; drives the source-cleanup
+// banner) and the relinks table (third-party services the user must
+// re-link on the destination after a move).
+func db_upgrade_70() {
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from pragma_table_info('users') where name='restore_source'"); !exists {
+		users.exec("alter table users add column restore_source text not null default ''")
+	}
+	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='relinks'"); !exists {
+		users.exec("create table relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
+	}
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

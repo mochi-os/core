@@ -229,6 +229,16 @@ func (m *Message) send_work() {
 			return
 		}
 		queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		if m.target == net_id {
+			// Self-loop dispatch fell back to queue.db (no worker yet,
+			// or inbox full). Don't inline-attempt: message_attempt_send
+			// → peer_send(net_id) → net_me.NewStream(self) self-dials
+			// and fails. self_loop_drain owns target==net_id rows; nudge
+			// it so the row drains on the next tick rather than waiting
+			// out the heartbeat.
+			queue_wake()
+			return
+		}
 		message_attempt_send(m, m.target, content)
 		return
 	}
@@ -254,6 +264,7 @@ func (m *Message) send_work() {
 	// touch queue.db, so giving them m.ID would orphan the inline
 	// send (no row for it to ack against, receiver gets a duplicate).
 	primary_peer := ""
+	self_queued := false
 	for _, peer := range peers {
 		if peer == net_id {
 			tmp := *m
@@ -262,6 +273,12 @@ func (m *Message) send_work() {
 			if message_self_loop_dispatch(&tmp, content) {
 				continue
 			}
+			// Dispatch fell back to queue.db. Queue a self-loop row for
+			// self_loop_drain, but never make net_id the inline primary
+			// — message_attempt_send(net_id) would self-dial and fail.
+			queue_add_direct(uid(), peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			self_queued = true
+			continue
 		}
 		id := m.ID
 		if primary_peer != "" {
@@ -272,11 +289,14 @@ func (m *Message) send_work() {
 			primary_peer = peer
 		}
 	}
-	// Try to send the primary row immediately; the rest ride the queue
-	// tick. Avoids fanning N goroutines from a single send. When every
-	// peer was self-loop-dispatched, there's no row left to attempt.
+	// Try to send the primary (non-self) row immediately; the rest ride
+	// the queue tick. Avoids fanning N goroutines from a single send.
 	if primary_peer != "" {
 		message_attempt_send(m, primary_peer, content)
+	}
+	// Nudge self_loop_drain if a self-loop row was queued as fallback.
+	if self_queued {
+		queue_wake()
 	}
 }
 

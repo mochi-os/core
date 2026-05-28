@@ -535,21 +535,27 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	}
 }
 
-// TestStreamOpenSelfLoopUsesLegacyPipe is the regression test for the
+// TestStreamOpenSelfLoopUsesV2Native is the regression test for the
 // market/staff → Comptroller outage: a mochi.remote.stream() to a
-// locally-hosted entity resolves peer==net_id, and the v2 path ends in
-// net_me.NewStream(self), which libp2p refuses. stream_open_v2_or_legacy
-// must short-circuit self to peer_stream's in-process pipe rather than
-// attempting (and failing) the v2 path without falling back.
+// locally-hosted entity resolves peer==net_id, and the wire v2 path
+// ends in net_me.NewStream(self), which libp2p refuses.
+// stream_open_v2_or_legacy must route self to the v2-native in-process
+// loopback (stream_self_loop) rather than attempting (and failing) the
+// wire path.
 //
-// In the test environment net_me is nil, so without the self
-// short-circuit the v2 attempt returns errSenderUnreachable — which is
-// NOT is_protocol_not_supported, so the old code returned that error
-// instead of falling back. The assertions below (non-nil stream,
-// v2==false, no error) all fail against the pre-fix code.
-func TestStreamOpenSelfLoopUsesLegacyPipe(t *testing.T) {
+// Returns v2=true (raw mode, handshake skipped) and a non-nil near end.
+// In the test environment net_me is nil, so the old wire attempt would
+// return errSenderUnreachable — which is NOT is_protocol_not_supported,
+// so the broken code returned that error instead of looping back. All
+// three assertions below fail against that broken code.
+//
+// Note: the far-end dispatch goroutine resolves "to-entity" to no local
+// user and closes its pipe end — that's fine; this test only asserts
+// the routing decision (the near end is returned, raw, no error).
+func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	cleanup := setup_replication_test(t) // sets net_id = "self"
 	defer cleanup()
+	setup_users_test_schema() // so the far-end stream_resolve query has a table
 
 	s, v2, err := stream_open_v2_or_legacy(net_id, "", "to-entity", "market", "search", "market", nil, nil)
 	if err != nil {
@@ -558,10 +564,16 @@ func TestStreamOpenSelfLoopUsesLegacyPipe(t *testing.T) {
 	if s == nil {
 		t.Fatal("self-loop returned nil stream; mochi.remote.stream() to a local entity would report 'not available'")
 	}
-	if v2 {
-		t.Error("self-loop took the v2 path; want the legacy in-process pipe (v2=false) — libp2p can't dial self")
+	if !v2 {
+		t.Error("self-loop did not take the v2-native path (v2=false); the legacy /mochi/1 pipe goes away in Phase 8")
 	}
-	// Closing unblocks the peer_stream receive goroutine waiting on the pipe.
+	// Drain the near end. The far-end goroutine resolves "to-entity" to
+	// no local user and closes its pipe end, so this read returns EOF.
+	// Reading also synchronises with the goroutine's DB access (the
+	// resolve happens-before its close, which happens-before this read
+	// returns) so the detached goroutine can't race test teardown.
+	var discard map[string]any
+	_ = s.read(&discard)
 	s.close()
 }
 

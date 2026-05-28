@@ -102,20 +102,11 @@ func receive_stream(s p2p_network.Stream) {
 	}
 
 	// Resolve target entity (may be a fingerprint) and the owning user.
-	to := open.To
-	if to != "" && valid(to, "fingerprint") {
-		if ent := entity_by_any(to); ent != nil {
-			to = ent.ID
-		}
-	}
-	var user *User
-	if to != "" {
-		user = user_owning_entity(to)
-		if user == nil {
-			_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unknown_user})
-			s.Close()
-			return
-		}
+	to, user, ok := stream_resolve(open.To)
+	if !ok {
+		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unknown_user})
+		s.Close()
+		return
 	}
 
 	// Acknowledge the open; transition to raw mode. After this we hand
@@ -130,22 +121,57 @@ func receive_stream(s p2p_network.Stream) {
 	st := stream_rw(s, s)
 	st.remote = s.Conn().RemoteMultiaddr().String()
 
-	// Read the caller's first post-ack CBOR segment as e.content,
-	// matching /mochi/1's stream_receive (which read content via
-	// read_content before dispatching the handler). Callers that
-	// passed `content` to stream_open get it shipped here by
-	// stream_open's post-ack write; callers that go through
-	// stream_to_peer (Starlark mochi.stream, replication_user_lookup,
-	// etc.) write content themselves via s.write right after the call
-	// returns. Either way the receiver reads it the same way.
-	//
-	// st.read() lazy-creates a CBOR decoder backed by the libp2p
-	// stream, so any handler-side e.segment(&v) / e.stream.read(&v)
-	// calls afterwards reuse the same decoder and pick up the next
-	// segments correctly.
+	// Hand off to the shared post-handshake dispatch (reads the first
+	// content segment, builds the Event, routes it, closes).
+	stream_dispatch(st, open, user, to, peer)
+
+	peer_discovered_address(peer, s.Conn().RemoteMultiaddr().String()+"/p2p/"+peer)
+	debug("Stream: closed peer=%q session=%s", peer, session)
+}
+
+// stream_resolve maps a /mochi/2/stream open target to its resolved
+// entity id and owning user. ok is false when a non-empty target has
+// no local owner: the wire receiver answers fail_unknown_user, the
+// self-loop just closes the pipe. An empty target resolves to
+// ("", nil, true) — an anonymous stream the handler may still accept.
+//
+// Shared by receive_stream (wire) and stream_self_loop (in-process) so
+// the two paths can never drift on how a target becomes a (user, app).
+func stream_resolve(to string) (string, *User, bool) {
+	if to == "" {
+		return "", nil, true
+	}
+	if valid(to, "fingerprint") {
+		if ent := entity_by_any(to); ent != nil {
+			to = ent.ID
+		}
+	}
+	user := user_owning_entity(to)
+	if user == nil {
+		return to, nil, false
+	}
+	return to, user, true
+}
+
+// stream_dispatch runs the post-handshake half of a /mochi/2/stream
+// session: read the caller's first post-ack CBOR segment as e.content,
+// build the Event with the stream as e.stream, route it to the app
+// handler, then close.
+//
+// Shared by receive_stream (after its hello/caps/claim/ack handshake)
+// and stream_self_loop (which skips the handshake — the same-process
+// boundary is trusted, exactly as message_self_loop_dispatch skips the
+// /mochi/2/messages envelope + signature). `to` is the resolved entity
+// id; `user` its owner (may be nil for an anonymous target).
+//
+// st.read() lazy-creates a CBOR decoder backed by the stream, so
+// handler-side e.segment(&v) / e.stream.read(&v) calls afterwards reuse
+// the same decoder and pick up subsequent segments correctly.
+func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 	content := map[string]any{}
 	if err := st.read(&content); err != nil {
-		info("Stream: content read failed peer=%q session=%s: %v", peer, session, err)
+		info("Stream dispatch: content read failed from=%q service=%q event=%q: %v",
+			open.From, open.Service, open.Event, err)
 		st.close()
 		return
 	}
@@ -166,12 +192,55 @@ func receive_stream(s p2p_network.Stream) {
 	}
 
 	if err := e.route(); err != nil {
-		debug("Stream: handler error peer=%q service=%q event=%q: %v",
-			peer, open.Service, open.Event, err)
+		debug("Stream dispatch: handler error service=%q event=%q: %v",
+			open.Service, open.Event, err)
 	}
 	st.close()
-	peer_discovered_address(peer, s.Conn().RemoteMultiaddr().String()+"/p2p/"+peer)
-	debug("Stream: closed peer=%q session=%s", peer, session)
+}
+
+// stream_self_loop is the in-process /mochi/2/stream loopback for
+// peer == net_id. libp2p refuses to dial self, so instead of a wire
+// stream we io.Pipe two ends crosswise: the caller reads/writes the
+// near end; the app handler runs on the far end via stream_dispatch.
+// The hello/caps/claim/open/ack handshake is skipped entirely — the
+// same-process boundary is trusted, mirroring how the /mochi/2/messages
+// self-send (message_self_loop_dispatch) skips the envelope + signature.
+//
+// Always returns a usable near end. Target resolution and the
+// unknown-user case are handled on the far end exactly as the wire
+// receiver does, so a self-loop to an unhosted entity fails the same
+// way an over-the-wire send would (the handler never runs and the near
+// end sees the closed pipe), rather than being decided differently at
+// the sender.
+//
+// This is the v2-native replacement for the old peer_stream(net_id)
+// self-loop, which ran the /mochi/1 receiver on the far end. Once
+// Phase 8 removes /mochi/1 (and peer_stream with it), this is what
+// keeps mochi.remote.stream() to a locally-hosted entity (market/staff
+// → Comptroller) working.
+func stream_self_loop(from, to, service, event, from_app string, services []string) *Stream {
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+	far := stream_rw(&pipe_reader{PipeReader: r1}, &pipe_writer{PipeWriter: w2})
+	near := stream_rw(&pipe_reader{PipeReader: r2}, &pipe_writer{PipeWriter: w1})
+
+	open := &Frame{
+		Type: frame_type_open, ID: uid(), From: from, To: to,
+		Service: service, Event: event, FromApp: from_app, Services: services,
+	}
+
+	go func() {
+		resolved, user, ok := stream_resolve(open.To)
+		if !ok {
+			debug("Stream self-loop: unknown user for to=%q service=%q event=%q",
+				open.To, open.Service, open.Event)
+			far.close()
+			return
+		}
+		stream_dispatch(far, open, user, resolved, net_id)
+	}()
+
+	return near
 }
 
 // stream_open is the sender side of /mochi/2/stream. Establishes the
@@ -277,21 +346,18 @@ func stream_open(peer, from, to, service, event, from_app string,
 func stream_open_v2_or_legacy(peer, from, to, service, event, from_app string,
 	services []string, content map[string]any) (st *Stream, v2 bool, err error) {
 
-	// Self-loop streams (peer == net_id) can't use the v2 path:
+	// Self-loop streams (peer == net_id) can't use the wire v2 path:
 	// peer_protocol_open ends in net_me.NewStream(self), which libp2p
-	// refuses (a host can't dial itself). peer_stream has the
-	// in-process pipe self-loop (it runs stream_receive on the far end
-	// via io.Pipe), so route self there directly. The caller
-	// (stream_to_peer) then takes its legacy branch and writes signed
-	// Headers, matching what the pipe's stream_receive(version=1)
-	// expects. Without this, every mochi.remote.stream() to a
-	// locally-hosted entity (market/staff → Comptroller) fails.
+	// refuses (a host can't dial itself). Route self to the v2-native
+	// in-process loopback (stream_self_loop), which io.Pipes the two
+	// ends and runs the /mochi/2/stream dispatch on the far end,
+	// skipping the handshake. Returned v2=true: the near end is already
+	// in raw mode, so the caller writes content directly rather than
+	// taking the legacy challenge+Headers path. Without this, every
+	// mochi.remote.stream() to a locally-hosted entity (market/staff →
+	// Comptroller) fails.
 	if peer == net_id {
-		legacy := peer_stream(peer)
-		if legacy == nil {
-			return nil, false, errSenderUnreachable
-		}
-		return legacy, false, nil
+		return stream_self_loop(from, to, service, event, from_app, services), true, nil
 	}
 
 	// Try v2 first unless the cache says it's not supported.

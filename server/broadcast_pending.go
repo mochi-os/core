@@ -400,6 +400,20 @@ func broadcast_pending_gc(force bool) int {
 		info("Broadcast pending GC: skipped gap user=%q app=%q peer=%q key=%q from_seq=%d to_seq=%d gap=%d age=%ds",
 			s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size, now()-s.Oldest)
 		audit_broadcast_pending_purged(s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size)
+
+		// Tell the subscribing app it permanently lost events on this
+		// stream, so it can do a full state re-fetch — broadcast/resync
+		// can't fill a gap whose sequences are pruned from the owner's log.
+		// entity = the stream key (the source entity). Best-effort,
+		// host-local; no-op if the app declares no broadcast/gap handler.
+		svc := ""
+		if svcs := app_services(a, u); len(svcs) > 0 {
+			svc = svcs[0]
+		}
+		peer, key, first, last := s.Peer, s.Key, s.Last+1, skip_to
+		error_dispatch(u, a, error_code_broadcast_gap, "unfillable", svc, key, nil, func() map[string]any {
+			return map[string]any{"peer": peer, "key": key, "first": first, "last": last}
+		})
 		skipped++
 	}
 	if skipped > 0 {

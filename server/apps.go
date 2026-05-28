@@ -53,6 +53,14 @@ type AppEvent struct {
 	internal_function func(*Event) `json:"-"`
 }
 
+// AppError is one entry in an app's `errors` block: the handler the
+// framework calls when a core-originated failure event (the fixed
+// catalogue in error_event.go) matches. Lean by design — unlike AppEvent
+// it carries no access-control fields, because the sender is always core.
+type AppError struct {
+	Function string `json:"function"`
+}
+
 type AppFunction struct {
 	Function   string `json:"function"`
 	Permission string `json:"permission,omitempty"`
@@ -135,6 +143,7 @@ type AppVersion struct {
 	Icons        []Icon                 `json:"icons"`
 	Actions      map[string]AppAction   `json:"actions"`
 	Events       map[string]AppEvent    `json:"events"`
+	Errors       map[string]AppError    `json:"errors"`
 	Functions    map[string]AppFunction `json:"functions"`
 	// Commit.Function is the name of a Starlark function the framework
 	// invokes after any committed write to this app's per-user DB —
@@ -429,6 +438,7 @@ var (
 			{"notifications/send", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/write", ""},
+			{"user/export", ""},
 			{"user/identity/write", ""},
 			{"user/sessions/read", ""},
 			{"user/sessions/write", ""},
@@ -1309,6 +1319,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 
 	av.base = base
 	av.app_json_mtime = st.ModTime()
+	error_catalogue_validate(&av, id)
 
 	// Validate manifest
 	if !valid(av.Version, "version") {

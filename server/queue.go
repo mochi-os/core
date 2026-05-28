@@ -394,8 +394,50 @@ func queue_ack_flush(ids []string) {
 // queue_drop is the explicit-give-up path keyed off a known reason.
 func queue_drop(id, reason string) {
 	db := db_open("db/queue.db")
+	var q QueueEntry
+	have := db.scan(&q, "select * from queue where id = ?", id)
 	db.exec("delete from queue where id = ?", id)
 	debug("Queue dropping message %q on NACK reason %q (no retry)", id, reason)
+	// Surface a terminal NACK to the sending app — after the delete, so the
+	// handler never runs while the row is being removed. unknown/rejected
+	// map to a code; fail_dedup and unmapped reasons dispatch nothing.
+	if have {
+		if code, errReason, ok := error_code_for_nack(reason); ok {
+			queue_error_dispatch(&q, code, errReason)
+		}
+	}
+}
+
+// queue_error_dispatch fires a core error event to the app that queued a
+// row whose send has terminally failed. Resolves the row's owning user and
+// app; cheap when that app declares no handler (the entity_peers lookup for
+// detail.locations runs only when a handler exists, via error_dispatch's
+// thunk). Call AFTER the row is removed from queue.db.
+func queue_error_dispatch(q *QueueEntry, code, reason string) {
+	if q.FromApp == "" || q.FromEntity == "" {
+		return
+	}
+	user := user_owning_entity(q.FromEntity)
+	if user == nil {
+		return
+	}
+	app := app_by_id(q.FromApp)
+	if app == nil {
+		return
+	}
+	original := map[string]any{
+		"service": q.Service,
+		"event":   q.Event,
+		"message": q.ID,
+	}
+	var detail func() map[string]any
+	if code == error_code_message_unknown || code == error_code_message_timeout {
+		to := q.ToEntity
+		detail = func() map[string]any {
+			return map[string]any{"locations": int64(len(entity_peers(to)))}
+		}
+	}
+	error_dispatch(user, app, code, reason, q.Service, q.ToEntity, original, detail)
 }
 
 // nack_should_drop returns true when a NACK's Reason hint means
@@ -479,6 +521,7 @@ func queue_fail(id string, err string) {
 	if age > queue_max_age {
 		//warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q", attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec("delete from queue where id = ?", id)
+		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)
@@ -1049,6 +1092,20 @@ func queue_cleanup() {
 	// 	warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d", q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)
 	// }
 	db.exec("delete from queue where created < ?", cutoff)
+
+	// Surface each aged-out send as message/timeout to its sending app,
+	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes
+	// one row per (recipient, host), so a gone recipient yields many rows.
+	seen := map[string]bool{}
+	for i := range old {
+		q := &old[i]
+		key := q.FromEntity + "|" + q.FromApp + "|" + q.ToEntity
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		queue_error_dispatch(q, error_code_message_timeout, "timeout")
+	}
 }
 
 // Drain queue before shutdown (wait for pending sends to complete)

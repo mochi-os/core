@@ -535,6 +535,36 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	}
 }
 
+// TestStreamOpenSelfLoopUsesLegacyPipe is the regression test for the
+// market/staff → Comptroller outage: a mochi.remote.stream() to a
+// locally-hosted entity resolves peer==net_id, and the v2 path ends in
+// net_me.NewStream(self), which libp2p refuses. stream_open_v2_or_legacy
+// must short-circuit self to peer_stream's in-process pipe rather than
+// attempting (and failing) the v2 path without falling back.
+//
+// In the test environment net_me is nil, so without the self
+// short-circuit the v2 attempt returns errSenderUnreachable — which is
+// NOT is_protocol_not_supported, so the old code returned that error
+// instead of falling back. The assertions below (non-nil stream,
+// v2==false, no error) all fail against the pre-fix code.
+func TestStreamOpenSelfLoopUsesLegacyPipe(t *testing.T) {
+	cleanup := setup_replication_test(t) // sets net_id = "self"
+	defer cleanup()
+
+	s, v2, err := stream_open_v2_or_legacy(net_id, "", "to-entity", "market", "search", "market", nil, nil)
+	if err != nil {
+		t.Fatalf("self-loop stream_open_v2_or_legacy returned error: %v (market/staff → local Comptroller would 502)", err)
+	}
+	if s == nil {
+		t.Fatal("self-loop returned nil stream; mochi.remote.stream() to a local entity would report 'not available'")
+	}
+	if v2 {
+		t.Error("self-loop took the v2 path; want the legacy in-process pipe (v2=false) — libp2p can't dial self")
+	}
+	// Closing unblocks the peer_stream receive goroutine waiting on the pipe.
+	s.close()
+}
+
 // --- Mixed-version: cache forces fallback ------------------------------
 
 func TestMixedVersionPeerForcesLegacyPath(t *testing.T) {

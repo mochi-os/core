@@ -277,6 +277,23 @@ func stream_open(peer, from, to, service, event, from_app string,
 func stream_open_v2_or_legacy(peer, from, to, service, event, from_app string,
 	services []string, content map[string]any) (st *Stream, v2 bool, err error) {
 
+	// Self-loop streams (peer == net_id) can't use the v2 path:
+	// peer_protocol_open ends in net_me.NewStream(self), which libp2p
+	// refuses (a host can't dial itself). peer_stream has the
+	// in-process pipe self-loop (it runs stream_receive on the far end
+	// via io.Pipe), so route self there directly. The caller
+	// (stream_to_peer) then takes its legacy branch and writes signed
+	// Headers, matching what the pipe's stream_receive(version=1)
+	// expects. Without this, every mochi.remote.stream() to a
+	// locally-hosted entity (market/staff → Comptroller) fails.
+	if peer == net_id {
+		legacy := peer_stream(peer)
+		if legacy == nil {
+			return nil, false, errSenderUnreachable
+		}
+		return legacy, false, nil
+	}
+
 	// Try v2 first unless the cache says it's not supported.
 	switch protocol_known_get(peer, protocol_stream) {
 	case protocol_state_unsupported:

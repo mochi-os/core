@@ -380,18 +380,22 @@ func web_shell_init(c *gin.Context) {
 
 	// Source-server cleanup banner: set when this account arrived via a
 	// server-move restore. Carried here so home/settings render the banner
-	// (and the pending re-link list) without a separate fetch.
-	udb := db_open("db/users.db")
-	if row, _ := udb.row("select restore_source from users where uid=?", user.UID); row != nil {
-		if source := as_string(row["restore_source"]); source != "" {
-			result["restoreSource"] = source
-			relinks := []gin.H{}
-			if links, _ := udb.rows("select service, identifier from relinks where user=? order by service", user.UID); links != nil {
-				for _, l := range links {
-					relinks = append(relinks, gin.H{"service": as_string(l["service"]), "identifier": as_string(l["identifier"])})
+	// (and the pending re-link list) without a separate fetch. Shown by
+	// default; the user can dismiss it permanently, which sets the
+	// restore.show preference to "false" (account-wide, survives reload).
+	if user.Preferences["restore.show"] != "false" {
+		udb := db_open("db/users.db")
+		if row, _ := udb.row("select restore_source from users where uid=?", user.UID); row != nil {
+			if source := as_string(row["restore_source"]); source != "" {
+				result["restoreSource"] = source
+				relinks := []gin.H{}
+				if links, _ := udb.rows("select service, identifier from relinks where user=? order by service", user.UID); links != nil {
+					for _, l := range links {
+						relinks = append(relinks, gin.H{"service": as_string(l["service"]), "identifier": as_string(l["identifier"])})
+					}
 				}
+				result["relinks"] = relinks
 			}
-			result["relinks"] = relinks
 		}
 	}
 

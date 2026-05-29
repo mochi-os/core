@@ -74,7 +74,10 @@ func nack_reason_from_error(err error) string {
 //
 //	mochi.broadcast.next(key) -> int (legacy; sequence allocator)
 //	mochi.broadcast.received(sender, key) -> int (highest applied seq)
+//	mochi.broadcast.seen(key) -> int (host-local time of the last apply for
+//	  key, max over senders; idle-resync #165 gate)
 //	mochi.broadcast.advance(sender, key, sequence)
+//	mochi.broadcast.touch(key) (stamp seen=now without an applied broadcast)
 //
 // Core's events.go auto-applies gap detection on inbound events
 // carrying `_key` + `sequence` in content + `peer` header: dedups
@@ -86,11 +89,13 @@ func nack_reason_from_error(err error) string {
 //	sequence(key, peer, last)               — sender outbound counter per (key, this_host)
 //	log(key, peer, sequence, event, data, created)
 //	acknowledged(key, peer, subscriber, last)
-//	received(sender, key, last)             — receiver-side dedup
+//	received(sender, key, last, seen)        — receiver-side dedup + idle stamp
 var api_broadcast = sls.FromStringDict(sl.String("mochi.broadcast"), sl.StringDict{
 	"next":     sl.NewBuiltin("mochi.broadcast.next", api_broadcast_next),
 	"received": sl.NewBuiltin("mochi.broadcast.received", api_broadcast_received),
+	"seen":     sl.NewBuiltin("mochi.broadcast.seen", api_broadcast_seen),
 	"advance":  sl.NewBuiltin("mochi.broadcast.advance", api_broadcast_advance),
+	"touch":    sl.NewBuiltin("mochi.broadcast.touch", api_broadcast_touch),
 	"send":     sl.NewBuiltin("mochi.broadcast.send", api_broadcast_send),
 	"replay":   sl.NewBuiltin("mochi.broadcast.replay", api_broadcast_replay),
 })
@@ -102,7 +107,13 @@ func broadcast_sequence_table_create(db *DB) {
 }
 
 func broadcast_received_table_create(db *DB) {
-	db.exec("create table if not exists received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
+	db.exec("create table if not exists received (sender text not null, key text not null, last integer not null default 0, seen integer not null default 0, primary key (sender, key))")
+	// Idle-resync (#165): seen = host-local time of the last applied broadcast
+	// for (sender, key). Added here so the migration rides every advance/touch
+	// path on existing received tables. Host-local, never replicated.
+	if exists, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !exists {
+		db.exec("alter table received add column seen integer not null default 0")
+	}
 }
 
 // broadcast_log_table_create lazily creates log for an app DB on
@@ -174,6 +185,28 @@ func broadcast_received_get(db *DB, sender, key string) int64 {
 	return int64(db.integer("select last from received where sender=? and key=?", sender, key))
 }
 
+// broadcast_seen_get returns the host-local time of the most recent applied
+// broadcast for key across all senders - the idle-resync (#165) gate. Reads
+// max(seen) ignoring sender, so paired owners (several (peer, key) rows) and
+// owner host-migration (new peer, same key) need no special handling. 0 when
+// the table or the seen column is absent (pre-migration db), which reads as
+// "very stale" and triggers one re-establish on first access after upgrade.
+func broadcast_seen_get(db *DB, key string) int64 {
+	if exists, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !exists {
+		return 0
+	}
+	return int64(db.integer("select coalesce(max(seen), 0) from received where key=?", key))
+}
+
+// broadcast_touch_local stamps seen=now for key without an applied broadcast
+// (subscribe / re-subscribe / full resync, and non-broadcast apps). Uses a
+// sentinel sender='' row so it never collides with a real per-peer position
+// row or the gap detector (which reads a specific (sender=peer, key)).
+func broadcast_touch_local(db *DB, key string) {
+	broadcast_received_table_create(db)
+	db.exec("insert into received (sender, key, last, seen) values ('', ?, 0, ?) on conflict(sender, key) do update set seen = excluded.seen", key, now())
+}
+
 // broadcast_advance_local is the public advance: bumps received,
 // clears the in-flight resync gate, then drains any pending-buffer
 // rows that chain onto the new received.last. Callers (events.go,
@@ -211,7 +244,10 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // even though both ended up with the same received.last).
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
-	db.exec("insert into received (sender, key, last) values (?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last)", sender, key, sequence)
+	// seen = now() stamps the host-local idle-resync (#165) signal on every
+	// applied broadcast - one chokepoint covering every app and event type.
+	// now() computed in Go (host-local plain exec, never replicated), not in SQL.
+	db.exec("insert into received (sender, key, last, seen) values (?, ?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last), seen = excluded.seen", sender, key, sequence, now())
 }
 
 // broadcast_log_append writes one log row in the same transaction as
@@ -287,6 +323,55 @@ func api_broadcast_received(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl.MakeInt(0), nil
 	}
 	return sl.MakeInt64(broadcast_received_get(db, sender, key)), nil
+}
+
+// mochi.broadcast.seen(key) -> int: host-local time of the most recent applied
+// broadcast for key, across all senders. The idle-resync (#165) gate.
+func api_broadcast_seen(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var key string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key); err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return sl_error(fn, "key must be non-empty")
+	}
+
+	user, _ := t.Local("user").(*User)
+	app, _ := t.Local("app").(*App)
+	if user == nil || app == nil {
+		return sl.MakeInt(0), nil
+	}
+
+	db := db_app_system(user, app)
+	if db == nil {
+		return sl.MakeInt(0), nil
+	}
+	return sl.MakeInt64(broadcast_seen_get(db, key)), nil
+}
+
+// mochi.broadcast.touch(key) -> None: stamp seen=now for key without an applied
+// broadcast (subscribe / re-subscribe / full resync, and non-broadcast apps).
+func api_broadcast_touch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var key string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key); err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return sl_error(fn, "key must be non-empty")
+	}
+
+	user, _ := t.Local("user").(*User)
+	app, _ := t.Local("app").(*App)
+	if user == nil || app == nil {
+		return sl_error(fn, "no user/app context")
+	}
+
+	db := db_app_system(user, app)
+	if db == nil {
+		return sl_error(fn, "no system database")
+	}
+	broadcast_touch_local(db, key)
+	return sl.None, nil
 }
 
 // mochi.broadcast.advance(sender, key, sequence) -> None: record applied seq.

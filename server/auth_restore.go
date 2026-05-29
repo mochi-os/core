@@ -437,7 +437,7 @@ func restore_primary_entity(account export_account) string {
 // no migration — and crucially no auto-downgrade — fires.
 func restore_schema_guard(bundle string) (string, error) {
 	type limit struct {
-		id     string
+		name   string
 		schema int
 	}
 	by_file := map[string]limit{}
@@ -445,7 +445,9 @@ func restore_schema_guard(bundle string) (string, error) {
 	for _, a := range apps {
 		av := a.active_locked(nil)
 		if av != nil && av.Database.File != "" {
-			by_file[av.Database.File] = limit{a.id, av.Database.Schema}
+			// Human app name (e.g. "Chess"), not the raw entity id, for
+			// the user-facing schema-mismatch error.
+			by_file[av.Database.File] = limit{a.label(nil, av, av.Label), av.Database.Schema}
 		}
 	}
 	apps_lock.Unlock()
@@ -464,7 +466,7 @@ func restore_schema_guard(bundle string) (string, error) {
 			return nil
 		}
 		if version > l.schema {
-			newer = l.id
+			newer = l.name
 			return io.EOF
 		}
 		return nil

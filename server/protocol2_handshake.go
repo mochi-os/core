@@ -70,7 +70,7 @@ func hello_write(w io.Writer, version int, session string, challenge []byte,
 // hello_read decodes the receiver's hello frame and runs the
 // rejection tests demanded by Challenge generation. The sender treats
 // a rejected hello (bad challenge, wrong version) as a protocol
-// negotiation failure and falls back to /mochi/1.
+// negotiation failure.
 func hello_read(r io.Reader, version int) (*Frame, error) {
 	f, err := frame_read(r)
 	if err != nil {

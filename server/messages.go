@@ -308,107 +308,19 @@ func (m *Message) send_work() {
 var message_attempt_send = message_attempt_send_real
 
 func message_attempt_send_real(m *Message, peer string, content []byte) {
-	// File pushes still go through the legacy slow path (one libp2p
-	// stream per file; bytes don't multiplex through /mochi/2/messages
-	// — too much HOL blocking). All other messages prefer /mochi/2;
-	// peer_send marks the queue row 'sending' and the inflight
-	// resolver (sender_read) will queue_ack/queue_fail.
-	if m.file == "" && protocol_known_get(peer, protocol_messages) != protocol_state_unsupported {
-		f, err := frame_for_message(m, content)
-		if err == nil {
-			queue_sending(m.ID)
-			send_err := peer_send(peer, m.ID, f)
-			if send_err == nil {
-				return
-			}
-			queue_unsending(m.ID)
-			if !is_v2_unsupported(send_err) {
-				queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_err))
-				return
-			}
-			// fall through to legacy
-		}
-	}
-
-	// Legacy /mochi/1 slow path. Mark as sending to prevent other
-	// queue processors from picking it up.
-	queue_sending(m.ID)
-
-	s := peer_stream(peer)
-	if s == nil {
-		//debug("Unable to open stream to peer, will retry from queue")
-		queue_fail(m.ID, "unable to open stream")
-		return
-	}
-	defer s.close()
-
-	// Read challenge from receiver
-	challenge, err := s.read_challenge()
+	// /mochi/2/messages: peer_send marks the queue row 'sending' and the
+	// inflight resolver (sender_read) drives queue_ack / queue_fail. On a
+	// stream-open failure the row stays queued for queue_process to retry.
+	f, err := frame_for_message(m, content)
 	if err != nil {
-		debug("Unable to read challenge: %v, will retry from queue", err)
-		queue_fail(m.ID, "challenge read failed")
+		queue_fail(m.ID, fmt.Sprintf("frame build: %v", err))
 		return
 	}
-
-	signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", "", m.Services, challenge)))
-
-	headers := cbor_encode(Headers{
-		Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
-		FromApp: m.FromApp, Services: m.Services, ID: m.ID, Signature: signature,
-	})
-
-	// Batch headers + content + data into single write
-	data := headers
-	data = append(data, content...)
-	if len(m.data) > 0 {
-		data = append(data, m.data...)
+	queue_sending(m.ID)
+	if send_err := peer_send(peer, m.ID, f); send_err != nil {
+		queue_unsending(m.ID)
+		queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_err))
 	}
-
-	ok := s.write_raw(data) == nil
-	if m.file != "" && ok {
-		_, err := s.write_file(m.file)
-		ok = err == nil
-	}
-
-	// Close write direction to signal we're done sending (keeps read open for ACK)
-	s.close_write()
-
-	if !ok {
-		peer_disconnected(peer)
-		debug("Message send failed, will retry from queue")
-		queue_fail(m.ID, "send failed")
-		return
-	}
-
-	// Read ACK from stream
-	var h Headers
-	if s.read_headers(&h) != nil {
-		debug("Message %q failed to read ACK, will retry from queue", m.ID)
-		queue_fail(m.ID, "ACK read failed")
-		return
-	}
-
-	if h.msg_type() == "ack" && h.AckID == m.ID {
-		//debug("Message %q received ACK", m.ID)
-		queue_ack(m.ID)
-		return
-	}
-
-	if h.msg_type() == "nack" && h.AckID == m.ID {
-		debug("Message %q received NACK reason=%q", m.ID, h.Reason)
-		// Reason-aware: drop on hints that say "retrying won't
-		// help" (broadcast gap, malformed payload). Default still
-		// goes to queue_fail with retry/backoff.
-		if nack_should_drop(h.Reason) {
-			queue_drop(m.ID, h.Reason)
-		} else {
-			queue_fail(m.ID, "NACK received")
-		}
-		return
-	}
-
-	debug("Message %q received unexpected response type=%q ack=%q", m.ID, h.msg_type(), h.AckID)
-	queue_fail(m.ID, "unexpected response")
 }
 
 // Set the content segment of an outgoing message

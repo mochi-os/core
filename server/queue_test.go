@@ -467,7 +467,7 @@ func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
 // Sender — pull_loop owns them. If queue_process competes for the
 // Sender's outbox, peer_send blocks for sender_send_timeout when
 // pull_loop has it full, dragging out the whole tick and starving
-// self-loop / /mochi/1-only / offline-peer work in the same batch.
+// self-loop / offline-peer work in the same batch.
 //
 // This test installs a synthetic Sender for a peer, queues a row for
 // that peer, runs queue_process, and confirms the row stays pending

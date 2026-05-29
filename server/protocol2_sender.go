@@ -41,12 +41,10 @@ import (
 )
 
 func init() {
-	// /mochi/2 owns per-peer state in two places — the protocol-support
-	// cache (protocol_known) and the Sender registry. Both need
-	// invalidation on libp2p disconnect so the next reconnect re-probes
-	// cleanly. Register here so peers.go's peer_disconnected stays
-	// decoupled from /mochi/2 internals.
-	peer_register_disconnect_hook(protocol_known_clear)
+	// /mochi/2 owns per-peer Sender state in the Sender registry; it
+	// needs invalidation on libp2p disconnect so the next reconnect
+	// opens a fresh Sender. Register here so peers.go's peer_disconnected
+	// stays decoupled from /mochi/2 internals.
 	peer_register_disconnect_hook(senders_peer_invalidate)
 }
 
@@ -118,7 +116,7 @@ var (
 // two paths don't compete for the same outbox slot (which manifests as
 // queue_process tick latency: peer_send blocks for sender_send_timeout
 // when pull_loop has saturated the outbox, dragging out the whole tick
-// and starving self-loop / /mochi/1-only / offline-peer work).
+// and starving self-loop / offline-peer work).
 func senders_has(peer string) bool {
 	if peer == "" {
 		return false
@@ -164,8 +162,8 @@ func sender_for(peer string) (*Sender, error) {
 
 // sender_open establishes a new /mochi/2/messages stream to peer,
 // runs the handshake (read hello → write caps), and starts the
-// per-Sender goroutines. Falls back to /mochi/1 if the peer doesn't
-// support /mochi/2/messages — peer_protocol_open handles the cache.
+// per-Sender goroutines. Returns errSenderUnreachable if the peer
+// can't be reached or doesn't speak /mochi/2/messages.
 func sender_open(peer string) (*Sender, error) {
 	stream, err := peer_protocol_open(peer, protocol_messages)
 	if err != nil {
@@ -746,15 +744,14 @@ func senders_entity_invalidate(entity string) {
 	}
 }
 
-// peer_protocol_open opens a libp2p stream to peer for `prefer`,
-// falling back to protocol_legacy if the peer doesn't support it. The
-// per-(peer, protocol) cache (see protocol_known) makes the fallback
-// stick for the lifetime of the libp2p connection.
+// peer_protocol_open opens a libp2p stream to peer for `prefer` (one of
+// the /mochi/2/* protocols), connecting first if needed.
 //
-// Returns nil stream + nil error in two cases:
-//   • peer is silent (peer_is_silent caught it before stream-open)
-//   • peer rejected both protocols
-// Callers treat both as errSenderUnreachable.
+// Returns errSenderUnreachable when the peer is silent, can't be
+// connected, or doesn't speak `prefer`. A peer that rejects `prefer`
+// with multistream's not-supported error never upgraded past /mochi/1
+// (removed in this version): it's logged loudly and silenced so we stop
+// probing it on every queue tick.
 func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) {
 	if peer == "" || net_me == nil {
 		return nil, errSenderUnreachable
@@ -772,124 +769,18 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 		return nil, fmt.Errorf("invalid peer id %q: %w", peer, err)
 	}
 
-	if protocol_known_get(peer, prefer) == protocol_state_unsupported {
-		// We've already determined this peer can't speak `prefer`.
-		// Hand back nil so caller falls back to legacy through
-		// /mochi/1 (peer_stream + read/write headers).
-		return nil, fmt.Errorf("protocol: peer %q does not support %q", peer, prefer)
-	}
-
 	s, err := net_me.NewStream(net_context, pid, p2p_protocol.ID(prefer))
 	if err != nil {
-		// libp2p returns multistream.ErrNotSupported when the peer
-		// doesn't speak `prefer`. Cache and surface so caller falls back.
 		if is_protocol_not_supported(err) {
-			protocol_known_set(peer, prefer, protocol_state_unsupported)
-			return nil, fmt.Errorf("protocol: peer %q does not support %q", peer, prefer)
+			warn("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)
+			peer_mark_send_failed(peer)
+			return nil, errSenderUnreachable
 		}
 		peer_mark_send_failed(peer)
 		return nil, fmt.Errorf("protocol: NewStream peer=%q proto=%q: %w", peer, prefer, err)
 	}
-	protocol_known_set(peer, prefer, protocol_state_supported)
 	peer_mark_send_success(peer)
 	return s, nil
-}
-
-// is_v2_unsupported reports whether err means "this peer doesn't speak
-// /mochi/2/*", which is the signal callers use to fall back to
-// /mochi/1. Wraps both the libp2p multistream error and the synthetic
-// "protocol: peer ... does not support" we return from
-// peer_protocol_open after a cache miss.
-func is_v2_unsupported(err error) bool {
-	if err == nil {
-		return false
-	}
-	if is_protocol_not_supported(err) {
-		return true
-	}
-	// peer_protocol_open's synthetic message after a cache hit.
-	if msg := err.Error(); len(msg) > 0 {
-		if strings.Contains(msg, "does not support") {
-			return true
-		}
-	}
-	return false
-}
-
-// --- Per-(peer, protocol) selection cache -----------------------------
-//
-// During the mixed-version rollout, the first stream-open attempt to
-// each peer probes whether it supports the requested /mochi/2/* protocol.
-// We cache the result for the lifetime of the libp2p connection, so
-// subsequent sends skip the probe and either open /mochi/2/* directly
-// or fall back to /mochi/1 without round-tripping.
-//
-// Cleared on peer disconnect (peer_disconnected in peers.go calls
-// protocol_known_clear) — the peer may have upgraded or downgraded
-// before reconnecting, so the next attempt re-probes.
-//
-// Per the operational context (< 10 production peers, mixed-version
-// window measured in days), this is intentionally minimal — see
-// claude/plans/protocol2.md → Protocol selection.
-//
-// Why not libp2p's Peerstore.SupportsProtocols / GetProtocols?
-//
-// Peerstore tracks protocols populated by the identify exchange.
-// Identify is pull-only: the remote's advertised protocol set only
-// becomes known after IdentifyConn runs on the connection. The first
-// NewStream attempt for a fresh connection arrives before identify
-// has finished, so Peerstore would return an empty list and we'd
-// have to fall back to probing anyway. We also need a "negative"
-// cache for the rollout window (peer answered ErrNotSupported once
-// → don't reprobe this connection) — Peerstore has no concept of
-// "this peer affirmatively does NOT support X", only "I don't know
-// of it". Once /mochi/1 is gone (Phase 8), this entire cache can be
-// retired in favour of always opening /mochi/2/* and treating
-// ErrNotSupported as a hard error.
-
-type protocol_state int
-
-const (
-	protocol_state_unknown protocol_state = iota
-	protocol_state_supported
-	protocol_state_unsupported
-)
-
-var (
-	protocol_known      = map[string]map[string]protocol_state{}
-	protocol_known_lock sync.RWMutex
-)
-
-// protocol_known_get returns the cached state for (peer, proto), or
-// protocol_state_unknown if we haven't probed yet.
-func protocol_known_get(peer, proto string) protocol_state {
-	protocol_known_lock.RLock()
-	defer protocol_known_lock.RUnlock()
-	if m := protocol_known[peer]; m != nil {
-		return m[proto]
-	}
-	return protocol_state_unknown
-}
-
-// protocol_known_set records the outcome of a probe.
-func protocol_known_set(peer, proto string, state protocol_state) {
-	protocol_known_lock.Lock()
-	defer protocol_known_lock.Unlock()
-	m := protocol_known[peer]
-	if m == nil {
-		m = map[string]protocol_state{}
-		protocol_known[peer] = m
-	}
-	m[proto] = state
-}
-
-// protocol_known_clear drops every protocol entry for peer. Called
-// from the libp2p disconnect handler — the peer may have upgraded or
-// downgraded before next connect, so the cache must re-probe.
-func protocol_known_clear(peer string) {
-	protocol_known_lock.Lock()
-	delete(protocol_known, peer)
-	protocol_known_lock.Unlock()
 }
 
 // is_protocol_not_supported tests whether err came from libp2p's

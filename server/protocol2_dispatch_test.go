@@ -1,8 +1,6 @@
-// Tests for queue_send_direct's dispatch tree (self-loop vs file-push
-// vs messages) and the queue_unsending / queue_is_inflight helpers
-// that keep the async resolver from racing queue_process.
-//
-// Phase 3f per claude/plans/protocol2.md → Testing strategy.
+// Tests for queue_send_direct's self-loop fast path and the
+// queue_sending / queue_unsending / queue_is_inflight helpers that keep
+// the async resolver from racing queue_process.
 
 package main
 
@@ -125,72 +123,4 @@ func TestQueueSendDirectSelfLoopFastPath(t *testing.T) {
 
 	// Wait for the worker to finish so the test cleanup doesn't race.
 	workers_drain_test(500 * 1e6) // 500ms (using ns; avoid import dance)
-}
-
-func TestQueueSendDirectFileBranchSkipsV2Messages(t *testing.T) {
-	// When q.File != "", the /mochi/2/messages branch is skipped —
-	// file pushes are structurally streams (use /mochi/2/stream
-	// instead) and queue_process routes them to queue_send_file_push
-	// directly. queue_send_direct's File-gate is `q.File == ""`; we
-	// verify the v2 path is not entered (no 'sending' state set) by
-	// using a peer that's already cached as v1-only AND with File
-	// set — both conditions guarantee the v2 branch is skipped.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	reset_protocol_cache(t)
-	saved := net_id
-	net_id = "self-not-target"
-	defer func() { net_id = saved }()
-
-	const peer = "v1-only-peer-file"
-	protocol_known_set(peer, protocol_messages, protocol_state_unsupported)
-
-	id := "file-branch"
-	install_queue_dispatch_row(t, id, peer, "/tmp/nonexistent", nil)
-	q := &QueueEntry{ID: id, Target: peer, File: "/tmp/nonexistent",
-		Service: "s", Event: "e"}
-
-	// peer_stream's "unknown peer" branch calls publish() which needs
-	// net_pubsub_1. Pre-create the peer entry in memory so peer_stream
-	// goes straight to peer_connect (which fails cleanly with net_me=nil).
-	peer_add_known(peer, []string{})
-
-	ok := queue_send_direct(q)
-	if ok {
-		t.Error("queue_send_direct returned true with no real peer")
-	}
-	if queue_is_inflight(id) {
-		t.Errorf("row marked sending despite File != \"\" (should skip v2 branch)")
-	}
-}
-
-// --- is_v2_unsupported gating ------------------------------------------
-
-func TestQueueSendDirectGatesOnCacheUnsupported(t *testing.T) {
-	// If the protocol cache reports protocol_messages as unsupported,
-	// queue_send_direct should NOT attempt peer_send and instead
-	// fall through to legacy (which will fail with no real peer).
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	reset_protocol_cache(t)
-	saved := net_id
-	net_id = "self-not-target"
-	defer func() { net_id = saved }()
-
-	const peer = "v1-only-peer"
-	protocol_known_set(peer, protocol_messages, protocol_state_unsupported)
-	peer_add_known(peer, []string{}) // avoid peer_stream's unknown-peer publish path
-
-	id := "gated"
-	install_queue_dispatch_row(t, id, peer, "", nil)
-	q := &QueueEntry{ID: id, Target: peer, Service: "s", Event: "e"}
-	ok := queue_send_direct(q)
-	// Legacy peer_stream returns nil → false. queue_sending must NOT
-	// have been called (we skip the v2 branch entirely).
-	if ok {
-		t.Error("unexpected true return")
-	}
-	if queue_is_inflight(id) {
-		t.Errorf("row marked sending despite cache=unsupported (should bypass v2 branch)")
-	}
 }

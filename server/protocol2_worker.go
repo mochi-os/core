@@ -185,7 +185,7 @@ func (w *app_worker) run() {
 }
 
 // handle runs a single frame end-to-end: decompresses the body,
-// decodes the embedded /mochi/1-shape Event from frame fields, routes
+// decodes the Event from frame fields, routes
 // it via e.route(), and signals completion via wf.reply.
 func (w *app_worker) handle(wf *worker_frame) {
 	defer func() {
@@ -207,13 +207,11 @@ func (w *app_worker) handle(wf *worker_frame) {
 	}
 
 	// e.stream carries any additional CBOR segments the sender packed
-	// after the content map. /mochi/1 used to write each segment as a
-	// separate CBOR value after the headers; /mochi/2 packs them all
-	// into Frame.Data as a single []byte. We wrap that byte buffer in
-	// a Stream so e.segment() / handlers using e.stream.read() can
-	// decode segments one at a time exactly as they did in /mochi/1.
-	// When Frame.Data is empty the stream's reader is a 0-byte buffer;
-	// handlers that don't call e.segment() never notice.
+	// after the content map: /mochi/2 packs them all into Frame.Data as
+	// a single []byte. We wrap that byte buffer in a Stream so
+	// e.segment() / handlers using e.stream.read() can decode segments
+	// one at a time. When Frame.Data is empty the stream's reader is a
+	// 0-byte buffer; handlers that don't call e.segment() never notice.
 	var event_stream *Stream
 	if len(f.Data) > 0 || f.Data != nil {
 		event_stream = stream_rw(io.NopCloser(bytes.NewReader(f.Data)), nil)
@@ -250,7 +248,7 @@ func (w *app_worker) handle(wf *worker_frame) {
 //     (broadcast-gap, pending-full, decode-failed) → translate to a
 //     compatible v2 reason. We currently map all of those to
 //     transient — the sender's resolver handles retry-backoff.
-//   • Default → transient (the equivalent of /mochi/1's "retry later").
+//   • Default → transient (the catch-all retry-later disposition).
 func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""

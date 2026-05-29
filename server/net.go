@@ -122,32 +122,11 @@ func net_pubsubs() {
 				continue
 			}
 			//debug("Net received pubsub event from peer %q", peer)
-			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), 1, peer)
+			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), peer)
 			peer_discovered(peer)
 			peer_connect(peer)
 		}
 	}
-}
-
-// Receive event with protocol version 1 from p2p stream
-func net_receive_1(s p2p_network.Stream) {
-	defer s.Close()
-	peer := s.Conn().RemotePeer().String()
-
-	// Rate limit incoming streams per peer (skip bootstrap and paired
-	// peers — both are trusted infrastructure, not anonymous senders).
-	if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_p2p.allow(peer) {
-		debug("Net rate limited peer %q", peer)
-		return
-	}
-
-	address := s.Conn().RemoteMultiaddr().String() + "/p2p/" + peer
-	//debug("Net stream from %q at %q", peer, address)
-
-	st := stream_rw(s, s)
-	st.remote = s.Conn().RemoteMultiaddr().String()
-	stream_receive(st, 1, peer)
-	peer_discovered_address(peer, address)
 }
 
 // Start p2p
@@ -260,14 +239,10 @@ func net_start() {
 	net_id = net_me.ID().String()
 	info("Net listening on port %d with id %q", port, net_id)
 
-	// Listen for connecting peers
-	net_me.SetStreamHandler("/mochi/1", net_receive_1)
-
 	// /mochi/2 handlers: messages multiplexes many small messages on
 	// one persistent stream; stream is a raw bidirectional channel
 	// (file transfer, RPC-style). Both share the hello/caps/claim
-	// handshake. /mochi/1 stays registered for fallback during the
-	// rollout (Phase 8 drops it).
+	// handshake.
 	protocol2_init()
 	net_me.SetStreamHandler(protocol_messages, receive_messages)
 	net_me.SetStreamHandler(protocol_stream, receive_stream)
@@ -311,23 +286,6 @@ func net_start() {
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
 	net_pubsub_1 = must(gs.Join("mochi/1"))
 	go net_pubsubs()
-}
-
-// Create stream to an already connected peer
-func net_stream(peer string) *Stream {
-	p, err := p2p_peer.Decode(peer)
-	if err != nil {
-		warn("Net invalid peer %q: %v", peer, err)
-		return nil
-	}
-
-	s, err := net_me.NewStream(net_context, p, "/mochi/1")
-	if err != nil {
-		info("Net unable to create stream to %q: %v", peer, err)
-		return nil
-	}
-
-	return stream_rw(io.ReadCloser(s), io.WriteCloser(s))
 }
 
 // Watch event bus for disconnecting peers

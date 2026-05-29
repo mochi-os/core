@@ -29,7 +29,7 @@
 // trigger fresh libp2p connect attempts to unreachable peers, each
 // blocking for the full ~10s libp2p timeout. queue_process's WaitGroup
 // then waited for those goroutines, dragging the whole tick out to
-// ~10s. Self-loop drain, /mochi/1-only peers, and first-time
+// ~10s. Self-loop drain, unreachable peers, and first-time
 // sender_open for newly-back peers all starved because they were in
 // the same batch as the stalled offline-peer goroutines.
 //
@@ -38,8 +38,7 @@
 // keeps queue_process's tick latency bounded by the actual fast
 // goroutines.
 //
-// Both /mochi/1 (peer_stream) and /mochi/2 (peer_protocol_open) feed
-// this cache; one reachability oracle covers both protocols.
+// The /mochi/2 send path (peer_protocol_open) feeds this cache.
 //
 // Not persisted: a server restart starts every peer with zero failures
 // recorded, so every peer gets a fresh trial. The map is bounded by the
@@ -58,8 +57,7 @@
 // be perfectly reachable via a fresh address libp2p just learned —
 // blocking it at the gater would prevent us from ever finding out.
 // Silent-cache is a send-path optimisation, not a network policy, so
-// it stays at the send-path entry points (peer_protocol_open and
-// peer_stream).
+// it stays at the send-path entry point (peer_protocol_open).
 //
 // Copyright Alistair Cunningham 2024-2026
 
@@ -102,8 +100,7 @@ func peer_is_silent(id string) bool {
 }
 
 // peer_mark_send_success clears any silent state. Called when an
-// outbound libp2p stream opens cleanly — by peer_stream on the
-// /mochi/1 path and by peer_protocol_open on the /mochi/2 path. The
+// outbound libp2p stream opens cleanly via peer_protocol_open. The
 // libp2p layer being alive is what matters here; whether the eventual
 // app-level ACK arrives is a separate concern.
 func peer_mark_send_success(id string) {
@@ -116,9 +113,9 @@ func peer_mark_send_success(id string) {
 }
 
 // peer_mark_send_failed records one stream-open failure. Called from
-// the peer_connect=false branches in peer_stream (/mochi/1) and
-// peer_protocol_open (/mochi/2) when the libp2p connect itself fails
-// — that's the "peer is unreachable" signal we want to silence on.
+// the peer_connect=false branch in peer_protocol_open when the libp2p
+// connect itself fails — that's the "peer is unreachable" signal we
+// want to silence on.
 // Transient stream-open errors after a successful connect don't count
 // (the peer IS reachable; the failure is application- or
 // protocol-level, handled separately).

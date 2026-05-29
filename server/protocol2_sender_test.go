@@ -455,26 +455,6 @@ func TestShutdownIsIdempotent(t *testing.T) {
 	s.shutdown()
 }
 
-// --- is_v2_unsupported -------------------------------------------------
-
-func TestIsV2UnsupportedSyntheticErrorMessage(t *testing.T) {
-	// peer_protocol_open returns synthetic errors like
-	// "protocol: peer X does not support /mochi/2/messages" after a
-	// cache hit. is_v2_unsupported should recognise them via the
-	// string match (errors.As on multistream.ErrNotSupported missed
-	// because we don't wrap that type).
-	err := errString("protocol: peer p does not support /mochi/2/messages")
-	if !is_v2_unsupported(err) {
-		t.Error("is_v2_unsupported missed synthetic 'does not support' error")
-	}
-	if is_v2_unsupported(nil) {
-		t.Error("is_v2_unsupported(nil) returned true")
-	}
-	if is_v2_unsupported(errString("some other error")) {
-		t.Error("is_v2_unsupported matched unrelated error")
-	}
-}
-
 // --- senders_bye_all ---------------------------------------------------
 
 func TestSendersBeyAllNoopOnNoSenders(t *testing.T) {

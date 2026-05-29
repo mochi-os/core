@@ -4,8 +4,8 @@
 // the libp2p-state machine transitions (via Peer.state in peers.go),
 // the reconnect backoff manager, the disconnect-hook registry that
 // /mochi/2 and future subsystems plug into, the publish/request
-// pubsub plumbing for peer-discovery announcements, the /mochi/1
-// peer_stream helper, and the shutdown bye-and-drain sequence.
+// pubsub plumbing for peer-discovery announcements, and the shutdown
+// bye-and-drain sequence.
 //
 // The Peer registry itself (identity, addresses, peers.db
 // persistence) lives in peers.go; the reachability silent-cache lives
@@ -16,7 +16,6 @@
 package main
 
 import (
-	"io"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -309,86 +308,12 @@ func peer_request_event(e *Event) {
 	}
 }
 
-// Get a reader and writer to a peer, connecting if necessary. The
-// /mochi/1 path; /mochi/2 callers go through peer_protocol_open in
-// protocol2_sender.go instead.
-func peer_stream(id string) *Stream {
-	if id == "" {
-		return nil
-	}
-
-	if id == net_id {
-		r1, w1 := io.Pipe()
-		r2, w2 := io.Pipe()
-		go stream_receive(&Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r1}, writer: &pipe_writer{PipeWriter: w2}}, 1, net_id)
-		return &Stream{id: stream_id(), reader: &pipe_reader{PipeReader: r2}, writer: &pipe_writer{PipeWriter: w1}}
-	}
-
-	// Fast-fail for recently-silent peers. Without this every
-	// queue_process tick re-attempts the libp2p connect for a peer
-	// known to be unreachable, blocking that bucket for the full
-	// connect timeout (tens of seconds). The skip lasts
-	// peer_silent_skip_window; after that we trial one attempt and
-	// either clear the silence (peer back) or re-arm it (still gone).
-	if peer_is_silent(id) {
-		return nil
-	}
-
-	p := peer_by_id(id)
-	if p == nil {
-		// In a future version, rate limit this
-		message("", "", "peers", "request").set("id", id).publish(false)
-		peer_mark_send_failed(id)
-		return nil
-	}
-
-	if !peer_connect(id) {
-		peer_mark_send_failed(id)
-		return nil
-	}
-
-	s := net_stream(id)
-	if s == nil {
-		return nil
-	}
-	peer_mark_send_success(id)
-	return s
-}
-
-// Notify peers of shutdown (best effort).
-//
-// Two paths: peers that already have an open /mochi/2/messages stream
-// get a `bye` frame on the existing Sender (preserves the in-flight
-// drain semantics). Peers we haven't talked to via /mochi/2 yet — or
-// /mochi/1-only peers — get the legacy fresh-stream bye on /mochi/1.
-//
-// peers_shutdown_drain_timeout caps how long we wait for the senders'
-// inflight to empty before forcing the close.
+// Notify peers of shutdown (best effort). Every open /mochi/2/messages
+// Sender gets a `bye` frame on its existing stream, then we wait for
+// in-flight to drain (capped by peers_shutdown_drain_timeout) before
+// forcing the close.
 func peers_shutdown() {
-	// First, drain every open /mochi/2/messages Sender via bye + wait.
 	senders_bye_all(peers_shutdown_drain_timeout)
-
-	peers_lock.Lock()
-	connected := []string{}
-	for id, p := range peers {
-		if p.state == peer_state_connected {
-			connected = append(connected, id)
-		}
-	}
-	peers_lock.Unlock()
-
-	// Then send the legacy bye to every still-connected peer that
-	// didn't have a /mochi/2 Sender. peers with both will receive two
-	// bye frames — that's harmless; both paths treat it as "stop
-	// sending us new work".
-	info("Notifying %d connected peers of shutdown", len(connected))
-	for _, id := range connected {
-		s := net_stream(id)
-		if s != nil && s.writer != nil {
-			s.write(Headers{Type: "bye"})
-			s.writer.Close()
-		}
-	}
 }
 
 // peers_shutdown_drain_timeout — how long peers_shutdown waits for

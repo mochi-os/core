@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	rd "runtime/debug"
 	"strings"
@@ -120,7 +121,7 @@ var self_loop_wake_ch = make(chan struct{}, 1)
 //   - Senders' pull_loop: direct rows with target == <its peer>
 //   - self_loop_drain: direct rows with target == net_id
 //   - queue_process: everything else (broadcasts, file pushes,
-//     /mochi/1-only peers, offline-peer fast-fails, empty-target rows)
+//     offline-peer fast-fails, empty-target rows)
 func queue_wake() {
 	select {
 	case queue_wake_ch <- struct{}{}:
@@ -582,114 +583,29 @@ func queue_send_direct(q *QueueEntry) bool {
 	// need to re-prove identity to ourselves via the signature - the
 	// presence of the row in queue.db IS the proof. File sends still
 	// need the slow path to push bytes through the stream API.
-	if peer == net_id && q.File == "" {
+	if peer == net_id {
 		return queue_send_self_loop_fast(q)
 	}
 
 	// /mochi/2/messages path: build a Frame and hand to peer_send. The
 	// Sender handles claim, codec, framing, ack matching, and updates
 	// the queue row itself (queue_ack / queue_fail) via the inflight
-	// resolver. Returns false from this function so queue_process
-	// doesn't delete or fail the row — the async resolver owns it,
-	// signalled by the 'sending' status set here. /mochi/1 peers fall
-	// through to the legacy slow path below.
-	if q.File == "" && protocol_known_get(peer, protocol_messages) != protocol_state_unsupported {
-		f, err := frame_for_queue(q)
-		if err == nil {
-			// Mark in-flight BEFORE handing off, so queue_process's
-			// post-call status check sees 'sending' and doesn't
-			// queue_fail an in-flight row.
-			queue_sending(q.ID)
-			send_err := peer_send(peer, q.ID, f)
-			if send_err == nil {
-				return false
-			}
-			// peer_send failed before queueing. Roll back the
-			// 'sending' so queue_fail can re-pend the row.
-			queue_unsending(q.ID)
-			if !is_v2_unsupported(send_err) {
-				return false
-			}
-			// fall through to legacy path
-		} else {
-			debug("Queue v2 frame build failed for %q: %v — falling back to legacy", q.ID, err)
-		}
-	}
-
-	s := peer_stream(peer)
-	if s == nil {
-		return false
-	}
-	defer s.close()
-
-	// Read challenge from receiver
-	challenge, err := s.read_challenge()
+	// resolver. Return false either way: on success the async resolver
+	// owns the row (status 'sending'); on a stream-open failure we roll
+	// back to 'pending' and queue_process retries on a later tick.
+	f, err := frame_for_queue(q)
 	if err != nil {
+		queue_drop(q.ID, fmt.Sprintf("frame build failed: %v", err))
 		return false
 	}
-
-	var services []string
-	if q.FromServices != "" {
-		services = strings.Split(q.FromServices, ",")
+	// Mark in-flight BEFORE handing off, so queue_process's post-call
+	// status check sees 'sending' and doesn't queue_fail an in-flight row.
+	queue_sending(q.ID)
+	if send_err := peer_send(peer, q.ID, f); send_err != nil {
+		// peer_send failed before queueing. Roll back 'sending' so
+		// queue_process re-pends the row for a later retry.
+		queue_unsending(q.ID)
 	}
-
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, challenge)))
-
-	headers := cbor_encode(Headers{
-		Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		FromApp: q.FromApp, Services: services, ID: q.ID, Signature: signature,
-	})
-
-	// Batch headers + content + data into single write
-	data := headers
-	if len(q.Content) > 0 {
-		data = append(data, q.Content...)
-	}
-	if len(q.Data) > 0 {
-		data = append(data, q.Data...)
-	}
-
-	if s.write_raw(data) != nil {
-		return false
-	}
-	if q.File != "" {
-		_, err := s.write_file(q.File)
-		if err != nil {
-			return false
-		}
-	}
-
-	// Close write direction to signal we're done sending (keeps read open for ACK)
-	s.close_write()
-
-	// Read ACK from stream
-	var h Headers
-	if s.read_headers(&h) != nil {
-		debug("Queue direct %q failed to read ACK", q.ID)
-		return false
-	}
-
-	if h.msg_type() == "ack" && h.AckID == q.ID {
-		//debug("Queue direct %q received ACK", q.ID)
-		return true
-	}
-
-	if h.msg_type() == "nack" && h.AckID == q.ID {
-		// Reason-aware NACK handling: a "broadcast-gap" NACK means
-		// the subscriber is already requesting catch-up via its own
-		// resync path, so retrying the same in-order live event for
-		// 7 days just floods the queue. Drop the row instead and
-		// return true so the caller's delete-on-ack is the visible
-		// outcome (idempotent - row's gone).
-		if nack_should_drop(h.Reason) {
-			queue_drop(q.ID, h.Reason)
-			return true
-		}
-		debug("Queue direct %q received NACK reason=%q", q.ID, h.Reason)
-		return false
-	}
-
-	debug("Queue direct %q received unexpected response type=%q ack=%q", q.ID, h.msg_type(), h.AckID)
 	return false
 }
 
@@ -944,8 +860,8 @@ func queue_process() int {
 		// outbox directly. queue_process attempting the same row would
 		// race for the same outbox slot and block on peer_send for
 		// sender_send_timeout when pull_loop has it full, dragging
-		// out the whole tick and starving self-loop / /mochi/1-only /
-		// offline-peer work in the same batch. Skipping here leaves
+		// out the whole tick and starving self-loop / offline-peer
+		// work in the same batch. Skipping here leaves
 		// the row pending; pull_loop's next tick (≤1s) will claim it.
 		// File pushes don't ride the Sender pipeline (separate
 		// /mochi/2/stream per file), so they stay with queue_process.
@@ -1147,7 +1063,7 @@ func queue_drain(timeout time.Duration) {
 //
 //   - queue_process's WaitGroup.Wait at end-of-tick blocks until every
 //     dispatched goroutine returns. When the batch includes a slow
-//     /mochi/1 NACK or an offline-peer connect timeout, the tick drags
+//     offline-peer connect timeout (libp2p dial), the tick drags
 //     out to sender_send_timeout (~5s), starving everything else in
 //     the next batch. A dedicated drain only ever handles self-loop
 //     rows — nothing slow can hold it up.

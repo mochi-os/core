@@ -634,7 +634,7 @@ func TestWorkerEventStreamCarriesFrameData(t *testing.T) {
 	// Frame.Data carries the CBOR-encoded segments the sender packed
 	// after the content map. The worker MUST wire it into e.stream so
 	// handlers calling e.segment(&v) can decode them — that's how
-	// /mochi/1's per-message segment chain stayed compatible.
+	// the per-message segment chain stays decodable.
 	//
 	// We can't easily inject a fake internal handler into the app
 	// registry from a test, so this asserts the wiring layer directly:

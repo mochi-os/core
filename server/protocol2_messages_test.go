@@ -239,8 +239,8 @@ func TestDispatchMessageUnclaimedFails(t *testing.T) {
 func TestDispatchMessageAnonymousAllowed(t *testing.T) {
 	// Plan: message gating is `claimed[From]` AND `From != ""`. An
 	// anonymous frame (From="") bypasses the gate — it dispatches to
-	// the worker without a claim check (matches /mochi/1 behaviour
-	// for anonymous events like directory_publish).
+	// the worker without a claim check, as anonymous events like
+	// directory_publish require.
 	reset_workers(t)
 	defer reset_workers(t)
 

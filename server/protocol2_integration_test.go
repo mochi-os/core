@@ -537,17 +537,14 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 
 // TestStreamOpenSelfLoopUsesV2Native is the regression test for the
 // market/staff → Comptroller outage: a mochi.remote.stream() to a
-// locally-hosted entity resolves peer==net_id, and the wire v2 path
-// ends in net_me.NewStream(self), which libp2p refuses.
-// stream_open_v2_or_legacy must route self to the v2-native in-process
-// loopback (stream_self_loop) rather than attempting (and failing) the
-// wire path.
+// locally-hosted entity resolves peer==net_id, and the wire path ends
+// in net_me.NewStream(self), which libp2p refuses. stream_open_or_self
+// must route self to the in-process loopback (stream_self_loop) rather
+// than attempting (and failing) the wire path.
 //
-// Returns v2=true (raw mode, handshake skipped) and a non-nil near end.
-// In the test environment net_me is nil, so the old wire attempt would
-// return errSenderUnreachable — which is NOT is_protocol_not_supported,
-// so the broken code returned that error instead of looping back. All
-// three assertions below fail against that broken code.
+// In the test environment net_me is nil, so the wire attempt would
+// return errSenderUnreachable; the self-loop path must return a non-nil
+// near end with no error.
 //
 // Note: the far-end dispatch goroutine resolves "to-entity" to no local
 // user and closes its pipe end — that's fine; this test only asserts
@@ -557,15 +554,12 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	defer cleanup()
 	setup_users_test_schema() // so the far-end stream_resolve query has a table
 
-	s, v2, err := stream_open_v2_or_legacy(net_id, "", "to-entity", "market", "search", "market", nil, nil)
+	s, err := stream_open_or_self(net_id, "", "to-entity", "market", "search", "market", nil, nil)
 	if err != nil {
-		t.Fatalf("self-loop stream_open_v2_or_legacy returned error: %v (market/staff → local Comptroller would 502)", err)
+		t.Fatalf("self-loop stream_open_or_self returned error: %v (market/staff → local Comptroller would 502)", err)
 	}
 	if s == nil {
 		t.Fatal("self-loop returned nil stream; mochi.remote.stream() to a local entity would report 'not available'")
-	}
-	if !v2 {
-		t.Error("self-loop did not take the v2-native path (v2=false); the legacy /mochi/1 pipe goes away in Phase 8")
 	}
 	// Drain the near end. The far-end goroutine resolves "to-entity" to
 	// no local user and closes its pipe end, so this read returns EOF.
@@ -577,17 +571,15 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	s.close()
 }
 
-// --- Mixed-version: cache forces fallback ------------------------------
+// --- Unreachable peer ---------------------------------------------------
 
-func TestMixedVersionPeerForcesLegacyPath(t *testing.T) {
-	// Plan: peer that doesn't support /mochi/2/messages is cached as
-	// such on the first probe failure; subsequent sends bypass the
-	// v2 branch entirely. Verified directly via the dispatch tree
-	// tests; here we additionally confirm queue_unsending unwinds
-	// cleanly when the v2 path fails with a not-supported error.
+func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
+	// queue_send_direct to a remote peer with no libp2p host (net_me is
+	// nil in tests) must unwind cleanly: peer_protocol_open returns
+	// errSenderUnreachable, queue_unsending rolls back the 'sending'
+	// mark, and the row is left for queue_process to retry.
 	cleanup := setup_replication_test(t)
 	defer cleanup()
-	reset_protocol_cache(t)
 	saved := net_id
 	net_id = "self-not-peer"
 	defer func() { net_id = saved }()
@@ -595,17 +587,14 @@ func TestMixedVersionPeerForcesLegacyPath(t *testing.T) {
 	const peer = "mixed-peer"
 	peer_add_known(peer, []string{})
 
-	// Pre-mark v2 as unknown (default). queue_send_direct will try
-	// sender_open, which calls peer_protocol_open → libp2p NewStream
-	// → fails (no net_me) → returns errSenderUnreachable. is_v2_unsupported
-	// returns false for that error (it's not "not supported", it's
-	// "couldn't even connect"), so queue_send_direct calls queue_fail.
-
-	id := "mixed-1"
+	id := "unreachable-1"
 	install_queue_dispatch_row(t, id, peer, "", nil)
 	q := &QueueEntry{ID: id, Target: peer, Service: "s", Event: "e"}
 	ok := queue_send_direct(q)
 	if ok {
 		t.Error("queue_send_direct returned true with no real peer")
+	}
+	if queue_is_inflight(id) {
+		t.Error("row left marked 'sending' after unreachable peer; queue_unsending should have rolled it back")
 	}
 }

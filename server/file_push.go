@@ -283,15 +283,13 @@ func replication_file_delete_event(e *Event) {
 	debug("Replication file-delete: applied user=%q app=%q path=%q", fd.User, fd.App, fd.Path)
 }
 
-// queue_send_file_push streams one file/push to peer. Prefers
-// /mochi/2/stream (one libp2p stream with an authenticated handshake)
-// and falls back to /mochi/1's peer_stream for peers that haven't
-// rolled out the new protocol.
+// queue_send_file_push streams one file/push to peer over /mochi/2/stream
+// (one libp2p stream with an authenticated handshake).
 //
-// Wire content after the handshake is identical in both paths:
-// FilePushHeader CBOR segment (q.Data), then raw file bytes, then EOF
-// (close_write). Receiver reads exactly header.Size bytes from the
-// stream and atomic-renames the .partial on success.
+// Wire content after the handshake: FilePushHeader CBOR segment
+// (q.Data), then raw file bytes, then EOF (close_write). Receiver reads
+// exactly header.Size bytes from the stream and atomic-renames the
+// .partial on success.
 func queue_send_file_push(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
@@ -309,86 +307,37 @@ func queue_send_file_push(q *QueueEntry) bool {
 	content := map[string]any{}
 	if len(q.Content) > 0 {
 		// q.Content is a cbor_encode(map[string]any{}) — empty map.
-		// Decode it so the v2 path can ship a Content map rather
-		// than a raw CBOR blob.
+		// Decode it so we ship a Content map rather than a raw CBOR blob.
 		_ = decode_into(q.Content, &content)
 	}
 
-	s, v2, err := stream_open_v2_or_legacy(peer, q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, services, content)
+	s, err := stream_open_or_self(peer, q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, services, content)
 	if err != nil || s == nil {
 		debug("Queue file-push: stream open failed peer=%q: %v", peer, err)
 		return false
 	}
 	defer s.close()
 
-	if !v2 {
-		// Legacy /mochi/1 path: do the per-message handshake
-		// /mochi/1 expects (challenge + headers).
-		challenge, cerr := s.read_challenge()
-		if cerr != nil {
+	// stream_open shipped the (empty) content map as the first post-ack
+	// segment so the receiver's receive_stream sets e.content. The
+	// FilePushHeader still needs to ride as the next CBOR segment because
+	// that's what the handler reads via e.segment(). q.Data is already
+	// CBOR-encoded so we ship it raw — the receiver's decoder reads it as
+	// the next value.
+	if len(q.Data) > 0 {
+		if werr := s.write_raw(q.Data); werr != nil {
 			return false
-		}
-		signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, challenge)))
-		headers := cbor_encode(Headers{
-			Type: "msg", From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-			FromApp: q.FromApp, Services: services, ID: q.ID, Signature: signature,
-		})
-		out := headers
-		if len(q.Content) > 0 {
-			out = append(out, q.Content...)
-		}
-		if len(q.Data) > 0 {
-			out = append(out, q.Data...)
-		}
-		if werr := s.write_raw(out); werr != nil {
-			return false
-		}
-	} else {
-		// v2 path: stream_open shipped the (empty) content map as the
-		// first post-ack segment so the receiver's receive_stream sets
-		// e.content. The FilePushHeader still needs to ride as the
-		// next CBOR segment because that's what the handler reads via
-		// e.segment(). q.Data is already CBOR-encoded so we ship it
-		// raw — receiver's decoder reads it as the next value.
-		if len(q.Data) > 0 {
-			if werr := s.write_raw(q.Data); werr != nil {
-				return false
-			}
 		}
 	}
 
-	// Stream the file body — identical on both paths.
+	// Stream the file body.
 	if err := file_push_send_body(s, q.File); err != nil {
 		debug("Queue file-push body send failed: %v", err)
 		return false
 	}
 
-	if !v2 {
-		// /mochi/1 expects an ACK frame back. v2 acks the open()
-		// already (in receive_stream); the handler returning closes
-		// the stream cleanly.
-		s.close_write()
-		var h Headers
-		if s.read_headers(&h) != nil {
-			debug("Queue file-push %q failed to read ACK", q.ID)
-			return false
-		}
-		if h.msg_type() == "ack" && h.AckID == q.ID {
-			return true
-		}
-		if h.msg_type() == "nack" && h.AckID == q.ID {
-			debug("Queue file-push %q received NACK reason=%q", q.ID, h.Reason)
-			if nack_should_drop(h.Reason) {
-				queue_drop(q.ID, h.Reason)
-				return true
-			}
-			return false
-		}
-		return false
-	}
-
-	// v2: handler success was already signalled by the open ack at
-	// handshake time. If write_raw + file send succeeded, return ok.
+	// Handler success was already signalled by the open ack at handshake
+	// time; if write_raw + file send succeeded, we're done.
 	return true
 }
 

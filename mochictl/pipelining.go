@@ -2,11 +2,8 @@
 // Copyright Alistair Cunningham 2026
 //
 // `mochictl pipelining status` -> GET /_/admin/pipelining/status
-//   Per-peer protocol-support cache, open Senders + their inflight,
-//   per-host worker pool size. Used day-to-day to spot peers stuck on
-//   /mochi/1, and at Phase 8 to confirm every paired peer supports
-//   /mochi/2/* before dropping the legacy handler. See
-//   claude/plans/protocol2.md.
+//   Open /mochi/2/messages Senders + their inflight depth and session,
+//   plus the per-host worker pool size. See claude/plans/protocol2.md.
 
 //go:build linux
 
@@ -46,8 +43,6 @@ func cmd_pipelining_status(args []string) error {
 		Senders        int `json:"senders"`
 		Peers          []struct {
 			Peer     string `json:"peer"`
-			Messages string `json:"messages"`
-			Stream   string `json:"stream"`
 			Sender   bool   `json:"sender"`
 			Inflight int    `json:"inflight"`
 			Session  string `json:"session"`
@@ -75,8 +70,8 @@ func cmd_pipelining_status(args []string) error {
 	if peer_w > 52 {
 		peer_w = 52
 	}
-	fmt.Printf("\n%-*s  %-12s  %-12s  %-8s  %8s  %s\n",
-		peer_w, "PEER", "MESSAGES", "STREAM", "SENDER", "INFLIGHT", "SESSION")
+	fmt.Printf("\n%-*s  %-8s  %8s  %s\n",
+		peer_w, "PEER", "SENDER", "INFLIGHT", "SESSION")
 	for _, p := range payload.Peers {
 		peer := p.Peer
 		if len(peer) > peer_w {
@@ -86,8 +81,8 @@ func cmd_pipelining_status(args []string) error {
 		if p.Sender {
 			sender = "yes"
 		}
-		fmt.Printf("%-*s  %-12s  %-12s  %-8s  %8d  %s\n",
-			peer_w, peer, p.Messages, p.Stream, sender, p.Inflight, p.Session)
+		fmt.Printf("%-*s  %-8s  %8d  %s\n",
+			peer_w, peer, sender, p.Inflight, p.Session)
 	}
 	return nil
 }

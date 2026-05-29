@@ -2,7 +2,7 @@
 // Copyright Alistair Cunningham 2026
 //
 // Tests covering the in-memory peer-silence fast-fail (task #100).
-// The gate sits in peer_stream so every outbound send path
+// The gate sits in peer_protocol_open so every outbound send path
 // (queue_send_direct, file_push, directory, messages) gets the
 // benefit; the tests exercise the gate directly to keep the
 // libp2p layer out of the picture.
@@ -186,8 +186,8 @@ func TestPeerIsSilentBootstrap(t *testing.T) {
 }
 
 // TestPeerIsSilentSelf confirms self-loop is never silent. The
-// in-process pipe in peer_stream() can't fail in the way the libp2p
-// connect can; marking self as silent would break all local fan-out.
+// in-process pipe can't fail in the way the libp2p connect can;
+// marking self as silent would break all local fan-out.
 func TestPeerIsSilentSelf(t *testing.T) {
 	reset_peer_reachability(t)
 	// net_id may be empty in tests where p2p hasn't initialised;

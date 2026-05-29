@@ -189,7 +189,7 @@ func init() {
 			run:  cmd_broadcast_lag,
 		},
 		"pipelining status": {
-			help: "/mochi/2 transport state: per-peer protocol support, open Senders + inflight, per-host worker pool. Use to confirm every paired peer supports /mochi/2/* before Phase 8 drops /mochi/1.",
+			help: "/mochi/2 transport state: open Senders + inflight, per-host worker pool.",
 			run:  cmd_pipelining_status,
 		},
 		"check starlark": {

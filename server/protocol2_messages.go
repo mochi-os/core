@@ -84,7 +84,6 @@ func receive_messages(s p2p_network.Stream) {
 
 	// Rate limit incoming streams per peer (skip bootstrap and paired
 	// peers — both are trusted infrastructure, not anonymous senders).
-	// Same gate as net_receive_1's /mochi/1 handler.
 	if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_p2p.allow(peer) {
 		debug("Messages rate limited peer %q", peer)
 		s.Reset()
@@ -225,7 +224,7 @@ func (r *Receiver) handle(f *Frame) bool {
 func (r *Receiver) dispatch_message(f *Frame) {
 	// Dedup against the sticky message_seen cache. ID == "" frames
 	// can't dedup; they ack/fail as normal but might double-apply on
-	// a retry — current /mochi/1 has the same property.
+	// a retry — acceptable for the rare ID-less frame.
 	if f.ID != "" && message_seen(f.ID) {
 		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
 		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})

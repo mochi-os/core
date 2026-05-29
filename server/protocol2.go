@@ -37,7 +37,6 @@ const (
 	// Protocol IDs registered with libp2p.
 	protocol_messages = "/mochi/2/messages"
 	protocol_stream   = "/mochi/2/stream"
-	protocol_legacy   = "/mochi/1"
 
 	// Wire / framing limits.
 	frame_maximum         = 16 * 1024 * 1024 // 16 MB defensive cap
@@ -93,9 +92,9 @@ const (
 )
 
 // Frame is the on-wire envelope shared by /mochi/2/messages and
-// /mochi/2/stream. Existing field names preserved verbatim with their
-// /mochi/1 wire keys (`from`, `to`, etc.) for interop; new fields use
-// single-word names per project convention.
+// /mochi/2/stream. The routing field names (`from`, `to`, etc.) keep
+// their original wire keys; new fields use single-word names per
+// project convention.
 type Frame struct {
 	Type      string         `cbor:"type"`
 	ID        string         `cbor:"id,omitempty"`
@@ -358,8 +357,7 @@ func claim_verify(entity string, challenge, signature []byte) error {
 // frame_reject_challenge runs the rejection tests demanded by the
 // hello-handshake spec: length must equal challenge_size_v2 and must
 // not be all-zero. A buggy/hostile receiver sending either of these
-// → sender treats it as a protocol negotiation failure and falls back
-// to /mochi/1.
+// → sender treats it as a protocol negotiation failure.
 func frame_reject_challenge(challenge []byte) error {
 	if len(challenge) != challenge_size_v2 {
 		return fmt.Errorf("hello: bad challenge length %d", len(challenge))

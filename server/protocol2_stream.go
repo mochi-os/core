@@ -213,11 +213,8 @@ func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 // end sees the closed pipe), rather than being decided differently at
 // the sender.
 //
-// This is the v2-native replacement for the old peer_stream(net_id)
-// self-loop, which ran the /mochi/1 receiver on the far end. Once
-// Phase 8 removes /mochi/1 (and peer_stream with it), this is what
-// keeps mochi.remote.stream() to a locally-hosted entity (market/staff
-// → Comptroller) working.
+// Keeps mochi.remote.stream() to a locally-hosted entity (market/staff
+// → Comptroller) working without a wire round-trip.
 func stream_self_loop(from, to, service, event, from_app string, services []string) *Stream {
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
@@ -284,8 +281,8 @@ func stream_open(peer, from, to, service, event, from_app string,
 
 	id := uid()
 	// The open frame carries routing only. Per-call content is shipped
-	// as the FIRST post-ack CBOR segment below, matching /mochi/1's
-	// "headers then content" wire pattern. The receiver's
+	// as the FIRST post-ack CBOR segment below ("routing then content").
+	// The receiver's
 	// receive_stream reads exactly one CBOR segment after the ack as
 	// e.content before dispatching, so any caller that passes
 	// `content` here is wire-compatible with handlers that already
@@ -337,50 +334,23 @@ func stream_open(peer, from, to, service, event, from_app string,
 		fmt.Errorf("stream: unexpected reply type %q peer=%q", reply.Type, peer)
 }
 
-// stream_open_v2_or_legacy is the migration helper for callers that
-// can use /mochi/2/stream when available and need to fall back to the
-// /mochi/1 peer_stream + read_challenge path for older peers. Returns
-// (v2 Stream, true) or (legacy Stream, false). Caller writes the
-// per-protocol message frame after this returns. During the rollout
-// window every caller uses this; Phase 8 drops the legacy branch.
-func stream_open_v2_or_legacy(peer, from, to, service, event, from_app string,
-	services []string, content map[string]any) (st *Stream, v2 bool, err error) {
+// stream_open_or_self opens a /mochi/2/stream to peer, routing a
+// self-target (peer == net_id) to the in-process loopback. The returned
+// stream is in raw mode: the open frame (and any `content`) is already
+// shipped and acked, so the caller reads/writes bytes directly.
+//
+// Self-loop streams can't use the wire path — peer_protocol_open ends
+// in net_me.NewStream(self), which libp2p refuses (a host can't dial
+// itself). stream_self_loop io.Pipes the two ends and runs the
+// /mochi/2/stream dispatch on the far end, skipping the handshake.
+// Without this, every mochi.remote.stream() to a locally-hosted entity
+// (market/staff → Comptroller) fails.
+func stream_open_or_self(peer, from, to, service, event, from_app string,
+	services []string, content map[string]any) (*Stream, error) {
 
-	// Self-loop streams (peer == net_id) can't use the wire v2 path:
-	// peer_protocol_open ends in net_me.NewStream(self), which libp2p
-	// refuses (a host can't dial itself). Route self to the v2-native
-	// in-process loopback (stream_self_loop), which io.Pipes the two
-	// ends and runs the /mochi/2/stream dispatch on the far end,
-	// skipping the handshake. Returned v2=true: the near end is already
-	// in raw mode, so the caller writes content directly rather than
-	// taking the legacy challenge+Headers path. Without this, every
-	// mochi.remote.stream() to a locally-hosted entity (market/staff →
-	// Comptroller) fails.
 	if peer == net_id {
-		return stream_self_loop(from, to, service, event, from_app, services), true, nil
+		return stream_self_loop(from, to, service, event, from_app, services), nil
 	}
-
-	// Try v2 first unless the cache says it's not supported.
-	switch protocol_known_get(peer, protocol_stream) {
-	case protocol_state_unsupported:
-		// Fall through to legacy.
-	default:
-		st, _, err = stream_open(peer, from, to, service, event, from_app, services, content)
-		if err == nil {
-			return st, true, nil
-		}
-		if is_protocol_not_supported(err) || protocol_known_get(peer, protocol_stream) == protocol_state_unsupported {
-			// Cache already updated by peer_protocol_open; fall through.
-		} else {
-			// Real failure (e.g. peer unreachable, handshake error) —
-			// don't fall back, that'd just retry the same path.
-			return nil, false, err
-		}
-	}
-
-	legacy := peer_stream(peer)
-	if legacy == nil {
-		return nil, false, errSenderUnreachable
-	}
-	return legacy, false, nil
+	s, _, err := stream_open(peer, from, to, service, event, from_app, services, content)
+	return s, err
 }

@@ -254,41 +254,6 @@ func peer_add_known(id string, addresses []string) {
 	peers[id] = p
 }
 
-// Get details of a peer, either from memory, or from database.
-func peer_by_id(id string) *Peer {
-	peers_lock.Lock()
-	p, found := peers[id]
-	peers_lock.Unlock()
-	if found {
-		return &p
-	}
-
-	// Load from database
-	p = Peer{ID: id}
-
-	var ps []peer_row
-	db := db_open("db/peers.db")
-	err := db.scans(&ps, "select * from peers where id=?", id)
-	if err != nil {
-		warn("Database error looking up peer %q: %v", id, err)
-		return nil
-	}
-	if len(ps) == 0 {
-		return nil
-	}
-	for _, a := range ps {
-		debug("Peer %q adding address %q from database", id, a.Address)
-		p.addresses = append(p.addresses, PeerAddress{Address: a.Address, Updated: a.Updated})
-	}
-
-	peers_lock.Lock()
-	peers[id] = p
-	peers_lock.Unlock()
-
-	debug("Adding database peer %q at %v", id, p.addresses)
-	return &p
-}
-
 // New or existing peer discovered or re-discovered at unknown address.
 func peer_discovered(id string) {
 	p, err := p2p_peer.Decode(id)

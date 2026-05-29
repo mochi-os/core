@@ -86,13 +86,9 @@ func directory_download() {
 	}
 }
 
-// Download directory updates from a specific peer.
-//
-// Prefers /mochi/2/stream (one libp2p stream with an authenticated
-// handshake), falls back to /mochi/1's peer_stream + read_challenge
-// for peers that haven't rolled out the new protocol. The wire
-// content after the handshake is identical in both paths — series of
-// CBOR-encoded Directory rows until EOF.
+// Download directory updates from a specific peer over /mochi/2/stream.
+// The wire content after the handshake is a series of CBOR-encoded
+// Directory rows until EOF.
 func directory_download_from_peer(peer string) bool {
 	start := int64(0)
 	var u Directory
@@ -109,26 +105,12 @@ func directory_download_from_peer(peer string) bool {
 		"version": build_version,
 	}
 
-	s, v2, err := stream_open_v2_or_legacy(peer, "", "", "directory", "download", "", nil, content)
+	s, err := stream_open_or_self(peer, "", "", "directory", "download", "", nil, content)
 	if err != nil || s == nil {
 		debug("Directory stream unable to open to peer %q: %v", peer, err)
 		return false
 	}
 	defer s.close()
-
-	if !v2 {
-		// Legacy /mochi/1 path: read challenge, write headers + content
-		// the old way. stream_open_v2_or_legacy returns the bare
-		// peer_stream — we still need to do the /mochi/1 handshake.
-		if _, cerr := s.read_challenge(); cerr != nil {
-			debug("Directory stream unable to read challenge: %v", cerr)
-			return false
-		}
-		if werr := s.write(Headers{Service: "directory", Event: "download"}); werr != nil {
-			return false
-		}
-		s.write_content("start", i64toa(start), "version", build_version)
-	}
 
 	users := db_open("db/users.db")
 	for {

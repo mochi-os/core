@@ -2,16 +2,16 @@
 // Copyright Alistair Cunningham 2026
 //
 // The "Advanced disclosure / restore" path on the signup form. The user
-// uploads a migration bundle (produced by mochi.user.export with keys)
-// and its passphrase. Unlike replicate (which links to a still-running
-// source), restore is single-shot: the destination becomes the new home
-// for the account's data and network identity, and the source is left
-// untouched (the user deletes it themselves — see the post-restore
-// banner driven by users.restore_source).
+// uploads a backup bundle (produced by mochi.user.export) and its
+// passphrase. Unlike replicate (which links to a still-running source),
+// restore is single-shot: the destination becomes the new home for the
+// account's data and network identity, and the source is left untouched
+// (the user deletes it themselves — see the post-restore banner driven
+// by users.restore_source).
 //
 // Modelled on auth_replicate.go. Validation that should give the user a
-// fast inline error (bad passphrase, wrong bundle mode, schema too new)
-// runs synchronously; the actual unpack-and-swap runs in a goroutine so
+// fast inline error (bad passphrase, schema too new) runs synchronously;
+// the actual unpack-and-swap runs in a goroutine so
 // a multi-GB restore doesn't block the HTTP response past its timeout.
 // The placeholder sits in status='pending-restore' until the swap
 // completes, gating every app but /login (see user_pending).
@@ -130,7 +130,7 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
-	// Manifest: must be a v1 migration bundle.
+	// Manifest: must be a v1 bundle.
 	var manifest export_manifest
 	if err := restore_read_json(filepath.Join(bundle, "manifest.json"), &manifest); err != nil {
 		user_delete(uid)
@@ -142,17 +142,20 @@ func web_auth_restore(c *gin.Context) {
 		respond_error(c, http.StatusBadRequest, "bundle_version", "errors.bundle_version", nil)
 		return
 	}
-	if manifest.Mode != "migration" {
-		// A GDPR bundle has no keys.age, so the restored user could not act
-		// as the source identity. Refuse with a clear message.
+
+	// Every export carries keys.age (the user's encrypted private keys); a
+	// bundle without it can't establish the identity, so it isn't a valid
+	// restore source.
+	keys_path := filepath.Join(bundle, "keys.age")
+	if !file_exists(keys_path) {
 		user_delete(uid)
-		respond_error(c, http.StatusBadRequest, "bundle_not_migration", "errors.bundle_not_migration", nil)
+		respond_error(c, http.StatusBadRequest, "bundle_invalid", "errors.bundle_invalid", nil)
 		return
 	}
 
 	// Decrypt keys.age (validates the passphrase) and read the account so
 	// we can find the primary entity that signed the manifest.
-	keys, err := restore_decrypt_keys(filepath.Join(bundle, "keys.age"), passphrase)
+	keys, err := restore_decrypt_keys(keys_path, passphrase)
 	if err != nil {
 		user_delete(uid)
 		respond_error(c, http.StatusBadRequest, "wrong_passphrase", "errors.wrong_passphrase", nil)

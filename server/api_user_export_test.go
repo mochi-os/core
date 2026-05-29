@@ -38,7 +38,7 @@ func TestUserExportRoundTrip(t *testing.T) {
 	sched.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, 'chat', 100, 'remind', '{}', 0, 1)", uid)
 
 	passphrase := "correct horse battery staple"
-	rel, err := user_export(uid, "settings", true, passphrase)
+	rel, err := user_export(uid, "settings", passphrase)
 	if err != nil {
 		t.Fatalf("user_export: %v", err)
 	}
@@ -80,9 +80,6 @@ func TestUserExportRoundTrip(t *testing.T) {
 	var manifest export_manifest
 	if err := json.Unmarshal(files["manifest.json"], &manifest); err != nil {
 		t.Fatalf("manifest: %v", err)
-	}
-	if manifest.Mode != "migration" {
-		t.Errorf("mode = %q, want migration", manifest.Mode)
 	}
 	if manifest.Version != export_manifest_version {
 		t.Errorf("version = %d, want %d", manifest.Version, export_manifest_version)

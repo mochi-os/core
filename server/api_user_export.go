@@ -1,16 +1,17 @@
 // Mochi server: user data export (GDPR download + server-move bundle)
 // Copyright Alistair Cunningham 2026
 //
-// mochi.user.export(keys=False, passphrase=None) -> path builds a .zip
-// bundle of everything the server holds about the calling user and
-// returns its path. The settings app streams the file to the browser
-// and deletes it afterwards (see apps/settings).
+// mochi.user.export(passphrase) -> path builds a .zip bundle of
+// everything the server holds about the calling user and returns its
+// path. The settings app streams the file to the browser.
 //
-// Two modes from one shape, chosen by the keys flag:
-//   - GDPR download (keys=False): user data only, no key material.
-//   - Server move (keys=True): adds keys.age, a passphrase-encrypted
-//     blob of the user's entity private keys, so the destination can
-//     act as the same network identity. Requires a passphrase.
+// Every export is a complete, restorable backup: the user's data plus
+// keys.age, a passphrase-encrypted blob of their entity private keys, so
+// the bundle can be restored onto another server as the same network
+// identity. The data files inside the zip are plaintext (the user can
+// always read their own data); only the keys are passphrase-protected.
+// A non-restorable "data only" variant was deliberately dropped — a
+// backup you can't restore is a footgun.
 //
 // The bundle is self-describing via manifest.json, which carries a
 // per-file sha256 and a signature over those hashes made with the
@@ -94,7 +95,6 @@ type export_link struct {
 // the signature absent; restore recomputes the identical bytes.
 type export_manifest struct {
 	Version     int                    `json:"version"`
-	Mode        string                 `json:"mode"`
 	Source      string                 `json:"source_server"`
 	Exported    string                 `json:"exported_at"`
 	Fingerprint string                 `json:"user_fingerprint"`
@@ -102,7 +102,7 @@ type export_manifest struct {
 	Signature   string                 `json:"signature,omitempty"`
 }
 
-// api_user_export is mochi.user.export(keys=False, passphrase=None).
+// api_user_export is mochi.user.export(passphrase).
 func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/export"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -114,13 +114,12 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no user")
 	}
 
-	var keys bool
 	var passphrase string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "keys?", &keys, "passphrase?", &passphrase); err != nil {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "passphrase", &passphrase); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	path, err := user_export(user.UID, app.id, keys, passphrase)
+	path, err := user_export(user.UID, app.id, passphrase)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -132,9 +131,9 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // the app-relative path so the action can stream it with a.write.file.
 // The bundle is built in a staging tree under users/<uid>/export/ first,
 // then zipped across into the app files area.
-func user_export(uid, app string, keys bool, passphrase string) (string, error) {
-	if keys && passphrase == "" {
-		return "", fmt.Errorf("passphrase required when exporting keys")
+func user_export(uid, app, passphrase string) (string, error) {
+	if passphrase == "" {
+		return "", fmt.Errorf("passphrase required")
 	}
 
 	root := filepath.Join(data_dir, "users", uid)
@@ -189,19 +188,14 @@ func user_export(uid, app string, keys bool, passphrase string) (string, error) 
 		return "", err
 	}
 
-	mode := "gdpr"
-	if keys {
-		mode = "migration"
-		if err := export_keys_age(udb, uid, passphrase, filepath.Join(tree, "keys.age")); err != nil {
-			return "", err
-		}
+	if err := export_keys_age(udb, uid, passphrase, filepath.Join(tree, "keys.age")); err != nil {
+		return "", err
 	}
 
 	// Manifest: hash every staged file, then sign the lot with the
 	// primary entity key.
 	manifest := export_manifest{
 		Version:     export_manifest_version,
-		Mode:        mode,
 		Source:      export_source_server(),
 		Exported:    stamp.Format(time.RFC3339),
 		Fingerprint: primary.Fingerprint,
@@ -270,9 +264,11 @@ func export_copy_subtree(src, dst string) error {
 			return os.MkdirAll(target, 0o700)
 		}
 		name := d.Name()
-		// SQLite write-ahead-log / shared-memory sidecars: the online
-		// backup copy is a self-contained DB, so these are redundant.
-		if strings.HasSuffix(name, "-wal") || strings.HasSuffix(name, "-shm") {
+		// SQLite write-ahead-log / shared-memory sidecars and the operator
+		// backup machinery's snapshot siblings: the online-backup copy is a
+		// self-contained DB, so all of these are redundant duplicates.
+		if strings.HasSuffix(name, "-wal") || strings.HasSuffix(name, "-shm") ||
+			strings.HasSuffix(name, ".db.snap") || strings.HasSuffix(name, ".db.backup") {
 			return nil
 		}
 		if strings.HasSuffix(name, ".db") {

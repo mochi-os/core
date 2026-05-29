@@ -60,11 +60,14 @@ func user_pending(u *User) bool {
 
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),
-	"count":    sl.NewBuiltin("mochi.user.count", api_user_count),
-	"create":   sl.NewBuiltin("mochi.user.create", api_user_create),
-	"delete":   sl.NewBuiltin("mochi.user.delete", api_user_delete),
-	"export":   sl.NewBuiltin("mochi.user.export", api_user_export),
-	"get":      &user_get_module{},
+	"code": sls.FromStringDict(sl.String("mochi.user.code"), sl.StringDict{
+		"send": sl.NewBuiltin("mochi.user.code.send", api_user_code_send),
+	}),
+	"count":  sl.NewBuiltin("mochi.user.count", api_user_count),
+	"create": sl.NewBuiltin("mochi.user.create", api_user_create),
+	"delete": sl.NewBuiltin("mochi.user.delete", api_user_delete),
+	"export": sl.NewBuiltin("mochi.user.export", api_user_export),
+	"get":    &user_get_module{},
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
 	}),
@@ -152,6 +155,55 @@ func code_send(email string, c *gin.Context) string {
 	}
 	email_login_code(u, email, code, request_language(c, u))
 	return ""
+}
+
+// code_consume verifies and consumes a one-time login code for an
+// already-known user, returning true if the code was valid and
+// unexpired. Used for step-up re-authentication (data export): the
+// session already identifies the user, so the code is matched to their
+// username and an attacker can't burn a different user's pending code.
+// Mirrors user_from_code's peer fan-out so paired hosts drop the code
+// too — prevents replay on a second host within the TTL.
+func code_consume(user *User, code string) bool {
+	if user == nil || code == "" {
+		return false
+	}
+	sessions := db_open("db/sessions.db")
+	var c Code
+	if !sessions.scan(&c, "delete from codes where code=? and username=? and expires>=? returning *", code, user.Username, now()) {
+		return false
+	}
+	replication_emit_sessions_row(user.UID, &SessionsRow{
+		Table:  "codes",
+		Key:    map[string]string{"code": code, "username": user.Username},
+		Delete: true,
+	})
+	return true
+}
+
+// api_user_code_send is mochi.user.code.send(): email the calling user a
+// one-time login code, reusing the login-code mechanism. The export flow
+// sends it when the download dialog opens and requires it back as a
+// second factor before building the (key-bearing) bundle — so a stolen
+// session alone can't extract the user's private keys, and the code
+// email doubles as an alert that an export was attempted. Gated on
+// user/export so only that flow can trigger a send.
+func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/export"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	var web *gin.Context
+	if action, ok := t.Local("action").(*Action); ok {
+		web = action.web
+	}
+	if reason := code_send(user.Username, web); reason != "" {
+		return sl_error(fn, "%s", reason)
+	}
+	return sl.None, nil
 }
 
 func login_create(user string, address string, agent string) string {

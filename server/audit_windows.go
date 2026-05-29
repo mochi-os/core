@@ -86,6 +86,13 @@ func audit_session_anomaly(user string, ip string, reason string) {
 	audit_write("AUTH", fmt.Sprintf("session_anomaly user=%s ip=%s reason=%s", user, ip, reason))
 }
 
+// audit_export logs a user data export. The bundle carries the user's
+// passphrase-encrypted private keys, so it is a key-bearing,
+// security-relevant operation worth a durable record.
+func audit_export(user string, ip string) {
+	audit_write("AUTH", fmt.Sprintf("export user=%s ip=%s", user, ip))
+}
+
 // audit_access_denied logs access denied events
 func audit_access_denied(user string, resource string, operation string) {
 	audit_write("AUTH", fmt.Sprintf("access_denied user=%s resource=%s operation=%s", user, resource, operation))

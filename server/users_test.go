@@ -302,6 +302,52 @@ func create_test_sessions_db(t *testing.T) func() {
 	return cleanup
 }
 
+// TestCodeConsume verifies the step-up second factor used by data
+// export: a one-time login code is consumed exactly once, only for the
+// user it was issued to, and only while unexpired.
+func TestCodeConsume(t *testing.T) {
+	cleanup := create_test_sessions_db(t)
+	defer cleanup()
+
+	db := db_open("db/sessions.db")
+	current := now()
+	db.exec("insert into codes (code, username, expires) values ('good', 'alice@example.com', ?)", current+3600)
+	db.exec("insert into codes (code, username, expires) values ('stale', 'alice@example.com', ?)", current-1)
+	db.exec("insert into codes (code, username, expires) values ('bobs', 'bob@example.com', ?)", current+3600)
+
+	alice := &User{UID: "u-alice", Username: "alice@example.com"}
+
+	// Empty, unknown, expired, and another user's codes all fail.
+	if code_consume(alice, "") {
+		t.Error("empty code accepted")
+	}
+	if code_consume(alice, "nope") {
+		t.Error("unknown code accepted")
+	}
+	if code_consume(alice, "stale") {
+		t.Error("expired code accepted")
+	}
+	if code_consume(alice, "bobs") {
+		t.Error("another user's code accepted")
+	}
+	if code_consume(nil, "good") {
+		t.Error("nil user accepted")
+	}
+
+	// The valid code works once, then is gone (single-use).
+	if !code_consume(alice, "good") {
+		t.Fatal("valid code rejected")
+	}
+	if code_consume(alice, "good") {
+		t.Error("code reusable after consume")
+	}
+
+	// bob's code survived alice's attempts: the consume is username-scoped.
+	if any, _ := db.exists("select 1 from codes where code='bobs'"); !any {
+		t.Error("another user's code was consumed")
+	}
+}
+
 // Test sessions_cleanup removes expired sessions
 func TestSessionsCleanup(t *testing.T) {
 	cleanup := create_test_sessions_db(t)

@@ -154,7 +154,11 @@ func user_export(uid, app, passphrase string) (string, error) {
 	if err := os.MkdirAll(tree, 0o700); err != nil {
 		return "", fmt.Errorf("create staging: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	// Remove only this export's own tree (its name carries a random
+	// suffix), never the shared staging directory — a concurrent export
+	// for the same user has its own tree under staging/ and must not be
+	// wiped. Empty staging/ is reaped by export_cleanup_orphans.
+	defer os.RemoveAll(tree)
 
 	// Wholesale per-user data: top-level user.db, then every app/entity
 	// subtree. The walk is opaque to what an app stores there.

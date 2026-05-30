@@ -19,6 +19,7 @@ type Directory struct {
 	Data        string
 	Created     int64
 	Updated     int64
+	Version     int64
 }
 
 var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDict{
@@ -67,9 +68,9 @@ func directory_create(e *Entity) {
 	db := db_open("db/directory.db")
 	exists, _ := db.exists("select 1 from entities where id=?", e.ID)
 	if exists {
-		db.exec("update entities set name=?, class=?, location=?, data=?, fingerprint=?, updated=? where id=?", e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, e.ID)
+		db.exec("update entities set name=?, class=?, location=?, data=?, fingerprint=?, updated=?, version=? where id=?", e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, now, e.ID)
 	} else {
-		db.exec("insert into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, now)
+		db.exec("insert into entities (id, name, class, location, data, fingerprint, created, updated, version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", e.ID, e.Name, e.Class, "p2p/"+net_id, e.Data, fp, now, now, now)
 	}
 	db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", e.ID, net_id, now)
 }
@@ -133,7 +134,17 @@ func directory_download_from_peer(peer string) bool {
 		if fp == "" {
 			fp = fingerprint(d.ID)
 		}
-		db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated)
+
+		// Version-based last-write-wins, same rule as the live publish
+		// path: don't let an older (or versionless) downloaded row
+		// overwrite a newer local copy. This matters during a bulk sync
+		// from a freshly-migrated peer whose pre-existing rows default to
+		// version 0. The location claim is still recorded below either way.
+		var existing Directory
+		have := db.scan(&existing, "select version from entities where id=?", d.ID)
+		if !(have && existing.Version > 0 && existing.Version >= d.Version) {
+			db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated, version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", d.ID, d.Name, d.Class, d.Location, d.Data, fp, d.Created, d.Updated, d.Version)
+		}
 
 		// Also record the location claim in `locations` — the routing
 		// table that entity_peer / entity_peers_failover read. The
@@ -346,15 +357,18 @@ func directory_manager() {
 func directory_publish(e *Entity, allow_queue bool) {
 	m := message(e.ID, "", "directory", "publish")
 
-	// Include created timestamp so bootstrap peers can propagate it
+	// Include created (so bootstrap peers can propagate it) and version
+	// (this host's last-edit time, for receiver-side last-write-wins).
 	created := now()
+	version := now()
 	db := db_open("db/directory.db")
 	var d Directory
-	if db.scan(&d, "select created from entities where id=?", e.ID) {
+	if db.scan(&d, "select created, version from entities where id=?", e.ID) {
 		created = d.Created
+		version = d.Version
 	}
 
-	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+net_id, "data", e.Data, "created", i64toa(created))
+	m.set("id", e.ID, "name", e.Name, "class", e.Class, "location", "p2p/"+net_id, "data", e.Data, "created", i64toa(created), "version", i64toa(version))
 	m.publish(allow_queue)
 }
 
@@ -394,8 +408,13 @@ func directory_publish_event(e *Event) {
 	}
 
 	db := db_open("db/directory.db")
-	var created int64
 
+	// Load any existing row once — it drives both created-preservation
+	// and the version compare below.
+	var existing Directory
+	have := db.scan(&existing, "select created, name, version from entities where id=?", id)
+
+	var created int64
 	if e.from == "" {
 		if !peer_is_bootstrap(e.peer) {
 			info("Directory dropping anonymous event from untrusted peer")
@@ -408,18 +427,15 @@ func directory_publish_event(e *Event) {
 	} else if e.from != id {
 		info("Directory dropping event from incorrect sender: %q!=%q", id, e.from)
 		return
-	} else {
-		// Non-bootstrap peer: preserve created unless name changed or entry is new
-		var existing Directory
-		if db.scan(&existing, "select created, name from entities where id=?", id) {
-			if name != existing.Name {
-				created = now
-			} else {
-				created = existing.Created
-			}
-		} else {
+	} else if have {
+		// Non-bootstrap peer: preserve created unless the name changed
+		if name != existing.Name {
 			created = now
+		} else {
+			created = existing.Created
 		}
+	} else {
+		created = now
 	}
 
 	// Don't let remote peers override location for local entities
@@ -429,7 +445,21 @@ func directory_publish_event(e *Event) {
 		location = "p2p/" + net_id
 	}
 
-	db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now)
+	// Version-based last-write-wins: keep the description we already hold
+	// when it carries a version at least as new as the incoming one, so
+	// reordered, replayed, or queue-re-flooded older announcements (and
+	// versionless announcements from a pre-version sender) can't clobber a
+	// newer record. The location refresh below runs regardless, so even a
+	// dropped-description announcement still proves the peer is alive for
+	// routing/failover. A brand-new entity (no row yet) and an entity we
+	// only hold versionless (stored version 0) fall through to the write,
+	// preserving prior behaviour during rollout.
+	version := atoi(e.get("version", ""), 0)
+	if have && existing.Version > 0 && existing.Version >= version {
+		debug("Directory keeping newer copy of %q: stored version %d >= incoming %d", id, existing.Version, version)
+	} else {
+		db.exec("replace into entities (id, name, class, location, data, fingerprint, created, updated, version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", id, name, class, location, data, fingerprint(id), created, now, version)
+	}
 
 	directory_record_location(db, id, location, now)
 

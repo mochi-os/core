@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 70
+	schema_version = 72
 )
 
 var (
@@ -220,6 +220,12 @@ func db_create() {
 	sessions.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
 	sessions.exec("create index partial_expires on partial(expires)")
 
+	// Step-up re-authentication proofs: short-lived single-use tokens
+	// earned by re-verifying the user's login factor(s) before a
+	// sensitive action. methods is the accrued set of factors verified.
+	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create index reauthentication_expires on reauthentication(expires)")
+
 	// Last-login timestamps (kept here, not in users.db, so the cold reference
 	// store doesn't take a write on every login)
 	sessions.exec("create table logins (user text primary key, last integer not null)")
@@ -248,7 +254,7 @@ func db_create() {
 	// that has announced itself as a replica. The legacy `location` column
 	// on entities is kept one release for rollback safety.
 	directory := db_open("db/directory.db")
-	directory.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null )")
+	directory.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null, version integer not null default 0 )")
 	directory.exec("create index entities_name on entities( name )")
 	directory.exec("create index entities_class on entities( class )")
 	directory.exec("create index entities_location on entities( location )")
@@ -730,6 +736,10 @@ func db_upgrade() {
 			db_upgrade_69()
 		case 70:
 			db_upgrade_70()
+		case 71:
+			db_upgrade_71()
+		case 72:
+			db_upgrade_72()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1031,6 +1041,31 @@ func db_upgrade_70() {
 	}
 	if exists, _ := users.exists("select 1 from sqlite_master where type='table' and name='relinks'"); !exists {
 		users.exec("create table relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
+	}
+}
+
+// db_upgrade_71 adds the reauthentication table to sessions.db: short-lived
+// single-use step-up proofs earned by re-verifying the user's login
+// factor(s) before a sensitive action (export, replication approval, and
+// the account-security cluster).
+func db_upgrade_71() {
+	sessions := db_open("db/sessions.db")
+	if exists, _ := sessions.exists("select 1 from sqlite_master where type='table' and name='reauthentication'"); !exists {
+		sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+		sessions.exec("create index reauthentication_expires on reauthentication(expires)")
+	}
+}
+
+// db_upgrade_72 adds the version column to directory.db entities. It
+// carries the announcing host's last-edit time for the entity, used by
+// directory_publish_event for version-based last-write-wins: a
+// reordered or replayed older announcement no longer clobbers a newer
+// description. Existing rows default to 0 (treated as "no version", so
+// the first versioned announcement wins). Idempotent.
+func db_upgrade_72() {
+	directory := db_open("db/directory.db")
+	if col, _ := directory.exists("select 1 from pragma_table_info('entities') where name='version'"); !col {
+		directory.exec("alter table entities add column version integer not null default 0")
 	}
 }
 

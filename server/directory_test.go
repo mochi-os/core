@@ -298,3 +298,173 @@ func TestDirectoryCleanupDeadPeersSkipsBootstrap(t *testing.T) {
 		t.Errorf("bootstrap peer was forgotten (rows now=%d); want kept regardless of silent/stale state", n)
 	}
 }
+
+// --- Version-based last-write-wins (directory_publish_event) ---
+//
+// Pubsub floods duplicate, reorder, and (within the freshness window)
+// replay announcements, so directory_publish_event keeps the
+// highest-versioned description rather than trusting arrival order. The
+// version is the announcing host's last-edit time, carried in the
+// announcement's `version` content field. The location refresh is
+// independent — it must run on every announcement so routing/failover
+// freshness stays honest even when the description write is dropped.
+
+// setup_directory_entities_test extends setup_directory_test with the
+// directory.db `entities` table (carrying the version column) plus a
+// minimal users.db `entities` table, so directory_publish_event's
+// description write and its local-entity check have somewhere to land.
+func setup_directory_entities_test(t *testing.T) func() {
+	cleanup := setup_directory_test(t)
+	ddb := db_open("db/directory.db")
+	ddb.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null, version integer not null default 0 )")
+	udb := db_open("db/users.db")
+	udb.exec("create table if not exists entities (id text not null primary key, user text not null default '')")
+	return cleanup
+}
+
+// dir_publish_event builds a signed directory/publish event (from == the
+// announced entity), mirroring what pubsub_receive hands the handler
+// after signature verification.
+func dir_publish_event(id, name, location string, version int64, peer string) *Event {
+	return &Event{
+		from:    id,
+		service: "directory",
+		event:   "publish",
+		peer:    peer,
+		content: map[string]any{
+			"id":       id,
+			"name":     name,
+			"class":    "person",
+			"location": location,
+			"data":     "x",
+			"version":  i64toa(version),
+		},
+	}
+}
+
+// dir_entity reads back the stored name + version for an entity.
+func dir_entity(t *testing.T, db *DB, id string) (string, int64) {
+	t.Helper()
+	row, _ := db.row("select name, version from entities where id=?", id)
+	if row == nil {
+		t.Fatalf("no entities row for %s", id)
+	}
+	name, _ := row["name"].(string)
+	return name, row_int(row, "version")
+}
+
+// TestDirectoryPublishNewerVersionWins: a higher-versioned announcement
+// overwrites the stored description.
+func TestDirectoryPublishNewerVersionWins(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('a')
+
+	directory_publish_event(dir_publish_event(id, "Alice", "p2p/peerY", 100, "peerY"))
+	if name, ver := dir_entity(t, ddb, id); name != "Alice" || ver != 100 {
+		t.Fatalf("after seed: name=%q version=%d, want Alice/100", name, ver)
+	}
+
+	directory_publish_event(dir_publish_event(id, "Alice Smith", "p2p/peerY", 200, "peerY"))
+	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+		t.Errorf("after newer announce: name=%q version=%d, want Alice Smith/200", name, ver)
+	}
+}
+
+// TestDirectoryPublishOlderVersionDropped: a reordered or replayed older
+// announcement must NOT overwrite a newer stored description — the core
+// bug version-LWW fixes.
+func TestDirectoryPublishOlderVersionDropped(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('b')
+
+	directory_publish_event(dir_publish_event(id, "Alice Smith", "p2p/peerY", 200, "peerY"))
+	directory_publish_event(dir_publish_event(id, "Alice", "p2p/peerY", 100, "peerY")) // stale replay
+
+	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+		t.Errorf("stale announce clobbered newer record: name=%q version=%d, want Alice Smith/200", name, ver)
+	}
+}
+
+// TestDirectoryPublishEqualVersionDropped: an equal-version announcement
+// (a re-flood of the same state) leaves the record untouched.
+func TestDirectoryPublishEqualVersionDropped(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('c')
+
+	directory_publish_event(dir_publish_event(id, "Alice Smith", "p2p/peerY", 200, "peerY"))
+	directory_publish_event(dir_publish_event(id, "Different", "p2p/peerY", 200, "peerY"))
+
+	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+		t.Errorf("equal-version announce changed record: name=%q version=%d, want Alice Smith/200", name, ver)
+	}
+}
+
+// TestDirectoryPublishStaleStillRefreshesLocation: when an older-version
+// announcement is dropped for the description, its location claim must
+// STILL be recorded — a stale description doesn't mean a stale host, and
+// routing/failover needs to learn the peer hosts the entity.
+func TestDirectoryPublishStaleStillRefreshesLocation(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('d')
+
+	directory_publish_event(dir_publish_event(id, "Alice Smith", "p2p/peerY", 200, "peerY"))
+	// Older announce relayed via a different host peerZ: description dropped,
+	// location for peerZ still recorded.
+	directory_publish_event(dir_publish_event(id, "Alice", "p2p/peerZ", 100, "peerZ"))
+
+	if name, _ := dir_entity(t, ddb, id); name != "Alice Smith" {
+		t.Errorf("stale announce clobbered description: name=%q, want Alice Smith", name)
+	}
+	if n := ddb.integer("select count(*) from locations where entity=? and peer='peerZ'", id); n != 1 {
+		t.Errorf("location for peerZ not recorded on a version-dropped announce: %d rows, want 1", n)
+	}
+}
+
+// TestDirectoryPublishVersionlessDoesNotClobberVersioned: a pre-version
+// (versionless) announcement must not overwrite a record we already hold
+// at a known version — protects upgraded receivers during rollout.
+func TestDirectoryPublishVersionlessDoesNotClobberVersioned(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('e')
+
+	directory_publish_event(dir_publish_event(id, "Alice Smith", "p2p/peerY", 200, "peerY"))
+	ev := dir_publish_event(id, "Alicia", "p2p/peerY", 0, "peerY")
+	delete(ev.content, "version") // truly absent, as an old sender would emit
+	directory_publish_event(ev)
+
+	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+		t.Errorf("versionless announce clobbered versioned record: name=%q version=%d, want Alice Smith/200", name, ver)
+	}
+}
+
+// TestDirectoryPublishVersionlessAmongVersionlessApplies: two versionless
+// announcements (an un-upgraded owner) keep the prior unconditional
+// behaviour — the second still updates the first.
+func TestDirectoryPublishVersionlessAmongVersionlessApplies(t *testing.T) {
+	cleanup := setup_directory_entities_test(t)
+	defer cleanup()
+	ddb := db_open("db/directory.db")
+	id := test_entity_id('f')
+
+	ev1 := dir_publish_event(id, "Alice", "p2p/peerY", 0, "peerY")
+	delete(ev1.content, "version")
+	directory_publish_event(ev1)
+
+	ev2 := dir_publish_event(id, "Alicia", "p2p/peerY", 0, "peerY")
+	delete(ev2.content, "version")
+	directory_publish_event(ev2)
+
+	if name, _ := dir_entity(t, ddb, id); name != "Alicia" {
+		t.Errorf("versionless update did not apply: name=%q, want Alicia", name)
+	}
+}

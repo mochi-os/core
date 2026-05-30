@@ -192,6 +192,10 @@ func init() {
 			help: "/mochi/2 transport state: open Senders + inflight, per-host worker pool.",
 			run:  cmd_pipelining_status,
 		},
+		"pubsub status": {
+			help: "Per-topic GossipSub mesh peer count + published/received counters during the /mochi/2 migration.",
+			run:  cmd_pubsub_status,
+		},
 		"check starlark": {
 			help: "Parse every .star file under <path> using the server's go.starlark.net parser. Non-zero exit + file:line:col on the first parse error. Use in deploy.sh before zipping the bundle.",
 			run:  cmd_check_starlark,

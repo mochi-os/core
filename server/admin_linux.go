@@ -264,6 +264,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/broadcast/lag", admin_broadcast_lag)
 	admin.POST("/broadcast/pending/gc", admin_broadcast_pending_gc)
 	admin.GET("/pipelining/status", admin_pipelining_status)
+	admin.GET("/pubsub/status", admin_pubsub_status)
 
 	// pprof endpoints — admin-socket only, no separate port. Peer-cred
 	// auth gates access. Useful for diagnosing memory bloat / goroutine

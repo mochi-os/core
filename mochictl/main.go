@@ -131,6 +131,13 @@ func main() {
 			args = args[1:]
 		}
 	}
+	// Allow 'pubsub status' (/mochi/2 migration observability).
+	if !ok && name == "pubsub" && len(args) > 0 {
+		if c, found := commands["pubsub "+args[0]]; found {
+			cmd, ok = c, true
+			args = args[1:]
+		}
+	}
 	// Allow 'check starlark' (pre-deploy parse validation).
 	if !ok && name == "check" && len(args) > 0 {
 		if c, found := commands["check "+args[0]]; found {

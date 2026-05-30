@@ -63,6 +63,10 @@ type oauth_state struct {
 var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.StringDict{
 	"list":   sl.NewBuiltin("mochi.user.oauth.list", api_user_oauth_list),
 	"unlink": sl.NewBuiltin("mochi.user.oauth.unlink", api_user_oauth_unlink),
+	"verify": sls.FromStringDict(sl.String("mochi.user.oauth.verify"), sl.StringDict{
+		"begin":  sl.NewBuiltin("mochi.user.oauth.verify.begin", api_user_oauth_verify_begin),
+		"finish": sl.NewBuiltin("mochi.user.oauth.verify.finish", api_user_oauth_verify_finish),
+	}),
 })
 
 // Cached go-oidc providers keyed by discovery URL. Discovery is a network call
@@ -282,44 +286,50 @@ func web_oauth_begin(c *gin.Context) {
 		link_user = user.UID
 	}
 
-	verifier, challenge := oauth_pkce()
+	auth_url, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge)
+	if err != nil {
+		warn("OAuth begin: %v", err)
+		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"url": auth_url})
+}
+
+// oauth_begin_ceremony generates the PKCE verifier/state, stores the oauth
+// ceremony - carrying user_id for the link and step-up flows, and the caller's
+// result challenge for the app/popup exchange - and returns the provider auth
+// URL. Shared by the web begin handler and the step-up verify.begin builtin.
+func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge string) (string, error) {
+	verifier, oauth_challenge := oauth_pkce()
 	state := random_alphanumeric(32)
 	nonce := random_alphanumeric(32)
 	redirect := oauth_redirect(c, name)
 
 	cfg, _, err := oauth_client_config(provider, redirect)
 	if err != nil {
-		warn("OAuth begin: provider config error (%s): %v", name, err)
-		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
-		return
+		return "", fmt.Errorf("provider config error (%s): %w", name, err)
 	}
 
 	data, err := json.Marshal(oauth_state{
 		Provider:  name,
 		Verifier:  verifier,
 		Nonce:     nonce,
-		Target:    body.Target,
+		Target:    target,
 		Redirect:  redirect,
-		Mode:      body.Mode,
-		Scheme:    body.Scheme,
-		Challenge: body.Challenge,
+		Mode:      mode,
+		Scheme:    scheme,
+		Challenge: challenge,
 	})
 	if err != nil {
-		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
-		return
+		return "", err
 	}
 
-	db := db_open("db/sessions.db")
-	if link_user != "" {
-		db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', ?, ?, ?, ?)",
-			state, link_user, []byte(state), string(data), now()+600)
-	} else {
-		db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', '', ?, ?, ?)",
-			state, []byte(state), string(data), now()+600)
-	}
+	db_open("db/sessions.db").exec(
+		"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', ?, ?, ?, ?)",
+		state, user_id, []byte(state), string(data), now()+600)
 
 	opts := []oauth2.AuthCodeOption{
-		oauth2.SetAuthURLParam("code_challenge", challenge),
+		oauth2.SetAuthURLParam("code_challenge", oauth_challenge),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 	}
 	if provider.oidc {
@@ -327,8 +337,7 @@ func web_oauth_begin(c *gin.Context) {
 	}
 	opts = append(opts, provider.extra_auth...)
 
-	auth_url := cfg.AuthCodeURL(state, opts...)
-	c.JSON(http.StatusOK, gin.H{"url": auth_url})
+	return cfg.AuthCodeURL(state, opts...), nil
 }
 
 // GET /_/auth/oauth/:provider/callback
@@ -414,6 +423,14 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
+	if st.Mode == "reauthentication" && link_user != "" {
+		if user := user_by_uid(link_user); user != nil {
+			oauth_reauthenticate(c, name, profile, user, st.Challenge)
+		} else {
+			oauth_reauthenticate_page(c)
+		}
+		return
+	}
 	if link_user != "" {
 		oauth_link(c, name, profile, link_user, st.Target)
 		return
@@ -812,6 +829,124 @@ func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		delete(r, "id")
 	}
 	return sl_encode(rows), nil
+}
+
+// api_user_oauth_verify_begin is mochi.user.oauth.verify.begin(provider,
+// challenge) -> {url}: start a popup OAuth re-authentication for the current
+// user. challenge is base64url(sha256(verifier)) the caller holds; the proof
+// is retrieved afterwards with verify.finish(verifier).
+func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	action, _ := t.Local("action").(*Action)
+	if action == nil || action.web == nil {
+		return sl_error(fn, "no request context")
+	}
+
+	var name, challenge string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "provider", &name, "challenge", &challenge); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if len(challenge) < 32 || len(challenge) > 128 {
+		return sl_error(fn, "invalid challenge")
+	}
+
+	provider, ok := oauth_providers()[name]
+	if !ok || !oauth_enabled(name) {
+		return sl_error(fn, "unknown provider")
+	}
+	// Only a provider the user has actually linked can re-authenticate them.
+	if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=? and provider=?", user.UID, name); !linked {
+		return sl_error(fn, "provider not linked")
+	}
+
+	url, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(map[string]any{"url": url}), nil
+}
+
+// api_user_oauth_verify_finish is mochi.user.oauth.verify.finish(verifier) ->
+// {token}|{remaining}|None: retrieve the step-up proof the OAuth popup produced,
+// keyed by the verifier's S256. Single-use; None if absent, expired, or the
+// authenticated provider account was not linked to this user.
+func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	var verifier string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "verifier", &verifier); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	h := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(h[:])
+
+	db := db_open("db/sessions.db")
+	row, _ := db.row("select data from ceremonies where id=? and type='reauthentication_oauth' and user=? and expires>?",
+		challenge, user.UID, now())
+	if row == nil {
+		return sl.None, nil
+	}
+	db.exec("delete from ceremonies where id=?", challenge)
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(row["data"].(string)), &result); err != nil {
+		return sl.None, nil
+	}
+	return sl_encode(result), nil
+}
+
+// oauth_reauthenticate completes a popup OAuth step-up: it confirms the
+// authenticated provider identity is already linked to the user, advances the
+// email-equivalent re-authentication factor, and stashes the resulting proof
+// (token or remaining factors) keyed by the caller's challenge for
+// verify.finish to retrieve. Always renders the auto-close page; a mismatched
+// account simply stores nothing, so finish returns None.
+func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, user *User, challenge string) {
+	users := db_open("db/users.db")
+	owner := ""
+	if row, _ := users.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
+		owner, _ = row["user"].(string)
+	}
+
+	if owner != "" && owner == user.UID {
+		oauth_update_profile(users, provider, p)
+		oauth_verification_record(users, provider, p.Subject, user.UID)
+
+		token, remaining := reauthentication_advance(user, "email")
+		result := map[string]any{}
+		if token != "" {
+			result["token"] = token
+		} else {
+			result["remaining"] = remaining
+		}
+		if body, err := json.Marshal(result); err == nil {
+			db_open("db/sessions.db").exec(
+				"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, '', ?, ?)",
+				challenge, user.UID, string(body), now()+120)
+		}
+	}
+
+	oauth_reauthenticate_page(c)
+}
+
+// oauth_reauthenticate_page closes the OAuth popup and pings the opener so the
+// step-up dialog fetches its proof immediately (it also polls window.closed).
+func oauth_reauthenticate_page(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8",
+		[]byte("<!doctype html><meta charset=utf-8><script>try{window.opener&&window.opener.postMessage('mochi-oauth-done','*')}catch(e){}window.close()</script>"))
 }
 
 // oauth_update_profile refreshes the email/name/verified fields for an

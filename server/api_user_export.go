@@ -1,12 +1,12 @@
 // Mochi server: user data export (GDPR download + server-move bundle)
 // Copyright Alistair Cunningham 2026
 //
-// mochi.user.export(passphrase, code) -> path builds a .zip bundle of
+// mochi.user.export(passphrase) -> path builds a .zip bundle of
 // everything the server holds about the calling user and returns its
 // path. The settings app streams the file to the browser. The bundle
-// carries the user's private keys, so the export requires a second
-// factor: an emailed login code (mochi.user.code.send), consumed here
-// before anything is built. Returns None if the code is invalid.
+// carries the user's private keys, so the settings action gates this
+// behind step-up re-authentication (mochi.user.session.reauthenticate)
+// before calling it.
 //
 // Every export is a complete, restorable backup: the user's data plus
 // keys.age, a passphrase-encrypted blob of their entity private keys, so
@@ -117,23 +117,12 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no user")
 	}
 
-	var passphrase, code string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "passphrase", &passphrase, "code", &code); err != nil {
+	var passphrase string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "passphrase", &passphrase); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if passphrase == "" {
 		return sl_error(fn, "passphrase required")
-	}
-
-	// Step-up re-authentication. An export bundle carries the user's
-	// (passphrase-encrypted) private keys, so a valid session alone must
-	// not be enough to extract them: the caller emails the user a code
-	// via mochi.user.code.send() first, and we consume it here before
-	// building anything. Returning None (rather than an error) lets the
-	// action map an invalid or expired code to a friendly, translated
-	// message without a Starlark try/except.
-	if !code_consume(user, code) {
-		return sl.None, nil
 	}
 
 	path, err := user_export(user.UID, app.id, passphrase)

@@ -293,6 +293,7 @@ func create_test_sessions_db(t *testing.T) func() {
 	db.exec("create table codes (code text not null, username text not null, expires integer not null, primary key (code, username))")
 	db.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
 	db.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
+	db.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
 
 	cleanup := func() {
 		data_dir = orig_data_dir

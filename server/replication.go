@@ -876,15 +876,15 @@ func replication_pending_kick_due(appID string) bool {
 // row state from the sender, advancing the cursor past the missing
 // sequences and accepting that the intervening per-op deltas are lost.
 type StalledStream struct {
-	Peer        string            `json:"peer"`
-	Scope       string            `json:"scope"`
-	User        string            `json:"user"`
-	Database    string            `json:"database"`
-	Cursor      int64             `json:"cursor"`
-	Anchored    bool              `json:"anchored"`
-	Predecessor PredecessorRange  `json:"predecessor"`
-	Count       int64             `json:"count"`
-	Oldest      int64             `json:"oldest"`
+	Peer        string           `json:"peer"`
+	Scope       string           `json:"scope"`
+	User        string           `json:"user"`
+	Database    string           `json:"database"`
+	Cursor      int64            `json:"cursor"`
+	Anchored    bool             `json:"anchored"`
+	Predecessor PredecessorRange `json:"predecessor"`
+	Count       int64            `json:"count"`
+	Oldest      int64            `json:"oldest"`
 }
 
 // PredecessorRange holds the minimum and maximum predecessor sequence
@@ -2083,7 +2083,6 @@ func replication_apply_user_core_exec(op *ReplicationOp) ApplyResult {
 // display) query replication state via this API instead of scraping
 // /_/health.
 
-
 // api_replication exposes mochi.replication.{status, links, hosts, joins}
 // plus the link, host, join, pair, and bootstrap sub-namespaces. Two-word
 // operations are sub-namespaced (host.remove), not glued (host_remove) —
@@ -2260,11 +2259,11 @@ func api_replication_link_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	if u == nil {
 		return sl_error(fn, "no user")
 	}
-	if len(args) < 1 {
-		return sl_error(fn, "peer required")
+	var peer string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "peer", &peer); err != nil {
+		return sl_error(fn, "%v", err)
 	}
-	peer, ok := sl.AsString(args[0])
-	if !ok || peer == "" {
+	if peer == "" {
 		return sl_error(fn, "invalid peer")
 	}
 
@@ -2375,11 +2374,15 @@ func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 //
 // Server-wide; the action wrapper must require_admin before calling.
 func api_replication_join_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 {
-		return sl_error(fn, "peer required")
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
 	}
-	peer, ok := sl.AsString(args[0])
-	if !ok || peer == "" {
+	var peer string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "peer", &peer); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if peer == "" {
 		return sl_error(fn, "invalid peer")
 	}
 
@@ -2627,10 +2630,10 @@ func sql_target_table(sql string) string {
 // Mochi single-word PK convention where the row id column is named
 // "id" and bound as a string):
 //
-//   INSERT|REPLACE INTO <table> (id, ...) VALUES (?, ...)
-//   INSERT|REPLACE INTO <table> VALUES (?, ...)
-//   UPDATE <table> SET ... WHERE id = ?
-//   DELETE FROM <table> WHERE id = ?
+//	INSERT|REPLACE INTO <table> (id, ...) VALUES (?, ...)
+//	INSERT|REPLACE INTO <table> VALUES (?, ...)
+//	UPDATE <table> SET ... WHERE id = ?
+//	DELETE FROM <table> WHERE id = ?
 //
 // Returns "" for any other shape. Apps whose row PK isn't "id", or
 // whose WHERE clause carries more than a single id-equality, fall
@@ -3358,7 +3361,6 @@ func replication_system_row_apply_delegations(originPeer string, s *SystemRow) {
 
 // (users.db rationale below was: audit gap #2 V2)
 
-
 // replication_users_users_mutable lists the columns of users.db.users
 // that may be updated via the per-user row-replication path (delivered
 // to every host in the user's host set, including per-user link
@@ -3723,7 +3725,6 @@ func boolint01(b bool) string {
 
 // (schedule.db rationale: paired hosts must agree on what's scheduled)
 
-
 // ScheduleRow is the wire payload for one insert or delete against
 // db/schedule.db. Key carries the natural composite identifier; Cols
 // carries the mutable fields (omitted on delete). Wire shape mirrors
@@ -3857,7 +3858,6 @@ func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult 
 
 // (sessions.db rationale: closes audit gap #3 for auth-flow tables)
 
-
 // SessionsRow is the wire payload for an insert / delete against one
 // of the replicated sessions.db tables. Same shape as UsersRow; the
 // receiver dispatches per-table by Table name.
@@ -3902,6 +3902,8 @@ func replication_sessions_row_apply(userUID string, r *SessionsRow) ApplyResult 
 		return replication_sessions_partial_apply(sdb, r)
 	case "codes":
 		return replication_sessions_codes_apply(sdb, r)
+	case "reauthentication":
+		return replication_sessions_reauthentication_apply(sdb, r)
 	}
 	info("Replication sessions-row dropping: unsupported table %q", r.Table)
 	return ApplyInvalid
@@ -3937,6 +3939,22 @@ func replication_sessions_codes_apply(sdb *DB, r *SessionsRow) ApplyResult {
 	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
 	sdb.exec("replace into codes (code, username, expires) values (?, ?, ?)",
 		code, username, expires)
+	return ApplyApplied
+}
+
+func replication_sessions_reauthentication_apply(sdb *DB, r *SessionsRow) ApplyResult {
+	id := r.Key["id"]
+	if id == "" {
+		return ApplyInvalid
+	}
+	if r.Delete {
+		sdb.exec("delete from reauthentication where id=?", id)
+		return ApplyApplied
+	}
+	var expires int64
+	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
+	sdb.exec("insert or replace into reauthentication (id, user, methods, expires) values (?, ?, ?, ?)",
+		id, r.Cols["user"], r.Cols["methods"], expires)
 	return ApplyApplied
 }
 

@@ -61,7 +61,8 @@ func user_pending(u *User) bool {
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),
 	"code": sls.FromStringDict(sl.String("mochi.user.code"), sl.StringDict{
-		"send": sl.NewBuiltin("mochi.user.code.send", api_user_code_send),
+		"send":   sl.NewBuiltin("mochi.user.code.send", api_user_code_send),
+		"verify": sl.NewBuiltin("mochi.user.code.verify", api_user_code_verify),
 	}),
 	"count":  sl.NewBuiltin("mochi.user.count", api_user_count),
 	"create": sl.NewBuiltin("mochi.user.create", api_user_create),
@@ -78,8 +79,9 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"recovery": api_user_recovery,
 	"search":   sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
-		"list":   sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
-		"revoke": sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
+		"list":           sl.NewBuiltin("mochi.user.session.list", api_user_session_list),
+		"reauthenticate": sl.NewBuiltin("mochi.user.session.reauthenticate", api_user_session_reauthenticate),
+		"revoke":         sl.NewBuiltin("mochi.user.session.revoke", api_user_session_revoke),
 	}),
 	"suspend": sl.NewBuiltin("mochi.user.suspend", api_user_suspend),
 	"totp":    api_user_totp,
@@ -206,6 +208,51 @@ func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.None, nil
 }
 
+// api_user_code_verify is mochi.user.code.verify(code): verify+consume an
+// emailed login code as the email factor of a step-up re-authentication,
+// advancing the accrual. Returns a dict {"token": ...} once every required
+// factor is satisfied, {"remaining": [...]} if more are needed, or None if
+// the code is wrong/expired (the action maps None to a translated error).
+func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/export"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	var code string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "code", &code); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if !code_consume(user, code) {
+		return sl.None, nil
+	}
+	return reauthentication_result(user, "email"), nil
+}
+
+// api_user_session_reauthenticate is mochi.user.session.reauthenticate(token):
+// spend a step-up re-authentication proof for the current user, returning
+// True if it was valid (and consuming it), else False. A settings action
+// calls this before a sensitive mutation (data export, replication
+// approval, an account-security change); the proof is earned by
+// re-verifying the user's login factor(s) via mochi.user.code.verify /
+// mochi.user.totp.verify / mochi.user.passkey.verify.
+func api_user_session_reauthenticate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/sessions/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	var token string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "token", &token); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.Bool(reauthentication_consume(user, token)), nil
+}
+
 func login_create(user string, address string, agent string) string {
 	code := random_alphanumeric(20)
 	// Create a per-login secret for signing JWTs for this login/device
@@ -256,6 +303,7 @@ func sessions_cleanup() {
 	db.exec("delete from codes where expires < ?", t)
 	db.exec("delete from ceremonies where expires < ?", t)
 	db.exec("delete from partial where expires < ?", t)
+	db.exec("delete from reauthentication where expires < ?", t)
 }
 
 func user_by_uid(uid string) *User {

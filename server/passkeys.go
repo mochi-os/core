@@ -33,6 +33,10 @@ var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.St
 		"begin":  sl.NewBuiltin("mochi.user.passkey.register.begin", api_user_passkey_register_begin),
 		"finish": sl.NewBuiltin("mochi.user.passkey.register.finish", api_user_passkey_register_finish),
 	}),
+	"verify": sls.FromStringDict(sl.String("mochi.user.passkey.verify"), sl.StringDict{
+		"begin":  sl.NewBuiltin("mochi.user.passkey.verify.begin", api_user_passkey_verify_begin),
+		"finish": sl.NewBuiltin("mochi.user.passkey.verify.finish", api_user_passkey_verify_finish),
+	}),
 })
 
 // Initialize the WebAuthn instance cache
@@ -305,25 +309,10 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
-	// Update credential usage. Sign count (replay-prevention state) goes to
-	// users.db so it survives sessions.db corruption; cosmetic last-used to
-	// sessions.db so per-assertion stat writes don't touch the cold store.
-	// Upsert so the row self-heals if sessions.db was wiped.
-	users.exec("update credentials set sign_count=? where id=?",
-		credential.Authenticator.SignCount, credential.ID)
-	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
-		credential.ID, user.UID, now())
-
-	// Per-(user, credential) leadership claim. The host that processed
-	// this assertion takes a 60s lease on `("credential", <id>)`; another
-	// host in the user's set that receives a concurrent assertion before
-	// the lease expires would lose its claim and (once the fence-aware
-	// op-rejection path lands) drop the conflicting sign_count update.
-	// For now the claim is informational — the existing sign_count
-	// integer remains authoritative — but the leadership row is in place
-	// so cross-host coordination can be turned on without touching this
-	// site again. See claude/plans/replication.md pattern 1.4.
-	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID), false)
+	// Record the assertion: sign-count replay state, cosmetic last-used,
+	// and the per-credential leadership claim. Shared with step-up
+	// re-auth; creates no session.
+	passkey_credential_finalize(user, credential)
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
@@ -358,9 +347,133 @@ func web_passkey_login_finish(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
+// passkey_credential_finalize records a just-validated assertion: the
+// sign-count replay-prevention update (users.db, authoritative), the
+// cosmetic last-used upsert (sessions.db, self-healing), and the
+// per-credential leadership claim (see claude/plans/replication.md pattern
+// 1.4). Shared by login and step-up re-auth; it never creates a session.
+func passkey_credential_finalize(user *User, credential *webauthn.Credential) {
+	db_open("db/users.db").exec("update credentials set sign_count=? where id=?",
+		credential.Authenticator.SignCount, credential.ID)
+	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
+		credential.ID, user.UID, now())
+	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID), false)
+}
+
 // ============================================================================
 // Starlark APIs (authenticated passkey management)
 // ============================================================================
+
+// mochi.user.passkey.verify.begin() -> dict: start a passkey assertion for
+// step-up re-authentication of the current (known) user. Mirrors
+// register.begin but uses a non-discoverable BeginLogin scoped to this
+// user's credentials, and a 'reauthentication' ceremony.
+func api_user_passkey_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	origin, _ := t.Local("origin").(string)
+	wa := webauthn_for_origin(origin)
+	if wa == nil {
+		return sl_error(fn, "webauthn not configured")
+	}
+
+	if !auth_method_allowed("passkey") {
+		return sl_error(fn, "passkey disabled")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	wu := &WebAuthnUser{user: user}
+	options, session, err := wa.BeginLogin(wu)
+	if err != nil {
+		return sl_error(fn, "webauthn error: %v", err)
+	}
+
+	ceremony := random_alphanumeric(32)
+	data, _ := json.Marshal(session)
+	db := db_open("db/sessions.db")
+	db.exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication', ?, ?, ?, ?)",
+		ceremony, user.UID, session.Challenge, string(data), now()+300)
+
+	return sl_encode(map[string]any{
+		"options":  options.Response,
+		"ceremony": ceremony,
+	}), nil
+}
+
+// mochi.user.passkey.verify.finish(ceremony, assertion) -> dict: complete a
+// step-up passkey assertion. Returns the re-authentication result
+// ({"token": ...} or {"remaining": [...]}), or None if the assertion fails
+// (the action maps None to a translated error). Creates no session.
+func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	origin, _ := t.Local("origin").(string)
+	wa := webauthn_for_origin(origin)
+	if wa == nil {
+		return sl_error(fn, "webauthn not configured")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	if len(args) < 2 {
+		return sl_error(fn, "syntax: <ceremony: string>, <assertion: dict>")
+	}
+	ceremony, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid ceremony")
+	}
+
+	var assertion_json string
+	switch a := args[1].(type) {
+	case sl.String:
+		assertion_json = string(a)
+	case *sl.Dict:
+		body, err := starlark_to_json(a)
+		if err != nil {
+			return sl_error(fn, "invalid assertion format")
+		}
+		assertion_json = string(body)
+	default:
+		return sl_error(fn, "invalid assertion")
+	}
+
+	db := db_open("db/sessions.db")
+	row, _ := db.row("select data from ceremonies where id=? and type='reauthentication' and user=? and expires>?",
+		ceremony, user.UID, now())
+	if row == nil {
+		return sl_error(fn, "ceremony expired")
+	}
+	db.exec("delete from ceremonies where id=?", ceremony)
+
+	var session webauthn.SessionData
+	json.Unmarshal([]byte(row["data"].(string)), &session)
+
+	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(assertion_json))
+	if err != nil {
+		return sl_error(fn, "invalid assertion: %v", err)
+	}
+
+	wu := &WebAuthnUser{user: user}
+	credential, err := wa.ValidateLogin(wu, session, parsed)
+	if err != nil {
+		info("Passkey step-up failed: %v", err)
+		return sl.None, nil
+	}
+	passkey_credential_finalize(user, credential)
+
+	return reauthentication_result(user, "passkey"), nil
+}
 
 // mochi.user.passkey.list() -> list: List user's passkeys
 func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

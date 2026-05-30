@@ -777,7 +777,11 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}), nil
 }
 
-// mochi.user.totp.verify(code) -> bool: Verify TOTP code and mark as verified
+// mochi.user.totp.verify(code): during setup, verifies the code and marks
+// TOTP enabled (returns bool). When TOTP is already enabled, this is a
+// step-up re-verify: it advances the re-authentication accrual and returns
+// the result dict ({"token": ...} or {"remaining": [...]}), or None on a
+// bad code.
 func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -798,17 +802,29 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select secret, created from totp where user=?", user.UID)
+	row, _ := db.row("select secret, verified, created from totp where user=?", user.UID)
 	if row == nil {
 		return sl_error(fn, "totp not set up")
 	}
 
 	secret := row["secret"].(string)
+	verified, _ := row["verified"].(int64)
+
+	// When TOTP is already enabled this call is a step-up re-verify, not
+	// setup: validate the code and advance the re-authentication accrual,
+	// returning the step-up result dict, or None on a bad code.
+	if verified == 1 {
+		if !totp.Validate(code, secret) {
+			return sl.None, nil
+		}
+		return reauthentication_result(user, "totp"), nil
+	}
+
 	if !totp.Validate(code, secret) {
 		return sl.False, nil
 	}
 
-	// Mark as verified
+	// Mark as verified (setup completion)
 	db.exec("update totp set verified=1 where user=?", user.UID)
 	created, _ := row["created"].(int64)
 	replication_emit_users_row(user.UID, &UsersRow{

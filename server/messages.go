@@ -56,8 +56,7 @@ func message_seen_cleanup() {
 }
 
 var api_message = sls.FromStringDict(sl.String("mochi.message"), sl.StringDict{
-	"send":    &message_send_module{},
-	"publish": sl.NewBuiltin("mochi.message.publish", api_message_publish),
+	"send": &message_send_module{},
 })
 
 // message_send_module is a callable module that also has a .peer method
@@ -115,7 +114,6 @@ func (m *Message) publish(allow_queue bool) {
 	if m.ID == "" {
 		m.ID = uid()
 	}
-	//debug("Message publishing: id %q, from %q, to %q, service %q, event %q, content '%+v'", m.ID, m.From, m.To, m.Service, m.Event, m.content)
 
 	content := cbor_encode(m.content)
 
@@ -124,20 +122,7 @@ func (m *Message) publish(allow_queue bool) {
 	}
 
 	if peers_sufficient() {
-		// Broadcasts: sign without challenge (untrusted anyway)
-		signature := entity_sign(m.From, string(signable_headers("msg", m.From, m.To, m.Service, m.Event, m.FromApp, m.ID, "", "", m.Services, nil)))
-		headers := cbor_encode(Headers{
-			Type: "msg", From: m.From, To: m.To, Service: m.Service, Event: m.Event,
-			FromApp: m.FromApp, Services: m.Services, ID: m.ID, Signature: signature,
-		})
-		data := headers
-		data = append(data, content...)
-		if len(m.data) > 0 {
-			data = append(data, m.data...)
-		}
-
-		//debug("Message sending via Net pubsub")
-		net_pubsub_1.Publish(net_context, data)
+		pubsub_publish(m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, m.ID, content, m.data)
 
 		if allow_queue {
 			queue_ack(m.ID)
@@ -501,82 +486,5 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	m.send_peer(peer)
-	return sl.None, nil
-}
-
-// mochi.message.publish(headers, content?, expires=seconds) -> None: Publish a broadcast message
-func api_message_publish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <headers: dictionary>, [content: dictionary]")
-	}
-
-	// Rate limit outbound pubsub messages
-	if !rate_limit_pubsub_out.allow("global") {
-		return sl.None, nil
-	}
-
-	headers := sl_decode_strings(args[0])
-	if headers == nil {
-		return sl_error(fn, "headers not specified or invalid")
-	}
-
-	user, _ := t.Local("user").(*User)
-	if user == nil {
-		user, _ = t.Local("owner").(*User)
-	}
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	// Validate from entity belongs to user
-	if headers["from"] != "" {
-		db := db_open("db/users.db")
-		from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
-		if err != nil {
-			return sl_error(fn, "database error: %v", err)
-		}
-		if !from_valid {
-			if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-				from_valid = true
-			}
-		}
-		if !from_valid {
-			return sl_error(fn, "invalid from header")
-		}
-	}
-
-	if !valid(headers["service"], "constant") {
-		return sl_error(fn, "invalid service header")
-	}
-
-	if !valid(headers["event"], "constant") {
-		return sl_error(fn, "invalid event header")
-	}
-
-	app, _ := t.Local("app").(*App)
-
-	m := message(headers["from"], headers["to"], headers["service"], headers["event"])
-
-	if app != nil {
-		m.FromApp = app.id
-		m.Services = app_services(app, user)
-	}
-
-	if len(args) > 1 {
-		if content, ok := sl_decode(args[1]).(map[string]any); ok {
-			m.content = content
-		}
-	}
-
-	// Parse expires kwarg (seconds from now)
-	for _, kw := range kwargs {
-		if string(kw[0].(sl.String)) == "expires" {
-			if v, ok := kw[1].(sl.Int); ok {
-				m.expires = now() + v.BigInt().Int64()
-			}
-		}
-	}
-
-	m.publish(true)
 	return sl.None, nil
 }

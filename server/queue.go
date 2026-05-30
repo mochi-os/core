@@ -618,12 +618,12 @@ func queue_send_direct(q *QueueEntry) bool {
 //
 // Differences from the pre-/mochi/2 version (which ran e.route()
 // inline):
-//   • Temporal: the call returns after enqueueing, not after the
+//   - Temporal: the call returns after enqueueing, not after the
 //     handler runs. The queue row is resolved later by queue_reply
 //     when the worker finishes (queue_ack / queue_fail / queue_drop).
-//   • Serial guarantee: self-loop now serialises with remote sends
+//   - Serial guarantee: self-loop now serialises with remote sends
 //     for the same (user, app).
-//   • Panic isolation: now lives in the worker's handle() rather than
+//   - Panic isolation: now lives in the worker's handle() rather than
 //     here. The defer recover guards only the dispatch path (resolve
 //     user from To, decode Content) — the handler proper runs on the
 //     worker goroutine which has its own recover.
@@ -710,18 +710,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		services = strings.Split(q.FromServices, ",")
 	}
 
-	signature := entity_sign(q.FromEntity, string(signable_headers("msg", q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.ID, "", "", services, nil)))
-
-	msg := Message{
-		ID: q.ID, From: q.FromEntity, To: q.ToEntity, Service: q.Service, Event: q.Event,
-		FromApp: q.FromApp, Services: services, Signature: signature,
-	}
-	data := cbor_encode(msg)
-	if len(q.Content) > 0 {
-		data = append(data, q.Content...)
-	}
-
-	net_pubsub_1.Publish(net_context, data)
+	pubsub_publish(q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, services, q.ID, q.Content, q.Data)
 	return true
 }
 
@@ -733,7 +722,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 //     as the highest-priority earliest-next_retry row for that peer.
 //     Up to queue_pick_direct_limit (50) distinct peers per tick.
 //
-//  2. Broadcasts (target='pubsub') and empty-target rows (target=''):
+//  2. Broadcasts (target='pubsub') and empty-target rows (target=”):
 //     picked normally by priority+next_retry, up to
 //     queue_pick_other_limit (20) per tick. Each is independent of
 //     any specific peer so the per-peer dedup doesn't apply.

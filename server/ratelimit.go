@@ -45,13 +45,6 @@ var (
 		window:  1,
 	}
 
-	// Pubsub outbound rate limiter: 20 per second global
-	rate_limit_pubsub_out = &rate_limiter{
-		entries: make(map[string]*rate_limit_entry),
-		limit:   20,
-		window:  1,
-	}
-
 	// Pubsub inbound rate limiter: 20 per second per peer
 	rate_limit_pubsub_in = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -163,7 +156,6 @@ func ratelimit_manager() {
 		rate_limit_api.cleanup()
 		rate_limit_login.cleanup()
 		rate_limit_p2p.cleanup()
-		rate_limit_pubsub_out.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()

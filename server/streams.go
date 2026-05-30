@@ -4,7 +4,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
@@ -16,7 +15,6 @@ import (
 )
 
 const (
-	challenge_size    = 16
 	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size
 	cbor_max_depth    = 32                // Max nesting depth
 	cbor_max_pairs    = 1000              // Max map pairs
@@ -36,14 +34,13 @@ func init() {
 }
 
 type Stream struct {
-	id        int64
-	reader    io.ReadCloser
-	writer    io.WriteCloser
-	decoder   *cbor.Decoder
-	encoder   *cbor.Encoder
-	challenge []byte // For incoming streams: challenge we sent
-	remote    string // Remote address (for incoming streams)
-	timeout   struct {
+	id      int64
+	reader  io.ReadCloser
+	writer  io.WriteCloser
+	decoder *cbor.Decoder
+	encoder *cbor.Encoder
+	remote  string // Remote address (for incoming streams)
+	timeout struct {
 		read  int
 		write int
 	}
@@ -63,15 +60,6 @@ var (
 	streams_lock       = &sync.Mutex{}
 	stream_next  int64 = 1
 )
-
-// Generate a random challenge
-func stream_challenge() ([]byte, error) {
-	b := make([]byte, challenge_size)
-	if _, err := rand.Read(b); err != nil {
-		return nil, err
-	}
-	return b, nil
-}
 
 // Create a new stream with specified headers over /mochi/2/stream
 // (authenticated handshake via claim + open).
@@ -164,164 +152,6 @@ func (s *Stream) close() {
 	if s.on_close != nil {
 		s.on_close_once.Do(s.on_close)
 	}
-}
-
-// Receive stream (send challenge first for direct streams)
-func stream_receive(s *Stream, peer string) {
-	// Send challenge if this is a bidirectional stream (not pubsub)
-	if s.writer != nil {
-		var err error
-		s.challenge, err = stream_challenge()
-		if err != nil {
-			info("Stream %d error generating challenge: %v", s.id, err)
-			return
-		}
-		if err := s.write_raw(s.challenge); err != nil {
-			info("Stream %d error sending challenge: %v", s.id, err)
-			return
-		}
-	}
-
-	// Get and verify message headers (limited to 4KB)
-	var h Headers
-	err := s.read_headers(&h)
-	if err != nil {
-		info("Stream %d error reading headers: %v", s.id, err)
-		return
-	}
-	if !h.valid() {
-		info("Stream %d received invalid headers", s.id)
-		return
-	}
-
-	// Handle ACK/NACK messages
-	msg_type := h.msg_type()
-	if msg_type == "ack" {
-		if !h.verify(s.challenge) {
-			info("Stream %d ACK failed signature verification", s.id)
-			return
-		}
-		//debug("Stream %d received ACK for ID %q", s.id, h.AckID)
-		queue_ack(h.AckID)
-		return
-	}
-	if msg_type == "nack" {
-		if !h.verify(s.challenge) {
-			info("Stream %d NACK failed signature verification", s.id)
-			return
-		}
-		// debug("Stream %d received NACK for ID %q", s.id, h.AckID)
-		queue_fail(h.AckID, "NACK received")
-		return
-	}
-
-	// Verify signature — challenge is nil for pubsub, non-nil for direct streams.
-	// For anonymous events, allow through with cleared From header - event handler checks Anonymous flag
-	if !h.verify(s.challenge) {
-		h.From = ""
-	}
-
-	// Deduplication check: skip if we've already processed this message
-	// ID. ACK gate matches the success path below — anonymous server-to-
-	// server events have From="" / To="" but still need ACKs, otherwise
-	// the sender's queue retries forever (caught live: duplicate
-	// bootstrap manifest-result messages logged "sending ACK only" but
-	// the From/To gate silently skipped the actual send, leaving 30
-	// queue rows stuck in retry-forever state on instance 1).
-	if h.ID != "" && message_seen(h.ID) {
-		debug("Stream %d duplicate message %q, sending ACK only", s.id, h.ID)
-		if s.writer != nil {
-			s.send_ack("ack", h.ID, h.To, h.From, "")
-		}
-		return
-	}
-
-	// Decode the content segment
-	content, err := s.read_content()
-	if err != nil {
-		info("Stream %d error reading content: %v", s.id, err)
-		// Same gate as the success path — anonymous server-to-server
-		// events (From="") need NACKs too, otherwise the sender's queue
-		// retries forever on a permanent decode error.
-		if h.ID != "" && s.writer != nil {
-			s.send_ack("nack", h.ID, h.To, h.From, nack_reason_decode_failed)
-		}
-		return
-	}
-
-	//debug("Stream %d from peer %q: from %q, to %q, service %q, event %q, content '%+v'", s.id, peer, h.From, h.To, h.Service, h.Event, content)
-
-	// Create event and route to app
-	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, sender_app: h.FromApp, sender_services: h.Services, peer: peer, content: content, stream: s}
-	route_err := e.route()
-
-	// Mark message as processed for deduplication
-	if h.ID != "" {
-		message_mark_seen(h.ID)
-	}
-
-	// Send ACK on success, NACK on failure. Any message with an ID
-	// gets a reply on the stream — anonymous server-to-server events
-	// (From="") need ACKs too, otherwise the sender's queue retries
-	// indefinitely. Without this, a paired server emitting hundreds
-	// of system-set / bootstrap-* / link-request ops accumulates
-	// unbounded pending rows in queue.db (caught live: instance 1's
-	// queue.db reached 3GB with 1100+ stuck bootstrap-db-chunks
-	// before SQLite signalled "database or disk is full").
-	if h.ID != "" && s.writer != nil {
-		if route_err == nil {
-			s.send_ack("ack", h.ID, h.To, h.From, "")
-		} else {
-			s.send_ack("nack", h.ID, h.To, h.From, nack_reason_from_error(route_err))
-		}
-	}
-}
-
-// Send ACK/NACK on existing stream (no challenge - TLS provides security)
-// send_ack writes an ACK or NACK frame back to the sender. reason is
-// a machine-readable hint used on NACKs (e.g. "broadcast-gap") so the
-// sender can decide between retry and drop without parsing the
-// (info-only) error string. Pass "" for ACKs and for unspecified
-// NACKs - the wire field is omitempty and old peers ignore it.
-func (s *Stream) send_ack(ack_type, ack_id, from, to, reason string) {
-	signature := entity_sign(from, string(signable_headers(ack_type, from, to, "", "", "", "", ack_id, reason, nil, nil)))
-
-	headers := cbor_encode(Headers{
-		Type: ack_type, From: from, To: to, AckID: ack_id, Reason: reason, Signature: signature,
-	})
-
-	if s.write_raw(headers) == nil {
-		// debug("Stream %d sent %s for ID %q (reason=%q)", s.id, ack_type, ack_id, reason)
-	}
-
-	if s.writer != nil {
-		s.writer.Close()
-	}
-}
-
-// Read challenge from stream
-func (s *Stream) read_challenge() ([]byte, error) {
-	if s == nil || s.reader == nil {
-		return nil, fmt.Errorf("stream not open for reading")
-	}
-
-	timeout := s.timeout.read
-	if timeout <= 0 {
-		timeout = 30
-	}
-
-	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
-		_ = r.SetReadDeadline(deadline)
-		defer r.SetReadDeadline(time.Time{})
-	}
-
-	challenge := make([]byte, challenge_size)
-	_, err := io.ReadFull(s.reader, challenge)
-	if err != nil {
-		return nil, err
-	}
-	return challenge, nil
 }
 
 // Read a CBOR encoded segment from a stream

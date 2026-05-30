@@ -4,11 +4,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,32 +99,6 @@ func net_connect(peer string, addresses []string) bool {
 
 	//debug("Net connected to peer %q", peer)
 	return true
-}
-
-// Join pubsubs
-func net_pubsubs() {
-	s := must(net_pubsub_1.Subscribe())
-
-	for {
-		m, err := s.Next(net_context)
-		if err != nil {
-			warn("Net pubsub error: %v", err)
-			continue
-		}
-		peer := m.ReceivedFrom.String()
-		if peer != net_id {
-			// Rate limit inbound pubsub messages per peer (skip
-			// bootstrap and paired peers — both are trusted).
-			if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_pubsub_in.allow(peer) {
-				debug("Net pubsub rate limited peer %q", peer)
-				continue
-			}
-			//debug("Net received pubsub event from peer %q", peer)
-			stream_receive(stream_rw(io.NopCloser(bytes.NewReader(m.Data)), nil), peer)
-			peer_discovered(peer)
-			peer_connect(peer)
-		}
-	}
 }
 
 // Start p2p
@@ -285,7 +257,7 @@ func net_start() {
 	// Start pubsubs
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
 	net_pubsub_1 = must(gs.Join("mochi/1"))
-	go net_pubsubs()
+	go pubsub_manager()
 }
 
 // Watch event bus for disconnecting peers

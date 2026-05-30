@@ -49,8 +49,8 @@ type Stream struct {
 	// for the stream's lifetime); set to a larger value before the
 	// first read on streams that legitimately carry hundreds of MB
 	// or more (bulk-bootstrap DB transfer). Must be set BEFORE the
-	// first read or read_headers call, since the decoder + its
-	// underlying LimitReader are constructed lazily.
+	// first read call, since the decoder + its underlying LimitReader
+	// are constructed lazily.
 	max_bytes     int64
 	on_close      func() // Called once when stream is closed (e.g. release semaphore)
 	on_close_once sync.Once
@@ -194,42 +194,6 @@ func (s *Stream) cbor_limit() int64 {
 		return s.max_bytes
 	}
 	return int64(cbor_max_size)
-}
-
-// Read headers from a stream (limited to 4KB)
-func (s *Stream) read_headers(h *Headers) error {
-	if s == nil || s.reader == nil {
-		return fmt.Errorf("stream not open for reading")
-	}
-
-	timeout := s.timeout.read
-	if timeout <= 0 {
-		timeout = 30
-	}
-
-	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
-		_ = r.SetReadDeadline(deadline)
-		defer r.SetReadDeadline(time.Time{})
-	}
-
-	// Use a size-limited decoder (must be called before read())
-	// Use s.cbor_limit() since the same decoder is reused for content and segments
-	if s.decoder != nil {
-		return fmt.Errorf("stream %d: read_headers must be called before read", s.id)
-	}
-	s.decoder = cbor_decode_mode.NewDecoder(io.LimitReader(s.reader, s.cbor_limit()))
-
-	err := s.decoder.Decode(h)
-	if err != nil {
-		return fmt.Errorf("stream %d unable to read headers: %v", s.id, err)
-	}
-
-	// Keep using the same decoder for subsequent reads
-	// (the decoder may have buffered data that would be lost if we created a new one)
-
-	// debug("Stream %d read headers: %+v", s.id, h)
-	return nil
 }
 
 // Read a content segment from a stream

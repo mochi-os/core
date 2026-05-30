@@ -291,8 +291,8 @@ func peers_publish() {
 }
 
 // Received a peer publish event from another server. We don't need to
-// do anything here because we've already marked the peer as discovered
-// in net_pubsubs().
+// do anything here because the pubsub manager already marked the peer as
+// discovered on receipt.
 func peer_publish_event(e *Event) {
 }
 

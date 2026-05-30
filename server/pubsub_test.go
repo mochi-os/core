@@ -11,12 +11,12 @@ import (
 	"testing"
 )
 
-// TestMessageSeenMarkAtomic: under concurrent receivers — the two pubsub
-// topic managers handling the same dual-published message in parallel —
-// exactly one caller may win "not seen" and process; the rest must dedup.
-// Guards the check-then-mark race that separate message_seen /
-// message_mark_seen calls lose (observed live as a directory/delete
-// processed twice during dual-run).
+// TestMessageSeenMarkAtomic: under concurrent receivers sharing the dedup
+// map — the pubsub manager and the direct-stream workers — exactly one
+// caller may win "not seen" and process; the rest must dedup. Guards the
+// check-then-mark race that separate message_seen / message_mark_seen
+// calls lose (first observed live as a directory/delete processed twice
+// during the /mochi/1 + /mochi/2 dual-run).
 func TestMessageSeenMarkAtomic(t *testing.T) {
 	id := uid()
 	const n = 64
@@ -207,11 +207,11 @@ func directory_frame(t *testing.T, id, name string, version int64, expires strin
 	return buf.Bytes()
 }
 
-// TestPubsubReceiveFrameRoutesDirectory: a valid signed directory/publish
+// TestPubsubReceiveRoutesDirectory: a valid signed directory/publish
 // Frame decodes, verifies, and routes through to a directory.db write; a
 // lower-version Frame is dropped by version-LWW; an expired Frame is
 // dropped before routing. Exercises the whole /mochi/2 receive path.
-func TestPubsubReceiveFrameRoutesDirectory(t *testing.T) {
+func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	protocol2_init()
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -223,19 +223,19 @@ func TestPubsubReceiveFrameRoutesDirectory(t *testing.T) {
 	id, _ := new_entity_keys(t)
 
 	// Newer announce (version 200) routes and writes.
-	pubsub_receive_frame(signed_directory_frame(t, id, "Alice Smith", 200), "peerY")
+	pubsub_receive(signed_directory_frame(t, id, "Alice Smith", 200), "peerY")
 	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
 		t.Fatalf("after v200 frame: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Older announce (version 100) is dropped by version-LWW.
-	pubsub_receive_frame(signed_directory_frame(t, id, "Alice", 100), "peerY")
+	pubsub_receive(signed_directory_frame(t, id, "Alice", 100), "peerY")
 	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
 		t.Errorf("stale v100 frame clobbered record: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Expired frame is dropped at the freshness check, before routing.
-	pubsub_receive_frame(directory_frame(t, id, "Expired", 300, i64toa(now()-1)), "peerY")
+	pubsub_receive(directory_frame(t, id, "Expired", 300, i64toa(now()-1)), "peerY")
 	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
 		t.Errorf("expired v300 frame was applied: name=%q version=%d, want Alice Smith/200", name, ver)
 	}

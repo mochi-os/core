@@ -15,7 +15,7 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// NACK reason hints. Receiver populates Headers.Reason on the
+// NACK reason hints. Receiver populates Frame.Reason on the
 // outbound NACK frame; sender's NACK handler reads it to decide
 // between retry (the legacy unconditional behaviour) and drop. New
 // reasons can be added freely - the omitempty wire field falls back
@@ -23,9 +23,9 @@ import (
 // path. See claude/sessions/2026-05-25-broadcast-resync-seq-643-
 // investigation.md for context.
 const (
-	nack_reason_broadcast_gap  = "broadcast-gap"
-	nack_reason_decode_failed  = "decode-failed"
-	nack_reason_pending_full   = "pending-full"
+	nack_reason_broadcast_gap = "broadcast-gap"
+	nack_reason_decode_failed = "decode-failed"
+	nack_reason_pending_full  = "pending-full"
 )
 
 // ErrBroadcastGap is the sentinel the gap detector wraps its returned
@@ -200,7 +200,7 @@ func broadcast_seen_get(db *DB, key string) int64 {
 
 // broadcast_touch_local stamps seen=now for key without an applied broadcast
 // (subscribe / re-subscribe / full resync, and non-broadcast apps). Uses a
-// sentinel sender='' row so it never collides with a real per-peer position
+// sentinel sender=” row so it never collides with a real per-peer position
 // row or the gap detector (which reads a specific (sender=peer, key)).
 func broadcast_touch_local(db *DB, key string) {
 	broadcast_received_table_create(db)
@@ -832,7 +832,7 @@ type broadcast_acknowledge_pending struct {
 }
 
 var (
-	broadcast_acknowledge_lock    sync.Mutex
+	broadcast_acknowledge_lock        sync.Mutex
 	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
 )
 

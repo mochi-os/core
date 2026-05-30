@@ -1,9 +1,7 @@
 // Mochi server: /_/admin/pubsub/status handler.
 //
-// Operator visibility into GossipSub pubsub during the /mochi/2
-// migration. Reports, per topic, the live mesh peer count plus the
-// published / received / last-received counters, so the operator can see
-// when mochi/1 has no real peers left and the #167 cutover is safe. Used
+// Operator visibility into the GossipSub /mochi/2 topic: the live mesh
+// peer count plus the published / received / last-received counters. Used
 // by `mochictl pubsub status`.
 //
 // Copyright Alistair Cunningham 2026
@@ -45,18 +43,11 @@ func admin_pubsub_status(c *gin.Context) {
 	out := PubsubStatus{
 		Topics: []PubsubTopic{
 			{
-				Topic:     "mochi/1",
-				Peers:     pubsub_topic_peers(net_pubsub_1),
-				Published: pubsub_published_1.Load(),
-				Received:  pubsub_received_1.Load(),
-				Last:      pubsub_last_1.Load(),
-			},
-			{
 				Topic:     "/mochi/2",
-				Peers:     pubsub_topic_peers(net_pubsub_2),
-				Published: pubsub_published_2.Load(),
-				Received:  pubsub_received_2.Load(),
-				Last:      pubsub_last_2.Load(),
+				Peers:     pubsub_topic_peers(net_pubsub),
+				Published: pubsub_published.Load(),
+				Received:  pubsub_received.Load(),
+				Last:      pubsub_last.Load(),
 			},
 		},
 	}

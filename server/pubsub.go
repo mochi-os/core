@@ -1,22 +1,18 @@
 // Mochi server: GossipSub pubsub.
 //
-// Server-level peer-discovery and directory announcements ride GossipSub.
-// This file owns the subscribe loops, the receive-side decode/route, and
-// the single publish path shared by every producer (directory / peer
-// announcements via Message.publish, and the queue's broadcast re-flood
-// via queue_send_broadcast). See claude/plans/pubsub.md.
+// Server-level peer-discovery and directory announcements ride GossipSub
+// on the /mochi/2 topic. This file owns the subscribe loop, the
+// receive-side decode/route, and the single publish path shared by every
+// producer (directory / peer announcements via Message.publish, and the
+// queue's broadcast re-flood via queue_send_broadcast). See
+// claude/plans/pubsub.md.
 //
-// Two wire formats run in parallel during the /mochi/2 migration:
-//
-//   - mochi/1 (legacy): a Headers envelope + CBOR content segment, signed
-//     over signable_headers with a nil challenge.
-//   - /mochi/2 (new): a self-contained protocol-2 Frame carrying an
-//     Expires freshness bound and a domain-separated entity signature over
-//     the canonical {v, from, service, event, expires, content}.
-//
-// pubsub_publish floods both under one shared message ID, so receivers on
-// either topic dedup the dual delivery via message_seen. Once every peer
-// speaks /mochi/2 (#167) the legacy topic, Headers, and its helpers drop.
+// Each message is a self-contained protocol-2 Frame carrying an Expires
+// freshness bound and — for signed announcements (directory) — a
+// domain-separated entity signature over the canonical
+// {v, from, service, event, expires, content}. pubsub_publish floods one
+// Frame; receivers dedup a re-flood or multi-path delivery via
+// message_seen_mark.
 //
 // Pubsub is best-effort and one-way: no per-message challenge, no
 // ack/nack, no reply writer. GossipSub's StrictSign authenticates the
@@ -33,21 +29,17 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"io"
 	"sync/atomic"
 )
 
 // Operator counters surfaced by `mochictl pubsub status`
-// (admin_pubsub_status). Per topic: outbound publish volume, inbound
-// message volume, and the last time a message was received. The live mesh
-// peer count is read from ListPeers at report time, not counted here.
+// (admin_pubsub_status): outbound publish volume, inbound message volume,
+// and the last time a message was received. The live mesh peer count is
+// read from ListPeers at report time, not counted here.
 var (
-	pubsub_published_1 atomic.Int64
-	pubsub_published_2 atomic.Int64
-	pubsub_received_1  atomic.Int64
-	pubsub_received_2  atomic.Int64
-	pubsub_last_1      atomic.Int64
-	pubsub_last_2      atomic.Int64
+	pubsub_published atomic.Int64
+	pubsub_received  atomic.Int64
+	pubsub_last      atomic.Int64
 )
 
 // Domain separator and freshness window for /mochi/2 pubsub entity
@@ -76,13 +68,11 @@ const (
 	pubsub_expires_max = 2 * pubsub_expires_ttl
 )
 
-// --- mochi/1: legacy Headers format -----------------------------------
-
-// pubsub_manager subscribes to the legacy mochi/1 topic and dispatches
-// each inbound message. One goroutine for the process, started from
-// net_start once the topic is joined.
+// pubsub_manager subscribes to the /mochi/2 topic and dispatches each
+// inbound message. One goroutine for the process, started from net_start
+// once the topic is joined.
 func pubsub_manager() {
-	s := must(net_pubsub_1.Subscribe())
+	s := must(net_pubsub.Subscribe())
 
 	for {
 		m, err := s.Next(net_context)
@@ -100,98 +90,20 @@ func pubsub_manager() {
 			debug("Pubsub rate limited peer %q", peer)
 			continue
 		}
-		pubsub_received_1.Add(1)
-		pubsub_last_1.Store(now())
+		pubsub_received.Add(1)
+		pubsub_last.Store(now())
 		pubsub_receive(m.Data, peer)
 		peer_discovered(peer)
 		peer_connect(peer)
 	}
 }
 
-// pubsub_receive decodes one legacy pubsub message — a Headers envelope
-// followed by a content segment — and routes it. Best-effort and
-// one-way, so unlike stream_receive there is no challenge, no ack/nack,
-// and no reply stream.
+// pubsub_receive decodes one /mochi/2 pubsub Frame and routes it. The
+// frame is self-contained: routing envelope, an Expires freshness bound,
+// and (for signed announcements) the entity signature all travel in the
+// one message — there is no stream or handshake context. Best-effort and
+// one-way, so there is no challenge, no ack/nack, and no reply stream.
 func pubsub_receive(data []byte, peer string) {
-	s := stream_rw(io.NopCloser(bytes.NewReader(data)), nil)
-
-	var h Headers
-	if err := s.read_headers(&h); err != nil {
-		info("Pubsub error reading headers from peer %q: %v", peer, err)
-		return
-	}
-	if !h.valid() {
-		info("Pubsub received invalid headers from peer %q", peer)
-		return
-	}
-	// Pubsub only ever carries broadcast messages; ack/nack belong to
-	// bidirectional streams. Drop anything else.
-	if h.msg_type() != "msg" {
-		return
-	}
-
-	// Verify the entity signature against a nil challenge (broadcasts sign
-	// without one). On failure, clear From so the event is treated as
-	// anonymous — the handler's Anonymous gate decides whether to accept it.
-	if !h.verify(nil) {
-		h.From = ""
-	}
-
-	// Deduplicate, atomically marking seen so the two concurrent topic
-	// managers can't both process the same dual-published message. Also
-	// coalesces the same message arriving via multiple mesh paths.
-	if h.ID != "" && message_seen_mark(h.ID) {
-		return
-	}
-
-	content, err := s.read_content()
-	if err != nil {
-		info("Pubsub error reading content from peer %q: %v", peer, err)
-		return
-	}
-
-	e := Event{id: event_id(), msg_id: h.ID, from: h.From, to: h.To, service: h.Service, event: h.Event, sender_app: h.FromApp, sender_services: h.Services, peer: peer, content: content}
-	if err := e.route(); err != nil {
-		debug("Pubsub route error for service %q event %q from peer %q: %v", h.Service, h.Event, peer, err)
-	}
-}
-
-// --- /mochi/2: Frame format -------------------------------------------
-
-// pubsub_manager_2 is the /mochi/2 counterpart to pubsub_manager: it
-// subscribes to the new Frame-format topic and routes each message. Runs
-// alongside pubsub_manager during the dual-run window; message_seen
-// dedups the duplicate delivery of a message arriving on both topics.
-func pubsub_manager_2() {
-	s := must(net_pubsub_2.Subscribe())
-
-	for {
-		m, err := s.Next(net_context)
-		if err != nil {
-			warn("Pubsub /mochi/2 error: %v", err)
-			continue
-		}
-		peer := m.ReceivedFrom.String()
-		if peer == net_id {
-			continue
-		}
-		if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_pubsub_in.allow(peer) {
-			debug("Pubsub /mochi/2 rate limited peer %q", peer)
-			continue
-		}
-		pubsub_received_2.Add(1)
-		pubsub_last_2.Store(now())
-		pubsub_receive_frame(m.Data, peer)
-		peer_discovered(peer)
-		peer_connect(peer)
-	}
-}
-
-// pubsub_receive_frame decodes one /mochi/2 pubsub Frame and routes it.
-// The frame is self-contained: routing envelope, an Expires freshness
-// bound, and (for signed announcements) the entity signature all travel
-// in the one message — there is no stream or handshake context.
-func pubsub_receive_frame(data []byte, peer string) {
 	f, err := frame_read(bytes.NewReader(data))
 	if err != nil {
 		info("Pubsub frame read error from peer %q: %v", peer, err)
@@ -222,8 +134,9 @@ func pubsub_receive_frame(data []byte, peer string) {
 		}
 	}
 
-	// Deduplicate atomically, coalescing the dual-topic delivery (same ID
-	// on mochi/1) without racing the other topic's manager goroutine.
+	// Deduplicate atomically, coalescing a re-flooded or multi-path
+	// delivery without racing the direct-stream workers that share the
+	// dedup map.
 	if f.ID != "" && message_seen_mark(f.ID) {
 		return
 	}
@@ -234,9 +147,9 @@ func pubsub_receive_frame(data []byte, peer string) {
 	}
 }
 
-// pubsub_frame_valid runs the envelope-level checks Headers.valid does for
-// the legacy path: well-formed from / to / service / event / id. Content
-// is validated by the event handler (valid(id,"entity") etc.).
+// pubsub_frame_valid runs the envelope-level checks on a received frame:
+// well-formed from / to / service / event / id. Content is validated by
+// the event handler (valid(id,"entity") etc.).
 func pubsub_frame_valid(f *Frame) bool {
 	if f.From != "" && !valid(f.From, "entity") {
 		return false
@@ -264,29 +177,20 @@ func pubsub_fresh(expires string) bool {
 	return exp > 0 && now() < exp && exp <= now()+pubsub_expires_max
 }
 
-// --- Shared publish path ----------------------------------------------
-
-// pubsub_publish floods one message to every pubsub topic. Producers
-// (directory / peer announcements via Message.publish, the queue's
-// broadcast re-flood via queue_send_broadcast) call this; it emits the
-// legacy Headers form on mochi/1 and the Frame form on /mochi/2 under one
-// shared message ID, so receivers on either topic dedup the dual delivery
-// via message_seen.
-func pubsub_publish(from, to, service, event, from_app string, services []string, id string, content, data []byte) {
-	// mochi/1: legacy Headers envelope, for servers not yet on /mochi/2.
-	signature := entity_sign(from, string(signable_headers("msg", from, to, service, event, from_app, id, "", "", services, nil)))
-	out := cbor_encode(Headers{
-		Type: "msg", From: from, To: to, Service: service, Event: event,
-		FromApp: from_app, Services: services, ID: id, Signature: signature,
-	})
-	out = append(out, content...)
-	if len(data) > 0 {
-		out = append(out, data...)
+// pubsub_publish floods one message to the /mochi/2 topic as a
+// self-contained Frame. Producers (directory / peer announcements via
+// Message.publish, the queue's broadcast re-flood via
+// queue_send_broadcast) call this. The Frame carries the routing
+// envelope, an Expires freshness bound, and — for a signed announcement
+// (from != "") — a domain-separated entity signature over the canonical
+// {v, from, service, event, expires, content}. Expires and the signature
+// are recomputed on every (re-)flood, so a queue-held broadcast re-floods
+// with a fresh, still-valid window.
+func pubsub_publish(from, to, service, event, id string, content, data []byte) {
+	if net_pubsub == nil {
+		return
 	}
-	net_pubsub_1.Publish(net_context, out)
-	pubsub_published_1.Add(1)
 
-	// /mochi/2: the same message as a self-contained Frame.
 	var cmap map[string]any
 	if len(content) > 0 {
 		if err := cbor_decode_mode.Unmarshal(content, &cmap); err != nil {
@@ -294,25 +198,12 @@ func pubsub_publish(from, to, service, event, from_app string, services []string
 			return
 		}
 	}
-	pubsub_publish_frame(from, to, service, event, id, cmap, data)
-}
-
-// pubsub_publish_frame floods the /mochi/2 form: a self-contained Frame
-// carrying the routing envelope, an Expires freshness bound, and — for a
-// signed announcement (from != "") — a domain-separated entity signature
-// over the canonical {v, from, service, event, expires, content}. Expires
-// and the signature are recomputed on every (re-)flood, so a queue-held
-// broadcast re-floods with a fresh, still-valid window.
-func pubsub_publish_frame(from, to, service, event, id string, content map[string]any, data []byte) {
-	if net_pubsub_2 == nil {
-		return
-	}
 
 	expires := i64toa(now() + pubsub_expires_ttl)
 
 	var sig []byte
 	if from != "" {
-		strcontent, ok := pubsub_string_content(content)
+		strcontent, ok := pubsub_string_content(cmap)
 		if !ok {
 			warn("Pubsub refusing to sign non-string content for %q", from)
 			return
@@ -323,7 +214,7 @@ func pubsub_publish_frame(from, to, service, event, id string, content map[strin
 	f := &Frame{
 		Type: frame_type_message, From: from, To: to,
 		Service: service, Event: event, ID: id,
-		Expires: expires, Content: content, Signature: sig,
+		Expires: expires, Content: cmap, Signature: sig,
 	}
 	if len(data) > 0 {
 		f.Data = data
@@ -334,8 +225,8 @@ func pubsub_publish_frame(from, to, service, event, id string, content map[strin
 		warn("Pubsub frame write failed: %v", err)
 		return
 	}
-	net_pubsub_2.Publish(net_context, buf.Bytes())
-	pubsub_published_2.Add(1)
+	net_pubsub.Publish(net_context, buf.Bytes())
+	pubsub_published.Add(1)
 }
 
 // --- Entity signature (signed announcements) --------------------------

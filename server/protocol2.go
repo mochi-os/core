@@ -43,6 +43,7 @@ const (
 	frame_length_size     = 4                // big-endian uint32 prefix
 	frame_diagnostic_size = 256              // hex log on CBOR decode failure
 	challenge_size_v2     = 32               // hello.Challenge length
+	max_id_length         = 64               // max Frame.ID / message id length
 
 	// Codec byte values (Frame.Codec).
 	codec_none = 0

@@ -2,9 +2,8 @@
 // Copyright Alistair Cunningham 2026
 //
 // `mochictl pubsub status` -> GET /_/admin/pubsub/status
-//   Per-topic mesh peer count + published/received counters during the
-//   /mochi/2 migration. mochi/1 dropping to zero real peers is the signal
-//   the #167 cutover is safe. See claude/plans/pubsub.md.
+//   Per-topic mesh peer count + published/received counters for the
+//   /mochi/2 GossipSub topic. See claude/plans/pubsub.md.
 
 //go:build linux
 

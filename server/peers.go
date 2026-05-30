@@ -370,5 +370,5 @@ func peers_manager() {
 
 // Check whether we have enough peers in the pubsub mesh to send broadcast messages to.
 func peers_sufficient() bool {
-	return len(net_pubsub_1.ListPeers()) >= peers_minimum
+	return len(net_pubsub.ListPeers()) >= peers_minimum
 }

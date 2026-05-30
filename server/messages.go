@@ -139,7 +139,7 @@ func (m *Message) publish(allow_queue bool) {
 	}
 
 	if peers_sufficient() {
-		pubsub_publish(m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, m.ID, content, m.data)
+		pubsub_publish(m.From, m.To, m.Service, m.Event, m.ID, content, m.data)
 
 		if allow_queue {
 			queue_ack(m.ID)

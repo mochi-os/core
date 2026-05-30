@@ -705,12 +705,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		return false
 	}
 
-	var services []string
-	if q.FromServices != "" {
-		services = strings.Split(q.FromServices, ",")
-	}
-
-	pubsub_publish(q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, services, q.ID, q.Content, q.Data)
+	pubsub_publish(q.FromEntity, q.ToEntity, q.Service, q.Event, q.ID, q.Content, q.Data)
 	return true
 }
 

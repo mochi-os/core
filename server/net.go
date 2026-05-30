@@ -36,6 +36,7 @@ var (
 	net_private  p2p_crypto.PrivKey
 	net_me       p2p_host.Host
 	net_pubsub_1 *p2p_pubsub.Topic
+	net_pubsub_2 *p2p_pubsub.Topic
 	net_pinger   *p2p_ping.PingService
 )
 
@@ -257,7 +258,9 @@ func net_start() {
 	// Start pubsubs
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
 	net_pubsub_1 = must(gs.Join("mochi/1"))
+	net_pubsub_2 = must(gs.Join("/mochi/2"))
 	go pubsub_manager()
+	go pubsub_manager_2()
 }
 
 // Watch event bus for disconnecting peers

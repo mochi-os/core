@@ -96,17 +96,18 @@ const (
 // their original wire keys; new fields use single-word names per
 // project convention.
 type Frame struct {
-	Type      string         `cbor:"type"`
-	ID        string         `cbor:"id,omitempty"`
-	Replies   []string       `cbor:"replies,omitempty"`
-	From      string         `cbor:"from,omitempty"`
-	To        string         `cbor:"to,omitempty"`
-	Service   string         `cbor:"service,omitempty"`
-	Event     string         `cbor:"event,omitempty"`
-	FromApp   string         `cbor:"from-app,omitempty"`
-	Services  []string       `cbor:"from-services,omitempty"`
-	Signature []byte         `cbor:"signature,omitempty"` // claim frames only
-	Reason    string         `cbor:"reason,omitempty"`
+	Type      string   `cbor:"type"`
+	ID        string   `cbor:"id,omitempty"`
+	Replies   []string `cbor:"replies,omitempty"`
+	From      string   `cbor:"from,omitempty"`
+	To        string   `cbor:"to,omitempty"`
+	Service   string   `cbor:"service,omitempty"`
+	Event     string   `cbor:"event,omitempty"`
+	FromApp   string   `cbor:"from-app,omitempty"`
+	Services  []string `cbor:"from-services,omitempty"`
+	Signature []byte   `cbor:"signature,omitempty"` // claim frames + signed pubsub announcements
+	Reason    string   `cbor:"reason,omitempty"`
+	Expires   string   `cbor:"expires,omitempty"` // pubsub message frames: absolute Unix seconds (decimal string) after which receivers reject the announcement
 
 	// New per-message fields.
 	Codec    byte           `cbor:"codec,omitempty"`

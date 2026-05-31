@@ -73,12 +73,14 @@ func TestUserMethodsConfigure(t *testing.T) {
 		t.Errorf("require totp without secret = %q, want credential", code)
 	}
 
-	// Recovery and OAuth can never be required.
+	// Recovery can never be required. OAuth can be required now that it's an
+	// independent factor, but only with a linked provider - none is linked here,
+	// so it's gated on the credential rather than hard-rejected.
 	if code := user_methods_configure(load(), "recovery", "required"); code != "invalid" {
 		t.Errorf("require recovery = %q, want invalid", code)
 	}
-	if code := user_methods_configure(load(), "oauth", "required"); code != "invalid" {
-		t.Errorf("require oauth = %q, want invalid", code)
+	if code := user_methods_configure(load(), "oauth", "required"); code != "credential" {
+		t.Errorf("require oauth without a linked provider = %q, want credential", code)
 	}
 
 	// Unknown method / state are rejected.
@@ -110,5 +112,38 @@ func TestUserMethodsConfigure(t *testing.T) {
 	setting_set("auth_passkey", "disabled")
 	if code := user_methods_configure(load(), "passkey", "allowed"); code != "blocked" {
 		t.Errorf("enable system-disabled passkey = %q, want blocked", code)
+	}
+}
+
+// TestUserMethodStateOperatorClamp covers the operator-policy clamp in
+// user_method_state (the settings grid's displayed state): a server-disabled
+// method reads "disabled" and server-required email reads "required", whatever
+// the user set or has registered.
+func TestUserMethodStateOperatorClamp(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	users := db_open("db/users.db")
+	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	settings := db_open("db/settings.db")
+	settings.exec("create table settings (name text primary key, value text not null)")
+	users.exec("insert into users (uid, username, methods) values ('u1', 'a@example.com', '')")
+	// A registered passkey: without the clamp this would read "allowed".
+	users.exec("insert into credentials (id, user, public_key, created) values (x'01', 'u1', x'00', 1)")
+
+	load := func() *User {
+		var u User
+		users.scan(&u, "select uid, username, role, methods, disabled, status from users where uid='u1'")
+		return &u
+	}
+
+	setting_set("auth_passkey", "disabled")
+	if s := user_method_state(load(), "passkey"); s != "disabled" {
+		t.Errorf("passkey state with auth_passkey=disabled = %q, want disabled", s)
+	}
+	setting_set("auth_email", "required")
+	if s := user_method_state(load(), "email"); s != "required" {
+		t.Errorf("email state with auth_email=required = %q, want required", s)
 	}
 }

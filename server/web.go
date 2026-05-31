@@ -984,13 +984,18 @@ func web_login_begin(c *gin.Context) {
 	// factor suffices). allowed is the set the login screen offers after
 	// email entry: email code, passkey, authenticator — filtered to those
 	// usable for this account, with anything the user disabled removed.
-	var methods []string
-	for _, m := range strings.Split(user.Methods, ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			methods = append(methods, m)
-		}
+	// methods is the effective required set the login AND-s: the user's own
+	// required factors plus the system email floor (auth_remaining_methods folds
+	// it in, with nothing completed yet). Force non-nil so it marshals to [] not
+	// null — the login client calls .includes() on it.
+	methods := auth_remaining_methods(user, "")
+	if methods == nil {
+		methods = []string{}
 	}
 	allowed := user_login_factors(user)
+	if allowed == nil {
+		allowed = []string{}
+	}
 	has_passkey := false
 	for _, m := range allowed {
 		if m == "passkey" {
@@ -1003,6 +1008,30 @@ func web_login_begin(c *gin.Context) {
 		"allowed":     allowed,
 		"has_passkey": has_passkey,
 	})
+}
+
+// web_auth_partial returns the pending login partial - its remaining factors and
+// id - so the /codes page can resume after a full-page navigation or refresh,
+// where the client store holds no MFA state. Reads the login_partial cookie that
+// every MFA-continuation flow (email/totp/passkey/oauth) sets; empty when none.
+func web_auth_partial(c *gin.Context) {
+	id, err := c.Cookie("login_partial")
+	if err != nil || id == "" {
+		c.JSON(http.StatusOK, gin.H{"partial": "", "remaining": []string{}})
+		return
+	}
+	row, _ := db_open("db/sessions.db").row("select remaining from partial where id=? and expires>?", id, now())
+	if row == nil {
+		c.JSON(http.StatusOK, gin.H{"partial": "", "remaining": []string{}})
+		return
+	}
+	remaining := []string{}
+	for _, m := range strings.Split(row_string(row, "remaining"), ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			remaining = append(remaining, m)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"partial": id, "remaining": remaining})
 }
 
 func web_identity_get(c *gin.Context) {
@@ -1476,6 +1505,7 @@ func web_start() {
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
 	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)
 	r.GET("/_/auth/methods", web_auth_methods)
+	r.GET("/_/auth/partial", web_auth_partial)
 
 	// Other system endpoints
 	r.GET("/_/identity", web_identity_get)

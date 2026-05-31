@@ -503,9 +503,9 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 			return
 		}
 		// Refuse only if the user has explicitly disabled OAuth as a login
-		// factor. Other required factors are not bypassed: OAuth counts as
-		// the email factor, so auth_remaining_oauth still forces a passkey
-		// or authenticator step when one is required.
+		// factor. OAuth is its own factor (not the email factor), so
+		// auth_remaining_oauth clears only the oauth requirement - every other
+		// required method (email, passkey, authenticator) must still complete.
 		if user_method_disabled(user, "oauth") {
 			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disabled")
 			oauth_error_redirect(c, "oauth_disallowed", nil)
@@ -531,7 +531,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 			}
 			partial := random_alphanumeric(32)
 			partial_create(db_open("db/sessions.db"), partial, user.UID, "oauth", strings.Join(remaining, ","), now()+300)
-			web_cookie_set(c, "oauth_partial", partial)
+			web_cookie_set(c, "login_partial", partial)
 			c.Redirect(http.StatusFound, "/login/codes")
 			return
 		}

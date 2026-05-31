@@ -342,6 +342,8 @@ func web_passkey_login_finish(c *gin.Context) {
 		// Create partial session
 		partial := random_alphanumeric(32)
 		partial_create(db, partial, user.UID, "passkey", strings.Join(remaining, ","), now()+300)
+		// Cookie-mirror the partial for /codes recovery (see web_auth_partial).
+		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,

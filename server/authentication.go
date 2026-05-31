@@ -88,6 +88,9 @@ func web_login_verify(c *gin.Context) {
 		// Create partial session for MFA
 		partial := random_alphanumeric(32)
 		partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
+		// Mirror the partial into a cookie so /codes can recover this MFA
+		// continuation after a full-page navigation or refresh (web_auth_partial).
+		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -322,6 +325,8 @@ func web_auth_totp(c *gin.Context) {
 		// Create partial session for remaining MFA
 		partial := random_alphanumeric(32)
 		partial_create(db_open("db/sessions.db"), partial, user.UID, "totp", strings.Join(remaining, ","), now()+300)
+		// Cookie-mirror the partial for /codes recovery (see web_auth_partial).
+		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -449,10 +454,19 @@ func user_method_disabled(user *User, method string) bool {
 	return methods_parse(user.Disabled)[method]
 }
 
-// user_method_state returns the user's effective state for a method:
-// "required" if it's in their required set, "disabled" if they turned it
-// off or its credential is missing, otherwise "allowed".
+// user_method_state returns the effective state for a method as shown in the
+// settings grid. Operator policy wins: disabled server-wide reads as "disabled"
+// and email required server-wide reads as "required", whatever the user set.
+// Otherwise it reflects the user's own setting: "required" if in their required
+// set, "disabled" if they turned it off or its credential is missing, else
+// "allowed".
 func user_method_state(user *User, method string) string {
+	switch auth_method_state(method) {
+	case "disabled":
+		return "disabled"
+	case "required":
+		return "required"
+	}
 	if methods_parse(user.Methods)[method] {
 		return "required"
 	}
@@ -522,11 +536,11 @@ func user_methods_configure(user *User, method, state string) string {
 	if state != "disabled" && state != "allowed" && state != "required" {
 		return "invalid"
 	}
-	// Recovery and OAuth can't be "required": recovery is single-use
-	// break-glass, and OAuth satisfies the email factor (auth_remaining_oauth
-	// maps it to email), so requiring it separately could never complete.
-	// Both are allowed or disabled only.
-	if (method == "recovery" || method == "oauth") && state == "required" {
+	// Recovery can't be "required": it's single-use break-glass, so demanding it
+	// every sign-in makes no sense. (OAuth was barred here too while it counted
+	// as the email factor; now that it's an independent factor it can be
+	// required like passkey or authenticator, subject to a linked provider.)
+	if method == "recovery" && state == "required" {
 		return "invalid"
 	}
 

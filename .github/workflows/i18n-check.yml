@@ -49,3 +49,6 @@ jobs:
               sys.exit(1)
           print("Server i18n check passed.")
           PY
+
+      - name: Check server label completeness
+        run: python3 .github/scripts/check-labels.py

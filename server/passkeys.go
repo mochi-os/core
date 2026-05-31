@@ -309,6 +309,13 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
+	// Refuse if the user has turned passkeys off as a login factor.
+	if user_method_disabled(user, "passkey") {
+		audit_login_failed(user.Username, rate_limit_client_ip(c), "passkey_disabled")
+		respond_error(c, http.StatusUnauthorized, "authentication_failed", "errors.authentication_failed", nil)
+		return
+	}
+
 	// Record the assertion: sign-count replay state, cosmetic last-used,
 	// and the per-credential leadership claim. Shared with step-up
 	// re-auth; creates no session.
@@ -424,6 +431,12 @@ func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
+	}
+
+	// A user who turned passkeys off as a login factor cannot use one for
+	// step-up either.
+	if user_method_disabled(user, "passkey") {
+		return sl.None, nil
 	}
 
 	if len(args) < 2 {

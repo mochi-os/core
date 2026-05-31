@@ -46,10 +46,10 @@ func message_mark_seen(id string) {
 // message_seen_mark atomically reports whether id was already processed
 // and, if not, marks it seen — both under one lock. The separate
 // message_seen / message_mark_seen pair has a check-then-mark gap that two
-// concurrent receivers can both slip through; pubsub's two topic managers
-// (mochi/1 + /mochi/2) receive the same dual-published message in parallel
-// during the migration, so they need this atomic coalescing. Returns true
-// when id was already seen (caller drops the duplicate).
+// concurrent receivers can both slip through; the pubsub manager and the
+// direct-stream workers share this dedup map, so a message arriving on
+// both paths needs this atomic coalescing. Returns true when id was
+// already seen (caller drops the duplicate).
 func message_seen_mark(id string) bool {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()

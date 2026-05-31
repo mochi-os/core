@@ -40,6 +40,7 @@ type User struct {
 	Username      string
 	Role          string
 	Methods       string
+	Disabled      string
 	Status        string
 	RestoreSource string `db:"restore_source"`
 	Preferences   map[string]string
@@ -225,6 +226,11 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "code", &code); err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	// A user who turned email off as a login factor cannot use it for
+	// step-up either.
+	if user_method_disabled(user, "email") {
+		return sl.None, nil
+	}
 	if !code_consume(user, code) {
 		return sl.None, nil
 	}
@@ -312,7 +318,7 @@ func user_by_uid(uid string) *User {
 	}
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", uid) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", uid) {
 		return nil
 	}
 
@@ -334,7 +340,7 @@ func user_by_uid(uid string) *User {
 func user_by_username(username string) *User {
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		return nil
 	}
 	u.Preferences = user_preferences_load(&u)
@@ -349,7 +355,7 @@ func user_by_identity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", i.User) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", i.User) {
 		return nil
 	}
 
@@ -374,7 +380,7 @@ func user_by_login(login string) *User {
 
 	users := db_open("db/users.db")
 	var u User
-	if !users.scan(&u, "select uid, username, role, methods, status from users where uid=?", s.User) {
+	if !users.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", s.User) {
 		return nil
 	}
 
@@ -401,7 +407,7 @@ func user_from_code(code string) (*User, string) {
 
 	db := db_open("db/users.db")
 	var u User
-	if db.scan(&u, "select uid, username, role, methods, status from users where username=?", c.Username) {
+	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", c.Username) {
 		// Fan the consume out to peers so other hosts in the user's
 		// host set drop their copy of the code too — prevents replay
 		// on a second host within the 1-hour TTL.
@@ -443,7 +449,7 @@ func user_create(username string) (*User, string) {
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
 
 	var u User
-	if db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
+	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)
 		return &u, ""
 	}
@@ -464,7 +470,7 @@ func user_owning_entity(id string) *User {
 	}
 
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", i.User) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", i.User) {
 		return nil
 	}
 
@@ -600,7 +606,7 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", id) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", id) {
 		return sl.None, nil
 	}
 
@@ -633,7 +639,7 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		return sl.None, nil
 	}
 
@@ -676,7 +682,7 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", user_id) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", user_id) {
 		return sl.None, nil
 	}
 
@@ -722,7 +728,7 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where uid=?", user_id) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where uid=?", user_id) {
 		return sl.None, nil
 	}
 
@@ -996,7 +1002,7 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
 
 	var u User
-	if !db.scan(&u, "select uid, username, role, methods, status from users where username=?", username) {
+	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		return sl_error(fn, "failed to create user")
 	}
 

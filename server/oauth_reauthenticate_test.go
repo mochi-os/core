@@ -28,7 +28,7 @@ func TestOauthReauthenticate(t *testing.T) {
 
 	users.exec("insert into users (uid, username) values ('u-x', 'x@example.com')")
 	users.exec("insert into oauth (user, provider, subject, created) values ('u-x', 'google', 'sub-123', 1)")
-	user := &User{UID: "u-x", Username: "x@example.com", Methods: "email"}
+	user := &User{UID: "u-x", Username: "x@example.com", Methods: "oauth"}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -51,7 +51,7 @@ func TestOauthReauthenticate(t *testing.T) {
 	var res map[string]any
 	json.Unmarshal([]byte(row["data"].(string)), &res)
 	if tok, _ := res["token"].(string); tok == "" {
-		t.Errorf("email-only user: expected a token, got %v", res)
+		t.Errorf("oauth-required user: expected a token, got %v", res)
 	}
 
 	// Unlinked provider account -> nothing minted (the stolen-session defence).

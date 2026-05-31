@@ -153,10 +153,11 @@ func email_login_code(user *User, to string, code string, language string) {
 	tagline := resolve_core_label(language, "email.login_code.tagline", nil)
 	expiry := resolve_core_label(language, "email.login_code.expiry", nil)
 	ignore := resolve_core_label(language, "email.login_code.ignore", nil)
-	text_intro := resolve_core_label(language, "email.login_code.text_intro", map[string]any{"code": code})
-	text_body := resolve_core_label(language, "email.login_code.text_body", nil)
 
-	text := text_intro + "\n\n" + text_body + "\n\n" + ignore + "\n"
+	// Plain-text part: the same instruction, code, and notice as the HTML, with
+	// the code on its own line. Reuses the tagline/expiry/ignore labels (also
+	// used by the HTML body) so there's a single translated source for each.
+	text := tagline + ":\n\n" + code + "\n\n" + expiry + ". " + ignore + "\n"
 	html_body := `<!DOCTYPE html>
 <html>
 <head>

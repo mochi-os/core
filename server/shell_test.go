@@ -483,6 +483,7 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	// Fix table schemas to match production (create_web_test_env uses simplified schemas)
 	db_users := db_open("db/users.db")
 	db_users.exec("alter table users add column methods text not null default ''")
+	db_users.exec("alter table users add column disabled text not null default ''")
 	db_users.exec("alter table users add column status text not null default 'active'")
 	// Recreate entities table without created/updated (Entity struct doesn't have those fields)
 	db_users.exec("drop table entities")

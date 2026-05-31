@@ -3,21 +3,22 @@ package main
 import "testing"
 
 // TestReauthentication covers the step-up proof engine: the required-factor
-// policy (oauth->email, recovery excluded, email default), single- and
-// multi-factor accrual, and that a proof is single-use, user-scoped,
-// expiry-checked, and rejected while incomplete.
+// policy (oauth re-verifies as oauth, recovery excluded, email default),
+// single- and multi-factor accrual, and that a proof is single-use,
+// user-scoped, expiry-checked, and rejected while incomplete.
 func TestReauthentication(t *testing.T) {
 	cleanup := create_test_sessions_db(t)
 	defer cleanup()
 
 	db := db_open("db/sessions.db")
 
-	// Required-factor policy.
-	if got := reauthentication_required(&User{Methods: ""}); len(got) != 1 || got[0] != "email" {
-		t.Errorf("default required = %v, want [email]", got)
+	// Required-factor policy. Nothing configured -> nothing specifically
+	// required (any one usable factor satisfies the step-up).
+	if got := reauthentication_required(&User{Methods: ""}); len(got) != 0 {
+		t.Errorf("no methods required = %v, want empty", got)
 	}
-	if got := reauthentication_required(&User{Methods: "oauth"}); len(got) != 1 || got[0] != "email" {
-		t.Errorf("oauth required = %v, want [email]", got)
+	if got := reauthentication_required(&User{Methods: "oauth"}); len(got) != 1 || got[0] != "oauth" {
+		t.Errorf("oauth required = %v, want [oauth]", got)
 	}
 	if got := reauthentication_required(&User{Methods: "email,totp,recovery"}); len(got) != 2 || got[0] != "email" || got[1] != "totp" {
 		t.Errorf("required = %v, want [email totp] (recovery excluded)", got)
@@ -47,6 +48,15 @@ func TestReauthentication(t *testing.T) {
 	}
 	if !reauthentication_consume(bob, tok) {
 		t.Error("bob's completed proof rejected")
+	}
+
+	// Decoupling guarantee: OAuth re-verifies as its own oauth factor and never
+	// satisfies a required email factor, so an email-required user who only
+	// clears oauth still owes email (an OAuth sign-in can't substitute for inbox
+	// control).
+	frank := &User{UID: "u-frank", Username: "frank@example.com", Methods: "email"}
+	if tok, rem := reauthentication_advance(frank, "oauth"); tok != "" || len(rem) != 1 || rem[0] != "email" {
+		t.Fatalf("frank oauth advance = (%q, %v), want no token and remaining [email]", tok, rem)
 	}
 
 	// An incomplete proof is not consumable even if its id is known.

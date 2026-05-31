@@ -70,6 +70,15 @@ func web_login_verify(c *gin.Context) {
 		return
 	}
 
+	// Refuse if the user has turned email codes off as a login factor.
+	// New signups never have email disabled, so this only blocks an
+	// existing account that explicitly disabled it.
+	if user_method_disabled(user, "email") {
+		audit_login_failed(user.Username, rate_limit_client_ip(c), "email_disabled")
+		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
+		return
+	}
+
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -93,9 +102,16 @@ func web_login_verify(c *gin.Context) {
 
 // auth_method_state returns the configured state of a login method: one of
 // "required", "allowed", or "disabled". Reads the per-method setting (e.g.
-// auth_email, auth_passkey) with the appropriate default.
+// auth_email, auth_passkey) with the appropriate default. Only email can be
+// required server-wide (it's the one method every account always has); a
+// legacy "required" stored on any other method is treated as "allowed", since
+// requiring a credential a user may not have would lock them out.
 func auth_method_state(method string) string {
-	return setting_get("auth_"+method, "allowed")
+	state := setting_get("auth_"+method, "allowed")
+	if method != "email" && state == "required" {
+		return "allowed"
+	}
+	return state
 }
 
 // auth_method_allowed reports whether a login method is usable at all — i.e.
@@ -128,28 +144,36 @@ func auth_methods_allowed_list() []string {
 	return allowed
 }
 
-// auth_remaining_methods returns methods still required after completing the given method
+// auth_remaining_methods returns the factors still required after completing
+// the given method. The effective required set is the user's required methods
+// plus email when the operator requires it server-wide — email is always
+// available so it's always enforceable, and it's the only method that can be
+// system-required, so it's the only policy addition here. Returned in
+// canonical order.
 func auth_remaining_methods(user *User, completed string) []string {
-	if user.Methods == "" || user.Methods == completed {
-		return nil
+	required := methods_parse(user.Methods)
+	if auth_method_state("email") == "required" {
+		required["email"] = true
 	}
+	delete(required, completed)
 
-	methods := strings.Split(user.Methods, ",")
 	var remaining []string
-	for _, m := range methods {
-		m = strings.TrimSpace(m)
-		if m != completed && m != "" {
+	for _, m := range auth_method_list {
+		if required[m] {
 			remaining = append(remaining, m)
 		}
 	}
 	return remaining
 }
 
-// auth_remaining_oauth returns methods still required after OAuth login.
-// OAuth is treated as equivalent to email (both prove ownership of a verified
-// email), so any "email" entry in the user's methods is considered satisfied.
+// auth_remaining_oauth returns the factors still required after an OAuth
+// login. OAuth proves control of a linked third-party account, not the
+// account's email inbox (the OAuth address may differ from the account
+// email), so it satisfies no required factor: the user must still complete
+// every method they require. OAuth alone signs in only when nothing is
+// required (an all-allowed account, where any one factor suffices).
 func auth_remaining_oauth(user *User) []string {
-	return auth_remaining_methods(user, "email")
+	return auth_remaining_methods(user, "oauth")
 }
 
 // auth_establish_session does the shared work of creating a login session: load
@@ -267,6 +291,13 @@ func web_auth_totp(c *gin.Context) {
 		return
 	}
 
+	// Refuse if the user has turned the authenticator off as a login factor.
+	if user_method_disabled(user, "totp") {
+		audit_login_failed(input.Email, rate_limit_client_ip(c), "totp_disabled")
+		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
+		return
+	}
+
 	// Verify TOTP code
 	if !totp_verify(user.UID, input.Code) {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
@@ -350,10 +381,192 @@ func jwt_verify(token_string string) (string, string, error) {
 // ============================================================================
 
 var api_user_methods = sls.FromStringDict(sl.String("mochi.user.methods"), sl.StringDict{
-	"get":   sl.NewBuiltin("mochi.user.methods.get", api_user_methods_get),
-	"set":   sl.NewBuiltin("mochi.user.methods.set", api_user_methods_set),
-	"reset": sl.NewBuiltin("mochi.user.methods.reset", api_user_methods_reset),
+	"get":       sl.NewBuiltin("mochi.user.methods.get", api_user_methods_get),
+	"states":    sl.NewBuiltin("mochi.user.methods.states", api_user_methods_states),
+	"set":       sl.NewBuiltin("mochi.user.methods.set", api_user_methods_set),
+	"configure": sl.NewBuiltin("mochi.user.methods.configure", api_user_methods_configure),
+	"reset":     sl.NewBuiltin("mochi.user.methods.reset", api_user_methods_reset),
 })
+
+// auth_method_list is the canonical ordering of login methods for the
+// per-user state model: email, the three credential-backed factors, then
+// recovery (break-glass — never "required").
+var auth_method_list = []string{"email", "passkey", "totp", "oauth", "recovery"}
+
+// auth_factor_list is the subset that can serve as a primary sign-in
+// proof; recovery is excluded because it's single-use break-glass.
+var auth_factor_list = []string{"email", "passkey", "totp", "oauth"}
+
+// methods_parse splits a comma-separated method list into a set, trimming
+// whitespace and dropping empties.
+func methods_parse(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range strings.Split(csv, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out[m] = true
+		}
+	}
+	return out
+}
+
+// methods_join renders a method set back to a comma-separated string in
+// canonical (auth_method_list) order, so the stored value is deterministic
+// regardless of update order — important for replication convergence.
+func methods_join(set map[string]bool) string {
+	var out []string
+	for _, m := range auth_method_list {
+		if set[m] {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// user_method_available reports whether the user holds the credential a
+// method needs to be usable: a registered passkey, a verified TOTP secret,
+// or a linked OAuth identity. Email and recovery need no stored credential.
+func user_method_available(user *User, method string) bool {
+	db := db_open("db/users.db")
+	switch method {
+	case "email", "recovery":
+		return true
+	case "passkey":
+		row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
+		return row != nil && row["count"].(int64) > 0
+	case "totp":
+		row, _ := db.row("select verified from totp where user=?", user.UID)
+		return row != nil && row["verified"].(int64) == 1
+	case "oauth":
+		ok, _ := db.exists("select 1 from oauth where user=?", user.UID)
+		return ok
+	}
+	return false
+}
+
+// user_method_disabled reports whether the user has explicitly turned a
+// method off (it's in their disabled set).
+func user_method_disabled(user *User, method string) bool {
+	return methods_parse(user.Disabled)[method]
+}
+
+// user_method_state returns the user's effective state for a method:
+// "required" if it's in their required set, "disabled" if they turned it
+// off or its credential is missing, otherwise "allowed".
+func user_method_state(user *User, method string) string {
+	if methods_parse(user.Methods)[method] {
+		return "required"
+	}
+	if user_method_disabled(user, method) || !user_method_available(user, method) {
+		return "disabled"
+	}
+	return "allowed"
+}
+
+// user_method_usable reports whether a method can sign the user in right
+// now: the operator permits it, the user hasn't disabled it, and the
+// credential exists.
+func user_method_usable(user *User, method string) bool {
+	return auth_method_state(method) != "disabled" && !user_method_disabled(user, method) && user_method_available(user, method)
+}
+
+// user_login_factors returns the address-then-prove factors the login
+// screen offers after the user enters their email — email code, passkey,
+// authenticator — filtered to those usable for this account. OAuth is
+// excluded because its buttons identify the user before any address is
+// typed, so they're driven by the system settings, not per-user state.
+func user_login_factors(user *User) []string {
+	var out []string
+	for _, m := range []string{"email", "passkey", "totp"} {
+		if user_method_usable(user, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// user_has_login_factor reports whether at least one primary factor would
+// remain usable given the proposed required/disabled sets — the guard that
+// stops a user locking themselves out by disabling their last way in.
+func user_has_login_factor(user *User, required, disabled map[string]bool) bool {
+	for _, m := range auth_factor_list {
+		if disabled[m] || auth_method_state(m) == "disabled" {
+			continue
+		}
+		// A required factor was checked for availability when it was set;
+		// otherwise confirm the credential exists.
+		if required[m] || user_method_available(user, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// user_methods_configure sets one login method to a state ("disabled",
+// "allowed", or "required") for the user, enforcing the operator policy
+// floor/ceiling, credential availability, and the at-least-one-factor
+// rule. Returns "" on success, or a short error code the caller maps to a
+// translated message: "invalid" (unknown method/state), "blocked" (policy
+// forbids it), "credential" (nothing to enable), "last" (would remove the
+// user's only way to sign in).
+func user_methods_configure(user *User, method, state string) string {
+	known := false
+	for _, m := range auth_method_list {
+		if m == method {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return "invalid"
+	}
+	if state != "disabled" && state != "allowed" && state != "required" {
+		return "invalid"
+	}
+	// Recovery and OAuth can't be "required": recovery is single-use
+	// break-glass, and OAuth satisfies the email factor (auth_remaining_oauth
+	// maps it to email), so requiring it separately could never complete.
+	// Both are allowed or disabled only.
+	if (method == "recovery" || method == "oauth") && state == "required" {
+		return "invalid"
+	}
+
+	// Operator policy bounds the per-user choice.
+	system := auth_method_state(method)
+	if system == "disabled" && state != "disabled" {
+		return "blocked"
+	}
+	if system == "required" && state != "required" {
+		return "blocked"
+	}
+
+	// Enabling a credential-backed factor needs the credential present.
+	if state != "disabled" && !user_method_available(user, method) {
+		return "credential"
+	}
+
+	required := methods_parse(user.Methods)
+	disabled := methods_parse(user.Disabled)
+	delete(required, method)
+	delete(disabled, method)
+	switch state {
+	case "required":
+		required[method] = true
+	case "disabled":
+		disabled[method] = true
+	}
+
+	if !user_has_login_factor(user, required, disabled) {
+		return "last"
+	}
+
+	methods := methods_join(required)
+	off := methods_join(disabled)
+	db := db_open("db/users.db")
+	db.exec("update users set methods=?, disabled=? where uid=?", methods, off, user.UID)
+	replication_emit_users_users_set(user.UID, map[string]string{"methods": methods, "disabled": off})
+	audit_password_changed(user.Username, "methods_changed")
+	return ""
+}
 
 // POST /_/auth/methods - Complete additional MFA factor
 func web_auth_mfa(c *gin.Context) {
@@ -557,6 +770,54 @@ func api_user_methods_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl_encode(methods), nil
 }
 
+// mochi.user.methods.states() -> dict: the user's per-method login state,
+// keyed by method (email, passkey, totp, oauth, recovery). Each value is a
+// dict {state, system, available}: state is the effective per-user setting
+// ("disabled"|"allowed"|"required"), system is the operator policy, and
+// available reports whether the credential the method needs exists.
+func api_user_methods_states(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	out := map[string]any{}
+	for _, m := range auth_method_list {
+		out[m] = map[string]any{
+			"state":     user_method_state(user, m),
+			"system":    auth_method_state(m),
+			"available": user_method_available(user, m),
+		}
+	}
+	return sl_encode(out), nil
+}
+
+// mochi.user.methods.configure(method, state) -> string: set one login
+// method's per-user state ("disabled" | "allowed" | "required"). Returns
+// "" on success, or an error code ("invalid" | "blocked" | "credential" |
+// "last") the calling action maps to a translated message.
+func api_user_methods_configure(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	var method, state string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "method", &method, "state", &state); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	return sl.String(user_methods_configure(user, method, state)), nil
+}
+
 // mochi.user.methods.set(methods) -> bool: Set user's required authentication methods
 func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
@@ -635,9 +896,12 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	methods_csv := strings.Join(methods, ",")
-	db.exec("update users set methods=? where uid=?", methods_csv, user.UID)
-	replication_emit_users_users_set(user.UID, map[string]string{"methods": methods_csv})
+	// The list-based setter expresses only the required set; it carries no
+	// "disabled" concept, so clear the per-user disabled list — everything
+	// not required becomes allowed.
+	csv := strings.Join(methods, ",")
+	db.exec("update users set methods=?, disabled='' where uid=?", csv, user.UID)
+	replication_emit_users_users_set(user.UID, map[string]string{"methods": csv, "disabled": ""})
 	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
@@ -676,8 +940,8 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	if target != nil {
 		target_name = target.Username
 	}
-	db.exec("update users set methods='email' where uid=?", id)
-	replication_emit_users_users_set(id, map[string]string{"methods": "email"})
+	db.exec("update users set methods='email', disabled='' where uid=?", id)
+	replication_emit_users_users_set(id, map[string]string{"methods": "email", "disabled": ""})
 	audit_password_changed(target_name, "admin_reset")
 	return sl.True, nil
 }
@@ -814,6 +1078,9 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// setup: validate the code and advance the re-authentication accrual,
 	// returning the step-up result dict, or None on a bad code.
 	if verified == 1 {
+		if user_method_disabled(user, "totp") {
+			return sl.None, nil
+		}
 		if !totp.Validate(code, secret) {
 			return sl.None, nil
 		}
@@ -946,6 +1213,13 @@ func web_recovery_login(c *gin.Context) {
 	}
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
+		return
+	}
+
+	// Refuse if the user has turned recovery codes off as a login factor.
+	if user_method_disabled(user, "recovery") {
+		audit_login_failed(input.Username, rate_limit_client_ip(c), "recovery_disabled")
+		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
 

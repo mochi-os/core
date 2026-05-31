@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 72
+	schema_version = 73
 )
 
 var (
@@ -159,7 +159,7 @@ func db_create() {
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active', restore_source text not null default '')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active', restore_source text not null default '')")
 	users.exec("create unique index users_username on users (username)")
 
 	// Services the user must re-link after a server move (restore). Populated
@@ -740,6 +740,8 @@ func db_upgrade() {
 			db_upgrade_71()
 		case 72:
 			db_upgrade_72()
+		case 73:
+			db_upgrade_73()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1066,6 +1068,19 @@ func db_upgrade_72() {
 	directory := db_open("db/directory.db")
 	if col, _ := directory.exists("select 1 from pragma_table_info('entities') where name='version'"); !col {
 		directory.exec("alter table entities add column version integer not null default 0")
+	}
+}
+
+// db_upgrade_73 adds the disabled column to users: a CSV of login methods
+// the user has explicitly turned off, the complement of the required
+// methods column. A method that is neither required nor disabled is
+// "allowed" (a usable but optional sign-in factor). Existing rows default
+// to '' (nothing explicitly disabled), so behaviour is unchanged on
+// upgrade. Idempotent.
+func db_upgrade_73() {
+	users := db_open("db/users.db")
+	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='disabled'"); !col {
+		users.exec("alter table users add column disabled text not null default ''")
 	}
 }
 

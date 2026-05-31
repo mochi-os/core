@@ -361,7 +361,7 @@ func TestAppActiveFor(t *testing.T) {
 
 	// Create users database for user preference tests
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	db.exec("insert into users (uid, username) values ('u1', 'test@example.com')")
 
 	// Create user directory for user.db
@@ -462,7 +462,7 @@ func create_test_cleanup_env(t *testing.T) func() {
 
 	// Create users database
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 
 	// Save original apps map
 	orig_apps := apps
@@ -962,7 +962,7 @@ func create_test_routing_env(t *testing.T) func() {
 
 	// Create users database
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	db.exec("insert into users (uid, username) values ('u1', 'user1@example.com')")
 	db.exec("insert into users (uid, username) values ('u2', 'user2@example.com')")
 
@@ -1152,7 +1152,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 
 	// Create users database
 	db := db_open("db/users.db")
-	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	db.exec("insert into users (uid, username) values ('u1', 'test@example.com')")
 	os.MkdirAll(data_dir+"/users/1", 0755)
 

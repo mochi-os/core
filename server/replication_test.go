@@ -139,7 +139,7 @@ func setup_replication_test(t *testing.T) func() {
 // the v53 schema: uid is the PK on users, FKs reference users(uid).
 func setup_users_test_schema() {
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	users.exec("create unique index users_username on users (username)")
 	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	users.exec("create index entities_user on entities(user)")

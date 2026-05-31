@@ -3370,8 +3370,9 @@ func replication_system_row_apply_delegations(originPeer string, s *SystemRow) {
 // (uid is the row key; role/username belong on the pair-only path
 // because they're per-operator decisions, not per-user data).
 var replication_users_users_mutable = map[string]bool{
-	"methods": true,
-	"status":  true,
+	"methods":  true,
+	"disabled": true,
+	"status":   true,
 }
 
 // replication_emit_users_users_set emits a partial update for one row

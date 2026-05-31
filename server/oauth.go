@@ -502,8 +502,12 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 			oauth_error_redirect(c, "suspended", nil)
 			return
 		}
-		if strings.Contains(user.Methods, "passkey") {
-			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disallowed")
+		// Refuse only if the user has explicitly disabled OAuth as a login
+		// factor. Other required factors are not bypassed: OAuth counts as
+		// the email factor, so auth_remaining_oauth still forces a passkey
+		// or authenticator step when one is required.
+		if user_method_disabled(user, "oauth") {
+			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disabled")
 			oauth_error_redirect(c, "oauth_disallowed", nil)
 			return
 		}
@@ -513,12 +517,20 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target strin
 
 		rate_limit_login.reset(rate_limit_client_ip(c))
 
-		// MFA: OAuth is treated as equivalent to email for "what factors
-		// are still required" purposes.
+		// OAuth proves a linked account, not the email factor, so any methods
+		// the user requires must still be completed as MFA.
 		remaining := auth_remaining_oauth(user)
 		if len(remaining) > 0 {
+			// If email is one of them, send the code now, as the other
+			// non-email first factors (TOTP, passkey) do.
+			for _, method := range remaining {
+				if method == "email" {
+					code_send(user.Username, c)
+					break
+				}
+			}
 			partial := random_alphanumeric(32)
-			partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
+			partial_create(db_open("db/sessions.db"), partial, user.UID, "oauth", strings.Join(remaining, ","), now()+300)
 			web_cookie_set(c, "oauth_partial", partial)
 			c.Redirect(http.StatusFound, "/login/codes")
 			return
@@ -910,10 +922,10 @@ func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 
 // oauth_reauthenticate completes a popup OAuth step-up: it confirms the
 // authenticated provider identity is already linked to the user, advances the
-// email-equivalent re-authentication factor, and stashes the resulting proof
-// (token or remaining factors) keyed by the caller's challenge for
-// verify.finish to retrieve. Always renders the auto-close page; a mismatched
-// account simply stores nothing, so finish returns None.
+// oauth re-authentication factor, and stashes the resulting proof (token or
+// remaining factors) keyed by the caller's challenge for verify.finish to
+// retrieve. Always renders the auto-close page; a mismatched account simply
+// stores nothing, so finish returns None.
 func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, user *User, challenge string) {
 	users := db_open("db/users.db")
 	owner := ""
@@ -921,11 +933,11 @@ func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, use
 		owner, _ = row["user"].(string)
 	}
 
-	if owner != "" && owner == user.UID {
+	if owner != "" && owner == user.UID && !user_method_disabled(user, "oauth") {
 		oauth_update_profile(users, provider, p)
 		oauth_verification_record(users, provider, p.Subject, user.UID)
 
-		token, remaining := reauthentication_advance(user, "email")
+		token, remaining := reauthentication_advance(user, "oauth")
 		result := map[string]any{}
 		if token != "" {
 			result["token"] = token
@@ -1172,8 +1184,14 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 
 		remaining := auth_remaining_oauth(user)
 		if len(remaining) > 0 {
+			for _, method := range remaining {
+				if method == "email" {
+					code_send(user.Username, c)
+					break
+				}
+			}
 			partial := random_alphanumeric(32)
-			partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
+			partial_create(db_open("db/sessions.db"), partial, user.UID, "oauth", strings.Join(remaining, ","), now()+300)
 			code, err := oauth_mobile_store(st.Challenge, map[string]any{
 				"mfa":       true,
 				"partial":   partial,

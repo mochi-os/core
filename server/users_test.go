@@ -22,7 +22,7 @@ func create_test_users_db(t *testing.T) func() {
 
 	// Create users table (mirrors db_create — uid is the PK, no integer id).
 	db := db_open("db/users.db")
-	db.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
+	db.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	db.exec("create unique index users_username on users (username)")
 
 	cleanup := func() {

@@ -9,12 +9,14 @@
 // and the action consumes it with reauthentication_consume before doing
 // its work.
 //
-// The required factor set is the user's login methods (user.Methods),
-// with oauth mapped to email (no stateless OAuth re-verify) and recovery
-// excluded (break-glass, not a routine re-auth) — so the proof is never
-// below the user's own login bar. The reauthentication table lives in
-// sessions.db and replicates like codes/partial, so a proof earned on one
-// host is honoured if the action lands on another within the host set.
+// The required factor set is the user's login methods (user.Methods), with
+// recovery excluded (break-glass, not a routine re-auth) - so the proof is
+// never below the user's own login bar. OAuth re-verifies as its own oauth
+// factor: a linked provider proves the provider account, not the email
+// inbox, so an account that requires email at login requires a real email
+// code at step-up, never a provider sign-in. The reauthentication table
+// lives in sessions.db and replicates like codes/partial, so a proof earned
+// on one host is honoured if the action lands on another within the host set.
 
 package main
 
@@ -33,21 +35,16 @@ type Reauthentication struct {
 	Expires int64
 }
 
-// reauthentication_required returns the factors the user must re-verify
-// for a step-up: their login methods, oauth->email, recovery excluded.
-// Defaults to email when no methods are configured.
+// reauthentication_required returns the factors the user must re-verify for
+// a step-up: their required login methods, recovery excluded. Empty when
+// nothing is required - any one usable factor then satisfies the step-up
+// (mirroring all-allowed login). The verify verbs refuse a method the user
+// has disabled, so "any one" never admits a turned-off factor.
 func reauthentication_required(user *User) []string {
-	raw := user.Methods
-	if strings.TrimSpace(raw) == "" {
-		raw = "email"
-	}
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range strings.Split(raw, ",") {
+	for _, m := range strings.Split(user.Methods, ",") {
 		m = strings.TrimSpace(m)
-		if m == "oauth" {
-			m = "email"
-		}
 		if m == "" || m == "recovery" {
 			continue
 		}
@@ -56,8 +53,10 @@ func reauthentication_required(user *User) []string {
 			out = append(out, m)
 		}
 	}
-	if len(out) == 0 {
-		out = []string{"email"}
+	// Email required server-wide is part of the bar at login, so step-up must
+	// clear it too (never weaker than login).
+	if auth_method_state("email") == "required" && !seen["email"] {
+		out = append(out, "email")
 	}
 	return out
 }

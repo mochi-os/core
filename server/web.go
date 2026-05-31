@@ -963,7 +963,6 @@ func web_login_begin(c *gin.Context) {
 	}
 
 	// Check if user exists
-	db := db_open("db/users.db")
 	user := user_by_username(input.Email)
 
 	if user == nil {
@@ -975,29 +974,33 @@ func web_login_begin(c *gin.Context) {
 		// New user - default to email method
 		c.JSON(http.StatusOK, gin.H{
 			"methods": []string{"email"},
+			"allowed": []string{"email"},
 			"new":     true,
 		})
 		return
 	}
 
-	// Get user's required methods
-	methods := []string{"email"}
-	if user.Methods != "" {
-		methods = strings.Split(user.Methods, ",")
-		for i := range methods {
-			methods[i] = strings.TrimSpace(methods[i])
+	// The required factors are AND-ed at login (empty = any one allowed
+	// factor suffices). allowed is the set the login screen offers after
+	// email entry: email code, passkey, authenticator — filtered to those
+	// usable for this account, with anything the user disabled removed.
+	var methods []string
+	for _, m := range strings.Split(user.Methods, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			methods = append(methods, m)
 		}
 	}
-
-	// Check if user has passkey as an alternative login method
+	allowed := user_login_factors(user)
 	has_passkey := false
-	count, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
-	if count != nil && count["count"].(int64) > 0 {
-		has_passkey = true
+	for _, m := range allowed {
+		if m == "passkey" {
+			has_passkey = true
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"methods":     methods,
+		"allowed":     allowed,
 		"has_passkey": has_passkey,
 	})
 }
@@ -1006,7 +1009,7 @@ func web_identity_get(c *gin.Context) {
 	user_by_id_allow_no_identity := func(id string) *User {
 		db := db_open("db/users.db")
 		var user User
-		if !db.scan(&user, "select uid, username, role, methods, status from users where uid=?", id) {
+		if !db.scan(&user, "select uid, username, role, methods, disabled, status from users where uid=?", id) {
 			return nil
 		}
 		user.Preferences = user_preferences_load(&user)

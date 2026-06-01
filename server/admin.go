@@ -75,9 +75,7 @@ func admin_health(c *gin.Context) {
 // to the rest of the Mochi network.
 func admin_identity(c *gin.Context) {
 	if net_me == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "net not started",
-		})
+		respond_error(c, http.StatusServiceUnavailable, "net_not_started", "errors.net_not_started", nil)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

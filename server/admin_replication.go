@@ -142,10 +142,7 @@ func admin_replication_resync(c *gin.Context) {
 	// guard.
 	udb := db_open("db/users.db")
 	if has, _ := udb.exists("select 1 from users limit 1"); has {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error":   "populated_server",
-			"message": "This server has users; bulk bootstrap requires a fresh install. Run 'mochictl replica join' on a fresh replica instead.",
-		})
+		respond_error(c, http.StatusForbidden, "populated_server", "errors.populated_server", nil)
 		return
 	}
 

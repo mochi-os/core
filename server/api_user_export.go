@@ -66,13 +66,47 @@ type export_entity struct {
 // export_account is the user's core users.db row plus entity records.
 // username and role are recorded for the user's own reference (GDPR
 // completeness) but are operator-owned and never imported on restore.
+// methods/disabled (the per-user login-requirement config) ARE imported on
+// restore, filtered to the factors whose credential can be re-established on
+// the destination (see restore_safe_methods).
 type export_account struct {
 	UID      string          `json:"uid"`
 	Username string          `json:"username"`
 	Role     string          `json:"role"`
 	Methods  string          `json:"methods"`
+	Disabled string          `json:"disabled"`
 	Status   string          `json:"status"`
 	Entities []export_entity `json:"entities"`
+	// Passkeys can't be restored (they're bound to the source origin), so
+	// they don't travel in the bundle. Recording that the account HAD them
+	// lets the destination prompt the user to re-register on the new host.
+	Passkeys bool `json:"passkeys"`
+}
+
+// export_totp is the user's authenticator secret. The secret is device
+// independent (unlike a passkey, which is bound to its origin), so it can be
+// restored and the user's existing authenticator entries keep working.
+type export_totp struct {
+	Secret   string `json:"secret"`
+	Verified int64  `json:"verified"`
+	Created  int64  `json:"created"`
+}
+
+// export_recovery is one stored recovery-code hash. Restoring the hashes
+// means the user's already-saved codes keep working on the destination.
+type export_recovery struct {
+	Hash    string `json:"hash"`
+	Created int64  `json:"created"`
+}
+
+// export_secrets is the passphrase-encrypted secrets.age payload: the
+// credentials that are safe and reliable to restore (authenticator secret,
+// recovery-code hashes). Passkeys are deliberately excluded — they're bound
+// to the source origin and won't authenticate after a server/domain move, so
+// the user re-registers them on the destination.
+type export_secrets struct {
+	Totp     *export_totp      `json:"totp"`
+	Recovery []export_recovery `json:"recovery"`
 }
 
 // export_schedule is one durable scheduled event from core schedule.db.
@@ -210,6 +244,9 @@ func user_export(uid, app, passphrase string) (string, error) {
 	if err := export_keys_age(udb, uid, passphrase, filepath.Join(tree, "keys.age")); err != nil {
 		return "", err
 	}
+	if err := export_secrets_age(udb, uid, passphrase, filepath.Join(tree, "secrets.age")); err != nil {
+		return "", err
+	}
 
 	// Manifest: hash every staged file, then sign the lot with the
 	// primary entity key.
@@ -339,11 +376,15 @@ func export_hash(path string) (string, int64, error) {
 // records to user.json. Credentials are never included.
 func export_account_json(udb *DB, uid string, primary *Entity, path string) error {
 	account := export_account{UID: uid, Username: primary.User, Entities: []export_entity{}}
-	if row, _ := udb.row("select username, role, methods, status from users where uid=?", uid); row != nil {
+	if row, _ := udb.row("select username, role, methods, disabled, status from users where uid=?", uid); row != nil {
 		account.Username, _ = row["username"].(string)
 		account.Role, _ = row["role"].(string)
 		account.Methods, _ = row["methods"].(string)
+		account.Disabled, _ = row["disabled"].(string)
 		account.Status, _ = row["status"].(string)
+	}
+	if row, _ := udb.row("select count(*) as count from credentials where user=?", uid); row != nil {
+		account.Passkeys = as_int64(row["count"]) > 0
 	}
 	var entities []Entity
 	if err := udb.scans(&entities, "select * from entities where user=?", uid); err != nil {
@@ -419,6 +460,58 @@ func export_keys_age(udb *DB, uid, passphrase, path string) error {
 		return err
 	}
 
+	recipient, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return fmt.Errorf("passphrase recipient: %w", err)
+	}
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	w, err := age.Encrypt(out, recipient)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(plain); err != nil {
+		w.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return out.Close()
+}
+
+// export_secrets_age writes the user's restorable auth credentials
+// (authenticator secret + recovery-code hashes) to secrets.age,
+// passphrase-encrypted with age (scrypt) — the same protection tier as
+// keys.age, which already carries the entity private keys. Always written so
+// the restore path is uniform; an account with neither yields empty fields.
+func export_secrets_age(udb *DB, uid, passphrase, path string) error {
+	secrets := export_secrets{Recovery: []export_recovery{}}
+	if row, _ := udb.row("select secret, verified, created from totp where user=?", uid); row != nil {
+		if secret := as_string(row["secret"]); secret != "" {
+			secrets.Totp = &export_totp{
+				Secret:   secret,
+				Verified: as_int64(row["verified"]),
+				Created:  as_int64(row["created"]),
+			}
+		}
+	}
+	if rows, _ := udb.rows("select hash, created from recovery where user=?", uid); rows != nil {
+		for _, r := range rows {
+			secrets.Recovery = append(secrets.Recovery, export_recovery{
+				Hash:    as_string(r["hash"]),
+				Created: as_int64(r["created"]),
+			})
+		}
+	}
+
+	plain, err := json.Marshal(secrets)
+	if err != nil {
+		return err
+	}
 	recipient, err := age.NewScryptRecipient(passphrase)
 	if err != nil {
 		return fmt.Errorf("passphrase recipient: %w", err)

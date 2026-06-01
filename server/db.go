@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 74
+	schema_version = 75
 )
 
 var (
@@ -159,7 +159,7 @@ func db_create() {
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0)")
 	users.exec("create unique index users_username on users (username)")
 
 	// Services the user must re-link after a server move (restore). Populated
@@ -744,6 +744,8 @@ func db_upgrade() {
 			db_upgrade_73()
 		case 74:
 			db_upgrade_74()
+		case 75:
+			db_upgrade_75()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1100,6 +1102,17 @@ func db_upgrade_73() {
 func db_upgrade_74() {
 	users := db_open("db/users.db")
 	users.exec("update users set methods='' where methods='email'")
+}
+
+// db_upgrade_75 adds the restore_passkeys flag to users: set on restore when
+// the source account had registered passkeys, so the post-restore banner can
+// prompt the user to re-register them (passkeys are bound to the source
+// origin and don't travel in a backup). Idempotent.
+func db_upgrade_75() {
+	users := db_open("db/users.db")
+	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='restore_passkeys'"); !col {
+		users.exec("alter table users add column restore_passkeys integer not null default 0")
+	}
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

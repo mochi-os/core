@@ -385,7 +385,7 @@ func web_shell_init(c *gin.Context) {
 	// restore.show preference to "false" (account-wide, survives reload).
 	if user.Preferences["restore.show"] != "false" {
 		udb := db_open("db/users.db")
-		if row, _ := udb.row("select restore_source from users where uid=?", user.UID); row != nil {
+		if row, _ := udb.row("select restore_source, restore_passkeys from users where uid=?", user.UID); row != nil {
 			if source := as_string(row["restore_source"]); source != "" {
 				result["restoreSource"] = source
 				relinks := []gin.H{}
@@ -395,6 +395,11 @@ func web_shell_init(c *gin.Context) {
 					}
 				}
 				result["relinks"] = relinks
+				// The source had passkeys, which can't be restored — prompt
+				// the user to re-register them here.
+				if as_int64(row["restore_passkeys"]) == 1 {
+					result["restorePasskeys"] = true
+				}
 			}
 		}
 	}

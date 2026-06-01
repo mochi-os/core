@@ -23,8 +23,13 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	// create_test_users_db uses the pre-v70 users schema; add the column
 	// the restore path writes.
 	db.exec("alter table users add column restore_source text not null default ''")
+	db.exec("alter table users add column restore_passkeys integer not null default 0")
 	db.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	db.exec("create table relinks (user text not null, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
+	// Tables the auth-restore path reads and writes.
+	db.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	db.exec("create table recovery (id integer primary key, user text not null, hash text not null, created integer not null)")
+	db.exec("create table credentials (id text not null primary key, user text not null, public_key blob, sign_count integer, name text, transports text, backup_eligible integer, backup_state integer, created integer)")
 	sched := db_open("db/schedule.db")
 	sched.exec("create table schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 	settings := db_open("db/settings.db")
@@ -48,6 +53,16 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	db.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, ?, ?, ?, '', 'person', 'Src', 'private', '', 0)",
 		id, private, fingerprint(id), src)
 	sched.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, 'chat', 555, 'remind', '{}', 0, 1)", src)
+
+	// Restorable auth credentials: a verified authenticator secret, two
+	// recovery-code hashes, and a 2FA requirement (email + authenticator).
+	db.exec("update users set methods='email,totp' where uid=?", src)
+	db.exec("insert into totp (user, secret, verified, created) values (?, 'JBSWY3DPEHPK3PXP', 1, 100)", src)
+	db.exec("insert into recovery (user, hash, created) values (?, 'hash-a', 100)", src)
+	db.exec("insert into recovery (user, hash, created) values (?, 'hash-b', 100)", src)
+	// A registered passkey: not restored (origin-bound), but the destination
+	// records that the source had one so the banner can prompt re-registration.
+	db.exec("insert into credentials (id, user, created) values ('cred-1', ?, 100)", src)
 
 	attach := filepath.Join(data_dir, "users", src, "chat", "files")
 	if err := os.MkdirAll(attach, 0o700); err != nil {
@@ -79,6 +94,13 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
+	// Decrypt secrets before the swap (the real flow decrypts in
+	// web_auth_restore, before restore_apply runs the swap that consumes
+	// secrets.age from the bundle).
+	secrets, err := restore_decrypt_secrets(filepath.Join(bundle, "secrets.age"), passphrase)
+	if err != nil {
+		t.Fatalf("decrypt secrets: %v", err)
+	}
 	var account export_account
 	if err := restore_read_json(filepath.Join(bundle, "user.json"), &account); err != nil {
 		t.Fatalf("user.json: %v", err)
@@ -100,6 +122,7 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	}
 	restore_entities(dst, account, keys)
 	restore_schedule(dst, bundle)
+	restore_auth(dst, account, secrets)
 	restore_finish_account(dst, manifest, bundle)
 
 	// ---- Assertions on the destination ----
@@ -126,5 +149,67 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	row, _ := db.row("select restore_source from users where uid=?", dst)
 	if row == nil || as_string(row["restore_source"]) != "https://test.example" {
 		t.Errorf("restore_source = %v, want https://test.example", row)
+	}
+
+	// Authenticator secret restored (device-independent, so it travels).
+	trow, _ := db.row("select secret, verified from totp where user=?", dst)
+	if trow == nil || as_string(trow["secret"]) != "JBSWY3DPEHPK3PXP" || as_int64(trow["verified"]) != 1 {
+		t.Errorf("totp not restored: %v", trow)
+	}
+	// Recovery-code hashes restored (the user's saved codes keep working).
+	if n, _ := db.row("select count(*) as count from recovery where user=?", dst); n == nil || as_int64(n["count"]) != 2 {
+		t.Errorf("recovery codes = %v, want 2", n)
+	}
+	// The 2FA requirement (email + authenticator) carries over, since the
+	// authenticator came back verified.
+	mrow, _ := db.row("select methods, disabled from users where uid=?", dst)
+	if mrow == nil || as_string(mrow["methods"]) != "email,totp" {
+		t.Errorf("methods = %v, want email,totp", mrow)
+	}
+	if mrow != nil && as_string(mrow["disabled"]) != "" {
+		t.Errorf("disabled = %q, want empty", as_string(mrow["disabled"]))
+	}
+	// The source had a passkey; the destination flags it for the re-register
+	// banner (passkeys themselves don't travel).
+	if prow, _ := db.row("select restore_passkeys from users where uid=?", dst); prow == nil || as_int64(prow["restore_passkeys"]) != 1 {
+		t.Errorf("restore_passkeys = %v, want 1", prow)
+	}
+}
+
+// TestRestoreSafeMethods verifies the filter never carries a requirement onto
+// a factor that can't be re-established on the destination, and never leaves
+// the user with no usable login path.
+func TestRestoreSafeMethods(t *testing.T) {
+	cases := []struct {
+		name             string
+		methods, disabled string
+		totp, recovery   bool
+		wantMethods      string
+		wantDisabled     string
+	}{
+		// Authenticator restored: a 2FA requirement carries over intact.
+		{"2fa-totp-restored", "email,totp", "", true, true, "email,totp", ""},
+		// Authenticator NOT restored: drop the totp requirement (else lockout).
+		{"2fa-totp-missing", "email,totp", "", false, false, "email", ""},
+		// Passkey-only required, passkey can't be restored: requirement dropped.
+		{"passkey-required", "passkey", "", false, false, "", ""},
+		// Passkey-only with email explicitly disabled, passkey gone: un-disable
+		// email so the user isn't locked out.
+		{"passkey-only-email-disabled", "passkey", "email", false, false, "", ""},
+		// Disabling an unavailable factor (passkey) is harmless and preserved.
+		{"disable-passkey", "", "passkey", false, false, "", "passkey"},
+		// Most users: nothing required, nothing disabled.
+		{"baseline", "", "", false, false, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, d := restore_safe_methods(c.methods, c.disabled, c.totp, c.recovery)
+			if m != c.wantMethods {
+				t.Errorf("methods = %q, want %q", m, c.wantMethods)
+			}
+			if d != c.wantDisabled {
+				t.Errorf("disabled = %q, want %q", d, c.wantDisabled)
+			}
+		})
 	}
 }

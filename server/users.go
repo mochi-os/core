@@ -41,9 +41,10 @@ type User struct {
 	Role          string
 	Methods       string
 	Disabled      string
-	Status        string
-	RestoreSource string `db:"restore_source"`
-	Preferences   map[string]string
+	Status          string
+	RestoreSource   string `db:"restore_source"`
+	RestorePasskeys bool   `db:"restore_passkeys"`
+	Preferences     map[string]string
 	Identity      *Entity
 	db            *DB // Used by actions
 }

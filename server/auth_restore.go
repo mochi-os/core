@@ -209,7 +209,11 @@ func web_auth_restore(c *gin.Context) {
 	session := login_create(uid, c.ClientIP(), c.Request.UserAgent())
 	web_cookie_set(c, "session", session)
 	restore_progress(uid, "validated", 5, "")
-	go restore_apply(uid, bundle, manifest, account, keys)
+	// secrets.age (authenticator secret + recovery hashes) is optional —
+	// absent from pre-secrets bundles. Decrypted with the same passphrase;
+	// ignore the error and restore without it when missing.
+	secrets, _ := restore_decrypt_secrets(filepath.Join(bundle, "secrets.age"), passphrase)
+	go restore_apply(uid, bundle, manifest, account, keys, secrets)
 
 	c.JSON(http.StatusOK, gin.H{"status": "pending", "uid": uid})
 }
@@ -218,7 +222,7 @@ func web_auth_restore(c *gin.Context) {
 // staged tree into place, re-insert core rows, install entity keys, then
 // flip the user to active. On any failure the placeholder is deleted
 // (which removes users/<uid>/ entirely), matching replication cleanup.
-func restore_apply(uid, bundle string, manifest export_manifest, account export_account, keys map[string]string) {
+func restore_apply(uid, bundle string, manifest export_manifest, account export_account, keys map[string]string, secrets *export_secrets) {
 	fail := func(reason string) {
 		warn("Restore failed for user %q: %s", uid, reason)
 		restore_progress(uid, "error", 100, reason)
@@ -246,6 +250,7 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	restore_progress(uid, "linking", 75, "")
 	restore_entities(uid, account, keys)
 	restore_schedule(uid, bundle)
+	restore_auth(uid, account, secrets)
 	restore_finish_account(uid, manifest, bundle)
 
 	// Migrations run lazily on first app access via db_open's forward
@@ -277,7 +282,7 @@ func restore_swap(uid, bundle string) error {
 	}
 	for _, e := range entries {
 		switch e.Name() {
-		case "manifest.json", "user.json", "schedule.json", "linked.json", "keys.age":
+		case "manifest.json", "user.json", "schedule.json", "linked.json", "keys.age", "secrets.age":
 			continue
 		}
 		dst := filepath.Join(dest, e.Name())
@@ -418,6 +423,119 @@ func restore_decrypt_keys(path, passphrase string) (map[string]string, error) {
 		return nil, err
 	}
 	return keys, nil
+}
+
+// restore_decrypt_secrets decrypts secrets.age with the passphrase. Returns
+// (nil, err) when the file is absent (pre-secrets bundle) — the caller treats
+// that as "no restorable auth credentials" and restores without them.
+func restore_decrypt_secrets(path, passphrase string) (*export_secrets, error) {
+	if passphrase == "" {
+		return nil, fmt.Errorf("passphrase required")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	identity, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := age.Decrypt(f, identity)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	var secrets export_secrets
+	if err := json.Unmarshal(plain, &secrets); err != nil {
+		return nil, err
+	}
+	return &secrets, nil
+}
+
+// restore_auth re-establishes the authenticator secret and recovery-code
+// hashes that travel safely (the device-independent credentials), then
+// restores the per-user login-requirement config filtered to the factors
+// that are actually usable on the destination — so a requirement on a factor
+// that couldn't come back (a passkey, an unverified authenticator) can never
+// lock the user out. Passkeys and OAuth links are re-established by the user.
+func restore_auth(uid string, account export_account, secrets *export_secrets) {
+	udb := db_open("db/users.db")
+	totp_restored := false
+	recovery_restored := false
+
+	if secrets != nil {
+		if t := secrets.Totp; t != nil && t.Secret != "" {
+			udb.exec("replace into totp (user, secret, verified, created) values (?, ?, ?, ?)",
+				uid, t.Secret, t.Verified, t.Created)
+			totp_restored = t.Verified == 1
+		}
+		for _, r := range secrets.Recovery {
+			if r.Hash == "" {
+				continue
+			}
+			udb.exec("insert into recovery (user, hash, created) values (?, ?, ?)", uid, r.Hash, r.Created)
+			recovery_restored = true
+		}
+	}
+
+	methods, disabled := restore_safe_methods(account.Methods, account.Disabled, totp_restored, recovery_restored)
+	// Record that the source had passkeys so the post-restore banner can
+	// prompt re-registration — passkeys are bound to the source origin and
+	// can't be restored.
+	passkeys := 0
+	if account.Passkeys {
+		passkeys = 1
+	}
+	udb.exec("update users set methods=?, disabled=?, restore_passkeys=? where uid=?", methods, disabled, passkeys, uid)
+}
+
+// restore_safe_methods filters a bundle's methods (required) and disabled
+// sets down to what's safe on the destination, where only email (always),
+// the restored authenticator, and restored recovery codes are usable —
+// passkeys and OAuth aren't yet re-established. It (1) drops any required
+// factor whose credential isn't available, (2) never leaves the user with no
+// usable login path (un-disabling email as the guaranteed fallback), and (3)
+// never requires a disabled factor. Output is canonical-ordered for
+// replication determinism.
+func restore_safe_methods(methods_csv, disabled_csv string, totp_restored, recovery_restored bool) (string, string) {
+	required := methods_parse(methods_csv)
+	disabled := methods_parse(disabled_csv)
+	available := map[string]bool{
+		"email":    true,
+		"totp":     totp_restored,
+		"recovery": recovery_restored,
+		// passkey and oauth are re-established by the user, not restored.
+	}
+
+	// Drop required factors we can't satisfy yet.
+	for m := range required {
+		if !available[m] {
+			delete(required, m)
+		}
+	}
+	// Guarantee a usable login path: if every available login factor is
+	// disabled, restore email as the fallback.
+	usable := false
+	for _, m := range []string{"email", "totp", "recovery"} {
+		if available[m] && !disabled[m] {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		delete(disabled, "email")
+	}
+	// A factor can't be both required and disabled.
+	for m := range required {
+		if disabled[m] {
+			delete(required, m)
+		}
+	}
+	return methods_join(required), methods_join(disabled)
 }
 
 // restore_primary_entity returns the id of the account's person-class

@@ -56,18 +56,22 @@ var permissions = []Permission{
 
 	// Restricted permissions
 	{"accounts/notify", true, false},
+	{"notifications/send", true, false},
 	{"permissions/manage", true, false},
 	{"settings/write", true, true},
+	{"user/export", true, false},
 	{"users/read", true, true},
 	{"webpush/send", true, false},
 }
 
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{
-	"check":  sl.NewBuiltin("mochi.permission.check", api_permission_check),
-	"grant":  sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
-	"level":  sl.NewBuiltin("mochi.permission.level", api_permission_level),
-	"list":   sl.NewBuiltin("mochi.permission.list", api_permission_list),
-	"revoke": sl.NewBuiltin("mochi.permission.revoke", api_permission_revoke),
+	"catalog": sl.NewBuiltin("mochi.permission.catalog", api_permission_catalog),
+	"check":   sl.NewBuiltin("mochi.permission.check", api_permission_check),
+	"grant":   sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
+	"level":   sl.NewBuiltin("mochi.permission.level", api_permission_level),
+	"list":    sl.NewBuiltin("mochi.permission.list", api_permission_list),
+	"name":    sl.NewBuiltin("mochi.permission.name", api_permission_name),
+	"revoke":  sl.NewBuiltin("mochi.permission.revoke", api_permission_revoke),
 })
 
 // permission_restricted returns whether a permission is restricted.
@@ -104,6 +108,36 @@ func permission_administrator(name string) bool {
 	}
 
 	return false
+}
+
+// permission_name resolves the human-readable, translated name for a permission
+// code in the given language. Dynamic url:/service: permissions are templated;
+// everything else resolves a "permissions.<code>" core label, with "/" in the
+// code mapped to "." to match the dotted core-label key convention.
+func permission_name(language, permission string) string {
+	if permission == "url:*" {
+		return resolve_core_label(language, "permissions.url.all", nil)
+	}
+	if strings.HasPrefix(permission, "url:") {
+		return resolve_core_label(language, "permissions.url", map[string]any{"domain": permission[4:]})
+	}
+	if strings.HasPrefix(permission, "service/") {
+		return resolve_core_label(language, "permissions.service", map[string]any{"service": permission[8:]})
+	}
+	return resolve_core_label(language, "permissions."+strings.ReplaceAll(permission, "/", "."), nil)
+}
+
+// thread_language resolves the request's language from a Starlark thread, using
+// the same priority as api_app_label: signed-in user preference, then the
+// thread-local language stashed by the request handler, then English.
+func thread_language(t *sl.Thread) string {
+	if user, _ := t.Local("user").(*User); user != nil {
+		return user_language(user)
+	}
+	if l, ok := t.Local("language").(string); ok && l != "" {
+		return l
+	}
+	return "en"
 }
 
 // permission_split splits a permission into name and object parts
@@ -244,7 +278,7 @@ func permission_revoke(u *User, app_id string, permission string) {
 }
 
 // permissions_list returns all permissions for an app for a user
-func permissions_list(u *User, app_id string) []map[string]any {
+func permissions_list(u *User, app_id, language string) []map[string]any {
 	if u == nil {
 		return nil
 	}
@@ -266,6 +300,7 @@ func permissions_list(u *User, app_id string) []map[string]any {
 
 		result = append(result, map[string]any{
 			"permission": full,
+			"name":       permission_name(language, full),
 			"granted":    granted,
 			"restricted": permission_restricted(full),
 			"admin":      permission_administrator(full),
@@ -511,8 +546,45 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 	}
 
-	perms := permissions_list(user, app_id)
+	perms := permissions_list(user, app_id, thread_language(t))
 	return sl_encode(perms), nil
+}
+
+// mochi.permission.catalog() -> list: List all defined permissions, each with
+// its code, translated name, and security flags. Dynamic url:/service:
+// permissions are not listed (they are named on demand via mochi.permission.name).
+func api_permission_catalog(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 0 {
+		return sl_error(fn, "syntax: no arguments")
+	}
+
+	language := thread_language(t)
+	result := make([]map[string]any, 0, len(permissions))
+	for _, p := range permissions {
+		result = append(result, map[string]any{
+			"permission": p.Name,
+			"name":       permission_name(language, p.Name),
+			"restricted": p.Restricted,
+			"admin":      p.AdminOnly,
+		})
+	}
+	return sl_encode(result), nil
+}
+
+// mochi.permission.name(permission) -> string: The human-readable, translated
+// name for a permission code, resolved in the request's language. Handles
+// dynamic url:/service: codes as well as the static catalog.
+func api_permission_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <permission: string>")
+	}
+
+	permission, ok := sl.AsString(args[0])
+	if !ok || permission == "" {
+		return sl_error(fn, "invalid permission")
+	}
+
+	return sl.String(permission_name(thread_language(t), permission)), nil
 }
 
 // mochi.permission.level(permission) -> string: Returns the permission's security

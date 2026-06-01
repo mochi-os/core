@@ -419,7 +419,7 @@ func TestPermissionsList(t *testing.T) {
 	permission_grant(user, app_id, "groups/manage")
 	permission_grant(user, app_id, "url:github.com")
 
-	perms := permissions_list(user, app_id)
+	perms := permissions_list(user, app_id, "en")
 
 	if len(perms) < 2 {
 		t.Errorf("permissions_list returned %d permissions, want at least 2", len(perms))
@@ -1044,7 +1044,7 @@ func TestPermissionNilUser(t *testing.T) {
 	permission_revoke(nil, "test-app", "groups/manage") // Should not panic
 
 	// permissions_list with nil user should return nil
-	perms := permissions_list(nil, "test-app")
+	perms := permissions_list(nil, "test-app", "en")
 	if perms != nil {
 		t.Error("permissions_list(nil, ...) should return nil")
 	}
@@ -1088,7 +1088,7 @@ func TestPermissionGrantIdempotent(t *testing.T) {
 	}
 
 	// Check that only one entry exists in the list
-	perms := permissions_list(user, app_id)
+	perms := permissions_list(user, app_id, "en")
 	count := 0
 	for _, p := range perms {
 		if p["permission"] == "groups/manage" {
@@ -1859,5 +1859,39 @@ func cleanup_test_data_dir(t *testing.T) {
 	t.Helper()
 	if data_dir != "" && data_dir != "/" {
 		os.RemoveAll(data_dir)
+	}
+}
+
+// TestPermissionCatalogAndName verifies that the permission catalog includes
+// every enforced permission and that permission_name resolves translated,
+// templated names (static, url, service, wildcard) via the core labels.
+func TestPermissionCatalogAndName(t *testing.T) {
+	load_core_labels()
+
+	// The catalog must list the permissions that are actually enforced,
+	// including the two that were previously missing from the slice.
+	have := map[string]bool{}
+	for _, p := range permissions {
+		have[p.Name] = true
+	}
+	for _, want := range []string{"notifications/send", "user/export", "accounts/read", "permissions/manage"} {
+		if !have[want] {
+			t.Errorf("permissions catalog missing %q", want)
+		}
+	}
+
+	cases := []struct{ lang, code, want string }{
+		{"en", "accounts/read", "Read connected accounts"},
+		{"en", "settings/write", "Change system settings"},
+		{"fr", "accounts/read", "Lire les comptes connectés"},
+		{"en", "url:github.com", "Access github.com"},
+		{"en", "url:*", "Access any website"},
+		{"en", "service/chat", "Handle chat service"},
+	}
+	for _, c := range cases {
+		got := permission_name(c.lang, c.code)
+		if got != c.want {
+			t.Errorf("permission_name(%q, %q) = %q, want %q", c.lang, c.code, got, c.want)
+		}
 	}
 }

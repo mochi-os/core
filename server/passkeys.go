@@ -785,11 +785,14 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	db := db_open("db/users.db")
 
-	// Check if this would leave user without passkey when passkey is required
-	if strings.Contains(user.Methods, "passkey") {
-		row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
-		if row != nil && row["count"].(int64) <= 1 {
-			return sl_error(fn, "cannot delete last passkey while passkey authentication is required")
+	// Refuse if deleting the last passkey would leave no way to sign in.
+	row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
+	if row != nil && row["count"].(int64) <= 1 {
+		switch user_factor_removal_blocked(user, "passkey") {
+		case "required":
+			return sl_error(fn, "cannot delete the last passkey while it is a required method")
+		case "last":
+			return sl_error(fn, "cannot delete your only remaining sign-in method")
 		}
 	}
 

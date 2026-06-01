@@ -1322,10 +1322,9 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 		if role == "" {
 			role = "user"
 		}
+		// Empty methods is the valid "any one factor signs you in" default;
+		// preserve it rather than coercing to email-required.
 		methods := kt.Methods
-		if methods == "" {
-			methods = "email"
-		}
 		status := kt.Status
 		if status == "" {
 			status = "active"

@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 73
+	schema_version = 74
 )
 
 var (
@@ -159,7 +159,7 @@ func db_create() {
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active', restore_source text not null default '')")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '')")
 	users.exec("create unique index users_username on users (username)")
 
 	// Services the user must re-link after a server move (restore). Populated
@@ -742,6 +742,8 @@ func db_upgrade() {
 			db_upgrade_72()
 		case 73:
 			db_upgrade_73()
+		case 74:
+			db_upgrade_74()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1082,6 +1084,22 @@ func db_upgrade_73() {
 	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='disabled'"); !col {
 		users.exec("alter table users add column disabled text not null default ''")
 	}
+}
+
+// db_upgrade_74 relaxes the historical email-required default to the tri-state
+// redesign's "any registered factor signs you in" default. Until schema 73 a
+// new account got methods='email' (email Required); the redesign makes the
+// default "no required factor", and the OAuth/email decoupling means an account
+// still on the old default that relies on a third-party provider can no longer
+// sign in with it alone (and could be locked out if the provider email is
+// unreachable). Relaxing every account still on the untouched default ('email'
+// exactly) to '' aligns existing users with new signups and un-breaks OAuth
+// login. Accounts that chose a stricter set (e.g. 'email,totp') or a non-email
+// factor keep it; pure-email accounts are unaffected in practice, since the
+// email code stays their only way in. Idempotent.
+func db_upgrade_74() {
+	users := db_open("db/users.db")
+	users.exec("update users set methods='' where methods='email'")
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

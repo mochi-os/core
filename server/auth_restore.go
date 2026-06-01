@@ -96,7 +96,7 @@ func web_auth_restore(c *gin.Context) {
 		role = "administrator"
 	}
 	uid := uid()
-	udb.exec("insert into users (uid, username, role, status) values (?, ?, ?, 'pending-restore')", uid, email, role)
+	udb.exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, '', 'pending-restore')", uid, email, role)
 
 	// Belt-and-braces freshness check before any staging, so the walk
 	// never has to skip the restore/ directory.

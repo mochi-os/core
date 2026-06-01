@@ -992,21 +992,32 @@ func web_login_begin(c *gin.Context) {
 	if methods == nil {
 		methods = []string{}
 	}
-	allowed := user_login_factors(user)
-	if allowed == nil {
-		allowed = []string{}
-	}
+	allowed := user_login_offered(user)
 	has_passkey := false
 	for _, m := range allowed {
 		if m == "passkey" {
 			has_passkey = true
 		}
 	}
+	oauth_required := false
+	for _, m := range methods {
+		if m == "oauth" {
+			oauth_required = true
+		}
+	}
+
+	// Offer OAuth in the verification step when it can verify this account: the
+	// provider is usable, and OAuth is either required or nothing else is (so
+	// any one factor, including OAuth, completes the login). The button carries
+	// the entered email so the callback can confirm OAuth resolves to this
+	// account, not a different one.
+	offer_oauth := user_method_usable(user, "oauth") && (len(methods) == 0 || oauth_required)
 
 	c.JSON(http.StatusOK, gin.H{
 		"methods":     methods,
 		"allowed":     allowed,
 		"has_passkey": has_passkey,
+		"oauth":       offer_oauth,
 	})
 }
 

@@ -58,6 +58,7 @@ type oauth_state struct {
 	Mode      string `json:"mode,omitempty"`      // "mobile" for native-app flow
 	Scheme    string `json:"scheme,omitempty"`    // app deep-link scheme (mobile)
 	Challenge string `json:"challenge,omitempty"` // S256(verifier) for app exchange (mobile)
+	Email     string `json:"email,omitempty"`     // address the email-login flow is verifying
 }
 
 var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.StringDict{
@@ -245,6 +246,7 @@ func web_oauth_begin(c *gin.Context) {
 		Mode      string `json:"mode"`      // "mobile" for native-app flow
 		Scheme    string `json:"scheme"`    // app deep-link scheme (mobile only)
 		Challenge string `json:"challenge"` // base64url(sha256(app_verifier)) (mobile only)
+		Email     string `json:"email"`     // typed address (email-login flow); binds OAuth to that account
 	}
 	c.ShouldBindJSON(&body)
 
@@ -286,7 +288,7 @@ func web_oauth_begin(c *gin.Context) {
 		link_user = user.UID
 	}
 
-	auth_url, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge)
+	auth_url, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge, body.Email)
 	if err != nil {
 		warn("OAuth begin: %v", err)
 		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
@@ -299,7 +301,7 @@ func web_oauth_begin(c *gin.Context) {
 // ceremony - carrying user_id for the link and step-up flows, and the caller's
 // result challenge for the app/popup exchange - and returns the provider auth
 // URL. Shared by the web begin handler and the step-up verify.begin builtin.
-func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge string) (string, error) {
+func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string) (string, error) {
 	verifier, oauth_challenge := oauth_pkce()
 	state := random_alphanumeric(32)
 	nonce := random_alphanumeric(32)
@@ -319,6 +321,7 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		Mode:      mode,
 		Scheme:    scheme,
 		Challenge: challenge,
+		Email:     email,
 	})
 	if err != nil {
 		return "", err
@@ -439,7 +442,7 @@ func web_oauth_callback(c *gin.Context) {
 		oauth_mobile_login(c, name, profile, &st)
 		return
 	}
-	oauth_login(c, name, profile, st.Target)
+	oauth_login(c, name, profile, st.Target, st.Email)
 }
 
 // oauth_link attaches an OAuth identity to an already-authenticated user. The
@@ -480,13 +483,31 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 }
 
 // oauth_login looks up an existing identity or creates a new user.
-func oauth_login(c *gin.Context, provider string, p *oauth_profile, target string) {
+func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expect_email string) {
 	db := db_open("db/users.db")
 
 	var user_id string
 	row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject)
 	if row != nil {
 		user_id, _ = row["user"].(string)
+	}
+
+	// Started from the email-entry login flow: the OAuth is verifying a specific
+	// identified account, so it must resolve to exactly that account - never a
+	// different account the provider happens to be linked to, and never a fresh
+	// signup. The discoverable landing path passes no email and is unaffected.
+	if expect_email != "" {
+		matched := false
+		if user_id != "" {
+			if u := user_by_uid(user_id); u != nil && u.Username == expect_email {
+				matched = true
+			}
+		}
+		if !matched {
+			audit_login_failed(expect_email, rate_limit_client_ip(c), "oauth_account_mismatch")
+			oauth_error_redirect(c, "account_mismatch", nil)
+			return
+		}
 	}
 
 	if user_id != "" {
@@ -877,7 +898,7 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "provider not linked")
 	}
 
-	url, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge)
+	url, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge, "")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1172,8 +1193,11 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 			oauth_mobile_error(c, st, "suspended", nil)
 			return
 		}
-		if strings.Contains(user.Methods, "passkey") {
-			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disallowed")
+		// Refuse only if the user has explicitly disabled OAuth as a login
+		// factor (OAuth is its own factor, not the email factor), matching
+		// the web path.
+		if user_method_disabled(user, "oauth") {
+			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disabled")
 			oauth_mobile_error(c, st, "oauth_disallowed", nil)
 			return
 		}

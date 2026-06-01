@@ -434,7 +434,9 @@ func user_from_code(code string) (*User, string) {
 
 // user_create inserts a new user with the given username (email), applies the
 // first-user-becomes-administrator rule, and sends the admin notification. Used
-// by both email-code signup and OAuth signup paths. Returns the created user
+// by both email-code signup and OAuth signup paths. New users have no required
+// login factor (methods=''); any one registered factor signs them in, and a
+// mandatory factor is an explicit opt-in. Returns the created user
 // and an error reason ("" on success, "invalid" if the row could not be read
 // back).
 func user_create(username string) (*User, string) {
@@ -446,7 +448,7 @@ func user_create(username string) (*User, string) {
 		role = "administrator"
 	}
 
-	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
+	db.exec("insert into users (uid, username, role, methods) values (?, ?, ?, '')", uid(), username, role)
 
 	var u User
 	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
@@ -999,7 +1001,7 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "user already exists")
 	}
 
-	db.exec("insert into users (uid, username, role) values (?, ?, ?)", uid(), username, role)
+	db.exec("insert into users (uid, username, role, methods) values (?, ?, ?, '')", uid(), username, role)
 
 	var u User
 	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {

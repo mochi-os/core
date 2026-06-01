@@ -498,6 +498,35 @@ func user_login_factors(user *User) []string {
 	return out
 }
 
+// user_login_offered returns the factors the login screen should offer after
+// the user enters their email. When the account requires specific factors,
+// only those can complete the login, so a usable-but-not-required factor is
+// omitted - offering it would imply an alternative that doesn't exist, since
+// the required factors must be completed regardless. With nothing required
+// (methods=''), any one usable factor suffices, so all are offered. Always
+// non-nil.
+func user_login_offered(user *User) []string {
+	usable := user_login_factors(user)
+	required := auth_remaining_methods(user, "")
+	if len(required) == 0 {
+		if usable == nil {
+			return []string{}
+		}
+		return usable
+	}
+	want := map[string]bool{}
+	for _, m := range required {
+		want[m] = true
+	}
+	offered := []string{}
+	for _, f := range usable {
+		if want[f] {
+			offered = append(offered, f)
+		}
+	}
+	return offered
+}
+
 // user_has_login_factor reports whether at least one primary factor would
 // remain usable given the proposed required/disabled sets — the guard that
 // stops a user locking themselves out by disabling their last way in.
@@ -513,6 +542,25 @@ func user_has_login_factor(user *User, required, disabled map[string]bool) bool 
 		}
 	}
 	return false
+}
+
+// user_factor_removal_blocked reports why removing the user's last credential
+// for a factor must be refused, or "" if it is safe. "required" - the factor
+// is still in the required set, so removing its credential would make login
+// impossible (the user must un-require it first); "last" - it is the only
+// factor that could still sign the user in (e.g. they disabled email and rely
+// on this one). Shared by the passkey-delete and authenticator-disable guards.
+func user_factor_removal_blocked(user *User, method string) string {
+	required := methods_parse(user.Methods)
+	if required[method] {
+		return "required"
+	}
+	disabled := methods_parse(user.Disabled)
+	disabled[method] = true
+	if !user_has_login_factor(user, required, disabled) {
+		return "last"
+	}
+	return ""
 }
 
 // user_methods_configure sets one login method to a state ("disabled",
@@ -777,7 +825,7 @@ func api_user_methods_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	if user.Methods == "" {
-		return sl_encode([]string{"email"}), nil
+		return sl_encode([]string{}), nil
 	}
 
 	methods := strings.Split(user.Methods, ",")
@@ -1150,9 +1198,12 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no user")
 	}
 
-	// Check if totp is in user's required methods
-	if strings.Contains(user.Methods, "totp") {
-		return sl_error(fn, "cannot disable totp while it is a required method")
+	// Refuse if disabling the authenticator would leave no way to sign in.
+	switch user_factor_removal_blocked(user, "totp") {
+	case "required":
+		return sl_error(fn, "cannot disable the authenticator while it is a required method")
+	case "last":
+		return sl_error(fn, "cannot disable your only remaining sign-in method")
 	}
 
 	db := db_open("db/users.db")

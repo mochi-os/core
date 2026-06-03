@@ -582,6 +582,36 @@ func admin_replication_stalled(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"stalled": out})
 }
 
+// admin_replication_irreparable is GET /_/admin/replication/irreparable.
+// Runs the irreparable scan on demand (the same detect-and-notify pass the
+// manager runs hourly) then returns every relationship marked irreparable -
+// broken past T_forget with no lossless recovery left. Each entry carries
+// the peer, scope, user, db, reason ('stalled' | 'offline'), the time it
+// became irreparable, and whether the dual-side notification has fired.
+// Exposed so an operator can check + alert immediately instead of waiting
+// for the hourly pass.
+func admin_replication_irreparable(c *gin.Context) {
+	replication_irreparable_scan()
+	rdb := db_open("db/replication.db")
+	rows, _ := rdb.rows("select peer, scope, user, db, reason, since, notified from irreparable order by since")
+	out := make([]map[string]any, 0, len(rows))
+	n := now()
+	for _, r := range rows {
+		since := row_int(r, "since")
+		out = append(out, map[string]any{
+			"peer":     row_string(r, "peer"),
+			"scope":    row_string(r, "scope"),
+			"user":     row_string(r, "user"),
+			"database": row_string(r, "db"),
+			"reason":   row_string(r, "reason"),
+			"since":    since,
+			"age":      n - since,
+			"notified": row_int(r, "notified"),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"irreparable": out})
+}
+
 // admin_replication_pending_gc is POST /_/admin/replication/pending/gc.
 // Runs the unfillable-pending GC pass on demand and returns the count
 // of rows dropped. Same logic the manager loop runs hourly, exposed so

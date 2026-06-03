@@ -309,6 +309,13 @@ func bootstrap_set_state(scope, peer, state, position string) {
 		"insert into bootstrap (scope, peer, state, position) values (?, ?, ?, ?) "+
 			"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position",
 		scope, peer, state, position)
+	// A completed (re-)bootstrap re-seeds this scope's streams from the
+	// peer, which is the only recovery for a stream marked irreparable
+	// past T_forget. Clear the terminal marker so its UI badge and the
+	// notify-dedup reset. See replication_irreparable.go.
+	if state == bootstrap_state_done {
+		replication_irreparable_clear(peer, scope)
+	}
 }
 
 // bootstrap_get_state reads the recorded (state, position) for a

@@ -325,6 +325,10 @@ func init() {
 	// leadership row.
 	a.event_anonymous("replica/leader/claim", replica_leader_claim_event)
 	a.event_anonymous("replica/leader/granted", replica_leader_granted_event)
+	// A peer telling us our replication relationship with it has gone
+	// irreparable (broken past T_forget) so both sides' admins are
+	// notified. See replication_irreparable.go.
+	a.event_anonymous("replica/irreparable", replication_irreparable_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -749,6 +753,7 @@ func replication_manager() {
 		replication_pending_drain()
 		replication_pending_warn_stalled()
 		if now()-last_gc >= pending_gc_period_seconds {
+			replication_irreparable_scan()
 			replication_pending_gc()
 			last_gc = now()
 		}
@@ -2121,6 +2126,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 //	{
 //	  "peer":              "<this-peer-id>",
 //	  "pair":              ["<peer-1>", "<peer-2>"],
+//	  "irreparable":       ["<peer>"], // pair members broken past T_forget
 //	  "hosts_count":       N,         // total per-user opt-in rows
 //	  "links_pending":     N,         // pending per-user link-requests
 //	  "joins_pending":     N,         // pending whole-server join-requests
@@ -2171,14 +2177,30 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		}
 	}
 
+	// Whole-server pair members marked irreparable (broken past T_forget):
+	// the Pair page badges these and offers Remove / re-bootstrap.
+	var irreparable []string
+	if rows, err := rdb.rows("select distinct peer from irreparable where scope=?", repl_scope_core); err == nil {
+		for _, r := range rows {
+			if p, ok := r["peer"].(string); ok && p != "" {
+				irreparable = append(irreparable, p)
+			}
+		}
+	}
+
 	pair_values := make([]sl.Value, 0, len(pair))
 	for _, p := range pair {
 		pair_values = append(pair_values, sl.String(p))
 	}
+	irreparable_values := make([]sl.Value, 0, len(irreparable))
+	for _, p := range irreparable {
+		irreparable_values = append(irreparable_values, sl.String(p))
+	}
 
-	result := sl.NewDict(6)
+	result := sl.NewDict(7)
 	_ = result.SetKey(sl.String("peer"), sl.String(net_id))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
+	_ = result.SetKey(sl.String("irreparable"), sl.NewList(irreparable_values))
 	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
 	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))
@@ -2237,10 +2259,15 @@ func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	out := sl.NewList(nil)
 	for _, r := range rows {
-		entry := sl.NewDict(3)
-		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		peer := row_string(r, "peer")
+		broken, _ := rdb.exists(
+			"select 1 from irreparable where peer=? and scope=? and user=?",
+			peer, repl_scope_app, u.UID)
+		entry := sl.NewDict(4)
+		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("added"), sl.MakeInt64(row_int(r, "added")))
 		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
+		_ = entry.SetKey(sl.String("irreparable"), sl.Bool(broken))
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -2340,6 +2367,8 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// confirms divergence).
 	replication_membership_update(u.UID, remaining)
 	audit_replication_host_removed(u.UID, peer)
+	// Removing the relationship resolves any irreparable badge for it.
+	rdb.exec("delete from irreparable where peer=? and scope=? and user=?", peer, repl_scope_app, u.UID)
 
 	return sl.String("removed"), nil
 }

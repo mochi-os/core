@@ -168,6 +168,12 @@ func init() {
 				return get_dump("/_/admin/replication/stalled", "stalled")
 			},
 		},
+		"replication irreparable": {
+			help: "Run the irreparable scan on demand (same logic the manager runs hourly) and list relationships broken past T_forget. Reason is 'stalled' (unfillable gap) or 'offline' (member unreachable too long).",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/irreparable", "irreparable")
+			},
+		},
 		"replication pending gc": {
 			help: "On-demand purge of aged unfillable pending rows (same logic the manager runs hourly). Reports count dropped.",
 			run:  cmd_replication_pending_gc,

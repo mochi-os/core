@@ -91,7 +91,7 @@ type Sender struct {
 	pings        map[string]int64
 	claimed      map[string]bool
 	closed       atomic.Bool
-	last_inbound atomic.Int64 // unix ns of last inbound frame; reset by ping_loop
+	last_inbound atomic.Int64  // unix ns of last inbound frame; reset by ping_loop
 	wake         chan struct{} // queue_wake routes per-peer nudges here; pull_loop drains
 	lock         sync.Mutex
 	rate_lock    sync.Mutex
@@ -359,17 +359,24 @@ func (s *Sender) handle_inbound(f *Frame) {
 	switch f.Type {
 	case frame_type_ack:
 		s.lock.Lock()
+		acked := false
 		for _, id := range f.Replies {
 			p := s.inflight[id]
 			if p == nil {
 				continue
 			}
 			delete(s.inflight, id)
+			acked = true
 			if p.queue != "" {
 				queue_ack_async(p.queue)
 			}
 		}
 		s.lock.Unlock()
+		// The peer is applying and acking — clear any send-stall so its
+		// deferred backlog resumes (peer_progress.go).
+		if acked {
+			peer_mark_progress(s.peer)
+		}
 
 	case frame_type_fail:
 		if len(f.Replies) == 0 {
@@ -644,6 +651,14 @@ func senders_sweep_all() {
 			if p.queue != "" {
 				queue_fail(p.queue, "inflight timeout")
 			}
+		}
+
+		// Stream opened but frames timed out without an ack: an
+		// app-level no-progress signal (distinct from a connect
+		// failure). Repeated, this stalls the target so queue_process
+		// parks its backlog instead of re-scanning it (peer_progress.go).
+		if len(stale_inflight) > 0 {
+			peer_mark_no_progress(s.peer)
 		}
 
 		if len(stale_pings) > 0 {

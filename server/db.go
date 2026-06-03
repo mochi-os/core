@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 75
+	schema_version = 77
 )
 
 var (
@@ -359,6 +359,19 @@ func db_create() {
 	// claude/plans/replication.md.
 	replication.exec("create table joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
 	replication.exec("create index joins_expires on joins(expires)")
+	// irreparable: a stream broken (stalled on an unfillable gap, or a
+	// member offline) past T_forget, when no lossless recovery remains.
+	// One row per (peer, scope, user, db); `notified` flips to 1 once the
+	// dual-side notification has fired so the manager neither re-notifies
+	// nor keeps warning. Cleared when the stream recovers or the operator
+	// removes the relationship. See replication_irreparable.go.
+	replication.exec("create table irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
+	// peer_unreachable: persisted "this peer's Sender has been failing to
+	// deliver since `since`" — set when a peer crosses the stall threshold,
+	// cleared on the next ack. Survives restarts so a member offline past
+	// T_forget is recognised even across server bounces. See
+	// peer_progress.go + replication_irreparable.go.
+	replication.exec("create table peer_unreachable (peer text not null primary key, since integer not null)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed.
@@ -746,6 +759,10 @@ func db_upgrade() {
 			db_upgrade_74()
 		case 75:
 			db_upgrade_75()
+		case 76:
+			db_upgrade_76()
+		case 77:
+			db_upgrade_77()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1112,6 +1129,28 @@ func db_upgrade_75() {
 	users := db_open("db/users.db")
 	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='restore_passkeys'"); !col {
 		users.exec("alter table users add column restore_passkeys integer not null default 0")
+	}
+}
+
+// db_upgrade_76 adds the irreparable marker table to replication.db: a
+// stream broken past T_forget is recorded here so the manager can notify
+// both sides once and surface the terminal state. Idempotent. See
+// replication_irreparable.go.
+func db_upgrade_76() {
+	replication := db_open("db/replication.db")
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='irreparable'"); !exists {
+		replication.exec("create table irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
+	}
+}
+
+// db_upgrade_77 adds the peer_unreachable table to replication.db: a
+// persisted "Sender failing since" timestamp per peer, so a member offline
+// past T_forget is recognised even across restarts. Idempotent. See
+// peer_progress.go.
+func db_upgrade_77() {
+	replication := db_open("db/replication.db")
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='peer_unreachable'"); !exists {
+		replication.exec("create table peer_unreachable (peer text not null primary key, since integer not null)")
 	}
 }
 

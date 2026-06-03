@@ -257,6 +257,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/replication/progress", admin_replication_progress)
 	admin.GET("/replication/ops", admin_replication_ops)
 	admin.GET("/replication/stalled", admin_replication_stalled)
+	admin.GET("/replication/irreparable", admin_replication_irreparable)
 	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
 	admin.POST("/replication/pending/gc", admin_replication_pending_gc)
 	admin.POST("/replication/resync", admin_replication_resync)

@@ -1428,6 +1428,8 @@ func replication_pair_remove(peer string) (string, []string, bool) {
 
 	rdb.exec("delete from pair where peer=?", peer)
 	pair_membership_refresh()
+	// Removing the relationship resolves any irreparable badge for it.
+	replication_irreparable_clear(peer, repl_scope_core)
 
 	var remaining []string
 	if rows, err := rdb.rows("select peer from pair"); err == nil {

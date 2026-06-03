@@ -98,6 +98,14 @@ type QueueEntry struct {
 
 const (
 	queue_max_age = 7 * 86400 // 7 days
+
+	// replication_op_retention is the retention floor for replication ops
+	// specifically (service = "replication"): a peer offline up to this
+	// long can still replay its missed ops from queue.db and converge
+	// losslessly — the T_forget "host-gone" budget. Other message classes
+	// use queue_max_age. Invariant (asserted in retention_test.go):
+	// replication_op_retention >= queue_max_age.
+	replication_op_retention = 30 * 86400 // 30 days (T_forget)
 )
 
 // queue_wake_ch is a buffered channel used by send_peer to nudge the
@@ -497,6 +505,21 @@ func queue_defer(id string, delay int64) {
 	db.exec("update queue set next_retry = ? where id = ?", now()+delay, id)
 }
 
+// queue_defer_target pushes every pending row for a target forward to
+// `until` in one UPDATE. Used to park a silent or stalled peer's entire
+// backlog so queue_select stops re-scanning it — deferring row-by-row
+// instead walks the whole backlog (one defer per tick), which is the
+// O(n^2) spin behind the 2026-06-02 incident. Idempotent: only rows due
+// before `until` are moved. Resurrected by queue_resurrect_peer when the
+// peer recovers.
+func queue_defer_target(target string, until int64) {
+	if target == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	db.exec("update queue set next_retry = ? where target = ? and status = 'pending' and next_retry < ?", until, target, until)
+}
+
 // queue_resurrect_peer brings every deferred row for a peer back into
 // the ready set. Called from peer_connect's success path so a reviving
 // peer's backlog drains immediately instead of waiting out the deferred
@@ -834,7 +857,20 @@ func queue_process() int {
 		// no specific target (pubsub fan-out), so the check only
 		// applies to direct + file/push.
 		if q.Type != "broadcast" && q.Target != "" && peer_is_silent(q.Target) {
-			queue_defer(q.ID, queue_silent_defer)
+			queue_defer_target(q.Target, now()+queue_silent_defer)
+			processed++
+			continue
+		}
+		// Stalled-peer pre-filter: the target opens a stream but never
+		// acks (peer_progress.go) — e.g. a wiped/unbootstrapped replica.
+		// Park its whole backlog until the trial window reopens, so the
+		// manager stops re-scanning an undeliverable pile every tick.
+		if q.Type != "broadcast" && q.Target != "" && peer_is_stalled(q.Target) {
+			until := peer_stall_until(q.Target)
+			if until <= now() {
+				until = now() + peer_stall_window
+			}
+			queue_defer_target(q.Target, until)
 			processed++
 			continue
 		}
@@ -984,19 +1020,22 @@ func queue_check_peer(peer string) {
 // Clean up old entries
 func queue_cleanup() {
 	db := db_open("db/queue.db")
-	cutoff := now() - queue_max_age
+	// Per-class retention: replication ops keep replication_op_retention
+	// (30d / T_forget) so an offline replica can still replay and merge;
+	// every other message class keeps queue_max_age (7d). One sweep, keyed
+	// off service so it covers every replication emit path.
+	gen_cutoff := now() - queue_max_age
+	repl_cutoff := now() - replication_op_retention
+	aged := "((service = 'replication' and created < ?) or (service != 'replication' and created < ?))"
 
 	// Log and delete expired messages
 	var old []QueueEntry
-	err := db.scans(&old, "select * from queue where created < ?", cutoff)
+	err := db.scans(&old, "select * from queue where "+aged, repl_cutoff, gen_cutoff)
 	if err != nil {
 		warn("Database error loading expired queue entries: %v", err)
 		return
 	}
-	// for _, q := range old {
-	// 	warn("Queue dropping expired message: id=%q type=%q from=%q to=%q service=%q event=%q attempts=%d", q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, q.Attempts)
-	// }
-	db.exec("delete from queue where created < ?", cutoff)
+	db.exec("delete from queue where "+aged, repl_cutoff, gen_cutoff)
 
 	// Surface each aged-out send as message/timeout to its sending app,
 	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes

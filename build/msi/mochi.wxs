@@ -16,10 +16,7 @@
         <MajorUpgrade DowngradeErrorMessage="A newer version of Mochi Server is already installed." />
         <MediaTemplate EmbedCab="yes" />
 
-        <?ifndef var.WIXL ?>
-        <UIRef Id="WixUI_InstallDir" />
-        <UIRef Id="WixUI_ErrorProgressText" />
-        <?endif ?>
+        <UIRef Id="WixUI_Minimal" />
 
         <Feature Id="ProductFeature" Title="Mochi Server" Level="1">
             <ComponentRef Id="MainExecutable" />

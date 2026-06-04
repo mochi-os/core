@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.112
+version = 0.4.113
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -287,7 +287,7 @@ $(msi): $(bin)/mochi-server.exe
 	mkdir -p $(build_windows)
 	cp $(bin)/mochi-server.exe $(build_windows)/
 	cp build/msi/mochi.conf $(build_windows)/
-	wixl -v -D Version=$(version) -D SourceDir=$(build_windows) -D WIXL -o $(msi) build/msi/mochi.wxs
+	wixl -v --ext ui -D Version=$(version) -D SourceDir=$(build_windows) -o $(msi) build/msi/mochi.wxs
 	rm -rf $(build_windows)
 	ls -l $(msi)
 

@@ -27,13 +27,22 @@ var core_labels_fs embed.FS
 // respond_error() for HTTP error responses returned by core itself.
 var core_labels = map[string]map[string]string{}
 
-// English variants that don't follow the default `<lang> -> en` fallback.
+// Regional variants whose nearest translated catalog isn't reached by the
+// default subtag-stripping fallback. Each entry redirects to the locale whose
+// catalog should serve it; the resolver then walks that target's own parents.
+// This mirrors the web lingui.config fallbackLocales map so server-rendered
+// labels and client strings resolve to the same language.
+//
 // Most Commonwealth English speakers (en-gb, en-au, en-nz, en-ie, en-za, en-in,
-// en-sg, en-hk, en-ca) fall back directly to `en` because the source `en`
-// catalog is already Commonwealth-flavoured. Only en-PH historically follows US
-// conventions and so routes through en-us first.
-var english_variants = map[string]string{
-	"en-ph": "en-us",
+// en-sg, en-hk, en-ca) need no entry: they fall back directly to `en` because
+// the source `en` catalog is already Commonwealth-flavoured. Only en-PH follows
+// US conventions and so routes through en-us first.
+var variant_redirects = map[string]string{
+	"en-ph": "en-us",   // Philippine English follows US conventions
+	"zh-hk": "zh-hant", // Hong Kong uses Traditional Chinese
+	"yue":   "zh-hant", // Written Cantonese uses Traditional Chinese
+	"es-ar": "es-419",  // Argentine Spanish resolves to Latin American Spanish
+	"nn":    "nb",      // Norwegian Nynorsk has no catalog; serve Bokmal
 }
 
 // language_fallbacks returns the resolution chain for a BCP 47 language tag.
@@ -58,7 +67,7 @@ func language_fallbacks(lang string) []string {
 
 	chain := []string{lang}
 
-	if redirect, ok := english_variants[lang]; ok {
+	if redirect, ok := variant_redirects[lang]; ok {
 		// Explicit redirect (e.g. en-ph -> en-us). Walk the redirect's parents.
 		chain = append(chain, redirect)
 		for parent := strip_subtag(redirect); parent != "" && parent != "en"; parent = strip_subtag(parent) {

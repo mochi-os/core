@@ -53,8 +53,13 @@ func TestLanguageFallbacks(t *testing.T) {
 		{"en-ca", []string{"en-ca", "en"}},
 		{"en-nz", []string{"en-nz", "en"}},
 
-		// English variant routing table: en-PH goes through en-us
+		// Variant routing table: redirect to the nearest translated catalog,
+		// then walk that target's own parents (mirrors web fallbackLocales).
 		{"en-ph", []string{"en-ph", "en-us", "en"}},
+		{"zh-hk", []string{"zh-hk", "zh-hant", "zh", "en"}},
+		{"yue", []string{"yue", "zh-hant", "zh", "en"}},
+		{"es-ar", []string{"es-ar", "es-419", "es", "en"}},
+		{"nn", []string{"nn", "nb", "en"}},
 
 		// Generic parent stripping
 		{"fr", []string{"fr", "en"}},

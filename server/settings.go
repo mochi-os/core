@@ -275,6 +275,22 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
+	"help_users_forum": {
+		Name:         "help_users_forum",
+		Pattern:      "entity",
+		Default:      "",
+		Description:  "Forum entity ID for Help app user submissions (Introduce yourself / Ask a question). Leave empty to use the default canonical Mochi forum.",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+	"help_dev_project": {
+		Name:         "help_dev_project",
+		Pattern:      "entity",
+		Default:      "",
+		Description:  "Project entity ID for Help app developer submissions (Report a bug / Suggest a feature). Leave empty to use the default canonical Mochi project.",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{

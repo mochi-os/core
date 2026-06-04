@@ -752,6 +752,7 @@ func replication_manager() {
 	for range time.Tick(30 * time.Second) {
 		replication_pending_drain()
 		replication_pending_warn_stalled()
+		replication_wiped_rebootstrap()
 		if now()-last_gc >= pending_gc_period_seconds {
 			replication_irreparable_scan()
 			replication_pending_gc()
@@ -1885,6 +1886,18 @@ var replication_emit_to = replication_emit_to_real
 func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	if peers == nil {
 		peers = recipients(user)
+	}
+	// Withhold from any peer whose relationship is irreparable - it can't
+	// apply until an operator re-bootstraps it, so emitting is wasted churn
+	// (this is what piled 90k undeliverable ops onto the wiped mochi2).
+	if len(peers) > 0 {
+		kept := peers[:0:0]
+		for _, p := range peers {
+			if !irreparable_emit_skip(user, p) {
+				kept = append(kept, p)
+			}
+		}
+		peers = kept
 	}
 	if len(peers) == 0 {
 		return

@@ -3,6 +3,8 @@
 
 package main
 
+import "sync"
+
 // A replication stream broken (stalled on an unfillable gap, or a member
 // gone) for longer than T_forget can no longer be recovered without data
 // loss: the predecessor ops are past retention on the sender, and a
@@ -91,7 +93,8 @@ func replication_irreparable_scan() {
 		if !replication_irreparable_leader(scope, user) {
 			continue // a co-host holds the lease and will notify
 		}
-		replication_irreparable_notify_local(scope, user)
+		urgent := replication_irreparable_last_copy(db, scope, user, peer)
+		replication_irreparable_notify_local(scope, user, urgent)
 		replication_irreparable_notify_remote(peer, scope, user, database, reason)
 		db.exec("update irreparable set notified=1 where peer=? and scope=? and user=? and db=?",
 			peer, scope, user, database)
@@ -157,16 +160,142 @@ func replication_irreparable_leader(scope, user string) bool {
 	return replication_leader_claim(leader_scope, "irreparable", false)
 }
 
+// replication_irreparable_last_copy reports whether the irreparable peer held
+// the LAST other copy of this data - i.e. no other healthy host/pair-member
+// still has it, so losing this one leaves the data single-copy (only here).
+// Drives the "no redundancy" urgency in the notification. Core scope counts
+// other pair members; app scope counts the user's other hosts.
+func replication_irreparable_last_copy(db *DB, scope, user, peer string) bool {
+	var others []map[string]any
+	if scope == repl_scope_app && user != "" {
+		others, _ = db.rows("select peer from hosts where user=? and peer!=?", user, peer)
+	} else {
+		others, _ = db.rows("select peer from pair where peer!=?", peer)
+	}
+	for _, r := range others {
+		other, _ := r["peer"].(string)
+		if other == "" {
+			continue
+		}
+		// A co-member that is itself irreparable doesn't count as a copy.
+		bad, _ := db.exists("select 1 from irreparable where peer=? and (scope=? or (scope=? and user=?))",
+			other, repl_scope_core, repl_scope_app, user)
+		if !bad {
+			return false // at least one other healthy copy survives
+		}
+	}
+	return true // no other healthy copy - losing this peer leaves no redundancy
+}
+
+// replication_irreparable_count returns how many relationships are currently
+// marked irreparable. Surfaced by /_/health as a degraded replication signal
+// (without flipping liveness - a dead peer is not a dead server).
+func replication_irreparable_count() int {
+	return db_open("db/replication.db").integer("select count(*) from irreparable")
+}
+
+// Cached snapshot of the irreparable table, refreshed at most every
+// irreparable_emit_cache_seconds, so the emit hot path filters out dead peers
+// with an in-memory check instead of a per-write query. The common case (no
+// irreparable rows) is an empty slice and a no-op loop.
+const irreparable_emit_cache_seconds = 30
+
+type irreparableEntry struct{ peer, scope, user string }
+
+var (
+	irreparable_snapshot      []irreparableEntry
+	irreparable_snapshot_at   int64
+	irreparable_snapshot_lock sync.Mutex
+)
+
+// irreparable_emit_skip reports whether this user's ops should be withheld
+// from `peer` because that relationship is irreparable - emitting to it is
+// wasted churn until an operator re-bootstraps. Skips on a whole-server (core)
+// marker for the peer, or a per-user (app) marker for this user.
+func irreparable_emit_skip(user, peer string) bool {
+	irreparable_snapshot_lock.Lock()
+	if now()-irreparable_snapshot_at > irreparable_emit_cache_seconds {
+		rows, _ := db_open("db/replication.db").rows("select peer, scope, user from irreparable")
+		snap := make([]irreparableEntry, 0, len(rows))
+		for _, r := range rows {
+			p, _ := r["peer"].(string)
+			s, _ := r["scope"].(string)
+			u, _ := r["user"].(string)
+			snap = append(snap, irreparableEntry{p, s, u})
+		}
+		irreparable_snapshot = snap
+		irreparable_snapshot_at = now()
+	}
+	snap := irreparable_snapshot
+	irreparable_snapshot_lock.Unlock()
+
+	for _, e := range snap {
+		if e.peer != peer {
+			continue
+		}
+		if e.scope == repl_scope_core {
+			return true
+		}
+		if e.scope == repl_scope_app && e.user == user {
+			return true
+		}
+	}
+	return false
+}
+
+// rebootstrap_unanchored_seconds is how long an UNANCHORED stalled stream (no
+// cursor - the receiver is missing the whole stream, i.e. wiped/fresh) must
+// persist before we auto-request a re-bootstrap from the source. Long enough
+// that ordinary out-of-order delivery has resolved, far short of the 30-day
+// irreparable floor. Anchored gaps (existing state, possible divergence) are
+// never auto-rebootstrapped - those stay operator-driven.
+const rebootstrap_unanchored_seconds = 10 * 60
+
+// replication_wiped_rebootstrap is the fast path for the 2026-06-02 incident:
+// a wiped replica that receives ops it can never chain (no cursor for the
+// stream) and would otherwise sit stalled for 30 days. When such a stream has
+// been unanchored past rebootstrap_unanchored_seconds, the receiver requests a
+// re-bootstrap from the source - safe because an unanchored stream has no
+// local state to lose. Debounced on any in-flight bootstrap for the peer, and
+// gated by the setting replication.rebootstrap.wiped (default on). Called from
+// the replication manager on its 30s tick.
+func replication_wiped_rebootstrap() {
+	if setting_get("replication.rebootstrap.wiped", "true") == "false" {
+		return
+	}
+	cutoff := now() - rebootstrap_unanchored_seconds
+	for _, s := range replication_pending_stalled() {
+		if s.Anchored || s.User == "" || s.Oldest > cutoff {
+			continue // anchored gap (divergence risk), non-user, or still settling
+		}
+		// Debounce: a bootstrap for this peer is already running.
+		if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, s.Peer); st == bootstrap_state_queued || st == bootstrap_state_active {
+			continue
+		}
+		info("Replication wiped-replica recovery: peer=%q user=%q db=%q unanchored %ds - requesting re-bootstrap",
+			s.Peer, s.User, s.Database, now()-s.Oldest)
+		// Always the surgical per-user pull: it re-fetches only this user's
+		// files + DBs (apps come from apps_default at boot), so we never
+		// atomic-rename whole-server apps/files out from under the running
+		// receiver. Safe because an unanchored stream has no local state to
+		// overwrite. For a fully-wiped pair member each user's stream
+		// triggers its own pull, serialised by the debounce above.
+		bootstrap_start_user(s.Peer, s.User)
+	}
+}
+
 // replication_irreparable_notify_local raises a Mochi notification on this
 // host: to every administrator for a whole-server stream, or to the owning
 // user for a per-user stream. Modelled on update_notify_admins - object=""
 // so the sender shows as "Mochi server", and the title/body are resolved
 // per-recipient against core labels.
-func replication_irreparable_notify_local(scope, user string) {
+// `urgent` is true when the dead peer held the last other copy of this data
+// (no redundancy left) - it escalates the notification title.
+func replication_irreparable_notify_local(scope, user string, urgent bool) {
 	if scope == repl_scope_app && user != "" {
 		// Per-user stream: the owning user manages it on their own hosts
 		// page.
-		replication_irreparable_notify_user(user, "/settings/user/replication")
+		replication_irreparable_notify_user(user, "/settings/user/replication", urgent)
 		return
 	}
 	// Whole-server stream: every administrator manages it on the pair page.
@@ -178,24 +307,29 @@ func replication_irreparable_notify_local(scope, user string) {
 	for _, row := range rows {
 		id, _ := row["uid"].(string)
 		if id != "" {
-			replication_irreparable_notify_user(id, "/settings/system/replication")
+			replication_irreparable_notify_user(id, "/settings/system/replication", urgent)
 		}
 	}
 }
 
 // replication_irreparable_notify_user sends the irreparable notification to
 // one user uid, resolving the text in that user's language and deep-linking
-// to the page (`url`) where they can remove the relationship or re-sync.
-func replication_irreparable_notify_user(uid, url string) {
+// to the page (`url`) where they can remove the relationship or re-sync. When
+// `urgent` (the last other copy is gone) it uses the no-redundancy title.
+func replication_irreparable_notify_user(uid, url string, urgent bool) {
 	user := user_by_uid(uid)
 	if user == nil {
 		return
 	}
 	lang := user_language(user)
+	title_key := "replica.irreparable.title"
+	if urgent {
+		title_key = "replica.irreparable.urgent"
+	}
 	args := Map{
 		"topic":  "replica/irreparable",
 		"object": "",
-		"title":  resolve_core_label(lang, "replica.irreparable.title", nil),
+		"title":  resolve_core_label(lang, title_key, nil),
 		"body":   resolve_core_label(lang, "replica.irreparable.body", nil),
 		"url":    url,
 		"label":  resolve_core_label(lang, "replica.irreparable.topic", nil),
@@ -240,6 +374,7 @@ func replication_irreparable_event(e *Event) {
 	if scope == "" {
 		return
 	}
-	replication_irreparable_notify_local(scope, user)
+	urgent := replication_irreparable_last_copy(db_open("db/replication.db"), scope, user, e.peer)
+	replication_irreparable_notify_local(scope, user, urgent)
 	info("Replication irreparable reported by peer: peer=%q scope=%q user=%q", e.peer, scope, user)
 }

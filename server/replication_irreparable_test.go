@@ -200,6 +200,111 @@ func TestIrreparableClearedOnRemove(t *testing.T) {
 	}
 }
 
+// TestIrreparableLastCopy: last_copy is true only when no OTHER healthy copy
+// of the data survives (drives the no-redundancy urgent notification).
+func TestIrreparableLastCopy(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	db.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peerA', 0, 0)")
+	db.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peerB', 0, 0)")
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('peerA', ?, 'u1', '', 'offline', 0, 1)", repl_scope_app)
+
+	// peerB is still a healthy copy -> losing peerA is not the last copy.
+	if replication_irreparable_last_copy(db, repl_scope_app, "u1", "peerA") {
+		t.Error("with a healthy peerB, peerA must not be the last copy")
+	}
+	// peerB also dies -> peerA is now the last copy.
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('peerB', ?, 'u1', '', 'offline', 0, 1)", repl_scope_app)
+	if !replication_irreparable_last_copy(db, repl_scope_app, "u1", "peerA") {
+		t.Error("with peerB also irreparable, peerA is the last copy (urgent)")
+	}
+}
+
+// TestIrreparableEmitSkip: ops are withheld from a peer marked irreparable for
+// the whole server (core) or for that user (app), and not from others.
+func TestIrreparableEmitSkip(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('peerApp', ?, 'u1', '', 'offline', 0, 1)", repl_scope_app)
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('peerCore', ?, '', '', 'offline', 0, 1)", repl_scope_core)
+	irreparable_snapshot_at = 0 // force the cache to refresh
+
+	if !irreparable_emit_skip("u1", "peerApp") {
+		t.Error("must skip a peer irreparable for this user")
+	}
+	if irreparable_emit_skip("u2", "peerApp") {
+		t.Error("must NOT skip for a different user (app-scope marker is per-user)")
+	}
+	if !irreparable_emit_skip("anyuser", "peerCore") {
+		t.Error("must skip a core-scope-irreparable peer for any user")
+	}
+	if irreparable_emit_skip("u1", "peerHealthy") {
+		t.Error("must NOT skip a healthy peer")
+	}
+}
+
+// TestWipedRebootstrapTriggers: an UNANCHORED stalled stream aged past the
+// threshold triggers a re-bootstrap; an anchored one and a fresh one do not.
+func TestWipedRebootstrapTriggers(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+
+	// Wiped stream: unanchored (no cursor), prev>0, aged.
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-wiped', 'app', 'u1', 'dbA', 7, 6, 1, ?, ?)", []byte{0x00}, old)
+	// Anchored gap (has cursor) — divergence risk, must NOT auto-rebootstrap.
+	db.exec("insert into cursor (peer, scope, user, db, sequence) values ('peer-anchored', 'app', 'u2', 'dbB', 10)")
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-anchored', 'app', 'u2', 'dbB', 16, 15, 1, ?, ?)", []byte{0x00}, old)
+	// Young unanchored — still settling, must NOT trigger yet.
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-young', 'app', 'u3', 'dbC', 7, 6, 1, ?, ?)", []byte{0x00}, now())
+
+	replication_wiped_rebootstrap()
+
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-wiped"); st != bootstrap_state_queued {
+		t.Errorf("wiped stream should trigger re-bootstrap; bootstrap state = %q, want queued", st)
+	}
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-anchored"); st != "" {
+		t.Errorf("anchored gap must NOT auto-rebootstrap (divergence risk); state = %q", st)
+	}
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-young"); st != "" {
+		t.Errorf("a still-settling unanchored stream must NOT trigger yet; state = %q", st)
+	}
+}
+
+// TestWipedRebootstrapDisabled: the setting gate turns it off.
+func TestWipedRebootstrapDisabled(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db_open("db/settings.db").exec("create table if not exists settings (name text primary key, value text not null)")
+	setting_set("replication.rebootstrap.wiped", "false")
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-off', 'app', 'u1', 'dbA', 7, 6, 1, ?, ?)", []byte{0x00}, old)
+
+	replication_wiped_rebootstrap()
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-off"); st != "" {
+		t.Errorf("disabled gate must not trigger; state = %q", st)
+	}
+}
+
+// TestIrreparableCount: the health-endpoint count reflects the marker rows.
+func TestIrreparableCount(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	if replication_irreparable_count() != 0 {
+		t.Error("fresh count should be 0")
+	}
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('p1', ?, '', '', 'offline', 0, 1)", repl_scope_core)
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values ('p2', ?, 'u1', '', 'offline', 0, 1)", repl_scope_app)
+	if c := replication_irreparable_count(); c != 2 {
+		t.Errorf("count = %d, want 2", c)
+	}
+}
+
 // TestApiStatusExposesIrreparable: a core-scope marker surfaces in
 // mochi.replication.status()'s irreparable list (drives the Pair page badge).
 func TestApiStatusExposesIrreparable(t *testing.T) {

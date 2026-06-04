@@ -45,12 +45,24 @@ func health_status() (gin.H, int) {
 		status = "degraded"
 	}
 
+	// Replication health is reported but does NOT flip the liveness code: a
+	// dead/irreparable PEER is an operator-attention issue, not a dead
+	// server, and 503 here would wrongly make load balancers / k8s restart a
+	// perfectly live host. Monitors alert on replication != "ok".
+	replication_status := "ok"
+	irreparable := replication_irreparable_count()
+	if irreparable > 0 {
+		replication_status = "degraded"
+	}
+
 	return gin.H{
-		"status":   status,
-		"version":  build_version,
-		"uptime":   int(time.Since(server_started_at).Seconds()),
-		"database": database_status,
-		"network":  network_status,
+		"status":      status,
+		"version":     build_version,
+		"uptime":      int(time.Since(server_started_at).Seconds()),
+		"database":    database_status,
+		"network":     network_status,
+		"replication": replication_status,
+		"irreparable": irreparable,
 	}, overall
 }
 

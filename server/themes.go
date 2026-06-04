@@ -86,17 +86,17 @@ func append_radius_preset(style_parts *[]string, preset string) {
 func font_stacks(pref string) (sans, mono string) {
 	switch pref {
 	case "system":
-		return `-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif`,
+		return `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif`,
 			`ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`
 	case "serif":
-		return `Georgia, "Times New Roman", Cambria, "Source Serif Pro", serif`, ""
+		return `Georgia, 'Times New Roman', Cambria, 'Source Serif Pro', serif`, ""
 	case "dyslexia":
 		// Atkinson Hyperlegible is loaded as a web font in lib/web's
 		// theme.css so this stack actually takes effect. OpenDyslexic
 		// (preferred by some readers) isn't on Google Fonts and would
 		// have to be self-hosted; Comic Sans is a last-resort local
 		// fallback some dyslexic readers find legible.
-		return `"Atkinson Hyperlegible", "OpenDyslexic", "Comic Sans MS", sans-serif`, ""
+		return `'Atkinson Hyperlegible', 'OpenDyslexic', 'Comic Sans MS', sans-serif`, ""
 	}
 	return "", ""
 }
@@ -111,7 +111,7 @@ func font_stacks(pref string) (sans, mono string) {
 // and theme previews.
 func style_preset_vars(density string) map[string]string {
 	const (
-		fontSans    = `-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif`
+		fontSans    = `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif`
 		fontMono    = "'IBM Plex Mono', 'Geist Mono', monospace"
 		shadowColor = "rgba(0, 0, 0, 0.1)"
 		borderWidth = "1px"

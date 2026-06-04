@@ -892,11 +892,10 @@ func account_send_verification_email(to string, code string, language string) {
           </tr>
           <tr>
             <td style="padding: 32px 40px 40px 40px; text-align: center;">
-              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">` + html.EscapeString(expiry) + `</p>
+              <p style="margin: 0; font-size: 14px; color: #a1a1aa;">` + html.EscapeString(expiry+". "+ignore) + `</p>
             </td>
           </tr>
         </table>
-        <p style="margin: 24px 0 0 0; font-size: 13px; color: #a1a1aa;">` + html.EscapeString(ignore) + `</p>
       </td>
     </tr>
   </table>

@@ -1389,6 +1389,26 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl_encode(rel), nil
 }
 
+// attachment_message builds an attachment-federation message carrying the
+// sender's declared service name + Services header, mirroring the data-fetch
+// path (attachment_fetch_remote). The receiver enforces that the message's
+// service is one the sender declares (route() -> "sender does not handle
+// service"); a plain message(from, to, app.id, ...) leaves Services empty and
+// uses app.id (an entity id for published apps) as the service, so every
+// attachment notification was rejected and retried forever. Set both here so
+// the notify path matches the fetch path.
+func attachment_message(app *App, owner *User, from, to, event string) *Message {
+	service := app.id
+	av := app.active(owner)
+	if av != nil && len(av.Services) > 0 {
+		service = av.Services[0]
+	}
+	m := message(from, to, service, event)
+	m.FromApp = app.id
+	m.Services = app_services(app, owner)
+	return m
+}
+
 // Federation: notify entities of new attachments
 func attachment_notify_create(app *App, owner *User, object string, attachments []map[string]any, notify []string) {
 	for _, entity := range notify {
@@ -1403,7 +1423,7 @@ func attachment_notify_create(app *App, owner *User, object string, attachments 
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/create")
+		m := attachment_message(app, owner, from, entity, "_attachment/create")
 		m.content = map[string]any{
 			"object": object,
 		}
@@ -1426,7 +1446,7 @@ func attachment_notify_insert(app *App, owner *User, object string, attachment m
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/insert")
+		m := attachment_message(app, owner, from, entity, "_attachment/insert")
 		m.content = map[string]any{
 			"object": object,
 		}
@@ -1449,7 +1469,7 @@ func attachment_notify_update(app *App, owner *User, attachment map[string]any, 
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/update")
+		m := attachment_message(app, owner, from, entity, "_attachment/update")
 		m.add(attachment)
 		m.send()
 	}
@@ -1479,7 +1499,7 @@ var attachment_notify_move = func(app *App, owner *User, attachment map[string]a
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/move")
+		m := attachment_message(app, owner, from, entity, "_attachment/move")
 		m.content = map[string]any{
 			"old_rank": fmt.Sprintf("%d", old_rank),
 			"ranks":    ranks,
@@ -1503,7 +1523,7 @@ func attachment_notify_delete(app *App, owner *User, object string, id string, n
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/delete")
+		m := attachment_message(app, owner, from, entity, "_attachment/delete")
 		m.content = map[string]any{
 			"object": object,
 			"id":     id,
@@ -1526,7 +1546,7 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 			continue
 		}
 
-		m := message(from, entity, app.id, "_attachment/clear")
+		m := attachment_message(app, owner, from, entity, "_attachment/clear")
 		m.content = map[string]any{
 			"object": object,
 		}

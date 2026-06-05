@@ -701,6 +701,10 @@ func TestWorkerFailureReasonMapping(t *testing.T) {
 		{"unknown event \"e\"", fail_unsupported},
 		{"no handler for event \"e\"", fail_unsupported},
 		{"handler panic: oops", fail_handler_panic},
+		// Deterministic authorization rejections drop (must not retry forever
+		// — the stuck _attachment/* self-loop bug).
+		{"sender does not handle service \"wikis\"", fail_unsupported},
+		{"unsigned attachment event", fail_unsupported},
 		{"something else entirely", fail_transient},
 		{"", ""},
 	}

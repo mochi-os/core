@@ -259,7 +259,13 @@ func worker_failure_reason(err error) string {
 		return fail_unknown_user
 	case strings.HasPrefix(msg, "unknown service"),
 		strings.HasPrefix(msg, "unknown event"),
-		strings.HasPrefix(msg, "no handler"):
+		strings.HasPrefix(msg, "no handler"),
+		// Deterministic authorization rejections: the sender's declared
+		// services are fixed in the message, so retrying can never change
+		// the verdict. Drop instead of retrying forever (this is what wedged
+		// the stuck _attachment/* self-loop rows at ~62 retries).
+		strings.HasPrefix(msg, "sender does not handle service"),
+		strings.HasPrefix(msg, "unsigned attachment event"):
 		return fail_unsupported
 	case strings.HasPrefix(msg, "handler panic"):
 		return fail_handler_panic

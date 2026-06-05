@@ -755,6 +755,7 @@ func replication_manager() {
 		replication_wiped_rebootstrap()
 		if now()-last_gc >= pending_gc_period_seconds {
 			replication_irreparable_scan()
+			replication_offline_scan()
 			replication_pending_gc()
 			last_gc = now()
 		}
@@ -2201,6 +2202,24 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		}
 	}
 
+	// Pair members currently unreachable, with the time they went offline.
+	// The Pair page renders an "Offline" badge once the duration crosses the
+	// display threshold; the notification waits for offline_threshold (24h).
+	offline_values := []sl.Value{}
+	if rows, err := rdb.rows("select unreachable.peer as peer, unreachable.since as since from unreachable join pair on pair.peer = unreachable.peer"); err == nil {
+		for _, r := range rows {
+			p, _ := r["peer"].(string)
+			if p == "" {
+				continue
+			}
+			since, _ := r["since"].(int64)
+			entry := sl.NewDict(2)
+			_ = entry.SetKey(sl.String("peer"), sl.String(p))
+			_ = entry.SetKey(sl.String("since"), sl.MakeInt64(since))
+			offline_values = append(offline_values, entry)
+		}
+	}
+
 	pair_values := make([]sl.Value, 0, len(pair))
 	for _, p := range pair {
 		pair_values = append(pair_values, sl.String(p))
@@ -2210,10 +2229,11 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		irreparable_values = append(irreparable_values, sl.String(p))
 	}
 
-	result := sl.NewDict(7)
+	result := sl.NewDict(8)
 	_ = result.SetKey(sl.String("peer"), sl.String(net_id))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
 	_ = result.SetKey(sl.String("irreparable"), sl.NewList(irreparable_values))
+	_ = result.SetKey(sl.String("offline"), sl.NewList(offline_values))
 	_ = result.SetKey(sl.String("hosts_count"), sl.MakeInt64(hosts_count))
 	_ = result.SetKey(sl.String("links_pending"), sl.MakeInt64(links_pending))
 	_ = result.SetKey(sl.String("joins_pending"), sl.MakeInt64(joins_pending))
@@ -2276,11 +2296,15 @@ func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		broken, _ := rdb.exists(
 			"select 1 from irreparable where peer=? and scope=? and user=?",
 			peer, repl_scope_app, u.UID)
-		entry := sl.NewDict(4)
+		// Offline-since (0 when reachable): the My-hosts page badges a host
+		// "Offline" once the duration crosses the display threshold.
+		offline := int64(rdb.integer("select since from unreachable where peer=?", peer))
+		entry := sl.NewDict(5)
 		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("added"), sl.MakeInt64(row_int(r, "added")))
 		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
 		_ = entry.SetKey(sl.String("irreparable"), sl.Bool(broken))
+		_ = entry.SetKey(sl.String("offline"), sl.MakeInt64(offline))
 		_ = out.Append(entry)
 	}
 	return out, nil

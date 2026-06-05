@@ -139,17 +139,10 @@ func peer_mark_send_failed(id string) {
 	if crossed {
 		peer_schedule_reconnect(id)
 		// Persist "unreachable since" for a replication member we can't even
-		// connect to (powered off / partitioned) so it's flagged
-		// offline-irreparable past T_forget — the companion to the
-		// inflight-timeout stamp in peer_mark_no_progress (a wiped replica
-		// that connects but never acks). Both clear only on a real app-level
-		// ack (peer_mark_progress), not on a bare libp2p stream-open, so a
-		// connect-fine/apply-broken replica isn't wrongly cleared. INSERT OR
-		// IGNORE keeps the original timestamp across repeated failures.
-		if peer_is_replication_member(id) {
-			db_open("db/replication.db").exec(
-				"insert or ignore into peer_unreachable (peer, since) values (?, ?)", id, now())
-		}
+		// connect to (powered off / partitioned) — the companion to the
+		// inflight-timeout stamp in peer_mark_no_progress and the
+		// disconnect-event stamp in peer_disconnected.
+		replication_member_unreachable(id)
 	}
 }
 

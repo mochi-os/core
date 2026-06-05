@@ -40,6 +40,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_67()
 	db_upgrade_76()
 	db_upgrade_77()
+	db_upgrade_78()
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise

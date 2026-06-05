@@ -29,6 +29,14 @@ import "sync"
 // unrecoverable.
 const irreparable_threshold = replication_op_retention
 
+// offline_threshold is how long a replication member may be unreachable
+// before its admins / owning user get a soft "offline" notification - the
+// early heads-up that sits well below the 30-day irreparable line, after
+// routine reboots / deploys / maintenance windows have had time to recover.
+// The Pair / My-hosts pages surface the offline badge sooner (from
+// unreachable.since directly); only the notification waits this long.
+const offline_threshold = 24 * 3600
+
 // replication_irreparable_scan reconciles the irreparable marker table
 // against the currently-stalled streams, then fires the dual-side
 // notification for any newly-marked stream. Called from the replication
@@ -66,7 +74,7 @@ func replication_irreparable_scan() {
 	// it's detected from the persisted unreachable mark instead. db is ''
 	// (the whole relationship, not one stream), so these never collide
 	// with the per-stream stalled rows above.
-	gone, _ := db.rows("select peer from peer_unreachable where since < ?", now()-irreparable_threshold)
+	gone, _ := db.rows("select peer from unreachable where since < ?", now()-irreparable_threshold)
 	for _, g := range gone {
 		peer, _ := g["peer"].(string)
 		if peer == "" {
@@ -90,7 +98,7 @@ func replication_irreparable_scan() {
 		user, _ := r["user"].(string)
 		database, _ := r["db"].(string)
 		reason, _ := r["reason"].(string)
-		if !replication_irreparable_leader(scope, user) {
+		if !replication_notify_leader(scope, user) {
 			continue // a co-host holds the lease and will notify
 		}
 		urgent := replication_irreparable_last_copy(db, scope, user, peer)
@@ -119,7 +127,7 @@ func replication_irreparable_offline_mark(db *DB, peer, scope, user string) {
 // peer_is_replication_member reports whether this peer participates in any
 // replication relationship (whole-server pair or per-user host) - the only
 // peers whose unreachability is worth persisting for the offline-irreparable
-// detector. Gating the peer_unreachable stamp on this keeps the table from
+// detector. Gating the unreachable stamp on this keeps the table from
 // accumulating rows for transient message recipients we happen never to ack
 // again.
 func peer_is_replication_member(id string) bool {
@@ -132,6 +140,38 @@ func peer_is_replication_member(id string) bool {
 	}
 	ok, _ := db.exists("select 1 from hosts where peer=?", id)
 	return ok
+}
+
+// replication_member_unreachable persists the "unreachable since" mark for a
+// replication member that has gone away - at the libp2p level (peer_disconnected,
+// the event-driven signal that fires even for an idle member with no traffic)
+// or whose sends keep failing (peer_mark_no_progress inflight timeouts /
+// peer_mark_send_failed connect failures). INSERT OR IGNORE keeps the original
+// timestamp across later signals. Non-members are ignored so the table stays
+// scoped to replication relationships.
+func replication_member_unreachable(id string) {
+	if !peer_is_replication_member(id) {
+		return
+	}
+	db_open("db/replication.db").exec("insert or ignore into unreachable (peer, since) values (?, ?)", id, now())
+}
+
+// replication_member_reachable clears the unreachable mark and any
+// offline-irreparable marker for a peer that is reachable again - an ack
+// arrived (peer_mark_progress) or libp2p reconnected (peer_reconnected).
+// Existence-gated so the common healthy peer pays only a cheap read. The
+// offline condition is resolved by reachability; a residual data gap, if any,
+// re-surfaces as a stalled stream, so the stalled irreparable reason is NOT
+// cleared here - a gap survives a reconnect.
+func replication_member_reachable(id string) {
+	if id == "" {
+		return
+	}
+	db := db_open("db/replication.db")
+	if seen, _ := db.exists("select 1 from unreachable where peer=?", id); seen {
+		db.exec("delete from unreachable where peer=?", id)
+		db.exec("delete from irreparable where peer=? and reason='offline'", id)
+	}
 }
 
 // replication_irreparable_clear removes any irreparable markers for a peer
@@ -147,17 +187,17 @@ func replication_irreparable_clear(peer, scope string) {
 	db.exec("delete from irreparable where peer=? and scope=?", peer, scope)
 }
 
-// replication_irreparable_leader gates the local notification so a
-// multi-host set notifies once. Core (whole-server) streams elect among the
-// pair members; app (per-user) streams elect among that user's hosts. The
+// replication_notify_leader gates a replication notification so a multi-host
+// set notifies once. Core (whole-server) relationships elect among the pair
+// members; app (per-user) relationships elect among that user's hosts. The
 // claim is optimistic, so a sole survivor whose only co-member is the dead
-// peer still wins and fires.
-func replication_irreparable_leader(scope, user string) bool {
+// peer still wins and fires. Shared by the irreparable and offline scans.
+func replication_notify_leader(scope, user string) bool {
 	leader_scope := "platform"
 	if scope == repl_scope_app && user != "" {
 		leader_scope = "user:" + user
 	}
-	return replication_leader_claim(leader_scope, "irreparable", false)
+	return replication_leader_claim(leader_scope, "notify", false)
 }
 
 // replication_irreparable_last_copy reports whether the irreparable peer held
@@ -292,51 +332,91 @@ func replication_wiped_rebootstrap() {
 // `urgent` is true when the dead peer held the last other copy of this data
 // (no redundancy left) - it escalates the notification title.
 func replication_irreparable_notify_local(scope, user string, urgent bool) {
+	title := "replica.irreparable.title"
+	if urgent {
+		title = "replica.irreparable.urgent"
+	}
+	replication_notify_members(scope, user, "replica/irreparable", title, "replica.irreparable.body")
+}
+
+// replication_offline_scan fires the soft offline notification once for any
+// member unreachable past offline_threshold, for every relationship the peer
+// participates in (whole-server pair and/or per-user host). The notified flag
+// dedups within an offline episode; it resets when the peer's next ack drops
+// the unreachable row. Members only - a stranger we briefly failed to
+// reach never gets a unreachable row. Leader-gated. Runs on the manager's
+// hourly tick alongside the irreparable scan.
+func replication_offline_scan() {
+	db := db_open("db/replication.db")
+	gone, _ := db.rows("select peer from unreachable where notified=0 and since < ?", now()-offline_threshold)
+	for _, g := range gone {
+		peer, _ := g["peer"].(string)
+		if peer == "" {
+			continue
+		}
+		if paired, _ := db.exists("select 1 from pair where peer=?", peer); paired {
+			if replication_notify_leader(repl_scope_core, "") {
+				replication_offline_notify_local(repl_scope_core, "")
+			}
+		}
+		users, _ := db.rows("select distinct user from hosts where peer=?", peer)
+		for _, u := range users {
+			user, _ := u["user"].(string)
+			if replication_notify_leader(repl_scope_app, user) {
+				replication_offline_notify_local(repl_scope_app, user)
+			}
+		}
+		db.exec("update unreachable set notified=1 where peer=?", peer)
+	}
+}
+
+// replication_offline_notify_local raises the soft offline notification: a
+// member has been unreachable past offline_threshold (24h) but not yet
+// irreparable. Whole-server scope notifies every administrator; per-user
+// scope notifies the owning user.
+func replication_offline_notify_local(scope, user string) {
+	replication_notify_members(scope, user, "replica/offline", "replica.offline.title", "replica.offline.body")
+}
+
+// replication_notify_members delivers a replication notification to whoever
+// manages the relationship: the owning user for an app (per-user) scope, or
+// every administrator for a core (whole-server) scope, each deep-linked to
+// the page where they act on it. title and body are core-label keys.
+func replication_notify_members(scope, user, topic, title, body string) {
 	if scope == repl_scope_app && user != "" {
-		// Per-user stream: the owning user manages it on their own hosts
-		// page.
-		replication_irreparable_notify_user(user, "/settings/user/replication", urgent)
+		replication_notify_user(user, topic, title, body, "/settings/user/replication")
 		return
 	}
-	// Whole-server stream: every administrator manages it on the pair page.
 	db := db_open("db/users.db")
-	rows, err := db.rows("select uid from users where role = ?", "administrator")
-	if err != nil {
-		return
-	}
+	rows, _ := db.rows("select uid from users where role = ?", "administrator")
 	for _, row := range rows {
-		id, _ := row["uid"].(string)
-		if id != "" {
-			replication_irreparable_notify_user(id, "/settings/system/replication", urgent)
+		if id, _ := row["uid"].(string); id != "" {
+			replication_notify_user(id, topic, title, body, "/settings/system/replication")
 		}
 	}
 }
 
-// replication_irreparable_notify_user sends the irreparable notification to
-// one user uid, resolving the text in that user's language and deep-linking
-// to the page (`url`) where they can remove the relationship or re-sync. When
-// `urgent` (the last other copy is gone) it uses the no-redundancy title.
-func replication_irreparable_notify_user(uid, url string, urgent bool) {
+// replication_notify_user delivers one replication notification to a user
+// uid, resolving the title and body label keys in that user's language and
+// showing the sender as "Mochi server" (object=""). Shared by the
+// irreparable and offline notifications.
+func replication_notify_user(uid, topic, title, body, url string) {
 	user := user_by_uid(uid)
 	if user == nil {
 		return
 	}
 	lang := user_language(user)
-	title_key := "replica.irreparable.title"
-	if urgent {
-		title_key = "replica.irreparable.urgent"
-	}
 	args := Map{
-		"topic":  "replica/irreparable",
+		"topic":  topic,
 		"object": "",
-		"title":  resolve_core_label(lang, title_key, nil),
-		"body":   resolve_core_label(lang, "replica.irreparable.body", nil),
+		"title":  resolve_core_label(lang, title, nil),
+		"body":   resolve_core_label(lang, body, nil),
 		"url":    url,
 		"label":  resolve_core_label(lang, "replica.irreparable.topic", nil),
 		"count":  int64(1),
 	}
 	if err := service_call_as_server(uid, "notifications", "send", args); err != nil {
-		info("Replication irreparable: notify user %q: %v", uid, err)
+		info("Replication notify user %q topic %q: %v", uid, topic, err)
 	}
 }
 
@@ -364,9 +444,9 @@ func replication_irreparable_notify_remote(peer, scope, user, database, reason s
 //
 // Deliberately notify-only, no persistent marker: a mirrored marker here has
 // no local recovery signal to clear it (our ack-based clear keys off our own
-// peer_unreachable, which a remote-reported marker never sets), so it would
+// unreachable, which a remote-reported marker never sets), so it would
 // orphan once the relationship recovers. This side's own Pair / My-hosts
-// badge is driven by its own detection (peer_unreachable / stalled), which
+// badge is driven by its own detection (unreachable / stalled), which
 // has a proper lifecycle. The notifications app dedups repeats on topic.
 func replication_irreparable_event(e *Event) {
 	scope, _ := e.content["scope"].(string)

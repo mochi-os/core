@@ -108,11 +108,11 @@ func TestIrreparableOfflineMember(t *testing.T) {
 	db := db_open("db/replication.db")
 
 	// peer-dead: paired + hosts user u1, unreachable 31 days.
-	db.exec("insert into peer_unreachable (peer, since) values ('peer-dead', ?)", now()-(irreparable_threshold+86400))
+	db.exec("insert into unreachable (peer, since) values ('peer-dead', ?)", now()-(irreparable_threshold+86400))
 	db.exec("insert into pair (peer, added, role) values ('peer-dead', ?, '')", now())
 	db.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peer-dead', ?, 0)", now())
 	// peer-flaky: paired, unreachable only 3 days -> not yet irreparable.
-	db.exec("insert into peer_unreachable (peer, since) values ('peer-flaky', ?)", now()-3*86400)
+	db.exec("insert into unreachable (peer, since) values ('peer-flaky', ?)", now()-3*86400)
 	db.exec("insert into pair (peer, added, role) values ('peer-flaky', ?, '')", now())
 
 	replication_irreparable_scan()
@@ -132,7 +132,7 @@ func TestIrreparableOfflineMember(t *testing.T) {
 }
 
 // TestPeerUnreachablePersistAndClear: crossing the stall threshold stamps a
-// peer_unreachable row once (preserving the original timestamp), and an ack
+// unreachable row once (preserving the original timestamp), and an ack
 // clears it.
 func TestPeerUnreachablePersistAndClear(t *testing.T) {
 	cleanup := setup_replication_test(t)
@@ -145,25 +145,25 @@ func TestPeerUnreachablePersistAndClear(t *testing.T) {
 	for i := 0; i < peer_stall_threshold; i++ {
 		peer_mark_no_progress(peer)
 	}
-	since := db.integer("select since from peer_unreachable where peer=?", peer)
+	since := db.integer("select since from unreachable where peer=?", peer)
 	if since == 0 {
-		t.Fatal("crossing the stall threshold must stamp peer_unreachable")
+		t.Fatal("crossing the stall threshold must stamp unreachable")
 	}
 	// More timeouts must not move the original `since`.
 	peer_mark_no_progress(peer)
-	if s := db.integer("select since from peer_unreachable where peer=?", peer); s != since {
-		t.Errorf("peer_unreachable.since changed on later timeout: %d -> %d", since, s)
+	if s := db.integer("select since from unreachable where peer=?", peer); s != since {
+		t.Errorf("unreachable.since changed on later timeout: %d -> %d", since, s)
 	}
 	// An ack clears it.
 	peer_mark_progress(peer)
-	if ok, _ := db.exists("select 1 from peer_unreachable where peer=?", peer); ok {
-		t.Error("an ack must clear peer_unreachable")
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", peer); ok {
+		t.Error("an ack must clear unreachable")
 	}
 }
 
 // TestPeerUnreachableConnectFailureStamps: the connect-failure path
 // (peer_mark_send_failed, a powered-off / partitioned member) also stamps
-// peer_unreachable for a replication member, and a non-member does not.
+// unreachable for a replication member, and a non-member does not.
 func TestPeerUnreachableConnectFailureStamps(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -179,11 +179,11 @@ func TestPeerUnreachableConnectFailureStamps(t *testing.T) {
 		peer_mark_send_failed(stranger)
 	}
 
-	if ok, _ := db.exists("select 1 from peer_unreachable where peer=?", member); !ok {
-		t.Error("a replication member we can't connect to must stamp peer_unreachable")
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", member); !ok {
+		t.Error("a replication member we can't connect to must stamp unreachable")
 	}
-	if ok, _ := db.exists("select 1 from peer_unreachable where peer=?", stranger); ok {
-		t.Error("a non-member must not stamp peer_unreachable (table stays scoped)")
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", stranger); ok {
+		t.Error("a non-member must not stamp unreachable (table stays scoped)")
 	}
 }
 
@@ -305,6 +305,94 @@ func TestIrreparableCount(t *testing.T) {
 	}
 }
 
+// TestApiExposesOffline: status() lists offline pair members with their
+// since, and hosts() carries a per-host offline timestamp (drives the badge).
+func TestApiExposesOffline(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	db.exec("insert into pair (peer, added, role) values ('peer-off', 0, '')")
+	db.exec("insert into unreachable (peer, since, notified) values ('peer-off', 12345, 0)")
+	db.exec("insert into hosts (user, peer, added, ack) values ('u-a', 'host-off', 0, 0)")
+	db.exec("insert into unreachable (peer, since, notified) values ('host-off', 54321, 0)")
+
+	v, err := api_replication_status(&sl.Thread{}, nil, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	off, _, _ := v.(*sl.Dict).Get(sl.String("offline"))
+	list, ok := off.(*sl.List)
+	if !ok || list.Len() != 1 {
+		t.Fatalf("status offline not a 1-element list: %v", off)
+	}
+	d := list.Index(0).(*sl.Dict)
+	peer, _, _ := d.Get(sl.String("peer"))
+	since, _, _ := d.Get(sl.String("since"))
+	if string(peer.(sl.String)) != "peer-off" {
+		t.Errorf("offline peer = %v, want peer-off", peer)
+	}
+	if s, _ := since.(sl.Int).Int64(); s != 12345 {
+		t.Errorf("offline since = %d, want 12345", s)
+	}
+
+	with_user_thread(&User{UID: "u-a"}, func(th *sl.Thread) {
+		hv, _ := api_replication_hosts(th, nil, sl.Tuple{}, nil)
+		hd := hv.(*sl.List).Index(0).(*sl.Dict)
+		ho, _, _ := hd.Get(sl.String("offline"))
+		if s, _ := ho.(sl.Int).Int64(); s != 54321 {
+			t.Errorf("host offline = %d, want 54321", s)
+		}
+	})
+}
+
+// TestPeerDisconnectStampsUnreachable: a member dropping at the libp2p level
+// (peer_disconnected) stamps unreachable even with no outbound traffic - the
+// idle-member gap a stopped mochi2 exposed; a reconnect clears it; a
+// non-member disconnect is ignored.
+func TestPeerDisconnectStampsUnreachable(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	member := "peer-dropped"
+	db.exec("insert into pair (peer, added, role) values (?, 0, '')", member)
+
+	peer_disconnected(member)
+	peer_disconnected("peer-stranger-disc") // not a member
+
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", member); !ok {
+		t.Error("a member disconnecting must stamp unreachable (the idle-offline case)")
+	}
+	if ok, _ := db.exists("select 1 from unreachable where peer='peer-stranger-disc'"); ok {
+		t.Error("a non-member disconnect must not stamp unreachable")
+	}
+	peer_reconnected(member)
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", member); ok {
+		t.Error("a reconnect must clear the offline mark")
+	}
+}
+
+// TestOfflineNotifyScan: a member unreachable past offline_threshold gets the
+// soft offline notification once (notified flips to 1); a member offline only
+// a few hours does not.
+func TestOfflineNotifyScan(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db := db_open("db/replication.db")
+	db.exec("insert into unreachable (peer, since, notified) values ('peer-day', ?, 0)", now()-offline_threshold-3600)
+	db.exec("insert into pair (peer, added, role) values ('peer-day', 0, '')")
+	db.exec("insert into unreachable (peer, since, notified) values ('peer-hour', ?, 0)", now()-3600)
+	db.exec("insert into pair (peer, added, role) values ('peer-hour', 0, '')")
+
+	replication_offline_scan()
+
+	if n := db.integer("select notified from unreachable where peer='peer-day'"); n != 1 {
+		t.Errorf("member offline past threshold should be notified once; notified=%d", n)
+	}
+	if n := db.integer("select notified from unreachable where peer='peer-hour'"); n != 0 {
+		t.Errorf("member offline only an hour must not notify yet; notified=%d", n)
+	}
+}
+
 // TestApiStatusExposesIrreparable: a core-scope marker surfaces in
 // mochi.replication.status()'s irreparable list (drives the Pair page badge).
 func TestApiStatusExposesIrreparable(t *testing.T) {
@@ -375,7 +463,7 @@ func TestAdminIrreparableEndpoint(t *testing.T) {
 	// Stalled stream (unfillable gap), aged past T_forget.
 	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-stall', 'app', 'u1', 'dbA', 7, 6, 1, ?, ?)", []byte{0x00}, old)
 	// Offline member: paired + hosts u2, unreachable past T_forget.
-	db.exec("insert into peer_unreachable (peer, since) values ('peer-off', ?)", old)
+	db.exec("insert into unreachable (peer, since) values ('peer-off', ?)", old)
 	db.exec("insert into pair (peer, added, role) values ('peer-off', 0, '')")
 	db.exec("insert into hosts (user, peer, added, ack) values ('u2', 'peer-off', 0, 0)")
 

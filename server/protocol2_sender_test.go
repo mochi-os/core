@@ -355,7 +355,7 @@ func TestSendersSweepTimesOutInflight(t *testing.T) {
 }
 
 // TestSendersSweepStampsPeerUnreachable: the real sweep path, repeated past
-// the stall threshold, persists a peer_unreachable row — the signal the
+// the stall threshold, persists a unreachable row — the signal the
 // offline-irreparable detector reads. Closes the Sender->DB loop that the
 // irreparable unit tests stub by calling peer_mark_no_progress directly.
 func TestSendersSweepStampsPeerUnreachable(t *testing.T) {
@@ -378,8 +378,8 @@ func TestSendersSweepStampsPeerUnreachable(t *testing.T) {
 		senders_sweep_all()
 	}
 
-	if ok, _ := db.exists("select 1 from peer_unreachable where peer=?", "sweep-stamp-peer"); !ok {
-		t.Error("repeated sweep timeouts must stamp peer_unreachable for the offline detector")
+	if ok, _ := db.exists("select 1 from unreachable where peer=?", "sweep-stamp-peer"); !ok {
+		t.Error("repeated sweep timeouts must stamp unreachable for the offline detector")
 	}
 }
 

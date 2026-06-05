@@ -97,18 +97,8 @@ func peer_mark_progress(id string) {
 		delete(peer_progress, id)
 	}
 	peer_progress_lock.Unlock()
-	// The peer just acked, so it is reachable again. Gate on a cheap
-	// indexed read (the common, never-unreachable peer matches nothing and
-	// pays no write): drop the persisted "unreachable since" mark AND any
-	// offline-irreparable marker for it. The offline reason is resolved by
-	// reachability; a residual data gap, if any, re-surfaces as a stalled
-	// stream. The stalled reason is NOT cleared here - a gap survives a
-	// reconnect and only a re-bootstrap fixes it.
-	db := db_open("db/replication.db")
-	if seen, _ := db.exists("select 1 from peer_unreachable where peer=?", id); seen {
-		db.exec("delete from peer_unreachable where peer=?", id)
-		db.exec("delete from irreparable where peer=? and reason='offline'", id)
-	}
+	// The peer just acked, so it is reachable again: clear the offline mark.
+	replication_member_reachable(id)
 	if stalled {
 		queue_resurrect_peer(id)
 	}
@@ -130,14 +120,10 @@ func peer_mark_no_progress(id string) {
 	crossed := p.Timeouts == peer_stall_threshold
 	peer_progress[id] = p
 	peer_progress_lock.Unlock()
-	// On the first crossing into stalled, stamp a persisted "unreachable
-	// since" so a replication member that connects but never acks (wiped
-	// replica) is flagged irreparable past T_forget even across restarts.
-	// INSERT OR IGNORE preserves the original timestamp on every later
-	// timeout; an ack clears it. Gated on membership so the table stays
-	// scoped to replication relationships.
-	if crossed && peer_is_replication_member(id) {
-		db_open("db/replication.db").exec(
-			"insert or ignore into peer_unreachable (peer, since) values (?, ?)", id, now())
+	// On the first crossing into stalled, stamp the member as unreachable: a
+	// replication member that connects but never acks (wiped replica). An ack
+	// clears it.
+	if crossed {
+		replication_member_unreachable(id)
 	}
 }

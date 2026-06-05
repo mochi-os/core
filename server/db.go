@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 77
+	schema_version = 78
 )
 
 var (
@@ -366,12 +366,12 @@ func db_create() {
 	// nor keeps warning. Cleared when the stream recovers or the operator
 	// removes the relationship. See replication_irreparable.go.
 	replication.exec("create table irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
-	// peer_unreachable: persisted "this peer's Sender has been failing to
-	// deliver since `since`" — set when a peer crosses the stall threshold,
-	// cleared on the next ack. Survives restarts so a member offline past
-	// T_forget is recognised even across server bounces. See
-	// peer_progress.go + replication_irreparable.go.
-	replication.exec("create table peer_unreachable (peer text not null primary key, since integer not null)")
+	// unreachable: persisted "this peer's Sender has been failing to deliver
+	// since `since`" — set when a peer crosses the stall threshold, cleared on
+	// the next ack. notified guards the 24h offline notification. Survives
+	// restarts so a member offline past T_forget is recognised even across
+	// server bounces. See peer_progress.go + replication_irreparable.go.
+	replication.exec("create table unreachable (peer text not null primary key, since integer not null, notified integer not null default 0)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed.
@@ -763,6 +763,8 @@ func db_upgrade() {
 			db_upgrade_76()
 		case 77:
 			db_upgrade_77()
+		case 78:
+			db_upgrade_78()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1151,6 +1153,25 @@ func db_upgrade_77() {
 	replication := db_open("db/replication.db")
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='peer_unreachable'"); !exists {
 		replication.exec("create table peer_unreachable (peer text not null primary key, since integer not null)")
+	}
+}
+
+// db_upgrade_78 renames peer_unreachable to unreachable (single word,
+// consistent with the irreparable table) and adds the notified flag, which
+// guards the 24h offline notification (fires once per offline episode; reset
+// when the row is dropped on the peer's next ack). Idempotent. See
+// replication_irreparable.go.
+func db_upgrade_78() {
+	replication := db_open("db/replication.db")
+	old, _ := replication.exists("select 1 from sqlite_master where type='table' and name='peer_unreachable'")
+	renamed, _ := replication.exists("select 1 from sqlite_master where type='table' and name='unreachable'")
+	if old && !renamed {
+		replication.exec("alter table peer_unreachable rename to unreachable")
+	}
+	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='unreachable'"); exists {
+		if col, _ := replication.exists("select 1 from pragma_table_info('unreachable') where name='notified'"); !col {
+			replication.exec("alter table unreachable add column notified integer not null default 0")
+		}
 	}
 }
 

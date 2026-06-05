@@ -25,7 +25,21 @@ import (
 var (
 	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}\.(js|css)$`)
 	web_https   = false
+	// Redact bearer tokens passed as ?token= (websockets, sandboxed-iframe
+	// resources) so the access log never holds credentials.
+	web_token_query = regexp.MustCompile(`token=[^&]*`)
 )
+
+// Redact the bearer token from a request path before it reaches the access
+// log. Tokens arrive as ?token=<jwt> on websocket upgrades and sandboxed-iframe
+// resource fetches; gin's logger includes the query string, so without this
+// the log would hold replayable credentials.
+func web_log_redact(path string) string {
+	if !strings.Contains(path, "token=") {
+		return path
+	}
+	return web_token_query.ReplaceAllString(path, "token=redacted")
+}
 
 // Call a web action
 func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
@@ -1485,7 +1499,7 @@ func web_start() {
 			status,
 			param.ClientIP,
 			param.Method,
-			param.Path,
+			web_log_redact(param.Path),
 			param.Latency,
 		)
 	}))

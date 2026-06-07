@@ -159,17 +159,21 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "passphrase required")
 	}
 
-	path, err := user_export(user.UID, app.id, passphrase)
+	// The domain the user accessed the web interface through, recorded in
+	// the manifest as the source server. Also the client IP for the audit
+	// log below: a key-bearing operation, and the durable trail if a
+	// stolen session ever triggers one.
+	host, ip := "", ""
+	if action, ok := t.Local("action").(*Action); ok && action.web != nil {
+		host = action.web.Request.Host
+		ip = rate_limit_client_ip(action.web)
+	}
+
+	path, err := user_export(user.UID, app.id, passphrase, host)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	// Record the export in the audit log: a key-bearing operation, and
-	// the durable trail if a stolen session ever triggers one.
-	ip := ""
-	if action, ok := t.Local("action").(*Action); ok && action.web != nil {
-		ip = rate_limit_client_ip(action.web)
-	}
 	audit_export(user.Username, ip)
 
 	return sl.String(path), nil
@@ -180,7 +184,7 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // the app-relative path so the action can stream it with a.write.file.
 // The bundle is built in a staging tree under users/<uid>/export/ first,
 // then zipped across into the app files area.
-func user_export(uid, app, passphrase string) (string, error) {
+func user_export(uid, app, passphrase, host string) (string, error) {
 	if passphrase == "" {
 		return "", fmt.Errorf("passphrase required")
 	}
@@ -252,7 +256,7 @@ func user_export(uid, app, passphrase string) (string, error) {
 	// primary entity key.
 	manifest := export_manifest{
 		Version:     export_manifest_version,
-		Source:      export_source_server(),
+		Source:      export_source_server(host),
 		Exported:    stamp.Format(time.RFC3339),
 		Fingerprint: primary.Fingerprint,
 		Files:       map[string]export_file{},
@@ -612,10 +616,27 @@ func export_store_uncompressed(rel string) bool {
 }
 
 // export_source_server returns this server's public https URL for the
-// manifest and the destination's re-link banner. Best-effort: primary
-// configured domain, else the email-from domain, else empty.
-func export_source_server() string {
+// manifest and the destination's re-link banner. Prefers the domain the
+// user actually accessed the web interface through (host), so a server
+// that serves several domains records the right one rather than whichever
+// sorts first. Falls back to the first configured domain, else the
+// email-from domain, else empty.
+func export_source_server(host string) string {
 	db := db_open("db/domains.db")
+
+	// Strip any port and match the request host against the configured
+	// domains. Only a domain this server actually serves is trusted, so a
+	// spoofed Host header cannot inject an arbitrary value.
+	host = strings.ToLower(strings.TrimSpace(host))
+	if colon := strings.IndexByte(host, ':'); colon >= 0 {
+		host = host[:colon]
+	}
+	if host != "" {
+		if row, _ := db.row("select domain from domains where domain=?", host); row != nil {
+			return "https://" + host
+		}
+	}
+
 	if row, _ := db.row("select domain from domains order by domain limit 1"); row != nil {
 		if domain := as_string(row["domain"]); domain != "" {
 			return "https://" + domain

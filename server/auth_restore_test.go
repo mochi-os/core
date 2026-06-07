@@ -73,7 +73,7 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	}
 
 	passphrase := "correct horse battery staple"
-	rel, err := user_export(src, "settings", passphrase)
+	rel, err := user_export(src, "settings", passphrase, "")
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}

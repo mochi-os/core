@@ -38,7 +38,7 @@ func TestUserExportRoundTrip(t *testing.T) {
 	sched.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, 'chat', 100, 'remind', '{}', 0, 1)", uid)
 
 	passphrase := "correct horse battery staple"
-	rel, err := user_export(uid, "settings", passphrase)
+	rel, err := user_export(uid, "settings", passphrase, "")
 	if err != nil {
 		t.Fatalf("user_export: %v", err)
 	}

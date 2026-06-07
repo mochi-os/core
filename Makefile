@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.114
+version = 0.4.115
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -376,6 +376,17 @@ docker:
 	    --tag $(docker_image):production \
 	    --push \
 	    .
+
+# Reclaim disk left by repeated image builds: dangling images from :dev
+# retags, plus build cache from both the default daemon builder and the
+# buildx container builder. The default builder's cache is already capped at
+# 5GB by /etc/docker/daemon.json (builder.gc); this target is the on-demand
+# sweep, mainly for the buildx builder, which daemon.json does not govern.
+# Leaves tagged images (:dev, release tags) untouched.
+docker-clean:
+	docker image prune -f
+	docker builder prune -af
+	-docker buildx prune -af
 
 # --------------------------------------------------------------------------
 # Release

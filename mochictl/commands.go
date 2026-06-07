@@ -99,6 +99,13 @@ func init() {
 				return post_silent("/_/admin/snapshot")
 			},
 		},
+		"vacuum": {
+			help: "Reclaim free pages from every open DB now (the periodic pass, on demand)",
+			run: func(args []string) error {
+				return post_dump("/_/admin/vacuum",
+					"databases_reclaimed", "bytes_reclaimed", "duration_ms")
+			},
+		},
 		"rsync-filter": {
 			help: "Print rsync filter rules for backing up the data dir",
 			run:  cmd_rsync_filter,

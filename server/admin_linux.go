@@ -245,6 +245,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/identity", admin_identity)
 	admin.GET("/health", admin_health)
 	admin.POST("/snapshot", admin_snapshot)
+	admin.POST("/vacuum", admin_vacuum)
 	admin.GET("/backup", admin_backup)
 	admin.POST("/stop", admin_stop)
 	admin.POST("/restart", admin_restart)
@@ -295,6 +296,7 @@ func admin_register_routes(r *gin.Engine) {
 // to record. Anything not in this map is not audited.
 var admin_audited_routes = map[string]string{
 	"POST /_/admin/snapshot":                "admin.snapshot",
+	"POST /_/admin/vacuum":                  "admin.vacuum",
 	"POST /_/admin/stop":                    "admin.stop",
 	"POST /_/admin/restart":                 "admin.restart",
 	"POST /_/admin/replica/join":            "admin.replica.join",
@@ -517,6 +519,20 @@ func admin_snapshot(c *gin.Context) {
 		status = http.StatusInternalServerError
 	}
 	c.JSON(status, out)
+}
+
+// admin_vacuum is the POST /_/admin/vacuum handler. Runs the reclaim pass
+// over every currently-open database immediately - the same gate the
+// periodic db_manager pass uses - instead of waiting for the next tick.
+// Host-local: it compacts only this host's files and is not replicated.
+func admin_vacuum(c *gin.Context) {
+	start := time.Now()
+	count, bytes := db_vacuum_all()
+	c.JSON(http.StatusOK, gin.H{
+		"databases_reclaimed": count,
+		"bytes_reclaimed":     bytes,
+		"duration_ms":         time.Since(start).Milliseconds(),
+	})
 }
 
 // admin_backup is the GET /_/admin/backup handler. Refreshes the in-place

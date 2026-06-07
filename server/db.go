@@ -80,6 +80,17 @@ var (
 // foreign keys, and the per-DB size cap. It runs on every fresh
 // connection in either pool, before any query.
 func db_setup_conn(c *sqlite3.Conn) error {
+	// auto_vacuum must be set before journal_mode=WAL and before any
+	// table exists, or it silently stays NONE (setting it after WAL is a
+	// no-op even on an empty database). On a fresh file this makes every
+	// new database incremental-auto-vacuum from birth, so DB.vacuum can
+	// reclaim freed pages with the cheap PRAGMA incremental_vacuum. On an
+	// existing populated database it is a no-op; those convert lazily in
+	// DB.vacuum. Runs before the Starlark authoriser is installed, so the
+	// PRAGMA write is permitted on both pools. See claude/plans/vacuum.md.
+	if err := c.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return err
+	}
 	if err := c.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
@@ -576,22 +587,142 @@ func db_app_schema_set(db *DB, version int) {
 	db.exec(fmt.Sprintf("pragma user_version=%d", version))
 }
 
+// db_vacuum_ratio is the minimum fraction of a database's pages that
+// must be on the freelist before reclaim is worthwhile; db_vacuum_minimum
+// is the minimum number of reclaimable bytes. Both must hold, so a
+// database that has not meaningfully churned is left untouched.
+// db_vacuum_period throttles the periodic pass: the db_manager tick is
+// per-minute, but the vacuum pass over open handles runs at most this
+// often (seconds).
+const (
+	db_vacuum_ratio   = 0.25
+	db_vacuum_minimum = 8 * 1024 * 1024
+	db_vacuum_period  = 3600
+)
+
+// db_vacuum_last is the unix time of the most recent periodic pass. Read
+// and written only from the single db_manager goroutine, so no lock.
+var db_vacuum_last int64
+
+// vacuum reclaims free pages from one database when it has churned past
+// the gate (ratio and minimum). It is host-local file maintenance, not a
+// logical write: it runs independently on every replica and must NOT be
+// leader-gated - gating it would leave non-leader replicas' files growing
+// forever. See claude/plans/vacuum.md.
+//
+// auto_vacuum=INCREMENTAL databases (everything created since this landed)
+// get the cheap PRAGMA incremental_vacuum. Older auto_vacuum=NONE
+// databases convert once: set INCREMENTAL then full VACUUM, which both
+// reclaims now and flips the mode for future churn. Either way the WAL is
+// checkpointed so freed pages leave the file. The work runs on one pinned
+// connection with a busy timeout, so it waits for rather than fights
+// concurrent writers. Best-effort: any error is logged at debug and
+// skipped - never warn (which emails the admin) and never panic.
+func (db *DB) vacuum() int64 {
+	pages := db.integer("pragma page_count")
+	if pages == 0 {
+		return 0
+	}
+	free := db.integer("pragma freelist_count")
+	size := db.integer("pragma page_size")
+	if float64(free)/float64(pages) < db_vacuum_ratio || free*size < db_vacuum_minimum {
+		return 0
+	}
+
+	conn, err := db.internal.Conn(context.Background())
+	if err != nil {
+		debug("Database vacuum unable to get connection for %q: %v", db.path, err)
+		return 0
+	}
+	defer conn.Close()
+
+	run := func(query string) bool {
+		if _, err := conn.ExecContext(context.Background(), query); err != nil {
+			debug("Database vacuum %q on %q failed: %v", query, db.path, err)
+			return false
+		}
+		return true
+	}
+
+	run("pragma busy_timeout=30000")
+	if db.integer("pragma auto_vacuum") == 2 {
+		if !run("pragma incremental_vacuum") {
+			return 0
+		}
+	} else {
+		if !run("pragma auto_vacuum=INCREMENTAL") || !run("vacuum") {
+			return 0
+		}
+	}
+	run("pragma wal_checkpoint(truncate)")
+
+	reclaimed := int64(pages*size - db.integer("pragma page_count")*size)
+	info("Database vacuum reclaimed %d bytes from %q", reclaimed, db.path)
+	return reclaimed
+}
+
+// db_vacuum_all runs the reclaim pass over every currently-open database
+// immediately and returns how many were reclaimed and the total bytes
+// freed. Backs the on-demand admin vacuum endpoint; the routine path is
+// the periodic pass in db_manager. Snapshots the open set under the lock,
+// then vacuums outside it so it does not block db_open.
+func db_vacuum_all() (int, int64) {
+	databases_lock.Lock()
+	open := make([]*DB, 0, len(databases))
+	for _, db := range databases {
+		if db.closed == 0 {
+			open = append(open, db)
+		}
+	}
+	databases_lock.Unlock()
+
+	count := 0
+	var total int64
+	for _, db := range open {
+		if n := db.vacuum(); n > 0 {
+			count++
+			total += n
+		}
+	}
+	return count, total
+}
+
 func db_manager() {
 	for range time.Tick(time.Minute) {
 		now := now()
-		var closers []*sqlx.DB
+		pass := now-db_vacuum_last >= db_vacuum_period
 
+		// Collect under the lock, but vacuum and close outside it: both
+		// can hold a write lock on the file, and must not block every
+		// other db_open while they run.
+		var evicting, live []*DB
 		databases_lock.Lock()
 		for _, db := range databases {
 			if db.closed > 0 && db.closed < now-60 {
-				closers = append(closers, db.internal, db.starlark)
+				evicting = append(evicting, db)
 				delete(databases, db.key)
+			} else if pass {
+				live = append(live, db)
 			}
 		}
 		databases_lock.Unlock()
 
-		for _, h := range closers {
-			h.Close()
+		// 2b: reclaim each idle database at the zero-contention moment
+		// just before its handles close.
+		for _, db := range evicting {
+			db.vacuum()
+			db.internal.Close()
+			db.starlark.Close()
+		}
+
+		// 2a (primary): reclaim the still-open databases in place. Core
+		// DBs and busy user DBs never go idle, so this periodic pass -
+		// not the eviction path above - is what keeps them compact.
+		if pass {
+			for _, db := range live {
+				db.vacuum()
+			}
+			db_vacuum_last = now
 		}
 	}
 }

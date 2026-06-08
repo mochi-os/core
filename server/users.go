@@ -62,6 +62,7 @@ func user_pending(u *User) bool {
 
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),
+	"close":    sl.NewBuiltin("mochi.user.close", api_user_close),
 	"code": sls.FromStringDict(sl.String("mochi.user.code"), sl.StringDict{
 		"send":   sl.NewBuiltin("mochi.user.code.send", api_user_code_send),
 		"verify": sl.NewBuiltin("mochi.user.code.verify", api_user_code_verify),
@@ -1476,22 +1477,28 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		replication_emit_session_delete(target, found)
 		count = 1
 	} else {
-		// Revoke all sessions for user. Collect codes up-front so each
-		// removal fans out a session-delete op to the user's host set.
-		codes, err := db.rows("select code from sessions where user=?", target)
-		if err != nil {
-			return sl_error(fn, "database error")
-		}
-		count = len(codes)
-		db.exec("delete from sessions where user=?", target)
-		for _, row := range codes {
-			if code, ok := row["code"].(string); ok && code != "" {
-				replication_emit_session_delete(target, code)
-			}
-		}
+		count = sessions_revoke_all(target)
 	}
 
 	return sl.MakeInt(count), nil
+}
+
+// sessions_revoke_all deletes every session for a user, fanning out a
+// replicated session-delete op for each so the revocation reaches every host
+// in the user's set. Returns the number of sessions revoked.
+func sessions_revoke_all(uid string) int {
+	db := db_open("db/sessions.db")
+	codes, err := db.rows("select code from sessions where user=?", uid)
+	if err != nil {
+		return 0
+	}
+	db.exec("delete from sessions where user=?", uid)
+	for _, row := range codes {
+		if code, ok := row["code"].(string); ok && code != "" {
+			replication_emit_session_delete(uid, code)
+		}
+	}
+	return len(codes)
 }
 
 func (u *User) identity() *Entity {

@@ -176,6 +176,16 @@ func audit_user_deleted(admin string, user string) {
 	audit_log_auth(fmt.Sprintf("user_deleted admin=%s user=%s", admin, user))
 }
 
+// audit_account_closed logs a self-service account closure
+func audit_account_closed(user string, ip string) {
+	audit_log_auth(fmt.Sprintf("account_closed user=%s ip=%s", user, ip))
+}
+
+// audit_account_reactivated logs a cancelled closure (account reactivated)
+func audit_account_reactivated(user string, ip string) {
+	audit_log_auth(fmt.Sprintf("account_reactivated user=%s ip=%s", user, ip))
+}
+
 // audit_identity_created logs identity creation
 func audit_identity_created(user string, entity string, class string) {
 	audit_log_auth(fmt.Sprintf("identity_created user=%s entity=%s class=%s", user, entity, class))

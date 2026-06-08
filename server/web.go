@@ -154,6 +154,15 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
+	// Block app actions for accounts pending closure (soft-deleted): the
+	// session is valid only to reach the reactivation interstitial, which
+	// lives in the /login app and so stays reachable. The user re-activates
+	// via /_/auth/close/cancel or lets the grace period purge the account.
+	if user != nil && user.Status == "closing" && a.id != "login" {
+		respond_error(c, http.StatusForbidden, "account_closing", "errors.account_closing", nil)
+		return true
+	}
+
 	// Run first-time setup for this user and app (grants default permissions)
 	app_user_setup(user, a.id)
 
@@ -1108,6 +1117,12 @@ func web_identity_get(c *gin.Context) {
 		},
 	}
 
+	// A closing account carries the purge timestamp so the reactivation
+	// interstitial can show the deletion date.
+	if u.Status == "closing" {
+		response["user"].(gin.H)["purge"] = user_purge(u.UID)
+	}
+
 	if u.Identity != nil {
 		response["user"].(gin.H)["name"] = u.Identity.Name
 		response["identity"] = gin.H{
@@ -1531,6 +1546,7 @@ func web_start() {
 	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)
 	r.GET("/_/auth/methods", web_auth_methods)
 	r.GET("/_/auth/partial", web_auth_partial)
+	r.POST("/_/auth/close/cancel", web_auth_close_cancel)
 
 	// Other system endpoints
 	r.GET("/_/identity", web_identity_get)

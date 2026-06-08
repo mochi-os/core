@@ -195,6 +195,7 @@ func main_serve(ready func()) int {
 		warn("admin listener disabled: %v", err)
 	}
 	go cache_manager()
+	go closure_manager()
 	go entities_manager()
 	go directory_manager()
 	go directory_cleanup_manager()

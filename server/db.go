@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 78
+	schema_version = 79
 )
 
 var (
@@ -170,7 +170,7 @@ func db_create() {
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0)")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
 	users.exec("create unique index users_username on users (username)")
 
 	// Services the user must re-link after a server move (restore). Populated
@@ -896,6 +896,8 @@ func db_upgrade() {
 			db_upgrade_77()
 		case 78:
 			db_upgrade_78()
+		case 79:
+			db_upgrade_79()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1303,6 +1305,17 @@ func db_upgrade_78() {
 		if col, _ := replication.exists("select 1 from pragma_table_info('unreachable') where name='notified'"); !col {
 			replication.exec("alter table unreachable add column notified integer not null default 0")
 		}
+	}
+}
+
+// db_upgrade_79 adds the purge column to users.db.users: the unix timestamp
+// at which a self-closed account is hard-deleted. 0 means the account is not
+// closing. Set alongside status='closing' by user_close; cleared on cancel;
+// acted on by closure_manager once it passes. Idempotent.
+func db_upgrade_79() {
+	users := db_open("db/users.db")
+	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='purge'"); !col {
+		users.exec("alter table users add column purge integer not null default 0")
 	}
 }
 

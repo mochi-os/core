@@ -3438,6 +3438,7 @@ var replication_users_users_mutable = map[string]bool{
 	"methods":  true,
 	"disabled": true,
 	"status":   true,
+	"purge":    true,
 }
 
 // replication_emit_users_users_set emits a partial update for one row

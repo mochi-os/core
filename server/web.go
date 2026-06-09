@@ -158,8 +158,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// session is valid only to reach the reactivation interstitial, which
 	// lives in the /login app and so stays reachable. The user re-activates
 	// via /_/auth/close/cancel or lets the grace period purge the account.
+	//
+	// A browser navigating to a gated app loads HTML, not XHR — returning a
+	// JSON 403 there would render raw JSON, because the SPA (which carries the
+	// account_closing redirect) never gets to run. So redirect HTML
+	// navigations straight to the interstitial; API/XHR callers still get the
+	// JSON 403 their request layer expects.
 	if user != nil && user.Status == "closing" && a.id != "login" {
-		respond_error(c, http.StatusForbidden, "account_closing", "errors.account_closing", nil)
+		accept := c.GetHeader("Accept")
+		if strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json") {
+			c.Redirect(http.StatusFound, "/login/closing")
+		} else {
+			respond_error(c, http.StatusForbidden, "account_closing", "errors.account_closing", nil)
+		}
+		c.Abort()
 		return true
 	}
 
@@ -1269,6 +1281,22 @@ func web_logout(c *gin.Context) {
 // Handle app paths
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
+
+	// A soft-deleted ("closing") account must never load the shell or an app —
+	// only the /login reactivation interstitial. Redirect top-level document
+	// navigations there before the shell renders; otherwise the shell loads
+	// and its gated app fetches bounce it in a loop. The /login app is exempt
+	// (it serves the interstitial itself). XHR/app-action requests are handled
+	// by the web_action gate.
+	if web_should_serve_shell(c) {
+		raw := strings.Trim(c.Request.URL.Path, "/")
+		if raw != "login" && !strings.HasPrefix(raw, "login/") {
+			if u := web_auth(c); u != nil && u.Status == "closing" {
+				c.Redirect(http.StatusFound, "/login/closing")
+				return
+			}
+		}
+	}
 
 	// Shell intercept: serve shell page for top-level document navigations
 	if web_should_serve_shell(c) {

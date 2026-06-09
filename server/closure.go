@@ -50,14 +50,13 @@ func api_user_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "administrators cannot close their own account")
 	}
 
-	host, ip, language := "", "", ""
+	ip, language := "", ""
 	if action, ok := t.Local("action").(*Action); ok && action.web != nil {
-		host = action.web.Request.Host
 		ip = rate_limit_client_ip(action.web)
 		language = request_language(action.web, user)
 	}
 
-	purge, err := user_close(user, host, language)
+	purge, err := user_close(user, language)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -70,7 +69,7 @@ func api_user_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // "closing", set the purge timestamp, revoke all sessions, and email the
 // user a cancellation notice. Returns the purge timestamp. Errors if the
 // account is not currently active (re-closing is a no-op error).
-func user_close(user *User, host, language string) (int64, error) {
+func user_close(user *User, language string) (int64, error) {
 	db := db_open("db/users.db")
 
 	row, _ := db.row("select status from users where uid=?", user.UID)
@@ -94,7 +93,7 @@ func user_close(user *User, host, language string) (int64, error) {
 	// interstitial during the grace window.
 	sessions_revoke_all(user.UID)
 
-	email_account_closing(user, user.Username, purge, host, language)
+	email_account_closing(user, user.Username, purge, language)
 	return purge, nil
 }
 
@@ -169,25 +168,29 @@ func closure_run_due(t int64) {
 }
 
 // email_account_closing tells the user their account is scheduled for
-// deletion and how to cancel. Localised to the user's language via the core
-// label resolver. Deduped per (address, purge) so two replicas processing
-// the same closure don't email twice.
-func email_account_closing(user *User, to string, purge int64, host, language string) {
+// deletion. Localised to the user's language via the core label resolver.
+// Deduped per (address, purge) so two replicas processing the same closure
+// don't email twice.
+//
+// The email deliberately contains NO link or action button. A "your account
+// is scheduled for deletion — click here to cancel" message is a prime
+// phishing template; including a real cancel link would train users to click
+// such links. The body instead tells them to sign in to their account
+// themselves (the reactivation page is reached through normal login).
+func email_account_closing(user *User, to string, purge int64, language string) {
 	event_id := fmt.Sprintf("closing:%d", purge)
 	if user != nil && email_already_delivered(user, to, event_id) {
 		return
 	}
 
 	date := time.Unix(purge, 0).UTC().Format("2006-01-02")
-	url := account_closing_url(host)
-	args := map[string]any{"date": date, "url": url}
+	args := map[string]any{"date": date}
 
 	subject := resolve_core_label(language, "email.account_closing.subject", nil)
 	heading := resolve_core_label(language, "email.account_closing.heading", nil)
 	body := resolve_core_label(language, "email.account_closing.body", args)
-	cancel := resolve_core_label(language, "email.account_closing.cancel", args)
 
-	text := body + "\n\n" + cancel + "\n\n" + url + "\n"
+	text := body + "\n"
 	html_body := `<!DOCTYPE html>
 <html>
 <head>
@@ -200,14 +203,9 @@ func email_account_closing(user *User, to string, purge int64, host, language st
       <td align="center" style="padding: 40px 20px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 440px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);">
           <tr>
-            <td style="padding: 40px 40px 24px 40px; text-align: center;">
+            <td style="padding: 40px; text-align: center;">
               <h1 style="margin: 0 0 16px 0; font-size: 24px; font-weight: 600; color: #18181b;">` + html.EscapeString(heading) + `</h1>
               <p style="margin: 0; font-size: 15px; color: #52525b; line-height: 1.5;">` + html.EscapeString(body) + `</p>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 40px 40px 40px; text-align: center;">
-              <a href="` + html.EscapeString(url) + `" style="display: inline-block; padding: 12px 24px; background-color: #18181b; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 500;">` + html.EscapeString(cancel) + `</a>
             </td>
           </tr>
         </table>
@@ -221,19 +219,4 @@ func email_account_closing(user *User, to string, purge int64, host, language st
 	if user != nil {
 		email_mark_delivered(user, to, event_id)
 	}
-}
-
-// account_closing_url builds the base URL the user logs in at to reach the
-// reactivation interstitial. Prefers the host the closure was requested
-// through; falls back to the first configured domain.
-func account_closing_url(host string) string {
-	if host == "" {
-		if domains := domain_list(); len(domains) > 0 {
-			host = domains[0].Domain
-		}
-	}
-	if host == "" {
-		return ""
-	}
-	return "https://" + host + "/"
 }

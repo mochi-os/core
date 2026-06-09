@@ -111,6 +111,16 @@ func web_should_serve_shell(c *gin.Context) bool {
 		return false
 	}
 
+	// The login app (auth flow, identity setup, replication/restore waiting
+	// pages, and the closure reactivation interstitial) is always full-page,
+	// never shell-wrapped. It's reached precisely when the user is between
+	// states — and a session-bearing user with an identity (e.g. a "closing"
+	// account) would otherwise be wrapped, loading the interstitial into the
+	// shell's sandboxed iframe where its cookies are stripped and it loops.
+	if path == "/login" || strings.HasPrefix(path, "/login/") {
+		return false
+	}
+
 	// Resource routes (attachment downloads, git Smart-HTTP) are never app
 	// HTML. Serving them inside the shell loads the response body into the
 	// shell's sandboxed iframe, which has an opaque origin — Chrome's PDF

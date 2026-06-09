@@ -1,0 +1,51 @@
+#!/bin/bash
+# Mochi server uninstaller for macOS.
+# Copyright Alistair Cunningham 2026
+#
+# A .pkg has no uninstall hook, so this script is installed alongside the
+# server and removes everything the installer placed — EXCEPT the data
+# directory and the _mochi account, which are deliberately preserved.
+#
+# /var/lib/mochi holds the user's entities and private keys, which cannot be
+# recovered once deleted, so an uninstall must not destroy them (the same rule
+# the Debian package follows on purge). The _mochi user/group is kept too: the
+# preserved data is owned by it, and deleting it would orphan that ownership.
+
+set -e
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "mochi-uninstall must be run as root: sudo mochi-uninstall" >&2
+	exit 1
+fi
+
+label="org.mochi-os.server"
+plist="/Library/LaunchDaemons/${label}.plist"
+
+echo "Stopping the Mochi server ..."
+launchctl bootout "system/${label}" 2>/dev/null || true
+
+echo "Removing installed files ..."
+rm -f "$plist"
+rm -f /usr/local/sbin/mochi-server
+rm -f /usr/local/sbin/mochictl
+
+# Regenerable cache; safe to remove.
+rm -rf /var/cache/mochi
+
+# Configuration; regenerated on reinstall.
+rm -f /etc/mochi/mochi.conf
+rmdir /etc/mochi 2>/dev/null || true
+
+# Drop the installer receipt so a later reinstall is clean.
+pkgutil --forget "$label" >/dev/null 2>&1 || true
+
+# Deliberately preserve /var/lib/mochi and the _mochi user/group.
+if [ -d /var/lib/mochi ]; then
+	echo "Mochi data, including private keys, has been kept at /var/lib/mochi."
+	echo "Run 'sudo rm -rf /var/lib/mochi' to remove it permanently."
+fi
+
+echo "Mochi server uninstalled."
+
+# Remove this script last.
+rm -f /usr/local/sbin/mochi-uninstall

@@ -47,6 +47,9 @@ if [ -n "$MOCHICTL" ]; then
 	cp "$MOCHICTL" "$ROOT_DIR/usr/local/sbin/mochictl"
 	chmod 755 "$ROOT_DIR/usr/local/sbin/mochictl"
 fi
+# Uninstaller: a .pkg has no uninstall hook, so ship `sudo mochi-uninstall`.
+cp "$SCRIPT_DIR/../pkg/mochi-uninstall" "$ROOT_DIR/usr/local/sbin/mochi-uninstall"
+chmod 755 "$ROOT_DIR/usr/local/sbin/mochi-uninstall"
 cp "$SCRIPT_DIR/../pkg/mochi.conf" "$ROOT_DIR/private/etc/mochi/mochi.conf"
 cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemons/"
 

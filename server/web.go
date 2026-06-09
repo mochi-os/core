@@ -146,11 +146,29 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// The /login/-/* paths are the only ones that need to work while
 	// pending — the user has to be able to cancel or wait.
 	if user_pending(user) && a.id != "login" {
+		// A browser navigating to a gated app loads HTML, not XHR —
+		// returning a JSON error there dumps raw JSON in the page, because
+		// the SPA (which would route to the waiting screen) never runs. So
+		// redirect HTML navigations to the matching /login waiting page,
+		// which explains the state (e.g. "approve the request on the source
+		// server") and offers cancel; API/XHR callers still get the JSON
+		// their request layer expects.
+		accept := c.GetHeader("Accept")
+		html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 		if user.Status == "pending-restore" {
-			respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
+			if html {
+				c.Redirect(http.StatusFound, "/login/restore")
+			} else {
+				respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
+			}
 		} else {
-			respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+			if html {
+				c.Redirect(http.StatusFound, "/login/replicating")
+			} else {
+				respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+			}
 		}
+		c.Abort()
 		return true
 	}
 

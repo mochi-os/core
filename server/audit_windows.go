@@ -64,6 +64,14 @@ func audit_write(facility string, msg string) {
 	}
 }
 
+// audit_log_daemon writes to the daemon facility. The Unix build logs to
+// syslog's LOG_DAEMON; here it routes through the file logger. Provided so the
+// cross-platform admin audit middleware (admin_routes.go) can record on every
+// platform.
+func audit_log_daemon(msg string) {
+	audit_write("DAEMON", msg)
+}
+
 // LOG_AUTH: Authentication, authorization, and security events
 
 // audit_login logs a successful login

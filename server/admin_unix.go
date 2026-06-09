@@ -1,83 +1,41 @@
-// Mochi server: Unix admin machinery — UDS listener, peer-cred auth,
-// route registration, snapshot routine + endpoints, audit middleware.
+// Mochi server: Unix admin transport — UDS listener, peer-credential auth,
+// admin_start, and the flock-based snapshot lock.
 // Copyright Alistair Cunningham 2026
 //
-// The admin listener exposes /_/admin/* endpoints for mochictl. It binds a
+// The admin listener exposes /_/admin/* (registered in admin_routes.go) over a
 // Unix domain socket at <data_dir>/run/admin.sock with mode 0660 (group
 // mochi). On accept, the peer credentials verify the peer is the mochi user,
 // root, or in the mochi group; any other peer is dropped before reaching Gin.
 // The kernel call that reads those credentials differs per OS (SO_PEERCRED on
 // Linux, LOCAL_PEERCRED on macOS), so admin_peer_authorized lives in the
-// platform files admin_cred_linux.go / admin_cred_darwin.go.
-//
-// Snapshot writes a `.backup` sibling next to every live `*.db` in the data
-// dir using SQLite's online backup API (sqlite3_backup_init), so page
-// offsets stay stable and rsync delta is tight. Static files are not
-// touched — rsync transfers them from their live paths directly. The legacy
-// `.snap` suffix from before the 2026-05-27 rename is still recognised by
-// the reap/restore/tar paths so pre-existing on-disk files keep working.
-//
-// Audit middleware records one row per state-changing admin call (snapshot,
-// stop, restart, reload). Read-only routes (status, version, config,
-// identity, backup) are not audited.
+// platform files admin_cred_linux.go / admin_cred_darwin.go. The Windows
+// transport (named pipe) is in admin_windows.go.
 
 //go:build linux || darwin
 
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sys/unix"
 )
 
-// -- Listener + peer credentials -------------------------------------------
-
 var (
-	admin_router     *gin.Engine
 	admin_mochi_uid  uint32
 	admin_mochi_gid  uint32
 	admin_creds_once sync.Once
 )
-
-// admin_cred is the platform-neutral peer identity read off an accepted UDS
-// connection. The per-OS admin_peer_authorized fills it from the kernel's
-// SO_PEERCRED (Linux) or LOCAL_PEERCRED (macOS) credentials. pid is 0 when the
-// platform does not report it (macOS xucred carries no pid).
-type admin_cred struct {
-	uid uint32
-	gid uint32
-	pid int32
-}
-
-// peer_credential_key is the context key used to attach the peer's admin_cred
-// to the request context so handlers and middleware can read it.
-type peer_credential_key struct{}
-
-// admin_peer_cred extracts the peer credentials previously attached by
-// admin_listener / ConnContext. Returns nil if not present.
-func admin_peer_cred(ctx context.Context) *admin_cred {
-	if cred, ok := ctx.Value(peer_credential_key{}).(*admin_cred); ok {
-		return cred
-	}
-	return nil
-}
 
 // admin_cred_basic_authorized reports whether the peer uid/gid alone clears
 // the gate: root, the mochi user, or a primary group of mochi. The per-OS
@@ -223,186 +181,6 @@ func admin_start() error {
 	return nil
 }
 
-// admin_register_routes wires every /_/admin/* handler.
-func admin_register_routes(r *gin.Engine) {
-	admin := r.Group("/_/admin")
-	admin.Use(admin_audit_middleware())
-	admin.GET("/status", admin_status)
-	admin.GET("/version", admin_version)
-	admin.GET("/config", admin_config)
-	admin.GET("/identity", admin_identity)
-	admin.GET("/health", admin_health)
-	admin.POST("/snapshot", admin_snapshot)
-	admin.POST("/vacuum", admin_vacuum)
-	admin.GET("/backup", admin_backup)
-	admin.POST("/stop", admin_stop)
-	admin.POST("/restart", admin_restart)
-	admin.POST("/replica/join", admin_replica_join)
-	admin.POST("/replica/leave", admin_replica_leave)
-	admin.GET("/replica/status", admin_replica_status)
-	admin.GET("/replication/status", admin_replication_status)
-	admin.GET("/replication/pair", admin_replication_pair)
-	admin.GET("/replication/pairs", admin_replication_pairs)
-	admin.GET("/replication/progress", admin_replication_progress)
-	admin.GET("/replication/ops", admin_replication_ops)
-	admin.GET("/replication/stalled", admin_replication_stalled)
-	admin.GET("/replication/irreparable", admin_replication_irreparable)
-	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
-	admin.POST("/replication/pending/gc", admin_replication_pending_gc)
-	admin.POST("/replication/resync", admin_replication_resync)
-	admin.POST("/replication/backfill", admin_replication_backfill)
-	admin.GET("/broadcast/lag", admin_broadcast_lag)
-	admin.POST("/broadcast/pending/gc", admin_broadcast_pending_gc)
-	admin.GET("/pipelining/status", admin_pipelining_status)
-	admin.GET("/pubsub/status", admin_pubsub_status)
-
-	// pprof endpoints — admin-socket only, no separate port. Peer-cred
-	// auth gates access. Useful for diagnosing memory bloat / goroutine
-	// leaks during replication tests:
-	//   mochictl -s admin.sock raw GET /_/admin/debug/pprof/heap > heap.pb.gz
-	//   go tool pprof heap.pb.gz
-	// curl -s --unix-socket admin.sock http://x/_/admin/debug/pprof/<profile>
-	// is the lower-level form for ad-hoc captures.
-	debug := r.Group("/_/admin/debug/pprof")
-	debug.GET("/", gin.WrapF(pprof.Index))
-	debug.GET("/cmdline", gin.WrapF(pprof.Cmdline))
-	debug.GET("/profile", gin.WrapF(pprof.Profile))
-	debug.GET("/symbol", gin.WrapF(pprof.Symbol))
-	debug.POST("/symbol", gin.WrapF(pprof.Symbol))
-	debug.GET("/trace", gin.WrapF(pprof.Trace))
-	debug.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
-	debug.GET("/heap", gin.WrapH(pprof.Handler("heap")))
-	debug.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
-	debug.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
-	debug.GET("/block", gin.WrapH(pprof.Handler("block")))
-	debug.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
-}
-
-// -- Audit middleware ------------------------------------------------------
-
-// admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label
-// to record. Anything not in this map is not audited.
-var admin_audited_routes = map[string]string{
-	"POST /_/admin/snapshot":                "admin.snapshot",
-	"POST /_/admin/vacuum":                  "admin.vacuum",
-	"POST /_/admin/stop":                    "admin.stop",
-	"POST /_/admin/restart":                 "admin.restart",
-	"POST /_/admin/replica/join":            "admin.replica.join",
-	"POST /_/admin/replica/leave":           "admin.replica.leave",
-	"POST /_/admin/replication/pair/remove": "admin.replication.pair.remove",
-	"POST /_/admin/replication/resync":      "admin.replication.resync",
-	"POST /_/admin/replication/backfill":    "admin.replication.backfill",
-}
-
-// admin_audit_middleware records a daemon-facility audit row after each
-// request to a state-changing admin route.
-func admin_audit_middleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Next()
-
-		key := c.Request.Method + " " + c.FullPath()
-		op, ok := admin_audited_routes[key]
-		if !ok {
-			return
-		}
-		cred := admin_peer_cred(c.Request.Context())
-		uid := -1
-		gid := -1
-		if cred != nil {
-			uid = int(cred.uid)
-			gid = int(cred.gid)
-		}
-		audit_log_daemon(fmt.Sprintf("%s peer_uid=%d peer_gid=%d status=%d",
-			op, uid, gid, c.Writer.Status()))
-	}
-}
-
-// -- Snapshot routine + handlers -------------------------------------------
-
-const snapshot_lock_name = "snapshot.lock"
-
-// snapshot_summary is the JSON returned by POST /_/admin/snapshot.
-type snapshot_summary struct {
-	Dbs    int      `json:"database_files"`
-	Reaped int      `json:"stale_snapshots_reaped"`
-	Bytes  int64    `json:"bytes_written"`
-	Ms     int64    `json:"duration_ms"`
-	Errors []string `json:"errors,omitempty"`
-}
-
-// snapshot_walk_dbs returns all live *.db file paths under root, skipping the
-// run/ and cache/ top-level directories. Backup siblings (*.db.backup, the
-// legacy *.db.snap, and their *.tmp partials) do not end in .db so the
-// `.db` suffix match excludes them automatically.
-func snapshot_walk_dbs(root string) ([]string, error) {
-	var paths []string
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p == root {
-				return nil
-			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == root && (base == "run" || base == "cache") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		name := d.Name()
-		if !strings.HasSuffix(name, ".db") {
-			return nil
-		}
-		paths = append(paths, p)
-		return nil
-	})
-	return paths, err
-}
-
-// snapshot_walk_backups returns all *.db.backup file paths under root, plus
-// any legacy *.db.snap files from before the 2026-05-27 suffix rename.
-func snapshot_walk_backups(root string) ([]string, error) {
-	var paths []string
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p == root {
-				return nil
-			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == root && (base == "run" || base == "cache") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		name := d.Name()
-		if strings.HasSuffix(name, ".db.backup") || strings.HasSuffix(name, ".db.snap") {
-			paths = append(paths, p)
-		}
-		return nil
-	})
-	return paths, err
-}
-
-// snapshot_trim_backup_suffix strips `.backup` or the legacy `.snap` suffix
-// from name and returns the derived live filename plus whether anything was
-// trimmed.
-func snapshot_trim_backup_suffix(name string) (string, bool) {
-	if v, ok := strings.CutSuffix(name, ".backup"); ok {
-		return v, true
-	}
-	if v, ok := strings.CutSuffix(name, ".snap"); ok {
-		return v, true
-	}
-	return name, false
-}
-
-// snapshot_copy_db lives in db_snapshot.go (cross-platform); the
-// bootstrap protocol calls it on every platform too.
-
 // snapshot_acquire_lock takes an exclusive lock on <run_dir>/snapshot.lock so
 // concurrent snapshot calls don't race. Linux flock is released automatically
 // if the process exits, so a crashed snapshot won't leave a stale lock.
@@ -425,205 +203,4 @@ func snapshot_release_lock(f *os.File) {
 	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
 	_ = f.Close()
 	_ = os.Remove(filepath.Join(run_dir(), snapshot_lock_name))
-}
-
-// snapshot_in_place writes a `.backup` sibling next to every live DB in the
-// data dir, then reaps any stale `.backup` (or legacy `.snap`) whose live
-// `.db` no longer exists. Acquires the snapshot lock for the duration of
-// the call.
-func snapshot_in_place() snapshot_summary {
-	start := time.Now()
-	out := snapshot_summary{}
-
-	lock, err := snapshot_acquire_lock()
-	if err != nil {
-		out.Errors = append(out.Errors, err.Error())
-		out.Ms = time.Since(start).Milliseconds()
-		return out
-	}
-	defer snapshot_release_lock(lock)
-
-	out = snapshot_in_place_locked()
-	out.Ms = time.Since(start).Milliseconds()
-	return out
-}
-
-// snapshot_in_place_locked does the actual snapshot work; the caller must
-// already hold the snapshot lock. Used by admin_backup so the lock is held
-// for both the snapshot phase and the tar streaming.
-func snapshot_in_place_locked() snapshot_summary {
-	out := snapshot_summary{}
-
-	// Reap stale backups first so we know the dir is tidy before writing new ones.
-	backups, err := snapshot_walk_backups(data_dir)
-	if err != nil {
-		out.Errors = append(out.Errors, fmt.Sprintf("walk backups: %v", err))
-	}
-	for _, backup := range backups {
-		live, _ := snapshot_trim_backup_suffix(backup)
-		if _, err := os.Stat(live); os.IsNotExist(err) {
-			if err := os.Remove(backup); err == nil {
-				out.Reaped++
-			}
-		}
-	}
-
-	dbs, err := snapshot_walk_dbs(data_dir)
-	if err != nil {
-		out.Errors = append(out.Errors, fmt.Sprintf("walk dbs: %v", err))
-		return out
-	}
-
-	for _, src := range dbs {
-		tmp := src + ".backup.tmp"
-		final := src + ".backup"
-		bytes, err := snapshot_copy_db(src, tmp)
-		if err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", src, err))
-			_ = os.Remove(tmp)
-			continue
-		}
-		if err := os.Rename(tmp, final); err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("rename %s: %v", tmp, err))
-			_ = os.Remove(tmp)
-			continue
-		}
-		// Drop a legacy `.snap` sibling from before the rename so the tar
-		// export does not ship two copies of the same DB.
-		_ = os.Remove(src + ".snap")
-		out.Dbs++
-		out.Bytes += bytes
-	}
-
-	return out
-}
-
-// admin_snapshot is the POST /_/admin/snapshot handler. Runs in-place; static
-// files are left in their live locations (rsync transfers them directly).
-func admin_snapshot(c *gin.Context) {
-	out := snapshot_in_place()
-	status := http.StatusOK
-	if len(out.Errors) > 0 && out.Dbs == 0 {
-		status = http.StatusInternalServerError
-	}
-	c.JSON(status, out)
-}
-
-// admin_vacuum is the POST /_/admin/vacuum handler. Runs the reclaim pass
-// over every currently-open database immediately - the same gate the
-// periodic db_manager pass uses - instead of waiting for the next tick.
-// Host-local: it compacts only this host's files and is not replicated.
-func admin_vacuum(c *gin.Context) {
-	start := time.Now()
-	count, bytes := db_vacuum_all()
-	c.JSON(http.StatusOK, gin.H{
-		"databases_reclaimed": count,
-		"bytes_reclaimed":     bytes,
-		"duration_ms":         time.Since(start).Milliseconds(),
-	})
-}
-
-// admin_backup is the GET /_/admin/backup handler. Refreshes the in-place
-// `.backup` siblings, then streams a tar.gz of (snapshot DBs + live static
-// files) to the response. Holds the snapshot lock throughout so the tar
-// sees a consistent set of files.
-func admin_backup(c *gin.Context) {
-	lock, err := snapshot_acquire_lock()
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
-	}
-	defer snapshot_release_lock(lock)
-
-	// Refresh .backup files in the data dir. They persist after the call —
-	// useful for subsequent rsync workflows.
-	summary := snapshot_in_place_locked()
-	if summary.Dbs == 0 && len(summary.Errors) > 0 {
-		c.JSON(http.StatusInternalServerError, summary)
-		return
-	}
-
-	c.Header("Content-Type", "application/gzip")
-	c.Header("Content-Disposition", `attachment; filename="mochi-backup.tar.gz"`)
-	gz := gzip.NewWriter(c.Writer)
-	tw := tar.NewWriter(gz)
-
-	// Walk the data dir, including .backup files (rewritten to drop the
-	// suffix in the tar) and static files. Legacy .snap siblings from
-	// before the rename are handled the same way. Skip live DB sidecars,
-	// in-flight temps, and ephemeral state.
-	_ = filepath.WalkDir(data_dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p == data_dir {
-				return nil
-			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == data_dir && (base == "run" || base == "cache") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		name := d.Name()
-		switch {
-		case strings.HasSuffix(name, ".backup") || strings.HasSuffix(name, ".snap"):
-			// .db.backup (or legacy .db.snap) -> .db inside the archive,
-			// so a restore lands the snapshot at the canonical path.
-			rel, err := filepath.Rel(data_dir, p)
-			if err != nil {
-				return nil
-			}
-			rel, _ = snapshot_trim_backup_suffix(rel)
-			if err := backup_tar_file(tw, p, rel); err != nil {
-				warn("backup: tar %s: %v", rel, err)
-			}
-		case strings.HasSuffix(name, ".db"),
-			strings.HasSuffix(name, ".db-wal"),
-			strings.HasSuffix(name, ".db-shm"),
-			strings.HasSuffix(name, ".db-journal"),
-			strings.HasSuffix(name, ".backup.tmp"),
-			strings.HasSuffix(name, ".snap.tmp"):
-			// Live DB files and in-flight temps are excluded; .backup
-			// siblings cover the data.
-			return nil
-		default:
-			rel, err := filepath.Rel(data_dir, p)
-			if err != nil {
-				return nil
-			}
-			if err := backup_tar_file(tw, p, rel); err != nil {
-				warn("backup: tar static %s: %v", rel, err)
-			}
-		}
-		return nil
-	})
-
-	_ = tw.Close()
-	_ = gz.Close()
-}
-
-// backup_tar_file appends one regular file to the tar writer using the
-// given archive-relative name.
-func backup_tar_file(tw *tar.Writer, src, rel string) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	stat, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	hdr, err := tar.FileInfoHeader(stat, "")
-	if err != nil {
-		return err
-	}
-	hdr.Name = rel
-	if err := tw.WriteHeader(hdr); err != nil {
-		return err
-	}
-	_, err = io.Copy(tw, f)
-	return err
 }

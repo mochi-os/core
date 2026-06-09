@@ -14,7 +14,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -55,8 +54,7 @@ var commands map[string]command
 func client(timeouts ...time.Duration) *adminclient.Client {
 	path := socket
 	if path == "" {
-		data := ini.String("directories", "data", "/var/lib/mochi")
-		path = filepath.Join(data, "run", "admin.sock")
+		path = admin_socket_default()
 	}
 	timeout := 30 * time.Second
 	if len(timeouts) > 0 {

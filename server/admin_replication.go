@@ -22,7 +22,7 @@
 // surfaces an aggregate `bootstrap_pending` count + a drill-down via
 // `/progress` that's enough for operators to spot stuck transfers.
 
-//go:build linux || darwin
+//go:build linux || darwin || windows
 
 package main
 

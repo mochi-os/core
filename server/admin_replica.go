@@ -13,7 +13,7 @@
 // what's at most one row at a time. Join/Leave write the state;
 // Status reads it and reconciles with the pair table.
 
-//go:build linux || darwin
+//go:build linux || darwin || windows
 
 package main
 

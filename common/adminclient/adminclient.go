@@ -1,7 +1,8 @@
-// Package adminclient is mochictl's HTTP client for the server's UDS admin
+// Package adminclient is mochictl's HTTP client for the server's admin
 // listener. It's a thin wrapper around net/http.Client with a custom
-// DialContext that dials a Unix domain socket; the rest of mochictl makes
-// regular http.Get / http.Post calls.
+// DialContext that dials the local admin transport — a Unix domain socket on
+// Linux/macOS, a named pipe on Windows (see admin_dial in the platform files);
+// the rest of mochictl makes regular http.Get / http.Post calls.
 //
 // Copyright Alistair Cunningham 2026
 
@@ -35,8 +36,7 @@ func New(socket string, timeout time.Duration) *Client {
 			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socket)
+					return admin_dial(ctx, socket)
 				},
 			},
 		},

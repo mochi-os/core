@@ -1,7 +1,7 @@
 # Makefile for Mochi
 # Copyright Alistair Cunningham 2024-2026
 
-version = 0.4.118
+version = 0.4.119
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -45,7 +45,7 @@ all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
 	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
-	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl-darwin-amd64 $(bin)/mochictl-darwin-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	rm -f $(bin)/mochictl $(bin)/mochictl.exe $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl-darwin-amd64 $(bin)/mochictl-darwin-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 
 # Order-only prerequisite: create $(bin) but don't trigger rebuilds when its
 # mtime changes.
@@ -70,6 +70,13 @@ $(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
 
 mochictl: $(bin)/mochictl
+
+# Windows mochictl: the server's admin listener is supported on windows via a
+# named pipe (LocalSystem/Administrators security descriptor).
+$(bin)/mochictl.exe: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl.exe ./mochictl
+
+mochictl.exe: $(bin)/mochictl.exe
 
 # macOS mochictl: the server's admin UDS listener is supported on darwin
 # (LOCAL_PEERCRED peer auth), so ship mochictl in the .pkg too.
@@ -295,9 +302,10 @@ $(bin)/mochi-server.exe: $(shell find server -name '*.go') $(shell find common -
 mochi-server.exe: $(bin)/mochi-server.exe
 
 # Windows MSI installer (requires wixl from msitools package on Linux, or WiX on Windows)
-$(msi): $(bin)/mochi-server.exe
+$(msi): $(bin)/mochi-server.exe $(bin)/mochictl.exe
 	mkdir -p $(build_windows)
 	cp $(bin)/mochi-server.exe $(build_windows)/
+	cp $(bin)/mochictl.exe $(build_windows)/
 	cp build/msi/mochi.conf $(build_windows)/
 	wixl -v --ext ui -D Version=$(version) -D SourceDir=$(build_windows) -o $(msi) build/msi/mochi.wxs
 	rm -rf $(build_windows)

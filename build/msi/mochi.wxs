@@ -20,6 +20,7 @@
 
         <Feature Id="ProductFeature" Title="Mochi Server" Level="1">
             <ComponentRef Id="MainExecutable" />
+            <ComponentRef Id="MochictlExecutable" />
             <ComponentRef Id="ConfigFile" />
             <ComponentRef Id="CacheFolderComp" />
             <ComponentRef Id="DataFolderComp" />
@@ -77,6 +78,16 @@
                                 Stop="both"
                                 Remove="uninstall"
                                 Wait="yes" />
+            </Component>
+
+            <!-- mochictl admin CLI. BinFolder is already on the system PATH
+                 (see the Environment element above), so it is runnable from an
+                 Administrator terminal. -->
+            <Component Id="MochictlExecutable" Guid="F6A7B8C9-D0E1-2345-F012-678901234567" Win64="yes">
+                <File Id="MochictlExe"
+                      Name="mochictl.exe"
+                      Source="$(var.SourceDir)/mochictl.exe"
+                      KeyPath="yes" />
             </Component>
         </DirectoryRef>
 

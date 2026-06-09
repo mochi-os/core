@@ -29,6 +29,7 @@ type SystemSetting struct {
 	UserReadable bool   // Whether non-admin users can read this setting
 	ReadOnly     bool   // Whether this setting can be modified by anyone
 	Public       bool   // Whether this setting can be read without authentication
+	Secret       bool   // Whether the value is a credential: never returned to a client (read paths report only whether it is set) and masked in the audit log
 }
 
 // system_settings defines all available system settings
@@ -180,6 +181,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"oauth_google_client_secret": {
+		Secret:       true,
 		Name:         "oauth_google_client_secret",
 		Pattern:      "line",
 		Default:      "",
@@ -196,6 +198,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"oauth_github_client_secret": {
+		Secret:       true,
 		Name:         "oauth_github_client_secret",
 		Pattern:      "line",
 		Default:      "",
@@ -212,6 +215,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"oauth_microsoft_client_secret": {
+		Secret:       true,
 		Name:         "oauth_microsoft_client_secret",
 		Pattern:      "line",
 		Default:      "",
@@ -236,6 +240,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"oauth_facebook_client_secret": {
+		Secret:       true,
 		Name:         "oauth_facebook_client_secret",
 		Pattern:      "line",
 		Default:      "",
@@ -252,6 +257,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"oauth_x_client_secret": {
+		Secret:       true,
 		Name:         "oauth_x_client_secret",
 		Pattern:      "line",
 		Default:      "",
@@ -268,6 +274,7 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 	},
 	"fcm.service_account": {
+		Secret:       true,
 		Name:         "fcm.service_account",
 		Pattern:      "text",
 		Default:      "",
@@ -331,6 +338,11 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "access denied")
 	}
 
+	// Credentials are write-only; never hand the stored value to a caller.
+	if def.Secret {
+		return sl.String(""), nil
+	}
+
 	value := setting_get(name, def.Default)
 	return sl.String(value), nil
 }
@@ -383,7 +395,12 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	setting_set(name, value)
-	audit_settings_changed(user.Username, name, value)
+	// Never write a credential's value into the audit log.
+	audit_value := value
+	if def.Secret {
+		audit_value = "***"
+	}
+	audit_settings_changed(user.Username, name, audit_value)
 	return sl.True, nil
 }
 
@@ -402,9 +419,17 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	var settings []map[string]any
 	for _, def := range system_settings {
 		value := setting_get(def.Name, def.Default)
+		// Credentials are write-only: report only whether a value is set, never
+		// the value itself, so it can't be read back through the admin UI.
+		set := value != ""
+		if def.Secret {
+			value = ""
+		}
 		settings = append(settings, map[string]any{
 			"name":          def.Name,
 			"value":         value,
+			"set":           set,
+			"secret":        def.Secret,
 			"default":       def.Default,
 			"description":   def.Description,
 			"pattern":       def.Pattern,

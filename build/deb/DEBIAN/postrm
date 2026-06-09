@@ -1,0 +1,29 @@
+#!/bin/bash
+
+case "$1" in
+	remove)
+		systemctl daemon-reload >/dev/null 2>&1 || true
+		;;
+
+	purge)
+		systemctl daemon-reload >/dev/null 2>&1 || true
+
+		# Cache is regenerated on next start; safe to remove.
+		rm -rf /var/cache/mochi
+
+		# Deliberately preserve /var/lib/mochi even on purge. It holds
+		# the user's entities and private keys, which cannot be
+		# recovered once deleted, so 'apt purge' must not destroy them.
+		# This matches how database packages (PostgreSQL, MySQL) keep
+		# their data directories on purge.
+		#
+		# The mochi user and group are kept too: the preserved data is
+		# owned by mochi:mochi, and a later reinstall's useradd could
+		# assign a different UID, orphaning that ownership. Keeping the
+		# user means a reinstall reuses it and the data stays readable.
+		if [ -d /var/lib/mochi ]; then
+			echo "Mochi data, including private keys, has been kept at /var/lib/mochi."
+			echo "Run 'sudo rm -rf /var/lib/mochi' to remove it permanently."
+		fi
+		;;
+esac

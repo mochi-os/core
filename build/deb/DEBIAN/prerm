@@ -1,3 +1,12 @@
 #!/bin/bash
 
-systemctl stop mochi-server
+case "$1" in
+	remove|deconfigure)
+		systemctl stop mochi-server >/dev/null 2>&1 || true
+		systemctl disable mochi-server >/dev/null 2>&1 || true
+		;;
+
+	upgrade)
+		systemctl stop mochi-server >/dev/null 2>&1 || true
+		;;
+esac

@@ -45,7 +45,7 @@ all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
 	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
-	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	rm -f $(bin)/mochictl $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl-darwin-amd64 $(bin)/mochictl-darwin-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 
 # Order-only prerequisite: create $(bin) but don't trigger rebuilds when its
 # mtime changes.
@@ -70,6 +70,18 @@ $(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
 
 mochictl: $(bin)/mochictl
+
+# macOS mochictl: the server's admin UDS listener is supported on darwin
+# (LOCAL_PEERCRED peer auth), so ship mochictl in the .pkg too.
+$(bin)/mochictl-darwin-amd64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-darwin-amd64 ./mochictl
+
+mochictl-darwin-amd64: $(bin)/mochictl-darwin-amd64
+
+$(bin)/mochictl-darwin-arm64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-darwin-arm64 ./mochictl
+
+mochictl-darwin-arm64: $(bin)/mochictl-darwin-arm64
 
 # Man page: docs/mochictl.1.md -> $(bin)/mochictl.1 via pandoc.
 # Requires: apt install pandoc
@@ -311,11 +323,11 @@ mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 
 # macOS .pkg installers
 # Requires: bomutils (/opt/bomutils), xar
-$(pkg_amd64): $(bin)/mochi-server-darwin-amd64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64)
+$(pkg_amd64): $(bin)/mochi-server-darwin-amd64 $(bin)/mochictl-darwin-amd64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64) $(bin)/mochictl-darwin-amd64
 
-$(pkg_arm64): $(bin)/mochi-server-darwin-arm64
-	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64)
+$(pkg_arm64): $(bin)/mochi-server-darwin-arm64 $(bin)/mochictl-darwin-arm64
+	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64) $(bin)/mochictl-darwin-arm64
 
 pkg-amd64: $(pkg_amd64)
 

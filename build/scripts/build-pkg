@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a macOS .pkg installer from Linux or macOS
-# Usage: build-pkg <binary> <version> <arch> <output.pkg>
+# Usage: build-pkg <binary> <version> <arch> <output.pkg> [mochictl]
 # Requires on Linux: mkbom/ls4mkbom (bomutils), xar
 # Requires on macOS: xcrun (Xcode command line tools), xar
 
@@ -10,6 +10,7 @@ BINARY="$1"
 VERSION="$2"
 ARCH="$3"
 OUTPUT="$4"
+MOCHICTL="$5"
 SCRIPT_DIR="$(dirname "$0")"
 BUILD_DIR="$(mktemp -d)"
 ROOT_DIR="$BUILD_DIR/root"
@@ -41,6 +42,11 @@ mkdir -p "$ROOT_DIR/private/var/lib/mochi"
 
 cp "$BINARY" "$ROOT_DIR/usr/local/sbin/mochi-server"
 chmod 755 "$ROOT_DIR/usr/local/sbin/mochi-server"
+# mochictl drives the admin UDS (supported on macOS via LOCAL_PEERCRED).
+if [ -n "$MOCHICTL" ]; then
+	cp "$MOCHICTL" "$ROOT_DIR/usr/local/sbin/mochictl"
+	chmod 755 "$ROOT_DIR/usr/local/sbin/mochictl"
+fi
 cp "$SCRIPT_DIR/../pkg/mochi.conf" "$ROOT_DIR/private/etc/mochi/mochi.conf"
 cp "$SCRIPT_DIR/../pkg/org.mochi-os.server.plist" "$ROOT_DIR/Library/LaunchDaemons/"
 

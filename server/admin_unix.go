@@ -1,11 +1,14 @@
-// Mochi server: Linux-only admin machinery — UDS listener, peer-cred auth,
+// Mochi server: Unix admin machinery — UDS listener, peer-cred auth,
 // route registration, snapshot routine + endpoints, audit middleware.
 // Copyright Alistair Cunningham 2026
 //
 // The admin listener exposes /_/admin/* endpoints for mochictl. It binds a
 // Unix domain socket at <data_dir>/run/admin.sock with mode 0660 (group
-// mochi). On accept, SO_PEERCRED verifies the peer is the mochi user, root,
-// or in the mochi group; any other peer is dropped before reaching Gin.
+// mochi). On accept, the peer credentials verify the peer is the mochi user,
+// root, or in the mochi group; any other peer is dropped before reaching Gin.
+// The kernel call that reads those credentials differs per OS (SO_PEERCRED on
+// Linux, LOCAL_PEERCRED on macOS), so admin_peer_authorized lives in the
+// platform files admin_cred_linux.go / admin_cred_darwin.go.
 //
 // Snapshot writes a `.backup` sibling next to every live `*.db` in the data
 // dir using SQLite's online backup API (sqlite3_backup_init), so page
@@ -18,7 +21,7 @@
 // stop, restart, reload). Read-only routes (status, version, config,
 // identity, backup) are not audited.
 
-//go:build linux
+//go:build linux || darwin
 
 package main
 
@@ -53,17 +56,42 @@ var (
 	admin_creds_once sync.Once
 )
 
-// peer_credential_key is the context key used to attach the peer's Ucred to the
-// request context so handlers and middleware can read it.
+// admin_cred is the platform-neutral peer identity read off an accepted UDS
+// connection. The per-OS admin_peer_authorized fills it from the kernel's
+// SO_PEERCRED (Linux) or LOCAL_PEERCRED (macOS) credentials. pid is 0 when the
+// platform does not report it (macOS xucred carries no pid).
+type admin_cred struct {
+	uid uint32
+	gid uint32
+	pid int32
+}
+
+// peer_credential_key is the context key used to attach the peer's admin_cred
+// to the request context so handlers and middleware can read it.
 type peer_credential_key struct{}
 
 // admin_peer_cred extracts the peer credentials previously attached by
 // admin_listener / ConnContext. Returns nil if not present.
-func admin_peer_cred(ctx context.Context) *unix.Ucred {
-	if cred, ok := ctx.Value(peer_credential_key{}).(*unix.Ucred); ok {
+func admin_peer_cred(ctx context.Context) *admin_cred {
+	if cred, ok := ctx.Value(peer_credential_key{}).(*admin_cred); ok {
 		return cred
 	}
 	return nil
+}
+
+// admin_cred_basic_authorized reports whether the peer uid/gid alone clears
+// the gate: root, the mochi user, or a primary group of mochi. The per-OS
+// admin_peer_authorized calls this first, then falls back to a supplementary-
+// group check that needs platform-specific data (/proc on Linux, the xucred
+// group list on macOS).
+func admin_cred_basic_authorized(uid, gid uint32) bool {
+	if uid == 0 || uid == admin_mochi_uid {
+		return true
+	}
+	if admin_mochi_gid != 0 && gid == admin_mochi_gid {
+		return true
+	}
+	return false
 }
 
 // admin_conn wraps an accepted UDS connection alongside its verified peer
@@ -71,7 +99,7 @@ func admin_peer_cred(ctx context.Context) *unix.Ucred {
 // into the request context.
 type admin_conn struct {
 	net.Conn
-	cred *unix.Ucred
+	cred *admin_cred
 }
 
 // admin_socket_path returns the absolute path of the admin UDS.
@@ -80,12 +108,13 @@ func admin_socket_path() string {
 }
 
 // admin_resolve_creds populates admin_mochi_uid/gid from the OS user/group
-// database. If the mochi user does not exist (e.g. development environment),
-// the server's effective UID is used as a fallback so the developer can run
-// mochictl as themselves.
+// database (admin_account is "mochi" on Linux, "_mochi" on macOS). If that
+// account does not exist (e.g. development environment, or a static darwin
+// build that cannot query OpenDirectory), the server's effective UID is used
+// as a fallback so the operator can run mochictl as the owner or root.
 func admin_resolve_creds() {
 	admin_creds_once.Do(func() {
-		if u, err := user.Lookup("mochi"); err == nil {
+		if u, err := user.Lookup(admin_account); err == nil {
 			if uid, err := strconv.ParseUint(u.Uid, 10, 32); err == nil {
 				admin_mochi_uid = uint32(uid)
 			}
@@ -93,7 +122,7 @@ func admin_resolve_creds() {
 		if admin_mochi_uid == 0 {
 			admin_mochi_uid = uint32(os.Geteuid())
 		}
-		if g, err := user.LookupGroup("mochi"); err == nil {
+		if g, err := user.LookupGroup(admin_account); err == nil {
 			if gid, err := strconv.ParseUint(g.Gid, 10, 32); err == nil {
 				admin_mochi_gid = uint32(gid)
 			}
@@ -101,51 +130,10 @@ func admin_resolve_creds() {
 	})
 }
 
-// admin_peer_authorized checks SO_PEERCRED on a connected UnixConn. Returns
-// true if the peer's UID matches the mochi user, is root, or is in the mochi
-// group (checking supplementary groups via /proc/<pid>/status).
-func admin_peer_authorized(c *net.UnixConn) (bool, *unix.Ucred) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return false, nil
-	}
-	var cred *unix.Ucred
-	var credErr error
-	err = raw.Control(func(fd uintptr) {
-		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
-	if err != nil || credErr != nil || cred == nil {
-		return false, nil
-	}
-	if cred.Uid == 0 || cred.Uid == admin_mochi_uid {
-		return true, cred
-	}
-	if admin_mochi_gid != 0 && admin_pid_in_group(int(cred.Pid), admin_mochi_gid) {
-		return true, cred
-	}
-	return false, cred
-}
-
-// admin_pid_in_group reports whether the given process is a member of gid,
-// including supplementary groups. SO_PEERCRED reports only the primary GID,
-// so we read /proc/<pid>/status to see the full Groups: list.
-func admin_pid_in_group(pid int, gid uint32) bool {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(line, "Groups:") {
-			continue
-		}
-		for _, s := range strings.Fields(strings.TrimPrefix(line, "Groups:")) {
-			if g, err := strconv.ParseUint(s, 10, 32); err == nil && uint32(g) == gid {
-				return true
-			}
-		}
-	}
-	return false
-}
+// admin_peer_authorized reads the connected peer's credentials and reports
+// whether they clear the admin gate. It lives in the platform files
+// admin_cred_linux.go (SO_PEERCRED) and admin_cred_darwin.go (LOCAL_PEERCRED)
+// because the kernel call and the supplementary-group lookup differ per OS.
 
 // admin_listener wraps a Unix listener and drops any connection that fails
 // the peer-credential check before it reaches the HTTP server.
@@ -167,7 +155,7 @@ func (l *admin_listener) Accept() (net.Conn, error) {
 		authorized, cred := admin_peer_authorized(uc)
 		if !authorized {
 			if cred != nil {
-				warn("admin: rejecting unauthorised peer uid=%d gid=%d pid=%d", cred.Uid, cred.Gid, cred.Pid)
+				warn("admin: rejecting unauthorised peer uid=%d gid=%d pid=%d", cred.uid, cred.gid, cred.pid)
 			} else {
 				warn("admin: rejecting peer with unreadable creds")
 			}
@@ -321,8 +309,8 @@ func admin_audit_middleware() gin.HandlerFunc {
 		uid := -1
 		gid := -1
 		if cred != nil {
-			uid = int(cred.Uid)
-			gid = int(cred.Gid)
+			uid = int(cred.uid)
+			gid = int(cred.gid)
 		}
 		audit_log_daemon(fmt.Sprintf("%s peer_uid=%d peer_gid=%d status=%d",
 			op, uid, gid, c.Writer.Status()))

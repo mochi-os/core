@@ -10,7 +10,7 @@
 // gap-detector can't self-detect (idle owner) was invisible to the
 // operator and only surfaced when a user noticed wrong data.
 
-//go:build linux
+//go:build linux || darwin
 
 package main
 

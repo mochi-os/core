@@ -280,6 +280,10 @@ func init() {
 	// peer be an active bootstrap source for the scope).
 	a.event("sql/op", replication_op_event)
 	a.event("host/membership/change", replication_membership_change_event)
+	// Deliberate signed "delete this account everywhere" op (see closure.go).
+	// Signed by one of the user's identities; the handler re-checks local
+	// closing/purge state before deleting (reactivation-race safety).
+	a.event("user/purge", replication_user_purge_event)
 	a.event("keys/transfer", replication_keys_transfer_event)
 	// Live file replication (see file_push.go). Per-(user, peer) push;
 	// any size; sha256-verified on the receiver before atomic rename.
@@ -1693,6 +1697,51 @@ func to_bytes(v any) []byte {
 // to queue.db) from outliving their setup tear-down.
 var replication_membership_update = replication_membership_update_impl
 
+// replication_membership_depart announces that THIS host is leaving the user's
+// per-user host set: it broadcasts the host set with self removed to the
+// remaining peers, so each drops this host. This is the self-leaving case that
+// replication_membership_update gets wrong — the latter re-adds net_id via
+// full_set (correct when a *staying* host drops a *different* peer, wrong when
+// the departing host is itself). Used by a host purging or removing its own
+// copy. Must run before the user's entities are deleted, since the op is signed
+// by one of the user's identity entities. No local-table rewrite — the caller
+// deletes this host's replication rows for the user separately.
+func replication_membership_depart(user string) {
+	db := db_open("db/replication.db")
+	rows, err := db.rows("select peer from hosts where user=? and peer != ?", user, net_id)
+	if err != nil {
+		return
+	}
+	remaining := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p := row_string(r, "peer"); p != "" {
+			remaining = append(remaining, p)
+		}
+	}
+	if len(remaining) == 0 {
+		return // no other hosts to notify
+	}
+
+	udb := db_open("db/users.db")
+	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
+	if err != nil || row == nil {
+		warn("Replication membership-depart: no signing entity for user %q: %v", user, err)
+		return
+	}
+	from, _ := row["id"].(string)
+	if from == "" {
+		return
+	}
+
+	seq := replication_sequence_next(user, "membership")
+	mc := &MembershipChange{User: user, Hosts: remaining, Sequence: seq}
+	for _, peer := range remaining {
+		m := message(from, from, "replication", "host/membership/change")
+		m.add(mc)
+		m.send_peer(peer)
+	}
+}
+
 // replication_membership_full_set returns the complete membership set
 // for a user: this server (net_id) plus `hosts`, de-duplicated with
 // blanks dropped and self first. Callers build `hosts` from the local
@@ -2397,12 +2446,12 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	// membership-update wipes & rewrites the local hosts table and
-	// broadcasts the new set to every remaining host. The departing
-	// peer learns it's out of the set when it next receives any op
-	// for this user and sees itself missing from the membership list
-	// (or when the periodic reconciler in #66's bootstrap protocol
-	// confirms divergence).
+	// broadcasts the new set to every remaining host.
 	replication_membership_update(u.UID, remaining)
+	// Tell the removed host to actually delete its copy ("delete this
+	// replica"): a signed leave-set user/purge. The account survives on the
+	// remaining hosts, so the removed host drops its data only — no tombstone.
+	replication_send_user_leave(u.UID, peer)
 	audit_replication_host_removed(u.UID, peer)
 	// Removing the relationship resolves any irreparable badge for it.
 	rdb.exec("delete from irreparable where peer=? and scope=? and user=?", peer, repl_scope_app, u.UID)

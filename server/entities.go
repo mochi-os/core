@@ -222,6 +222,35 @@ func (e *Entity) delete() {
 	audit_identity_deleted(username, e.ID)
 }
 
+// delete_local removes this entity's local rows WITHOUT broadcasting the
+// directory tombstone or replicating the deletion. Used when this host stops
+// hosting the user (leave-set / "delete this replica") while the account and
+// its entities survive on other hosts: the entity stays in the network
+// directory (other hosts still advertise it), and this host's now-stale
+// directory location ages out via the location TTL.
+func (e *Entity) delete_local() {
+	db := db_open("db/users.db")
+	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.id", e.ID)
+	username := ""
+	if row != nil {
+		username, _ = row["username"].(string)
+	}
+
+	queue := db_open("db/queue.db")
+	queue.exec("delete from queue where from_entity=?", e.ID)
+	queue.exec("delete from queue where to_entity=?", e.ID)
+
+	if e.User != "" {
+		udb := db_open(fmt.Sprintf("users/%s/user.db", e.User))
+		udb.exec("delete from group_members where member=? and type='user'", e.ID)
+	}
+
+	db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
+	db.exec("delete from entities where id=?", e.ID)
+
+	audit_identity_deleted(username, e.ID)
+}
+
 // Get the peer an entity is at
 func entity_peer(id string) string {
 	// Check if local

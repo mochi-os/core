@@ -25,6 +25,119 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
+// UserPurge is the payload of a "user/purge" replication op — a deliberate,
+// signed instruction to delete a host's copy of an account. Distinct from a
+// replicated row delete (which the apply path no-ops for safety): a user/purge
+// is signed by one of the user's own identity entities, so only a legitimate
+// host can authorise it. AccountGone distinguishes the two intents:
+//   - true:  close / admin delete — the account is gone everywhere, tombstone
+//            the entities. Sent to every replica (recipients).
+//   - false: "delete this replica" — the user removed one host from their set;
+//            that host purges its copy (leave-set), entities survive elsewhere.
+//            Sent only to the removed host.
+type UserPurge struct {
+	User        string
+	AccountGone bool
+}
+
+// replication_emit_user_purge propagates an authoritative account-gone purge of
+// `user` to every replica that holds the account — recipients(user) = the
+// per-user host set ∪ all server pairs. Each recipient applies it via
+// replication_user_purge_event, which re-checks local state before deleting.
+// Must be called while the user's identity entities still exist (the op is
+// signed by one of them).
+func replication_emit_user_purge(user string) {
+	peers := recipients(user)
+	if len(peers) == 0 {
+		return
+	}
+	replication_send_user_purge(user, peers, true)
+}
+
+// replication_send_user_leave tells a single removed host to purge its own copy
+// of `user` (leave-set: the account survives on the other hosts). Used by
+// host.remove / "delete this replica".
+func replication_send_user_leave(user, peer string) {
+	replication_send_user_purge(user, []string{peer}, false)
+}
+
+// replication_send_user_purge signs a UserPurge with one of the user's identity
+// entities and sends it to each peer.
+func replication_send_user_purge(user string, peers []string, accountGone bool) {
+	if len(peers) == 0 {
+		return
+	}
+	udb := db_open("db/users.db")
+	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
+	if err != nil || row == nil {
+		warn("user/purge emit: no signing entity for user %q: %v", user, err)
+		return
+	}
+	from, _ := row["id"].(string)
+	if from == "" {
+		return
+	}
+	up := &UserPurge{User: user, AccountGone: accountGone}
+	for _, peer := range peers {
+		m := message(from, from, "replication", "user/purge")
+		m.add(up)
+		m.send_peer(peer)
+	}
+}
+
+// replication_user_purge_event applies a received user/purge. The framework has
+// already verified the signature against e.from; we additionally require e.from
+// to be one of the named user's own identities, so a foreign entity can't
+// authorise the deletion. Idempotent (purging an absent user is a no-op).
+func replication_user_purge_event(e *Event) {
+	var up UserPurge
+	if !e.segment(&up) {
+		info("user/purge dropping: cannot decode payload")
+		return
+	}
+	if up.User == "" {
+		return
+	}
+
+	db := db_open("db/users.db")
+	row, _ := db.row("select status, purge from users where uid=?", up.User)
+	if row == nil {
+		return // already gone — idempotent no-op
+	}
+
+	// Signer must be one of this user's identities.
+	if ok, _ := db.exists("select 1 from entities where user=? and id=?", up.User, e.from); !ok {
+		audit_signature_failed(e.from, "user/purge signer is not an identity of "+up.User)
+		return
+	}
+
+	if up.AccountGone {
+		// Ordering / reactivation-race safety: purge only if THIS host's copy
+		// is still closing with the deadline elapsed. A reactivated (active)
+		// account drops the op; a lagging replica re-derives it later only if
+		// the account is genuinely still due.
+		status, _ := row["status"].(string)
+		purge, _ := row["purge"].(int64)
+		if status != "closing" || purge <= 0 || purge > now() {
+			return
+		}
+		if _, err := user_purge_local(up.User, true); err != nil {
+			info("user/purge: delete failed for %q: %v", up.User, err)
+			return
+		}
+		audit_user_deleted(up.User, up.User)
+		return
+	}
+
+	// leave-set: the user removed this host from their set. Purge the local
+	// copy; the account survives on the other hosts.
+	if _, err := user_purge_local(up.User, false); err != nil {
+		info("user/purge (leave): delete failed for %q: %v", up.User, err)
+		return
+	}
+	audit_replication_host_removed(up.User, net_id)
+}
+
 // account_closing_days is the grace period, in days, between a self-service
 // closure and the hard purge. Operator-tunable via [account] closing in the
 // config; defaults to 30 (the de-facto deactivation window users expect).
@@ -141,10 +254,21 @@ func closure_manager() {
 	}
 }
 
-// closure_run_due purges every account whose purge timestamp has passed. Each
-// purge is leader-gated with strict=true: user_delete broadcasts an
-// irreversible network tombstone, so only the strict-majority leader for the
-// account may fire it — a partition-isolated minority must not double-delete.
+// closure_run_due purges every account whose purge timestamp has passed.
+//
+// Deliberately NOT leader-gated. Account data is per-host state: each replica
+// holds its own copy and must delete its own, so every host that sees the
+// account as due runs user_delete locally — that is how a multi-host account
+// converges to deleted everywhere. (The closing status and purge timestamp
+// replicate via the close path, so every host independently reaches this
+// point once the deadline passes.) Leader-gating would let exactly one host
+// delete its copy and strand the rest, because user deletion does not
+// propagate as a row op (the apply path no-ops incoming user deletes for
+// safety).
+//
+// The one cross-host side effect — the signed directory/delete tombstone each
+// entity broadcasts — is idempotent on receivers, so the handful of redundant
+// broadcasts from several hosts purging around the same time are harmless.
 func closure_run_due(t int64) {
 	db := db_open("db/users.db")
 	rows, err := db.rows("select uid from users where status='closing' and purge>0 and purge<=?", t)
@@ -156,9 +280,13 @@ func closure_run_due(t int64) {
 		if uid == "" {
 			continue
 		}
-		if !replication_leader_claim("closure", uid, true) {
-			continue
-		}
+		// Propagate the authoritative purge to every replica (host-set ∪
+		// pairs) BEFORE deleting locally — the op is signed by one of the
+		// user's entities, which the local delete is about to remove. Each
+		// recipient re-checks its own closing/purge state before acting, and
+		// the op is idempotent, so it's safe for several hosts to emit it and
+		// for it to reach a host that has already purged.
+		replication_emit_user_purge(uid)
 		if _, err := user_delete(uid); err != nil {
 			info("Account closure purge failed for %q: %v", uid, err)
 			continue

@@ -1158,45 +1158,51 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.True, nil
 }
 
-// user_delete removes a user and all associated rows (entities, sessions,
-// passkeys, totp, recovery, oauth) plus the on-disk data directory. Returns
-// the deleted username for audit purposes.
+// user_delete removes this host's copy of a user, entities tombstoned — the
+// "account is gone everywhere" form. Thin wrapper over user_purge_local.
 func user_delete(id string) (string, error) {
+	return user_purge_local(id, true)
+}
+
+// user_purge_local removes THIS host's copy of a user (entities, sessions,
+// passkeys, totp, recovery, oauth, app DBs, on-disk tree, replication
+// metadata) and announces this host's departure from the user's host set.
+// Returns the deleted username for audit.
+//
+// accountGone selects the directory side effect, which is the only thing that
+// differs between the two deletion intents:
+//   - true  (close / admin delete): broadcast the signed entity directory
+//     tombstone and replicate the entity deletion — the account is gone
+//     everywhere.
+//   - false (leave-set / "delete this replica"): remove the entities locally
+//     only; they survive on the other hosts, so no tombstone, no replicate.
+func user_purge_local(id string, accountGone bool) (string, error) {
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return "", fmt.Errorf("user not found")
 	}
 
-	// Replication membership-change/remove emit: capture the user's current
-	// per-user host set BEFORE entity rows are deleted, because the outgoing
-	// op is signed by one of the user's identity entities. The captured set
-	// already excludes this peer (hosts table never holds self), so the emit
-	// announces "user U is hosted on these other peers" to each of them; each
-	// receiver replaces its local hosts(U) view with the announced set
-	// (self-filtered), naturally dropping this peer.
+	// Announce this host's departure from the user's per-user host set before
+	// the entity rows are deleted (the membership op is signed by one of the
+	// user's identity entities). Broadcasts the set WITHOUT self so the
+	// remaining peers drop this host — the self-leaving case that
+	// replication_membership_update mishandles by re-adding self.
 	//
-	// Covers both per-user opt-in (other peers learn this host is gone) and
-	// whole-server pair (the SQL row-delete below propagates via the standard
-	// pair replication path, and the receiver's user_delete handler runs the
-	// same hook on its side).
-	rdb := db_open("db/replication.db")
-	var hosts []string
-	if rows, err := rdb.rows("select peer from hosts where user=?", id); err == nil {
-		for _, r := range rows {
-			if peer, ok := r["peer"].(string); ok && peer != "" {
-				hosts = append(hosts, peer)
-			}
-		}
-	}
-	if len(hosts) > 0 {
-		replication_membership_update(id, hosts)
-	}
+	// Note: this is the LOCAL removal of one host's copy. It does not delete
+	// the user on the other hosts — incoming user-row deletes are a no-op in
+	// the apply path. Deleting the account everywhere (closure / admin delete)
+	// is a separate propagated operation; see claude/plans/account-deletion.md.
+	replication_membership_depart(id)
 
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
-		e.delete()
+		if accountGone {
+			e.delete() // tombstone network-wide + replicate the deletion
+		} else {
+			e.delete_local() // this host only; entity survives on other hosts
+		}
 	}
 
 	sdb := db_open("db/sessions.db")
@@ -1221,6 +1227,7 @@ func user_delete(id string) (string, error) {
 	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
 
 	// Clean up replication.db user-keyed rows now that the user is gone.
+	rdb := db_open("db/replication.db")
 	rdb.exec("delete from hosts where user=?", id)
 	rdb.exec("delete from seen where user=?", id)
 	rdb.exec("delete from pending where user=?", id)

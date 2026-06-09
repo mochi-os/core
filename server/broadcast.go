@@ -144,6 +144,27 @@ func broadcast_acknowledged_table_create(db *DB) {
 	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 }
 
+// broadcast_infra_table_ensure lazily creates the broadcast infra table
+// named by a replicated op's target before the receiver re-executes the
+// op's row write. These tables (sequence/log/acknowledged) are created
+// on the sender via plain local exec; the matching CREATE never reaches
+// the receiver because schema statements don't replicate (sql_target_table
+// returns "" for CREATE). Their row ops (insert/delete) do replicate, so a
+// receiver that has never itself sent a broadcast for this app lacks the
+// table and the row op fails with "no such table". No-op for any other
+// table name, and idempotent (create ... if not exists), so it converges
+// partners broken before this fix on their next inbound broadcast op.
+func broadcast_infra_table_ensure(db *DB, table string) {
+	switch table {
+	case "sequence":
+		broadcast_sequence_table_create(db)
+	case "log":
+		broadcast_log_table_create(db)
+	case "acknowledged":
+		broadcast_acknowledged_table_create(db)
+	}
+}
+
 // broadcast_next_local allocates and returns the next outbound sequence
 // number on the given DB for (key, peer). Per-(key, peer) PK gives each
 // paired host its own sequence space.

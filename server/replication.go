@@ -2935,6 +2935,12 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 		return ApplyDeferred
 	}
 
+	// Broadcast infra tables are created lazily on the sender and their
+	// CREATE never crosses the wire, so a receiver that hasn't itself
+	// sent a broadcast for this app lacks them and the replicated row op
+	// would fail "no such table". Ensure by op target before applying.
+	broadcast_infra_table_ensure(db, op.Table)
+
 	if _, err := db.starlark.Exec(cmd.Statement, cmd.Args...); err != nil {
 		// FK violations under out-of-order arrival (parallel-queue
 		// send sends N ops to one peer concurrently; receiver applies

@@ -13,6 +13,74 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
+// TestAttachmentRecordWriteReplicatesMetadata locks in the fix for the
+// replica-blank-photos bug: attachment metadata lives in the per-app system
+// DB and used to be written with plain db.exec, so it never reached a paired
+// host (the attachments table was empty on the replica and images rendered
+// blank). attachment_record_write must now emit an app-system exec op for
+// every attachment — owner-owned (entity="") and foreign cached reference
+// (entity set) alike — carrying the row verbatim, including the entity column
+// the receiver branches on. (The owner-only eager byte push is exercised by
+// file_push_test.go; here we assert the metadata convergence that was missing.)
+func TestAttachmentRecordWriteReplicatesMetadata(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	// Capture every replicated op instead of routing to the wire.
+	orig := replication_emit_to
+	var ops []*ReplicationOp
+	replication_emit_to = func(user string, op *ReplicationOp, peers []string) {
+		ops = append(ops, op)
+	}
+	defer func() { replication_emit_to = orig }()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app_system(u, a)
+	if db == nil {
+		t.Fatal("no app-system db")
+	}
+
+	attachment_record_write(db, &Attachment{ID: "att-own", Object: "post-1", Entity: "", Name: "photo.jpg", Size: 3, Rank: 1, Created: 1})
+	attachment_record_write(db, &Attachment{ID: "att-foreign", Object: "post-2", Entity: "entity-99", Name: "remote.jpg", Size: 5, Rank: 1, Created: 2})
+
+	// Each write must surface an attachments app-system exec op carrying the
+	// row's id and entity value.
+	seen := map[string]string{} // id -> entity carried in the op
+	for _, op := range ops {
+		if op.Operation != repl_op_exec_app_system || op.Table != "attachments" {
+			continue
+		}
+		var cmd SQLCommand
+		if err := cbor.Unmarshal(op.Payload, &cmd); err != nil {
+			t.Fatalf("decode op payload: %v", err)
+		}
+		// Args order matches the insert: id, object, entity, ...
+		if len(cmd.Args) < 3 {
+			continue
+		}
+		id, _ := cmd.Args[0].(string)
+		entity, _ := cmd.Args[2].(string)
+		seen[id] = entity
+	}
+
+	if e, ok := seen["att-own"]; !ok {
+		t.Error("owner attachment metadata was not replicated")
+	} else if e != "" {
+		t.Errorf("owner attachment op carried entity=%q, want empty", e)
+	}
+	if e, ok := seen["att-foreign"]; !ok {
+		t.Error("foreign attachment metadata was not replicated")
+	} else if e != "entity-99" {
+		t.Errorf("foreign attachment op carried entity=%q, want entity-99", e)
+	}
+
+	// Sanity: the rows also landed in the local app-system DB.
+	if n := db.integer("select count(*) from attachments"); n != 2 {
+		t.Errorf("local attachments rows = %d, want 2", n)
+	}
+}
+
 // setup_attachment_move_test opens a fresh attachments DB under a
 // throwaway data_dir, seeds three rows (id=a,b,c with ranks 1,2,3)
 // scoped to the given entity, and returns the DB plus a cleanup

@@ -393,6 +393,32 @@ func queue_ack_flush(ids []string) {
 	db.exec("delete from queue where id in ("+string(placeholders)+")", args...)
 }
 
+// queue_drain_entity waits up to `wait` for every queued message from
+// `entity` to leave the queue (sent and resolved, or dropped). Used by
+// account teardown: farewell messages (membership departs, user/purge)
+// are signed with the user's identity key, which the caller is about to
+// delete — once the key is gone, unsent rows can no longer be claimed
+// and are silently dropped. Draining first lets the normal send complete;
+// on timeout (peer offline) teardown proceeds and the farewell is lost,
+// which receivers self-heal from (their own closure tick re-derives an
+// account-gone purge; stream traffic at a departed host fails visibly).
+func queue_drain_entity(entity string, wait time.Duration) {
+	if entity == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		exists, _ := db.exists("select 1 from queue where from_entity=? limit 1", entity)
+		if !exists {
+			return
+		}
+		queue_wake()
+		time.Sleep(50 * time.Millisecond)
+	}
+	info("Queue drain timeout: farewell messages from entity %q still queued at teardown", entity)
+}
+
 // queue_drop removes a queue row without scheduling a retry. Use when
 // the receiver's NACK carries a Reason hint that further attempts
 // would deterministically NACK with the same outcome - e.g.

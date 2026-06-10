@@ -1195,6 +1195,16 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	// is a separate propagated operation; see claude/plans/account-deletion.md.
 	replication_membership_depart(id)
 
+	// Farewell messages (the depart above; the user/purge op when called
+	// from closure) are queued asynchronously but signed with the identity
+	// key the loop below deletes. Drain them first or the queue sender
+	// loses the race and silently drops them at claim time.
+	if row, err := db.row("select id from entities where user=? order by id limit 1", id); err == nil && row != nil {
+		if signer, _ := row["id"].(string); signer != "" {
+			queue_drain_entity(signer, 2*time.Second)
+		}
+	}
+
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
@@ -1227,11 +1237,18 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
 
 	// Clean up replication.db user-keyed rows now that the user is gone.
+	// `tail` and `cursor` matter as much as `sequence`: a host that later
+	// re-replicates this user starts a fresh op-stream incarnation, and a
+	// stale outbound tail stamps the first new op with the dead
+	// incarnation's prev (receivers buffer it unanchored forever), while a
+	// stale receive cursor silently drops the peer's re-sent ops.
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from hosts where user=?", id)
 	rdb.exec("delete from seen where user=?", id)
 	rdb.exec("delete from pending where user=?", id)
 	rdb.exec("delete from sequence where user=?", id)
+	rdb.exec("delete from tail where user=?", id)
+	rdb.exec("delete from cursor where user=?", id)
 
 	return target.Username, nil
 }

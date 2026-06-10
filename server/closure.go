@@ -247,8 +247,13 @@ func user_purge(uid string) int64 {
 }
 
 // closure_manager hard-deletes accounts whose grace period has elapsed. Runs
-// hourly — a coarse tick is fine for a multi-day timer.
+// shortly after startup — a purge that came due while the server was down
+// should not wait an hour for the first tick, but the P2P layer needs a
+// moment to connect so the user/purge farewell can reach the other
+// replicas — then hourly; a coarse tick is fine for a multi-day timer.
 func closure_manager() {
+	time.Sleep(time.Minute)
+	closure_run_due(now())
 	for range time.Tick(time.Hour) {
 		closure_run_due(now())
 	}

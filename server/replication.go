@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -1256,12 +1257,20 @@ func replication_membership_apply(originPeer string, mc *MembershipChange) {
 	stale := mc.Sequence < latest
 
 	if !stale {
+		previous, _ := db.rows("select peer from hosts where user=?", mc.User)
 		db.exec("delete from hosts where user=?", mc.User)
+		current := map[string]bool{}
 		for _, peer := range mc.Hosts {
 			if peer == "" || peer == net_id {
 				continue
 			}
+			current[peer] = true
 			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", mc.User, peer, now())
+		}
+		for _, r := range previous {
+			if p := row_string(r, "peer"); p != "" && !current[p] {
+				replication_peer_forget(mc.User, p)
+			}
 		}
 	}
 
@@ -1697,6 +1706,46 @@ func to_bytes(v any) []byte {
 // to queue.db) from outliving their setup tear-down.
 var replication_membership_update = replication_membership_update_impl
 
+// replication_peer_forget clears this host's receive-side stream state for a
+// (user, peer) whose copy of the user is gone: apply cursors, undelivered
+// pending ops, and the app-scope dedup rows. A purged host that later
+// re-replicates the user starts a fresh op-stream incarnation at sequence 1;
+// retained state from the previous incarnation silently drops every op the
+// new incarnation emits ("below cursor") or dedups it ("duplicate").
+// Membership-scope seen rows are kept: membership sequences are wall-clock
+// based so they never collide across incarnations, and dropping them would
+// let a replayed stale membership change apply as if new.
+func replication_peer_forget(user, peer string) {
+	db := db_open("db/replication.db")
+	db.exec("delete from cursor where user=? and peer=?", user, peer)
+	db.exec("delete from pending where user=? and peer=?", user, peer)
+	db.exec("delete from seen where user=? and peer=? and scope='app'", user, peer)
+}
+
+// replication_membership_sequence returns the sequence number for an outbound
+// membership change: wall-clock milliseconds, bumped to stay strictly
+// increasing within this process. Membership emits must NOT use the per-user
+// counter in `sequence` — that counter is wiped when a host purges its copy,
+// so a host that later re-joins the same user restarts at 1 and every
+// membership change it emits collides with the receivers' retained `seen`
+// rows and is silently deduped. Wall time stays monotonic across
+// incarnations; receivers order by plain comparison, so the switch from
+// small counter values to millisecond values reads as strictly newer.
+func replication_membership_sequence() int64 {
+	for {
+		last := atomic.LoadInt64(&membership_clock)
+		next := time.Now().UnixMilli()
+		if next <= last {
+			next = last + 1
+		}
+		if atomic.CompareAndSwapInt64(&membership_clock, last, next) {
+			return next
+		}
+	}
+}
+
+var membership_clock int64
+
 // replication_membership_depart announces that THIS host is leaving the user's
 // per-user host set: it broadcasts the host set with self removed to the
 // remaining peers, so each drops this host. This is the self-leaving case that
@@ -1733,7 +1782,7 @@ func replication_membership_depart(user string) {
 		return
 	}
 
-	seq := replication_sequence_next(user, "membership")
+	seq := replication_membership_sequence()
 	mc := &MembershipChange{User: user, Hosts: remaining, Sequence: seq}
 	for _, peer := range remaining {
 		m := message(from, from, "replication", "host/membership/change")
@@ -1764,19 +1813,27 @@ func replication_membership_full_set(hosts []string) []string {
 }
 
 func replication_membership_update_impl(user string, hosts []string) {
-	seq := replication_sequence_next(user, "membership")
+	seq := replication_membership_sequence()
 
 	// The broadcast set must include this server (the origin); the
 	// local-table rewrite below still filters self out.
 	hosts = replication_membership_full_set(hosts)
 
 	db := db_open("db/replication.db")
+	previous, _ := db.rows("select peer from hosts where user=?", user)
 	db.exec("delete from hosts where user=?", user)
+	current := map[string]bool{}
 	for _, peer := range hosts {
 		if peer == "" || peer == net_id {
 			continue
 		}
+		current[peer] = true
 		db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
+	}
+	for _, r := range previous {
+		if p := row_string(r, "peer"); p != "" && !current[p] {
+			replication_peer_forget(user, p)
+		}
 	}
 	db.exec(
 		"insert or ignore into seen (peer, scope, user, sequence, applied) values ('', 'membership', ?, ?, ?)",
@@ -2159,6 +2216,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 	"links":  sl.NewBuiltin("mochi.replication.links", api_replication_links),
 	"hosts":  sl.NewBuiltin("mochi.replication.hosts", api_replication_hosts),
 	"joins":  sl.NewBuiltin("mochi.replication.joins", api_replication_joins),
+	"leave":  sl.NewBuiltin("mochi.replication.leave", api_replication_leave),
 	"link": sls.FromStringDict(sl.String("mochi.replication.link"), sl.StringDict{
 		"approve": sl.NewBuiltin("mochi.replication.link.approve", api_replication_link_approve),
 		"deny":    sl.NewBuiltin("mochi.replication.link.deny", api_replication_link_deny),
@@ -2408,6 +2466,30 @@ func api_replication_link_deny(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 
 	return sl.String(replication_link_deny(u.UID, peer)), nil
+}
+
+// api_replication_leave is mochi.replication.leave(): remove THIS host's copy
+// of the calling user's account from their per-user replica set — the local
+// "remove my account from this server". Purges the local copy (leave-set: no
+// entity tombstone, so the account survives on the user's other hosts) and
+// announces this host's departure to them. Refuses when this is the only copy
+// (no other hosts) — that would delete the account outright, which is what
+// close account is for. Step-up is enforced by the calling app, like close.
+func api_replication_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	u, _ := t.Local("user").(*User)
+	if u == nil {
+		return sl_error(fn, "no user")
+	}
+	// The hosts table never lists self, so a non-empty set means another copy
+	// exists. Without one, leaving would be a full account deletion.
+	rdb := db_open("db/replication.db")
+	if others, _ := rdb.exists("select 1 from hosts where user=? limit 1", u.UID); !others {
+		return sl_error(fn, "this is the only copy of your account")
+	}
+	if _, err := user_purge_local(u.UID, false); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.True, nil
 }
 
 // api_replication_host_remove removes `peer` from the calling user's

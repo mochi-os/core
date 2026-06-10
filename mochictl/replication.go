@@ -13,8 +13,6 @@
 // `mochictl replication resync`        → POST /_/admin/replication/resync
 // `mochictl replication backfill`      → POST /_/admin/replication/backfill
 
-//go:build linux
-
 package main
 
 import (

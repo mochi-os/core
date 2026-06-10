@@ -5,8 +5,6 @@
 //   Open /mochi/2/messages Senders + their inflight depth and session,
 //   plus the per-host worker pool size. See claude/plans/protocol2.md.
 
-//go:build linux
-
 package main
 
 import (

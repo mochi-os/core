@@ -7,8 +7,6 @@
 //   session report; see claude/sessions/2026-05-25-broadcast-resync-
 //   seq-643-investigation.md and task #83.
 
-//go:build linux
-
 package main
 
 import (

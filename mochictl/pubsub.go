@@ -5,8 +5,6 @@
 //   Per-topic mesh peer count + published/received counters for the
 //   /mochi/2 GossipSub topic. See claude/plans/pubsub.md.
 
-//go:build linux
-
 package main
 
 import (

@@ -2,12 +2,13 @@
 // Copyright Alistair Cunningham 2026
 //
 // mochictl is the operator's control tool for a running mochi-server. It
-// connects to the server's UDS admin listener at <data_dir>/run/admin.sock
-// and is authenticated by Unix peer credentials — no tokens, no network.
+// connects to the server's admin listener — a UDS at <data_dir>/run/admin.sock
+// on Linux/macOS, a named pipe on Windows — authenticated by the transport
+// itself (Unix peer credentials / pipe security descriptor), no tokens, no
+// network. Builds and runs on every platform; only the systemd/Docker service
+// lifecycle behind `mochictl start` stays Linux-only (stubbed elsewhere).
 //
 // See claude/plans/mochictl.md for the design.
-
-//go:build linux
 
 package main
 

@@ -7,8 +7,6 @@
 // /_/health, because TLS-only deploys reject 127.0.0.1 handshakes on SNI
 // mismatch. External monitors keep using the public /_/health endpoint.
 
-//go:build linux
-
 package main
 
 import (

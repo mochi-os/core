@@ -11,8 +11,6 @@
 // the server tries to load the deployed bundle. See
 // claude/memory/feedback_starlark_no_implicit_concat.md and task #89.
 
-//go:build linux
-
 package main
 
 import (

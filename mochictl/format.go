@@ -10,8 +10,6 @@
 // Inputs that aren't valid JSON (e.g. plain-text error bodies) are written
 // straight to stdout regardless of mode.
 
-//go:build linux
-
 package main
 
 import (

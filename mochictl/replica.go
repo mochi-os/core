@@ -19,8 +19,6 @@
 // `mochictl replica status` is a one-shot read of the current state
 // for diagnostics and scripting.
 
-//go:build linux
-
 package main
 
 import (

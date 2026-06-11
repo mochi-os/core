@@ -62,6 +62,7 @@ func init() {
 	a.event_anonymous("delete", directory_delete_event)
 	a.event_anonymous("request", directory_request_event)
 	a.event_anonymous("sync", directory_sync_event)
+	a.event_anonymous("push", directory_push_event)
 }
 
 // entry_signable returns the canonical CBOR the entity signs over a row's
@@ -354,8 +355,78 @@ func directory_sync() {
 				continue // Don't sync from self
 			}
 			if directory_sync_from_peer(peer) {
+				directory_push_to_peer(peer)
 				break
 			}
+		}
+	}
+}
+
+// directory_push_watermark tracks, per sync peer, the highest self-row
+// `seen` already delivered over a push stream, so only rows re-attested
+// since the last successful push are sent — steady-state one push per
+// hourly re-attest cycle, not one per 5-minute sync tick. In-memory by
+// design: a restart repeats one full push, which the receiver's
+// entry_store ordering rules dedup; and because every self-row's seen
+// advances on the hourly re-attest, a receiver that lost rows (wiped
+// directory) is made whole within an hour regardless of the watermark.
+// Touched only from the directory_manager goroutine.
+var directory_push_watermark = map[string]int64{}
+
+// directory_push_rows returns this host's own rows re-attested after the
+// watermark, oldest first so the watermark can advance monotonically.
+func directory_push_rows(watermark int64) []Entry {
+	var rows []Entry
+	db := db_open("db/directory.db")
+	if err := db.scans(&rows, "select * from entries where peer=? and seen>? order by seen", net_id, watermark); err != nil {
+		warn("Database error loading directory rows for push: %v", err)
+		return nil
+	}
+	return rows
+}
+
+// directory_push_to_peer delivers this host's own rows to one sync peer
+// over a stream. Pubsub republish remains the low-latency path, but a
+// republish burst larger than gossipsub's per-peer outbound queue is
+// silently truncated (observed live: only ~40 of a 154-row burst
+// survived), so correctness rides on this reliable push to the same
+// peers directory_sync pulls from; the rest of the fleet picks the rows
+// up from there.
+func directory_push_to_peer(peer string) {
+	rows := directory_push_rows(directory_push_watermark[peer])
+	if len(rows) == 0 {
+		return
+	}
+	s, err := stream_open_or_self(peer, "", "", "directory", "push", "", nil, map[string]any{"version": build_version})
+	if err != nil || s == nil {
+		debug("Directory push stream unable to open to peer %q: %v", peer, err)
+		return
+	}
+	defer s.close()
+	for _, en := range rows {
+		if err := s.write(en); err != nil {
+			debug("Directory push write error to peer %q: %v", peer, err)
+			return
+		}
+	}
+	directory_push_watermark[peer] = rows[len(rows)-1].Seen
+	debug("Directory pushed %d rows to peer %q", len(rows), peer)
+}
+
+// Receive a directory push: a peer delivering rows over a stream. Each
+// row passes the same verification gate as a live publish, so the worst
+// a malicious pusher can do is deliver valid rows; the sender is just a
+// carrier.
+func directory_push_event(e *Event) {
+	stored := 0
+	for {
+		var en Entry
+		if err := e.stream.read(&en); err != nil {
+			debug("Directory push from peer %q finished: %d rows stored", e.peer, stored)
+			return
+		}
+		if entry_store(&en, "push") {
+			stored++
 		}
 	}
 }
@@ -583,6 +654,9 @@ func directory_manager() {
 		for _, e := range locals {
 			directory_create(&e)
 			directory_publish(&e, true)
+			// A tight burst overflows gossipsub's per-peer outbound queue
+			// and the excess is silently dropped; spread the broadcasts.
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 

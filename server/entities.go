@@ -133,6 +133,12 @@ func entities_manager() {
 				db.exec("update entities set published=? where id=?", now(), e.ID)
 				directory_create(&e)
 				directory_publish(&e, false)
+				// A tight burst overflows gossipsub's per-peer outbound
+				// queue and the excess is silently dropped (observed live:
+				// only ~40 of a 154-row burst survived); spread the
+				// broadcasts. Reliable delivery to sync peers additionally
+				// rides directory_push_to_peer.
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}

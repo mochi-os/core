@@ -7,8 +7,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"testing"
 
+	"github.com/fxamacker/cbor/v2"
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 )
@@ -505,5 +507,85 @@ func TestDirectoryTtlSweep(t *testing.T) {
 	}
 	if n := db.integer("select count(*) from entries where entity='ent-new'"); n != 1 {
 		t.Errorf("fresh row removed by the sweep")
+	}
+}
+
+// --- directory push: reliable self-row delivery to sync peers ---
+
+// TestDirectoryPushRowsSelectsOwnNewerRows: only this host's own rows
+// past the watermark are selected, oldest first.
+func TestDirectoryPushRowsSelectsOwnNewerRows(t *testing.T) {
+	cleanup := setup_directory_test(t)
+	defer cleanup()
+
+	t0 := now()
+	add_entry(t, "ent-a", net_id, t0-100) // own, below watermark
+	add_entry(t, "ent-b", net_id, t0-50)  // own, above watermark
+	add_entry(t, "ent-c", net_id, t0-10)  // own, above watermark
+	add_entry(t, "ent-d", "peerZ", t0)    // foreign: never pushed
+
+	rows := directory_push_rows(t0 - 60)
+	if len(rows) != 2 {
+		t.Fatalf("selected %d rows, want 2", len(rows))
+	}
+	if rows[0].Entity != "ent-b" || rows[1].Entity != "ent-c" {
+		t.Errorf("rows out of order: %q, %q; want ent-b, ent-c", rows[0].Entity, rows[1].Entity)
+	}
+	for _, r := range rows {
+		if r.Peer != net_id {
+			t.Errorf("selected foreign row %q peer=%q", r.Entity, r.Peer)
+		}
+	}
+}
+
+// TestDirectoryPushRowsWatermarkExcludesDelivered: a watermark at the
+// newest row's seen yields nothing — the steady-state no-op between
+// hourly re-attests.
+func TestDirectoryPushRowsWatermarkExcludesDelivered(t *testing.T) {
+	cleanup := setup_directory_test(t)
+	defer cleanup()
+
+	t0 := now()
+	add_entry(t, "ent-a", net_id, t0-100)
+	add_entry(t, "ent-b", net_id, t0-50)
+
+	if rows := directory_push_rows(t0 - 50); len(rows) != 0 {
+		t.Errorf("selected %d rows past an up-to-date watermark, want 0", len(rows))
+	}
+	if rows := directory_push_rows(0); len(rows) != 2 {
+		t.Errorf("zero watermark selected %d rows, want all 2", len(rows))
+	}
+}
+
+// TestDirectoryPushEventStoresVerifiedRows: the push receiver runs every
+// streamed row through the entry_store gate — verified rows land, a
+// tampered row is dropped, and the loop survives it.
+func TestDirectoryPushEventStoresVerifiedRows(t *testing.T) {
+	cleanup := setup_directory_test(t)
+	defer cleanup()
+
+	entity, ek := test_identity(t)
+	entity2, ek2 := test_identity(t)
+	peer, hk := test_host(t)
+	good := test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, now())
+	bad := test_entry(t, entity2, ek2, peer, hk, "Mallory", 100, 50, now())
+	bad.Name = "Tampered" // breaks the content signature
+
+	r, w := io.Pipe()
+	go func() {
+		enc := cbor.NewEncoder(w)
+		_ = enc.Encode(good)
+		_ = enc.Encode(bad)
+		w.Close()
+	}()
+
+	directory_push_event(&Event{peer: peer, stream: &Stream{reader: r}})
+
+	db := db_open("db/directory.db")
+	if n := db.integer("select count(*) from entries where entity=?", entity); n != 1 {
+		t.Errorf("verified pushed row not stored")
+	}
+	if n := db.integer("select count(*) from entries where entity=?", entity2); n != 0 {
+		t.Errorf("tampered pushed row was stored")
 	}
 }

@@ -254,13 +254,16 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 	}
 
 	// Add the source peer to this user's per-user host set so future
-	// ops fan out to it. The membership-change op the source emits
-	// at Approve time will eventually reconcile, but we record the
-	// reciprocal entry now so writes from here flow to the source.
+	// ops fan out to it. The join ops the source announces at Approve
+	// time will eventually reconcile, but we record the reciprocal
+	// entry now so writes from here flow to the source. Then assert our
+	// own membership immediately so the other hosts' rows for us carry
+	// a fresh seen + attestation without waiting for the hourly tick.
 	rdb := db_open("db/replication.db")
 	rdb.exec(
-		"insert or replace into hosts (user, peer, added, ack) values (?, ?, ?, 0)",
-		placeholder, originPeer, now())
+		"insert or replace into hosts (user, peer, added, ack, seen) values (?, ?, ?, 0, ?)",
+		placeholder, originPeer, now(), now())
+	replication_membership_assert(placeholder)
 
 	// Seed the in-order apply cursors for the user's non-file streams
 	// (users, sessions) at the source's tail snapshot. Live ops that
@@ -829,8 +832,8 @@ func replication_link_approve(user, peer string) (string, error) {
 	// keys.Seeds so the first op it receives on each stream — emitted
 	// at or after this point — chains onto the seed.
 	rdb.exec(
-		"insert or replace into hosts (user, peer, added, ack) values (?, ?, ?, 0)",
-		user, peer, now())
+		"insert or replace into hosts (user, peer, added, ack, seen) values (?, ?, ?, 0, ?)",
+		user, peer, now(), now())
 	keys.Seeds = map[string]int64{
 		"users":    replication_tail(user, repl_scope_app, "users"),
 		"sessions": replication_tail(user, repl_scope_app, "sessions"),
@@ -839,6 +842,9 @@ func replication_link_approve(user, peer string) (string, error) {
 	replication_emit_link_approved(peer, placeholder, keys)
 	audit_replication_link_approved(user, peer)
 
+	// Announce the user-authorised set as additive `join` ops, one per
+	// member (existing hosts ∪ the new one). Every host — existing and new —
+	// learns every member; join only adds, so this can never strip a host.
 	var current []string
 	if rows, err := rdb.rows("select peer from hosts where user=?", user); err == nil {
 		for _, r := range rows {
@@ -847,7 +853,8 @@ func replication_link_approve(user, peer string) (string, error) {
 			}
 		}
 	}
-	replication_membership_update(user, current)
+	replication_membership_announce(user, current)
+	replication_membership_assert(user)
 
 	return "approved", nil
 }

@@ -26,15 +26,12 @@ import (
 )
 
 // UserPurge is the payload of a "user/purge" replication op — a deliberate,
-// signed instruction to delete a host's copy of an account. Distinct from a
-// replicated row delete (which the apply path no-ops for safety): a user/purge
-// is signed by one of the user's own identity entities, so only a legitimate
-// host can authorise it. AccountGone distinguishes the two intents:
-//   - true:  close / admin delete — the account is gone everywhere, tombstone
-//            the entities. Sent to every replica (recipients).
-//   - false: "delete this replica" — the user removed one host from their set;
-//            that host purges its copy (leave-set), entities survive elsewhere.
-//            Sent only to the removed host.
+// signed "the account is gone everywhere" instruction (close / admin full
+// delete), distinct from a replicated row delete (which the apply path no-ops
+// for safety). Signed by one of the user's identity entities; the receiver
+// re-checks its own closing/purge state before acting. AccountGone is always
+// true now — the leave form (one host deleting another's copy) was the
+// forgeable strip primitive and is replaced by self-asserted membership.
 type UserPurge struct {
 	User        string
 	AccountGone bool
@@ -51,19 +48,15 @@ func replication_emit_user_purge(user string) {
 	if len(peers) == 0 {
 		return
 	}
-	replication_send_user_purge(user, peers, true)
+	replication_send_user_purge(user, peers)
 }
 
-// replication_send_user_leave tells a single removed host to purge its own copy
-// of `user` (leave-set: the account survives on the other hosts). Used by
-// host.remove / "delete this replica".
-func replication_send_user_leave(user, peer string) {
-	replication_send_user_purge(user, []string{peer}, false)
-}
-
-// replication_send_user_purge signs a UserPurge with one of the user's identity
-// entities and sends it to each peer.
-func replication_send_user_purge(user string, peers []string, accountGone bool) {
+// replication_send_user_purge signs an account-gone UserPurge with one of the
+// user's identity entities and sends it to each peer. Only the account-gone
+// form exists: the leave form (one host removing another's copy) was the
+// forgeable strip primitive and is replaced by self-asserted membership — a
+// host removes only its OWN copy, via replication_membership_depart.
+func replication_send_user_purge(user string, peers []string) {
 	if len(peers) == 0 {
 		return
 	}
@@ -77,7 +70,7 @@ func replication_send_user_purge(user string, peers []string, accountGone bool) 
 	if from == "" {
 		return
 	}
-	up := &UserPurge{User: user, AccountGone: accountGone}
+	up := &UserPurge{User: user, AccountGone: true}
 	for _, peer := range peers {
 		m := message(from, from, "replication", "user/purge")
 		m.add(up)
@@ -111,31 +104,24 @@ func replication_user_purge_event(e *Event) {
 		return
 	}
 
-	if up.AccountGone {
-		// Ordering / reactivation-race safety: purge only if THIS host's copy
-		// is still closing with the deadline elapsed. A reactivated (active)
-		// account drops the op; a lagging replica re-derives it later only if
-		// the account is genuinely still due.
-		status, _ := row["status"].(string)
-		purge, _ := row["purge"].(int64)
-		if status != "closing" || purge <= 0 || purge > now() {
-			return
-		}
-		if _, err := user_purge_local(up.User, true); err != nil {
-			info("user/purge: delete failed for %q: %v", up.User, err)
-			return
-		}
-		audit_user_deleted(up.User, up.User)
-		return
+	if !up.AccountGone {
+		return // only the account-gone form exists; leave is self-asserted now
 	}
 
-	// leave-set: the user removed this host from their set. Purge the local
-	// copy; the account survives on the other hosts.
-	if _, err := user_purge_local(up.User, false); err != nil {
-		info("user/purge (leave): delete failed for %q: %v", up.User, err)
+	// Ordering / reactivation-race safety: purge only if THIS host's copy
+	// is still closing with the deadline elapsed. A reactivated (active)
+	// account drops the op; a lagging replica re-derives it later only if
+	// the account is genuinely still due.
+	status, _ := row["status"].(string)
+	purge, _ := row["purge"].(int64)
+	if status != "closing" || purge <= 0 || purge > now() {
 		return
 	}
-	audit_replication_host_removed(up.User, net_id)
+	if _, err := user_purge_local(up.User, true); err != nil {
+		info("user/purge: delete failed for %q: %v", up.User, err)
+		return
+	}
+	audit_user_deleted(up.User, up.User)
 }
 
 // account_closing_days is the grace period, in days, between a self-service

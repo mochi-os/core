@@ -7,9 +7,10 @@ import (
 	"flag"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"time"
+
+	"core/common/paths"
 )
 
 type Map map[string]any
@@ -60,48 +61,10 @@ func main_serve(ready func()) int {
 		info("Mochi %s starting", build_version)
 	}
 
-	// Platform-aware default paths
-	default_config := "/etc/mochi/mochi.conf"
-	default_cache := "/var/cache/mochi"
-	default_data := "/var/lib/mochi"
-	switch runtime.GOOS {
-	case "darwin":
-		// Prefer the .pkg-installed system layout when /etc/mochi/mochi.conf
-		// exists. Otherwise fall back to macOS-native per-user paths so
-		// running from source without `sudo make install` Just Works.
-		if file_exists("/etc/mochi/mochi.conf") {
-			default_config = "/etc/mochi/mochi.conf"
-			default_cache = "/var/cache/mochi"
-			default_data = "/var/lib/mochi"
-		} else {
-			home := os.Getenv("HOME")
-			app_support := filepath.Join(home, "Library", "Application Support", "Mochi")
-			default_config = filepath.Join(app_support, "mochi.conf")
-			default_cache = filepath.Join(home, "Library", "Caches", "Mochi")
-			default_data = app_support
-		}
-	case "windows":
-		// %ProgramData%\Mochi is shared across users and accessible to the
-		// LocalSystem account that the Windows service runs under. Falls
-		// back to %LocalAppData%\mochi if ProgramData isn't set (rare).
-		program_data := os.Getenv("ProgramData")
-		if program_data == "" {
-			program_data = os.Getenv("ALLUSERSPROFILE")
-		}
-		if program_data != "" {
-			default_config = filepath.Join(program_data, "Mochi", "mochi.conf")
-			default_cache = filepath.Join(program_data, "Mochi", "cache")
-			default_data = filepath.Join(program_data, "Mochi", "data")
-		} else {
-			local_app_data := os.Getenv("LOCALAPPDATA")
-			if local_app_data == "" {
-				local_app_data = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
-			}
-			default_config = filepath.Join(local_app_data, "mochi", "mochi.conf")
-			default_cache = filepath.Join(local_app_data, "mochi", "cache")
-			default_data = filepath.Join(local_app_data, "mochi", "data")
-		}
-	}
+	// Platform-aware default paths, shared with mochictl
+	default_config := paths.Config()
+	default_cache := paths.Cache()
+	default_data := paths.Data()
 
 	flag.StringVar(&config_file, "f", default_config, "Configuration file")
 	flag.Parse()
@@ -199,6 +162,7 @@ func main_serve(ready func()) int {
 	go entities_manager()
 	go directory_manager()
 	go directory_cleanup_manager()
+	go replication_membership_manager()
 	go peers_manager()
 	go peer_reconnect_manager()
 	go peers_publish()

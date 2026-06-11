@@ -315,9 +315,13 @@ func net_ping_peer(id string) {
 }
 
 // Sign data with this server's libp2p host key. Used for core-scope replication
-// ops that aren't tied to a user identity (apps.db / settings.db / domains.db).
-// User-scoped ops sign with entity_sign() instead.
+// ops that aren't tied to a user identity (apps.db / settings.db / domains.db),
+// directory attestations, and membership self-assertions. User-scoped ops sign
+// with entity_sign() instead. Nil before net_start (unit tests).
 func server_sign(data []byte) []byte {
+	if net_private == nil {
+		return nil
+	}
 	sig, err := net_private.Sign(data)
 	if err != nil {
 		warn("server_sign failed: %v", err)

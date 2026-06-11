@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 80
+	schema_version = 81
 )
 
 var (
@@ -332,7 +332,11 @@ func db_create() {
 	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
 	replication.exec("create index pending_received on pending(received)")
 	replication.exec("create index pending_chain on pending(peer, scope, user, db, prev)")
-	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, primary key (user, peer))")
+	// hosts: a user's per-user replica set, one row per hosting peer. Each
+	// row is that peer's self-assertion that it hosts the user, carrying its
+	// libp2p-key attestation and a `seen` refresh timestamp. A peer can only
+	// add or remove its own membership; rows age out when un-refreshed.
+	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, seen integer not null default 0, attestation text not null default '', primary key (user, peer))")
 	replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
 	// cursor: the contiguous in-order apply watermark per inbound
 	// (peer, scope, user, db) stream. Each op chains onto its db
@@ -900,6 +904,8 @@ func db_upgrade() {
 			db_upgrade_79()
 		case 80:
 			db_upgrade_80()
+		case 81:
+			db_upgrade_81()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1328,6 +1334,22 @@ func db_upgrade_79() {
 // than migrate. Local public entities are marked unpublished so the
 // directory manager's startup republish re-announces them immediately;
 // third-party rows repopulate via sync. Idempotent.
+// db_upgrade_81 adds the self-assertion columns to replication.db hosts:
+// `seen` (each host's membership refresh timestamp) and `attestation` (its
+// libp2p-key signature over the claim). Existing rows backfill seen=added
+// and an empty attestation; upgraded peers re-assert within the hour, and a
+// peer that never re-asserts ages out via the membership TTL. Idempotent.
+func db_upgrade_81() {
+	r := db_open("db/replication.db")
+	if col, _ := r.exists("select 1 from pragma_table_info('hosts') where name='seen'"); !col {
+		r.exec("alter table hosts add column seen integer not null default 0")
+		r.exec("update hosts set seen=added where seen=0")
+	}
+	if col, _ := r.exists("select 1 from pragma_table_info('hosts') where name='attestation'"); !col {
+		r.exec("alter table hosts add column attestation text not null default ''")
+	}
+}
+
 func db_upgrade_80() {
 	d := db_open("db/directory.db")
 	d.exec("drop table if exists entities")

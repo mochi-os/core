@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -73,16 +72,6 @@ type ReplicationOp struct {
 	Fence       int64  `cbor:"fence,omitempty"`
 }
 
-// MembershipChange announces the new host set for a user. Sent by whichever
-// host the user (or operator) initiated the change on; receivers replace
-// their local view in `replication.db.hosts`. Sequence is a per-user
-// monotonic counter from the originating host; older sequences are
-// recorded as seen but do not overwrite a newer set.
-type MembershipChange struct {
-	User     string   `cbor:"user"`
-	Hosts    []string `cbor:"hosts"`
-	Sequence int64    `cbor:"sequence"`
-}
 
 // KeysTransfer carries a user's identity (the users-row fields plus every
 // owned entity, including the private keys) from one host to another.
@@ -280,7 +269,13 @@ func init() {
 	// authorize via that peer-id (e.g. bootstrap chunks require the
 	// peer be an active bootstrap source for the scope).
 	a.event("sql/op", replication_op_event)
-	a.event("host/membership/change", replication_membership_change_event)
+	// Replica membership (self-asserted per host). `join` is user-authorised
+	// (additive); `assert`/`leave`/`evict` carry host-key attestations
+	// verified against the named peer, so their envelopes are anonymous.
+	a.event("membership/join", replication_membership_join_event)
+	a.event_anonymous("membership/assert", replication_membership_assert_event)
+	a.event_anonymous("membership/leave", replication_membership_leave_event)
+	a.event_anonymous("membership/evict", replication_membership_evict_event)
 	// Deliberate signed "delete this account everywhere" op (see closure.go).
 	// Signed by one of the user's identities; the handler re-checks local
 	// closing/purge state before deleting (reactivation-race safety).
@@ -1216,75 +1211,160 @@ func replication_emit_session_delete(userUID, code string) {
 	})
 }
 
-// replication_membership_change_event applies a membership update from
-// another host in the user's set. The framework has already verified the
-// signature against e.from (the user's identity entity). Dedup on
-// (peer, scope="membership", user, sequence); replace local hosts if the
-// incoming sequence is the newest we've seen for the user.
+// Replica membership is per-host self-assertion, the same authority model as
+// the directory: a host's presence in a user's replica set is a fact only
+// that host can assert (with its own libp2p key) and only that host can
+// withdraw. The `hosts` table on a receiver is mutated only by: `join`
+// (additive, user-authorised, during link approval), the named host's own
+// signed `assert`/`leave`, and TTL age-out. No op removes a peer other than
+// via that peer's own leave, so a key-holding replica cannot strip another
+// host from the set.
 //
-// Older membership changes still go into `seen` so a slow peer's stale
-// announcement doesn't keep re-applying after a newer state has landed.
-func replication_membership_change_event(e *Event) {
-	var mc MembershipChange
-	if !e.segment(&mc) {
-		info("Replication membership-change dropping: cannot decode payload")
-		return
-	}
-	replication_membership_apply(e.peer, &mc)
+// `join` keeps the user-identity envelope signature (the user authorising a
+// new recipient). `assert`/`leave`/`evict` ride anonymous envelopes and carry
+// a host-key attestation verified against the named peer, so the relaying
+// mesh peer carries no trust.
+
+const (
+	membership_assert_domain = "mochi/2/membership/assert"
+	membership_leave_domain  = "mochi/2/membership/leave"
+	membership_evict_domain  = "mochi/2/membership/evict"
+)
+
+// membership_window is how long a host's self-assertion stands without a
+// refresh before it ages out of peers' sets. Matches the directory TTL and
+// the replication cursor retention.
+const membership_window = 30 * 86400
+
+func membership_assert_signable(user, peer string, seen int64) ([]byte, error) {
+	return canonical_encoder.Marshal(map[string]any{
+		"v": membership_assert_domain, "user": user, "peer": peer, "seen": i64toa(seen),
+	})
 }
 
-// replication_membership_apply is the pure-DB half of the membership-change
-// path, separated out for testing. Dedup on (peer, scope="membership", user,
-// sequence); replace local hosts if the incoming sequence is the newest
-// we've seen for the user. Older membership changes still go into `seen` so
-// a slow peer's stale announcement doesn't keep re-applying after a newer
-// state has landed.
-func replication_membership_apply(originPeer string, mc *MembershipChange) {
-	db := db_open("db/replication.db")
+func membership_leave_signable(user, peer string, time int64) ([]byte, error) {
+	return canonical_encoder.Marshal(map[string]any{
+		"v": membership_leave_domain, "user": user, "peer": peer, "time": i64toa(time),
+	})
+}
 
-	if applied, _ := db.exists(
-		"select 1 from seen where peer=? and scope='membership' and user=? and sequence=?",
-		originPeer, mc.User, mc.Sequence); applied {
+func membership_evict_signable(user, peer string, time int64) ([]byte, error) {
+	return canonical_encoder.Marshal(map[string]any{
+		"v": membership_evict_domain, "user": user, "peer": peer, "time": i64toa(time),
+	})
+}
+
+// membership_hosts returns true if this server holds the user locally — only
+// a host of the user reacts to membership ops, so a random peer that receives
+// a broadcast ignores it.
+func membership_hosts(user string) bool {
+	ok, _ := db_open("db/users.db").exists("select 1 from users where uid=?", user)
+	return ok
+}
+
+// replication_membership_join_event: a user-authorised, additive "add this
+// peer to the set". The framework verified the envelope signature; we require
+// e.from to be one of the user's own identities (user authority). Adds the
+// named peer; never removes anyone.
+func replication_membership_join_event(e *Event) {
+	user := e.get("user", "")
+	peer := e.get("peer", "")
+	if user == "" || peer == "" || peer == net_id {
 		return
 	}
-
-	var latest int64
-	if row, err := db.row("select max(sequence) as seq from seen where scope='membership' and user=?", mc.User); err == nil && row != nil {
-		if v, ok := row["seq"].(int64); ok {
-			latest = v
-		}
+	if !membership_hosts(user) {
+		return
 	}
-	stale := mc.Sequence < latest
-
-	if !stale {
-		previous, _ := db.rows("select peer from hosts where user=?", mc.User)
-		db.exec("delete from hosts where user=?", mc.User)
-		current := map[string]bool{}
-		for _, peer := range mc.Hosts {
-			if peer == "" || peer == net_id {
-				continue
-			}
-			current[peer] = true
-			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", mc.User, peer, now())
-		}
-		for _, r := range previous {
-			if p := row_string(r, "peer"); p != "" && !current[p] {
-				replication_peer_forget(mc.User, p)
-			}
-		}
+	udb := db_open("db/users.db")
+	if ok, _ := udb.exists("select 1 from entities where user=? and id=?", user, e.from); !ok {
+		audit_signature_failed(e.from, "membership/join signer is not an identity of "+user)
+		return
 	}
-
-	db.exec(
-		"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, 'membership', ?, ?, ?)",
-		originPeer, mc.User, mc.Sequence, now())
-
-	if stale {
-		debug("Replication membership-change stale: user=%q seq=%d < latest=%d (from peer %q)",
-			mc.User, mc.Sequence, latest, originPeer)
-	} else {
-		debug("Replication membership-change applied: user=%q seq=%d hosts=%v (from peer %q)",
-			mc.User, mc.Sequence, mc.Hosts, originPeer)
+	db := db_open("db/replication.db")
+	if exists, _ := db.exists("select 1 from hosts where user=? and peer=?", user, peer); !exists {
+		db.exec("insert into hosts (user, peer, added, ack, seen) values (?, ?, ?, 0, ?)", user, peer, now(), now())
+		debug("Replication membership join: user=%q peer=%q", user, peer)
 	}
+}
+
+// replication_membership_assert_event: a host refreshing its own membership,
+// host-key signed. Refresh only — updates `seen` for an already-known peer; a
+// peer the receiver doesn't already hold is ignored, so a host cannot
+// self-join (joining requires the user-authorised join above).
+func replication_membership_assert_event(e *Event) {
+	user := e.get("user", "")
+	peer := e.get("peer", "")
+	seen := atoi(e.get("seen", ""), 0)
+	if user == "" || peer == "" || peer == net_id || seen <= 0 || seen > now()+3600 {
+		return
+	}
+	if !membership_hosts(user) {
+		return
+	}
+	attestation := e.get("attestation", "")
+	signable, err := membership_assert_signable(user, peer, seen)
+	if err != nil || !server_verify(peer, signable, base58_decode(attestation, "")) {
+		info("Replication membership-assert dropping: bad attestation user=%q peer=%q", user, peer)
+		return
+	}
+	// Store the attestation with the refreshed claim so the row carries the
+	// proof it was accepted on.
+	db := db_open("db/replication.db")
+	db.exec("update hosts set seen=?, attestation=? where user=? and peer=? and seen<?", seen, attestation, user, peer, seen)
+}
+
+// replication_membership_leave_event: a host withdrawing its OWN membership,
+// host-key signed. The only removal primitive — a leave can only remove the
+// signing peer's row, so no key holder can strip another host.
+func replication_membership_leave_event(e *Event) {
+	user := e.get("user", "")
+	peer := e.get("peer", "")
+	t := atoi(e.get("time", ""), 0)
+	if user == "" || peer == "" || peer == net_id || t <= 0 {
+		return
+	}
+	if !membership_hosts(user) {
+		return
+	}
+	signable, err := membership_leave_signable(user, peer, t)
+	if err != nil || !server_verify(peer, signable, base58_decode(e.get("attestation", ""), "")) {
+		info("Replication membership-leave dropping: bad attestation user=%q peer=%q", user, peer)
+		return
+	}
+	db := db_open("db/replication.db")
+	db.exec("delete from hosts where user=? and peer=? and seen<=?", user, peer, t)
+	replication_peer_forget(user, peer)
+	debug("Replication membership leave: user=%q peer=%q", user, peer)
+}
+
+// replication_membership_evict_event: a server-server pair member dropping a
+// user across the pair (admin delete). Host-key signed by the emitting pair
+// member; honoured ONLY when that sender is in this server's pair set, so a
+// non-pair replica cannot forge it. Purges this server's copy with leave
+// semantics (the account survives on the user's own hosts).
+func replication_membership_evict_event(e *Event) {
+	user := e.get("user", "")
+	peer := e.get("peer", "")
+	t := atoi(e.get("time", ""), 0)
+	if user == "" || peer == "" || peer == net_id || t <= 0 {
+		return
+	}
+	if !membership_hosts(user) {
+		return
+	}
+	if !peer_is_pair(peer) {
+		return // only the operator's own pair members may evict
+	}
+	signable, err := membership_evict_signable(user, peer, t)
+	if err != nil || !server_verify(peer, signable, base58_decode(e.get("attestation", ""), "")) {
+		info("Replication membership-evict dropping: bad attestation user=%q peer=%q", user, peer)
+		return
+	}
+	if _, err := user_purge_local(user, false); err != nil {
+		info("membership/evict: purge failed for %q: %v", user, err)
+		return
+	}
+	audit_replication_host_removed(user, net_id)
 }
 
 // replication_keys_transfer_event applies an inbound user-identity transfer
@@ -1681,30 +1761,6 @@ func to_bytes(v any) []byte {
 	return nil
 }
 
-// replication_membership_update is the local side: bumps the user's
-// membership sequence, replaces local hosts with the new set, and emits a
-// membership-change announcement to every peer in the new set.
-//
-// `hosts` is the host set as the caller knows it. Callers build it from
-// `select peer from hosts` — the local hosts table, which by
-// construction never lists this server itself. This function adds
-// `net_id` so the *broadcast* set is complete: a server running a
-// membership-update is, by definition, a host of that user (it holds
-// their account and manages their host set), so it belongs in the set
-// every replica is told about. Without this the emitted MembershipChange
-// omitted the origin, and each replica's apply (which deletes + rewrites
-// its hosts table from the payload) dropped the origin from its own host
-// set — so the replica could no longer fan its writes back to the
-// source. (Caught 2026-05-21: a per-user replica's "My hosts" listed a
-// stale peer but not the source server.)
-//
-// The local-table rewrite still filters self out (a server isn't its
-// own host), so adding net_id only affects the outbound set.
-//
-// Package-level alias so callers route through this hook; tests can
-// replace it with a no-op to keep the send_peer goroutines (which write
-// to queue.db) from outliving their setup tear-down.
-var replication_membership_update = replication_membership_update_impl
 
 // replication_peer_forget clears this host's receive-side stream state for a
 // (user, peer) whose copy of the user is gone: apply cursors, undelivered
@@ -1722,143 +1778,96 @@ func replication_peer_forget(user, peer string) {
 	db.exec("delete from seen where user=? and peer=? and scope='app'", user, peer)
 }
 
-// replication_membership_sequence returns the sequence number for an outbound
-// membership change: wall-clock milliseconds, bumped to stay strictly
-// increasing within this process. Membership emits must NOT use the per-user
-// counter in `sequence` — that counter is wiped when a host purges its copy,
-// so a host that later re-joins the same user restarts at 1 and every
-// membership change it emits collides with the receivers' retained `seen`
-// rows and is silently deduped. Wall time stays monotonic across
-// incarnations; receivers order by plain comparison, so the switch from
-// small counter values to millisecond values reads as strictly newer.
-func replication_membership_sequence() int64 {
-	for {
-		last := atomic.LoadInt64(&membership_clock)
-		next := time.Now().UnixMilli()
-		if next <= last {
-			next = last + 1
+// replication_membership_announce broadcasts the user-authorised set as
+// additive `join` ops — one per member, signed with the user's identity key.
+// Each receiver that holds the user adds the named peers; join never removes
+// anyone, so this cannot strip a host. Called from link approval with the
+// full set (existing hosts ∪ the new one) so every host, new and old,
+// converges on the same membership.
+func replication_membership_announce(user string, hosts []string) {
+	udb := db_open("db/users.db")
+	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
+	if err != nil || row == nil {
+		warn("Replication membership-announce: no signing entity for user %q: %v", user, err)
+		return
+	}
+	from, _ := row["id"].(string)
+	if from == "" {
+		return
+	}
+	for _, peer := range hosts {
+		if peer == "" {
+			continue
 		}
-		if atomic.CompareAndSwapInt64(&membership_clock, last, next) {
-			return next
-		}
+		m := message(from, from, "replication", "membership/join")
+		m.set("user", user, "peer", peer)
+		m.publish(true)
 	}
 }
 
-var membership_clock int64
-
-// replication_membership_depart announces that THIS host is leaving the user's
-// per-user host set: it broadcasts the host set with self removed to the
-// remaining peers, so each drops this host. This is the self-leaving case that
-// replication_membership_update gets wrong — the latter re-adds net_id via
-// full_set (correct when a *staying* host drops a *different* peer, wrong when
-// the departing host is itself). Used by a host purging or removing its own
-// copy. Must run before the user's entities are deleted, since the op is signed
-// by one of the user's identity entities. No local-table rewrite — the caller
-// deletes this host's replication rows for the user separately.
-func replication_membership_depart(user string) {
-	db := db_open("db/replication.db")
-	rows, err := db.rows("select peer from hosts where user=? and peer != ?", user, net_id)
+// replication_membership_assert refreshes THIS host's own membership claim for
+// the user: a host-key-signed `assert` updating the receivers' `seen` for
+// net_id, broadcast. Called on join and on the periodic refresh tick; a host
+// that stops asserting ages out of peers' sets after membership_window.
+func replication_membership_assert(user string) {
+	seen := now()
+	signable, err := membership_assert_signable(user, net_id, seen)
 	if err != nil {
 		return
 	}
-	remaining := make([]string, 0, len(rows))
-	for _, r := range rows {
-		if p := row_string(r, "peer"); p != "" {
-			remaining = append(remaining, p)
-		}
-	}
-	if len(remaining) == 0 {
-		return // no other hosts to notify
-	}
-
-	udb := db_open("db/users.db")
-	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
-	if err != nil || row == nil {
-		warn("Replication membership-depart: no signing entity for user %q: %v", user, err)
-		return
-	}
-	from, _ := row["id"].(string)
-	if from == "" {
-		return
-	}
-
-	seq := replication_membership_sequence()
-	mc := &MembershipChange{User: user, Hosts: remaining, Sequence: seq}
-	for _, peer := range remaining {
-		m := message(from, from, "replication", "host/membership/change")
-		m.add(mc)
-		m.send_peer(peer)
-	}
-}
-
-// replication_membership_full_set returns the complete membership set
-// for a user: this server (net_id) plus `hosts`, de-duplicated with
-// blanks dropped and self first. Callers build `hosts` from the local
-// `hosts` table, which by construction never lists this server — so
-// without prepending net_id the broadcast membership set omits the
-// origin, and replicas applying it drop the origin from their own host
-// set. A server running a membership-update is always a host of that
-// user, so it always belongs in the set.
-func replication_membership_full_set(hosts []string) []string {
-	seen := map[string]bool{}
-	full := make([]string, 0, len(hosts)+1)
-	for _, peer := range append([]string{net_id}, hosts...) {
-		if peer == "" || seen[peer] {
-			continue
-		}
-		seen[peer] = true
-		full = append(full, peer)
-	}
-	return full
-}
-
-func replication_membership_update_impl(user string, hosts []string) {
-	seq := replication_membership_sequence()
-
-	// The broadcast set must include this server (the origin); the
-	// local-table rewrite below still filters self out.
-	hosts = replication_membership_full_set(hosts)
-
 	db := db_open("db/replication.db")
-	previous, _ := db.rows("select peer from hosts where user=?", user)
-	db.exec("delete from hosts where user=?", user)
-	current := map[string]bool{}
-	for _, peer := range hosts {
-		if peer == "" || peer == net_id {
-			continue
-		}
-		current[peer] = true
-		db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
-	}
-	for _, r := range previous {
-		if p := row_string(r, "peer"); p != "" && !current[p] {
-			replication_peer_forget(user, p)
-		}
-	}
-	db.exec(
-		"insert or ignore into seen (peer, scope, user, sequence, applied) values ('', 'membership', ?, ?, ?)",
-		user, seq, now())
+	db.exec("update hosts set seen=? where user=? and peer=?", seen, user, net_id)
+	m := message("", "", "replication", "membership/assert")
+	m.set("user", user, "peer", net_id, "seen", i64toa(seen), "attestation", base58_encode(server_sign(signable)))
+	m.publish(false)
+}
 
-	mc := &MembershipChange{User: user, Hosts: hosts, Sequence: seq}
-
-	udb := db_open("db/users.db")
-	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
-	if err != nil || row == nil {
-		warn("Replication membership-update: no signing entity for user %q: %v", user, err)
+// replication_membership_depart announces that THIS host is leaving the user's
+// set: a host-key-signed `leave`, broadcast. Self-scoped — receivers can only
+// drop net_id's row, never another peer's. Host-key signed, so it has no
+// dependency on the user's identity keys (works during and after teardown).
+func replication_membership_depart(user string) {
+	t := now()
+	signable, err := membership_leave_signable(user, net_id, t)
+	if err != nil {
 		return
 	}
-	from, _ := row["id"].(string)
-	if from == "" {
+	m := message("", "", "replication", "membership/leave")
+	m.set("user", user, "peer", net_id, "time", i64toa(t), "attestation", base58_encode(server_sign(signable)))
+	m.publish(false)
+}
+
+// replication_membership_evict drops a user across this server's pair set: a
+// host-key-signed `evict` from net_id, honoured only by pair members. Used by
+// admin delete to converge across the operator's own infrastructure without
+// the entity-signed (forgeable) leave op.
+func replication_membership_evict(user string) {
+	t := now()
+	signable, err := membership_evict_signable(user, net_id, t)
+	if err != nil {
 		return
 	}
+	m := message("", "", "replication", "membership/evict")
+	m.set("user", user, "peer", net_id, "time", i64toa(t), "attestation", base58_encode(server_sign(signable)))
+	m.publish(false)
+}
 
-	for _, peer := range hosts {
-		if peer == "" || peer == net_id {
+// replication_membership_manager refreshes this host's membership assertions
+// hourly and ages out stale rows. A peer that stops asserting (gone) ages out
+// of the local set after membership_window — automatic forget-unreachable.
+func replication_membership_manager() {
+	for range time.Tick(time.Hour) {
+		db := db_open("db/replication.db")
+		db.exec("delete from hosts where peer!=? and seen>0 and seen < ?", net_id, now()-membership_window)
+		rows, err := db.rows("select distinct user from hosts where peer!=?", net_id)
+		if err != nil {
 			continue
 		}
-		m := message(from, from, "replication", "host/membership/change")
-		m.add(mc)
-		m.send_peer(peer)
+		for _, r := range rows {
+			if u := row_string(r, "user"); u != "" && membership_hosts(u) {
+				replication_membership_assert(u)
+			}
+		}
 	}
 }
 
@@ -2520,26 +2529,14 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl.String("not-found"), nil
 	}
 
-	rows, err := rdb.rows("select peer from hosts where user=? and peer!=?", u.UID, peer)
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-	remaining := make([]string, 0, len(rows))
-	for _, r := range rows {
-		if p := row_string(r, "peer"); p != "" {
-			remaining = append(remaining, p)
-		}
-	}
-
-	// membership-update wipes & rewrites the local hosts table and
-	// broadcasts the new set to every remaining host.
-	replication_membership_update(u.UID, remaining)
-	// Tell the removed host to actually delete its copy ("delete this
-	// replica"): a signed leave-set user/purge. The account survives on the
-	// remaining hosts, so the removed host drops its data only — no tombstone.
-	replication_send_user_leave(u.UID, peer)
-	audit_replication_host_removed(u.UID, peer)
-	// Removing the relationship resolves any irreparable badge for it.
+	// Local-only cleanup: drop this server's view of the unreachable host.
+	// A host can only be removed from the set by its own signed leave, so
+	// there is no remote eviction — if `peer` is actually alive it will
+	// re-assert and reappear; a genuinely dead host ages out everywhere via
+	// the membership TTL. (Forcing a remote delete was the forgeable strip
+	// primitive; it is gone.)
+	rdb.exec("delete from hosts where user=? and peer=?", u.UID, peer)
+	replication_peer_forget(u.UID, peer)
 	rdb.exec("delete from irreparable where peer=? and scope=? and user=?", peer, repl_scope_app, u.UID)
 
 	return sl.String("removed"), nil

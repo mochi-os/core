@@ -17,6 +17,7 @@ import (
 
 	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
+	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
 	sl "go.starlark.net/starlark"
 )
 
@@ -41,6 +42,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_76()
 	db_upgrade_77()
 	db_upgrade_78()
+	db_upgrade_81() // hosts: seen + attestation columns (membership v2)
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise
@@ -57,20 +59,6 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_system_row := replication_emit_system_row
 	replication_emit_system_set = func(database, table, row, field, value string) {}
 	replication_emit_system_row = func(database, table string, key, cols map[string]string, del bool) {}
-
-	// Membership broadcast spawns send_peer goroutines that hit queue.db
-	// — keep the local DB write side, drop the broadcast.
-	orig_membership := replication_membership_update
-	replication_membership_update = func(user string, hosts []string) {
-		db := db_open("db/replication.db")
-		db.exec("delete from hosts where user=?", user)
-		for _, peer := range hosts {
-			if peer == "" || peer == net_id {
-				continue
-			}
-			db.exec("insert into hosts (user, peer, added, ack) values (?, ?, ?, 0)", user, peer, now())
-		}
-	}
 
 	// link-denied emit spawns send_peer goroutines too — same problem.
 	orig_emit_link_denied := replication_emit_link_denied
@@ -116,7 +104,6 @@ func setup_replication_test(t *testing.T) func() {
 		replication_bootstrap_emit_scope_done = orig_emit_bootstrap_scope_done
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
-		replication_membership_update = orig_membership
 		replication_emit_link_denied = orig_emit_link_denied
 		replication_bootstrap_file_manifest_fetch = orig_file_manifest_fetch
 		replication_bootstrap_db_manifest_fetch = orig_db_manifest_fetch
@@ -282,118 +269,115 @@ func TestReplicationSequenceIndependentScopes(t *testing.T) {
 	}
 }
 
-func TestReplicationMembershipApplyFresh(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+// Membership v2: per-host self-assertion. A receiver only reacts to
+// membership ops for a user it holds locally, so these tests seed a users
+// row. Real libp2p host identities (test_host, from directory_test.go) sign
+// asserts/leaves so server_verify runs for real.
 
-	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 1}
-	replication_membership_apply("origin", mc)
-
-	db := db_open("db/replication.db")
-	count := db.integer("select count(*) from hosts where user='user1'")
-	if count != 2 {
-		t.Errorf("expected 2 hosts after fresh apply, got %d", count)
+// membership_user seeds a local users row + a hosts row for `peer`, so this
+// server is a host of `user` and already knows `peer`.
+func membership_user(t *testing.T, user, peer string, seen int64) {
+	t.Helper()
+	udb := db_open("db/users.db")
+	udb.exec("create table if not exists users (uid text primary key, username text not null default '', status text not null default 'active', purge integer not null default 0)")
+	udb.exec("insert or replace into users (uid, username) values (?, 'u@x')", user)
+	udb.exec("create table if not exists entities (id text primary key, user text not null default '')")
+	if peer != "" {
+		db_open("db/replication.db").exec("insert or replace into hosts (user, peer, added, ack, seen) values (?, ?, 1, 0, ?)", user, peer, seen)
 	}
 }
 
-func TestReplicationMembershipApplyStaleIgnored(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 5}
-	replication_membership_apply("origin1", mc1)
-
-	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peerC"}, Sequence: 3}
-	replication_membership_apply("origin2", mc2)
-
-	db := db_open("db/replication.db")
-	count := db.integer("select count(*) from hosts where user='user1'")
-	if count != 2 {
-		t.Errorf("stale apply must not overwrite; expected 2 hosts, got %d", count)
+func membership_assert_event(t *testing.T, user, peer string, key p2p_crypto.PrivKey, seen int64) *Event {
+	t.Helper()
+	signable, _ := membership_assert_signable(user, peer, seen)
+	sig, err := key.Sign(signable)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
 	}
+	return &Event{service: "replication", event: "membership/assert", content: map[string]any{
+		"user": user, "peer": peer, "seen": i64toa(seen), "attestation": base58_encode(sig)}}
+}
 
-	// Stale messages still get recorded as seen so the sender's queue drops them.
-	exists, _ := db.exists("select 1 from seen where peer='origin2' and scope='membership' and user='user1' and sequence=3")
-	if !exists {
-		t.Errorf("stale membership change must still be recorded as seen")
+func membership_leave_event(t *testing.T, user, peer string, key p2p_crypto.PrivKey, when int64) *Event {
+	t.Helper()
+	signable, _ := membership_leave_signable(user, peer, when)
+	sig, err := key.Sign(signable)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return &Event{service: "replication", event: "membership/leave", content: map[string]any{
+		"user": user, "peer": peer, "time": i64toa(when), "attestation": base58_encode(sig)}}
+}
+
+// TestMembershipJoinAdds: a user-authorised join (signer is the user's
+// identity) adds the named peer; it is additive and never removes.
+func TestMembershipJoinAdds(t *testing.T) {
+	cleanup := setup_directory_test(t) // protocol2_init + users/entities tables
+	defer cleanup()
+	user, _ := test_identity(t)
+	peerB, _ := test_host(t)
+	membership_user(t, user, "", 0)
+	db := db_open("db/users.db")
+	db.exec("insert or replace into entities (id, user) values (?, ?)", user, user) // signer is a user identity
+
+	replication_membership_join_event(&Event{from: user, service: "replication", event: "membership/join",
+		content: map[string]any{"user": user, "peer": peerB}})
+
+	if n := db_open("db/replication.db").integer("select count(*) from hosts where user=? and peer=?", user, peerB); n != 1 {
+		t.Errorf("join did not add peer; rows=%d want 1", n)
 	}
 }
 
-func TestReplicationMembershipApplyDuplicateIgnored(t *testing.T) {
-	cleanup := setup_replication_test(t)
+// TestMembershipLeaveSelfOnly: a host's own signed leave removes only its
+// row; a leave forged for another peer (wrong host key) is rejected. This is
+// the strip-resistance property.
+func TestMembershipLeaveSelfOnly(t *testing.T) {
+	cleanup := setup_directory_test(t)
 	defer cleanup()
-
-	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA", "peer_b"}, Sequence: 1}
-	replication_membership_apply("origin", mc1)
-
-	// Same (peer, scope, user, sequence) — must be a no-op even though the
-	// payload differs.
-	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peerX"}, Sequence: 1}
-	replication_membership_apply("origin", mc2)
-
+	user, _ := test_identity(t)
+	peerB, keyB := test_host(t)
+	peerC, keyC := test_host(t)
+	membership_user(t, user, peerB, 100)
+	db_open("db/replication.db").exec("insert or replace into hosts (user, peer, added, ack, seen) values (?, ?, 1, 0, 100)", user, peerC)
 	db := db_open("db/replication.db")
-	rows, _ := db.rows("select peer from hosts where user='user1' order by peer")
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 hosts (first apply wins), got %d", len(rows))
+
+	// C tries to remove B (signs a leave naming B with C's key) → rejected.
+	bad := membership_leave_event(t, user, peerB, keyC, 200)
+	replication_membership_leave_event(bad)
+	if n := db.integer("select count(*) from hosts where user=? and peer=?", user, peerB); n != 1 {
+		t.Error("leave with another host's key stripped peerB; want kept")
 	}
-	if p, _ := rows[0]["peer"].(string); p != "peerA" {
-		t.Errorf("expected peerA in first row, got %q", p)
+
+	// B removes itself (B's key) → applied.
+	replication_membership_leave_event(membership_leave_event(t, user, peerB, keyB, 200))
+	if n := db.integer("select count(*) from hosts where user=? and peer=?", user, peerB); n != 0 {
+		t.Error("self-signed leave did not remove peerB")
 	}
-	if p, _ := rows[1]["peer"].(string); p != "peer_b" {
-		t.Errorf("expected peer_b in second row, got %q", p)
+	// C's row is untouched.
+	if n := db.integer("select count(*) from hosts where user=? and peer=?", user, peerC); n != 1 {
+		t.Error("leave removed an unrelated peer")
 	}
 }
 
-func TestReplicationMembershipExcludesSelf(t *testing.T) {
-	cleanup := setup_replication_test(t)
+// TestMembershipAssertRefreshesKnownOnly: a host-signed assert refreshes
+// `seen` for a known peer, and is ignored for an unknown peer (no self-join).
+func TestMembershipAssertRefreshesKnownOnly(t *testing.T) {
+	cleanup := setup_directory_test(t)
 	defer cleanup()
-
-	mc := &MembershipChange{User: "user1", Hosts: []string{"peerA", "self", "peer_b"}, Sequence: 1}
-	replication_membership_apply("origin", mc)
-
+	user, _ := test_identity(t)
+	peerB, keyB := test_host(t)
+	unknown, keyU := test_host(t)
+	membership_user(t, user, peerB, 100)
 	db := db_open("db/replication.db")
-	count := db.integer("select count(*) from hosts where user='user1' and peer='self'")
-	if count != 0 {
-		t.Errorf("self peer must be filtered from hosts; got %d rows", count)
-	}
-	total := db.integer("select count(*) from hosts where user='user1'")
-	if total != 2 {
-		t.Errorf("expected 2 hosts (peerA, peer_b), got %d", total)
-	}
-}
 
-// TestReplicationMembershipFullSetIncludesOrigin: the broadcast
-// membership set must include this server. Callers pass the local
-// hosts table, which never lists self — so the set the function emits
-// must add net_id, or replicas applying the MembershipChange drop the
-// origin and can no longer fan writes back to it.
-func TestReplicationMembershipFullSetIncludesOrigin(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	// setup_replication_test sets net_id = "self".
-
-	got := replication_membership_full_set([]string{"peerA", "peer_b"})
-	if len(got) != 3 || got[0] != "self" {
-		t.Fatalf("full set = %v, want [self peerA peer_b] (origin first)", got)
+	replication_membership_assert_event(membership_assert_event(t, user, peerB, keyB, 500))
+	if s := db.integer("select seen from hosts where user=? and peer=?", user, peerB); s != 500 {
+		t.Errorf("assert did not refresh seen; got %d want 500", s)
 	}
-	found := map[string]bool{}
-	for _, p := range got {
-		found[p] = true
-	}
-	if !found["self"] || !found["peerA"] || !found["peer_b"] {
-		t.Errorf("full set %v missing an expected peer", got)
-	}
-
-	// Empty caller list still yields just the origin.
-	if got := replication_membership_full_set(nil); len(got) != 1 || got[0] != "self" {
-		t.Errorf("full set of nil = %v, want [self]", got)
-	}
-
-	// De-dupes (defensive — if a caller's list already had self or a
-	// repeat) and drops blanks.
-	got = replication_membership_full_set([]string{"self", "peerA", "", "peerA"})
-	if len(got) != 2 || got[0] != "self" || got[1] != "peerA" {
-		t.Errorf("full set with dups/blanks = %v, want [self peerA]", got)
+	// Unknown peer self-asserting must NOT join.
+	replication_membership_assert_event(membership_assert_event(t, user, unknown, keyU, 500))
+	if n := db.integer("select count(*) from hosts where user=? and peer=?", user, unknown); n != 0 {
+		t.Error("assert from an unknown peer self-joined; want ignored")
 	}
 }
 
@@ -2186,41 +2170,6 @@ func TestIntegrationKeysTransferThenSessionInsert(t *testing.T) {
 	}
 }
 
-func TestIntegrationMembershipChangePropagates(t *testing.T) {
-	switch_to, cleanup := integration_setup(t)
-	defer cleanup()
-
-	// Host 1 announces a host set {peer1, peer2, peer3} for user alice.
-	// Host 2 receives and replaces its local view.
-	switch_to("h1")
-	mc := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1", "peer2", "peer3"}, Sequence: 5}
-	replication_membership_apply("peer1", mc)
-	db1 := db_open("db/replication.db")
-	count := db1.integer("select count(*) from hosts where user='uid-alice'")
-	// h1's peer (peer1=self on h1) is filtered out → 2 rows.
-	if count != 2 {
-		t.Errorf("h1 hosts count: expected 2 (self excluded), got %d", count)
-	}
-
-	switch_to("h2")
-	replication_membership_apply("peer1", mc)
-	db2 := db_open("db/replication.db")
-	count = db2.integer("select count(*) from hosts where user='uid-alice'")
-	// h2's peer (peer2=self on h2) is filtered out → 2 rows.
-	if count != 2 {
-		t.Errorf("h2 hosts count: expected 2 (self excluded), got %d", count)
-	}
-
-	// Stale change must not overwrite either host.
-	switch_to("h1")
-	mc2 := &MembershipChange{User: "uid-alice", Hosts: []string{"peer1"}, Sequence: 3}
-	replication_membership_apply("peer1", mc2)
-	count = db1.integer("select count(*) from hosts where user='uid-alice'")
-	if count != 2 {
-		t.Errorf("h1 host count after stale apply: expected 2, got %d", count)
-	}
-}
-
 func TestEmailDedupBasic(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_email_test")
 	if err != nil {
@@ -2569,32 +2518,6 @@ func TestIntegrationEmailDedupReplicates(t *testing.T) {
 	u2 := &User{UID: "uid-bob"}
 	if !email_already_delivered(u2, "bob@example.com", "login:abc") {
 		t.Error("h2 must see the replicated email_delivered row")
-	}
-}
-
-func TestReplicationMembershipNewerOverwrites(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	mc1 := &MembershipChange{User: "user1", Hosts: []string{"peerA"}, Sequence: 1}
-	replication_membership_apply("origin1", mc1)
-
-	mc2 := &MembershipChange{User: "user1", Hosts: []string{"peer_b", "peerC"}, Sequence: 2}
-	replication_membership_apply("origin2", mc2)
-
-	db := db_open("db/replication.db")
-	rows, _ := db.rows("select peer from hosts where user='user1' order by peer")
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 hosts after newer apply, got %d", len(rows))
-	}
-	got := map[string]bool{}
-	for _, r := range rows {
-		if p, ok := r["peer"].(string); ok {
-			got[p] = true
-		}
-	}
-	if got["peerA"] || !got["peer_b"] || !got["peerC"] {
-		t.Errorf("newer state must replace older; got %v", got)
 	}
 }
 

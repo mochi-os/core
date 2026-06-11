@@ -1196,8 +1196,12 @@ func user_remove(id string) (string, error) {
 	}
 
 	if foreign {
-		for _, peer := range pairs {
-			replication_send_user_leave(id, peer)
+		// Eviction: drop the user from the operator's own pair via a
+		// host-signed evict (honoured only by pair members), and purge the
+		// local copy with leave semantics. The user's own hosts on other
+		// operators are untouched.
+		if len(pairs) > 0 {
+			replication_membership_evict(id)
 		}
 		return user_purge_local(id, false)
 	}

@@ -65,7 +65,8 @@ func queue_priority(service, event string) int {
 			return priority_bulk
 		case "link/request", "link/approved", "link/denied",
 			"join/request", "join/approved", "join/denied",
-			"host/membership/change", "pair/membership/change",
+			"membership/join", "membership/assert", "membership/leave",
+			"membership/evict", "pair/membership/change",
 			"keys/transfer", "bootstrap/scope/done":
 			return priority_control
 		}

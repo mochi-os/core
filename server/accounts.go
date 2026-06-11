@@ -1615,6 +1615,11 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 	}
 
 	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		// Without an explicit client, webpush-go falls back to a bare
+		// http.Client with no timeout; a hanging push endpoint then
+		// blocks the notifications commit hook until the Starlark
+		// execution cap kills it (and the caller's service.call with it).
+		HTTPClient:      &http.Client{Timeout: 15 * time.Second},
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,
@@ -1696,6 +1701,8 @@ func account_deliver_unifiedpush(user *User, accountID int64, data map[string]an
 	}
 
 	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		// Bounded client for the same reason as account_deliver_browser.
+		HTTPClient:      &http.Client{Timeout: 15 * time.Second},
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,

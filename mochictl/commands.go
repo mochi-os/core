@@ -133,7 +133,7 @@ func init() {
 			run:  cmd_replica_reset,
 		},
 		"replica join": {
-			help: "Join an existing server as a pair replica (fresh installs only)",
+			help: "Join an existing server as a pair replica (fresh installs only). Args: <source-peer-id> [--address=<multiaddr>]... to supply the source's address when discovery cannot find it",
 			run:  cmd_replica_join,
 		},
 		"replica leave": {

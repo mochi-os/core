@@ -17,10 +17,12 @@ package main
 
 import (
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
 func init() {
@@ -268,6 +270,10 @@ func peer_reconnect_manager() {
 					debug("Peer %q reconnected successfully", id)
 					return
 				}
+				// The peer may be unreachable because our addresses for
+				// it are stale (or were never known); ask the mesh for
+				// fresh ones alongside the backoff probe.
+				peer_request_addresses(id)
 				// Backoff: 10s, 20s, 40s, 80s, 160s, 300s (capped).
 				peer_reconnect_lock.Lock()
 				r := peer_reconnects[id]
@@ -285,10 +291,36 @@ func peer_reconnect_manager() {
 	}
 }
 
-// Publish our own information to the pubsub regularly or when requested.
+// peers_publish_minimum_interval throttles how often the publish loop
+// fires: a flood of peers/request broadcasts naming this server (or a
+// burst of local address changes) collapses into one publish per
+// interval instead of one per request.
+const peers_publish_minimum_interval = 30 * time.Second
+
+// peers_publish_addresses_maximum caps how many addresses one publish
+// carries and how many a receiver applies from one event. Generous —
+// a host with several interfaces plus observed and relay addresses
+// stays comfortably under it — while bounding what a hostile publisher
+// can push into receivers' peers.db.
+const peers_publish_addresses_maximum = 16
+
+// Publish our own information — identity plus dialable addresses — to
+// the pubsub regularly, when another server requests it, or when our
+// address set changes (net_watch_addresses). The addresses are how a
+// server that knows this server only by peer id (mochictl replica join,
+// any bare-peer-id send) becomes able to dial it: receivers verify the
+// pubsub envelope names us as originator and merge the addresses into
+// their peer registry.
 func peers_publish() {
 	for {
-		message("", "", "peers", "publish").publish(false)
+		m := message("", "", "peers", "publish")
+		if addresses := net_addresses(); len(addresses) > 0 {
+			if len(addresses) > peers_publish_addresses_maximum {
+				addresses = addresses[:peers_publish_addresses_maximum]
+			}
+			m.set("addresses", strings.Join(addresses, ","))
+		}
+		m.publish(false)
 
 		select {
 		case <-peer_publish_chan:
@@ -296,13 +328,54 @@ func peers_publish() {
 		case <-time.After(time.Hour):
 			debug("Peer routine publish")
 		}
+		time.Sleep(peers_publish_minimum_interval)
 	}
 }
 
-// Received a peer publish event from another server. We don't need to
-// do anything here because the pubsub manager already marked the peer as
-// discovered on receipt.
+// peers_publish_request nudges the publish loop. Non-blocking — if a
+// publish is already pending the second request collapses with it.
+func peers_publish_request() {
+	select {
+	case peer_publish_chan <- true:
+	default:
+	}
+}
+
+// Received a peer publish event from another server: merge the
+// originator's announced addresses into the peer registry. Trust comes
+// from the GossipSub envelope, not the payload — every pubsub message
+// is signed by its originating peer and verified before delivery
+// (StrictSign), and e.origin carries that verified id. A direct-stream
+// message spoofing this event has no origin and is ignored, as is any
+// announced address whose /p2p/ suffix names a different peer.
 func peer_publish_event(e *Event) {
+	if e.origin == "" || e.origin == net_id {
+		return
+	}
+
+	announced := e.get("addresses", "")
+	if announced == "" {
+		return
+	}
+
+	applied := 0
+	for _, address := range strings.Split(announced, ",") {
+		if applied >= peers_publish_addresses_maximum {
+			break
+		}
+		address = strings.TrimSpace(address)
+		ma, err := multiaddr.NewMultiaddr(address)
+		if err != nil {
+			continue
+		}
+		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
+		if err != nil || info.ID.String() != e.origin {
+			continue
+		}
+		debug("Peer %q announced address %q", e.origin, address)
+		peer_discovered_address(e.origin, address)
+		applied++
+	}
 }
 
 // Reply to a peer request if for us. Non-blocking — if a publish is
@@ -311,10 +384,27 @@ func peer_request_event(e *Event) {
 	if e.get("id", "") != net_id {
 		return
 	}
-	select {
-	case peer_publish_chan <- true:
-	default:
+	peers_publish_request()
+}
+
+// peer_request_addresses broadcasts a peers/request asking the named
+// peer to publish itself — the recovery path for sending to a peer we
+// know only by id (a replica joining a pair source it has never met) or
+// whose stored addresses have gone stale. The target answers with a
+// peers/publish carrying its addresses; peer_publish_event applies them
+// and the queued messages deliver on the next wake. Rate limited per
+// target so the queue retrying an unreachable peer doesn't flood the
+// mesh. Returns whether a request was broadcast.
+func peer_request_addresses(id string) bool {
+	if id == "" || id == net_id {
+		return false
 	}
+	if !rate_limit_peer_request.allow(id) {
+		return false
+	}
+	debug("Peer %q addresses unknown or unreachable; requesting publish", id)
+	message("", "", "peers", "request").set("id", id).publish(false)
+	return true
 }
 
 // Notify peers of shutdown (best effort). Every open /mochi/2/messages

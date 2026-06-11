@@ -52,6 +52,15 @@ var (
 		window:  1,
 	}
 
+	// Peer address-request rate limiter: 1 broadcast per minute per
+	// target peer. The queue retries unreachable peers every tick;
+	// without this each retry would re-flood a peers/request.
+	rate_limit_peer_request = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   1,
+		window:  60,
+	}
+
 	// URL request rate limiter: 100 requests per minute per app
 	rate_limit_url = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -157,6 +166,7 @@ func ratelimit_manager() {
 		rate_limit_login.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
+		rate_limit_peer_request.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()
 	}

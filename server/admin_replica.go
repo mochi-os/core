@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 )
@@ -34,7 +35,7 @@ var (
 )
 
 // admin_replica_join is POST /_/admin/replica/join.
-// Body: {"source": "<peer-id>"}
+// Body: {"source": "<peer-id>", "addresses": ["<multiaddr>", ...]}
 //
 // Refuses if `users.db.users` is non-empty — the empty-replica rule
 // from claude/plans/replication.md. Records the pending join in
@@ -43,16 +44,29 @@ var (
 // approval / denial arrives asynchronously and is detected by polling
 // the Status endpoint.
 //
+// addresses is the operator escape hatch for a source that automatic
+// discovery (mDNS, peers/request) cannot reach: each entry is seeded
+// into the peer registry before the emit, so the queued join-request
+// has somewhere to dial immediately. Entries may carry the /p2p/<id>
+// suffix (which must then name the source) or omit it.
+//
 // Idempotent on the same source — a repeat call with the same peer
 // re-emits the join-request (in case the prior delivery was lost) and
 // keeps the existing pending state. A call with a *different* source
 // while another is in flight refuses with a 409.
 func admin_replica_join(c *gin.Context) {
 	var input struct {
-		Source string `json:"source"`
+		Source    string   `json:"source"`
+		Addresses []string `json:"addresses"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Source == "" {
 		respond_error(c, http.StatusBadRequest, "source_required", "errors.source_required", nil)
+		return
+	}
+
+	addresses, bad := peer_addresses_normalise(input.Source, input.Addresses)
+	if bad != "" {
+		respond_error(c, http.StatusBadRequest, "address_invalid", "errors.address_invalid", map[string]any{"address": bad})
 		return
 	}
 
@@ -81,6 +95,12 @@ func admin_replica_join(c *gin.Context) {
 	setting_set("replica.join.state", "waiting")
 	setting_set("replica.join.reason", "")
 	setting_set("replica.join.started", fmt.Sprintf("%d", now()))
+
+	// Seed operator-supplied addresses so the join-request emit below
+	// has somewhere to dial without waiting on discovery.
+	for _, address := range addresses {
+		peer_discovered_address(input.Source, address)
+	}
 
 	// Replica's own libp2p peer-id is the operator's correlation
 	// handle — they'll see it on the source admin's Pair page.
@@ -183,11 +203,53 @@ func admin_replica_status(c *gin.Context) {
 		state = "approved"
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"state":   state,
-		"peer":    net_id,
-		"source":  pending_peer,
-		"members": members,
-		"reason":  reason,
-	})
+	out := gin.H{
+		"state":     state,
+		"peer":      net_id,
+		"addresses": net_addresses(),
+		"source":    pending_peer,
+		"members":   members,
+		"reason":    reason,
+	}
+	if state == "waiting" {
+		out["delivery"] = admin_replica_delivery(pending_peer)
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// admin_replica_delivery reports whether the pending join-request has
+// actually left this server — the diagnostics mochictl renders while
+// polling, so an undeliverable source (unknown address, unreachable)
+// surfaces to the operator instead of an indefinite silent wait.
+//
+//	queued    — the join-request still sits in queue.db (false once
+//	            the source acked it)
+//	attempts  — delivery attempts so far
+//	error     — last transport error, "" if none
+//	addresses — how many addresses the registry holds for the source;
+//	            0 means undeliverable until discovery or --address
+//	silent    — the source is in the silent-failure cache (repeated
+//	            connection failures)
+func admin_replica_delivery(source string) gin.H {
+	queued := false
+	attempts := int64(0)
+	last := ""
+	if file_exists(filepath.Join(data_dir, "db", "queue.db")) {
+		qdb := db_open("db/queue.db")
+		row, _ := qdb.row(
+			"select attempts, last_error from queue where target=? and service='replication' and event='join/request' order by created desc limit 1",
+			source)
+		if row != nil {
+			queued = true
+			attempts = row_int(row, "attempts")
+			last = row_string(row, "last_error")
+		}
+	}
+	return gin.H{
+		"queued":    queued,
+		"attempts":  attempts,
+		"error":     last,
+		"addresses": peer_addresses_count(source),
+		"silent":    peer_is_silent(source),
+	}
 }

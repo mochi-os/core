@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/fxamacker/cbor/v2"
@@ -206,5 +207,30 @@ func TestFileDeleteRoundTrip(t *testing.T) {
 	}
 	if out.User != in.User || out.App != in.App || out.Path != in.Path {
 		t.Errorf("mismatch: in=%+v out=%+v", in, out)
+	}
+}
+
+// TestFilePushDropsMissingFile — a queued file/push whose source file
+// has been deleted is a permanent failure: the send must drop the row
+// (no retry) and report handled, instead of failing transiently until
+// the retention window expires. Regression test for the 24-row backlog
+// of deleted test files retried ~72 times over four days (2026-06-11).
+func TestFilePushDropsMissingFile(t *testing.T) {
+	_, _, cleanup := setup_file_push_test(t)
+	defer cleanup()
+
+	qdb := db_open("db/queue.db")
+	qdb.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+
+	missing := filepath.Join(data_dir, "users", "u1", "test", "files", "gone.bin")
+	qdb.exec("insert into queue (id, target, from_entity, to_entity, service, event, file, next_retry, created) values ('fp-missing', 'peerX', '', '', 'replication', 'file/push', ?, 0, ?)",
+		missing, now())
+
+	q := QueueEntry{ID: "fp-missing", Target: "peerX", Service: "replication", Event: "file/push", File: missing}
+	if !queue_send_file_push(&q) {
+		t.Fatal("send with missing source file should report handled, not transient failure")
+	}
+	if has, _ := qdb.exists("select 1 from queue where id = 'fp-missing'"); has {
+		t.Error("queue row should be dropped when the source file is missing")
 	}
 }

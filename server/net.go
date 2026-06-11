@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	p2p "github.com/libp2p/go-libp2p"
@@ -231,6 +232,12 @@ func net_start() {
 	// Watch event bus for disconnecting peers
 	go net_watch_disconnect()
 
+	// Watch event bus for changes to our own address set
+	go net_watch_addresses()
+
+	// Watch event bus for AutoNAT reachability verdicts
+	go net_watch_reachability()
+
 	// Start keepalive ping manager
 	go net_ping_manager()
 
@@ -274,6 +281,116 @@ func net_watch_disconnect() {
 		if c.Connectedness == p2p_network.NotConnected {
 			peer_disconnected(c.Peer.String())
 		}
+	}
+}
+
+// net_addresses returns this server's dialable multiaddresses, each
+// carrying the /p2p/<id> suffix — the format peers.db and the
+// [bootstrap] addresses option use. The set comes from the libp2p host:
+// interface listen addresses (wildcard binds expanded per interface),
+// identify-observed public addresses, and relay circuit addresses once
+// AutoRelay holds a reservation — the latter being what makes a NAT-ed
+// server dialable at all. Loopback is filtered (useless to any remote
+// dialler); LAN-private addresses stay (they're how same-network servers
+// without working multicast reach each other). Empty before net_start.
+func net_addresses() []string {
+	if net_me == nil {
+		return nil
+	}
+	suffix := "/p2p/" + net_id
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range net_me.Addrs() {
+		if net_loopback(a) {
+			continue
+		}
+		s := a.String()
+		if !strings.HasSuffix(s, suffix) {
+			s += suffix
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// net_loopback reports whether a multiaddress starts with a loopback
+// IP component (127.0.0.0/8 or ::1).
+func net_loopback(a multiaddr.Multiaddr) bool {
+	if v, err := a.ValueForProtocol(multiaddr.P_IP4); err == nil {
+		return strings.HasPrefix(v, "127.")
+	}
+	if v, err := a.ValueForProtocol(multiaddr.P_IP6); err == nil {
+		return v == "::1"
+	}
+	return false
+}
+
+// net_reachability holds the server's current AutoNAT verdict —
+// "public" (dialable from the internet), "private" (behind NAT with no
+// working port mapping), or "unknown" (not yet determined). Read by
+// mochi.server.network() for the status page.
+var net_reachability atomic.Value
+
+// net_reachable returns the current AutoNAT verdict string.
+func net_reachable() string {
+	if v, ok := net_reachability.Load().(string); ok && v != "" {
+		return v
+	}
+	return "unknown"
+}
+
+// net_relay reports whether the server currently holds relay circuit
+// addresses (an AutoRelay reservation) — the thing that makes a
+// NAT-ed server dialable.
+func net_relay() bool {
+	for _, a := range net_addresses() {
+		if strings.Contains(a, "/p2p-circuit") {
+			return true
+		}
+	}
+	return false
+}
+
+// Watch event bus for AutoNAT reachability verdicts.
+func net_watch_reachability() {
+	sub, err := net_me.EventBus().Subscribe(&p2p_event.EvtLocalReachabilityChanged{}, p2p_eventbus.Name("reachability"))
+	if err != nil {
+		warn("Net unable to subscribe to reachability events: %v", err)
+		return
+	}
+	defer sub.Close()
+
+	for e := range sub.Out() {
+		switch e.(p2p_event.EvtLocalReachabilityChanged).Reachability {
+		case p2p_network.ReachabilityPublic:
+			net_reachability.Store("public")
+		case p2p_network.ReachabilityPrivate:
+			net_reachability.Store("private")
+		default:
+			net_reachability.Store("unknown")
+		}
+		debug("Net reachability now %q", net_reachable())
+	}
+}
+
+// Watch event bus for changes to our own address set (new NAT mapping,
+// identify-observed address confirmed, AutoRelay reservation acquired or
+// lost) and trigger a peers/publish so other servers learn the new
+// addresses promptly instead of at the next hourly cadence.
+func net_watch_addresses() {
+	sub, err := net_me.EventBus().Subscribe(&p2p_event.EvtLocalAddressesUpdated{}, p2p_eventbus.Name("addresses"))
+	if err != nil {
+		warn("Net unable to subscribe to address events: %v", err)
+		return
+	}
+	defer sub.Close()
+
+	for range sub.Out() {
+		peers_publish_request()
 	}
 }
 

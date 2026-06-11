@@ -2259,6 +2259,7 @@ var api_replication = sls.FromStringDict(sl.String("mochi.replication"), sl.Stri
 //
 //	{
 //	  "peer":              "<this-peer-id>",
+//	  "addresses":         ["<multiaddr>", ...], // this server's dialable addresses
 //	  "pair":              ["<peer-1>", "<peer-2>"],
 //	  "irreparable":       ["<peer>"], // pair members broken past T_forget
 //	  "hosts_count":       N,         // total per-user opt-in rows
@@ -2349,8 +2350,18 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		irreparable_values = append(irreparable_values, sl.String(p))
 	}
 
-	result := sl.NewDict(8)
+	// This server's dialable multiaddresses — the Pair page shows them
+	// next to the peer id so the operator has something to paste into
+	// `mochictl replica join --address=` when discovery can't reach us.
+	addresses := net_addresses()
+	address_values := make([]sl.Value, 0, len(addresses))
+	for _, a := range addresses {
+		address_values = append(address_values, sl.String(a))
+	}
+
+	result := sl.NewDict(9)
 	_ = result.SetKey(sl.String("peer"), sl.String(net_id))
+	_ = result.SetKey(sl.String("addresses"), sl.NewList(address_values))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
 	_ = result.SetKey(sl.String("irreparable"), sl.NewList(irreparable_values))
 	_ = result.SetKey(sl.String("offline"), sl.NewList(offline_values))

@@ -174,6 +174,46 @@ func peers_bootstrap_load() {
 	})
 }
 
+// peer_addresses_normalise validates operator-supplied multiaddresses
+// for a peer and returns them in registry form (each carrying the
+// /p2p/<id> suffix). An entry may omit the suffix; one that carries it
+// must name the expected peer. Returns the normalised list and the
+// first rejected input ("" when all were valid).
+func peer_addresses_normalise(id string, addresses []string) ([]string, string) {
+	var out []string
+	for _, address := range addresses {
+		address = strings.TrimSpace(address)
+		if address == "" {
+			continue
+		}
+		ma, err := multiaddr.NewMultiaddr(address)
+		if err != nil {
+			return nil, address
+		}
+		if info, err := p2p_peer.AddrInfoFromP2pAddr(ma); err == nil {
+			if info.ID.String() != id {
+				return nil, address
+			}
+			out = append(out, address)
+			continue
+		}
+		with := address + "/p2p/" + id
+		if _, err := multiaddr.NewMultiaddr(with); err != nil {
+			return nil, address
+		}
+		out = append(out, with)
+	}
+	return out, ""
+}
+
+// peer_addresses_count returns how many addresses the registry holds
+// for a peer — zero for a peer we know only by id (or not at all).
+func peer_addresses_count(id string) int {
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	return len(peers[id].addresses)
+}
+
 // peer_is_bootstrap returns true if the peer ID is a bootstrap peer.
 func peer_is_bootstrap(id string) bool {
 	for _, p := range peers_bootstrap {

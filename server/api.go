@@ -14,11 +14,13 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	gotime "time"
 
 	cbor "github.com/fxamacker/cbor/v2"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	sl "go.starlark.net/starlark"
 	"go.starlark.net/starlarkjson"
 	sls "go.starlark.net/starlarkstruct"
@@ -78,6 +80,9 @@ func init() {
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
 				"id":      sl.NewBuiltin("mochi.server.id", api_server_id),
+				"counts":  sl.NewBuiltin("mochi.server.counts", api_server_counts),
+				"network": sl.NewBuiltin("mochi.server.network", api_server_network),
+				"peers":   sl.NewBuiltin("mochi.server.peers", api_server_peers),
 				"started": sl.NewBuiltin("mochi.server.started", api_server_started),
 				"uptime":  sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
 				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
@@ -468,6 +473,138 @@ func service_call_as_server(target_user_uid string, service string, function str
 // mochi.server.id() -> string: Get the local libp2p peer ID for this server
 func api_server_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.String(net_id), nil
+}
+
+// mochi.server.peers() -> list: Known peers with connection and outbound-queue state.
+// One entry per peer in the registry or with queued messages:
+//
+//	peer         string — libp2p peer id
+//	connected    bool   — currently connected at the libp2p level
+//	unreachable  bool   — in the silent-failure cache (repeated connect failures)
+//	address      string — the address of the live connection, or the most
+//	                      recently seen known address ("" when none)
+//	seen         int    — Unix timestamp the peer was last seen (now for a
+//	                      connected peer; 0 when never)
+//	addresses    int    — dialable addresses known for the peer (0 = undeliverable)
+//	queued       int    — messages in the outbound queue targeting the peer
+//	oldest       int    — Unix timestamp of the oldest queued message (0 when none)
+//
+// A peer with queued messages but no registry entry still appears —
+// that's the undeliverable case the status page exists to surface.
+// Unsorted; the consumer sorts.
+func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	type entry struct {
+		connected bool
+		address   string
+		seen      int64
+		addresses int
+		queued    int64
+		oldest    int64
+	}
+
+	rollup := map[string]*entry{}
+	peers_lock.Lock()
+	for id, p := range peers {
+		e := &entry{connected: p.state == peer_state_connected, addresses: len(p.addresses)}
+		for _, a := range p.addresses {
+			if a.Updated > e.seen {
+				e.seen = a.Updated
+				e.address = a.Address
+			}
+		}
+		rollup[id] = e
+	}
+	peers_lock.Unlock()
+
+	// A live connection beats the registry: report its remote address
+	// and now() as last-seen.
+	if net_me != nil {
+		for id, e := range rollup {
+			if !e.connected {
+				continue
+			}
+			pid, err := p2p_peer.Decode(id)
+			if err != nil {
+				continue
+			}
+			if conns := net_me.Network().ConnsToPeer(pid); len(conns) > 0 {
+				e.address = conns[0].RemoteMultiaddr().String()
+				e.seen = now()
+			}
+		}
+	}
+
+	if file_exists(filepath.Join(data_dir, "db", "queue.db")) {
+		qdb := db_open("db/queue.db")
+		rows, _ := qdb.rows("select target, count(*) as queued, min(created) as oldest from queue where target != '' group by target")
+		for _, r := range rows {
+			target, _ := r["target"].(string)
+			if target == "" {
+				continue
+			}
+			e := rollup[target]
+			if e == nil {
+				e = &entry{}
+				rollup[target] = e
+			}
+			e.queued = row_int(r, "queued")
+			e.oldest = row_int(r, "oldest")
+		}
+	}
+
+	out := make([]map[string]any, 0, len(rollup))
+	for id, e := range rollup {
+		out = append(out, map[string]any{
+			"peer":        id,
+			"connected":   e.connected,
+			"unreachable": peer_is_silent(id),
+			"address":     strings.TrimSuffix(e.address, "/p2p/"+id),
+			"seen":        e.seen,
+			"addresses":   e.addresses,
+			"queued":      e.queued,
+			"oldest":      e.oldest,
+		})
+	}
+	return sl_encode(out), nil
+}
+
+// mochi.server.network() -> dict: This server's network health.
+//
+//	reachability  string — AutoNAT verdict: "public", "private", or "unknown"
+//	relay         bool   — currently holds relay circuit addresses (dialable via relay)
+//	mesh          int    — servers in the /mochi/2 GossipSub mesh, including
+//	                       this one (1 = isolated; 0 = pubsub not running)
+//	last          int    — Unix timestamp of the last broadcast received (0 if none)
+func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	mesh := pubsub_topic_peers(net_pubsub)
+	if net_pubsub != nil {
+		mesh++
+	}
+	return sl_encode(map[string]any{
+		"reachability": net_reachable(),
+		"relay":        net_relay(),
+		"mesh":         mesh,
+		"last":         pubsub_last.Load(),
+	}), nil
+}
+
+// mochi.server.counts() -> dict: Account totals on this server.
+//
+//	users     int — accounts in users.db
+//	entities  int — entities across all accounts
+func api_server_counts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	users := int64(0)
+	entities := int64(0)
+	if file_exists(filepath.Join(data_dir, "db", "users.db")) {
+		udb := db_open("db/users.db")
+		if row, _ := udb.row("select count(*) as c from users"); row != nil {
+			users = row_int(row, "c")
+		}
+		if row, _ := udb.row("select count(*) as c from entities"); row != nil {
+			entities = row_int(row, "c")
+		}
+	}
+	return sl_encode(map[string]any{"users": users, "entities": entities}), nil
 }
 
 // mochi.server.started() -> int: Unix timestamp (seconds) when this server process started

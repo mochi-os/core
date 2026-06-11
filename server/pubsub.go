@@ -97,7 +97,13 @@ func pubsub_manager() {
 		}
 		pubsub_received.Add(1)
 		pubsub_last.Store(now())
-		pubsub_receive(m.Data, peer)
+		// GetFrom is the originating peer, authenticated by GossipSub's
+		// StrictSign policy (the message signature is verified against
+		// this id before delivery). Handlers that act on the *author* of
+		// a flooded message (peers/publish address announcements) read it
+		// from Event.origin; ReceivedFrom stays the identity for rate
+		// limiting and neighbour discovery.
+		pubsub_receive(m.Data, peer, m.GetFrom().String())
 		peer_discovered(peer)
 		peer_connect(peer)
 	}
@@ -108,7 +114,11 @@ func pubsub_manager() {
 // and (for signed announcements) the entity signature all travel in the
 // one message — there is no stream or handshake context. Best-effort and
 // one-way, so there is no challenge, no ack/nack, and no reply stream.
-func pubsub_receive(data []byte, peer string) {
+//
+// origin is the GossipSub-authenticated originating peer (may equal
+// peer when the originator is a direct mesh neighbour); "" when the
+// caller has no authenticated originator.
+func pubsub_receive(data []byte, peer, origin string) {
 	f, err := frame_read(bytes.NewReader(data))
 	if err != nil {
 		info("Pubsub frame read error from peer %q: %v", peer, err)
@@ -146,7 +156,7 @@ func pubsub_receive(data []byte, peer string) {
 		return
 	}
 
-	e := Event{id: event_id(), msg_id: f.ID, from: f.From, to: f.To, service: f.Service, event: f.Event, peer: peer, content: f.Content}
+	e := Event{id: event_id(), msg_id: f.ID, from: f.From, to: f.To, service: f.Service, event: f.Event, peer: peer, origin: origin, content: f.Content}
 	if err := e.route(); err != nil {
 		debug("Pubsub frame route error for service %q event %q from peer %q: %v", f.Service, f.Event, peer, err)
 	}

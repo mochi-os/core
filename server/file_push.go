@@ -16,8 +16,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -299,6 +301,18 @@ func queue_send_file_push(q *QueueEntry) bool {
 		return false
 	}
 
+	// A missing source file is a permanent failure, not a transient
+	// one: the file was deleted after the push was queued. That's
+	// legitimate — the delete replicates as its own file/delete event,
+	// and receivers tolerate bytes-not-yet-here — so retrying can never
+	// succeed and would otherwise back off for the full retention
+	// window. Drop the row instead, before touching the network.
+	if !file_exists(q.File) {
+		info("Queue file-push dropping %q: source file %q no longer exists", q.ID, q.File)
+		queue_drop(q.ID, "file-missing")
+		return true
+	}
+
 	var services []string
 	if q.FromServices != "" {
 		services = split_services(q.FromServices)
@@ -332,6 +346,13 @@ func queue_send_file_push(q *QueueEntry) bool {
 
 	// Stream the file body.
 	if err := file_push_send_body(s, q.File); err != nil {
+		// Same permanent-failure rule for the race where the file
+		// vanishes between the existence check above and the open.
+		if errors.Is(err, fs.ErrNotExist) {
+			info("Queue file-push dropping %q: source file %q no longer exists", q.ID, q.File)
+			queue_drop(q.ID, "file-missing")
+			return true
+		}
 		debug("Queue file-push body send failed: %v", err)
 		return false
 	}

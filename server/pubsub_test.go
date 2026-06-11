@@ -223,19 +223,19 @@ func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	}
 
 	// Newer row (version 200) routes, verifies, and writes.
-	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice Smith", 200, 50, base), fresh), "relayZ")
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice Smith", 200, 50, base), fresh), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Fatalf("after v200 frame: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Older row (version 100) is dropped by LWW.
-	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, base+1), fresh), "relayZ")
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, base+1), fresh), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("stale v100 frame clobbered record: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Expired frame is dropped at the freshness check, before routing.
-	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), i64toa(now()-1)), "relayZ")
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), i64toa(now()-1)), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("expired v300 frame was applied: name=%q version=%d, want Alice Smith/200", name, ver)
 	}

@@ -775,6 +775,10 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 		return nil, errSenderUnreachable
 	}
 	if peer != net_id && !peer_connect(peer) {
+		// Unknown or stale-addressed peer: ask the mesh for its current
+		// addresses (rate limited). A reply re-wakes the queue via
+		// peer_discovered_address, so the failed row retries promptly.
+		peer_request_addresses(peer)
 		peer_mark_send_failed(peer)
 		return nil, errSenderUnreachable
 	}

@@ -286,3 +286,120 @@ func TestReplicationJoinDeniedApplyIgnoresOtherPeer(t *testing.T) {
 		t.Errorf("state after stray denial = %q, want unchanged %q", state, "waiting")
 	}
 }
+
+// setup_admin_replica_peers adds the peers.db schema and an empty
+// in-memory registry on top of setup_admin_replica_test, for the
+// --address seeding tests. Returns a combined cleanup.
+func setup_admin_replica_peers(t *testing.T) func() {
+	t.Helper()
+	cleanup := setup_admin_replica_test(t)
+
+	pdb := db_open("db/peers.db")
+	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
+
+	peers_lock.Lock()
+	saved := peers
+	peers = map[string]Peer{}
+	peers_lock.Unlock()
+
+	return func() {
+		peers_lock.Lock()
+		peers = saved
+		peers_lock.Unlock()
+		cleanup()
+	}
+}
+
+// TestAdminReplicaJoinSeedsAddresses: operator-supplied addresses (the
+// --address escape hatch) land in the peer registry before the emit,
+// with or without the /p2p/ suffix.
+func TestAdminReplicaJoinSeedsAddresses(t *testing.T) {
+	cleanup := setup_admin_replica_peers(t)
+	defer cleanup()
+
+	source, _ := test_host(t)
+	w, _ := admin_replica_post(t, "/_/admin/replica/join", map[string]any{
+		"source": source,
+		"addresses": []string{
+			"/ip4/198.51.100.20/tcp/1443",
+			"/ip4/198.51.100.20/udp/1443/quic-v1/p2p/" + source,
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if n := peer_addresses_count(source); n != 2 {
+		t.Errorf("seeded addresses = %d, want 2", n)
+	}
+}
+
+// TestAdminReplicaJoinRejectsBadAddress: an unparseable address (or one
+// suffixed with a different peer) 400s before any pending state is set.
+func TestAdminReplicaJoinRejectsBadAddress(t *testing.T) {
+	cleanup := setup_admin_replica_peers(t)
+	defer cleanup()
+
+	source, _ := test_host(t)
+	other, _ := test_host(t)
+
+	for _, address := range []string{"junk", "/ip4/198.51.100.20/tcp/1443/p2p/" + other} {
+		w, body := admin_replica_post(t, "/_/admin/replica/join", map[string]any{
+			"source":    source,
+			"addresses": []string{address},
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("address %q: status = %d, want 400", address, w.Code)
+		}
+		if code, _ := body["error"].(string); code != "address_invalid" {
+			t.Errorf("address %q: error = %q, want address_invalid", address, code)
+		}
+		if peer := setting_get("replica.join.peer", ""); peer != "" {
+			t.Errorf("address %q: pending peer should not be set; got %q", address, peer)
+		}
+	}
+}
+
+// TestAdminReplicaStatusReportsDelivery: while a join is pending, the
+// status payload carries the delivery diagnostics mochictl renders —
+// queued row, attempt count, last error, known-address count.
+func TestAdminReplicaStatusReportsDelivery(t *testing.T) {
+	cleanup := setup_admin_replica_peers(t)
+	defer cleanup()
+
+	source, _ := test_host(t)
+	setting_set("replica.join.peer", source)
+	setting_set("replica.join.state", "waiting")
+
+	qdb := db_open("db/queue.db")
+	qdb.exec("insert into queue (id, target, from_entity, to_entity, service, event, attempts, last_error, next_retry, created) values ('q1', ?, '', '', 'replication', 'join/request', 3, 'connect timeout', 0, ?)",
+		source, now())
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/_/admin/replica/status", nil)
+	admin_replica_status(c)
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad status body: %v", err)
+	}
+	if state, _ := body["state"].(string); state != "waiting" {
+		t.Fatalf("state = %q, want waiting", state)
+	}
+	delivery, _ := body["delivery"].(map[string]any)
+	if delivery == nil {
+		t.Fatal("delivery block missing while waiting")
+	}
+	if queued, _ := delivery["queued"].(bool); !queued {
+		t.Error("delivery.queued = false, want true")
+	}
+	if attempts, _ := delivery["attempts"].(float64); attempts != 3 {
+		t.Errorf("delivery.attempts = %v, want 3", delivery["attempts"])
+	}
+	if errtext, _ := delivery["error"].(string); errtext != "connect timeout" {
+		t.Errorf("delivery.error = %q, want %q", errtext, "connect timeout")
+	}
+	if addresses, _ := delivery["addresses"].(float64); addresses != 0 {
+		t.Errorf("delivery.addresses = %v, want 0", delivery["addresses"])
+	}
+}

@@ -23,6 +23,7 @@ type Event struct {
 	sender_app      string
 	sender_services []string
 	peer            string
+	origin          string // pubsub only: signature-verified originating peer (GetFrom); "" for direct streams
 	content         map[string]any
 	user            *User
 	app             *App

@@ -34,16 +34,35 @@ import (
 	"core/common/ini"
 )
 
-// cmd_replica_join handles `mochictl replica join <source-id>`. POSTs
-// the source-id to the server admin endpoint, then polls status with a
-// short backoff until a terminal state.
+// cmd_replica_join handles `mochictl replica join <source-id>
+// [--address=<multiaddr>]...`. POSTs the source-id (plus any
+// operator-supplied source addresses, the escape hatch for sources
+// that automatic discovery cannot reach) to the server admin endpoint,
+// then polls status with a short backoff until a terminal state.
 func cmd_replica_join(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: mochictl replica join <source-peer-id>")
+	source := ""
+	var addresses []string
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--address="):
+			for _, a := range strings.Split(strings.TrimPrefix(arg, "--address="), ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					addresses = append(addresses, a)
+				}
+			}
+		case strings.HasPrefix(arg, "--"):
+			return fmt.Errorf("unknown argument %q", arg)
+		case source == "":
+			source = arg
+		default:
+			return fmt.Errorf("unexpected argument %q", arg)
+		}
 	}
-	source := args[0]
+	if source == "" {
+		return fmt.Errorf("usage: mochictl replica join <source-peer-id> [--address=<multiaddr>]...")
+	}
 
-	body, err := json.Marshal(map[string]string{"source": source})
+	body, err := json.Marshal(map[string]any{"source": source, "addresses": addresses})
 	if err != nil {
 		return err
 	}
@@ -78,11 +97,23 @@ func cmd_replica_join(args []string) error {
 	// runs until the server reports a terminal state. Ctrl+C is the
 	// operator's escape hatch; the pending state survives in
 	// settings.db and is observable via `mochictl replica status`.
+	//
+	// While waiting, surface the delivery diagnostics the status
+	// endpoint reports so an undeliverable join-request (source address
+	// unknown, source unreachable) is visible instead of an indefinite
+	// silent wait. Each hint prints once, on change.
+	hinted := ""
 	for {
 		time.Sleep(2 * time.Second)
-		state, source, reason, members, err := replica_status_read()
+		state, source, reason, members, delivery, err := replica_status_read()
 		if err != nil {
 			return err
+		}
+		if state == "waiting" && !flag_json {
+			if hint := replica_delivery_hint(delivery); hint != "" && hint != hinted {
+				fmt.Println(hint)
+				hinted = hint
+			}
 		}
 		switch state {
 		case "approved":
@@ -155,7 +186,7 @@ func cmd_replica_leave(args []string) error {
 
 // cmd_replica_status is the one-shot diagnostic read.
 func cmd_replica_status(args []string) error {
-	return get_dump("/_/admin/replica/status", "state", "peer", "source", "members", "reason")
+	return get_dump("/_/admin/replica/status", "state", "peer", "addresses", "source", "members", "reason", "delivery")
 }
 
 // cmd_replica_reset handles `mochictl replica reset --from=<peer-id> --confirm`.
@@ -287,28 +318,59 @@ func replica_reset_copy(src, dst string) error {
 	return os.WriteFile(dst, data, 0644)
 }
 
+// replica_delivery is the join-request delivery diagnostics block from
+// the status endpoint. Nil when the server predates it or the state
+// isn't waiting.
+type replica_delivery struct {
+	Queued    bool   `json:"queued"`
+	Attempts  int64  `json:"attempts"`
+	Error     string `json:"error"`
+	Addresses int64  `json:"addresses"`
+	Silent    bool   `json:"silent"`
+}
+
+// replica_delivery_hint renders one operator-facing line describing
+// where the join-request currently is. "" means nothing worth saying
+// (no diagnostics, or nothing attempted yet).
+func replica_delivery_hint(d *replica_delivery) string {
+	switch {
+	case d == nil:
+		return ""
+	case !d.Queued:
+		return "Join request delivered. Waiting for the source administrator to approve ..."
+	case d.Addresses == 0 && d.Attempts > 0:
+		return "Join request not yet delivered: no known address for the source. Requesting it from the network; pass --address=<multiaddr> to supply one directly."
+	case d.Silent:
+		return "Join request not yet delivered: the source is unreachable at its known addresses. Retrying ..."
+	case d.Attempts > 0:
+		return "Source address known. Delivering join request ..."
+	}
+	return ""
+}
+
 // replica_status_read is the polling-loop helper used by cmd_replica_join.
-// Returns (state, source, reason, members, err).
-func replica_status_read() (string, string, string, []string, error) {
+// Returns (state, source, reason, members, delivery, err).
+func replica_status_read() (string, string, string, []string, *replica_delivery, error) {
 	resp, err := client().Get("/_/admin/replica/status")
 	if err != nil {
-		return "", "", "", nil, err
+		return "", "", "", nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return "", "", "", nil, http_error(resp.StatusCode, body)
+		return "", "", "", nil, nil, http_error(resp.StatusCode, body)
 	}
 	var s struct {
-		State   string   `json:"state"`
-		Source  string   `json:"source"`
-		Reason  string   `json:"reason"`
-		Members []string `json:"members"`
+		State    string            `json:"state"`
+		Source   string            `json:"source"`
+		Reason   string            `json:"reason"`
+		Members  []string          `json:"members"`
+		Delivery *replica_delivery `json:"delivery"`
 	}
 	if err := json.Unmarshal(body, &s); err != nil {
-		return "", "", "", nil, err
+		return "", "", "", nil, nil, err
 	}
-	return s.State, s.Source, s.Reason, s.Members, nil
+	return s.State, s.Source, s.Reason, s.Members, s.Delivery, nil
 }
 
 func must_marshal(v any) []byte {

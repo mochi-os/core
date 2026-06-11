@@ -213,9 +213,16 @@ func (e *Entity) delete() {
 		udb.exec("delete from group_members where member=? and type='user'", e.ID)
 	}
 
-	// Remove entity
+	// Remove entity. During an account purge each host deletes its own
+	// entities, so the row deletion must NOT replicate: it would strip the
+	// surviving copies' identity keys while their account is still live and
+	// break the user/purge signer check on receivers. Outside teardown — a
+	// user deleting one identity from a live account — the change must
+	// propagate.
 	db.exec("delete from entities where id=?", e.ID)
-	replication_emit_users_entities_delete(e.User, e.ID)
+	if _, teardown := purging.Load(e.User); !teardown {
+		replication_emit_users_entities_delete(e.User, e.ID)
+	}
 
 	// Audit log entity deletion
 	audit_identity_deleted(username, e.ID)

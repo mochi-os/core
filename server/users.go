@@ -1150,7 +1150,7 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "cannot delete self")
 	}
 
-	target, err := user_delete(id)
+	target, err := user_remove(id)
 	if err != nil {
 		return sl_error(fn, err.Error())
 	}
@@ -1163,6 +1163,56 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // "account is gone everywhere" form. Thin wrapper over user_purge_local.
 func user_delete(id string) (string, error) {
 	return user_purge_local(id, true)
+}
+
+// user_remove deletes a user on the admin's authority, immediately. That
+// authority covers the operator's own infrastructure — this server and its
+// server-server pair members — and nothing else:
+//
+//   - The user has no foreign (user-user) replicas: full account deletion.
+//     The account is marked closing with the deadline already due (the row
+//     op replicates to the pair members), the signed account-gone purge is
+//     emitted (pair members honor it once their row shows closing-and-due,
+//     or purge at their next sweep), and the local copy is purged with
+//     entity tombstones.
+//
+//   - The user has foreign replicas on other operators' servers: an
+//     eviction, not a deletion. The pair members are told to drop their
+//     copies via the leave-set purge, the local copy is purged with leave
+//     semantics, and the account survives untouched on the user's own
+//     hosts. The closing status is deliberately NOT set here — its row op
+//     would replicate to the foreign hosts and schedule deletion of copies
+//     the admin has no authority over.
+func user_remove(id string) (string, error) {
+	rdb := db_open("db/replication.db")
+	foreign, _ := rdb.exists("select 1 from hosts where user=? limit 1", id)
+	pairs := []string{}
+	if rows, err := rdb.rows("select peer from pair"); err == nil {
+		for _, r := range rows {
+			if p, _ := r["peer"].(string); p != "" && p != net_id {
+				pairs = append(pairs, p)
+			}
+		}
+	}
+
+	if foreign {
+		for _, peer := range pairs {
+			replication_send_user_leave(id, peer)
+		}
+		return user_purge_local(id, false)
+	}
+
+	if len(pairs) > 0 {
+		db := db_open("db/users.db")
+		due := now()
+		db.exec("update users set status='closing', purge=? where uid=?", due, id)
+		replication_emit_users_users_set(id, map[string]string{
+			"status": "closing",
+			"purge":  fmt.Sprintf("%d", due),
+		})
+		replication_emit_user_purge(id)
+	}
+	return user_delete(id)
 }
 
 // user_purge_local removes THIS host's copy of a user (entities, sessions,

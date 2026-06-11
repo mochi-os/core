@@ -8,7 +8,7 @@
 // claude/plans/pubsub.md.
 //
 // Each message is a self-contained protocol-2 Frame carrying an Expires
-// freshness bound and — for signed announcements (directory) — a
+// freshness bound and — for producers that sign their envelope — a
 // domain-separated entity signature over the canonical
 // {v, from, service, event, expires, content}. pubsub_publish floods one
 // Frame; receivers dedup a re-flood or multi-path delivery via
@@ -16,9 +16,10 @@
 //
 // Pubsub is best-effort and one-way: no per-message challenge, no
 // ack/nack, no reply writer. GossipSub's StrictSign authenticates the
-// relaying peer at the mesh layer; the entity signature authenticates
-// signed announcements (directory). Anonymous announcements (peer
-// discovery) are unsigned and trusted via the GossipSub source.
+// relaying peer at the mesh layer. Directory rows authenticate themselves:
+// the payload carries an entity signature over the content and a host-key
+// attestation over the claim, verified by entry_store regardless of which
+// mesh peer relayed the frame — so directory frames ride anonymously here.
 //
 // Copyright Alistair Cunningham 2024-2026
 
@@ -80,6 +81,10 @@ func pubsub_manager() {
 			warn("Pubsub error: %v", err)
 			continue
 		}
+		// ReceivedFrom is the last-hop mesh peer, not the originator — the
+		// right identity for rate limiting and mesh-neighbour discovery
+		// below. Nothing here treats it as the author: directory payloads
+		// self-verify, and envelope signatures name their own entity.
 		peer := m.ReceivedFrom.String()
 		if peer == net_id {
 			continue
@@ -123,10 +128,10 @@ func pubsub_receive(data []byte, peer string) {
 		return
 	}
 
-	// Entity signature (signed announcements only). On failure, clear From
-	// so the event is treated as anonymous — the handler's Anonymous gate
-	// (e.g. directory_publish_event's bootstrap-peer trust, which reads the
-	// entity id from content) decides whether to keep it.
+	// Entity signature (signed envelopes only). On failure, clear From so
+	// the event is treated as anonymous and the handler's Anonymous gate
+	// decides. Directory frames are always anonymous here — their payloads
+	// self-verify in entry_store.
 	if f.From != "" {
 		strcontent, ok := pubsub_string_content(f.Content)
 		if !ok || pubsub_verify(f.From, f.Service, f.Event, f.Expires, strcontent, f.Signature) != nil {

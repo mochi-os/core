@@ -1366,23 +1366,17 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	net_id = "selfpeer"
 	defer func() { net_id = orig_p2p }()
 
-	// Set up the v52 directory schema.
-	db_create_directory := func() {
-		db := db_open("db/directory.db")
-		db.exec("create table entities (id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null)")
-		db.exec("create table locations (entity text not null, peer text not null, seen integer not null, primary key (entity, peer))")
-		db.exec("create index locations_seen on locations(seen)")
-	}
-	db_create_directory()
+	// Set up the directory schema.
+	dir := db_open("db/directory.db")
+	dir.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
 	// Also need a users.db entities table so entity_peers can do its local check.
 	udb := db_open("db/users.db")
 	udb.exec("create table entities (id text primary key, user text not null default '')")
 
-	dir := db_open("db/directory.db")
 	now_ts := now()
-	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerA', ?)", now_ts-100)
-	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peer_b', ?)", now_ts-50)
-	dir.exec("insert into locations (entity, peer, seen) values ('e1', 'peerC', ?)", now_ts) // most recent
+	dir.exec("insert into entries (entity, peer, name, class, version, created, seen) values ('e1', 'peerA', 'n', 'person', 1, 1, ?)", now_ts-100)
+	dir.exec("insert into entries (entity, peer, name, class, version, created, seen) values ('e1', 'peer_b', 'n', 'person', 1, 1, ?)", now_ts-50)
+	dir.exec("insert into entries (entity, peer, name, class, version, created, seen) values ('e1', 'peerC', 'n', 'person', 1, 1, ?)", now_ts) // most recent
 
 	peers := entity_peers("e1")
 	if len(peers) != 3 {
@@ -1408,7 +1402,7 @@ func TestDirectoryEntityPeersMultiHost(t *testing.T) {
 	}
 
 	// Aged-out peers (older than 30 days) are not returned.
-	dir.exec("insert into locations (entity, peer, seen) values ('e2', 'oldpeer', ?)", now_ts-31*86400)
+	dir.exec("insert into entries (entity, peer, name, class, version, created, seen) values ('e2', 'oldpeer', 'n', 'person', 1, 1, ?)", now_ts-31*86400)
 	if ps := entity_peers("e2"); len(ps) != 0 {
 		t.Errorf("aged-out peers must not be returned; got %v", ps)
 	}

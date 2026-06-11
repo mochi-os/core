@@ -174,31 +174,20 @@ func TestPubsubSignVerify(t *testing.T) {
 	}
 }
 
-// signed_directory_frame builds the wire bytes of a signed directory/publish
-// Frame at the given version, with a fresh in-window Expires.
-func signed_directory_frame(t *testing.T, id, name string, version int64) []byte {
+// directory_row_frame builds the wire bytes of an anonymous directory
+// publish Frame carrying a self-verifying row, with an explicit Expires.
+func directory_row_frame(t *testing.T, en *Entry, expires string) []byte {
 	t.Helper()
-	return directory_frame(t, id, name, version, i64toa(now()+pubsub_expires_ttl))
-}
-
-// directory_frame is signed_directory_frame with an explicit Expires, for
-// the freshness cases.
-func directory_frame(t *testing.T, id, name string, version int64, expires string) []byte {
-	t.Helper()
-	content := map[string]string{
-		"id": id, "name": name, "class": "person",
-		"location": "p2p/peerY", "data": "x",
-		"created": "1000", "version": i64toa(version),
-	}
-	sig := pubsub_sign(id, "directory", "publish", expires, content)
-	cmap := make(map[string]any, len(content))
-	for k, v := range content {
-		cmap[k] = v
-	}
 	f := &Frame{
-		Type: frame_type_message, From: id,
+		Type:    frame_type_message,
 		Service: "directory", Event: "publish", ID: uid(),
-		Expires: expires, Content: cmap, Signature: sig,
+		Expires: expires,
+		Content: map[string]any{
+			"entity": en.Entity, "peer": en.Peer, "name": en.Name,
+			"class": en.Class, "data": en.Data,
+			"version": i64toa(en.Version), "created": i64toa(en.Created), "seen": i64toa(en.Seen),
+			"signature": en.Signature, "attestation": en.Attestation,
+		},
 	}
 	var buf bytes.Buffer
 	if err := frame_write(&buf, f); err != nil {
@@ -207,36 +196,47 @@ func directory_frame(t *testing.T, id, name string, version int64, expires strin
 	return buf.Bytes()
 }
 
-// TestPubsubReceiveRoutesDirectory: a valid signed directory/publish
-// Frame decodes, verifies, and routes through to a directory.db write; a
-// lower-version Frame is dropped by version-LWW; an expired Frame is
-// dropped before routing. Exercises the whole /mochi/2 receive path.
+// TestPubsubReceiveRoutesDirectory: an anonymous directory publish Frame
+// carrying a self-verifying row decodes, routes, verifies in entry_store,
+// and lands in directory.db; a lower-version row is dropped by LWW; an
+// expired Frame is dropped before routing. Exercises the whole /mochi/2
+// receive path with the payload-borne trust model.
 func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	protocol2_init()
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	setup_users_test_schema()
 	ddb := db_open("db/directory.db")
-	ddb.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null, version integer not null default 0 )")
-	ddb.exec("create table locations ( entity text not null, peer text not null, seen integer not null, primary key (entity, peer) )")
+	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
 
-	id, _ := new_entity_keys(t)
+	entity, ek := test_identity(t)
+	peer, hk := test_host(t)
+	fresh := i64toa(now() + pubsub_expires_ttl)
+	base := now() - 100
+	name_at := func() (string, int64) {
+		row, _ := ddb.row("select name, version from entries where entity=? and peer=?", entity, peer)
+		if row == nil {
+			return "", 0
+		}
+		n, _ := row["name"].(string)
+		return n, row_int(row, "version")
+	}
 
-	// Newer announce (version 200) routes and writes.
-	pubsub_receive(signed_directory_frame(t, id, "Alice Smith", 200), "peerY")
-	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+	// Newer row (version 200) routes, verifies, and writes.
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice Smith", 200, 50, base), fresh), "relayZ")
+	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Fatalf("after v200 frame: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
-	// Older announce (version 100) is dropped by version-LWW.
-	pubsub_receive(signed_directory_frame(t, id, "Alice", 100), "peerY")
-	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+	// Older row (version 100) is dropped by LWW.
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, base+1), fresh), "relayZ")
+	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("stale v100 frame clobbered record: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Expired frame is dropped at the freshness check, before routing.
-	pubsub_receive(directory_frame(t, id, "Expired", 300, i64toa(now()-1)), "peerY")
-	if name, ver := dir_entity(t, ddb, id); name != "Alice Smith" || ver != 200 {
+	pubsub_receive(directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), i64toa(now()-1)), "relayZ")
+	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("expired v300 frame was applied: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 }

@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 79
+	schema_version = 80
 )
 
 var (
@@ -260,21 +260,21 @@ func db_create() {
 	sessions.exec("create table verifications (oauth integer primary key, user text not null, last integer not null default 0)")
 	sessions.exec("create index verifications_user on verifications(user)")
 
-	// Directory. `entities` holds per-entity metadata (one row); `locations`
-	// holds per-(entity, peer) location claims so receivers know every host
-	// that has announced itself as a replica. The legacy `location` column
-	// on entities is kept one release for rollback safety.
+	// Directory. One row per (entity, peer): each row is one host's listing
+	// of one entity, asserted by that host alone. There are no global rows;
+	// a host may only publish or delete rows naming itself. Rows are
+	// self-verifying: `signature` is the entity's ed25519 signature over the
+	// content facts, `attestation` is the asserting host's libp2p-key
+	// signature over the claim, so any row can be re-served and verified
+	// regardless of how it arrived.
 	directory := db_open("db/directory.db")
-	directory.exec("create table entities ( id text not null primary key, name text not null, class text not null, location text not null default '', data text not null default '', fingerprint text not null default '', created integer not null, updated integer not null, version integer not null default 0 )")
-	directory.exec("create index entities_name on entities( name )")
-	directory.exec("create index entities_class on entities( class )")
-	directory.exec("create index entities_location on entities( location )")
-	directory.exec("create index entities_fingerprint on entities( fingerprint )")
-	directory.exec("create index entities_created on entities( created )")
-	directory.exec("create index entities_updated on entities( updated )")
-	directory.exec("create table locations ( entity text not null, peer text not null, seen integer not null, primary key ( entity, peer ) )")
-	directory.exec("create index locations_peer on locations( peer )")
-	directory.exec("create index locations_seen on locations( seen )")
+	directory.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	directory.exec("create index entries_name on entries( name )")
+	directory.exec("create index entries_class on entries( class )")
+	directory.exec("create index entries_fingerprint on entries( fingerprint )")
+	directory.exec("create index entries_peer on entries( peer )")
+	directory.exec("create index entries_seen on entries( seen )")
+	directory.exec("create index entries_created on entries( created )")
 
 	// Peers
 	peers := db_open("db/peers.db")
@@ -898,6 +898,8 @@ func db_upgrade() {
 			db_upgrade_78()
 		case 79:
 			db_upgrade_79()
+		case 80:
+			db_upgrade_80()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1317,6 +1319,27 @@ func db_upgrade_79() {
 	if col, _ := users.exists("select 1 from pragma_table_info('users') where name='purge'"); !col {
 		users.exec("alter table users add column purge integer not null default 0")
 	}
+}
+
+// db_upgrade_80 replaces the two-table directory (entities + locations) with
+// the single self-verifying `entries` table. Legacy rows carry no signatures
+// and could never be re-served under the self-verifying model, and
+// directory.db is rebuildable network state — so drop and rebuild rather
+// than migrate. Local public entities are marked unpublished so the
+// directory manager's startup republish re-announces them immediately;
+// third-party rows repopulate via sync. Idempotent.
+func db_upgrade_80() {
+	d := db_open("db/directory.db")
+	d.exec("drop table if exists entities")
+	d.exec("drop table if exists locations")
+	d.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	d.exec("create index if not exists entries_name on entries( name )")
+	d.exec("create index if not exists entries_class on entries( class )")
+	d.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
+	d.exec("create index if not exists entries_peer on entries( peer )")
+	d.exec("create index if not exists entries_seen on entries( seen )")
+	d.exec("create index if not exists entries_created on entries( created )")
+	db_open("db/users.db").exec("update entities set published=0 where privacy='public'")
 }
 
 // db_upgrade_61 heals replication.db installs whose db_upgrade_55 ran

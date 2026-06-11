@@ -119,8 +119,12 @@ func entities_manager() {
 
 	for range time.Tick(time.Hour) {
 		if peers_sufficient() {
+			// Hourly: the republish is what refreshes our directory rows'
+			// attestation (seen), which peers' freshness tiering and the
+			// dead-peer cleanup key on. directory_create keeps the content
+			// signature when nothing changed, so this is cheap.
 			var es []Entity
-			err := db.scans(&es, "select * from entities where privacy='public' and published<?", now()-86400)
+			err := db.scans(&es, "select * from entities where privacy='public' and published<?", now()-3600)
 			if err != nil {
 				warn("Database error loading entities for republish: %v", err)
 				continue
@@ -150,10 +154,7 @@ func entity_privacy_set(e *Entity, privacy string) error {
 	replication_emit_users_entities_update(e.User, e.ID, map[string]string{"privacy": privacy})
 
 	if privacy == "private" {
-		db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
-		m := message(e.ID, "", "directory", "delete")
-		m.set("entity", e.ID)
-		go m.publish(false)
+		entry_delete_self(e.ID)
 	} else {
 		directory_create(e)
 		directory_publish(e, true)
@@ -162,9 +163,9 @@ func entity_privacy_set(e *Entity, privacy string) error {
 }
 
 // entity_name_set updates an entity's name and republishes the directory
-// entry when public. The directory's created timestamp is reset on rename
-// to prevent impersonation: an attacker can't squat a name early and then
-// later rename to it to appear first in search results.
+// row when public. directory_create resets the row's created timestamp on
+// rename to prevent impersonation: an attacker can't squat a name early and
+// then later rename to it to appear first in search results.
 func entity_name_set(e *Entity, name string) error {
 	if !valid(name, "name") {
 		return fmt.Errorf("invalid name")
@@ -179,13 +180,17 @@ func entity_name_set(e *Entity, name string) error {
 
 	if e.Privacy == "public" {
 		directory_create(e)
-		db_open("db/directory.db").exec("update entities set created=? where id=?", now(), e.ID)
 		directory_publish(e, true)
 	}
 	return nil
 }
 
-// Delete an entity: broadcast deletion to network, remove from directory and entities table
+// Delete an entity: withdraw this host's directory row (locally and
+// network-wide) and remove the entity. The withdrawal is host-key signed,
+// so there is no ordering constraint against the entity key's deletion.
+// On a replicated account every host runs this during its own purge, so the
+// network's rows for the entity converge to gone host by host — no global
+// tombstone exists to forge.
 func (e *Entity) delete() {
 	// Get user for audit logging
 	db := db_open("db/users.db")
@@ -195,10 +200,7 @@ func (e *Entity) delete() {
 		username = row["username"].(string)
 	}
 
-	// Broadcast deletion (must publish before deleting entity, since publish needs the private key to sign)
-	m := message(e.ID, "", "directory", "delete")
-	m.set("entity", e.ID)
-	m.publish(false)
+	entry_delete_self(e.ID)
 
 	// Remove queued messages from/to this entity
 	queue := db_open("db/queue.db")
@@ -211,9 +213,6 @@ func (e *Entity) delete() {
 		udb.exec("delete from group_members where member=? and type='user'", e.ID)
 	}
 
-	// Remove from local directory
-	db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
-
 	// Remove entity
 	db.exec("delete from entities where id=?", e.ID)
 	replication_emit_users_entities_delete(e.User, e.ID)
@@ -224,10 +223,10 @@ func (e *Entity) delete() {
 
 // delete_local removes this entity's local rows WITHOUT broadcasting the
 // directory tombstone or replicating the deletion. Used when this host stops
-// hosting the user (leave-set / "delete this replica") while the account and
-// its entities survive on other hosts: the entity stays in the network
-// directory (other hosts still advertise it), and this host's now-stale
-// directory location ages out via the location TTL.
+// hosting the user (leave-set / "remove my account from this server") while
+// the account and its entities survive on other hosts: only THIS host's
+// directory row is withdrawn (locally and network-wide); the other hosts'
+// rows keep the entity resolvable.
 func (e *Entity) delete_local() {
 	db := db_open("db/users.db")
 	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.id", e.ID)
@@ -245,7 +244,7 @@ func (e *Entity) delete_local() {
 		udb.exec("delete from group_members where member=? and type='user'", e.ID)
 	}
 
-	db_open("db/directory.db").exec("delete from entities where id=?", e.ID)
+	entry_delete_self(e.ID)
 	db.exec("delete from entities where id=?", e.ID)
 
 	audit_identity_deleted(username, e.ID)
@@ -259,9 +258,9 @@ func entity_peer(id string) string {
 		return net_id
 	}
 
-	// Check the directory's locations table for an active peer claim.
-	// `seen` ages out via the 30-day cleanup in directory_manager.
-	row, _ := db_open("db/directory.db").row("select peer from locations where entity=? and seen > ? order by seen desc limit 1", id, now()-30*86400)
+	// Check the directory for an active peer claim. `seen` ages out via
+	// the 30-day cleanup in directory_manager.
+	row, _ := db_open("db/directory.db").row("select peer from entries where entity=? and peer!=? and seen > ? order by seen desc limit 1", id, net_id, now()-30*86400)
 	if row != nil {
 		if peer, ok := row["peer"].(string); ok && peer != "" {
 			return peer
@@ -269,7 +268,9 @@ func entity_peer(id string) string {
 	}
 
 	// Not found. Send a directory request and return failure.
-	message("", id, "directory", "request").publish(false)
+	m := message("", "", "directory", "request")
+	m.set("entity", id)
+	m.publish(false)
 	return ""
 }
 
@@ -280,7 +281,7 @@ func entity_peers(id string) []string {
 	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
 		return []string{net_id}
 	}
-	rows, _ := db_open("db/directory.db").rows("select peer from locations where entity=? and seen > ? order by seen desc", id, now()-30*86400)
+	rows, _ := db_open("db/directory.db").rows("select peer from entries where entity=? and peer!=? and seen > ? order by seen desc", id, net_id, now()-30*86400)
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		if peer, ok := r["peer"].(string); ok && peer != "" {
@@ -313,8 +314,8 @@ func entity_peers_failover(id string) []string {
 	active_cutoff := now_ts - directory_active_window
 	stale_cutoff := now_ts - 30*86400
 
-	active, _ := db.rows("select peer from locations where entity=? and seen > ? order by seen asc", id, active_cutoff)
-	stale, _ := db.rows("select peer from locations where entity=? and seen > ? and seen <= ? order by seen desc", id, stale_cutoff, active_cutoff)
+	active, _ := db.rows("select peer from entries where entity=? and peer!=? and seen > ? order by seen asc", id, net_id, active_cutoff)
+	stale, _ := db.rows("select peer from entries where entity=? and peer!=? and seen > ? and seen <= ? order by seen desc", id, net_id, stale_cutoff, active_cutoff)
 
 	seen_peer := map[string]bool{}
 	out := make([]string, 0, len(active)+len(stale))
@@ -328,9 +329,9 @@ func entity_peers_failover(id string) []string {
 }
 
 // directory_active_window is the freshness window used by the
-// stream/RPC failover policy. Set to 2× the entity republish interval
-// (1 hour) so a peer that missed one republish tick still counts as
-// active. Peers outside this window fall to the stale-fallback tier.
+// stream/RPC failover policy. Set to 2× the hourly attestation refresh
+// (entities_manager) so a peer that missed one refresh tick still counts
+// as active. Peers outside this window fall to the stale-fallback tier.
 const directory_active_window = 2 * 60 * 60
 
 // Sign a string using an entity's private key
@@ -550,9 +551,9 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 	}
 
-	// Check directory (by id or fingerprint)
+	// Check directory (by id or fingerprint), newest content first
 	db = db_open("db/directory.db")
-	row, err = db.row("select name from entities where id=? or fingerprint=?", id, id)
+	row, err = db.row("select name from entries where entity=? or fingerprint=? order by version desc, seen desc limit 1", id, id)
 	if err == nil && row != nil {
 		if name, ok := row["name"].(string); ok {
 			return sl.String(name), nil
@@ -661,7 +662,6 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	old_privacy := e.Privacy
 	changed_to_private := false
-	name_changed := false
 
 	// Process kwargs - validate and apply database updates
 	for _, kv := range kwargs {
@@ -675,7 +675,6 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			if name != e.Name {
 				db.exec("update entities set name=? where id=?", name, id)
 				replication_emit_users_entities_update(e.User, id, map[string]string{"name": name})
-				name_changed = true
 			}
 
 		case "data":
@@ -706,23 +705,14 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// Update directory after all changes are applied
 	if changed_to_private {
-		// Remove from directory and broadcast deletion
-		db_open("db/directory.db").exec("delete from entities where id=?", id)
-		m := message(id, "", "directory", "delete")
-		m.set("entity", id)
-		go m.publish(false)
+		entry_delete_self(id)
 	} else {
 		// Reload entity to get all updated fields
 		db.scan(&e, "select * from entities where id=?", id)
 		if e.Privacy == "public" {
-			// Update local directory and publish to network
+			// directory_create resets the row's created timestamp on rename
+			// (anti-impersonation) and refreshes the attestation.
 			directory_create(&e)
-			// If name changed, reset the created timestamp. This prevents impersonation
-			// by creating a blank entry early, waiting for a legitimate entity with the
-			// same name, then renaming to appear first in search results.
-			if name_changed {
-				db_open("db/directory.db").exec("update entities set created=? where id=?", now(), id)
-			}
 			directory_publish(&e, true)
 		}
 	}

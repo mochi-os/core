@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// add_directory_location_for_failover ensures the locations table
+// add_directory_location_for_failover ensures the entries table
 // exists and inserts a (entity, peer, seen) row. Used by failover
 // tests to set up controlled directory state.
 func add_directory_location_for_failover(t *testing.T, entity, peer string, seen int64) {
 	t.Helper()
 	db := db_open("db/directory.db")
-	db.exec("create table if not exists locations (entity text not null, peer text not null, seen integer not null, primary key (entity, peer))")
-	db.exec("insert or replace into locations (entity, peer, seen) values (?, ?, ?)", entity, peer, seen)
+	db.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	db.exec("insert or replace into entries (entity, peer, name, class, version, created, seen) values (?, ?, 'n', 'person', 1, 1, ?)", entity, peer, seen)
 }
 
 // TestEntityPeersFailoverActiveFirst — active peers (seen within the

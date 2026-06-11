@@ -575,16 +575,28 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //	mesh          int    — servers in the /mochi/2 GossipSub mesh, including
 //	                       this one (1 = isolated; 0 = pubsub not running)
 //	last          int    — Unix timestamp of the last broadcast received (0 if none)
+//	queued        int    — broadcasts waiting in the outbound queue. These rows
+//	                       have no target peer so they never appear in the
+//	                       peers() rollup — they accumulate exactly when the
+//	                       server is isolated from the mesh.
 func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	mesh := pubsub_topic_peers(net_pubsub)
 	if net_pubsub != nil {
 		mesh++
+	}
+	queued := int64(0)
+	if file_exists(filepath.Join(data_dir, "db", "queue.db")) {
+		qdb := db_open("db/queue.db")
+		if row, _ := qdb.row("select count(*) as c from queue where type='broadcast'"); row != nil {
+			queued = row_int(row, "c")
+		}
 	}
 	return sl_encode(map[string]any{
 		"reachability": net_reachable(),
 		"relay":        net_relay(),
 		"mesh":         mesh,
 		"last":         pubsub_last.Load(),
+		"queued":       queued,
 	}), nil
 }
 

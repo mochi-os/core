@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1176,7 +1177,16 @@ func user_delete(id string) (string, error) {
 //     everywhere.
 //   - false (leave-set / "delete this replica"): remove the entities locally
 //     only; they survive on the other hosts, so no tombstone, no replicate.
+// purging tracks users whose local copy is mid-teardown. Row deletions
+// during the teardown can trigger replication emits after the user's
+// identity entities are already gone; the emit's missing-signing-entity
+// warning is expected then, not an anomaly, so it checks this set.
+var purging sync.Map
+
 func user_purge_local(id string, accountGone bool) (string, error) {
+	purging.Store(id, true)
+	defer purging.Delete(id)
+
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {

@@ -2023,7 +2023,11 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	udb := db_open("db/users.db")
 	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
 	if err != nil || row == nil {
-		warn("Replication emit: no signing entity for user %q: %v", user, err)
+		if _, teardown := purging.Load(user); teardown {
+			debug("Replication emit: skipping for user %q mid-teardown (entities gone)", user)
+		} else {
+			warn("Replication emit: no signing entity for user %q: %v", user, err)
+		}
 		return
 	}
 	from, _ := row["id"].(string)

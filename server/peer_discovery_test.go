@@ -145,6 +145,33 @@ func TestPeerRequestAddressesRateLimit(t *testing.T) {
 	}
 }
 
+// TestPeerConnectRetryEnrollsFailedDial: a failed startup dial must
+// enroll the peer in the reconnect manager's backoff probes. The other
+// enrollment triggers (libp2p disconnect, silent-failure threshold)
+// require having reached the peer or having traffic for it, so without
+// this a server that boots before its network is ready stays isolated
+// until restart (observed live: hotel network blocking the bootstrap
+// port left instances out of the mesh indefinitely).
+func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, _ := test_host(t)
+	peer_add_known(id, []string{"/ip4/192.0.2.50/tcp/1443/p2p/" + id})
+
+	// net_me is nil in unit tests, so the dial fails like an
+	// unreachable network would.
+	peer_connect_retry(id)
+
+	peer_reconnect_lock.Lock()
+	_, scheduled := peer_reconnects[id]
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
+	if !scheduled {
+		t.Error("failed startup dial did not schedule a reconnect probe")
+	}
+}
+
 func TestPeerAddressesNormalise(t *testing.T) {
 	id, _ := test_host(t)
 	other, _ := test_host(t)

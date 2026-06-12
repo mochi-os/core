@@ -139,6 +139,20 @@ func peer_connect(id string) bool {
 	return ok
 }
 
+// peer_connect_retry dials a peer and, on failure, enrolls it in the
+// reconnect manager's backoff probes. Startup dials (the bootstrap list
+// and the peers.db restore) use this instead of bare peer_connect: a
+// server that boots before its network is ready fails every initial
+// dial, and without enrollment nothing ever retries — the reconnect
+// machinery's other triggers (a libp2p disconnect, the silent-failure
+// threshold) both require having reached the peer or having traffic for
+// it, so a never-connected idle server stays isolated until restart.
+func peer_connect_retry(id string) {
+	if !peer_connect(id) {
+		peer_schedule_reconnect(id)
+	}
+}
+
 // Refresh the timestamp of the address we actually connected on.
 func peer_refresh_connected_address(id string) {
 	pid, err := p2p_peer.Decode(id)
@@ -200,7 +214,7 @@ func peer_disconnected(id string) {
 }
 
 // peer_schedule_reconnect adds id to peer_reconnects[] with an initial
-// retry delay if not already scheduled. Two callers:
+// retry delay if not already scheduled. Three callers:
 //
 //   - peer_disconnected (above): libp2p reports a peer we were
 //     connected to has gone away.
@@ -208,6 +222,8 @@ func peer_disconnected(id string) {
 //     silent-failure threshold: a peer we couldn't open a stream to
 //     enough times in a row is treated the same as one that
 //     disconnected, so peer_reconnect_manager probes it periodically.
+//   - peer_connect_retry (above): a startup dial failed, typically
+//     because the server booted before its network was ready.
 //
 // Without the second path, a peer we discovered via DHT but never
 // successfully connected to would stay silent forever — peer_is_silent

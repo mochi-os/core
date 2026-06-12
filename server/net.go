@@ -246,7 +246,7 @@ func net_start() {
 		if p.ID != net_id {
 			debug("Adding bootstrap peer %q at %v", p.ID, peer_address_strings(p.addresses))
 			peer_add_known(p.ID, peer_address_strings(p.addresses))
-			go peer_connect(p.ID)
+			go peer_connect_retry(p.ID)
 		}
 	}
 

@@ -103,11 +103,15 @@ func admin_replication_pair(c *gin.Context) {
 			peer, _ := r["peer"].(string)
 			added, _ := r["added"].(int64)
 			role, _ := r["role"].(string)
-			members = append(members, map[string]any{
+			member := map[string]any{
 				"peer":  peer,
 				"added": added,
 				"role":  role,
-			})
+			}
+			peer_name_fields(member, peer, false)
+			// Admin output is operator display: fingerprints hyphenate.
+			member["fingerprint"] = fingerprint_hyphens(member["fingerprint"].(string))
+			members = append(members, member)
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"members": members})
@@ -228,11 +232,11 @@ func admin_replication_ops(c *gin.Context) {
 		Max   int64  `db:"max"`
 	}
 	type pendRow struct {
-		Peer    string `db:"peer"`
-		User    string `db:"user"`
-		Scope   string `db:"scope"`
-		Count   int64  `db:"count"`
-		Oldest  int64  `db:"oldest"`
+		Peer   string `db:"peer"`
+		User   string `db:"user"`
+		Scope  string `db:"scope"`
+		Count  int64  `db:"count"`
+		Oldest int64  `db:"oldest"`
 	}
 
 	emitted_query := "select user, scope, next from sequence"
@@ -371,17 +375,17 @@ func admin_replication_pairs(c *gin.Context) {
 	n := now()
 
 	type peerData struct {
-		Peer           string                       `json:"peer"`
-		Added          int64                        `json:"added"`
-		Role           string                       `json:"role"`
-		Bootstrap      map[string]string            `json:"bootstrap"`
-		OutboundTail   map[string]int64             `json:"outbound_tail"`
-		InboundCursor  map[string]int64             `json:"inbound_cursor"`
-		Pending        map[string]any               `json:"pending"`
-		SeenCount      int64                        `json:"seen_count"`
-		LastOpAt       int64                        `json:"last_op_at"`
-		LeasesHeldBy   []map[string]any             `json:"leases_held_by_self"`
-		LeasesHeldPeer []map[string]any             `json:"leases_held_by_peer"`
+		Peer           string            `json:"peer"`
+		Added          int64             `json:"added"`
+		Role           string            `json:"role"`
+		Bootstrap      map[string]string `json:"bootstrap"`
+		OutboundTail   map[string]int64  `json:"outbound_tail"`
+		InboundCursor  map[string]int64  `json:"inbound_cursor"`
+		Pending        map[string]any    `json:"pending"`
+		SeenCount      int64             `json:"seen_count"`
+		LastOpAt       int64             `json:"last_op_at"`
+		LeasesHeldBy   []map[string]any  `json:"leases_held_by_self"`
+		LeasesHeldPeer []map[string]any  `json:"leases_held_by_peer"`
 	}
 
 	pairs := map[string]*peerData{}

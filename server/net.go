@@ -250,8 +250,9 @@ func net_start() {
 		}
 	}
 
-	// Add peers from database
+	// Add peers from database, along with their claimed display names
 	peers_add_from_db(100)
+	peer_names_load()
 
 	// Listen via multicast DNS. Best-effort: hosts without a usable IPv4/IPv6
 	// multicast interface (containers under qemu, certain k8s CNI plugins,
@@ -267,7 +268,7 @@ func net_start() {
 	go pubsub_manager()
 }
 
-// Watch event bus for disconnecting peers
+// Watch event bus for peer connectedness changes
 func net_watch_disconnect() {
 	sub, err := net_me.EventBus().Subscribe(&p2p_event.EvtPeerConnectednessChanged{}, p2p_eventbus.Name("disconnect"))
 	if err != nil {
@@ -278,7 +279,16 @@ func net_watch_disconnect() {
 
 	for e := range sub.Out() {
 		c := e.(p2p_event.EvtPeerConnectednessChanged)
-		if c.Connectedness == p2p_network.NotConnected {
+		switch c.Connectedness {
+		case p2p_network.Connected:
+			// A new connection (either direction): announce ourselves —
+			// the startup publish predates the mesh and is lost, so this
+			// is how a newcomer learns existing peers' names and vice
+			// versa. Collapsed by the publish loop's minimum interval.
+			peers_publish_request()
+			// Fresh authenticated evidence for the peer's name claims.
+			peer_names_connected(c.Peer.String())
+		case p2p_network.NotConnected:
 			peer_disconnected(c.Peer.String())
 		}
 	}

@@ -112,6 +112,22 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
+	"hostname_publish": {
+		Name:         "hostname_publish",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether to announce this server's hostname and domains to other servers",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
+	"hostname": {
+		Name:         "hostname",
+		Pattern:      "^[a-z0-9.-]{1,253}$",
+		Default:      "",
+		Description:  "Hostname announced to other servers (defaults to the operating system hostname)",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
 	"operator_name": {
 		Name:         "operator_name",
 		Pattern:      "line",
@@ -395,6 +411,11 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	setting_set(name, value)
+	// Announce hostname changes immediately rather than waiting for the
+	// hourly publish.
+	if name == "hostname" || name == "hostname_publish" {
+		peers_publish_request()
+	}
 	// Never write a credential's value into the audit log.
 	audit_value := value
 	if def.Secret {

@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 81
+	schema_version = 82
 )
 
 var (
@@ -279,6 +279,8 @@ func db_create() {
 	// Peers
 	peers := db_open("db/peers.db")
 	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
+	// Claimed display names per peer with their verification verdict
+	peers.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
 
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
@@ -906,6 +908,8 @@ func db_upgrade() {
 			db_upgrade_80()
 		case 81:
 			db_upgrade_81()
+		case 82:
+			db_upgrade_82()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1239,7 +1243,7 @@ func db_upgrade_72() {
 // the user has explicitly turned off, the complement of the required
 // methods column. A method that is neither required nor disabled is
 // "allowed" (a usable but optional sign-in factor). Existing rows default
-// to '' (nothing explicitly disabled), so behaviour is unchanged on
+// to ” (nothing explicitly disabled), so behaviour is unchanged on
 // upgrade. Idempotent.
 func db_upgrade_73() {
 	users := db_open("db/users.db")
@@ -1255,7 +1259,7 @@ func db_upgrade_73() {
 // still on the old default that relies on a third-party provider can no longer
 // sign in with it alone (and could be locked out if the provider email is
 // unreachable). Relaxing every account still on the untouched default ('email'
-// exactly) to '' aligns existing users with new signups and un-breaks OAuth
+// exactly) to ” aligns existing users with new signups and un-breaks OAuth
 // login. Accounts that chose a stricter set (e.g. 'email,totp') or a non-email
 // factor keep it; pure-email accounts are unaffected in practice, since the
 // email code stays their only way in. Idempotent.
@@ -1348,6 +1352,13 @@ func db_upgrade_81() {
 	if col, _ := r.exists("select 1 from pragma_table_info('hosts') where name='attestation'"); !col {
 		r.exec("alter table hosts add column attestation text not null default ''")
 	}
+}
+
+// db_upgrade_82 adds the peers.db names table: hostname/domain claims
+// from peers/publish with their DNS verification verdict. Idempotent.
+func db_upgrade_82() {
+	p := db_open("db/peers.db")
+	p.exec("create table if not exists names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
 }
 
 func db_upgrade_80() {

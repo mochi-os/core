@@ -477,8 +477,8 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, op.UID)
 	case ApplyDeferred:
 		replication_pending_buffer(db, peer, op)
-		debug("Replication op deferred: peer=%q scope=%q user=%q db=%q seq=%d",
-			peer, op.Scope, op.User, op.Database, op.Sequence)
+		// debug("Replication op deferred: peer=%q scope=%q user=%q db=%q seq=%d",
+		// 	peer, op.Scope, op.User, op.Database, op.Sequence)
 	case ApplyInvalid:
 		info("Replication op dropping: unrecognised shape peer=%q scope=%q db=%q table=%q op=%q",
 			peer, op.Scope, op.Database, op.Table, op.Operation)
@@ -780,10 +780,10 @@ func replication_pending_warn_stalled() {
 		if s.Oldest > threshold {
 			continue
 		}
-		warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d age=%ds",
-			s.Peer, s.Scope, s.User, s.Database,
-			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count,
-			now()-s.Oldest)
+		// warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d age=%ds",
+		// 	s.Peer, s.Scope, s.User, s.Database,
+		// 	s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count,
+		// 	now()-s.Oldest)
 	}
 }
 
@@ -2343,7 +2343,10 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 	pair_values := make([]sl.Value, 0, len(pair))
 	for _, p := range pair {
-		pair_values = append(pair_values, sl.String(p))
+		entry := sl.NewDict(4)
+		_ = entry.SetKey(sl.String("peer"), sl.String(p))
+		peer_name_dict(entry, p, false)
+		pair_values = append(pair_values, entry)
 	}
 	irreparable_values := make([]sl.Value, 0, len(irreparable))
 	for _, p := range irreparable {
@@ -2359,8 +2362,9 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		address_values = append(address_values, sl.String(a))
 	}
 
-	result := sl.NewDict(9)
+	result := sl.NewDict(10)
 	_ = result.SetKey(sl.String("peer"), sl.String(net_id))
+	_ = result.SetKey(sl.String("fingerprint"), sl.String(fingerprint(net_id)))
 	_ = result.SetKey(sl.String("addresses"), sl.NewList(address_values))
 	_ = result.SetKey(sl.String("pair"), sl.NewList(pair_values))
 	_ = result.SetKey(sl.String("irreparable"), sl.NewList(irreparable_values))
@@ -2376,7 +2380,8 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // calling user. Source-side display: "alice on B wants to replicate
 // from A — Approve / Deny".
 //
-// Returned shape: list of dicts {peer, label, expires}.
+// Returned shape: list of dicts {peer, label, expires, name, verified,
+// fingerprint} — name is withheld unless verified (approval context).
 func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	u, _ := t.Local("user").(*User)
 	if u == nil {
@@ -2393,10 +2398,13 @@ func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	out := sl.NewList(nil)
 	for _, r := range rows {
-		entry := sl.NewDict(3)
-		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		peer := row_string(r, "peer")
+		entry := sl.NewDict(6)
+		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
 		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		// Approval context: unverified names are withheld.
+		peer_name_dict(entry, peer, true)
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -2406,7 +2414,8 @@ func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // calling user — the peers that hold a copy of this user's data via
 // the per-user opt-in flow.
 //
-// Returned shape: list of dicts {peer, added, ack}.
+// Returned shape: list of dicts {peer, added, ack, irreparable,
+// offline, name, verified, fingerprint}.
 func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	u, _ := t.Local("user").(*User)
 	if u == nil {
@@ -2430,12 +2439,13 @@ func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		// Offline-since (0 when reachable): the My-hosts page badges a host
 		// "Offline" once the duration crosses the display threshold.
 		offline := int64(rdb.integer("select since from unreachable where peer=?", peer))
-		entry := sl.NewDict(5)
+		entry := sl.NewDict(8)
 		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("added"), sl.MakeInt64(row_int(r, "added")))
 		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
 		_ = entry.SetKey(sl.String("irreparable"), sl.Bool(broken))
 		_ = entry.SetKey(sl.String("offline"), sl.MakeInt64(offline))
+		peer_name_dict(entry, peer, false)
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -2555,7 +2565,9 @@ func api_replication_host_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 // api_replication_joins returns pending inbound whole-server
 // join-requests. Server-wide; the action wrapper must require_admin
-// before calling. Returned shape: list of dicts {peer, label, expires}.
+// before calling. Returned shape: list of dicts {peer, label, expires,
+// name, verified, fingerprint} — name is withheld unless verified
+// (approval context).
 func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	rdb := db_open("db/replication.db")
 	rows, err := rdb.rows("select peer, label, expires from joins order by received")
@@ -2565,10 +2577,13 @@ func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	out := sl.NewList(nil)
 	for _, r := range rows {
-		entry := sl.NewDict(3)
-		_ = entry.SetKey(sl.String("peer"), sl.String(row_string(r, "peer")))
+		peer := row_string(r, "peer")
+		entry := sl.NewDict(6)
+		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
 		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
+		// Approval context: unverified names are withheld.
+		peer_name_dict(entry, peer, true)
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -3092,7 +3107,7 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 		// tick retries once the parent has landed. Other errors
 		// (schema drift, real bugs) log + advance dedup as before.
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
-			debug("Replication exec deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
+			// debug("Replication exec deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
 			return ApplyDeferred
 		}
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)

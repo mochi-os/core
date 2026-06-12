@@ -405,6 +405,10 @@ func peers_manager() {
 			}
 		}
 		peers_lock.Unlock()
+
+		// Claimed names age out with the same expiry; connected peers
+		// with day-old verification verdicts re-check.
+		peer_names_sweep(expiry)
 	}
 }
 

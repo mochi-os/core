@@ -165,6 +165,7 @@ func main_serve(ready func()) int {
 	go replication_membership_manager()
 	go peers_manager()
 	go peer_reconnect_manager()
+	go peer_names_manager()
 	go peers_publish()
 	go queue_manager()
 	go queue_ack_batcher()

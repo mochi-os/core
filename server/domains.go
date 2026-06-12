@@ -280,6 +280,9 @@ func domain_register(name string) (*domain, error) {
 			"updated":  fmt.Sprintf("%d", n),
 		}, false)
 
+	// Served domains are part of the peers/publish announcement.
+	peers_publish_request()
+
 	return domain_get(name), nil
 }
 
@@ -332,6 +335,9 @@ func domain_delete(name string) error {
 
 	replication_emit_system_row("domains", "domains",
 		map[string]string{"domain": name}, nil, true)
+
+	// Served domains are part of the peers/publish announcement.
+	peers_publish_request()
 	return nil
 }
 

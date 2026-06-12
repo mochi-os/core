@@ -79,13 +79,14 @@ func init() {
 				"unambiguous":  sl.NewBuiltin("mochi.random.unambiguous", api_random_unambiguous),
 			}),
 			"server": sls.FromStringDict(sl.String("mochi.server"), sl.StringDict{
-				"id":      sl.NewBuiltin("mochi.server.id", api_server_id),
-				"counts":  sl.NewBuiltin("mochi.server.counts", api_server_counts),
-				"network": sl.NewBuiltin("mochi.server.network", api_server_network),
-				"peers":   sl.NewBuiltin("mochi.server.peers", api_server_peers),
-				"started": sl.NewBuiltin("mochi.server.started", api_server_started),
-				"uptime":  sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
-				"version": sl.NewBuiltin("mochi.server.version", api_server_version),
+				"id":          sl.NewBuiltin("mochi.server.id", api_server_id),
+				"fingerprint": sl.NewBuiltin("mochi.server.fingerprint", api_server_fingerprint),
+				"counts":      sl.NewBuiltin("mochi.server.counts", api_server_counts),
+				"network":     sl.NewBuiltin("mochi.server.network", api_server_network),
+				"peers":       sl.NewBuiltin("mochi.server.peers", api_server_peers),
+				"started":     sl.NewBuiltin("mochi.server.started", api_server_started),
+				"uptime":      sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
+				"version":     sl.NewBuiltin("mochi.server.version", api_server_version),
 				"update": sls.FromStringDict(sl.String("mochi.server.update"), sl.StringDict{
 					"info":    sl.NewBuiltin("mochi.server.update.info", api_server_update_info),
 					"install": sl.NewBuiltin("mochi.server.update.install", api_server_update_install),
@@ -475,10 +476,21 @@ func api_server_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl.String(net_id), nil
 }
 
+// mochi.server.fingerprint() -> string: Get the 9-character fingerprint
+// of this server's libp2p peer ID
+func api_server_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.String(fingerprint(net_id)), nil
+}
+
 // mochi.server.peers() -> list: Known peers with connection and outbound-queue state.
 // One entry per peer in the registry or with queued messages:
 //
 //	peer         string — libp2p peer id
+//	name         string — claimed display name ("" when none): the first
+//	                      verified claim, else the claimed machine
+//	                      hostname; dotted claims never show unverified
+//	verified     bool   — whether name passed DNS verification
+//	fingerprint  string — 9-character fingerprint of the peer id
 //	connected    bool   — currently connected at the libp2p level
 //	unreachable  bool   — in the silent-failure cache (repeated connect failures)
 //	address      string — the address of the live connection, or the most
@@ -554,8 +566,12 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	out := make([]map[string]any, 0, len(rollup))
 	for id, e := range rollup {
+		name, verified := peer_name(id)
 		out = append(out, map[string]any{
 			"peer":        id,
+			"name":        name,
+			"verified":    verified,
+			"fingerprint": fingerprint(id),
 			"connected":   e.connected,
 			"unreachable": peer_is_silent(id),
 			"address":     strings.TrimSuffix(e.address, "/p2p/"+id),

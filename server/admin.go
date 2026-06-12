@@ -79,8 +79,9 @@ func admin_identity(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"peer_id":  net_id,
-		"data_dir": data_dir,
+		"peer_id":     net_id,
+		"fingerprint": fingerprint_hyphens(fingerprint(net_id)),
+		"data_dir":    data_dir,
 	})
 }
 

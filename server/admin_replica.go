@@ -203,13 +203,25 @@ func admin_replica_status(c *gin.Context) {
 		state = "approved"
 	}
 
+	// Verified display names for the members, keyed by peer id —
+	// annotation data for mochictl output. Verified only: this readout
+	// can inform trust decisions.
+	names := gin.H{}
+	for _, m := range members {
+		if name, verified := peer_name(m); verified {
+			names[m] = name
+		}
+	}
+
 	out := gin.H{
-		"state":     state,
-		"peer":      net_id,
-		"addresses": net_addresses(),
-		"source":    pending_peer,
-		"members":   members,
-		"reason":    reason,
+		"state":       state,
+		"peer":        net_id,
+		"fingerprint": fingerprint_hyphens(fingerprint(net_id)),
+		"addresses":   net_addresses(),
+		"source":      pending_peer,
+		"members":     members,
+		"names":       names,
+		"reason":      reason,
 	}
 	if state == "waiting" {
 		out["delivery"] = admin_replica_delivery(pending_peer)

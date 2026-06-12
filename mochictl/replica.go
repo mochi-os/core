@@ -105,7 +105,7 @@ func cmd_replica_join(args []string) error {
 	hinted := ""
 	for {
 		time.Sleep(2 * time.Second)
-		state, source, reason, members, delivery, err := replica_status_read()
+		state, source, reason, members, names, delivery, err := replica_status_read()
 		if err != nil {
 			return err
 		}
@@ -122,9 +122,18 @@ func cmd_replica_join(args []string) error {
 					"state":   "approved",
 					"source":  source,
 					"members": members,
+					"names":   names,
 				})))
 			} else {
-				fmt.Printf("Approved. Pair set: %s\n", strings.Join(members, ", "))
+				annotated := make([]string, 0, len(members))
+				for _, m := range members {
+					if name := names[m]; name != "" {
+						annotated = append(annotated, fmt.Sprintf("%s (%s)", m, name))
+					} else {
+						annotated = append(annotated, m)
+					}
+				}
+				fmt.Printf("Approved. Pair set: %s\n", strings.Join(annotated, ", "))
 				fmt.Printf("Bootstrap started against %s. Track with: %s replication progress\n", source, self_invocation())
 			}
 			return nil
@@ -175,8 +184,8 @@ func cmd_replica_leave(args []string) error {
 		return nil
 	}
 	var result struct {
-		State          string   `json:"state"`
-		FormerMembers  []string `json:"former_members"`
+		State         string   `json:"state"`
+		FormerMembers []string `json:"former_members"`
 	}
 	if err := json.Unmarshal(body, &result); err == nil {
 		fmt.Printf("%s. Former pair members: %s\n", result.State, strings.Join(result.FormerMembers, ", "))
@@ -186,7 +195,7 @@ func cmd_replica_leave(args []string) error {
 
 // cmd_replica_status is the one-shot diagnostic read.
 func cmd_replica_status(args []string) error {
-	return get_dump("/_/admin/replica/status", "state", "peer", "addresses", "source", "members", "reason", "delivery")
+	return get_dump("/_/admin/replica/status", "state", "peer", "fingerprint", "addresses", "source", "members", "names", "reason", "delivery")
 }
 
 // cmd_replica_reset handles `mochictl replica reset --from=<peer-id> --confirm`.
@@ -349,28 +358,30 @@ func replica_delivery_hint(d *replica_delivery) string {
 }
 
 // replica_status_read is the polling-loop helper used by cmd_replica_join.
-// Returns (state, source, reason, members, delivery, err).
-func replica_status_read() (string, string, string, []string, *replica_delivery, error) {
+// Returns (state, source, reason, members, names, delivery, err) —
+// names maps member peer ids to their verified display names.
+func replica_status_read() (string, string, string, []string, map[string]string, *replica_delivery, error) {
 	resp, err := client().Get("/_/admin/replica/status")
 	if err != nil {
-		return "", "", "", nil, nil, err
+		return "", "", "", nil, nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return "", "", "", nil, nil, http_error(resp.StatusCode, body)
+		return "", "", "", nil, nil, nil, http_error(resp.StatusCode, body)
 	}
 	var s struct {
 		State    string            `json:"state"`
 		Source   string            `json:"source"`
 		Reason   string            `json:"reason"`
 		Members  []string          `json:"members"`
+		Names    map[string]string `json:"names"`
 		Delivery *replica_delivery `json:"delivery"`
 	}
 	if err := json.Unmarshal(body, &s); err != nil {
-		return "", "", "", nil, nil, err
+		return "", "", "", nil, nil, nil, err
 	}
-	return s.State, s.Source, s.Reason, s.Members, s.Delivery, nil
+	return s.State, s.Source, s.Reason, s.Members, s.Names, s.Delivery, nil
 }
 
 func must_marshal(v any) []byte {

@@ -119,6 +119,8 @@ func peer_connect(id string) bool {
 	if ok {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
+		// Fresh authenticated evidence: re-verify stale name claims now.
+		peer_names_connected(id)
 		// Clear the silent-cache BEFORE resurrecting deferred rows.
 		// queue_resurrect_peer pulls rows forward to now() so they
 		// run on the next queue_process tick, but peer_protocol_open's
@@ -320,6 +322,14 @@ func peers_publish() {
 			}
 			m.set("addresses", strings.Join(addresses, ","))
 		}
+		if name, domains := peer_names_announce(); name != "" || domains != "" {
+			if name != "" {
+				m.set("name", name)
+			}
+			if domains != "" {
+				m.set("domains", domains)
+			}
+		}
 		m.publish(false)
 
 		select {
@@ -352,6 +362,24 @@ func peer_publish_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
 		return
 	}
+
+	// Claimed names apply (or clear) independently of addresses: a
+	// publish with no claims from a peer that previously claimed names
+	// means its operator turned announcements off — honor it.
+	var names []string
+	if n := strings.ToLower(strings.TrimSpace(e.get("name", ""))); n != "" && peer_name_valid(n) {
+		names = append(names, n)
+	}
+	for _, d := range strings.Split(e.get("domains", ""), ",") {
+		if len(names) >= peer_names_maximum {
+			break
+		}
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d != "" && peer_name_valid(d) {
+			names = append(names, d)
+		}
+	}
+	peer_names_apply(e.origin, names)
 
 	announced := e.get("addresses", "")
 	if announced == "" {

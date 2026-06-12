@@ -1928,3 +1928,37 @@ func TestNotificationsAppSelfCallBypass(t *testing.T) {
 	// The condition `caller_id != a.id` is false, so permission check is skipped
 	// This means the notifications app can always call its own functions
 }
+
+// TestAppIsLogin — the login-app exemption must match by registered
+// path, not by the id literal: on a published install the login app's
+// id is a publisher entity id, and matching on "login" made the
+// pending-replication / account-closing / identity-required gates
+// redirect the login app's own /login/* pages to themselves forever
+// (ticket #414: /login/replicating 302ing to itself on every published
+// install, invisible on dev installs where the id IS "login").
+func TestAppIsLogin(t *testing.T) {
+	cleanup := create_test_apps_db(t)
+	defer cleanup()
+
+	if !app_is_login(&App{id: "login"}) {
+		t.Error("dev login app (id \"login\") must be the login app")
+	}
+	if app_is_login(nil) {
+		t.Error("nil app must not be the login app")
+	}
+	if app_is_login(&App{id: "feeds"}) {
+		t.Error("unrelated dev app must not be the login app")
+	}
+
+	// Published install: the login app's id is an entity id, identified
+	// only through the system path binding.
+	published := app("1AppIsLoginTestEntityIdXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+	apps_path_set("login", published.id)
+	defer apps_path_delete("login")
+	if !app_is_login(published) {
+		t.Error("published login app (entity id bound to path \"login\") must be the login app")
+	}
+	if app_is_login(&App{id: "1SomeOtherPublishedAppEntityIdYYYYYYYYYYYYYYYYYYYY"}) {
+		t.Error("other published app must not be the login app")
+	}
+}

@@ -145,7 +145,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// is wrong (the 35%-files-missing case from the same incident).
 	// The /login/-/* paths are the only ones that need to work while
 	// pending — the user has to be able to cancel or wait.
-	if user_pending(user) && a.id != "login" {
+	if user_pending(user) && !app_is_login(a) {
 		// A browser navigating to a gated app loads HTML, not XHR —
 		// returning a JSON error there dumps raw JSON in the page, because
 		// the SPA (which would route to the waiting screen) never runs. So
@@ -182,7 +182,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// account_closing redirect) never gets to run. So redirect HTML
 	// navigations straight to the interstitial; API/XHR callers still get the
 	// JSON 403 their request layer expects.
-	if user != nil && user.Status == "closing" && a.id != "login" {
+	if user != nil && user.Status == "closing" && !app_is_login(a) {
 		accept := c.GetHeader("Accept")
 		if strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json") {
 			c.Redirect(http.StatusFound, "/login/closing")
@@ -306,7 +306,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	}
 
 	// Require identity for authenticated users accessing non-login apps
-	if user != nil && a.id != "login" && !aa.Public {
+	if user != nil && !app_is_login(a) && !aa.Public {
 		if user.identity() == nil {
 			if strings.Contains(c.GetHeader("Accept"), "text/html") {
 				c.Redirect(http.StatusFound, "/login/identity")

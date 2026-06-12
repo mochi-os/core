@@ -859,6 +859,26 @@ func app_for_service_fallback(user *User, service string) *App {
 	return app_select_best(candidates)
 }
 
+// app_is_login reports whether a is the server's login app. The login
+// app's id is "login" on a development install (directory name) but a
+// publisher entity id on a published install, so identity is resolved
+// through the app's registered "login" path rather than the id literal.
+// The web gates that exempt the login app (pending-replication,
+// account-closing, identity-required) redirect INTO /login/* pages —
+// matching on the id literal made those redirects loop forever on every
+// published install, because the gate fired on the login app itself
+// (ticket #414: /login/replicating 302ing to itself).
+func app_is_login(a *App) bool {
+	if a == nil {
+		return false
+	}
+	if a.id == "login" {
+		return true
+	}
+	login := app_for_path(nil, "login")
+	return login != nil && login.id == a.id
+}
+
 // app_for_path finds the best app for a URL path with user preferences.
 // Resolution order:
 // 1. User's binding (if user is not nil)

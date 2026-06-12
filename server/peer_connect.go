@@ -116,6 +116,10 @@ func peer_connect(id string) bool {
 	peers[id] = p
 	peers_lock.Unlock()
 
+	if !ok {
+		peer_addresses_failed(id)
+	}
+
 	if ok {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
@@ -153,7 +157,8 @@ func peer_connect_retry(id string) {
 	}
 }
 
-// Refresh the timestamp of the address we actually connected on.
+// Refresh the address we actually connected on, recording the success —
+// the evidence that protects it from cap eviction and early pruning.
 func peer_refresh_connected_address(id string) {
 	pid, err := p2p_peer.Decode(id)
 	if err != nil {
@@ -170,18 +175,20 @@ func peer_refresh_connected_address(id string) {
 
 	peers_lock.Lock()
 	if p, found := peers[id]; found {
+		peer_address_insert(&p, addr, t)
 		for i, a := range p.addresses {
 			if a.Address == addr {
-				p.addresses[i].Updated = t
-				peers[id] = p
+				p.addresses[i].Success = t
+				p.addresses[i].Failure = 0
 				break
 			}
 		}
+		peers[id] = p
 	}
 	peers_lock.Unlock()
 
 	db := db_open("db/peers.db")
-	db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, addr, t)
+	db.exec("insert into peers ( id, address, updated, success ) values ( ?, ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated, success=excluded.success, failure=0", id, addr, t, t)
 }
 
 // Peer has become disconnected.
@@ -414,6 +421,14 @@ func peer_publish_event(e *Event) {
 		}
 		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
 		if err != nil || info.ID.String() != e.origin {
+			continue
+		}
+		// A mesh-wide announcement carrying loopback or unspecified is
+		// junk for every receiver: the same-host peers it would be valid
+		// for learn it through mDNS and live connections instead.
+		// Compliant senders never announce these (net_addresses filters
+		// them); reject what a buggy or hostile one might send.
+		if net_unroutable(ma) {
 			continue
 		}
 		debug("Peer %q announced address %q", e.origin, address)

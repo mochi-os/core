@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 82
+	schema_version = 83
 )
 
 var (
@@ -278,7 +278,7 @@ func db_create() {
 
 	// Peers
 	peers := db_open("db/peers.db")
-	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
+	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 	// Claimed display names per peer with their verification verdict
 	peers.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
 
@@ -910,6 +910,8 @@ func db_upgrade() {
 			db_upgrade_81()
 		case 82:
 			db_upgrade_82()
+		case 83:
+			db_upgrade_83()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1359,6 +1361,20 @@ func db_upgrade_81() {
 func db_upgrade_82() {
 	p := db_open("db/peers.db")
 	p.exec("create table if not exists names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
+}
+
+// db_upgrade_83 adds usefulness evidence to peers.db addresses: when a
+// connection last succeeded on each (`success`) and how many dial
+// rounds have failed since (`failure`). Protects proven addresses from
+// cap eviction and lets never-proven ones prune early. Idempotent.
+func db_upgrade_83() {
+	p := db_open("db/peers.db")
+	if col, _ := p.exists("select 1 from pragma_table_info('peers') where name='success'"); !col {
+		p.exec("alter table peers add column success integer not null default 0")
+	}
+	if col, _ := p.exists("select 1 from pragma_table_info('peers') where name='failure'"); !col {
+		p.exec("alter table peers add column failure integer not null default 0")
+	}
 }
 
 func db_upgrade_80() {

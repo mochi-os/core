@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	gonet "net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,13 +41,16 @@ var (
 	net_pinger  *p2p_ping.PingService
 )
 
-// Peer discovered using multicast DNS
+// Peer discovered using multicast DNS. mDNS is link-scoped, so every
+// address it carries — including loopback from a same-host sibling — is
+// valid for us to store and dial; one connect attempt per event, not
+// per address.
 func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 	for _, pa := range p.Addrs {
 		debug("Net received mDNS event from %q at %q", p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
 		peer_discovered_address(p.ID.String(), pa.String()+"/p2p/"+p.ID.String())
-		peer_connect(p.ID.String())
 	}
+	peer_connect(p.ID.String())
 }
 
 // Connect to a peer
@@ -300,18 +304,21 @@ func net_watch_disconnect() {
 // interface listen addresses (wildcard binds expanded per interface),
 // identify-observed public addresses, and relay circuit addresses once
 // AutoRelay holds a reservation — the latter being what makes a NAT-ed
-// server dialable at all. Loopback is filtered (useless to any remote
-// dialler); LAN-private addresses stay (they're how same-network servers
-// without working multicast reach each other). Empty before net_start.
+// server dialable at all. Loopback and container-bridge addresses are
+// filtered (host-local; the containers they're valid for learn them
+// over mDNS); LAN-private addresses stay (they're how same-network
+// servers without working multicast reach each other). Empty before
+// net_start.
 func net_addresses() []string {
 	if net_me == nil {
 		return nil
 	}
+	container := net_container_addresses()
 	suffix := "/p2p/" + net_id
 	seen := map[string]bool{}
 	var out []string
 	for _, a := range net_me.Addrs() {
-		if net_loopback(a) {
+		if net_loopback(a) || container[net_address_ip(a)] {
 			continue
 		}
 		s := a.String()
@@ -335,6 +342,69 @@ func net_loopback(a multiaddr.Multiaddr) bool {
 	}
 	if v, err := a.ValueForProtocol(multiaddr.P_IP6); err == nil {
 		return v == "::1"
+	}
+	return false
+}
+
+// net_unroutable reports whether a multiaddress starts with an IP no
+// other host could ever dial — loopback or unspecified. Used to reject
+// junk in received address announcements.
+func net_unroutable(a multiaddr.Multiaddr) bool {
+	ip := gonet.ParseIP(net_address_ip(a))
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+// net_address_ip returns the leading IP component of a multiaddress,
+// "" when it has none (dns names). For a relay circuit this is the
+// relay's IP, which is what its dialability depends on.
+func net_address_ip(a multiaddr.Multiaddr) string {
+	if v, err := a.ValueForProtocol(multiaddr.P_IP4); err == nil {
+		return v
+	}
+	if v, err := a.ValueForProtocol(multiaddr.P_IP6); err == nil {
+		return v
+	}
+	return ""
+}
+
+// net_container_addresses returns the IPs of local interfaces created
+// by container and VM tooling — host-local bridges whose addresses are
+// dialable only from containers on this machine, which learn them over
+// mDNS. Announcing them tells every other server to dial its own
+// bridge. Best-effort: enumeration failure filters nothing.
+func net_container_addresses() map[string]bool {
+	out := map[string]bool{}
+	interfaces, err := gonet.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, i := range interfaces {
+		if !net_container_interface(i.Name) {
+			continue
+		}
+		addresses, err := i.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addresses {
+			if n, ok := a.(*gonet.IPNet); ok {
+				out[n.IP.String()] = true
+			}
+		}
+	}
+	return out
+}
+
+// net_container_interface reports whether an interface name matches the
+// auto-generated names container and VM tooling uses for host-local
+// bridges. A deliberately-named primary bridge (br0, bridge0) does not
+// match — only the tool-generated forms (docker0, br-1a2b3c4d, virbr0,
+// veth..., cni0, podman1, flannel.1, lxcbr0, lxdbr0, kube-bridge).
+func net_container_interface(name string) bool {
+	for _, prefix := range []string{"docker", "br-", "virbr", "veth", "cni", "podman", "flannel", "lxcbr", "lxdbr", "kube"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
 	}
 	return false
 }

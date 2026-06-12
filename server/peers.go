@@ -55,20 +55,29 @@ type Peer struct {
 	state     peer_state
 }
 
-// PeerAddress tracks a peer's address with a last-seen timestamp.
+// PeerAddress tracks a peer's address with usefulness evidence: when it
+// was last seen (announced, discovered, or refreshed), when a
+// connection last succeeded on it, and how many whole-peer dial rounds
+// have failed since that success. Dialing hands every address to libp2p
+// at once, so failures only accrue peer-wide (no address worked);
+// per-address differentiation comes from successes.
 type PeerAddress struct {
 	Address string
 	Updated int64
+	Success int64 // last successful connection on this address; 0 = never proven
+	Failure int64 // failed dial rounds since the last success
 }
 
-// peer_row is the sqlx scan target for `select id, address, updated
-// from peers ...` — one row per (peer, address) tuple. Kept separate
-// from Peer so the in-memory Peer struct doesn't carry a singular
-// `Address` field that's only meaningful during SQL scanning.
+// peer_row is the sqlx scan target for peers.db rows — one row per
+// (peer, address) tuple. Kept separate from Peer so the in-memory Peer
+// struct doesn't carry a singular `Address` field that's only
+// meaningful during SQL scanning.
 type peer_row struct {
 	ID      string
 	Address string
 	Updated int64
+	Success int64
+	Failure int64
 }
 
 // peer_address_strings extracts address strings from a slice of PeerAddress.
@@ -83,6 +92,8 @@ func peer_address_strings(addrs []PeerAddress) []string {
 const (
 	peers_minimum          = 1
 	peer_maximum_addresses = 20
+	peer_expiry            = 14 * 86400 // addresses unseen this long prune
+	peer_unproven          = 3 * 86400  // never-successful addresses prune sooner
 )
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
@@ -214,6 +225,69 @@ func peer_addresses_count(id string) int {
 	return len(peers[id].addresses)
 }
 
+// peer_bootstrap_addresses returns the configured bootstrap addresses
+// for a peer — the entries eviction and pruning must never remove.
+func peer_bootstrap_addresses(id string) map[string]bool {
+	out := map[string]bool{}
+	for _, bp := range peers_bootstrap {
+		if bp.ID == id {
+			for _, a := range bp.addresses {
+				out[a.Address] = true
+			}
+			break
+		}
+	}
+	return out
+}
+
+// peer_address_insert merges one address into a peer's list, refreshing
+// the timestamp when already present and evicting the least useful
+// entry when the cap is reached. Returns whether the address was new.
+// Eviction never removes a bootstrap address and drops never-proven
+// entries before ones a connection has succeeded on (oldest success
+// first, then oldest seen) — so a roaming peer's churn of dead LAN
+// addresses cannot push out the one address that works. Caller holds
+// peers_lock.
+func peer_address_insert(p *Peer, address string, t int64) bool {
+	for i, a := range p.addresses {
+		if a.Address == address {
+			p.addresses[i].Updated = t
+			return false
+		}
+	}
+	pa := PeerAddress{Address: address, Updated: t}
+	if len(p.addresses) < peer_maximum_addresses {
+		p.addresses = append(p.addresses, pa)
+		return true
+	}
+	bootstrap := peer_bootstrap_addresses(p.ID)
+	victim := -1
+	for i, a := range p.addresses {
+		if bootstrap[a.Address] {
+			continue
+		}
+		if victim < 0 {
+			victim = i
+			continue
+		}
+		v := p.addresses[victim]
+		if a.Success != v.Success {
+			if a.Success < v.Success {
+				victim = i
+			}
+			continue
+		}
+		if a.Updated < v.Updated {
+			victim = i
+		}
+	}
+	if victim < 0 {
+		return false // every slot is a bootstrap address; drop the newcomer
+	}
+	p.addresses[victim] = pa
+	return true
+}
+
 // peer_is_bootstrap returns true if the peer ID is a bootstrap peer.
 func peer_is_bootstrap(id string) bool {
 	for _, p := range peers_bootstrap {
@@ -224,7 +298,8 @@ func peer_is_bootstrap(id string) bool {
 	return false
 }
 
-// Add some peers we already know about from the database.
+// Add some peers we already know about from the database, restoring
+// each address's success/failure evidence.
 func peers_add_from_db(limit int) {
 	var ps []peer_row
 	db := db_open("db/peers.db")
@@ -234,29 +309,38 @@ func peers_add_from_db(limit int) {
 		return
 	}
 	for _, p := range ps {
-		var addresses []string
 		var as []peer_row
-		err := db.scans(&as, "select address from peers where id=?", p.ID)
+		err := db.scans(&as, "select address, updated, success, failure from peers where id=?", p.ID)
 		if err != nil {
 			warn("Database error loading addresses for peer %q: %v", p.ID, err)
 			continue
 		}
-		for _, a := range as {
-			addresses = append(addresses, a.Address)
+		t := now()
+		peers_lock.Lock()
+		entry, found := peers[p.ID]
+		if !found {
+			entry = Peer{ID: p.ID}
 		}
+		for _, a := range as {
+			peer_address_insert(&entry, a.Address, t)
+			for i := range entry.addresses {
+				if entry.addresses[i].Address == a.Address {
+					entry.addresses[i].Success = a.Success
+					entry.addresses[i].Failure = a.Failure
+					break
+				}
+			}
+		}
+		addresses := peer_address_strings(entry.addresses)
+		peers[p.ID] = entry
+		peers_lock.Unlock()
 		debug("Adding database peer %q at %v", p.ID, addresses)
-		peer_add_known(p.ID, addresses)
 		go peer_connect_retry(p.ID)
 	}
 }
 
-// Add already known peer to memory, merging any new addresses with
-// the existing entry. Previously this returned early when the peer was
-// already in memory, silently dropping any newly-discovered addresses
-// (e.g. a known peer reachable on a new IP via a different discovery
-// path). Now matches peer_discovered_work's merge semantics — caps the
-// per-peer address list at peer_maximum_addresses, replacing the
-// oldest when full.
+// Add already known peer to memory, merging any new addresses with the
+// existing entry via peer_address_insert's cap and eviction rules.
 func peer_add_known(id string, addresses []string) {
 	peers_lock.Lock()
 	defer peers_lock.Unlock()
@@ -267,29 +351,7 @@ func peer_add_known(id string, addresses []string) {
 		p = Peer{ID: id}
 	}
 	for _, addr := range addresses {
-		exists := false
-		for i, a := range p.addresses {
-			if a.Address == addr {
-				exists = true
-				p.addresses[i].Updated = t
-				break
-			}
-		}
-		if exists {
-			continue
-		}
-		pa := PeerAddress{Address: addr, Updated: t}
-		if len(p.addresses) < peer_maximum_addresses {
-			p.addresses = append(p.addresses, pa)
-			continue
-		}
-		oldest := 0
-		for i, a := range p.addresses {
-			if a.Updated < p.addresses[oldest].Updated {
-				oldest = i
-			}
-		}
-		p.addresses[oldest] = pa
+		peer_address_insert(&p, addr, t)
 	}
 	peers[id] = p
 }
@@ -321,95 +383,88 @@ func peer_discovered_work(id string, address string) {
 
 	peers_lock.Lock()
 	p, found := peers[id]
-
-	if found {
-		exists := false
-		for i, a := range p.addresses {
-			if a.Address == address {
-				exists = true
-				p.addresses[i].Updated = t
-				break
-			}
-		}
-		if !exists {
-			pa := PeerAddress{Address: address, Updated: t}
-			if len(p.addresses) < peer_maximum_addresses {
-				p.addresses = append(p.addresses, pa)
-			} else {
-				// Replace the oldest address
-				oldest := 0
-				for i, a := range p.addresses {
-					if a.Updated < p.addresses[oldest].Updated {
-						oldest = i
-					}
-				}
-				p.addresses[oldest] = pa
-			}
-		}
-
-		if p.Updated < t-int64(3600) {
-			save = true
-			p.Updated = t
-		}
-	} else {
-		p = Peer{ID: id, addresses: []PeerAddress{{Address: address, Updated: t}}, Updated: t}
-		save = true
+	if !found {
+		p = Peer{ID: id}
 	}
-
+	peer_address_insert(&p, address, t)
+	if !found || p.Updated < t-int64(3600) {
+		save = true
+		p.Updated = t
+	}
 	peers[id] = p
 	peers_lock.Unlock()
 
 	if save {
+		// Upsert, not replace: a replace would wipe the row's
+		// success/failure evidence.
 		db := db_open("db/peers.db")
-		db.exec("replace into peers ( id, address, updated ) values ( ?, ?, ? )", id, address, t)
+		db.exec("insert into peers ( id, address, updated ) values ( ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated", id, address, t)
 	}
+}
+
+// peer_addresses_failed counts a failed whole-peer dial round against
+// every address, in memory and on disk. Dialing hands all addresses to
+// libp2p at once, so a failure means none of them worked.
+func peer_addresses_failed(id string) {
+	peers_lock.Lock()
+	if p, found := peers[id]; found {
+		for i := range p.addresses {
+			p.addresses[i].Failure++
+		}
+		peers[id] = p
+	}
+	peers_lock.Unlock()
+
+	db := db_open("db/peers.db")
+	db.exec("update peers set failure=failure+1 where id=?", id)
 }
 
 // Clean up stale peers.
 func peers_manager() {
 	for range time.Tick(24 * time.Hour) {
-		expiry := now() - 14*86400
-
-		// Prune stale addresses from the database
-		db := db_open("db/peers.db")
-		db.exec("delete from peers where updated<?", expiry)
-
-		// Prune stale addresses from memory
-		peers_lock.Lock()
-		for id, p := range peers {
-			// Collect bootstrap addresses for this peer so we never prune them
-			bootstrap := map[string]bool{}
-			for _, bp := range peers_bootstrap {
-				if bp.ID == id {
-					for _, a := range bp.addresses {
-						bootstrap[a.Address] = true
-					}
-					break
-				}
-			}
-
-			// Keep addresses that are recent or are bootstrap hardcoded
-			kept := []PeerAddress{}
-			for _, a := range p.addresses {
-				if a.Updated >= expiry || bootstrap[a.Address] {
-					kept = append(kept, a)
-				}
-			}
-			p.addresses = kept
-
-			// Remove peer from memory if no addresses remain and not connected
-			if len(p.addresses) == 0 && p.state != peer_state_connected {
-				delete(peers, id)
-			} else {
-				peers[id] = p
-			}
-		}
-		peers_lock.Unlock()
+		peers_prune()
 
 		// Claimed names age out with the same expiry; connected peers
 		// with day-old verification verdicts re-check.
-		peer_names_sweep(expiry)
+		peer_names_sweep(now() - peer_expiry)
 	}
+}
+
+// peers_prune drops stale addresses: anything unseen for peer_expiry,
+// and never-proven addresses unseen for peer_unproven — the junk a
+// roaming machine accumulates (other networks' LAN addresses) dies in
+// days instead of weeks, while addresses a connection has succeeded on
+// get the full window. Live peers' addresses never age: every hourly
+// announcement refreshes them. Bootstrap addresses never prune.
+func peers_prune() {
+	t := now()
+	expiry := t - peer_expiry
+	unproven := t - peer_unproven
+
+	// Prune stale addresses from the database
+	db := db_open("db/peers.db")
+	db.exec("delete from peers where updated<? or ( success=0 and updated<? )", expiry, unproven)
+
+	// Prune stale addresses from memory
+	peers_lock.Lock()
+	for id, p := range peers {
+		bootstrap := peer_bootstrap_addresses(id)
+		kept := []PeerAddress{}
+		for _, a := range p.addresses {
+			if bootstrap[a.Address] || a.Updated >= unproven || (a.Success > 0 && a.Updated >= expiry) {
+				kept = append(kept, a)
+			}
+		}
+		p.addresses = kept
+
+		// Remove peer from memory if no addresses remain and not connected
+		if len(p.addresses) == 0 && p.state != peer_state_connected {
+			delete(peers, id)
+		} else {
+			peers[id] = p
+		}
+	}
+	peers_lock.Unlock()
 }
 
 // Check whether we have enough peers in the pubsub mesh to send broadcast

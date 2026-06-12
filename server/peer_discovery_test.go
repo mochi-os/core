@@ -24,7 +24,7 @@ func setup_peer_discovery_test(t *testing.T) func() {
 	cleanup := setup_replication_test(t)
 
 	pdb := db_open("db/peers.db")
-	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
+	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 
 	peers_lock.Lock()
 	saved := peers
@@ -169,6 +169,164 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 	peer_reconnect_lock.Unlock()
 	if !scheduled {
 		t.Error("failed startup dial did not schedule a reconnect probe")
+	}
+}
+
+// TestPeerPublishEventRejectsUnroutable: a mesh-wide announcement
+// carrying loopback or unspecified addresses is junk for every receiver
+// (same-host peers learn loopback over mDNS); only routable entries
+// apply.
+func TestPeerPublishEventRejectsUnroutable(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	origin, _ := test_host(t)
+	announced := "/ip4/127.0.0.1/tcp/1443/p2p/" + origin +
+		",/ip6/::1/tcp/1443/p2p/" + origin +
+		",/ip4/0.0.0.0/tcp/1443/p2p/" + origin +
+		",/ip4/192.0.2.30/tcp/1443/p2p/" + origin
+	peer_publish_event(publish_event(origin, announced))
+
+	if n := peer_addresses_count(origin); n != 1 {
+		t.Errorf("addresses applied = %d, want 1 (loopback/unspecified rejected)", n)
+	}
+}
+
+// TestPeerAddressEviction: when the per-peer cap forces a choice, the
+// victim is the least useful address — never-proven before proven,
+// oldest first — so a roaming peer's churn cannot push out the address
+// connections actually succeed on.
+func TestPeerAddressEviction(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, _ := test_host(t)
+	proven := fmt.Sprintf("/ip4/198.51.100.1/tcp/1443/p2p/%s", id)
+
+	peers_lock.Lock()
+	p := Peer{ID: id}
+	for i := 0; i < peer_maximum_addresses-1; i++ {
+		p.addresses = append(p.addresses, PeerAddress{Address: fmt.Sprintf("/ip4/10.0.0.%d/tcp/1443/p2p/%s", i+1, id), Updated: int64(100 + i)})
+	}
+	// The proven address is the OLDEST seen — the old rule would evict it.
+	p.addresses = append(p.addresses, PeerAddress{Address: proven, Updated: 50, Success: 99})
+	newcomer := peer_address_insert(&p, "/ip4/203.0.113.99/tcp/1443/p2p/"+id, now())
+	peers_lock.Unlock()
+
+	if !newcomer {
+		t.Fatal("newcomer not inserted")
+	}
+	kept := false
+	evicted := true
+	for _, a := range p.addresses {
+		if a.Address == proven {
+			kept = true
+		}
+		if a.Address == fmt.Sprintf("/ip4/10.0.0.1/tcp/1443/p2p/%s", id) {
+			evicted = false
+		}
+	}
+	if !kept {
+		t.Error("eviction removed the proven address")
+	}
+	if !evicted {
+		t.Error("eviction kept the oldest never-proven address")
+	}
+}
+
+// TestPeerAddressesFailed: a failed dial round counts against every
+// address, in memory and in peers.db.
+func TestPeerAddressesFailed(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, _ := test_host(t)
+	address := "/ip4/192.0.2.40/tcp/1443/p2p/" + id
+	peer_discovered_address(id, address)
+
+	peer_addresses_failed(id)
+	peer_addresses_failed(id)
+
+	peers_lock.Lock()
+	failure := peers[id].addresses[0].Failure
+	peers_lock.Unlock()
+	if failure != 2 {
+		t.Errorf("memory failure count = %d, want 2", failure)
+	}
+	var rows []peer_row
+	db_open("db/peers.db").scans(&rows, "select id, address, updated, success, failure from peers where id=?", id)
+	if len(rows) != 1 || rows[0].Failure != 2 {
+		t.Errorf("database failure count = %+v, want 2", rows)
+	}
+}
+
+// TestPeersPrune: never-proven addresses prune after peer_unproven,
+// proven ones get the full peer_expiry window, and bootstrap addresses
+// never prune.
+func TestPeersPrune(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, _ := test_host(t)
+	t0 := now()
+	stale := t0 - peer_unproven - 10
+	proven := PeerAddress{Address: "/ip4/198.51.100.2/tcp/1443/p2p/" + id, Updated: stale, Success: stale}
+	junk := PeerAddress{Address: "/ip4/10.0.0.9/tcp/1443/p2p/" + id, Updated: stale}
+	ancient := PeerAddress{Address: "/ip4/198.51.100.3/tcp/1443/p2p/" + id, Updated: t0 - peer_expiry - 10, Success: t0 - peer_expiry - 10}
+
+	db := db_open("db/peers.db")
+	for _, a := range []PeerAddress{proven, junk, ancient} {
+		db.exec("insert into peers ( id, address, updated, success ) values ( ?, ?, ?, ? )", id, a.Address, a.Updated, a.Success)
+	}
+	peers_lock.Lock()
+	peers[id] = Peer{ID: id, addresses: []PeerAddress{proven, junk, ancient}}
+	peers_lock.Unlock()
+
+	peers_prune()
+
+	peers_lock.Lock()
+	remaining := peer_address_strings(peers[id].addresses)
+	peers_lock.Unlock()
+	if len(remaining) != 1 || remaining[0] != proven.Address {
+		t.Errorf("memory prune kept %v, want only the proven address", remaining)
+	}
+	var rows []peer_row
+	db.scans(&rows, "select id, address, updated, success, failure from peers where id=?", id)
+	if len(rows) != 1 || rows[0].Address != proven.Address {
+		t.Errorf("database prune kept %+v, want only the proven address", rows)
+	}
+}
+
+// TestNetContainerInterface: tool-generated bridge names match; real
+// interfaces and deliberately-named bridges don't.
+func TestNetContainerInterface(t *testing.T) {
+	matching := []string{"docker0", "br-1a2b3c4d", "virbr0", "veth12ab", "cni0", "podman1", "flannel.1", "lxcbr0", "lxdbr0", "kube-bridge"}
+	for _, name := range matching {
+		if !net_container_interface(name) {
+			t.Errorf("net_container_interface(%q) = false, want true", name)
+		}
+	}
+	plain := []string{"eth0", "wlp3s0", "enp4s0", "br0", "bridge0", "lo", "tailscale0", "wg0"}
+	for _, name := range plain {
+		if net_container_interface(name) {
+			t.Errorf("net_container_interface(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestDbUpgrade83: the success/failure columns arrive idempotently.
+func TestDbUpgrade83(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	db := db_open("db/peers.db")
+	db.exec("drop table peers")
+	db.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
+	db_upgrade_83()
+	db_upgrade_83() // idempotent
+	db.exec("insert into peers ( id, address, updated, success, failure ) values ('x', 'y', 1, 2, 3)")
+	if ok, _ := db.exists("select 1 from peers where id='x' and success=2 and failure=3"); !ok {
+		t.Error("peers table not usable after upgrade")
 	}
 }
 

@@ -262,27 +262,29 @@ type BootstrapDBChunk struct {
 }
 
 // bootstrap_stream_key maps a bootstrapped DB file — by its relative
-// path under data_dir — to the replication stream key the in-order
-// gate uses for that file, matching repl_op_stream:
+// path under data_dir — to the class-qualified replication stream key the
+// in-order gate uses for that file, matching repl_op_stream:
 //
-//	users/<u>/<app>/db/<file>  → <app>        (app data DB)
-//	users/<u>/<app>/app.db     → <app>/app    (per-app config DB)
-//	users/<u>/<file>.db        → <file>       (per-user infra DB:
-//	                                          user.db, notifications.db)
+//	users/<u>/<app>/db/<file>  → app:<app>          (app data DB)
+//	users/<u>/<app>/app.db     → app:<app>/system   (per-app system DB)
+//	users/<u>/<file>.db        → core:<file>        (per-user infra DB:
+//	                                                core:user, core:notifications)
 //
 // Returns "" for a file no replication stream targets. Keyed off the
 // path structure (not the basename) so an app whose data file is
-// itself named app.db can't collide with the config DB.
+// itself named app.db can't collide with the config DB. The class prefix
+// keeps a dev app named after a reserved core DB (e.g. "notifications")
+// from sharing a stream with that core DB.
 func bootstrap_stream_key(path string) string {
 	parts := strings.Split(filepath.ToSlash(path), "/")
 	if len(parts) >= 5 && parts[0] == "users" && parts[3] == "db" {
-		return parts[2]
+		return repl_stream_key(repl_stream_class_app, parts[2])
 	}
 	if len(parts) == 4 && parts[0] == "users" && parts[3] == "app.db" {
-		return parts[2] + "/app"
+		return repl_stream_key(repl_stream_class_app, parts[2]) + "/system"
 	}
 	if len(parts) == 3 && parts[0] == "users" {
-		return strings.TrimSuffix(parts[2], ".db")
+		return repl_stream_key(repl_stream_class_core, strings.TrimSuffix(parts[2], ".db"))
 	}
 	return ""
 }

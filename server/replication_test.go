@@ -915,7 +915,7 @@ func TestReplicationGatedStreamAppliesInSequenceOrder(t *testing.T) {
 	for _, o := range []*ReplicationOp{del, insert} {
 		db.exec(
 			"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-			"peerG", o.Scope, o.User, "sessions", o.Sequence, o.Prev, cbor_encode(o), now())
+			"peerG", o.Scope, o.User, repl_stream_key(repl_stream_class_system, "sessions"), o.Sequence, o.Prev, cbor_encode(o), now())
 	}
 
 	replication_pending_drain()
@@ -927,7 +927,7 @@ func TestReplicationGatedStreamAppliesInSequenceOrder(t *testing.T) {
 	if n := db.integer("select count(*) from pending where peer='peerG'"); n != 0 {
 		t.Errorf("pending must be empty after in-order drain; got %d rows", n)
 	}
-	if seq, anchored := replication_cursor(db, "peerG", repl_scope_app, "uid-gate", "sessions"); !anchored || seq != 2 {
+	if seq, anchored := replication_cursor(db, "peerG", repl_scope_app, "uid-gate", repl_stream_key(repl_stream_class_system, "sessions")); !anchored || seq != 2 {
 		t.Errorf("cursor must advance to 2; got seq=%d anchored=%v", seq, anchored)
 	}
 }
@@ -961,7 +961,7 @@ func TestReplicationGatedStreamGapStopsDrain(t *testing.T) {
 	for _, o := range []*ReplicationOp{op(1, 0, "sess-1"), op(3, 2, "sess-3")} {
 		db.exec(
 			"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-			"peerH", o.Scope, o.User, "sessions", o.Sequence, o.Prev, cbor_encode(o), now())
+			"peerH", o.Scope, o.User, repl_stream_key(repl_stream_class_system, "sessions"), o.Sequence, o.Prev, cbor_encode(o), now())
 	}
 
 	replication_pending_drain()
@@ -976,7 +976,7 @@ func TestReplicationGatedStreamGapStopsDrain(t *testing.T) {
 	if n := db.integer("select count(*) from pending where peer='peerH' and sequence=3"); n != 1 {
 		t.Errorf("seq 3 must remain in pending; got %d rows", n)
 	}
-	if seq, _ := replication_cursor(db, "peerH", repl_scope_app, "uid-gap", "sessions"); seq != 1 {
+	if seq, _ := replication_cursor(db, "peerH", repl_scope_app, "uid-gap", repl_stream_key(repl_stream_class_system, "sessions")); seq != 1 {
 		t.Errorf("cursor must stop at 1 (the gap is at 2); got seq=%d", seq)
 	}
 }
@@ -1043,7 +1043,7 @@ func TestReplicationStreamStartReanchors(t *testing.T) {
 
 	db := db_open("db/replication.db")
 	// Stream already advanced to 5 by earlier ops.
-	replication_cursor_set(db, "peerS", repl_scope_app, "uid-seam", "sessions", 5)
+	replication_cursor_set(db, "peerS", repl_scope_app, "uid-seam", repl_stream_key(repl_stream_class_system, "sessions"), 5)
 
 	op := &ReplicationOp{
 		Scope: repl_scope_app, User: "uid-seam",
@@ -1056,15 +1056,15 @@ func TestReplicationStreamStartReanchors(t *testing.T) {
 	}
 	db.exec(
 		"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-		"peerS", op.Scope, op.User, "sessions", op.Sequence, op.Prev, cbor_encode(op), now())
+		"peerS", op.Scope, op.User, repl_stream_key(repl_stream_class_system, "sessions"), op.Sequence, op.Prev, cbor_encode(op), now())
 
-	replication_stream_drain(db, "peerS", repl_scope_app, "uid-seam", "sessions")
+	replication_stream_drain(db, "peerS", repl_scope_app, "uid-seam", repl_stream_key(repl_stream_class_system, "sessions"))
 
 	sdb := db_open("db/sessions.db")
 	if n := sdb.integer("select count(*) from sessions where code='sess-seam'"); n != 1 {
 		t.Errorf("Prev==0 op must apply even on an anchored stream; got %d rows", n)
 	}
-	if seq, _ := replication_cursor(db, "peerS", repl_scope_app, "uid-seam", "sessions"); seq != 5 {
+	if seq, _ := replication_cursor(db, "peerS", repl_scope_app, "uid-seam", repl_stream_key(repl_stream_class_system, "sessions")); seq != 5 {
 		t.Errorf("monotonic cursor must not rewind below 5; got %d", seq)
 	}
 }
@@ -1075,13 +1075,13 @@ func TestReplicationStreamStartReanchors(t *testing.T) {
 // both travel under op.Database = app.id on the wire).
 func TestBootstrapStreamKey(t *testing.T) {
 	cases := []struct{ path, want string }{
-		{"users/uid-1/feeds/db/feeds.db", "feeds"},
-		{"users/uid-1/feeds/app.db", "feeds/app"},
-		{"users/uid-1/user.db", "user"},
-		{"users/uid-1/notifications.db", "notifications"},
+		{"users/uid-1/feeds/db/feeds.db", "app:feeds"},
+		{"users/uid-1/feeds/app.db", "app:feeds/system"},
+		{"users/uid-1/user.db", "core:user"},
+		{"users/uid-1/notifications.db", "core:notifications"},
 		// An app whose data file is itself named app.db still keys on
 		// the app (not the config-DB suffix) — keyed off path structure.
-		{"users/uid-1/feeds/db/app.db", "feeds"},
+		{"users/uid-1/feeds/db/app.db", "app:feeds"},
 		{"db/users.db", ""},
 		{"db/sessions.db", ""},
 	}
@@ -1104,10 +1104,10 @@ func TestBootstrapDBSeedCursor(t *testing.T) {
 	cases := []struct {
 		rel, stream, user string
 	}{
-		{"users/uid-a/feeds/db/feeds.db", "feeds", "uid-a"},
-		{"users/uid-a/feeds/app.db", "feeds/app", "uid-a"},
-		{"users/uid-b/user.db", "user", "uid-b"},
-		{"users/uid-b/notifications.db", "notifications", "uid-b"},
+		{"users/uid-a/feeds/db/feeds.db", "app:feeds", "uid-a"},
+		{"users/uid-a/feeds/app.db", "app:feeds/system", "uid-a"},
+		{"users/uid-b/user.db", "core:user", "uid-b"},
+		{"users/uid-b/notifications.db", "core:notifications", "uid-b"},
 	}
 	for i, c := range cases {
 		seed := int64(10 + i)
@@ -1156,20 +1156,20 @@ func TestReplicationFreshReplicaSeedThenDrain(t *testing.T) {
 	for _, o := range []*ReplicationOp{mk(41, 40, "s41"), mk(42, 41, "s42")} {
 		db.exec(
 			"insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-			"src", o.Scope, o.User, "sessions", o.Sequence, o.Prev, cbor_encode(o), now())
+			"src", o.Scope, o.User, repl_stream_key(repl_stream_class_system, "sessions"), o.Sequence, o.Prev, cbor_encode(o), now())
 	}
 
 	// Before the seed: a drain can't place Prev>0 ops on an un-anchored
 	// stream — they stay buffered.
-	replication_stream_drain(db, "src", repl_scope_app, "uid-fresh", "sessions")
+	replication_stream_drain(db, "src", repl_scope_app, "uid-fresh", repl_stream_key(repl_stream_class_system, "sessions"))
 	sdb := db_open("db/sessions.db")
 	if n := sdb.integer("select count(*) from sessions where code in ('s41','s42')"); n != 0 {
 		t.Fatalf("un-seeded stream must not apply Prev>0 ops; got %d", n)
 	}
 
 	// The seed lands — cursor at the source's snapshot point, 40.
-	replication_cursor_set(db, "src", repl_scope_app, "uid-fresh", "sessions", 40)
-	replication_stream_drain(db, "src", repl_scope_app, "uid-fresh", "sessions")
+	replication_cursor_set(db, "src", repl_scope_app, "uid-fresh", repl_stream_key(repl_stream_class_system, "sessions"), 40)
+	replication_stream_drain(db, "src", repl_scope_app, "uid-fresh", repl_stream_key(repl_stream_class_system, "sessions"))
 
 	if n := sdb.integer("select count(*) from sessions where code in ('s41','s42')"); n != 2 {
 		t.Errorf("after seeding cursor=40 the buffered ops must chain and apply; got %d", n)
@@ -1177,7 +1177,7 @@ func TestReplicationFreshReplicaSeedThenDrain(t *testing.T) {
 	if n := db.integer("select count(*) from pending where peer='src'"); n != 0 {
 		t.Errorf("pending must be empty after drain; got %d", n)
 	}
-	if seq, _ := replication_cursor(db, "src", repl_scope_app, "uid-fresh", "sessions"); seq != 42 {
+	if seq, _ := replication_cursor(db, "src", repl_scope_app, "uid-fresh", repl_stream_key(repl_stream_class_system, "sessions")); seq != 42 {
 		t.Errorf("cursor must advance to 42; got %d", seq)
 	}
 }

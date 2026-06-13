@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 83
+	schema_version = 85
 )
 
 var (
@@ -281,6 +281,8 @@ func db_create() {
 	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 	// Claimed display names per peer with their verification verdict
 	peers.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
+	// Latest signed peer record per peer: self-certifying addresses
+	peers.exec("create table records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
 
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
@@ -912,6 +914,10 @@ func db_upgrade() {
 			db_upgrade_82()
 		case 83:
 			db_upgrade_83()
+		case 84:
+			db_upgrade_84()
+		case 85:
+			db_upgrade_85()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1374,6 +1380,38 @@ func db_upgrade_83() {
 	}
 	if col, _ := p.exists("select 1 from pragma_table_info('peers') where name='failure'"); !col {
 		p.exec("alter table peers add column failure integer not null default 0")
+	}
+}
+
+// db_upgrade_84 adds the peers.db records table: the latest signed peer
+// record per peer, for replay rejection and relay. Idempotent.
+func db_upgrade_84() {
+	p := db_open("db/peers.db")
+	p.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
+}
+
+// db_upgrade_85 re-keys replication.db cursor/tail/pending stream
+// identifiers to the class-qualified scheme (app:/core:/system:) so an app
+// named after a reserved core stream (e.g. a dev app "notifications") no
+// longer shares one stream + cursor with the core DB of the same name. The
+// bare keys map deterministically via repl_stream_migrate_key. Rows already
+// containing ':' are skipped, so the migration is idempotent. A conflated
+// bare "notifications"/"user" row resolves to the core stream; any colliding
+// app-data stream re-anchors on its next Prev==0 op.
+func db_upgrade_85() {
+	r := db_open("db/replication.db")
+	for _, table := range []string{"cursor", "tail", "pending"} {
+		if has, _ := r.exists("select 1 from sqlite_master where type='table' and name=?", table); !has {
+			continue
+		}
+		rows, _ := r.rows("select distinct db from " + table + " where db != '' and instr(db, ':') = 0")
+		for _, row := range rows {
+			old, _ := row["db"].(string)
+			if old == "" {
+				continue
+			}
+			r.exec("update "+table+" set db=? where db=?", repl_stream_migrate_key(old), old)
+		}
 	}
 }
 

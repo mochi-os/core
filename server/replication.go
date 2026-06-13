@@ -340,20 +340,81 @@ func init() {
 // done by the pattern-library helpers (PN-counter, LWW, append-only log,
 // commit hook) and is wired up per-app. This handler is the transport-level
 // landing point only.
-// repl_op_stream returns the per-physical-DB stream key the in-order
-// gate chains an op on. Almost always op.Database, but app-system
-// exec ops (mochi.access.* / attachments) and app data-DB exec ops
-// both travel under op.Database = app.id while writing two distinct
-// files (users/<u>/<app>/app.db vs users/<u>/<app>/db/<file>). They
-// get independent streams — an "/app" suffix for the app-system one —
-// so a stuck op in one doesn't block the other and the bootstrap
-// cursor-seed stays per-file exact. The wire op.Database is unchanged;
-// only the gate's notion of "which stream" is finer.
+// A replication stream is identified by (class, name), never a bare name.
+// The class prefix keeps a name drawn from the open app-id namespace (a dev
+// app's directory name) from colliding with a reserved core/system name —
+// e.g. a dev app named "notifications" (app:notifications) and the core
+// per-user notifications.db (core:notifications) are distinct streams.
+// repl_op_stream derives the class from op.Operation; bootstrap_stream_key
+// derives it from the on-disk path shape; the two MUST agree for every
+// logical stream or the bootstrap cursor seed won't line up with the gate.
+// The wire op (Database + Operation) is unchanged — the key is local to
+// replication.db (cursor/tail/pending) and the in-memory gate, so the
+// scheme is a receiver/sender-local concern and mixed-version hosts
+// interoperate (each derives its own keys from the same wire ops).
+const (
+	repl_stream_class_app    = "app"    // per-app data DB (app:<id>) + system DB (app:<id>/system)
+	repl_stream_class_core   = "core"   // file-backed per-user infra DBs (core:user, core:notifications)
+	repl_stream_class_system = "system" // server-level core tables replicated as rows (system:users/sessions/schedule)
+)
+
+// repl_stream_system is the set of system-row stream names — server-level
+// core tables replicated per-user as typed rows, never file-bootstrapped.
+// Mirrors the apply dispatch in replication_apply_sql; every other reserved
+// name (notifications, the user-core sentinel) is file-backed and takes the
+// core class.
+var repl_stream_system = map[string]bool{"users": true, "sessions": true, "schedule": true}
+
+// repl_stream_key builds a class-qualified stream key. The ":" separator
+// can't appear in an app id (base58) or a dev app directory name, so an
+// "app:<id>" key can never equal a reserved "core:"/"system:" key.
+func repl_stream_key(class, name string) string {
+	return class + ":" + name
+}
+
+// repl_op_stream returns the class-qualified per-physical-DB stream key the
+// in-order gate chains an op on. App data and app-system exec ops both
+// travel under op.Database = app.id while writing two distinct files
+// (users/<u>/<app>/db/<file> vs users/<u>/<app>/app.db); the "/system"
+// suffix keeps them on independent streams so a stuck op in one can't block
+// the other. All gated ops are scope=app today.
 func repl_op_stream(op *ReplicationOp) string {
-	if op.Operation == repl_op_exec_app_system {
-		return op.Database + "/app"
+	switch op.Operation {
+	case repl_op_exec:
+		return repl_stream_key(repl_stream_class_app, op.Database)
+	case repl_op_exec_app_system:
+		return repl_stream_key(repl_stream_class_app, op.Database) + "/system"
+	case repl_op_exec_user_core:
+		// op.Database is the user-core sentinel ("user").
+		return repl_stream_key(repl_stream_class_core, op.Database)
 	}
-	return op.Database
+	// Typed row ops (insert/update/delete, *-row.set/delete): server-level
+	// system tables take the system class, file-backed per-user infra
+	// (notifications) takes core.
+	if repl_stream_system[op.Database] {
+		return repl_stream_key(repl_stream_class_system, op.Database)
+	}
+	return repl_stream_key(repl_stream_class_core, op.Database)
+}
+
+// repl_stream_migrate_key maps a legacy bare stream key (pre-class-
+// qualification) to its class-qualified form for db_upgrade_85. The schema
+// migration has no op.Operation, so it derives the class from the bare name
+// alone: the "/app" per-app-system suffix, the system-row set, and the
+// file-backed core names are recognised; everything else is per-app data.
+// A conflated bare "notifications"/"user" row resolves to the core stream;
+// any colliding app-data stream re-anchors on its next Prev==0 op.
+func repl_stream_migrate_key(old string) string {
+	if strings.HasSuffix(old, "/app") {
+		return repl_stream_key(repl_stream_class_app, strings.TrimSuffix(old, "/app")) + "/system"
+	}
+	if repl_stream_system[old] {
+		return repl_stream_key(repl_stream_class_system, old)
+	}
+	if old == repl_db_user_core_sentinel || old == "notifications" {
+		return repl_stream_key(repl_stream_class_core, old)
+	}
+	return repl_stream_key(repl_stream_class_app, old)
 }
 
 func replication_op_event(e *Event) {
@@ -812,16 +873,22 @@ func replication_app_drain(user, appID string) {
 		return
 	}
 	db := db_open("db/replication.db")
+	// An app owns two class-qualified streams: its data DB (app:<id>) and
+	// its per-app system DB (app:<id>/system). Drain both — a schema
+	// migration can unblock deferred ops on either.
+	data := repl_stream_key(repl_stream_class_app, appID)
+	system := data + "/system"
 	streams, err := db.rows(
-		"select distinct peer, scope from pending where user=? and db=?",
-		user, appID)
+		"select distinct peer, scope, db from pending where user=? and db in (?, ?)",
+		user, data, system)
 	if err != nil {
 		return
 	}
 	for _, s := range streams {
 		peer, _ := s["peer"].(string)
 		scope, _ := s["scope"].(string)
-		replication_stream_drain(db, peer, scope, user, appID)
+		stream, _ := s["db"].(string)
+		replication_stream_drain(db, peer, scope, user, stream)
 	}
 }
 
@@ -1531,8 +1598,11 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 	// is monotonic — a re-applied keys-transfer is idempotent.
 	rdb := db_open("db/replication.db")
 	for stream, seq := range kt.Seeds {
-		replication_cursor_set(rdb, originPeer, repl_scope_app, userUID, stream, seq)
-		replication_stream_drain(rdb, originPeer, repl_scope_app, userUID, stream)
+		// Seeds carries only system-row streams (users, sessions) under bare
+		// logical keys; re-qualify to the class key the gate uses locally.
+		key := repl_stream_key(repl_stream_class_system, stream)
+		replication_cursor_set(rdb, originPeer, repl_scope_app, userUID, key, seq)
+		replication_stream_drain(rdb, originPeer, repl_scope_app, userUID, key)
 	}
 
 	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d credentials=%d recovery=%d tokens=%d totp=%v (from peer %q)",
@@ -1607,9 +1677,13 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	// Snapshot the non-file streams' tails so the replica seeds its
 	// in-order apply cursors — the caller has already added `peer` as
 	// a recipient, so the first op it receives chains onto these.
+	// Seeds map keys are bare logical names (stable wire format); the values
+	// come from the class-qualified local tail, and the receiver re-qualifies
+	// the keys before setting cursors — so the wire is unchanged and an
+	// old/new peer on either side stays consistent.
 	kt.Seeds = map[string]int64{
-		"users":    replication_tail(user_uid, repl_scope_app, "users"),
-		"sessions": replication_tail(user_uid, repl_scope_app, "sessions"),
+		"users":    replication_tail(user_uid, repl_scope_app, repl_stream_key(repl_stream_class_system, "users")),
+		"sessions": replication_tail(user_uid, repl_scope_app, repl_stream_key(repl_stream_class_system, "sessions")),
 	}
 	if oauth_rows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauth_rows {

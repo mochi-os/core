@@ -271,8 +271,11 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 	// ones chain. File-bootstrapped streams seed per-file from the DB
 	// snapshot instead (bootstrap_db_seed_cursor).
 	for stream, seq := range kt.Seeds {
-		replication_cursor_set(rdb, originPeer, repl_scope_app, placeholder, stream, seq)
-		replication_stream_drain(rdb, originPeer, repl_scope_app, placeholder, stream)
+		// Seeds carries only system-row streams (users, sessions) under bare
+		// logical keys; re-qualify to the class key the gate uses locally.
+		key := repl_stream_key(repl_stream_class_system, stream)
+		replication_cursor_set(rdb, originPeer, repl_scope_app, placeholder, key, seq)
+		replication_stream_drain(rdb, originPeer, repl_scope_app, placeholder, key)
 	}
 
 	// Backfill this user's existing data from the source. Without
@@ -834,9 +837,11 @@ func replication_link_approve(user, peer string) (string, error) {
 	rdb.exec(
 		"insert or replace into hosts (user, peer, added, ack, seen) values (?, ?, ?, 0, ?)",
 		user, peer, now(), now())
+	// Bare logical keys on the wire (stable format); values from the
+	// class-qualified local tail. The receiver re-qualifies before seeding.
 	keys.Seeds = map[string]int64{
-		"users":    replication_tail(user, repl_scope_app, "users"),
-		"sessions": replication_tail(user, repl_scope_app, "sessions"),
+		"users":    replication_tail(user, repl_scope_app, repl_stream_key(repl_stream_class_system, "users")),
+		"sessions": replication_tail(user, repl_scope_app, repl_stream_key(repl_stream_class_system, "sessions")),
 	}
 
 	replication_emit_link_approved(peer, placeholder, keys)

@@ -1802,7 +1802,7 @@ func TestFrameworkDuplicateDelivery(t *testing.T) {
 
 	// Cursor should be at seq=1, single seen row.
 	rdb := db_open("db/replication.db")
-	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if !anchored || cursor != 1 {
 		t.Errorf("cursor: anchored=%v seq=%d, want anchored=true seq=1", anchored, cursor)
 	}
@@ -1846,7 +1846,7 @@ func TestFrameworkOutOfOrderArrivalDrainsPending(t *testing.T) {
 	if n, _ := pending["n"].(int64); n != 0 {
 		t.Errorf("after drain: pending = %d, want 0 (cleared)", n)
 	}
-	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if cursor != 2 {
 		t.Errorf("cursor = %d, want 2", cursor)
 	}
@@ -1873,7 +1873,7 @@ func TestFrameworkBelowCursorOpDropped(t *testing.T) {
 		t.Errorf("rows = %d, want 3 (below-cursor replay must not apply)", n)
 	}
 	rdb := db_open("db/replication.db")
-	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if cursor != 3 {
 		t.Errorf("cursor = %d, want 3 (must not rewind)", cursor)
 	}
@@ -1890,7 +1890,7 @@ func TestFrameworkStreamRestart(t *testing.T) {
 	replication_op_receive("peerA", build_schedule_op(2, 1, "two", 200))
 
 	rdb := db_open("db/replication.db")
-	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	cursor, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if cursor != 2 {
 		t.Fatalf("pre-restart cursor = %d, want 2", cursor)
 	}
@@ -1902,7 +1902,7 @@ func TestFrameworkStreamRestart(t *testing.T) {
 	if n, _ := row["n"].(int64); n != 3 {
 		t.Errorf("rows = %d, want 3 (restart op anchored and applied)", n)
 	}
-	cursor, _ = replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
+	cursor, _ = replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if cursor != 50 {
 		t.Errorf("post-restart cursor = %d, want 50", cursor)
 	}
@@ -1924,8 +1924,8 @@ func TestFrameworkPerPeerStreamsIndependent(t *testing.T) {
 		t.Errorf("rows = %d, want 3 (1 per stream + 1 chain on A)", n)
 	}
 	rdb := db_open("db/replication.db")
-	c_a, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, "schedule")
-	c_b, _ := replication_cursor(rdb, "peer_b", repl_scope_app, fwUID, "schedule")
+	c_a, _ := replication_cursor(rdb, "peerA", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
+	c_b, _ := replication_cursor(rdb, "peer_b", repl_scope_app, fwUID, repl_stream_key(repl_stream_class_system, "schedule"))
 	if c_a != 2 {
 		t.Errorf("peerA cursor = %d, want 2", c_a)
 	}
@@ -2056,7 +2056,7 @@ func skew_pending_count(t *testing.T, peer, app_id string) int64 {
 	rdb := db_open("db/replication.db")
 	row, _ := rdb.row(
 		"select count(*) as n from pending where peer=? and scope=? and user=? and db=?",
-		peer, repl_scope_app, skew_user, app_id)
+		peer, repl_scope_app, skew_user, repl_stream_key(repl_stream_class_app, app_id))
 	if row == nil {
 		return 0
 	}
@@ -2087,7 +2087,7 @@ func TestSchemaSkewForwardDefersThenAppliesAfterMigration(t *testing.T) {
 		t.Errorf("after defer: posts rows = %d, want 0 (op deferred, not applied)", got)
 	}
 	rdb := db_open("db/replication.db")
-	if _, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, app_id); anchored {
+	if _, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, repl_stream_key(repl_stream_class_app, app_id)); anchored {
 		t.Errorf("after defer: cursor must NOT be anchored (apply did not succeed)")
 	}
 
@@ -2101,7 +2101,7 @@ func TestSchemaSkewForwardDefersThenAppliesAfterMigration(t *testing.T) {
 	if got := skew_posts_count(t, app_id); got != 1 {
 		t.Errorf("after drain: posts rows = %d, want 1 (deferred op applied)", got)
 	}
-	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, app_id)
+	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, repl_stream_key(repl_stream_class_app, app_id))
 	if !anchored || cursor != 1 {
 		t.Errorf("after drain: cursor anchored=%v seq=%d, want anchored=true seq=1", anchored, cursor)
 	}
@@ -2199,7 +2199,7 @@ func TestSchemaSkewMultiVersionDrainsInOrder(t *testing.T) {
 	}
 
 	rdb := db_open("db/replication.db")
-	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, app_id)
+	cursor, anchored := replication_cursor(rdb, "peerA", repl_scope_app, skew_user, repl_stream_key(repl_stream_class_app, app_id))
 	if !anchored || cursor != 4 {
 		t.Errorf("after drain: cursor anchored=%v seq=%d, want anchored=true seq=4", anchored, cursor)
 	}

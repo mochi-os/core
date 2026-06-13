@@ -134,6 +134,44 @@ func git_open(owner *User, app *App, entity_id string) (*git.Repository, error) 
 	return git.PlainOpen(path)
 }
 
+// git_can_write reports whether the thread's authenticated identity holds
+// repository/<entity_id> write in owner's repositories ACL. This is the same
+// check the git Smart-HTTP receive-pack path applies (see the access_check in
+// git_http_handler), so performing a merge or mutating a branch through the
+// Starlark git API requires exactly what a `git push` to that repository
+// requires. Fails closed: a missing owner/app, no authenticated identity, no
+// app system DB, or no matching grant all deny. The acting identity is the
+// session user locally; across a P2P boundary the inbound event runs as the
+// entity owner, so callers that must authorize a remote initiator (e.g. the
+// repositories merge event) check that initiator's verified `from` themselves
+// before reaching here - this is the same-host backstop, not that gate.
+func git_can_write(t *sl.Thread, owner *User, app *App, entity_id string) bool {
+	if owner == nil || app == nil || entity_id == "" {
+		return false
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return false
+	}
+	// Prefer the acting identity (set in action / service / remote contexts);
+	// fall back to the account's person entity, matching the git push
+	// (receive-pack) path. Fail closed if neither yields an identity.
+	identity_id := ""
+	if user.Identity != nil {
+		identity_id = user.Identity.ID
+	} else if ident := user.identity(); ident != nil {
+		identity_id = ident.ID
+	}
+	if identity_id == "" {
+		return false
+	}
+	app_db := db_app_system(owner, app)
+	if app_db == nil {
+		return false
+	}
+	return app_db.access_check(owner, identity_id, user.Role, "repository/"+entity_id, "write")
+}
+
 // Initialize a new bare repository
 func git_init(owner *User, app *App, entity_id string) error {
 	path := git_repo_path(owner, app, entity_id)
@@ -547,6 +585,10 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_write(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository write required to create a branch")
+	}
+
 	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
@@ -587,6 +629,10 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_write(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository write required to delete a branch")
 	}
 
 	repo, err := git_open(owner, app, entity_id)
@@ -654,6 +700,10 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_write(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository write required to set the default branch")
 	}
 
 	repo, err := git_open(owner, app, entity_id)
@@ -1606,6 +1656,10 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_write(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository write required to merge")
 	}
 
 	repo, err := git_open(owner, app, entity_id)

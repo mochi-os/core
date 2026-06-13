@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	sl "go.starlark.net/starlark"
 )
 
 // test_app is the per-app context the git_* helpers expect. Tests use
@@ -607,4 +608,72 @@ func TestGitBranchOperations(t *testing.T) {
 		return nil
 	})
 	t.Logf("Total branches: %d", count)
+}
+
+// ============ Merge / branch-mutation access control ============
+
+// TestGitMergeAccessControl is the unit-level proof of the repository-merge
+// ACL (task #3): git_can_write - the shared gate for api_git_merge_perform and
+// the branch create/delete/default-set primitives - authorizes a mutation only
+// when the acting identity holds repository/<id> write, the same grant a git
+// push requires, and fails closed otherwise. This encodes the plan's acceptance
+// criteria: merge without repo write is denied; with the grant it is allowed;
+// the repository owner ('*') is allowed; an absent identity is denied.
+func TestGitMergeAccessControl(t *testing.T) {
+	owner, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo_id := "merge-acl-repo"
+	resource := "repository/" + repo_id
+
+	owner_identity := "12OwnerAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	writer_identity := "12WriterBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	nobody_identity := "12NobodyCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	owner.Identity = &Entity{ID: owner_identity}
+
+	// db_app_system keys on owner.UID; ensure its directory and the users dir
+	// (for the identity() fallback path) exist under the test data dir.
+	os.MkdirAll(filepath.Join(data_dir, "users", owner.UID, test_app.id), 0755)
+	os.MkdirAll(filepath.Join(data_dir, "db"), 0755)
+
+	// Seed the repositories ACL exactly as action_create + action_access_set
+	// would: the owner holds '*', a collaborator holds 'write'. Insert directly
+	// to keep the test free of replication side-effects.
+	db := db_app_system(owner, test_app)
+	if db == nil {
+		t.Fatal("db_app_system returned nil")
+	}
+	db.access_setup()
+	db.exec("insert into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )",
+		owner_identity, resource, "*", 1, owner_identity, now())
+	db.exec("insert into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )",
+		writer_identity, resource, "write", 1, owner_identity, now())
+
+	thread := func(u *User) *sl.Thread {
+		th := &sl.Thread{}
+		if u != nil {
+			th.SetLocal("user", u)
+		}
+		th.SetLocal("owner", owner)
+		th.SetLocal("app", test_app)
+		return th
+	}
+
+	cases := []struct {
+		name string
+		user *User
+		want bool
+	}{
+		{"repository owner ('*' grant) may merge", owner, true},
+		{"collaborator with write grant may merge", &User{UID: "u2", Identity: &Entity{ID: writer_identity}}, true},
+		{"identity with no grant is denied", &User{UID: "u3", Identity: &Entity{ID: nobody_identity}}, false},
+		{"user without an identity is denied (fail closed)", &User{UID: "u4"}, false},
+		{"no authenticated user is denied (fail closed)", nil, false},
+	}
+
+	for _, c := range cases {
+		if got := git_can_write(thread(c.user), owner, test_app, repo_id); got != c.want {
+			t.Errorf("%s: git_can_write = %v, want %v", c.name, got, c.want)
+		}
+	}
 }

@@ -290,6 +290,70 @@ func TestWipedRebootstrapDisabled(t *testing.T) {
 	}
 }
 
+// TestWipedRebootstrapSystemRowEscalates: a system-row stream (system:sessions)
+// can't be re-seeded by the per-user file pull, so the loop must NOT pull it —
+// it escalates straight to irreparable for an operator re-join.
+func TestWipedRebootstrapSystemRowEscalates(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rebootstrap_attempts = map[string]rebootstrap_state{}
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+	sys := repl_stream_key(repl_stream_class_system, "sessions")
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-sys', 'app', 'u1', ?, 7, 6, 1, ?, ?)",
+		sys, []byte{0x00}, old)
+
+	replication_wiped_rebootstrap()
+
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-sys"); st != "" {
+		t.Errorf("system-row stream must NOT trigger a file pull; state = %q", st)
+	}
+	if n := db.integer("select count(*) from irreparable where peer='peer-sys' and db=?", sys); n != 1 {
+		t.Errorf("system-row stream must escalate to irreparable; markers = %d, want 1", n)
+	}
+}
+
+// TestWipedRebootstrapCapEscalates: after rebootstrap_attempt_cap futile pulls
+// the loop gives up — escalates to irreparable and stops re-pulling.
+func TestWipedRebootstrapCapEscalates(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rebootstrap_attempts = map[string]rebootstrap_state{"peer-cap|u1": {attempts: rebootstrap_attempt_cap}}
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-cap', 'app', 'u1', 'app:feeds', 7, 6, 1, ?, ?)", []byte{0x00}, old)
+
+	replication_wiped_rebootstrap()
+
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-cap"); st != "" {
+		t.Errorf("capped stream must NOT pull again; state = %q", st)
+	}
+	if n := db.integer("select count(*) from irreparable where peer='peer-cap' and db='app:feeds'"); n != 1 {
+		t.Errorf("capped stream must escalate to irreparable; markers = %d, want 1", n)
+	}
+	if !rebootstrap_attempts["peer-cap|u1"].gaveup {
+		t.Error("capped stream must be flagged gaveup so it stops retrying")
+	}
+}
+
+// TestWipedRebootstrapBacksOff: a second tick immediately after a pull must not
+// re-fire — exponential backoff keeps the attempt count at 1.
+func TestWipedRebootstrapBacksOff(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rebootstrap_attempts = map[string]rebootstrap_state{}
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-bo', 'app', 'u1', 'app:feeds', 7, 6, 1, ?, ?)", []byte{0x00}, old)
+
+	replication_wiped_rebootstrap() // attempt 1
+	replication_wiped_rebootstrap() // immediate retry — gated by backoff
+
+	if got := rebootstrap_attempts["peer-bo|u1"].attempts; got != 1 {
+		t.Errorf("backoff must prevent a second immediate attempt; attempts = %d, want 1", got)
+	}
+}
+
 // TestIrreparableCount: the health-endpoint count reflects the marker rows.
 func TestIrreparableCount(t *testing.T) {
 	cleanup := setup_replication_test(t)

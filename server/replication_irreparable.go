@@ -3,7 +3,11 @@
 
 package main
 
-import "sync"
+import (
+	"fmt"
+	"strings"
+	"sync"
+)
 
 // A replication stream broken (stalled on an unfillable gap, or a member
 // gone) for longer than T_forget can no longer be recovered without data
@@ -291,6 +295,28 @@ func irreparable_emit_skip(user, peer string) bool {
 // never auto-rebootstrapped - those stay operator-driven.
 const rebootstrap_unanchored_seconds = 10 * 60
 
+// rebootstrap auto-recovery must converge, not fire every 30s forever. Per-
+// (peer, user) attempt count + last-attempt time gate exponential backoff;
+// after rebootstrap_attempt_cap futile pulls the relationship escalates to
+// irreparable (operator re-join) instead of retrying for the full 30-day
+// floor. In-memory: a restart resets the counters, which at worst means a
+// fresh round of attempts.
+type rebootstrap_state struct {
+	attempts int
+	last     int64
+	gaveup   bool
+}
+
+var (
+	rebootstrap_attempts = map[string]rebootstrap_state{}
+	rebootstrap_mutex    sync.Mutex
+)
+
+const (
+	rebootstrap_attempt_cap = 5
+	rebootstrap_backoff_cap = 6 * 60 * 60 // seconds between attempts, capped
+)
+
 // replication_wiped_rebootstrap is the fast path for the 2026-06-02 incident:
 // a wiped replica that receives ops it can never chain (no cursor for the
 // stream) and would otherwise sit stalled for 30 days. When such a stream has
@@ -303,25 +329,101 @@ func replication_wiped_rebootstrap() {
 	if setting_get("replication.rebootstrap.wiped", "true") == "false" {
 		return
 	}
+	stalled := replication_pending_stalled()
+
+	// Prune attempt state for (peer, user) pairs no longer stalled — a
+	// stream that anchored (drained or re-seeded) starts fresh if it ever
+	// stalls again.
+	live := map[string]bool{}
+	for _, s := range stalled {
+		if s.User != "" {
+			live[s.Peer+"|"+s.User] = true
+		}
+	}
+	rebootstrap_mutex.Lock()
+	for k := range rebootstrap_attempts {
+		if !live[k] {
+			delete(rebootstrap_attempts, k)
+		}
+	}
+	rebootstrap_mutex.Unlock()
+
 	cutoff := now() - rebootstrap_unanchored_seconds
-	for _, s := range replication_pending_stalled() {
+	for _, s := range stalled {
 		if s.Anchored || s.User == "" || s.Oldest > cutoff {
 			continue // anchored gap (divergence risk), non-user, or still settling
 		}
+
+		// System-row streams (system:users / sessions / schedule) are seeded
+		// only by a keys-transfer at join time, never by the per-user file
+		// pull below — so a pull can never anchor them, and retrying it was
+		// the infinite loop this function used to be. Escalate straight to
+		// irreparable: the operator's re-join re-sends the keys (and Seeds).
+		if strings.HasPrefix(s.Database, repl_stream_class_system+":") {
+			replication_rebootstrap_give_up(s, "system-row stream needs a keys-transfer re-seed (operator re-join)")
+			continue
+		}
+
 		// Debounce: a bootstrap for this peer is already running.
 		if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, s.Peer); st == bootstrap_state_queued || st == bootstrap_state_active {
 			continue
 		}
-		info("Replication wiped-replica recovery: peer=%q user=%q db=%q unanchored %ds - requesting re-bootstrap",
-			s.Peer, s.User, s.Database, now()-s.Oldest)
-		// Always the surgical per-user pull: it re-fetches only this user's
-		// files + DBs (apps come from apps_default at boot), so we never
-		// atomic-rename whole-server apps/files out from under the running
-		// receiver. Safe because an unanchored stream has no local state to
-		// overwrite. For a fully-wiped pair member each user's stream
-		// triggers its own pull, serialised by the debounce above.
+
+		key := s.Peer + "|" + s.User
+		rebootstrap_mutex.Lock()
+		state := rebootstrap_attempts[key]
+		if state.gaveup {
+			rebootstrap_mutex.Unlock()
+			continue
+		}
+		// Exponential backoff between attempts so a stream that won't anchor
+		// (source down, FK-deferred parent never arrives) isn't re-pulled
+		// every tick. The first fire is already gated by s.Oldest > cutoff.
+		delay := int64(rebootstrap_unanchored_seconds) << uint(state.attempts)
+		if delay > rebootstrap_backoff_cap {
+			delay = rebootstrap_backoff_cap
+		}
+		if state.last != 0 && now()-state.last < delay {
+			rebootstrap_mutex.Unlock()
+			continue
+		}
+		// Cap: after N futile pulls, stop and escalate rather than retrying
+		// for the full 30-day irreparable floor.
+		if state.attempts >= rebootstrap_attempt_cap {
+			state.gaveup = true
+			rebootstrap_attempts[key] = state
+			rebootstrap_mutex.Unlock()
+			replication_rebootstrap_give_up(s, fmt.Sprintf("re-bootstrap did not anchor after %d attempts", state.attempts))
+			continue
+		}
+		state.attempts++
+		state.last = now()
+		rebootstrap_attempts[key] = state
+		rebootstrap_mutex.Unlock()
+
+		info("Replication wiped-replica recovery: peer=%q user=%q db=%q unanchored %ds - re-bootstrap attempt %d/%d",
+			s.Peer, s.User, s.Database, now()-s.Oldest, state.attempts, rebootstrap_attempt_cap)
+		// The surgical per-user pull: re-fetches only this user's files +
+		// DBs (apps come from apps_default at boot), so we never atomic-
+		// rename whole-server apps/files out from under the running receiver.
 		bootstrap_start_user(s.Peer, s.User)
 	}
+}
+
+// replication_rebootstrap_give_up escalates a stream the auto-recovery can't
+// fix to the irreparable table (operator action required), idempotently —
+// one marker + one warning per stream until it's cleared, by a successful
+// re-bootstrap (bootstrap_set_state → replication_irreparable_clear) or
+// operator removal.
+func replication_rebootstrap_give_up(s StalledStream, why string) {
+	db := db_open("db/replication.db")
+	if exists, _ := db.exists("select 1 from irreparable where peer=? and scope=? and user=? and db=?",
+		s.Peer, s.Scope, s.User, s.Database); exists {
+		return
+	}
+	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values (?, ?, ?, ?, 'stalled', ?, 0)",
+		s.Peer, s.Scope, s.User, s.Database, now())
+	warn("Replication auto-recovery gave up: peer=%q user=%q db=%q - %s", s.Peer, s.User, s.Database, why)
 }
 
 // replication_irreparable_notify_local raises a Mochi notification on this

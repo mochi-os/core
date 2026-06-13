@@ -61,6 +61,16 @@ var (
 		window:  60,
 	}
 
+	// Peer record-relay rate limiter: 1 relayed answer per minute per
+	// target peer. A peers/request is a broadcast every holder of the
+	// target's record could answer; this bounds how often any one of
+	// them does so for the same target.
+	rate_limit_record_relay = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   1,
+		window:  60,
+	}
+
 	// URL request rate limiter: 100 requests per minute per app
 	rate_limit_url = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -167,6 +177,7 @@ func ratelimit_manager() {
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_peer_request.cleanup()
+		rate_limit_record_relay.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()
 	}

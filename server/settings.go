@@ -128,6 +128,14 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
+	"relay": {
+		Name:         "relay",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Act as a relay for other servers when this server is publicly reachable",
+		UserReadable: false,
+		ReadOnly:     false,
+	},
 	"operator_name": {
 		Name:         "operator_name",
 		Pattern:      "line",
@@ -415,6 +423,10 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// hourly publish.
 	if name == "hostname" || name == "hostname_publish" {
 		peers_publish_request()
+	}
+	// Start or stop the relay service to match the new opt-out state.
+	if name == "relay" {
+		relay_service_update()
 	}
 	// Never write a credential's value into the audit log.
 	audit_value := value

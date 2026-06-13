@@ -25,6 +25,7 @@ func setup_peer_discovery_test(t *testing.T) func() {
 
 	pdb := db_open("db/peers.db")
 	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
+	pdb.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
 
 	peers_lock.Lock()
 	saved := peers

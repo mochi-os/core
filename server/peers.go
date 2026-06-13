@@ -106,7 +106,14 @@ const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6
 // addresses. Comma-separated multiaddrs; each includes /p2p/<peer-id>
 // so the peer identity is recoverable. Out-of-the-box installs need
 // at least one reachable bootstrap to discover the wider network.
-const bootstrap_addresses_hardcoded = "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+//
+// The 1443 entries are the normal path. The 443 entries (QUIC over
+// UDP, WSS over TCP on the mochi-os.org name the certificate covers)
+// are the hostile-network fallback: a firewall that blocks 1443 but
+// allows the web cannot tell WSS from HTTPS. They activate once the
+// bootstrap runs with [p2p] https enabled; until then dialling them
+// fails harmlessly while 1443 carries the connection.
+const bootstrap_addresses_hardcoded = "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns4/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 
 var (
 	// peer_default_publisher + peers_bootstrap start at the hardcoded
@@ -425,8 +432,12 @@ func peers_manager() {
 		peers_prune()
 
 		// Claimed names age out with the same expiry; connected peers
-		// with day-old verification verdicts re-check.
-		peer_names_sweep(now() - peer_expiry)
+		// with day-old verification verdicts re-check. Signed records
+		// and relay flags age out too.
+		expiry := now() - peer_expiry
+		peer_names_sweep(expiry)
+		peer_records_sweep(expiry)
+		peer_relays_sweep()
 	}
 }
 

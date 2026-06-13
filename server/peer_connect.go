@@ -30,6 +30,7 @@ func init() {
 	a.service("peers")
 	a.event_anonymous("request", peer_request_event) // Unsigned pubsub broadcast
 	a.event_anonymous("publish", peer_publish_event) // Unsigned pubsub broadcast
+	a.event_anonymous("record", peer_record_event)   // Unsigned pubsub broadcast; record self-certifies
 }
 
 // Reconnection state for a disconnected peer.
@@ -345,6 +346,16 @@ func peers_publish() {
 			}
 			m.set("addresses", strings.Join(addresses, ","))
 		}
+		// The signed record is the authoritative, replay-protected,
+		// relayable form of the same addresses; the plain list above
+		// stays for receivers that predate it.
+		if record := peer_record_announce(); record != "" {
+			m.set("record", record)
+		}
+		// Advertise that we relay so NAT'd peers can reserve a slot.
+		if relay_enabled() {
+			m.set("relay", "true")
+		}
 		if name, domains := peer_names_announce(); name != "" || domains != "" {
 			if name != "" {
 				m.set("name", name)
@@ -375,12 +386,14 @@ func peers_publish_request() {
 }
 
 // Received a peer publish event from another server: merge the
-// originator's announced addresses into the peer registry. Trust comes
-// from the GossipSub envelope, not the payload — every pubsub message
-// is signed by its originating peer and verified before delivery
-// (StrictSign), and e.origin carries that verified id. A direct-stream
-// message spoofing this event has no origin and is ignored, as is any
-// announced address whose /p2p/ suffix names a different peer.
+// originator's announced addresses into the peer registry. Two trust
+// roots, preferred in order: a signed peer record (self-certifying —
+// its own libp2p signature proves the addresses, with sequence-based
+// replay rejection), then the plain address list (trusted via the
+// GossipSub envelope, which StrictSign-verifies the originating peer
+// into e.origin). A direct-stream message spoofing this event has no
+// origin and is ignored, as is any address whose /p2p/ suffix names a
+// different peer.
 func peer_publish_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
 		return
@@ -404,13 +417,36 @@ func peer_publish_event(e *Event) {
 	}
 	peer_names_apply(e.origin, names)
 
-	announced := e.get("addresses", "")
-	if announced == "" {
-		return
+	// Note whether this peer offers relay, for AutoRelay candidate
+	// selection. Not security-sensitive: a false claim just fails to
+	// grant a reservation.
+	if e.get("relay", "") == "true" {
+		peer_relay_seen(e.origin)
 	}
 
+	// Prefer the signed record: self-certifying and replay-protected.
+	// Fall back to the plain address list when absent or unverifiable,
+	// so peers that predate signed records still publish addresses.
+	addresses, ok := peer_record_apply(e.origin, e.get("record", ""))
+	if !ok {
+		announced := e.get("addresses", "")
+		if announced == "" {
+			return
+		}
+		addresses = strings.Split(announced, ",")
+	}
+	peer_apply_addresses(e.origin, addresses)
+}
+
+// peer_apply_addresses merges discovered addresses for a peer through
+// the receive-side hygiene shared by direct announcements and relayed
+// records: cap the count, drop entries whose /p2p/ suffix names a
+// different peer, and reject loopback or unspecified addresses (junk for
+// every receiver — the same-host peers they'd be valid for learn them
+// over mDNS, not the mesh).
+func peer_apply_addresses(id string, addresses []string) {
 	applied := 0
-	for _, address := range strings.Split(announced, ",") {
+	for _, address := range addresses {
 		if applied >= peers_publish_addresses_maximum {
 			break
 		}
@@ -420,30 +456,54 @@ func peer_publish_event(e *Event) {
 			continue
 		}
 		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
-		if err != nil || info.ID.String() != e.origin {
+		if err != nil || info.ID.String() != id {
 			continue
 		}
-		// A mesh-wide announcement carrying loopback or unspecified is
-		// junk for every receiver: the same-host peers it would be valid
-		// for learn it through mDNS and live connections instead.
-		// Compliant senders never announce these (net_addresses filters
-		// them); reject what a buggy or hostile one might send.
 		if net_unroutable(ma) {
 			continue
 		}
-		debug("Peer %q announced address %q", e.origin, address)
-		peer_discovered_address(e.origin, address)
+		debug("Peer %q discovered at address %q", id, address)
+		peer_discovered_address(id, address)
 		applied++
 	}
 }
 
-// Reply to a peer request if for us. Non-blocking — if a publish is
-// already pending the second request collapses with it.
+// Reply to a peers/request. If it names us, republish ourselves
+// (non-blocking — a pending publish collapses with it). If it names a
+// peer we are not, and we hold that peer's signed record, relay it on
+// their behalf — the address-book-exchange path that lets a server find
+// a peer that is offline or never heard the request.
 func peer_request_event(e *Event) {
-	if e.get("id", "") != net_id {
+	id := e.get("id", "")
+	if id == "" {
 		return
 	}
-	peers_publish_request()
+	if id == net_id {
+		peers_publish_request()
+		return
+	}
+	if e.origin == "" || e.origin == net_id {
+		return
+	}
+	peer_record_relay(id)
+}
+
+// Received a relayed signed record: some server is vouching for a
+// third party's addresses by carrying that peer's record. Trust is in
+// the record's own signature, not the carrier, so the relayer's
+// identity is irrelevant — we verify the record, apply it to the peer
+// it names (with the same replay and hygiene guards as a direct
+// announcement), and note the answer so our own relay suppresses.
+func peer_record_event(e *Event) {
+	id, addresses, sequence, data, ok := peer_record_verify(e.get("record", ""))
+	if !ok || id == net_id {
+		return
+	}
+	peer_record_seen(id)
+	if !peer_record_store(id, sequence, data) {
+		return
+	}
+	peer_apply_addresses(id, addresses)
 }
 
 // peer_request_addresses broadcasts a peers/request asking the named

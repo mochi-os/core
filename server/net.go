@@ -181,40 +181,34 @@ func net_start() {
 		p2p.EnableAutoNATv2(),
 		p2p.EnableNATService(),
 		p2p.EnableHolePunching(),
+		// Rewrite advertised addresses for the 443 fallback (no-op when
+		// off): drop the loopback WebSocket listener, inject the public
+		// WSS address. See fallback.go.
+		p2p.AddrsFactory(fallback_addrs_factory),
 	}
 
-	// AutoRelay: use bootstrap peers as relays when behind NAT
-	var relayPeers []p2p_peer.AddrInfo
-	for _, bp := range peers_bootstrap {
-		pid, err := p2p_peer.Decode(bp.ID)
-		if err != nil {
-			continue
-		}
-		ai := p2p_peer.AddrInfo{ID: pid}
-		for _, a := range bp.addresses {
-			ma, err := multiaddr.NewMultiaddr(strings.TrimSuffix(a.Address, "/p2p/"+bp.ID))
-			if err != nil {
-				continue
-			}
-			ai.Addrs = append(ai.Addrs, ma)
-		}
-		if len(ai.Addrs) > 0 {
-			relayPeers = append(relayPeers, ai)
-		}
-	}
-	if len(relayPeers) > 0 {
-		opts = append(opts, p2p.EnableAutoRelayWithStaticRelays(relayPeers))
+	// Hostile-network reachability: also accept libp2p on 443 (QUIC over
+	// UDP, WebSocket-Secure over TCP bridged from the web server). Off
+	// unless [p2p] https is set; see fallback.go.
+	if fb := fallback_listen_addresses(); len(fb) > 0 {
+		opts = append(opts, p2p.ListenAddrStrings(fb...))
 	}
 
-	// Relay server: serve as relay for NAT peers when configured
-	if ini_bool("p2p", "relay", false) {
-		opts = append(opts, p2p.EnableRelayService())
-		info("Net relay service enabled")
-	}
+	// AutoRelay: when behind NAT, reserve a slot on a relay. Candidates
+	// come from a dynamic source (relay.go) — the bootstrap relays plus
+	// any public peer that announces it relays — rather than a fixed
+	// list, so a NAT'd server is not limited to the bootstraps. Our own
+	// relay service is started dynamically once AutoNAT finds us public
+	// (relay_service_update from the reachability watcher), not as a
+	// construction-time option, since reachability is unknown here.
+	opts = append(opts, p2p.EnableAutoRelayWithPeerSource(net_relay_candidates))
 
 	net_me = must(p2p.New(opts...))
 	net_id = net_me.ID().String()
 	info("Net listening on port %d with id %q", port, net_id)
+
+	// Record the loopback WebSocket port for the web server's 443 bridge.
+	fallback_capture()
 
 	// /mochi/2 handlers: messages multiplexes many small messages on
 	// one persistent stream; stream is a raw bidirectional channel
@@ -255,8 +249,10 @@ func net_start() {
 	}
 
 	// Add peers from database, along with their claimed display names
+	// and signed records
 	peers_add_from_db(100)
 	peer_names_load()
+	peer_records_load()
 
 	// Listen via multicast DNS. Best-effort: hosts without a usable IPv4/IPv6
 	// multicast interface (containers under qemu, certain k8s CNI plugins,
@@ -454,6 +450,8 @@ func net_watch_reachability() {
 			net_reachability.Store("unknown")
 		}
 		debug("Net reachability now %q", net_reachable())
+		// Serve as a relay exactly while we are publicly reachable.
+		relay_service_update()
 	}
 }
 

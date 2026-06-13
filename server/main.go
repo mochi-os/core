@@ -224,7 +224,8 @@ loop:
 	// Notify connected peers
 	peers_shutdown()
 
-	// Close Net host
+	// Stop relaying, then close the Net host
+	relay_shutdown()
 	if net_me != nil {
 		net_me.Close()
 	}

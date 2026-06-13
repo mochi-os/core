@@ -1551,6 +1551,10 @@ func web_start() {
 	}
 	gin.DefaultWriter = log.Writer()
 	r := gin.New()
+	// First, before logging or any other handling: bridge a root-path
+	// libp2p WebSocket upgrade to the loopback libp2p listener. No-op
+	// unless the 443 fallback is enabled and the request is exactly that.
+	r.Use(fallback_middleware)
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		status := fmt.Sprintf("%d", param.StatusCode)
 		if log_color && param.StatusCode >= 400 {

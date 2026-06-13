@@ -1234,62 +1234,13 @@ func TestBootstrapRetryIncompleteOnceRefiresAndResets(t *testing.T) {
 	}
 }
 
-// TestBootstrapDBLandClearsStaleSidecars: landing a snapshot must
-// remove the destination's stale -wal / -shm / -journal sidecars.
-// Regression for the 2026-05-21 mochi2 crash: bootstrap renamed the
-// `.db` into place but left the previous database's write-ahead log
-// next to it; the next open replayed that log against the new file
-// and SQLite raised "database disk image is malformed", which (in a
-// Starlark goroutine) killed the server.
-func TestBootstrapDBLandClearsStaleSidecars(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	dir := filepath.Join(data_dir, "users", "u-alice", "feeds", "db")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	target := filepath.Join(dir, "feeds.db")
-	partial := target + ".partial"
-
-	// The destination already exists with stale sidecars from the
-	// server's prior use of that path.
-	if err := os.WriteFile(target, []byte("OLD-DB"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
-		if err := os.WriteFile(sidecar, []byte("stale"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The freshly-transferred snapshot.
-	if err := os.WriteFile(partial, []byte("NEW-SNAPSHOT"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := bootstrap_db_land(partial, target); err != nil {
-		t.Fatalf("bootstrap_db_land: %v", err)
-	}
-
-	// The snapshot replaced the target...
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if string(got) != "NEW-SNAPSHOT" {
-		t.Errorf("target content = %q, want %q", got, "NEW-SNAPSHOT")
-	}
-	// ...the partial was consumed...
-	if _, err := os.Stat(partial); !os.IsNotExist(err) {
-		t.Errorf("partial %q still exists after land", partial)
-	}
-	// ...and every stale sidecar is gone.
-	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
-		if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
-			t.Errorf("stale sidecar %q survived land — a fresh open would replay it and corrupt the new DB", sidecar)
-		}
-	}
-}
+// The 2026-05-21 "database disk image is malformed" crash (bootstrap
+// renamed a new .db into place but left the previous WAL beside it, which
+// the next open replayed against the new file) is now prevented by design:
+// bootstrap_db_land restores INTO the live connection instead of renaming,
+// so the live WAL is never orphaned and there are no stale sidecars to
+// clear. TestBootstrapDbLandRestoresIntoLiveHandle (replication_land_test.go)
+// covers the replacement behaviour end to end.
 
 // TestBootstrapDBManifestResultSpawnsDriver: receiver handler spawns
 // the per-scope driver goroutine with the full entry list. Replaces

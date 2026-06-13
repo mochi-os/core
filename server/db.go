@@ -2027,30 +2027,6 @@ func db_purge_prefix(dir string) {
 	}
 }
 
-// db_evict_path closes and evicts the single cached DB at `relpath`
-// (relative to data_dir). Use it before rename(2)-replacing a DB file
-// out from under the server — e.g. when bootstrap lands a snapshot —
-// so the next db_open picks up the fresh inode instead of a handle
-// pinned to the now-unlinked original. Returns true if a handle was
-// actually evicted. No-op if the path isn't cached.
-func db_evict_path(relpath string) bool {
-	full := filepath.Join(data_dir, relpath)
-	var closers []*sqlx.DB
-	databases_lock.Lock()
-	for key, db := range databases {
-		if db.path == full {
-			closers = append(closers, db.internal, db.starlark)
-			delete(databases, key)
-		}
-	}
-	databases_lock.Unlock()
-	for _, h := range closers {
-		if h != nil {
-			h.Close()
-		}
-	}
-	return len(closers) > 0
-}
 
 func (db *DB) exec(query string, values ...any) {
 	must(db.internal.Exec(query, values...))

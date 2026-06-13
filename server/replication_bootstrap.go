@@ -64,6 +64,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -74,6 +75,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 )
 
 // Bootstrap scope names. Used as the `scope` key in
@@ -1565,13 +1568,42 @@ func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 // its own clean WAL.
 func bootstrap_db_land(partial, target string) error {
 	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
-	db_evict_path(rel)
-	for _, sidecar := range []string{target + "-wal", target + "-shm", target + "-journal"} {
-		_ = os.Remove(sidecar)
+	// Page-copy the snapshot INTO the live connection rather than evicting
+	// the cached handle and renaming the file under it. The old evict+rename
+	// closed the pooled handle mid-use — a borrower's next query hit "database
+	// is closed" and panicked the worker — and left an evict→rename gap where
+	// a concurrent re-open saw the old file with its WAL already deleted
+	// ("database disk image is malformed"). Restore keeps the handle and its
+	// WAL intact: SQLite replaces the destination's pages under its own
+	// locking, and other pool connections pick up the new content on their
+	// next read. db_open creates the file if absent, so a first-time landing
+	// works too.
+	db := db_open(rel)
+	if db == nil {
+		return fmt.Errorf("bootstrap-db-fetch: open target %q for restore", rel)
 	}
-	if err := os.Rename(partial, target); err != nil {
-		return fmt.Errorf("bootstrap-db-fetch: rename %q -> %q: %w", partial, target, err)
+	conn, err := db.internal.Conn(context.Background())
+	if err != nil {
+		return fmt.Errorf("bootstrap-db-fetch: restore conn for %q: %w", rel, err)
 	}
+	defer conn.Close()
+	// Wait through brief writer contention on the destination rather than
+	// failing the whole landing (WAL readers don't block the restore writer).
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA busy_timeout=10000"); err != nil {
+		return fmt.Errorf("bootstrap-db-fetch: busy_timeout for %q: %w", rel, err)
+	}
+	source := "file:" + partial + "?mode=ro"
+	restore_error := conn.Raw(func(driverConn any) error {
+		dc, ok := driverConn.(sqlitedrv.Conn)
+		if !ok {
+			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
+		}
+		return dc.Raw().Restore("main", source)
+	})
+	if restore_error != nil {
+		return fmt.Errorf("bootstrap-db-fetch: restore %q into %q: %w", partial, rel, restore_error)
+	}
+	_ = os.Remove(partial)
 	return nil
 }
 

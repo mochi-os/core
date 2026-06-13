@@ -11,6 +11,7 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"log"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -50,9 +51,54 @@ func warn(message string, values ...any) {
 	log.Print(out + "\n")
 
 	admin := ini_string("email", "admin", "")
-	if admin != "" {
-		email_send(admin, "Mochi error", out)
+	if admin == "" {
+		return
 	}
+	// Rate-limit the admin email per warn FORMAT (not per formatted message —
+	// the args vary, the template is the recurring identity), so one repeating
+	// fault can't flood the inbox (a tight loop once sent ~3,000 mails). The
+	// log line above is always written; only the email is throttled.
+	send, suppressed := warn_email_allow(message)
+	if !send {
+		return
+	}
+	if suppressed > 0 {
+		out = fmt.Sprintf("%s\n\n(%d further warning(s) of this kind were suppressed since the last email.)", out, suppressed)
+	}
+	email_send(admin, "Mochi error", out)
+}
+
+type warn_email_record struct {
+	last       int64
+	suppressed int
+}
+
+var (
+	warn_email_state = map[string]warn_email_record{}
+	warn_email_mutex sync.Mutex
+)
+
+// warn_email_window is the minimum gap between admin emails for the same warn
+// format string.
+const warn_email_window = 60 * 60
+
+// warn_email_allow reports whether the admin email for this warn format may be
+// sent now. When it may, it returns the number of occurrences suppressed since
+// the previous email (for a rollup line) and opens a fresh window; when it may
+// not, it records the suppression and returns (false, 0). The first occurrence
+// of any format always sends. In-memory only — a restart resets the windows.
+func warn_email_allow(format string) (send bool, suppressed int) {
+	warn_email_mutex.Lock()
+	defer warn_email_mutex.Unlock()
+	record := warn_email_state[format]
+	if record.last != 0 && now()-record.last < warn_email_window {
+		record.suppressed++
+		warn_email_state[format] = record
+		return false, 0
+	}
+	suppressed = record.suppressed
+	warn_email_state[format] = warn_email_record{last: now()}
+	return true, suppressed
 }
 
 // mochi.log.debug/info/warn(format, values...) -> None: Write to application log

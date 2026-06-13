@@ -307,7 +307,7 @@ $(msi): $(bin)/mochi-server.exe $(bin)/mochictl.exe
 	cp $(bin)/mochi-server.exe $(build_windows)/
 	cp $(bin)/mochictl.exe $(build_windows)/
 	cp build/msi/mochi.conf $(build_windows)/
-	wixl -v --ext ui -D Version=$(version) -D SourceDir=$(build_windows) -o $(msi) build/msi/mochi.wxs
+	wixl -v --ext ui -a x64 -D Version=$(version) -D SourceDir=$(build_windows) -o $(msi) build/msi/mochi.wxs
 	rm -rf $(build_windows)
 	ls -l $(msi)
 

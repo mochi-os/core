@@ -111,7 +111,7 @@ func admin_replication_pair(c *gin.Context) {
 				"added": added,
 				"role":  role,
 			}
-			peer_name_fields(member, peer, false)
+			peer_name_fields(member, peer)
 			// Admin output is operator display: fingerprints hyphenate.
 			member["fingerprint"] = fingerprint_hyphens(member["fingerprint"].(string))
 			members = append(members, member)

@@ -124,8 +124,6 @@ func peer_connect(id string) bool {
 	if ok {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
-		// Fresh authenticated evidence: re-verify stale name claims now.
-		peer_names_connected(id)
 		// Clear the silent-cache BEFORE resurrecting deferred rows.
 		// queue_resurrect_peer pulls rows forward to now() so they
 		// run on the next queue_process tick, but peer_protocol_open's

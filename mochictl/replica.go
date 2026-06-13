@@ -359,7 +359,7 @@ func replica_delivery_hint(d *replica_delivery) string {
 
 // replica_status_read is the polling-loop helper used by cmd_replica_join.
 // Returns (state, source, reason, members, names, delivery, err) —
-// names maps member peer ids to their verified display names.
+// names maps member peer ids to their announced display names.
 func replica_status_read() (string, string, string, []string, map[string]string, *replica_delivery, error) {
 	resp, err := client().Get("/_/admin/replica/status")
 	if err != nil {

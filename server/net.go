@@ -289,8 +289,6 @@ func net_watch_disconnect() {
 			// is how a newcomer learns existing peers' names and vice
 			// versa. Collapsed by the publish loop's minimum interval.
 			peers_publish_request()
-			// Fresh authenticated evidence for the peer's name claims.
-			peer_names_connected(c.Peer.String())
 		case p2p_network.NotConnected:
 			peer_disconnected(c.Peer.String())
 		}

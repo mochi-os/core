@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 85
+	schema_version = 86
 )
 
 var (
@@ -280,7 +280,7 @@ func db_create() {
 	peers := db_open("db/peers.db")
 	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 	// Claimed display names per peer with their verification verdict
-	peers.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
+	peers.exec("create table names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
 	// Latest signed peer record per peer: self-certifying addresses
 	peers.exec("create table records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
 
@@ -918,6 +918,8 @@ func db_upgrade() {
 			db_upgrade_84()
 		case 85:
 			db_upgrade_85()
+		case 86:
+			db_upgrade_86()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1388,6 +1390,16 @@ func db_upgrade_83() {
 func db_upgrade_84() {
 	p := db_open("db/peers.db")
 	p.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
+}
+
+// db_upgrade_86 drops peer-name DNS verification: the names table loses its
+// verified/checked columns and keeps only the announced name. peers.db is
+// host-local cache repopulated from announcements, so the table is dropped
+// and recreated rather than altered in place.
+func db_upgrade_86() {
+	p := db_open("db/peers.db")
+	p.exec("drop table if exists names")
+	p.exec("create table names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
 }
 
 // db_upgrade_85 re-keys replication.db cursor/tail/pending stream

@@ -1,23 +1,21 @@
 // Mochi server: peer display-name unit tests
 // Copyright Alistair Cunningham 2026
 //
-// Tests for the hostname/domain claims carried in peers/publish: claim
-// validation, the merge/clear semantics, DNS verification against
-// authenticated-connection evidence, the display selection rule (dotted
-// claims never show unverified), and the approval-context withholding.
+// Tests for the hostname a peer announces in peers/publish: name
+// validation, the store/clear semantics, that a served-domain list is
+// ignored, the announce source, load, and the schema-86 migration.
 
 package main
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"testing"
 )
 
-// setup_peer_names_test gives a fresh data_dir with settings, domains
-// and peers databases, empty peer registries, and stubbed resolver /
-// evidence hooks. Returns a cleanup restoring everything.
+// setup_peer_names_test gives a fresh data_dir with settings, domains and
+// peers databases and empty peer registries. Returns a cleanup restoring
+// everything.
 func setup_peer_names_test(t *testing.T) func() {
 	t.Helper()
 
@@ -34,7 +32,7 @@ func setup_peer_names_test(t *testing.T) func() {
 	pdb := db_open("db/peers.db")
 	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 	pdb.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
-	pdb.exec("create table if not exists names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
+	pdb.exec("create table if not exists names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
 
 	peers_lock.Lock()
 	saved_peers := peers
@@ -46,12 +44,7 @@ func setup_peer_names_test(t *testing.T) func() {
 	peer_names = map[string][]PeerName{}
 	peer_names_lock.Unlock()
 
-	saved_resolve := peer_names_resolve
-	saved_evidence := peer_names_evidence
-
 	return func() {
-		peer_names_resolve = saved_resolve
-		peer_names_evidence = saved_evidence
 		peer_names_lock.Lock()
 		peer_names = saved_names
 		peer_names_lock.Unlock()
@@ -64,7 +57,8 @@ func setup_peer_names_test(t *testing.T) func() {
 }
 
 // names_event builds the Event shape pubsub_receive hands to
-// peer_publish_event, with name claims and no addresses.
+// peer_publish_event, with a name (and an optional, ignored domains field)
+// and no addresses.
 func names_event(origin, name, domains string) *Event {
 	content := map[string]any{}
 	if name != "" {
@@ -99,19 +93,19 @@ func TestPeerPublishEventAppliesNames(t *testing.T) {
 	origin, _ := test_host(t)
 	peer_publish_event(names_event(origin, "Wasabi", "mochi-os.org, Example.COM"))
 
-	// Only the FQDN is applied; a peer's served-domain list is ignored.
-	name, verified := peer_name(origin)
-	if name != "wasabi" || verified {
-		t.Errorf("peer_name = %q/%v, want wasabi/false", name, verified)
+	// Only the announced hostname is applied; a peer's served-domain list
+	// is ignored.
+	if name := peer_name(origin); name != "wasabi" {
+		t.Errorf("peer_name = %q, want wasabi", name)
 	}
 
 	var rows []peer_name_row
-	db_open("db/peers.db").scans(&rows, "select id, name, verified, checked, updated from names where id=? order by name", origin)
+	db_open("db/peers.db").scans(&rows, "select id, name, updated from names where id=? order by name", origin)
 	if len(rows) != 1 {
-		t.Fatalf("stored claims = %d, want 1 (served domains must be ignored)", len(rows))
+		t.Fatalf("stored names = %d, want 1 (served domains must be ignored)", len(rows))
 	}
 	if rows[0].Name != "wasabi" {
-		t.Errorf("stored claim = %q, want wasabi", rows[0].Name)
+		t.Errorf("stored name = %q, want wasabi", rows[0].Name)
 	}
 }
 
@@ -121,18 +115,18 @@ func TestPeerPublishEventClearsNames(t *testing.T) {
 
 	origin, _ := test_host(t)
 	peer_publish_event(names_event(origin, "wasabi", ""))
-	if name, _ := peer_name(origin); name != "wasabi" {
-		t.Fatalf("claim not applied")
+	if name := peer_name(origin); name != "wasabi" {
+		t.Fatalf("name not applied")
 	}
 
-	// A publish with no claims from a peer that previously claimed
+	// A publish with no name from a peer that previously announced one
 	// means its operator wants anonymity.
 	peer_publish_event(names_event(origin, "", ""))
-	if name, _ := peer_name(origin); name != "" {
-		t.Errorf("claims survived a claimless publish: %q", name)
+	if name := peer_name(origin); name != "" {
+		t.Errorf("name survived a nameless publish: %q", name)
 	}
 	if exists, _ := db_open("db/peers.db").exists("select 1 from names where id=?", origin); exists {
-		t.Error("claims survived in peers.db")
+		t.Error("name survived in peers.db")
 	}
 }
 
@@ -150,127 +144,37 @@ func TestPeerPublishEventIgnoresDomains(t *testing.T) {
 	}
 	peer_publish_event(names_event(origin, "wasabi", domains))
 
-	// However many domains a peer lists, none are stored — only the FQDN.
+	// However many domains a peer lists, none are stored — only the name.
 	peer_names_lock.Lock()
 	stored := len(peer_names[origin])
 	peer_names_lock.Unlock()
 	if stored != 1 {
-		t.Errorf("stored claims = %d, want 1 (served domains ignored)", stored)
+		t.Errorf("stored names = %d, want 1 (served domains ignored)", stored)
 	}
-	if name, _ := peer_name(origin); name != "wasabi" {
+	if name := peer_name(origin); name != "wasabi" {
 		t.Errorf("peer_name = %q, want wasabi", name)
 	}
 }
 
-func TestPeerNamesVerify(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
-
-	origin, _ := test_host(t)
-	peer_names_evidence = func(string) []string { return []string{"192.0.2.7"} }
-	resolved := map[string][]net.IP{"mochi-os.org": {net.ParseIP("192.0.2.7")}, "evil.example": {net.ParseIP("203.0.113.9")}}
-	var resolve_error error
-	peer_names_resolve = func(host string) ([]net.IP, error) {
-		if resolve_error != nil {
-			return nil, resolve_error
-		}
-		return resolved[host], nil
-	}
-
-	peer_names_apply(origin, []string{"wasabi", "mochi-os.org", "evil.example"})
-	peer_names_verify(origin)
-
-	// Matching claim verifies and wins selection; mismatching stays out.
-	name, verified := peer_name(origin)
-	if name != "mochi-os.org" || !verified {
-		t.Fatalf("peer_name = %q/%v, want mochi-os.org/true", name, verified)
-	}
-
-	// Verdicts persist to peers.db (survive restarts).
-	if ok, _ := db_open("db/peers.db").exists("select 1 from names where id=? and name='mochi-os.org' and verified=1", origin); !ok {
-		t.Error("verified verdict not persisted")
-	}
-
-	// A transient resolver failure keeps the verdict ...
-	resolve_error = &net.DNSError{Err: "timeout", IsTimeout: true}
-	peer_names_lock.Lock()
-	for i := range peer_names[origin] {
-		peer_names[origin][i].Checked = 0
-	}
-	peer_names_lock.Unlock()
-	peer_names_verify(origin)
-	if name, verified := peer_name(origin); name != "mochi-os.org" || !verified {
-		t.Errorf("transient failure demoted: %q/%v", name, verified)
-	}
-
-	// ... but a definitive not-found demotes.
-	resolve_error = &net.DNSError{Err: "no such host", IsNotFound: true}
-	peer_names_lock.Lock()
-	for i := range peer_names[origin] {
-		peer_names[origin][i].Checked = 0
-	}
-	peer_names_lock.Unlock()
-	peer_names_verify(origin)
-	if name, verified := peer_name(origin); name != "wasabi" || verified {
-		t.Errorf("not-found kept verification: %q/%v", name, verified)
-	}
-}
-
-func TestPeerNamesNewClaimUnverified(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
-
-	origin, _ := test_host(t)
-	peer_names_evidence = func(string) []string { return []string{"192.0.2.7"} }
-	peer_names_resolve = func(host string) ([]net.IP, error) { return []net.IP{net.ParseIP("192.0.2.7")}, nil }
-
-	peer_names_apply(origin, []string{"a.example.com"})
-	peer_names_verify(origin)
-	if _, verified := peer_name(origin); !verified {
-		t.Fatal("claim should verify")
-	}
-
-	// A changed claim set: the kept claim retains its verdict, the new
-	// claim starts unverified.
-	peer_names_apply(origin, []string{"b.example.com", "a.example.com"})
-	peer_names_lock.Lock()
-	for _, c := range peer_names[origin] {
-		switch c.Name {
-		case "a.example.com":
-			if !c.Verified {
-				t.Error("kept claim lost its verdict")
-			}
-		case "b.example.com":
-			if c.Verified {
-				t.Error("new claim born verified")
-			}
-		}
-	}
-	peer_names_lock.Unlock()
-}
-
-func TestPeerNameApprovalContext(t *testing.T) {
+func TestPeerNameFields(t *testing.T) {
 	cleanup := setup_peer_names_test(t)
 	defer cleanup()
 
 	origin, _ := test_host(t)
 	peer_names_apply(origin, []string{"wasabi"})
 
-	// Unverified names are withheld where a human approves trust.
+	// The announced name shows as a plain label; the fingerprint is the
+	// authoritative identifier. No verified field exists any more.
 	m := map[string]any{}
-	peer_name_fields(m, origin, true)
-	if m["name"] != "" || m["verified"] != false {
-		t.Errorf("approval context leaked unverified name: %v", m)
+	peer_name_fields(m, origin)
+	if m["name"] != "wasabi" {
+		t.Errorf("name = %v, want wasabi", m["name"])
 	}
 	if fp, _ := m["fingerprint"].(string); len(fp) != 9 || fp != fingerprint(origin) {
 		t.Errorf("fingerprint = %v, want %s", m["fingerprint"], fingerprint(origin))
 	}
-
-	// Informational contexts show it muted (verified=false).
-	m = map[string]any{}
-	peer_name_fields(m, origin, false)
-	if m["name"] != "wasabi" || m["verified"] != false {
-		t.Errorf("informational context = %v", m)
+	if _, ok := m["verified"]; ok {
+		t.Error("verified field should no longer be set")
 	}
 }
 
@@ -300,24 +204,30 @@ func TestPeerNamesLoad(t *testing.T) {
 
 	origin, _ := test_host(t)
 	db := db_open("db/peers.db")
-	db.exec("insert into names (id, name, verified, checked, updated) values (?, 'mochi-os.org', 1, 5, 5), (?, 'wasabi', 0, 0, 5)", origin, origin)
+	db.exec("insert into names (id, name, updated) values (?, 'mochi-os.org', 5)", origin)
 
 	peer_names_load()
-	if name, verified := peer_name(origin); name != "mochi-os.org" || !verified {
-		t.Errorf("loaded peer_name = %q/%v, want mochi-os.org/true", name, verified)
+	if name := peer_name(origin); name != "mochi-os.org" {
+		t.Errorf("loaded peer_name = %q, want mochi-os.org", name)
 	}
 }
 
-func TestDbUpgrade82(t *testing.T) {
+func TestDbUpgrade86(t *testing.T) {
 	cleanup := setup_peer_names_test(t)
 	defer cleanup()
 
 	db := db_open("db/peers.db")
+	// Recreate the pre-86 shape (verified/checked columns) with a cached row.
 	db.exec("drop table names")
-	db_upgrade_82()
-	db_upgrade_82() // idempotent
-	db.exec("insert into names (id, name, updated) values ('x', 'y', 1)")
-	if ok, _ := db.exists("select 1 from names where id='x'"); !ok {
+	db.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
+	db.exec("insert into names (id, name, verified, checked, updated) values ('x', 'y', 1, 5, 5)")
+
+	db_upgrade_86()
+	db_upgrade_86() // idempotent
+
+	// New shape: the table takes the three-column insert and is usable.
+	db.exec("insert into names (id, name, updated) values ('a', 'b', 1)")
+	if ok, _ := db.exists("select 1 from names where id='a'"); !ok {
 		t.Error("names table not usable after upgrade")
 	}
 }

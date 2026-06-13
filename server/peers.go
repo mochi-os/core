@@ -431,8 +431,7 @@ func peers_manager() {
 	for range time.Tick(24 * time.Hour) {
 		peers_prune()
 
-		// Claimed names age out with the same expiry; connected peers
-		// with day-old verification verdicts re-check. Signed records
+		// Announced names age out with the same expiry. Signed records
 		// and relay flags age out too.
 		expiry := now() - peer_expiry
 		peer_names_sweep(expiry)

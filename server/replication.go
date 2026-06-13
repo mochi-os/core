@@ -2489,7 +2489,7 @@ func api_replication_status(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	for _, p := range pair {
 		entry := sl.NewDict(4)
 		_ = entry.SetKey(sl.String("peer"), sl.String(p))
-		peer_name_dict(entry, p, false)
+		peer_name_dict(entry, p)
 		pair_values = append(pair_values, entry)
 	}
 	irreparable_values := make([]sl.Value, 0, len(irreparable))
@@ -2547,8 +2547,7 @@ func api_replication_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
 		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
-		// Approval context: unverified names are withheld.
-		peer_name_dict(entry, peer, true)
+		peer_name_dict(entry, peer)
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -2589,7 +2588,7 @@ func api_replication_hosts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		_ = entry.SetKey(sl.String("ack"), sl.MakeInt64(row_int(r, "ack")))
 		_ = entry.SetKey(sl.String("irreparable"), sl.Bool(broken))
 		_ = entry.SetKey(sl.String("offline"), sl.MakeInt64(offline))
-		peer_name_dict(entry, peer, false)
+		peer_name_dict(entry, peer)
 		_ = out.Append(entry)
 	}
 	return out, nil
@@ -2726,8 +2725,7 @@ func api_replication_joins(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		_ = entry.SetKey(sl.String("peer"), sl.String(peer))
 		_ = entry.SetKey(sl.String("label"), sl.String(row_string(r, "label")))
 		_ = entry.SetKey(sl.String("expires"), sl.MakeInt64(row_int(r, "expires")))
-		// Approval context: unverified names are withheld.
-		peer_name_dict(entry, peer, true)
+		peer_name_dict(entry, peer)
 		_ = out.Append(entry)
 	}
 	return out, nil

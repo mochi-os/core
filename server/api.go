@@ -566,11 +566,9 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	out := make([]map[string]any, 0, len(rollup))
 	for id, e := range rollup {
-		name, verified := peer_name(id)
 		out = append(out, map[string]any{
 			"peer":        id,
-			"name":        name,
-			"verified":    verified,
+			"name":        peer_name(id),
 			"fingerprint": fingerprint(id),
 			"connected":   e.connected,
 			"unreachable": peer_is_silent(id),

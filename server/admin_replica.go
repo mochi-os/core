@@ -203,12 +203,12 @@ func admin_replica_status(c *gin.Context) {
 		state = "approved"
 	}
 
-	// Verified display names for the members, keyed by peer id —
-	// annotation data for mochictl output. Verified only: this readout
-	// can inform trust decisions.
+	// Announced display names for the members, keyed by peer id —
+	// annotation data for mochictl output. Self-asserted labels; the
+	// fingerprint (also shown) is the authoritative identifier.
 	names := gin.H{}
 	for _, m := range members {
-		if name, verified := peer_name(m); verified {
+		if name := peer_name(m); name != "" {
 			names[m] = name
 		}
 	}

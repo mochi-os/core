@@ -157,13 +157,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 		if user.Status == "pending-restore" {
 			if html {
-				c.Redirect(http.StatusFound, "/login/restore")
+				c.Redirect(http.StatusFound, app_login_route("restore"))
 			} else {
 				respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
 			}
 		} else {
 			if html {
-				c.Redirect(http.StatusFound, "/login/replicating")
+				c.Redirect(http.StatusFound, app_login_route("replicating"))
 			} else {
 				respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
 			}
@@ -185,7 +185,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if user != nil && user.Status == "closing" && !app_is_login(a) {
 		accept := c.GetHeader("Accept")
 		if strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json") {
-			c.Redirect(http.StatusFound, "/login/closing")
+			c.Redirect(http.StatusFound, app_login_route("closing"))
 		} else {
 			respond_error(c, http.StatusForbidden, "account_closing", "errors.account_closing", nil)
 		}
@@ -309,7 +309,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	if user != nil && !app_is_login(a) && !aa.Public {
 		if user.identity() == nil {
 			if strings.Contains(c.GetHeader("Accept"), "text/html") {
-				c.Redirect(http.StatusFound, "/login/identity")
+				c.Redirect(http.StatusFound, app_login_route("identity"))
 				return true
 			}
 			respond_error(c, http.StatusForbidden, "identity_required", "errors.identity_required", nil)
@@ -1308,9 +1308,9 @@ func web_path(c *gin.Context) {
 	// by the web_action gate.
 	if web_should_serve_shell(c) {
 		raw := strings.Trim(c.Request.URL.Path, "/")
-		if raw != "login" && !strings.HasPrefix(raw, "login/") {
+		if !app_login_owns(raw) {
 			if u := web_auth(c); u != nil && u.Status == "closing" {
-				c.Redirect(http.StatusFound, "/login/closing")
+				c.Redirect(http.StatusFound, app_login_route("closing"))
 				return
 			}
 		}
@@ -1406,7 +1406,7 @@ func web_path(c *gin.Context) {
 	if raw == "" {
 		if user == nil && !web_is_iframe_request(c) {
 			// Serve login app for unauthenticated top-level navigations
-			if login_app := app_for_path(nil, "login"); login_app != nil {
+			if login_app := app_login(); login_app != nil {
 				web_action(c, login_app, "", nil)
 				return
 			}
@@ -1425,8 +1425,8 @@ func web_path(c *gin.Context) {
 	// Check for app matching first segment (user preferences, then system defaults, then fallback)
 	a := app_for_path(user, first)
 	if a != nil {
-		// 301 redirect /login -> / for unauthenticated users (bookmarks, password managers)
-		if first == "login" && len(segments) == 1 && user == nil &&
+		// 301 redirect the login path -> / for unauthenticated users (bookmarks, password managers)
+		if first == app_login_path() && len(segments) == 1 && user == nil &&
 			strings.Contains(c.GetHeader("Accept"), "text/html") {
 			target := "/"
 			if c.Request.URL.RawQuery != "" {

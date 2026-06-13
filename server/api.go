@@ -595,6 +595,11 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //	                       have no target peer so they never appear in the
 //	                       peers() rollup — they accumulate exactly when the
 //	                       server is isolated from the mesh.
+//	unresolved    int    — direct messages queued to a recipient entity whose
+//	                       host server is not yet known locally (empty target).
+//	                       Like broadcasts they have no target peer, so they
+//	                       never appear in the peers() rollup; the queue retry
+//	                       loop keeps re-resolving which server hosts them.
 //	holepunch     dict   — NAT-to-NAT hole-punch (DCUtR) outcomes since
 //	                       startup: {success, failure}. Both 0 on a server
 //	                       that has never needed to punch (public, or only
@@ -605,10 +610,14 @@ func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		mesh++
 	}
 	queued := int64(0)
+	unresolved := int64(0)
 	if file_exists(filepath.Join(data_dir, "db", "queue.db")) {
 		qdb := db_open("db/queue.db")
 		if row, _ := qdb.row("select count(*) as c from queue where type='broadcast'"); row != nil {
 			queued = row_int(row, "c")
+		}
+		if row, _ := qdb.row("select count(*) as c from queue where type='direct' and target=''"); row != nil {
+			unresolved = row_int(row, "c")
 		}
 	}
 	return sl_encode(map[string]any{
@@ -617,6 +626,7 @@ func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		"mesh":         mesh,
 		"last":         pubsub_last.Load(),
 		"queued":       queued,
+		"unresolved":   unresolved,
 		"holepunch": map[string]any{
 			"success": holepunch_success.Load(),
 			"failure": holepunch_failure.Load(),

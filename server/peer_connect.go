@@ -356,13 +356,8 @@ func peers_publish() {
 		if relay_enabled() {
 			m.set("relay", "true")
 		}
-		if name, domains := peer_names_announce(); name != "" || domains != "" {
-			if name != "" {
-				m.set("name", name)
-			}
-			if domains != "" {
-				m.set("domains", domains)
-			}
+		if name := peer_names_announce(); name != "" {
+			m.set("name", name)
 		}
 		m.publish(false)
 
@@ -405,15 +400,6 @@ func peer_publish_event(e *Event) {
 	var names []string
 	if n := strings.ToLower(strings.TrimSpace(e.get("name", ""))); n != "" && peer_name_valid(n) {
 		names = append(names, n)
-	}
-	for _, d := range strings.Split(e.get("domains", ""), ",") {
-		if len(names) >= peer_names_maximum {
-			break
-		}
-		d = strings.ToLower(strings.TrimSpace(d))
-		if d != "" && peer_name_valid(d) {
-			names = append(names, d)
-		}
 	}
 	peer_names_apply(e.origin, names)
 

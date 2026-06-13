@@ -59,7 +59,7 @@ type peer_name_row struct {
 }
 
 const (
-	peer_names_maximum = 5    // claims stored per peer: 1 hostname + 4 domains
+	peer_names_maximum = 5    // defensive cap on claims merged per peer (a real announcement carries a single FQDN)
 	peer_names_recheck = 3600 // claim verdicts older than this re-verify on reconnect
 )
 
@@ -99,14 +99,15 @@ func peer_name_valid(name string) bool {
 	return true
 }
 
-// peer_names_announce composes this server's own announcement for
-// peers/publish: the hostname (the `hostname` setting, defaulting to the
-// OS hostname) and its served domains from the domain registry
-// (wildcards collapse to their base). Both empty when the administrator
-// has turned `hostname_publish` off.
-func peer_names_announce() (string, string) {
+// peer_names_announce returns this server's own FQDN for peers/publish:
+// the `hostname` setting, defaulting to the OS hostname. The served
+// domains from the domain registry are deliberately NOT announced — a
+// server publishes the name it is reached by, not the list of domains it
+// happens to host. Empty when the administrator has turned
+// `hostname_publish` off or the resolved name is invalid.
+func peer_names_announce() string {
 	if setting_get("hostname_publish", "true") != "true" {
-		return "", ""
+		return ""
 	}
 
 	name := strings.ToLower(strings.TrimSpace(setting_get("hostname", "")))
@@ -116,32 +117,10 @@ func peer_names_announce() (string, string) {
 		}
 	}
 	if !peer_name_valid(name) {
-		name = ""
+		return ""
 	}
 
-	var domains []string
-	for _, d := range domain_list() {
-		n := strings.ToLower(strings.TrimPrefix(d.Domain, "*."))
-		if n == name || !peer_name_valid(n) {
-			continue
-		}
-		duplicate := false
-		for _, existing := range domains {
-			if existing == n {
-				duplicate = true
-				break
-			}
-		}
-		if duplicate {
-			continue
-		}
-		domains = append(domains, n)
-		if len(domains) == peer_names_maximum-1 {
-			break
-		}
-	}
-
-	return name, strings.Join(domains, ",")
+	return name
 }
 
 // peer_names_apply merges a publish's claimed names for a peer. Claims

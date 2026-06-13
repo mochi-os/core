@@ -99,8 +99,7 @@ func TestPeerPublishEventAppliesNames(t *testing.T) {
 	origin, _ := test_host(t)
 	peer_publish_event(names_event(origin, "Wasabi", "mochi-os.org, Example.COM"))
 
-	// The dotless hostname displays unverified; dotted claims are
-	// stored but never selected while unverified.
+	// Only the FQDN is applied; a peer's served-domain list is ignored.
 	name, verified := peer_name(origin)
 	if name != "wasabi" || verified {
 		t.Errorf("peer_name = %q/%v, want wasabi/false", name, verified)
@@ -108,8 +107,11 @@ func TestPeerPublishEventAppliesNames(t *testing.T) {
 
 	var rows []peer_name_row
 	db_open("db/peers.db").scans(&rows, "select id, name, verified, checked, updated from names where id=? order by name", origin)
-	if len(rows) != 3 {
-		t.Fatalf("stored claims = %d, want 3", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("stored claims = %d, want 1 (served domains must be ignored)", len(rows))
+	}
+	if rows[0].Name != "wasabi" {
+		t.Errorf("stored claim = %q, want wasabi", rows[0].Name)
 	}
 }
 
@@ -134,7 +136,7 @@ func TestPeerPublishEventClearsNames(t *testing.T) {
 	}
 }
 
-func TestPeerNamesCap(t *testing.T) {
+func TestPeerPublishEventIgnoresDomains(t *testing.T) {
 	cleanup := setup_peer_names_test(t)
 	defer cleanup()
 
@@ -148,11 +150,15 @@ func TestPeerNamesCap(t *testing.T) {
 	}
 	peer_publish_event(names_event(origin, "wasabi", domains))
 
+	// However many domains a peer lists, none are stored — only the FQDN.
 	peer_names_lock.Lock()
 	stored := len(peer_names[origin])
 	peer_names_lock.Unlock()
-	if stored != peer_names_maximum {
-		t.Errorf("stored claims = %d, want cap %d", stored, peer_names_maximum)
+	if stored != 1 {
+		t.Errorf("stored claims = %d, want 1 (served domains ignored)", stored)
+	}
+	if name, _ := peer_name(origin); name != "wasabi" {
+		t.Errorf("peer_name = %q, want wasabi", name)
 	}
 }
 
@@ -273,21 +279,18 @@ func TestPeerNamesAnnounce(t *testing.T) {
 	defer cleanup()
 
 	setting_set("hostname", "test-box")
+	// Served domains are present but must never reach the announcement.
 	db := db_open("db/domains.db")
 	db.exec("insert into domains (domain, created, updated) values ('example.com', 1, 1), ('*.wild.example', 1, 1)")
 
-	name, domains := peer_names_announce()
-	if name != "test-box" {
+	if name := peer_names_announce(); name != "test-box" {
 		t.Errorf("announced name = %q, want test-box", name)
-	}
-	if domains != "example.com,wild.example" && domains != "wild.example,example.com" {
-		t.Errorf("announced domains = %q", domains)
 	}
 
 	// The administrator opt-out silences the announcement entirely.
 	setting_set("hostname_publish", "false")
-	if name, domains := peer_names_announce(); name != "" || domains != "" {
-		t.Errorf("opt-out still announces %q/%q", name, domains)
+	if name := peer_names_announce(); name != "" {
+		t.Errorf("opt-out still announces %q", name)
 	}
 }
 

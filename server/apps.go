@@ -859,24 +859,52 @@ func app_for_service_fallback(user *User, service string) *App {
 	return app_select_best(candidates)
 }
 
-// app_is_login reports whether a is the server's login app. The login
-// app's id is "login" on a development install (directory name) but a
-// publisher entity id on a published install, so identity is resolved
-// through the app's registered "login" path rather than the id literal.
-// The web gates that exempt the login app (pending-replication,
-// account-closing, identity-required) redirect INTO /login/* pages —
-// matching on the id literal made those redirects loop forever on every
-// published install, because the gate fired on the login app itself
-// (ticket #414: /login/replicating 302ing to itself).
+// app_login_path is the URL path the login app is served at. The
+// login_app system setting names it (default "login"); an administrator
+// can point it at another app's path to replace the login experience —
+// landing page and interstitials — with their own app. Resolving by
+// path, not by app id, keeps it mode-independent (the path is the same
+// on a development and a published install), which is what stopped the
+// published-install redirect loop in ticket #414.
+func app_login_path() string {
+	return setting_get("login_app", "login")
+}
+
+// app_login resolves the app bound to the login role: the app serving
+// app_login_path. This is the app the auth gates exempt (it owns the
+// interstitial pages) and the landing served to unauthenticated users.
+func app_login() *App {
+	return app_for_path(nil, app_login_path())
+}
+
+// app_is_login reports whether a is the bound login app. The gates that
+// exempt the login app (pending-replication, account-closing,
+// identity-required) redirect INTO its interstitial pages, so the login
+// app must never be gated against itself — matching by the resolved app
+// rather than an id literal is what keeps that from looping on a
+// published install (ticket #414).
 func app_is_login(a *App) bool {
 	if a == nil {
 		return false
 	}
-	if a.id == "login" {
-		return true
-	}
-	login := app_for_path(nil, "login")
-	return login != nil && login.id == a.id
+	l := app_login()
+	return l != nil && l.id == a.id
+}
+
+// app_login_route is the absolute URL of one of the login app's
+// interstitial pages (replicating, restore, closing, identity) — the
+// targets the auth gates redirect a browser to. The page names are
+// fixed conventions; only the login app's path varies.
+func app_login_route(name string) string {
+	return "/" + app_login_path() + "/" + name
+}
+
+// app_login_owns reports whether a trimmed request path belongs to the
+// login app (its path or a sub-path) — used to exempt it from the
+// shell-level closing gate.
+func app_login_owns(raw string) bool {
+	p := app_login_path()
+	return raw == p || strings.HasPrefix(raw, p+"/")
 }
 
 // app_for_path finds the best app for a URL path with user preferences.

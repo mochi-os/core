@@ -1939,8 +1939,15 @@ func TestNotificationsAppSelfCallBypass(t *testing.T) {
 func TestAppIsLogin(t *testing.T) {
 	cleanup := create_test_apps_db(t)
 	defer cleanup()
+	defer apps_path_delete("login")
 
-	if !app_is_login(&App{id: "login"}) {
+	// The login app is resolved by the login_app path binding (default
+	// "login"), not by an id literal — so it works the same on a dev
+	// install (id "login") and a published install (publisher entity id).
+	dev := app("login")
+	apps_path_set("login", dev.id)
+
+	if !app_is_login(dev) {
 		t.Error("dev login app (id \"login\") must be the login app")
 	}
 	if app_is_login(nil) {
@@ -1954,11 +1961,41 @@ func TestAppIsLogin(t *testing.T) {
 	// only through the system path binding.
 	published := app("1AppIsLoginTestEntityIdXXXXXXXXXXXXXXXXXXXXXXXXXXX")
 	apps_path_set("login", published.id)
-	defer apps_path_delete("login")
 	if !app_is_login(published) {
 		t.Error("published login app (entity id bound to path \"login\") must be the login app")
 	}
 	if app_is_login(&App{id: "1SomeOtherPublishedAppEntityIdYYYYYYYYYYYYYYYYYYYY"}) {
 		t.Error("other published app must not be the login app")
+	}
+
+	// Default route and path ownership.
+	if got := app_login_route("closing"); got != "/login/closing" {
+		t.Errorf("route = %q, want /login/closing", got)
+	}
+	if !app_login_owns("login") || !app_login_owns("login/identity") {
+		t.Error("login path must be owned by the login app")
+	}
+	if app_login_owns("feeds") {
+		t.Error("an unrelated path must not be owned by the login app")
+	}
+
+	// Admin override: point login_app at another app's path. The whole
+	// login experience — exemption, route, ownership — moves with it.
+	db_open("db/settings.db").exec("create table if not exists settings (name text primary key, value text not null)")
+	db_open("db/settings.db").exec("replace into settings (name, value) values ('login_app', 'welcome')")
+	defer apps_path_delete("welcome")
+	welcome := app("1WelcomeLandingAppEntityIdZZZZZZZZZZZZZZZZZZZZZZZZ")
+	apps_path_set("welcome", welcome.id)
+	if !app_is_login(welcome) {
+		t.Error("after override, the welcome app must be the login app")
+	}
+	if app_is_login(published) {
+		t.Error("after override, the previous login app must no longer match")
+	}
+	if got := app_login_route("identity"); got != "/welcome/identity" {
+		t.Errorf("override route = %q, want /welcome/identity", got)
+	}
+	if !app_login_owns("welcome") || app_login_owns("login") {
+		t.Error("ownership must follow the override")
 	}
 }

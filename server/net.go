@@ -24,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	holepunch "github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
@@ -180,7 +181,9 @@ func net_start() {
 		p2p.NATPortMap(),
 		p2p.EnableAutoNATv2(),
 		p2p.EnableNATService(),
-		p2p.EnableHolePunching(),
+		// Hole punching with a tracer so DCUtR outcomes are observable
+		// (logged and counted for the status page); see holepunch.go.
+		p2p.EnableHolePunching(holepunch.WithTracer(holepunch_tracer{})),
 		// Rewrite advertised addresses for the 443 fallback (no-op when
 		// off): drop the loopback WebSocket listener, inject the public
 		// WSS address. See fallback.go.

@@ -595,6 +595,10 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //	                       have no target peer so they never appear in the
 //	                       peers() rollup — they accumulate exactly when the
 //	                       server is isolated from the mesh.
+//	holepunch     dict   — NAT-to-NAT hole-punch (DCUtR) outcomes since
+//	                       startup: {success, failure}. Both 0 on a server
+//	                       that has never needed to punch (public, or only
+//	                       directly-reachable peers).
 func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	mesh := pubsub_topic_peers(net_pubsub)
 	if net_pubsub != nil {
@@ -613,6 +617,10 @@ func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		"mesh":         mesh,
 		"last":         pubsub_last.Load(),
 		"queued":       queued,
+		"holepunch": map[string]any{
+			"success": holepunch_success.Load(),
+			"failure": holepunch_failure.Load(),
+		},
 	}), nil
 }
 

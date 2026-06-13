@@ -1824,6 +1824,7 @@ func bootstrap_progress_start(peer, user string, scopes []string) {
 	bootstrap_progress_mutex.Lock()
 	bootstrap_progresses[peer] = &bootstrap_progress{user: user, started: now(), scopes: pending}
 	bootstrap_progress_mutex.Unlock()
+	replication_health_record_bootstrap()
 	info("Replication bootstrap starting: peer=%q user=%q scopes=%q", peer, user, strings.Join(scopes, " "))
 }
 

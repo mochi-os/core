@@ -90,6 +90,9 @@ func admin_replication_status(c *gin.Context) {
 		"links_pending":     links_pending,
 		"joins_pending":     joins_pending,
 		"bootstrap_pending": bootstrap_pending,
+		"stalled_count":     len(replication_pending_stalled()),
+		"irreparable_count": replication_irreparable_count(),
+		"recovery_rate":     replication_health_recovery_rate(),
 	})
 }
 

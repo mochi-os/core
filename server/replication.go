@@ -818,8 +818,78 @@ func replication_manager() {
 			replication_irreparable_scan()
 			replication_offline_scan()
 			replication_pending_gc()
+			replication_health_scan()
 			last_gc = now()
 		}
+	}
+}
+
+// Replication health signals. The per-target recovery cap (task #22) stops a
+// single stream looping forever, but it can't see two systemic symptoms: a
+// stalled-stream count climbing rather than draining (accumulating divergence)
+// and an abnormally high rate of auto-recovery bootstraps across all targets
+// (a non-converging path we haven't met, or one source problem hitting many
+// users). replication_health_scan watches both on the manager's hourly tick
+// and alerts via warn() — rate-limited per format by task #24, so the alert
+// itself can't storm. The same numbers are surfaced on the admin status
+// endpoint. The reason this matters: last time, exactly this kind of "the
+// system is working hard to repair itself" symptom ran unnoticed for days.
+const (
+	health_stalled_alert   = 10        // stalled streams that aren't draining
+	health_recovery_alert  = 20        // bootstraps started in the trailing window
+	health_recovery_window = 60 * 60   // trailing window for the recovery rate, seconds
+)
+
+var (
+	health_mutex            sync.Mutex
+	health_previous_stalled = -1 // -1 until the first scan sets a baseline
+	health_recovery_starts  []int64
+)
+
+// replication_health_record_bootstrap notes one bootstrap start for the
+// recovery-rate metric. Called from bootstrap_progress_start.
+func replication_health_record_bootstrap() {
+	health_mutex.Lock()
+	defer health_mutex.Unlock()
+	health_recovery_starts = append(health_recovery_starts, now())
+}
+
+// replication_health_recovery_rate returns the number of bootstraps started in
+// the trailing window, pruning entries older than it.
+func replication_health_recovery_rate() int {
+	health_mutex.Lock()
+	defer health_mutex.Unlock()
+	cutoff := now() - health_recovery_window
+	kept := health_recovery_starts[:0]
+	for _, t := range health_recovery_starts {
+		if t >= cutoff {
+			kept = append(kept, t)
+		}
+	}
+	health_recovery_starts = kept
+	return len(kept)
+}
+
+func replication_health_scan() {
+	stalled := len(replication_pending_stalled())
+	rate := replication_health_recovery_rate()
+
+	health_mutex.Lock()
+	previous := health_previous_stalled
+	health_previous_stalled = stalled
+	health_mutex.Unlock()
+
+	// Climbing (not draining between scans) past the floor: a legitimate
+	// bootstrap drains its transient stalls within the hour, so a count that
+	// holds or grows is accumulating divergence, not settling.
+	if stalled >= health_stalled_alert && previous >= 0 && stalled >= previous {
+		warn("Replication health: %d stalled streams not draining (was %d an hour ago) - replication is falling behind; check /_/admin/replication/stalled",
+			stalled, previous)
+	}
+	// Acute: an abnormal rate of auto-recovery bootstraps.
+	if rate >= health_recovery_alert {
+		warn("Replication health: %d recovery bootstraps in the last hour - auto-recovery is firing abnormally often; check replication.db pending/bootstrap state",
+			rate)
 	}
 }
 

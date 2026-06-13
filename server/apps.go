@@ -615,7 +615,7 @@ func app_check_install(id string) bool {
 		debug("App %q ignoring install status", id)
 		return true
 	}
-	debug("App %q checking install status", id)
+	// debug("App %q checking install status", id)
 
 	// Get all track versions from publisher
 	tracks, _, default_version, ok := app_check_version(id)
@@ -659,11 +659,11 @@ func app_check_install(id string) bool {
 func app_check_version(id string) (map[string]string, string, string, bool) {
 	s, err := stream("", id, "publisher", "version", "", nil)
 	if err != nil {
-		debug("App %q using fallback to default publisher", id)
+		// debug("App %q using fallback to default publisher", id)
 		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version", "", nil)
 	}
 	if err != nil {
-		debug("App %q version check failed: %v", id, err)
+		// debug("App %q version check failed: %v", id, err)
 		return nil, "", "", false
 	}
 	defer s.close()

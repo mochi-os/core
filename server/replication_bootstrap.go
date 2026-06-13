@@ -470,6 +470,7 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 		if settled == bootstrap_state_done {
 			bootstrap_scope_settled(peer, scope)
 		}
+		bootstrap_progress_settle(peer, scope, settled)
 		return 0
 	}
 	bootstrap_set_state(scope, peer, bootstrap_state_active, strconv.FormatInt(count, 10))
@@ -531,7 +532,6 @@ func replication_bootstrap_scope_done_event(e *Event) {
 	}
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from bootstrap_served where peer=? and scope=?", e.peer, done.Scope)
-	debug("Replication bootstrap-scope-done: peer=%q scope=%q", e.peer, done.Scope)
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)
@@ -780,8 +780,6 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 		_ = e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true})
 		return
 	}
-	debug("Replication bootstrap-file-manifest: scope=%q prefix=%q entries=%d from=%q",
-		scope, prefix, len(entries), e.peer)
 	// Empty manifest is still a single page with Done=true so the
 	// receiver knows to transition the scope to 'done'.
 	if len(entries) == 0 {
@@ -969,9 +967,10 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		if settle && settledState == bootstrap_state_done {
 			bootstrap_scope_settled(originPeer, res.Scope)
 		}
+		if settle {
+			bootstrap_progress_settle(originPeer, res.Scope, settledState)
+		}
 	}
-	debug("Replication bootstrap-file-manifest-result: scope=%q prefix=%q page-entries=%d needed=%d done=%v from=%q",
-		res.Scope, res.Prefix, len(res.Entries), len(needed), res.Done, originPeer)
 }
 
 // bootstrap_chunk_fetch_with_retry wraps bootstrap_file_chunk_fetch
@@ -1016,6 +1015,7 @@ var bootstrap_file_scope_driver = bootstrap_file_scope_driver_impl
 func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFileEntry) {
 	for _, entry := range needed {
 		ok := true
+		var size int64
 		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
 			resp, err := bootstrap_chunk_fetch_with_retry(peer, scope, req.Path, req.Offset, req.Length)
 			if err != nil {
@@ -1030,11 +1030,14 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 				ok = false
 				break
 			}
+			size += int64(len(resp.Data))
 			if resp.EOF {
 				break
 			}
 		}
-		if !ok {
+		if ok {
+			bootstrap_progress_transfer(peer, "file", size)
+		} else {
 			// Failed file: bump the failed counter so the settle path
 			// chooses 'incomplete' instead of 'done'. The pending
 			// counter still decrements below so the scope can settle
@@ -1135,8 +1138,6 @@ func replication_bootstrap_file_chunk_fetch_event(e *Event) {
 			scope, path, offset, e.peer, err)
 		return
 	}
-	debug("Replication bootstrap-file-chunk-fetch served: scope=%q path=%q offset=%d sent=%d eof=%v to=%q",
-		scope, path, offset, len(data), eof, e.peer)
 }
 
 // bootstrap_max_chunk_size caps a single chunk request at 1 MiB. The
@@ -1386,7 +1387,6 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		info("Replication bootstrap-db-fetch: backup %q failed (from=%q): %v", source_path, e.peer, err)
 		return
 	}
-	debug("Replication bootstrap-db-fetch: source=%q size=%d seed=%d to=%q", source_path, size, seedSeq, e.peer)
 
 	f, err := os.Open(tmp_path)
 	if err != nil {
@@ -1492,6 +1492,7 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	}
 
 	var seed int64
+	var received int64
 	for {
 		var chunk BootstrapDBChunk
 		if err := s.read(&chunk); err != nil {
@@ -1507,6 +1508,7 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 		if n != len(chunk.Data) {
 			return fmt.Errorf("bootstrap-db-fetch: short write at offset %d: wrote %d of %d", chunk.Offset, n, len(chunk.Data))
 		}
+		received += int64(n)
 		if chunk.EOF {
 			seed = chunk.Seed
 			break
@@ -1520,6 +1522,7 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 		return err
 	}
 	bootstrap_db_seed_cursor(peer, target, seed)
+	bootstrap_progress_transfer(peer, "database", received)
 	return nil
 }
 
@@ -1540,7 +1543,6 @@ func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 	rdb := db_open("db/replication.db")
 	replication_cursor_set(rdb, peer, repl_scope_app, user, stream, seed)
 	replication_stream_drain(rdb, peer, repl_scope_app, user, stream)
-	debug("Replication bootstrap: seeded cursor peer=%q user=%q db=%q seq=%d", peer, user, stream, seed)
 }
 
 // bootstrap_db_land atomically installs the completed snapshot at
@@ -1752,6 +1754,101 @@ func bootstrap_retry_incomplete_once() {
 	}
 }
 
+// bootstrap_progress tracks one in-flight bootstrap (a bootstrap_start
+// or bootstrap_start_user call) so the log carries a single starting
+// line and a single finished/incomplete summary line instead of a line
+// per manifest, DB, and chunk; per-transfer failures keep their own
+// info lines. Keyed by source peer — one bootstrap per peer at a time,
+// matching the (scope, peer) keying of the bootstrap state table.
+// In-memory only: a restart mid-bootstrap loses the summary (the
+// resume path's refires log through their own lines), and settles for
+// untracked (peer, scope) pairs — resume, retry-manager refires — are
+// no-ops here.
+type bootstrap_progress struct {
+	user      string
+	started   int64
+	scopes    map[string]string // scope -> "" (pending) | done | incomplete
+	databases int64
+	files     int64
+	bytes     int64
+	failures  int64
+}
+
+var (
+	bootstrap_progresses     = map[string]*bootstrap_progress{}
+	bootstrap_progress_mutex sync.Mutex
+)
+
+// bootstrap_progress_start registers a tracked bootstrap and logs the
+// starting line. A re-start for the same peer supersedes the prior
+// entry (its summary is abandoned).
+func bootstrap_progress_start(peer, user string, scopes []string) {
+	pending := map[string]string{}
+	for _, scope := range scopes {
+		pending[scope] = ""
+	}
+	bootstrap_progress_mutex.Lock()
+	bootstrap_progresses[peer] = &bootstrap_progress{user: user, started: now(), scopes: pending}
+	bootstrap_progress_mutex.Unlock()
+	info("Replication bootstrap starting: peer=%q user=%q scopes=%q", peer, user, strings.Join(scopes, " "))
+}
+
+// bootstrap_progress_transfer adds one completed transfer to the
+// peer's tracked bootstrap. kind is "database" or "file".
+func bootstrap_progress_transfer(peer, kind string, bytes int64) {
+	bootstrap_progress_mutex.Lock()
+	defer bootstrap_progress_mutex.Unlock()
+	p, ok := bootstrap_progresses[peer]
+	if !ok {
+		return
+	}
+	if kind == "database" {
+		p.databases++
+	} else {
+		p.files++
+	}
+	p.bytes += bytes
+}
+
+// bootstrap_progress_settle records a scope's settled state. When the
+// last tracked scope settles it logs the summary line and drops the
+// entry: "finished" when every scope reached done, "incomplete" when
+// any scope gave up on entries (the retry manager re-fires those
+// scopes later).
+func bootstrap_progress_settle(peer, scope, state string) {
+	bootstrap_progress_mutex.Lock()
+	p, ok := bootstrap_progresses[peer]
+	if !ok {
+		bootstrap_progress_mutex.Unlock()
+		return
+	}
+	if _, tracked := p.scopes[scope]; !tracked {
+		bootstrap_progress_mutex.Unlock()
+		return
+	}
+	p.scopes[scope] = state
+	if state == bootstrap_state_incomplete {
+		p.failures += bootstrap_get_failed(scope, peer)
+	}
+	for _, s := range p.scopes {
+		if s == "" {
+			bootstrap_progress_mutex.Unlock()
+			return
+		}
+	}
+	delete(bootstrap_progresses, peer)
+	bootstrap_progress_mutex.Unlock()
+
+	outcome := "finished"
+	for _, s := range p.scopes {
+		if s != bootstrap_state_done {
+			outcome = "incomplete"
+		}
+	}
+	info("Replication bootstrap %s: peer=%q user=%q duration=%ds databases=%d files=%d bytes=%d failures=%d",
+		outcome, peer, p.user, now()-p.started, p.databases, p.files, p.bytes, p.failures)
+}
+
 // bootstrap_start kicks off a whole-replica bootstrap from `peer`.
 // Called from the join-approved handler on a fresh replica once the
 // source has accepted the pair join; also exposed via mochictl for
@@ -1776,6 +1873,7 @@ func bootstrap_start(peer string) {
 	if peer == "" {
 		return
 	}
+	bootstrap_progress_start(peer, "", []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs})
 	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
 		go replication_bootstrap_file_manifest_fetch(peer, scope, "")
@@ -1813,6 +1911,7 @@ func bootstrap_start_user(peer, uid string) {
 	if peer == "" || uid == "" {
 		return
 	}
+	bootstrap_progress_start(peer, uid, []string{bootstrap_scope_files, bootstrap_scope_userdbs})
 	bootstrap_set_state(bootstrap_scope_files, peer, bootstrap_state_queued, "")
 	go replication_bootstrap_file_manifest_fetch(peer, bootstrap_scope_files, uid+"/")
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
@@ -2024,8 +2123,6 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope})
 		return
 	}
-	debug("Replication bootstrap-db-manifest: scope=%q user=%q entries=%d from=%q",
-		scope, user, len(entries), e.peer)
 	_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
 }
 
@@ -2040,14 +2137,11 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
 		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
 		bootstrap_scope_settled(originPeer, res.Scope)
-		debug("Replication bootstrap-db-manifest-result: scope=%q empty (no DBs to fetch) from=%q",
-			res.Scope, originPeer)
+		bootstrap_progress_settle(originPeer, res.Scope, bootstrap_state_done)
 		return
 	}
 	bootstrap_set_pending(res.Scope, originPeer, int64(len(res.Entries)))
 	go bootstrap_db_scope_driver(originPeer, res.Scope, res.Entries)
-	debug("Replication bootstrap-db-manifest-result: scope=%q driving %d entries from=%q",
-		res.Scope, len(res.Entries), originPeer)
 }
 
 // ============================================================

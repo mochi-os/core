@@ -279,11 +279,35 @@ func schedule_run(se ScheduledEvent) {
 		return
 	}
 
-	// Run the event handler
-	debug("schedule start: %s/%s id=%d", se.App, se.Event, se.ID)
+	// Run the event handler. Normal runs are not logged — failures have
+	// their own lines (panic recovery above, missing user/app warns and
+	// handler errors in schedule_run_event and the app framework). The
+	// watchdog covers the one case those miss: a handler that doesn't
+	// return. A run past schedule_stuck_seconds gets a stuck line, and a
+	// finished line when it eventually returns, so a stuck line with no
+	// finished line means the handler is still wedged (or died with the
+	// process).
+	started := now()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(schedule_stuck_seconds * time.Second):
+			info("schedule stuck: %s/%s id=%d running over %ds", se.App, se.Event, se.ID, int64(schedule_stuck_seconds))
+		}
+	}()
 	schedule_run_event(&se)
-	debug("schedule end: %s/%s id=%d", se.App, se.Event, se.ID)
+	close(done)
+	if now()-started >= schedule_stuck_seconds {
+		info("schedule finished: %s/%s id=%d after %ds", se.App, se.Event, se.ID, now()-started)
+	}
 }
+
+// schedule_stuck_seconds is how long a scheduled event may run before
+// the watchdog logs it as stuck. Feed polls and AI calls legitimately
+// take tens of seconds under remote rate-limit backoff; minutes is
+// pathological.
+const schedule_stuck_seconds = 5 * 60
 
 // schedule_run_event dispatches the scheduled event to the app's event handler
 func schedule_run_event(se *ScheduledEvent) {

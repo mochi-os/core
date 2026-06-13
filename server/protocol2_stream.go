@@ -48,7 +48,7 @@ func receive_stream(s p2p_network.Stream) {
 		return
 	}
 	session := session_id()
-	debug("Stream: open peer=%q session=%s", peer, session)
+	// debug("Stream: open peer=%q session=%s", peer, session)
 
 	if err := hello_write(s, 2, session, challenge, receiver_codecs(), receiver_features()); err != nil {
 		info("Stream: hello write failed peer=%q session=%s: %v", peer, session, err)
@@ -126,7 +126,7 @@ func receive_stream(s p2p_network.Stream) {
 	stream_dispatch(st, open, user, to, peer)
 
 	peer_discovered_address(peer, s.Conn().RemoteMultiaddr().String()+"/p2p/"+peer)
-	debug("Stream: closed peer=%q session=%s", peer, session)
+	// debug("Stream: closed peer=%q session=%s", peer, session)
 }
 
 // stream_resolve maps a /mochi/2/stream open target to its resolved

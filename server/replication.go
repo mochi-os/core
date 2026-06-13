@@ -411,13 +411,13 @@ func replication_op_receive(peer string, op *ReplicationOp) {
 	case anchored && op.Prev == cursor:
 		// Chains onto the cursor.
 	case anchored && op.Prev < cursor:
-		debug("Replication op below cursor: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d",
-			peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor)
+		// debug("Replication op below cursor: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d",
+		// 	peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor)
 		return
 	default:
 		replication_pending_buffer(db, peer, op)
-		debug("Replication op buffered out-of-order: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d anchored=%v",
-			peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor, anchored)
+		// debug("Replication op buffered out-of-order: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d anchored=%v",
+		// 	peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor, anchored)
 		return
 	}
 
@@ -472,8 +472,8 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
 			peer, op.Scope, op.User, op.Sequence, now())
 		replication_cursor_set(db, peer, op.Scope, op.User, repl_op_stream(op), op.Sequence)
-		debug("Replication op applied: peer=%q scope=%q user=%q db=%q seq=%d prev=%d table=%q op=%q",
-			peer, op.Scope, op.User, op.Database, op.Sequence, op.Prev, op.Table, op.Operation)
+		// debug("Replication op applied: peer=%q scope=%q user=%q db=%q seq=%d prev=%d table=%q op=%q",
+		// 	peer, op.Scope, op.User, op.Database, op.Sequence, op.Prev, op.Table, op.Operation)
 		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, op.UID)
 	case ApplyDeferred:
 		replication_pending_buffer(db, peer, op)
@@ -3113,7 +3113,7 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
 		return ApplyApplied
 	}
-	debug("Replication exec apply: user=%q app=%q table=%q", op.User, op.Database, op.Table)
+	// debug("Replication exec apply: user=%q app=%q table=%q", op.User, op.Database, op.Table)
 	return ApplyApplied
 }
 
@@ -3218,8 +3218,8 @@ func replication_system_set_apply_apps_two_col(originPeer string, s *SystemSet) 
 			fmt.Sprintf("replace into %s (%s, app) values (?, ?)", s.Table, keyCol),
 			s.Row, s.Value)
 	}
-	debug("Replication system-set apps.%s applied: %s=%q value=%q (from %q)",
-		s.Table, keyCol, s.Row, s.Value, originPeer)
+	// debug("Replication system-set apps.%s applied: %s=%q value=%q (from %q)",
+	// 	s.Table, keyCol, s.Row, s.Value, originPeer)
 }
 
 // replication_system_set_apply_apps_installs handles apps.db.apps —
@@ -3244,8 +3244,8 @@ func replication_system_set_apply_apps_installs(originPeer string, s *SystemSet)
 		}
 		db.exec("replace into apps (app, installed) values (?, ?)", s.Row, installed)
 	}
-	debug("Replication system-set apps.apps applied: app=%q value=%q (from %q)",
-		s.Row, s.Value, originPeer)
+	// debug("Replication system-set apps.apps applied: app=%q value=%q (from %q)",
+	// 	s.Row, s.Value, originPeer)
 	if s.Value != "" && valid(s.Row, "entity") {
 		go app_check_install(s.Row)
 	}

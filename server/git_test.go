@@ -677,3 +677,72 @@ func TestGitMergeAccessControl(t *testing.T) {
 		}
 	}
 }
+
+// TestGitReadAccessControl proves git_can_read - the gate on the diff and
+// merge-check primitives - permits public ("*") repositories including
+// anonymous callers, permits identities with an explicit read grant, and denies
+// identities (and anonymous callers) without one. This closes the read-preview
+// gap where another app could diff/merge-check a private repository it lacks
+// read access to.
+func TestGitReadAccessControl(t *testing.T) {
+	owner, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	owner_identity := "12OwnerAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	reader_identity := "12ReaderDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	nobody_identity := "12NobodyCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	owner.Identity = &Entity{ID: owner_identity}
+
+	pub := "read-acl-public"
+	priv := "read-acl-private"
+
+	os.MkdirAll(filepath.Join(data_dir, "users", owner.UID, test_app.id), 0755)
+	os.MkdirAll(filepath.Join(data_dir, "db"), 0755)
+
+	db := db_app_system(owner, test_app)
+	if db == nil {
+		t.Fatal("db_app_system returned nil")
+	}
+	db.access_setup()
+	grant := func(subject, repo, op string) {
+		db.exec("insert into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )",
+			subject, "repository/"+repo, op, 1, owner_identity, now())
+	}
+	// Public repo: anyone may read; owner holds '*'.
+	grant("*", pub, "read")
+	grant(owner_identity, pub, "*")
+	// Private repo: owner '*' plus one explicit reader; no public grant.
+	grant(owner_identity, priv, "*")
+	grant(reader_identity, priv, "read")
+
+	thread := func(u *User) *sl.Thread {
+		th := &sl.Thread{}
+		if u != nil {
+			th.SetLocal("user", u)
+		}
+		th.SetLocal("owner", owner)
+		th.SetLocal("app", test_app)
+		return th
+	}
+	reader := &User{UID: "u2", Identity: &Entity{ID: reader_identity}}
+	nobody := &User{UID: "u3", Identity: &Entity{ID: nobody_identity}}
+
+	cases := []struct {
+		name string
+		user *User
+		repo string
+		want bool
+	}{
+		{"public repo, anonymous caller", nil, pub, true},
+		{"public repo, any identity", nobody, pub, true},
+		{"private repo, owner '*'", owner, priv, true},
+		{"private repo, identity with read grant", reader, priv, true},
+		{"private repo, identity without grant denied", nobody, priv, false},
+		{"private repo, anonymous denied", nil, priv, false},
+	}
+	for _, c := range cases {
+		if got := git_can_read(thread(c.user), owner, test_app, c.repo); got != c.want {
+			t.Errorf("%s: git_can_read = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

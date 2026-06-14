@@ -172,6 +172,35 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity_id string) bool {
 	return app_db.access_check(owner, identity_id, user.Role, "repository/"+entity_id, "write")
 }
 
+// git_can_read reports whether the thread's authenticated identity - or anyone,
+// for a repository carrying a public "*" read grant - holds repository/<entity_id>
+// read in owner's repositories ACL. It gates the diff and merge-check read
+// primitives so another app cannot preview a private repository's diff or
+// conflict-check without read access. Unlike git_can_write it does NOT fail
+// closed on a missing identity: an empty identity is passed through to
+// access_check, where it still matches a public "*" read grant - preserving
+// anonymous read of public repositories.
+func git_can_read(t *sl.Thread, owner *User, app *App, entity_id string) bool {
+	if owner == nil || app == nil || entity_id == "" {
+		return false
+	}
+	identity_id := ""
+	role := ""
+	if user, _ := t.Local("user").(*User); user != nil {
+		if user.Identity != nil {
+			identity_id = user.Identity.ID
+		} else if ident := user.identity(); ident != nil {
+			identity_id = ident.ID
+		}
+		role = user.Role
+	}
+	app_db := db_app_system(owner, app)
+	if app_db == nil {
+		return false
+	}
+	return app_db.access_check(owner, identity_id, role, "repository/"+entity_id, "read")
+}
+
 // Initialize a new bare repository
 func git_init(owner *User, app *App, entity_id string) error {
 	path := git_repo_path(owner, app, entity_id)
@@ -1264,6 +1293,10 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_read(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository read required to diff")
+	}
+
 	repo, err := git_open(owner, app, entity_id)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
@@ -1337,6 +1370,10 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository read required to diff")
 	}
 
 	repo, err := git_open(owner, app, entity_id)
@@ -1495,6 +1532,10 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity_id) {
+		return sl_error(fn, "permission denied: repository read required to check merge")
 	}
 
 	repo, err := git_open(owner, app, entity_id)

@@ -6,6 +6,10 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
+
+	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
+	relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 )
 
 // TestRelayAddrinfo: a relay candidate's dial target keeps only direct
@@ -168,5 +172,51 @@ func TestRelayOffered(t *testing.T) {
 	setting_set("relay", "false")
 	if relay_offered() {
 		t.Error("opt-out not honoured")
+	}
+}
+
+// TestRelayMetricsTracer: the tracer keeps live reservation/circuit gauges
+// and a cumulative refusal count, and relay_utilization clamps and caps.
+func TestRelayMetricsTracer(t *testing.T) {
+	relay_reservations.Store(0)
+	relay_circuits.Store(0)
+	relay_rejected.Store(0)
+
+	m := relay_metrics{}
+
+	// Reservations: opens count, renewals don't, closes decrement by count.
+	m.ReservationAllowed(false)
+	m.ReservationAllowed(false)
+	m.ReservationAllowed(true) // renewal — no change
+	m.ReservationClosed(1)
+	if got := relay_reservations.Load(); got != 1 {
+		t.Errorf("reservations = %d, want 1", got)
+	}
+
+	// Circuits: opens and closes.
+	m.ConnectionOpened()
+	m.ConnectionOpened()
+	m.ConnectionClosed(time.Second)
+	if got := relay_circuits.Load(); got != 1 {
+		t.Errorf("circuits = %d, want 1", got)
+	}
+
+	// Rejected: only non-OK reservation requests.
+	m.ReservationRequestHandled(pbv2.Status_OK)
+	m.ReservationRequestHandled(pbv2.Status_RESERVATION_REFUSED)
+	m.ReservationRequestHandled(pbv2.Status_RESOURCE_LIMIT_EXCEEDED)
+	if got := relay_rejected.Load(); got != 2 {
+		t.Errorf("rejected = %d, want 2", got)
+	}
+
+	// relay_utilization clamps a negative gauge to 0 and reports the cap.
+	relay_reservations.Store(-5)
+	u := relay_utilization()
+	res := u["reservations"].(map[string]any)
+	if res["held"].(int64) != 0 {
+		t.Errorf("held = %v, want 0 (clamped)", res["held"])
+	}
+	if res["maximum"].(int64) != int64(relay.DefaultResources().MaxReservations) {
+		t.Errorf("maximum = %v, want %d", res["maximum"], relay.DefaultResources().MaxReservations)
 	}
 }

@@ -33,8 +33,11 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
@@ -52,7 +55,58 @@ var (
 	// peer_relays maps a peer id to when it last announced it relays.
 	peer_relays      = map[string]int64{}
 	peer_relays_lock = &sync.Mutex{}
+
+	relay_reservations atomic.Int64 // reservations the relay service currently holds (gauge)
+	relay_circuits     atomic.Int64 // relayed connections currently open (gauge)
+	relay_rejected     atomic.Int64 // reservation requests refused since startup (cumulative)
 )
+
+// relay_metrics implements libp2p's relay MetricsTracer so the relay
+// service's live load can be surfaced (mochi.server.network().relaying).
+// The relay calls these from its own goroutines, so the counters are
+// atomic. A saturated relay (reservations near the cap, rejected climbing)
+// is what leaves NAT'd peers Unreachable with no other signal.
+type relay_metrics struct{}
+
+func (relay_metrics) RelayStatus(bool)                     {}
+func (relay_metrics) ConnectionOpened()                    { relay_circuits.Add(1) }
+func (relay_metrics) ConnectionClosed(time.Duration)       { relay_circuits.Add(-1) }
+func (relay_metrics) ConnectionRequestHandled(pbv2.Status) {}
+func (relay_metrics) ReservationAllowed(renewal bool) {
+	if !renewal {
+		relay_reservations.Add(1)
+	}
+}
+func (relay_metrics) ReservationClosed(count int) { relay_reservations.Add(-int64(count)) }
+func (relay_metrics) ReservationRequestHandled(status pbv2.Status) {
+	if status != pbv2.Status_OK {
+		relay_rejected.Add(1)
+	}
+}
+func (relay_metrics) BytesTransferred(int) {}
+
+// relay_utilization reports the relay service's live load for
+// mochi.server.network(). The reservation/circuit gauges read 0 when no
+// relay is running; rejected is a since-startup total.
+func relay_utilization() map[string]any {
+	held := relay_reservations.Load()
+	if held < 0 {
+		held = 0
+	}
+	circuits := relay_circuits.Load()
+	if circuits < 0 {
+		circuits = 0
+	}
+	return map[string]any{
+		"active": relay_enabled(),
+		"reservations": map[string]any{
+			"held":    held,
+			"maximum": int64(relay.DefaultResources().MaxReservations),
+		},
+		"circuits": circuits,
+		"rejected": relay_rejected.Load(),
+	}
+}
 
 // relay_offered reports whether the operator permits this server to
 // serve as a relay. Default on; the `relay` system setting is the
@@ -84,7 +138,9 @@ func relay_service_update() {
 	defer relay_service_lock.Unlock()
 	switch {
 	case want && relay_service == nil:
-		r, err := relay.New(net_me)
+		relay_reservations.Store(0)
+		relay_circuits.Store(0)
+		r, err := relay.New(net_me, relay.WithMetricsTracer(relay_metrics{}))
 		if err != nil {
 			warn("Net unable to start relay service: %v", err)
 			return
@@ -95,6 +151,8 @@ func relay_service_update() {
 	case !want && relay_service != nil:
 		relay_service.Close()
 		relay_service = nil
+		relay_reservations.Store(0)
+		relay_circuits.Store(0)
 		info("Net relay service disabled")
 		peers_publish_request()
 	}

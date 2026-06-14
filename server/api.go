@@ -602,6 +602,13 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //	                       startup: {success, failure}. Both 0 on a server
 //	                       that has never needed to punch (public, or only
 //	                       directly-reachable peers).
+//	relaying      dict   — this server's own circuit-relay service load,
+//	                       for when it runs one (publicly reachable + the
+//	                       relay setting on): {active, reservations {held,
+//	                       maximum}, circuits, rejected}. held approaching
+//	                       maximum, or rejected climbing, means the relay is
+//	                       full and turning NAT'd peers away — they show
+//	                       Unreachable elsewhere with no other signal.
 func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	mesh := pubsub_topic_peers(net_pubsub)
 	if net_pubsub != nil {
@@ -629,6 +636,7 @@ func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			"success": holepunch_success.Load(),
 			"failure": holepunch_failure.Load(),
 		},
+		"relaying": relay_utilization(),
 	}), nil
 }
 

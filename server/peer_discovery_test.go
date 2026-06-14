@@ -193,6 +193,103 @@ func TestPeerPublishEventRejectsUnroutable(t *testing.T) {
 	}
 }
 
+// TestPeerPublishEventDropsSelfRelay: a circuit address that relays
+// through ourselves is dead weight (we reach the peer directly over its
+// reservation), so it is dropped on apply; a third-party relay and a
+// direct address are kept.
+func TestPeerPublishEventDropsSelfRelay(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	self, _ := test_host(t)
+	saved := net_id
+	net_id = self
+	defer func() { net_id = saved }()
+
+	origin, _ := test_host(t)
+	other, _ := test_host(t)
+	direct := "/ip4/192.0.2.10/udp/1443/quic-v1/p2p/" + origin
+	self_relay := "/ip4/198.51.100.1/udp/1443/quic-v1/p2p/" + self + "/p2p-circuit/p2p/" + origin
+	other_relay := "/ip4/203.0.113.5/udp/1443/quic-v1/p2p/" + other + "/p2p-circuit/p2p/" + origin
+	peer_publish_event(publish_event(origin, strings.Join([]string{direct, self_relay, other_relay}, ",")))
+
+	if n := peer_addresses_count(origin); n != 2 {
+		t.Errorf("addresses applied = %d, want 2 (self-relay dropped)", n)
+	}
+	peers_lock.Lock()
+	p := peers[origin]
+	peers_lock.Unlock()
+	for _, a := range p.addresses {
+		if strings.Contains(a.Address, "/p2p/"+self+"/p2p-circuit") {
+			t.Errorf("self-relay address was stored: %q", a.Address)
+		}
+	}
+}
+
+// TestPeersPurgeSelfRelay: the startup purge sheds self-relay addresses
+// already in the registry (accumulated before the apply-time filter).
+func TestPeersPurgeSelfRelay(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	self, _ := test_host(t)
+	saved := net_id
+	net_id = self
+	defer func() { net_id = saved }()
+
+	origin, _ := test_host(t)
+	direct := "/ip4/192.0.2.10/udp/1443/quic-v1/p2p/" + origin
+	self_relay := "/ip4/198.51.100.1/udp/1443/quic-v1/p2p/" + self + "/p2p-circuit/p2p/" + origin
+	// Seed both directly, bypassing the apply-time filter.
+	peer_discovered_address(origin, direct)
+	peer_discovered_address(origin, self_relay)
+	if n := peer_addresses_count(origin); n != 2 {
+		t.Fatalf("seeded addresses = %d, want 2", n)
+	}
+
+	peers_purge_self_relay()
+
+	if n := peer_addresses_count(origin); n != 1 {
+		t.Errorf("after purge = %d, want 1 (self-relay removed)", n)
+	}
+	if ok, _ := db_open("db/peers.db").exists("select 1 from peers where address like ?", "%/p2p/"+self+"/p2p-circuit%"); ok {
+		t.Error("self-relay address survived purge in peers.db")
+	}
+}
+
+// TestBootstrapConnectPreferred: the walk holds the highest-priority
+// reachable bootstrap and leaves lower-priority backups untouched while it
+// is connected — so the backup (wasabi) is dialled only when the primary
+// (yuzu) is unavailable.
+func TestBootstrapConnectPreferred(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	primary, _ := test_host(t)
+	backup, _ := test_host(t)
+
+	saved := peers_bootstrap
+	peers_bootstrap = []Peer{{ID: primary}, {ID: backup}}
+	defer func() { peers_bootstrap = saved }()
+
+	// Primary already connected; backup merely known (disconnected).
+	peers_lock.Lock()
+	peers[primary] = Peer{ID: primary, state: peer_state_connected}
+	peers[backup] = Peer{ID: backup, state: peer_state_disconnected}
+	peers_lock.Unlock()
+
+	bootstrap_connect_preferred()
+
+	// The connected primary short-circuits the walk, so the backup is
+	// never dialled — it stays disconnected (not even connecting).
+	peers_lock.Lock()
+	state := peers[backup].state
+	peers_lock.Unlock()
+	if state != peer_state_disconnected {
+		t.Errorf("backup state = %v, want disconnected (must not be dialled while primary is connected)", state)
+	}
+}
+
 // TestPeerAddressEviction: when the per-peer cap forces a choice, the
 // victim is the least useful address — never-proven before proven,
 // oldest first — so a roaming peer's churn cannot push out the address

@@ -25,7 +25,6 @@
 package main
 
 import (
-	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -97,9 +96,9 @@ const (
 )
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
-// when mochi.conf doesn't override [publisher] peer. Wasabi's libp2p
+// when mochi.conf doesn't override [publisher] peer. Yuzu's libp2p
 // id; serves the published-app catalogue.
-const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+const peer_default_publisher_hardcoded = "12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR"
 
 // bootstrap_addresses_hardcoded is the fallback list of bootstrap
 // multiaddresses when mochi.conf doesn't override [bootstrap]
@@ -113,7 +112,7 @@ const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6
 // allows the web cannot tell WSS from HTTPS. They activate once the
 // bootstrap runs with [p2p] https enabled; until then dialling them
 // fails harmlessly while 1443 carries the connection.
-const bootstrap_addresses_hardcoded = "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns4/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+const bootstrap_addresses_hardcoded = "/ip4/51.178.97.142/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/51.178.97.142/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns4/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 
 var (
 	// peer_default_publisher + peers_bootstrap start at the hardcoded
@@ -183,13 +182,51 @@ func peers_bootstrap_load() {
 	if len(raw) > 0 {
 		list = strings.Join(raw, ",")
 	}
+	// Order is preserved as priority order — the first entry is the
+	// primary bootstrap, later entries are backups. bootstrap_manager
+	// connects to the most-preferred reachable one (no shuffle: we want a
+	// deterministic primary, not load-spread across equals).
 	peers_bootstrap = bootstrap_addresses_parse(list)
+}
 
-	// Shuffle so different servers attempt bootstrap peers in different
-	// orders, spreading the initial-connect load across them.
-	rand.Shuffle(len(peers_bootstrap), func(i, j int) {
-		peers_bootstrap[i], peers_bootstrap[j] = peers_bootstrap[j], peers_bootstrap[i]
-	})
+// bootstrap_recheck is how often bootstrap_manager re-evaluates which
+// bootstrap to hold a connection to, so the primary is preferred again
+// promptly once it recovers from an outage.
+const bootstrap_recheck = 30 * time.Second
+
+// bootstrap_manager maintains a connection to the most-preferred reachable
+// bootstrap. peers_bootstrap is in priority order (primary first); the
+// manager makes every bootstrap's addresses known up front, then dials
+// down the list and stops at the first that is or becomes connected — so a
+// backup (e.g. wasabi) is dialled only while every higher-priority
+// bootstrap (e.g. yuzu) is unreachable, and the primary is preferred again
+// the moment it recovers. Replaces dialling every bootstrap at once.
+func bootstrap_manager() {
+	for _, p := range peers_bootstrap {
+		if p.ID != net_id {
+			peer_add_known(p.ID, peer_address_strings(p.addresses))
+		}
+	}
+	bootstrap_connect_preferred()
+	for range time.Tick(bootstrap_recheck) {
+		bootstrap_connect_preferred()
+	}
+}
+
+// bootstrap_connect_preferred ensures a connection to the highest-priority
+// reachable bootstrap: it walks peers_bootstrap in priority order and stops
+// at the first that connects (peer_connect returns true for an already-open
+// connection), leaving lower-priority backups untouched while a higher one
+// holds.
+func bootstrap_connect_preferred() {
+	for _, p := range peers_bootstrap {
+		if p.ID == net_id {
+			continue
+		}
+		if peer_connect(p.ID) {
+			return
+		}
+	}
 }
 
 // peer_addresses_normalise validates operator-supplied multiaddresses
@@ -473,6 +510,35 @@ func peers_prune() {
 		} else {
 			peers[id] = p
 		}
+	}
+	peers_lock.Unlock()
+}
+
+// peers_purge_self_relay drops every stored address that relays through
+// this server itself — a circuit address with our own peer ID in the relay
+// slot. We can never use our own relay to reach the peer (we hold a direct
+// reservation connection to it), so the address is dead weight: registry
+// bloat and a wasted dial. Called once at startup to shed any accumulated
+// before this filter existed; peer_apply_addresses keeps new ones out. The
+// address stays valid for every other peer, who keep advertising it.
+func peers_purge_self_relay() {
+	if net_id == "" {
+		return
+	}
+	marker := "/p2p/" + net_id + "/p2p-circuit"
+
+	db_open("db/peers.db").exec("delete from peers where address like ?", "%"+marker+"%")
+
+	peers_lock.Lock()
+	for id, p := range peers {
+		kept := p.addresses[:0]
+		for _, a := range p.addresses {
+			if !strings.Contains(a.Address, marker) {
+				kept = append(kept, a)
+			}
+		}
+		p.addresses = kept
+		peers[id] = p
 	}
 	peers_lock.Unlock()
 }

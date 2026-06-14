@@ -425,9 +425,10 @@ func peer_publish_event(e *Event) {
 // peer_apply_addresses merges discovered addresses for a peer through
 // the receive-side hygiene shared by direct announcements and relayed
 // records: cap the count, drop entries whose /p2p/ suffix names a
-// different peer, and reject loopback or unspecified addresses (junk for
-// every receiver — the same-host peers they'd be valid for learn them
-// over mDNS, not the mesh).
+// different peer, drop circuit addresses that relay through ourselves,
+// and reject loopback or unspecified addresses (junk for every receiver —
+// the same-host peers they'd be valid for learn them over mDNS, not the
+// mesh).
 func peer_apply_addresses(id string, addresses []string) {
 	applied := 0
 	for _, address := range addresses {
@@ -441,6 +442,14 @@ func peer_apply_addresses(id string, addresses []string) {
 		}
 		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
 		if err != nil || info.ID.String() != id {
+			continue
+		}
+		// Drop circuit addresses that relay through ourselves: we can
+		// never use our own relay to reach the peer (we hold a direct
+		// connection — the reservation it made with us), so the address is
+		// dead weight here, both registry bloat and a wasted dial. It
+		// stays valid for every other peer, who keep advertising it.
+		if net_id != "" && strings.Contains(address, "/p2p/"+net_id+"/p2p-circuit") {
 			continue
 		}
 		if net_unroutable(ma) {

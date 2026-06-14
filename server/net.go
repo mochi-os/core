@@ -242,20 +242,17 @@ func net_start() {
 	// Start keepalive ping manager
 	go net_ping_manager()
 
-	// Add bootstrap peers
-	for _, p := range peers_bootstrap {
-		if p.ID != net_id {
-			debug("Adding bootstrap peer %q at %v", p.ID, peer_address_strings(p.addresses))
-			peer_add_known(p.ID, peer_address_strings(p.addresses))
-			go peer_connect_retry(p.ID)
-		}
-	}
+	// Connect to bootstrap peers, preferring the first reachable in
+	// priority order (primary first) and falling back to a backup only
+	// while the higher-priority bootstraps are unavailable.
+	go bootstrap_manager()
 
 	// Add peers from database, along with their claimed display names
 	// and signed records
 	peers_add_from_db(100)
 	peer_names_load()
 	peer_records_load()
+	peers_purge_self_relay()
 
 	// Listen via multicast DNS. Best-effort: hosts without a usable IPv4/IPv6
 	// multicast interface (containers under qemu, certain k8s CNI plugins,

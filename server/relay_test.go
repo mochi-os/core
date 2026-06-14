@@ -9,7 +9,6 @@ import (
 	"time"
 
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
-	relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 )
 
 // TestRelayAddrinfo: a relay candidate's dial target keeps only direct
@@ -216,7 +215,39 @@ func TestRelayMetricsTracer(t *testing.T) {
 	if res["held"].(int64) != 0 {
 		t.Errorf("held = %v, want 0 (clamped)", res["held"])
 	}
-	if res["maximum"].(int64) != int64(relay.DefaultResources().MaxReservations) {
-		t.Errorf("maximum = %v, want %d", res["maximum"], relay.DefaultResources().MaxReservations)
+	if res["maximum"].(int64) != int64(relay_reservations_default) {
+		t.Errorf("maximum = %v, want %d", res["maximum"], relay_reservations_default)
+	}
+}
+
+// TestRelayResources: the relay runs with raised reservation caps and an
+// unbounded per-connection limit by default (so relayed transfers aren't
+// truncated), and a constrained relay can cap them via [relay] config.
+func TestRelayResources(t *testing.T) {
+	// Default — no config: raised caps, no per-connection Data/Duration limit.
+	rc := relay_resources()
+	if rc.MaxReservations != relay_reservations_default {
+		t.Errorf("MaxReservations = %d, want %d", rc.MaxReservations, relay_reservations_default)
+	}
+	if rc.MaxReservationsPerIP != 64 || rc.MaxReservationsPerASN != 256 {
+		t.Errorf("per-IP/ASN = %d/%d, want 64/256", rc.MaxReservationsPerIP, rc.MaxReservationsPerASN)
+	}
+	if rc.Limit != nil {
+		t.Errorf("Limit = %+v, want nil (unbounded transfer)", rc.Limit)
+	}
+
+	// A constrained relay caps reservations and per-connection data.
+	t.Setenv("MOCHI_RELAY_RESERVATIONS", "256")
+	t.Setenv("MOCHI_RELAY_DATA", "1048576") // 1 MiB
+	rc = relay_resources()
+	if rc.MaxReservations != 256 {
+		t.Errorf("configured MaxReservations = %d, want 256", rc.MaxReservations)
+	}
+	if rc.Limit == nil || rc.Limit.Data != 1048576 {
+		t.Errorf("Limit.Data = %v, want 1048576", rc.Limit)
+	}
+	// Duration left unset → bounded only by data (effectively unbounded).
+	if rc.Limit.Duration < time.Hour {
+		t.Errorf("Limit.Duration = %v, want effectively unbounded", rc.Limit.Duration)
 	}
 }

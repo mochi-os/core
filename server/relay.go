@@ -48,6 +48,12 @@ import (
 // and ages out.
 const peer_relay_maximum_age = 3600
 
+// relay_reservations_default is the relay's MaxReservations when [relay]
+// reservations is unset — far above libp2p's conservative 128, since a
+// reservation is just a cheap idle registered connection and a dedicated
+// relay should not be a bottleneck.
+const relay_reservations_default = 2048
+
 var (
 	relay_service      *relay.Relay
 	relay_service_lock = &sync.Mutex{}
@@ -101,11 +107,50 @@ func relay_utilization() map[string]any {
 		"active": relay_enabled(),
 		"reservations": map[string]any{
 			"held":    held,
-			"maximum": int64(relay.DefaultResources().MaxReservations),
+			"maximum": int64(ini_int("relay", "reservations", relay_reservations_default)),
 		},
 		"circuits": circuits,
 		"rejected": relay_rejected.Load(),
 	}
+}
+
+// relay_resources builds the relay service's resource limits from the
+// [relay] config, sized for a dedicated relay rather than libp2p's
+// conservative bootstrap-only defaults. A relay must never impose a
+// per-connection transfer ceiling below what the application itself allows
+// (1 GB per file, 10 GB per user) or it silently truncates file sharing
+// for NAT'd users — so the per-connection Data/Duration limit is unbounded
+// by default. A bandwidth-constrained relay can cap it with [relay] data
+// (bytes) and/or [relay] duration (seconds); setting either enables the
+// limit.
+func relay_resources() relay.Resources {
+	rc := relay.DefaultResources()
+	rc.MaxReservations = ini_int("relay", "reservations", relay_reservations_default)
+	// CGNAT/ISP headroom, well above libp2p's 8/32: many home servers
+	// behind one carrier-grade-NAT IP or ISP can still reserve, while one
+	// actor still cannot monopolise the relay.
+	rc.MaxReservationsPerIP = 64
+	rc.MaxReservationsPerASN = 256
+
+	data := atoi(ini_string("relay", "data", "0"), 0)
+	duration := ini_int("relay", "duration", 0)
+	if data <= 0 && duration <= 0 {
+		rc.Limit = nil // unbounded per-connection transfer
+		return rc
+	}
+	limit := relay.DefaultLimit()
+	if data > 0 {
+		limit.Data = data
+	} else {
+		limit.Data = 1 << 60 // bounded only by duration
+	}
+	if duration > 0 {
+		limit.Duration = time.Duration(duration) * time.Second
+	} else {
+		limit.Duration = time.Duration(1 << 60) // bounded only by data
+	}
+	rc.Limit = limit
+	return rc
 }
 
 // relay_offered reports whether the operator permits this server to
@@ -140,7 +185,7 @@ func relay_service_update() {
 	case want && relay_service == nil:
 		relay_reservations.Store(0)
 		relay_circuits.Store(0)
-		r, err := relay.New(net_me, relay.WithMetricsTracer(relay_metrics{}))
+		r, err := relay.New(net_me, relay.WithResources(relay_resources()), relay.WithMetricsTracer(relay_metrics{}))
 		if err != nil {
 			warn("Net unable to start relay service: %v", err)
 			return
@@ -166,6 +211,35 @@ func relay_shutdown() {
 		relay_service.Close()
 		relay_service = nil
 	}
+}
+
+// relay_rejected_alerted is the rejection count relay_saturation_check last
+// warned at; only that function (a single goroutine) touches it.
+var relay_rejected_alerted int64
+
+// relay_manager periodically alerts when the running relay is turning peers
+// away, so the operator can add capacity before NAT'd peers go unreachable.
+func relay_manager() {
+	for range time.Tick(15 * time.Minute) {
+		relay_saturation_check()
+	}
+}
+
+// relay_saturation_check warns the admin when the relay refused reservations
+// since the last check — peers being turned away is the signal to raise
+// [relay] reservations or stand up more relays. warn()'s per-format dedup
+// throttles the email to at most once per hour.
+func relay_saturation_check() {
+	if !relay_enabled() {
+		relay_rejected_alerted = relay_rejected.Load()
+		return
+	}
+	rejected := relay_rejected.Load()
+	if rejected > relay_rejected_alerted {
+		warn("Relay service refused %d reservation(s) since startup (%d of %d slots held) — it is turning NAT'd peers away; raise [relay] reservations or stand up more relays",
+			rejected, relay_reservations.Load(), ini_int("relay", "reservations", relay_reservations_default))
+	}
+	relay_rejected_alerted = rejected
 }
 
 // peer_relay_seen records that a peer announced it relays.

@@ -242,6 +242,9 @@ func net_start() {
 	// Start keepalive ping manager
 	go net_ping_manager()
 
+	// Alert when the relay service (if running) is turning peers away
+	go relay_manager()
+
 	// Connect to bootstrap peers, preferring the first reachable in
 	// priority order (primary first) and falling back to a backup only
 	// while the higher-priority bootstraps are unavailable.

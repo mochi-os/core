@@ -178,6 +178,9 @@ func main_serve(ready func()) int {
 	go restore_cleanup_orphans()
 	go sessions_manager()
 	go update_manager()
+	// Register the configured [web] domain (if any) before the web server
+	// starts, so a fresh server can serve HTTPS on first boot.
+	domains_seed_config()
 	go web_start()
 	go apps_manager()
 	go schedule_start()

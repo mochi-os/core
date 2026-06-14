@@ -286,6 +286,27 @@ func domain_register(name string) (*domain, error) {
 	return domain_get(name), nil
 }
 
+// domains_seed_config registers the domain named in [web] domain, if set, so a
+// fresh server serves HTTPS for it on first boot — letting first-run setup
+// happen over HTTPS instead of plain HTTP. Idempotent: a no-op once the domain
+// exists (seeded earlier, or added in Settings). The domain must resolve to
+// this server and ports 80/443 must be reachable for the certificate to
+// provision via Let's Encrypt.
+func domains_seed_config() {
+	name := strings.TrimSpace(ini_string("web", "domain", ""))
+	if name == "" || name == "localhost" {
+		return
+	}
+	if domain_get(name) != nil {
+		return
+	}
+	if _, err := domain_register(name); err != nil {
+		warn("Unable to register configured domain %s: %v", name, err)
+		return
+	}
+	info("Registered domain %s from [web] domain config (HTTPS on first boot)", name)
+}
+
 // Valid column names for domain updates
 var domain_update_columns = map[string]bool{"verified": true, "tls": true}
 

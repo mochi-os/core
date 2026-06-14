@@ -220,19 +220,37 @@ loop:
 
 	audit_server_stop()
 
-	// Wait for queue to drain (with timeout)
-	queue_drain(10 * time.Second)
+	// Run the drain + close sequence under an overall deadline. queue_drain
+	// and peers_shutdown are individually bounded, but on a busy PUBLIC host
+	// libp2p's host Close (and the relay/transport shutdown beneath it) can
+	// block indefinitely when a connection or listener won't quiesce —
+	// observed on yuzu hanging the full systemd TimeoutStopSec (90s) before
+	// SIGKILL, while an idle NAT'd instance shuts down in milliseconds. Cap
+	// the whole phase well under 90s so we exit cleanly on our own terms
+	// instead of being force-killed mid-write. SQLite is crash-safe (WAL
+	// recovery on next open), so a forced exit here loses no committed data,
+	// and peers treat the dropped connection like any other and reconnect.
+	const shutdown_grace = 30 * time.Second
+	done := make(chan struct{})
+	go func() {
+		queue_drain(10 * time.Second) // outbound queue (bounded)
+		peers_shutdown()              // bye to connected peers (bounded)
+		relay_shutdown()              // stop the circuit-relay service
+		if net_me != nil {
+			net_me.Close() // close the libp2p host — the usual culprit
+		}
+		audit_close()
+		close(done)
+	}()
 
-	// Notify connected peers
-	peers_shutdown()
-
-	// Stop relaying, then close the Net host
-	relay_shutdown()
-	if net_me != nil {
-		net_me.Close()
+	select {
+	case <-done:
+		info("Shutdown complete")
+	case <-time.After(shutdown_grace):
+		// Rate-limited per format string, so this surfaces the degradation
+		// without emailing on every restart while the host stays busy.
+		warn("Shutdown exceeded %s; forcing exit (libp2p host close did not quiesce)", shutdown_grace)
+		os.Exit(exit_code)
 	}
-
-	audit_close()
-	info("Shutdown complete")
 	return exit_code
 }

@@ -304,6 +304,15 @@ func domains_seed_config() {
 		warn("Unable to register configured domain %s: %v", name, err)
 		return
 	}
+	// Mark it verified. The operator naming the domain in mochi.conf is itself
+	// the authorization for this host to serve it — no DNS-token check needed.
+	// Without this the row stays verified=0, and once domains_verification is
+	// enabled (notably when a fresh replica inherits the setting from its pair
+	// member via replication) the host policy would refuse a certificate for
+	// this server's OWN configured domain.
+	if err := domain_update(name, map[string]any{"verified": 1}); err != nil {
+		warn("Unable to mark configured domain %s verified: %v", name, err)
+	}
 	info("Registered domain %s from [web] domain config (HTTPS on first boot)", name)
 }
 

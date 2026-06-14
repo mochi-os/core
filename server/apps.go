@@ -1333,7 +1333,67 @@ func apps_manager() {
 			}
 		}
 
+		// Pin each default app's declared services to it so name-based service
+		// resolution can't fall through to an imposter app claiming the same
+		// service name (see apps_pin_default_services).
+		apps_pin_default_services(apps_default)
+
 		time.Sleep(24 * time.Hour)
+	}
+}
+
+// apps_pin_default_services binds each default app's declared services to that
+// app via a system service binding, so name-based service resolution for core
+// services (repositories, notifications, ...) cannot fall through to the
+// fallback and be captured by an imposter app that declares the same service
+// name. Deliberately conservative:
+//   - it never overwrites an existing system binding, so an administrator
+//     override (set via mochi.app.service.set) survives;
+//   - it skips any service a dev app provides, so local-development precedence
+//     (dev apps win) is preserved.
+// A user's own binding (a.user.app.service.set) always takes precedence over the
+// system binding, so per-user overrides are unaffected either way. Idempotent:
+// safe to run on every apps_manager pass.
+func apps_pin_default_services(defaults []DefaultApp) {
+	default_ids := map[string]bool{}
+	for _, d := range defaults {
+		default_ids[d.ID] = true
+	}
+
+	type binding struct{ service, app string }
+	var candidates []binding
+	dev := map[string]bool{}
+
+	apps_lock.Lock()
+	for _, a := range apps {
+		av := a.active_locked(nil)
+		if av == nil {
+			continue
+		}
+		if !is_entity_id(a.id) {
+			// Dev app: record its services so we never override it.
+			for _, s := range av.Services {
+				dev[s] = true
+			}
+			continue
+		}
+		if default_ids[a.id] {
+			for _, s := range av.Services {
+				candidates = append(candidates, binding{s, a.id})
+			}
+		}
+	}
+	apps_lock.Unlock()
+
+	for _, c := range candidates {
+		if dev[c.service] {
+			continue // a dev app provides it; preserve dev precedence
+		}
+		if apps_service_get(c.service) != "" {
+			continue // existing binding (admin override or earlier pin) - leave it
+		}
+		apps_service_set(c.service, c.app)
+		debug("Pinned default service %q to app %q", c.service, c.app)
 	}
 }
 

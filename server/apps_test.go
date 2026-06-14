@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	sl "go.starlark.net/starlark"
@@ -1059,6 +1060,45 @@ func TestAppForServiceForResolution(t *testing.T) {
 	result = app_for_service(user, "notifications")
 	if result == nil || result.id != "notif-app-2" {
 		t.Errorf("app_for_service with user binding = %v, want notif-app-2", result)
+	}
+}
+
+// TestAppsPinDefaultServices verifies the service-imposter hardening: a default
+// app's declared service is pinned to it via a system binding; an existing
+// binding (admin override) is never overwritten; and a service that a dev app
+// provides is skipped so dev precedence is preserved.
+func TestAppsPinDefaultServices(t *testing.T) {
+	cleanup := create_test_routing_env(t)
+	defer cleanup()
+
+	canonical := "c" + strings.Repeat("a", 49) // entity-id-shaped (len 50)
+	imposter := "i" + strings.Repeat("b", 49)  // entity-id-shaped (len 50)
+
+	canonAV := &AppVersion{Version: "1.0", Services: []string{"svc1", "svc2", "svc3"}}
+	apps[canonical] = &App{id: canonical, versions: map[string]*AppVersion{"1.0": canonAV}, latest: canonAV}
+	impAV := &AppVersion{Version: "1.0", Services: []string{"svc1"}}
+	apps[imposter] = &App{id: imposter, versions: map[string]*AppVersion{"1.0": impAV}, latest: impAV}
+	devAV := &AppVersion{Version: "1.0", Services: []string{"svc3"}}
+	apps["devapp"] = &App{id: "devapp", versions: map[string]*AppVersion{"1.0": devAV}, latest: devAV}
+
+	// svc2 already has an admin/system binding that must be preserved.
+	apps_service_set("svc2", "preset-app")
+
+	apps_pin_default_services([]DefaultApp{{ID: canonical}})
+
+	if got := apps_service_get("svc1"); got != canonical {
+		t.Errorf("svc1 (no binding, no dev) bound to %q, want canonical %q", got, canonical)
+	}
+	if got := apps_service_get("svc2"); got != "preset-app" {
+		t.Errorf("svc2 (existing binding) = %q, want preset-app preserved", got)
+	}
+	if got := apps_service_get("svc3"); got != "" {
+		t.Errorf("svc3 (dev app provides) = %q, want empty (skipped)", got)
+	}
+
+	// Resolution honors the pin: svc1 routes to the canonical app, not the imposter.
+	if r := app_for_service(nil, "svc1"); r == nil || r.id != canonical {
+		t.Errorf("app_for_service(svc1) = %v, want canonical %q", r, canonical)
 	}
 }
 

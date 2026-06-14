@@ -11,6 +11,7 @@
 // `mochictl replication pair list`     → GET /_/admin/replication/pair
 // `mochictl replication pair remove`   → POST /_/admin/replication/pair/remove
 // `mochictl replication resync`        → POST /_/admin/replication/resync
+// `mochictl replication resume`        → POST /_/admin/replication/resume
 // `mochictl replication backfill`      → POST /_/admin/replication/backfill
 
 package main
@@ -63,6 +64,49 @@ func cmd_replication_resync(args []string) error {
 		return nil
 	}
 	fmt.Printf("Re-bootstrap initiated against peer %s. Track progress with 'mochictl replication status'.\n", peer)
+	return nil
+}
+
+// cmd_replication_resume handles `mochictl replication resume <peer-id>`.
+// POSTs the peer-id to the admin endpoint, which re-drives every scope
+// that hasn't finished bootstrapping from that peer. Unlike `resync`,
+// this is safe on a populated, running server — it only re-fires
+// not-yet-done scopes, so it never rename-replaces a DB the daemon holds
+// open. Use it when a bootstrap completed some scopes but left others
+// stuck (e.g. files / apps queued behind a long userdbs transfer) and
+// resync refuses with "This server has users".
+//
+// Usage:
+//   mochictl replication resume <peer-id>
+func cmd_replication_resume(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mochictl replication resume <peer-id>")
+	}
+	peer := args[0]
+
+	body, err := json.Marshal(map[string]string{"peer": peer})
+	if err != nil {
+		return err
+	}
+
+	resp, err := client().Post("/_/admin/replication/resume", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, raw)
+	}
+
+	if flag_json {
+		fmt.Println(string(raw))
+		return nil
+	}
+	if !flag_verbose {
+		return nil
+	}
+	fmt.Printf("Resume initiated against peer %s. Track progress with 'mochictl replication progress'.\n", peer)
 	return nil
 }
 

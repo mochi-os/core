@@ -791,7 +791,7 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 	s, err := net_me.NewStream(net_context, pid, p2p_protocol.ID(prefer))
 	if err != nil {
 		if is_protocol_not_supported(err) {
-			warn("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)
+			debug("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)
 			peer_mark_send_failed(peer)
 			return nil, errSenderUnreachable
 		}

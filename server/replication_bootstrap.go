@@ -310,10 +310,21 @@ type BootstrapScopeDone struct {
 // reference but callers may also seed them explicitly.
 func bootstrap_set_state(scope, peer, state, position string) {
 	rdb := db_open("db/replication.db")
-	rdb.exec(
-		"insert into bootstrap (scope, peer, state, position) values (?, ?, ?, ?) "+
-			"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position",
-		scope, peer, state, position)
+	if state == bootstrap_state_active {
+		// Reaching (or staying) active means the manifest or a chunk just
+		// landed — real forward progress. Stamp `progress` and clear the
+		// retry-backoff counter so the universal-retry driver sees the
+		// transfer as live and leaves it alone (bootstrap_retry_eligible).
+		rdb.exec(
+			"insert into bootstrap (scope, peer, state, position, progress, attempts) values (?, ?, ?, ?, ?, 0) "+
+				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, progress=excluded.progress, attempts=0",
+			scope, peer, state, position, now())
+	} else {
+		rdb.exec(
+			"insert into bootstrap (scope, peer, state, position) values (?, ?, ?, ?) "+
+				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position",
+			scope, peer, state, position)
+	}
 	// A completed (re-)bootstrap re-seeds this scope's streams from the
 	// peer, which is the only recovery for a stream marked irreparable
 	// past T_forget. Clear the terminal marker so its UI badge and the
@@ -939,7 +950,15 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 	// pending decrement transitions it.
 	if len(needed) > 0 {
 		bootstrap_pending_add(res.Scope, originPeer, int64(len(needed)))
-		go bootstrap_file_scope_driver(originPeer, res.Scope, needed)
+		// Defer the bulk chunk-fetch driver while `originPeer` is in its
+		// manifest phase (bootstrap_start) so a multi-GB transfer can't
+		// start mid-phase and starve another scope's manifest read. Capture
+		// scope as a local — `res` (=&page) is reused across the manifest
+		// pagination loop, so the closure must not read res lazily.
+		scope := res.Scope
+		bootstrap_phase_drive(originPeer, func() {
+			bootstrap_file_scope_driver(originPeer, scope, needed)
+		})
 	}
 	if res.Done {
 		// Read position + state under the same lock the decrement
@@ -1742,19 +1761,43 @@ func bootstrap_refire_manifest(peer, scope, uid string) {
 	}
 }
 
-// bootstrap_retry_incomplete_manager runs forever, periodically draining
-// any (scope, peer) row that settled to 'incomplete' (every entry was
-// attempted but some failed). Resets the row's counters and re-fires the
-// manifest; the diff naturally picks up still-missing files/DBs and
-// re-drives the scope driver. Loops at bootstrap_retry_interval until
-// the operator removes the row via mochictl OR every entry transfers
-// successfully on a subsequent attempt.
+// bootstrap_retry_incomplete_manager runs forever, periodically re-driving
+// EVERY (scope, peer) row that hasn't reached 'done' — not just the ones
+// that settled to 'incomplete'. A scope can be stuck non-done in three
+// ways, and all three must eventually heal without an operator or a
+// restart:
 //
-// Per-user link signup blocks the user on /login/replicating until
-// the scope reaches 'done' (see bootstrap_wait_then_activate), so this
-// manager is what eventually lets a user with a flaky network land on
-// a complete dashboard instead of a half-empty one.
+//   - queued     — the manifest-request never landed (e.g. the small
+//     manifest read was starved by a multi-GB bulk transfer over the same
+//     connection, or the source was briefly unreachable at join time).
+//     Before this driver covered queued rows, a starved manifest left the
+//     scope queued forever (observed live 2026-06-14: yuzu's files+apps
+//     scopes sat queued through a 16 GB userdbs transfer and never
+//     recovered without a re-wipe).
+//   - active     — a transfer that stalled (the source went away mid-
+//     stream) without settling. Distinguished from a *live* transfer by
+//     its `progress` timestamp: a live one refreshes progress on every
+//     chunk and is left alone; a stalled one is re-driven.
+//   - incomplete — every entry was attempted but some failed.
+//
+// Each re-drive backs off per-row (bootstrap_retry_backoff) keyed on the
+// `attempts` counter so an unreachable source isn't probed every tick;
+// any real forward progress resets attempts to 0 (see bootstrap_set_state
+// for state=active). Re-firing a manifest against an unreachable peer
+// simply fails fast and is retried next pass, so connectivity needs no
+// separate gate here — the periodic retry IS the wait-for-connection.
+//
+// Per-user link signup blocks the user on /login/replicating until the
+// scope reaches 'done' (see bootstrap_wait_then_activate), so this
+// manager is what eventually lets a user with a flaky network land on a
+// complete dashboard instead of a half-empty one.
 const bootstrap_retry_interval = 30 * time.Second
+
+// bootstrap_stall_seconds is how long a scope may sit in 'active' with no
+// forward progress before the retry driver treats it as stalled and
+// re-drives it. Comfortably longer than the gap between chunks on a slow
+// link so a live-but-slow transfer is never disturbed.
+const bootstrap_stall_seconds = 120
 
 func bootstrap_retry_incomplete_manager() {
 	for {
@@ -1763,29 +1806,109 @@ func bootstrap_retry_incomplete_manager() {
 	}
 }
 
-// bootstrap_retry_incomplete_once does one pass: read every 'incomplete'
-// row, reset its counters, re-fire the manifest. Pulled out so tests
-// can drive a single iteration without spinning the manager loop.
+// bootstrap_retry_backoff returns the minimum seconds since last progress
+// before a scope with `attempts` consecutive failed retries is eligible
+// again: 30s, 60s, 120s, … capped at 30 minutes. The cap keeps a long-
+// unreachable source probed roughly twice an hour rather than abandoned.
+func bootstrap_retry_backoff(attempts int64) int64 {
+	const base = 30
+	const maximum = 1800
+	backoff := int64(base)
+	for i := int64(0); i < attempts && backoff < maximum; i++ {
+		backoff *= 2
+	}
+	if backoff > maximum {
+		backoff = maximum
+	}
+	return backoff
+}
+
+// bootstrap_retry_eligible decides whether a non-done row should be
+// re-driven this pass. idle is now-progress (seconds since last forward
+// progress). A live 'active' transfer (idle < bootstrap_stall_seconds) is
+// never disturbed; everything else waits out its per-row backoff.
+func bootstrap_retry_eligible(state string, idle, attempts int64) bool {
+	if state == bootstrap_state_active && idle < bootstrap_stall_seconds {
+		return false
+	}
+	return idle >= bootstrap_retry_backoff(attempts)
+}
+
+// bootstrap_retry_incomplete_once does one pass: re-drive every eligible
+// non-done row. Pulled out so tests can drive a single iteration without
+// spinning the manager loop. (Name kept for back-compat; it now covers
+// queued + stalled-active + incomplete, not only incomplete.)
 func bootstrap_retry_incomplete_once() {
 	rdb := db_open("db/replication.db")
-	rows, err := rdb.rows("select peer, scope from bootstrap where state=?", bootstrap_state_incomplete)
+	rows, err := rdb.rows("select peer, scope, state, progress, attempts from bootstrap where state != ?", bootstrap_state_done)
 	if err != nil || len(rows) == 0 {
 		return
 	}
 	for _, r := range rows {
 		peer, _ := r["peer"].(string)
 		scope, _ := r["scope"].(string)
+		state, _ := r["state"].(string)
 		if peer == "" || scope == "" {
 			continue
 		}
-		// Reset the counters so the new manifest pass starts fresh —
-		// pending_add will re-bump position as each page lands and the
-		// driver decrements as files transfer.
-		rdb.exec("update bootstrap set state='queued', position='', failed=0 where scope=? and peer=?", scope, peer)
+		progress, _ := r["progress"].(int64)
+		attempts, _ := r["attempts"].(int64)
+		if !bootstrap_retry_eligible(state, now()-progress, attempts) {
+			continue
+		}
+		// Reset to queued and clear the per-pass failed counter so the new
+		// manifest pass starts fresh — the file scope's pending_add would
+		// otherwise stack a fresh page count on top of the stale one and
+		// the scope would never reach pending==0. Bump attempts and stamp
+		// progress so the row backs off and isn't re-fired again until its
+		// next window; a real chunk landing resets attempts to 0 via
+		// bootstrap_set_state(active).
+		rdb.exec("update bootstrap set state='queued', position='', failed=0, attempts=attempts+1, progress=? where scope=? and peer=?", now(), scope, peer)
 		uid := bootstrap_peer_user(peer)
-		debug("Replication bootstrap-retry: scope=%q peer=%q uid=%q re-firing manifest", scope, peer, uid)
+		debug("Replication bootstrap-retry: scope=%q peer=%q uid=%q state=%q attempts=%d re-firing manifest", scope, peer, uid, state, attempts+1)
 		bootstrap_refire_manifest(peer, scope, uid)
 	}
+}
+
+// bootstrap_resume_peer re-drives every non-done (scope, peer) bootstrap
+// row for one peer immediately, ignoring backoff — the on-demand analogue
+// of the periodic retry driver. Safe to call on a *populated* replica: it
+// only re-fires scopes that are not yet 'done', so it never re-fetches
+// (and rename-replaces) a DB the running server already holds open. This
+// is the crucial difference from `resync`, which wipes ALL bootstrap rows
+// and re-bootstraps every scope from scratch — including the done ones —
+// and so is refused on a populated host. Resume is what lets an operator
+// (or an automatic reconnect) finish a bootstrap that completed some
+// scopes (e.g. userdbs) but left others stuck (e.g. files+apps queued),
+// which `resync` could not do without a full re-wipe.
+//
+// Called by `mochictl replication resume` and fired automatically when a
+// stalled source becomes reachable again (replication_member_reachable).
+// No-op (returns 0) if the peer has no non-done rows.
+func bootstrap_resume_peer(peer string) int {
+	if peer == "" {
+		return 0
+	}
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select scope from bootstrap where peer=? and state != ?", peer, bootstrap_state_done)
+	if err != nil || len(rows) == 0 {
+		return 0
+	}
+	uid := bootstrap_peer_user(peer)
+	count := 0
+	for _, r := range rows {
+		scope, _ := r["scope"].(string)
+		if scope == "" {
+			continue
+		}
+		// Clear backoff (attempts=0) so the kick fires now; a clean recount
+		// (position='') so the file scope's pending_add doesn't stack.
+		rdb.exec("update bootstrap set state='queued', position='', failed=0, attempts=0, progress=? where scope=? and peer=?", now(), scope, peer)
+		bootstrap_refire_manifest(peer, scope, uid)
+		count++
+	}
+	info("Replication bootstrap resume: re-fired %d non-done scope(s) for peer=%q", count, peer)
+	return count
 }
 
 // bootstrap_progress tracks one in-flight bootstrap (a bootstrap_start
@@ -1884,6 +2007,86 @@ func bootstrap_progress_settle(peer, scope, state string) {
 		outcome, peer, p.user, now()-p.started, p.databases, p.files, p.bytes, p.failures)
 }
 
+// ---- §2: manifests-first bulk ordering -------------------------------
+//
+// bootstrap_start fetches every scope's manifest BEFORE any bulk transfer
+// begins. Without this, the first scope whose manifest lands (userdbs,
+// typically the largest) starts streaming GBs immediately and saturates
+// the shared connection, so the other scopes' small manifest READS time
+// out and those scopes sit at 'queued' forever (observed live 2026-06-14:
+// yuzu's files+apps starved behind a 16 GB userdbs transfer). Reading all
+// manifests first means no bulk stream can ever block a manifest read.
+//
+// Mechanism: while a peer is in its manifest phase (between
+// bootstrap_phase_begin and bootstrap_phase_end), the per-scope bulk
+// drivers the manifest results would spawn are DEFERRED into the phase
+// instead of run. bootstrap_phase_end (fired once every manifest fetch has
+// returned) releases them under a bounded worker count. Callers that
+// re-drive a single scope on their own schedule (resume / retry) don't
+// open a phase, so their drives run immediately as before — they're
+// already backstopped by the universal retry driver and don't have the
+// all-scopes-starting-at-once contention.
+
+// bootstrap_bulk_concurrency caps concurrent bulk-scope drivers as an
+// anti-runaway bound — a heavily paginated file manifest can otherwise
+// spawn one driver per page. Generous: it stops pathological fan-out
+// without throttling the handful of drivers a normal bootstrap runs.
+const bootstrap_bulk_concurrency = 16
+
+var (
+	bootstrap_bulk_sem = make(chan struct{}, bootstrap_bulk_concurrency)
+	bootstrap_phase_mu sync.Mutex
+	// bootstrap_phases holds, per peer, the bulk drives deferred during
+	// that peer's manifest phase. A peer absent from the map is not in a
+	// manifest phase — its drives run immediately.
+	bootstrap_phases = map[string]*[]func(){}
+)
+
+// bootstrap_phase_begin opens a manifest phase for `peer`: bulk drives are
+// collected rather than run until bootstrap_phase_end.
+func bootstrap_phase_begin(peer string) {
+	bootstrap_phase_mu.Lock()
+	deferred := []func(){}
+	bootstrap_phases[peer] = &deferred
+	bootstrap_phase_mu.Unlock()
+}
+
+// bootstrap_phase_drive runs `drive` now (under the concurrency bound), or
+// defers it if `peer` is in a manifest phase.
+func bootstrap_phase_drive(peer string, drive func()) {
+	bootstrap_phase_mu.Lock()
+	if deferred, ok := bootstrap_phases[peer]; ok {
+		*deferred = append(*deferred, drive)
+		bootstrap_phase_mu.Unlock()
+		return
+	}
+	bootstrap_phase_mu.Unlock()
+	go bootstrap_bulk_run(drive)
+}
+
+// bootstrap_phase_end closes `peer`'s manifest phase and releases every
+// drive deferred during it. No-op if the peer wasn't in a phase.
+func bootstrap_phase_end(peer string) {
+	bootstrap_phase_mu.Lock()
+	deferred := bootstrap_phases[peer]
+	delete(bootstrap_phases, peer)
+	bootstrap_phase_mu.Unlock()
+	if deferred == nil {
+		return
+	}
+	for _, drive := range *deferred {
+		go bootstrap_bulk_run(drive)
+	}
+}
+
+// bootstrap_bulk_run runs one bulk-scope drive under the global
+// concurrency bound.
+func bootstrap_bulk_run(drive func()) {
+	bootstrap_bulk_sem <- struct{}{}
+	defer func() { <-bootstrap_bulk_sem }()
+	drive()
+}
+
 // bootstrap_start kicks off a whole-replica bootstrap from `peer`.
 // Called from the join-approved handler on a fresh replica once the
 // source has accepted the pair join; also exposed via mochictl for
@@ -1909,13 +2112,32 @@ func bootstrap_start(peer string) {
 		return
 	}
 	bootstrap_progress_start(peer, "", []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs})
+	// Manifests first: open a phase so the per-scope bulk drivers are held
+	// until every manifest has been fetched, then released together. See
+	// the §2 block above bootstrap_start.
+	bootstrap_phase_begin(peer)
+	var wg sync.WaitGroup
 	for _, scope := range []string{bootstrap_scope_files, bootstrap_scope_apps} {
 		bootstrap_set_state(scope, peer, bootstrap_state_queued, "")
-		go replication_bootstrap_file_manifest_fetch(peer, scope, "")
+		wg.Add(1)
+		go func(scope string) {
+			defer wg.Done()
+			replication_bootstrap_file_manifest_fetch(peer, scope, "")
+		}(scope)
 	}
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
-	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, "")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, "")
+	}()
 	audit_replication_bootstrap_started(peer)
+	// Release the deferred bulk drivers once every manifest has landed.
+	// Async so bootstrap_start stays non-blocking.
+	go func() {
+		wg.Wait()
+		bootstrap_phase_end(peer)
+	}()
 }
 
 // bootstrap_start_user is the per-user link signup analogue of
@@ -1947,11 +2169,26 @@ func bootstrap_start_user(peer, uid string) {
 		return
 	}
 	bootstrap_progress_start(peer, uid, []string{bootstrap_scope_files, bootstrap_scope_userdbs})
+	// Manifests first (see §2 block above bootstrap_start).
+	bootstrap_phase_begin(peer)
+	var wg sync.WaitGroup
 	bootstrap_set_state(bootstrap_scope_files, peer, bootstrap_state_queued, "")
-	go replication_bootstrap_file_manifest_fetch(peer, bootstrap_scope_files, uid+"/")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replication_bootstrap_file_manifest_fetch(peer, bootstrap_scope_files, uid+"/")
+	}()
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
-	go replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, uid)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, uid)
+	}()
 	audit_replication_bootstrap_started(peer)
+	go func() {
+		wg.Wait()
+		bootstrap_phase_end(peer)
+	}()
 }
 
 // bootstrap_walk_db_manifest enumerates every DB the source has for
@@ -2176,7 +2413,14 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 		return
 	}
 	bootstrap_set_pending(res.Scope, originPeer, int64(len(res.Entries)))
-	go bootstrap_db_scope_driver(originPeer, res.Scope, res.Entries)
+	// Defer the bulk DB-fetch driver while `originPeer` is in its manifest
+	// phase (bootstrap_start) so a multi-GB DB transfer can't start mid-
+	// phase and starve another scope's manifest read.
+	scope := res.Scope
+	entries := res.Entries
+	bootstrap_phase_drive(originPeer, func() {
+		bootstrap_db_scope_driver(originPeer, scope, entries)
+	})
 }
 
 // ============================================================

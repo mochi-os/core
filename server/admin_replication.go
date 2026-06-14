@@ -166,6 +166,36 @@ func admin_replication_resync(c *gin.Context) {
 	})
 }
 
+// admin_replication_resume is POST /_/admin/replication/resume.
+// Body: {"peer": "<peer-id>"}
+//
+// Re-drives every NON-done bootstrap scope for `peer` immediately
+// (bootstrap_resume_peer). Unlike resync, this is safe on a populated,
+// running server: it touches only scopes that haven't finished, so it
+// never rename-replaces a DB the daemon already holds open. It's the
+// recovery for a bootstrap that completed some scopes (e.g. userdbs) but
+// left others stuck (e.g. files+apps queued) — the exact situation where
+// resync refuses ("This server has users") and the only previous option
+// was a full re-wipe.
+//
+// Idempotent on the wire: the receiver's manifest-diff skips files/DBs
+// whose local copy already matches by size + sha256. Returns the number
+// of scopes re-driven (0 if the peer has nothing outstanding).
+func admin_replication_resume(c *gin.Context) {
+	var input struct {
+		Peer string `json:"peer"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
+		respond_error(c, http.StatusBadRequest, "missing_peer", "errors.missing_peer", nil)
+		return
+	}
+	scopes := bootstrap_resume_peer(input.Peer)
+	c.JSON(http.StatusOK, gin.H{
+		"peer":   input.Peer,
+		"scopes": scopes,
+	})
+}
+
 // admin_replication_backfill is POST /_/admin/replication/backfill.
 // Re-runs replication_pair_backfill against `peer`. Unlike the
 // bulk-bootstrap resync, this is safe on a populated host: it emits

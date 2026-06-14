@@ -1961,8 +1961,13 @@ func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: called with content=%v", e.content)
 
 	if e.db == nil {
-		warn("attachment_event_data: no database, returning 500")
-		e.stream.write(map[string]string{"status": "500"})
+		// No app DB for this (user, app) on this host. Under replication a
+		// peer can legitimately request an attachment for a user/app not
+		// (yet) present here — that's "I don't have it", not a server fault.
+		// Answer 404 like the not-found case below, at debug, so it doesn't
+		// warn-email the admin on every such request.
+		debug("attachment_event_data: no database for this context, returning 404")
+		e.stream.write(map[string]string{"status": "404"})
 		return
 	}
 
@@ -2050,7 +2055,7 @@ func (e *Event) attachment_event_data() {
 
 	f, err := root.Open(filename)
 	if err != nil {
-		warn("attachment_event_data: file not found, returning 404")
+		debug("attachment_event_data: file not found, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
 	}

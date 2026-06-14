@@ -1234,6 +1234,230 @@ func TestBootstrapRetryIncompleteOnceRefiresAndResets(t *testing.T) {
 	}
 }
 
+// TestBootstrapRetryRefiresQueuedAndStalledActive is the keystone of the
+// universal-retry fix (#25). The retry driver used to re-fire only
+// 'incomplete' rows, so a scope stuck at 'queued' (its manifest-request
+// never landed — exactly yuzu's files+apps scopes on 2026-06-14) sat
+// there forever. The driver must now also re-fire queued rows and
+// stalled-active rows, while leaving a live (recently-progressing) active
+// transfer alone.
+func TestBootstrapRetryRefiresQueuedAndStalledActive(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	// Pair member → whole-server (empty prefix / user filter), deterministic.
+	rdb.exec("insert into pair (peer, added) values ('src-peer', 1)")
+
+	// files: queued, never progressed (progress=0) → the yuzu case.
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('files', 'src-peer', 'queued', '', 0, 0)")
+	// apps: active and LIVE (progress just now) → must be left alone.
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('apps', 'src-peer', 'active', '3', ?, 0)", now())
+	// userdbs: active but STALLED (progress well past the stall window) → re-fire.
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('userdbs', 'src-peer', 'active', '7', ?, 0)", now()-bootstrap_stall_seconds-10)
+	// sysdbs on another peer: done → never touched.
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('sysdbs', 'other-peer', 'done', '', 0, 0)")
+
+	var mu sync.Mutex
+	var fileScopes, dbScopes []string
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		fileScopes = append(fileScopes, scope)
+		mu.Unlock()
+	}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
+		mu.Lock()
+		dbScopes = append(dbScopes, scope)
+		mu.Unlock()
+	}
+	defer func() {
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
+	}()
+
+	bootstrap_retry_incomplete_once()
+
+	// Give the refire goroutines a moment to record.
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileScopes) >= 1 && len(dbScopes) >= 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// files (queued) must be re-fired; apps (live active) must NOT be.
+	if len(fileScopes) != 1 || fileScopes[0] != bootstrap_scope_files {
+		t.Errorf("file refires = %v, want exactly [files] (queued re-fired, live-active apps left alone)", fileScopes)
+	}
+	// userdbs (stalled active) must be re-fired.
+	if len(dbScopes) != 1 || dbScopes[0] != bootstrap_scope_userdbs {
+		t.Errorf("db refires = %v, want exactly [userdbs] (stalled active re-fired)", dbScopes)
+	}
+	// The live-active apps row keeps its position (not reset to queued).
+	if state, pos := bootstrap_get_state(bootstrap_scope_apps, "src-peer"); state != bootstrap_state_active || pos != "3" {
+		t.Errorf("live-active apps row disturbed: state=%q position=%q, want active/3", state, pos)
+	}
+	// The done row on the other peer is untouched.
+	if state, _ := bootstrap_get_state(bootstrap_scope_sysdbs, "other-peer"); state != bootstrap_state_done {
+		t.Errorf("done row mutated: state=%q", state)
+	}
+}
+
+// TestBootstrapRetryEligibility unit-tests the pure backoff + eligibility
+// decision so the timing logic is verified without DB / goroutine churn.
+func TestBootstrapRetryEligibility(t *testing.T) {
+	backoffs := []struct {
+		attempts int64
+		want     int64
+	}{
+		{0, 30}, {1, 60}, {2, 120}, {3, 240}, {6, 1800}, {100, 1800},
+	}
+	for _, b := range backoffs {
+		if got := bootstrap_retry_backoff(b.attempts); got != b.want {
+			t.Errorf("bootstrap_retry_backoff(%d) = %d, want %d", b.attempts, got, b.want)
+		}
+	}
+
+	cases := []struct {
+		name     string
+		state    string
+		idle     int64
+		attempts int64
+		want     bool
+	}{
+		{"queued within backoff", bootstrap_state_queued, 5, 0, false},
+		{"queued past backoff", bootstrap_state_queued, 40, 0, true},
+		{"queued backoff escalated by attempts", bootstrap_state_queued, 40, 1, false},
+		{"live active never disturbed", bootstrap_state_active, 5, 0, false},
+		{"stalled active re-driven", bootstrap_state_active, bootstrap_stall_seconds + 10, 0, true},
+		{"incomplete long idle", bootstrap_state_incomplete, 100000, 0, true},
+	}
+	for _, c := range cases {
+		if got := bootstrap_retry_eligible(c.state, c.idle, c.attempts); got != c.want {
+			t.Errorf("%s: bootstrap_retry_eligible(%q, idle=%d, attempts=%d) = %v, want %v",
+				c.name, c.state, c.idle, c.attempts, got, c.want)
+		}
+	}
+}
+
+// TestBootstrapResumePeer covers the on-demand operator kick (#25): it
+// re-fires every NOT-done scope for one peer, leaves done scopes and other
+// peers alone, returns the count, and is a no-op for an unknown peer.
+func TestBootstrapResumePeer(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added) values ('src-peer', 1)")
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('files', 'src-peer', 'queued', '', 0, 4)")
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('userdbs', 'src-peer', 'incomplete', '0', 0, 2)")
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('apps', 'src-peer', 'done', '', 0, 0)")
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('files', 'other-peer', 'queued', '', 0, 0)")
+
+	var mu sync.Mutex
+	var fileScopes, dbScopes []string
+	orig_file := replication_bootstrap_file_manifest_fetch
+	orig_db := replication_bootstrap_db_manifest_fetch
+	replication_bootstrap_file_manifest_fetch = func(peer, scope, prefix string) {
+		mu.Lock()
+		fileScopes = append(fileScopes, peer+"/"+scope)
+		mu.Unlock()
+	}
+	replication_bootstrap_db_manifest_fetch = func(peer, scope, user string) {
+		mu.Lock()
+		dbScopes = append(dbScopes, peer+"/"+scope)
+		mu.Unlock()
+	}
+	defer func() {
+		replication_bootstrap_file_manifest_fetch = orig_file
+		replication_bootstrap_db_manifest_fetch = orig_db
+	}()
+
+	if n := bootstrap_resume_peer("src-peer"); n != 2 {
+		t.Errorf("bootstrap_resume_peer returned %d, want 2 (files + userdbs; apps is done)", n)
+	}
+
+	for i := 0; i < 50; i++ {
+		mu.Lock()
+		done := len(fileScopes) >= 1 && len(dbScopes) >= 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fileScopes) != 1 || fileScopes[0] != "src-peer/files" {
+		t.Errorf("file refires = %v, want [src-peer/files] (other-peer must not be touched)", fileScopes)
+	}
+	if len(dbScopes) != 1 || dbScopes[0] != "src-peer/userdbs" {
+		t.Errorf("db refires = %v, want [src-peer/userdbs]", dbScopes)
+	}
+
+	// The done scope is left as done; the retried scopes reset to queued
+	// with backoff cleared (attempts=0).
+	if state, _ := bootstrap_get_state(bootstrap_scope_apps, "src-peer"); state != bootstrap_state_done {
+		t.Errorf("done scope mutated by resume: state=%q", state)
+	}
+	if got := bootstrap_get_failed(bootstrap_scope_files, "src-peer"); got != 0 {
+		t.Errorf("files failed after resume = %d, want 0 (reset)", got)
+	}
+	if attempts := rdb.integer("select attempts from bootstrap where scope='files' and peer='src-peer'"); attempts != 0 {
+		t.Errorf("files attempts after resume = %d, want 0 (backoff cleared)", attempts)
+	}
+
+	// Unknown peer is a no-op.
+	if n := bootstrap_resume_peer("nobody"); n != 0 {
+		t.Errorf("bootstrap_resume_peer(unknown) = %d, want 0", n)
+	}
+}
+
+// TestBootstrapPhaseDefersBulk is the §2 manifests-first guarantee: a bulk
+// drive enqueued while a peer is in its manifest phase must NOT run until
+// the phase ends (so a multi-GB transfer can't start mid-phase and starve
+// another scope's manifest read), and a drive enqueued with no phase
+// active runs immediately (the resume / retry path).
+func TestBootstrapPhaseDefersBulk(t *testing.T) {
+	// In a phase: deferred until phase_end.
+	ran := make(chan struct{}, 1)
+	bootstrap_phase_begin("phase-peer")
+	bootstrap_phase_drive("phase-peer", func() { ran <- struct{}{} })
+
+	select {
+	case <-ran:
+		t.Fatal("bulk drive ran during the manifest phase; it must be deferred")
+	case <-time.After(100 * time.Millisecond):
+		// Correct: still deferred.
+	}
+
+	bootstrap_phase_end("phase-peer")
+	select {
+	case <-ran:
+		// Correct: released on phase end.
+	case <-time.After(2 * time.Second):
+		t.Fatal("bulk drive did not run after phase end")
+	}
+
+	// No phase active: runs immediately.
+	ran2 := make(chan struct{}, 1)
+	bootstrap_phase_drive("no-phase-peer", func() { ran2 <- struct{}{} })
+	select {
+	case <-ran2:
+		// Correct.
+	case <-time.After(2 * time.Second):
+		t.Fatal("bulk drive with no active phase did not run")
+	}
+}
+
 // The 2026-05-21 "database disk image is malformed" crash (bootstrap
 // renamed a new .db into place but left the previous WAL beside it, which
 // the next open replayed against the new file) is now prevented by design:

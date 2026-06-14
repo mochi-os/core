@@ -88,7 +88,7 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 
 	sa_raw := setting_get("fcm.service_account", "")
 	if sa_raw == "" {
-		warn("FCM: account_deliver_fcm called but fcm.service_account is empty")
+		debug("FCM: account_deliver_fcm called but fcm.service_account is empty")
 		return false, false, "FCM service account not configured"
 	}
 	sa, err := fcm_parse_service_account(sa_raw)

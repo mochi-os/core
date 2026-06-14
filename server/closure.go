@@ -63,7 +63,7 @@ func replication_send_user_purge(user string, peers []string) {
 	udb := db_open("db/users.db")
 	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
 	if err != nil || row == nil {
-		warn("user/purge emit: no signing entity for user %q: %v", user, err)
+		debug("user/purge emit: no signing entity for user %q: %v", user, err)
 		return
 	}
 	from, _ := row["id"].(string)

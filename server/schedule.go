@@ -122,20 +122,77 @@ func schedule_next() *ScheduledEvent {
 }
 
 // schedule_valid checks if the user and app still exist
+// schedule_valid reports whether a due event can actually run on THIS host
+// right now: the user, the app, an active version for that user, AND a
+// handler for the event must all be present. It is the single source of
+// truth used by schedule_run — anything it rejects is routed through
+// schedule_handle_unrunnable rather than reaching schedule_run_event,
+// whose own equivalent checks are then only a TOCTOU backstop.
 func schedule_valid(se *ScheduledEvent) bool {
-	// Check user exists ("" = system, always valid)
+	// Resolve the user ("" = system, always valid).
+	var user *User
 	if se.User != "" {
-		if user_by_uid(se.User) == nil {
+		user = user_by_uid(se.User)
+		if user == nil {
 			return false
 		}
 	}
 
-	// Check app exists
-	if app_by_id(se.App) == nil {
+	// App must exist, with an active version for this user...
+	app := app_by_id(se.App)
+	if app == nil {
+		return false
+	}
+	av := app.active(user)
+	if av == nil {
 		return false
 	}
 
-	return true
+	// ...that has a handler for this event (or a catch-all "").
+	apps_lock.Lock()
+	_, found := av.Events[se.Event]
+	if !found {
+		_, found = av.Events[""]
+	}
+	apps_lock.Unlock()
+	return found
+}
+
+// schedule_handle_unrunnable deals with a due event that schedule_valid
+// rejected. Under replication this is frequently EXPECTED, not an error:
+// the host that has the user + app + handler runs it (leader-gating dedups
+// the side effects), and a host still bootstrapping a user must not touch
+// that user's just-replicated rows. So we stay quiet (no admin email) and,
+// crucially, never replicate a delete — a peer at a different app version
+// may run this event fine, and propagating a delete would wipe it there.
+//
+//   - User absent or still bootstrapping (pending): defer silently — a
+//     peer runs it; dropping it risks losing a just-replicated schedule
+//     before its app/data finishes landing.
+//   - Active user, or a system event (host-local), whose app / version /
+//     handler is genuinely gone here: a recurring row would otherwise
+//     re-fire every interval forever, so drop it LOCALLY (no replicated
+//     delete) to stop the churn. One-shot rows were already removed by
+//     schedule_claim, so nothing to do for them.
+func schedule_handle_unrunnable(se *ScheduledEvent) {
+	if se.User != "" {
+		// Decide on the user's replication status alone — NOT user_by_uid,
+		// which also returns nil for a user whose identity hasn't loaded and
+		// would wrongly look "absent". A missing row, or a still-bootstrapping
+		// (pending) user, means defer: a peer runs the event, and dropping a
+		// just-replicated row before its data lands would lose it.
+		row, _ := db_open("db/users.db").row("select status from users where uid=?", se.User)
+		if row == nil {
+			return
+		}
+		status, _ := row["status"].(string)
+		if user_pending(&User{Status: status}) {
+			return
+		}
+	}
+	if se.Interval > 0 {
+		schedule_db().exec("delete from schedule where id=?", se.ID)
+	}
 }
 
 // schedule_start initializes and starts the scheduler
@@ -270,12 +327,11 @@ func schedule_run(se ScheduledEvent) {
 		}
 	}()
 
-	// Check user and app still exist
+	// Can it run on this host (user + app + active version + handler all
+	// present)? If not, handle it quietly and replication-safely — never
+	// warn-email or replicate a delete; see schedule_handle_unrunnable.
 	if !schedule_valid(&se) {
-		// For recurring events, delete so it doesn't keep trying
-		if se.Interval > 0 {
-			schedule_delete(se.ID)
-		}
+		schedule_handle_unrunnable(&se)
 		return
 	}
 
@@ -312,11 +368,16 @@ const schedule_stuck_seconds = 5 * 60
 // schedule_run_event dispatches the scheduled event to the app's event handler
 func schedule_run_event(se *ScheduledEvent) {
 	// Get the user (nil for system events)
+	// These four checks duplicate schedule_valid (already run in
+	// schedule_run, which routes a rejection to schedule_handle_unrunnable
+	// and never reaches here). They survive only as a TOCTOU backstop —
+	// the user/app could vanish between the two calls — so they log at
+	// debug, never warn-email.
 	var user *User
 	if se.User != "" {
 		user = user_by_uid(se.User)
 		if user == nil {
-			warn("schedule: user %q not found for event %s/%s", se.User, se.App, se.Event)
+			debug("schedule: user %q not found for event %s/%s", se.User, se.App, se.Event)
 			return
 		}
 	}
@@ -324,14 +385,14 @@ func schedule_run_event(se *ScheduledEvent) {
 	// Get the app
 	app := app_by_id(se.App)
 	if app == nil {
-		warn("schedule: app %q not found for event %s", se.App, se.Event)
+		debug("schedule: app %q not found for event %s", se.App, se.Event)
 		return
 	}
 
 	// Get the active version for this user
 	av := app.active(user)
 	if av == nil {
-		warn("schedule: no active version for app %q", se.App)
+		debug("schedule: no active version for app %q", se.App)
 		return
 	}
 
@@ -344,7 +405,7 @@ func schedule_run_event(se *ScheduledEvent) {
 	apps_lock.Unlock()
 
 	if !found {
-		warn("schedule: event %q not found in app %q", se.Event, se.App)
+		debug("schedule: event %q not found in app %q", se.Event, se.App)
 		return
 	}
 

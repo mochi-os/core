@@ -1733,7 +1733,7 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		return nil, false
 	}
 	if len(rows) == 0 {
-		warn("Replication transfer-keys: no entities for user %q", user_uid)
+		debug("Replication transfer-keys: no entities for user %q", user_uid)
 		return nil, false
 	}
 
@@ -1869,7 +1869,7 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		kt.Entities = append(kt.Entities, ent)
 	}
 	if len(kt.Entities) == 0 {
-		warn("Replication transfer-keys: user %q has no valid entities", user_uid)
+		debug("Replication transfer-keys: user %q has no valid entities", user_uid)
 		return nil, false
 	}
 	return &kt, true
@@ -1932,7 +1932,7 @@ func replication_membership_announce(user string, hosts []string) {
 	udb := db_open("db/users.db")
 	row, err := udb.row("select id from entities where user=? order by id limit 1", user)
 	if err != nil || row == nil {
-		warn("Replication membership-announce: no signing entity for user %q: %v", user, err)
+		debug("Replication membership-announce: no signing entity for user %q: %v", user, err)
 		return
 	}
 	from, _ := row["id"].(string)
@@ -2179,7 +2179,7 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		if _, teardown := purging.Load(user); teardown {
 			debug("Replication emit: skipping for user %q mid-teardown (entities gone)", user)
 		} else {
-			warn("Replication emit: no signing entity for user %q: %v", user, err)
+			debug("Replication emit: no signing entity for user %q: %v", user, err)
 		}
 		return
 	}
@@ -2295,6 +2295,40 @@ func replication_emit_user_core_exec(user *User, sql string, args []any) {
 	})
 }
 
+// replication_exec_forward_incompatible reports whether a replicated-op
+// SQL error is a forward-incompatibility — the statement references a
+// column or table this receiver's (newer) schema no longer has — rather
+// than a transient/retryable failure. Such ops can never apply here: the
+// sender is at an older schema and the local shape has moved on (e.g. the
+// sender emits `update chats set status='left' where left=1` but this host
+// has since dropped the `left` column). They are quarantined
+// (replication_deadletter), not retried and not emailed — a rolling
+// schema upgrade legitimately produces them.
+func replication_exec_forward_incompatible(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such column") ||
+		strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "has no column named")
+}
+
+// replication_deadletter records a forward-incompatible op that this host
+// can't apply: an audit-trail entry (greppable by scope/user/db/sequence,
+// the same way audit_replication_pending_purged records dropped pending
+// rows) plus a debug log line. Deliberately NOT warn() — a schema-skew op
+// is an expected condition during a rolling upgrade, not an operator-
+// actionable error, so it must not email the admin nor consume the shared
+// per-format email-throttle slot a genuine exec bug at the same site
+// needs. The caller returns ApplyApplied so the op is marked seen and the
+// stream advances (never retried forever, never silently dropped).
+func replication_deadletter(op *ReplicationOp, statement, errText string) {
+	audit_replication_deadletter(op.Scope, op.User, op.Database, op.Sequence, errText)
+	debug("Replication exec forward-incompatible (quarantined): scope=%q user=%q db=%q seq=%d sql=%q: %s",
+		op.Scope, op.User, op.Database, op.Sequence, statement, errText)
+}
+
 func replication_apply_app_system_exec(op *ReplicationOp) ApplyResult {
 	var cmd SQLCommand
 	if err := cbor.Unmarshal(op.Payload, &cmd); err != nil {
@@ -2320,6 +2354,10 @@ func replication_apply_app_system_exec(op *ReplicationOp) ApplyResult {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			debug("Replication exec-app-system deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
 			return ApplyDeferred
+		}
+		if replication_exec_forward_incompatible(err) {
+			replication_deadletter(op, cmd.Statement, err.Error())
+			return ApplyApplied
 		}
 		warn("Replication exec-app-system failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
 		return ApplyApplied
@@ -2348,6 +2386,10 @@ func replication_apply_user_core_exec(op *ReplicationOp) ApplyResult {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			debug("Replication exec-user-core deferred (FK): user=%q table=%q sql=%q", op.User, op.Table, cmd.Statement)
 			return ApplyDeferred
+		}
+		if replication_exec_forward_incompatible(err) {
+			replication_deadletter(op, cmd.Statement, err.Error())
+			return ApplyApplied
 		}
 		warn("Replication exec-user-core failed on user=%q sql=%q: %v", op.User, cmd.Statement, err)
 		return ApplyApplied
@@ -3251,6 +3293,10 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			// debug("Replication exec deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
 			return ApplyDeferred
+		}
+		if replication_exec_forward_incompatible(err) {
+			replication_deadletter(op, cmd.Statement, err.Error())
+			return ApplyApplied
 		}
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
 		return ApplyApplied

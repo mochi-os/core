@@ -175,6 +175,19 @@ func replication_member_reachable(id string) {
 	if seen, _ := db.exists("select 1 from unreachable where peer=?", id); seen {
 		db.exec("delete from unreachable where peer=?", id)
 		db.exec("delete from irreparable where peer=? and reason='offline'", id)
+		// A source that just came back is the moment to re-drive any
+		// bootstrap scope that stalled while it was gone. Clearing the
+		// per-row backoff (attempts=0) and progress timestamp makes every
+		// non-done scope for this peer immediately eligible on the retry
+		// driver's next tick — instead of waiting out its exponential
+		// backoff window. We only reach here on an unreachable→reachable
+		// transition, so any 'active' row was genuinely stalled (its peer
+		// was gone), making the re-drive correct rather than disruptive.
+		// A plain UPDATE here (rather than calling bootstrap_resume_peer)
+		// keeps the libp2p connect callback off the manifest-fetch code
+		// path — both for speed and to avoid a package initialization
+		// cycle through the stubbable fetch vars.
+		db.exec("update bootstrap set attempts=0, progress=0 where peer=? and state != 'done'", id)
 	}
 }
 

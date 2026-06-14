@@ -129,7 +129,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	// Model fallback: if model not found and not already using default, retry with default
 	if result.status == 404 && model != ai_provider_defaults[ptype] {
-		warn("ai: model %q not found for %s, falling back to default %q", model, ptype, ai_provider_defaults[ptype])
+		debug("ai: model %q not found for %s, falling back to default %q", model, ptype, ai_provider_defaults[ptype])
 		switch ptype {
 		case "claude":
 			result = ai_call_claude(api_key, ai_provider_defaults[ptype], prompt)

@@ -43,6 +43,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_77()
 	db_upgrade_78()
 	db_upgrade_81() // hosts: seen + attestation columns (membership v2)
+	db_upgrade_87() // bootstrap: progress + attempts columns (universal retry)
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise

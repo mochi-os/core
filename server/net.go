@@ -93,7 +93,7 @@ func net_connect(peer string, addresses []string) bool {
 	}
 
 	if len(ai.Addrs) == 0 {
-		warn("Net peer %q has no valid addresses", peer)
+		debug("Net peer %q has no valid addresses", peer)
 		return false
 	}
 

@@ -191,6 +191,10 @@ func init() {
 			help: "Force a bulk-bootstrap re-run against the given peer",
 			run:  cmd_replication_resync,
 		},
+		"replication resume": {
+			help: "Re-drive only the not-yet-done bootstrap scopes for a peer (safe on a populated server, unlike resync)",
+			run:  cmd_replication_resume,
+		},
 		"replication backfill": {
 			help: "Re-run the pair-join system-row backfill against the given peer",
 			run:  cmd_replication_backfill,

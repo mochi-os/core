@@ -334,6 +334,58 @@ func TestScheduleValid(t *testing.T) {
 	})
 }
 
+// TestScheduleHandleUnrunnable covers the #30 replication-safe handling of
+// a due event that can't run on this host: bootstrapping/absent users are
+// deferred (their just-replicated rows are NOT dropped), while a genuinely
+// stale recurring row (active user or system event whose app is gone) is
+// dropped LOCALLY so it stops re-firing — never via the replicated
+// schedule_delete, which would wipe it on a peer that can still run it.
+func TestScheduleHandleUnrunnable(t *testing.T) {
+	data_dir = t.TempDir()
+	os.MkdirAll(data_dir+"/db", 0755)
+	db_create()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username, role, status) values ('active-u', 'au', 'user', 'active')")
+	udb.exec("insert into users (uid, username, role, status) values ('pending-u', 'pu', 'user', 'pending-replication')")
+
+	sdb := schedule_db()
+	insert := func(user string, interval int64) int64 {
+		res := must(sdb.internal.Exec(
+			"insert into schedule (user, app, due, event, data, interval, created) values (?, 'gone-app', 1, 'tick', '', ?, 1)",
+			user, interval))
+		id, _ := res.LastInsertId()
+		return id
+	}
+	exists := func(id int64) bool {
+		ok, _ := sdb.exists("select 1 from schedule where id=?", id)
+		return ok
+	}
+	run := func(user string, id, interval int64) {
+		schedule_handle_unrunnable(&ScheduledEvent{ID: id, User: user, App: "gone-app", Event: "tick", Interval: interval})
+	}
+
+	cases := []struct {
+		name     string
+		user     string
+		interval int64
+		wantKept bool
+	}{
+		{"absent user recurring -> deferred", "ghost-u", 300, true},
+		{"pending user recurring -> deferred", "pending-u", 300, true},
+		{"active user gone-app recurring -> dropped locally", "active-u", 300, false},
+		{"system event gone-app recurring -> dropped locally", "", 300, false},
+		{"active user one-shot -> claim's job, no-op here", "active-u", 0, true},
+	}
+	for _, c := range cases {
+		id := insert(c.user, c.interval)
+		run(c.user, id, c.interval)
+		if got := exists(id); got != c.wantKept {
+			t.Errorf("%s: row kept=%v, want kept=%v", c.name, got, c.wantKept)
+		}
+	}
+}
+
 func TestScheduleClaimBeforeExecute(t *testing.T) {
 	// Setup test environment
 	data_dir = t.TempDir()

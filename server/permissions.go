@@ -241,7 +241,32 @@ func permission_granted(u *User, app_id string, permission string) bool {
 
 	// For other permissions, check exact match
 	granted, _ := db.exists("select 1 from permissions where app=? and permission=? and object=? and granted=1", app_id, name, object)
-	return granted
+	if granted {
+		return true
+	}
+
+	// Default apps' permissions are lazily granted on first check, but ONLY
+	// while the user is still bootstrapping from another host: app_user_setup()
+	// is skipped for a user_pending user (it can't open the per-user DB while
+	// it's being rename(2)-swapped by the backfill), so the default grants
+	// aren't seeded yet, and a create-time hook (database_create) or migration
+	// firing during the bootstrap would otherwise be denied. Gating on
+	// user_pending mirrors app_user_setup's own skip, so this covers exactly
+	// the window setup misses — and a normal, set-up user never auto-acquires a
+	// permission it wasn't granted. A user-revoked permission has an explicit
+	// granted=0 row, so it is never re-granted here.
+	if user_pending(u) {
+		if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); !seeded {
+			for _, p := range apps_default_get(app_id) {
+				if p.Permission == name && p.Object == object {
+					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object)
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // permission_grant grants a permission to an app for a user

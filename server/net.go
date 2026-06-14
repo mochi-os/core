@@ -269,6 +269,11 @@ func net_start() {
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
 	net_pubsub = must(gs.Join("/mochi/2"))
 	go pubsub_manager()
+
+	// Watch the broadcast mesh and aggressively re-dial when it empties
+	// (this server isolated from every peer), alerting on prolonged
+	// isolation.
+	go mesh_isolation_manager()
 }
 
 // Watch event bus for peer connectedness changes

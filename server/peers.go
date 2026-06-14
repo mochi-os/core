@@ -241,6 +241,116 @@ func bootstrap_connect_preferred() {
 	}
 }
 
+// mesh_isolation_recheck is how often mesh_isolation_manager samples the
+// broadcast mesh while watching for, and recovering from, isolation.
+const mesh_isolation_recheck = 15 * time.Second
+
+// mesh_isolation_confirm is how many consecutive empty samples confirm
+// isolation before remediation starts, so ordinary GossipSub churn (a peer
+// briefly leaving the mesh) doesn't trigger a re-dial round on its own.
+const mesh_isolation_confirm = 2
+
+// mesh_isolation_alert_after is how long confirmed isolation must persist
+// before the operator is warned: long enough that a bootstrap restart or a
+// transient partition reconverges unnoticed, short enough that a genuinely
+// cut-off server is reported within the hour.
+const mesh_isolation_alert_after = 10 * time.Minute
+
+// mesh_isolation_state carries mesh_isolation_step's memory between
+// samples: consecutive empty samples seen, the unix time isolation was
+// confirmed (0 when not isolated), and whether the operator alert has
+// fired for this episode.
+type mesh_isolation_state struct {
+	empty   int
+	since   int64
+	alerted bool
+}
+
+// mesh_isolation_step folds one mesh sample into the isolation state and
+// reports what the manager should do this tick. Pure (no I/O, no clock) so
+// the confirm / stand-down / alert logic is unit-testable; the manager
+// wires it to the live mesh, the re-dial, and warn(). `remediate` asks for
+// a re-dial round, `alert` fires the once-per-episode operator warning,
+// `recovered` reports the mesh came back after we had alerted.
+func mesh_isolation_step(s mesh_isolation_state, peers int, t int64) (next mesh_isolation_state, remediate, alert, recovered bool) {
+	if peers > 0 {
+		// A peer is in the mesh: stand down, resetting all memory. Report
+		// recovery only if we had escalated to an alert this episode.
+		return mesh_isolation_state{}, false, false, s.since != 0 && s.alerted
+	}
+
+	s.empty++
+	if s.empty < mesh_isolation_confirm {
+		return s, false, false, false
+	}
+	if s.since == 0 {
+		s.since = t
+	}
+	if !s.alerted && t-s.since >= int64(mesh_isolation_alert_after/time.Second) {
+		s.alerted = true
+		return s, true, true, false
+	}
+	return s, true, false, false
+}
+
+// mesh_isolation_manager watches the GossipSub broadcast mesh and switches
+// from the passive per-peer reconnect cadence to active remediation when
+// the mesh empties — this server is its only member, so it can neither
+// send nor receive broadcasts. While isolated it re-dials every bootstrap
+// (not just the most-preferred one) and resets the known-peer reconnect
+// backoffs so peer_reconnect_manager retries them at once instead of
+// waiting out the exponential delay (which only grows while we're cut
+// off), and nudges a peers/request for fresh addresses.
+//
+// The remediation runs only while the mesh is empty and stands down the
+// instant a peer appears, so the action (re-dial) directly clears its own
+// trigger (the mesh grows) and cannot run away: the dial set is finite and
+// nothing fires faster than the recheck tick. If isolation persists past
+// mesh_isolation_alert_after the operator is warned once (warn() is itself
+// email-throttled per format), and recovery is logged.
+func mesh_isolation_manager() {
+	var state mesh_isolation_state
+	for range time.Tick(mesh_isolation_recheck) {
+		if net_pubsub == nil {
+			continue
+		}
+		previous := state.since
+		var remediate, alert, recovered bool
+		state, remediate, alert, recovered = mesh_isolation_step(state, len(net_pubsub.ListPeers()), now())
+		if recovered {
+			info("Mesh isolation cleared after %s; broadcast mesh recovered", time.Duration(now()-previous)*time.Second)
+		}
+		if remediate {
+			mesh_isolation_remediate()
+		}
+		if alert {
+			warn("Broadcast mesh isolated for %s: no GossipSub peers. Re-dialling all bootstraps and known peers.", time.Duration(now()-state.since)*time.Second)
+		}
+	}
+}
+
+// mesh_isolation_remediate makes one aggressive attempt to rejoin the
+// mesh: dial every bootstrap concurrently (each dial can block for the
+// libp2p connect timeout, and the set is small), reset every known-peer
+// reconnect backoff so the next peer_reconnect_manager tick retries them
+// all, and request fresh addresses from anyone still able to hear us.
+func mesh_isolation_remediate() {
+	for _, p := range peers_bootstrap {
+		if p.ID != net_id {
+			go peer_connect(p.ID)
+		}
+	}
+
+	peer_reconnect_lock.Lock()
+	for id, r := range peer_reconnects {
+		r.NextRetry = now()
+		peer_reconnects[id] = r
+	}
+	peer_reconnect_lock.Unlock()
+
+	peers_publish_request()
+}
+
 // peer_addresses_normalise validates operator-supplied multiaddresses
 // for a peer and returns them in registry form (each carrying the
 // /p2p/<id> suffix). An entry may omit the suffix; one that carries it

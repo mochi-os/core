@@ -118,7 +118,7 @@ func fallback_addrs_factory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 		out = append(out, a)
 	}
 	if host := fallback_host(); host != "" {
-		if wss, err := multiaddr.NewMultiaddr("/dns4/" + host + "/tcp/443/tls/ws"); err == nil {
+		if wss, err := multiaddr.NewMultiaddr("/dns/" + host + "/tcp/443/tls/ws"); err == nil {
 			out = append(out, wss)
 		}
 	}

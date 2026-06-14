@@ -106,7 +106,9 @@ func TestFallbackAddrsFactory(t *testing.T) {
 	if strings.Contains(joined, "/127.0.0.1/tcp/40001/ws") {
 		t.Error("loopback ws was not dropped from advertised addresses")
 	}
-	if !strings.Contains(joined, "/dns4/mochi-os.org/tcp/443/tls/ws") {
+	// Dual-stack: /dns resolves both A and AAAA so a v6-only client can
+	// reach the WSS fallback too (was /dns4, v4-only).
+	if !strings.Contains(joined, "/dns/mochi-os.org/tcp/443/tls/ws") {
 		t.Errorf("public WSS address not injected: %s", joined)
 	}
 	if !strings.Contains(joined, "/ip4/198.51.100.4/tcp/1443") {

@@ -236,8 +236,10 @@ func net_start() {
 	// Watch event bus for changes to our own address set
 	go net_watch_addresses()
 
-	// Watch event bus for AutoNAT reachability verdicts
+	// Watch event bus for AutoNAT reachability verdicts, and debounce
+	// them so a flapping verdict doesn't churn the relay service.
 	go net_watch_reachability()
+	go net_reachability_manager()
 
 	// Start keepalive ping manager
 	go net_ping_manager()
@@ -456,8 +458,87 @@ func net_watch_reachability() {
 			net_reachability.Store("unknown")
 		}
 		debug("Net reachability now %q", net_reachable())
-		// Serve as a relay exactly while we are publicly reachable.
-		relay_service_update()
+		// The relay decision is NOT driven from here. AutoNAT verdicts
+		// flap (a couple of failed probes flip public<->unknown and back),
+		// and acting on every raw event churns the relay service — each
+		// Close drops the reservations NAT'd peers hold on us. The raw
+		// verdict stored above feeds net_reachability_manager, which
+		// debounces it before touching the relay.
+	}
+}
+
+// net_reachable_public is the debounced, relay-gating reachability verdict:
+// true only after AutoNAT has reported "public" stably. net_reachability is
+// the raw live verdict (shown on the status page); this is the
+// hysteresis-filtered one the relay service runs off.
+var net_reachable_public atomic.Bool
+
+// reachability_recheck is how often net_reachability_manager re-evaluates
+// the debounced verdict — fine-grained relative to the dwell windows.
+const reachability_recheck = 15 * time.Second
+
+// Asymmetric hysteresis windows: quick to confirm public (start relaying
+// promptly once reachable), slow to leave it (tearing the relay down drops
+// every reservation, so don't do it on a transient blip).
+const (
+	reachability_confirm_public     = 60 * time.Second
+	reachability_confirm_not_public = 5 * time.Minute
+)
+
+// reachability_debounce_state carries net_reachability_manager's memory:
+// the current stable verdict and the unix time the raw verdict first
+// disagreed with it (0 = they agree, nothing pending).
+type reachability_debounce_state struct {
+	stable_public bool
+	pending_since int64
+}
+
+// reachability_debounce_step folds one raw observation into the state and
+// reports whether the stable verdict should flip now. The dwell required
+// depends on direction — reachability_confirm_public to go up,
+// reachability_confirm_not_public to go down. Pure so the hysteresis is
+// unit-testable.
+func reachability_debounce_step(s reachability_debounce_state, raw_public bool, t int64) (next reachability_debounce_state, flip bool) {
+	if raw_public == s.stable_public {
+		s.pending_since = 0 // raw agrees with stable: cancel any pending flip
+		return s, false
+	}
+	if s.pending_since == 0 {
+		s.pending_since = t // raw just started disagreeing: open the dwell
+	}
+	dwell := int64(reachability_confirm_public / time.Second)
+	if !raw_public {
+		dwell = int64(reachability_confirm_not_public / time.Second)
+	}
+	if t-s.pending_since >= dwell {
+		s.stable_public = raw_public
+		s.pending_since = 0
+		return s, true
+	}
+	return s, false
+}
+
+// net_reachability_manager debounces the raw AutoNAT verdict into
+// net_reachable_public and touches the relay service only when the stable
+// verdict actually flips — so a flapping public<->unknown reachability
+// can't churn the relay (start/stop, dropping reservations) on every probe.
+func net_reachability_manager() {
+	var state reachability_debounce_state
+	for range time.Tick(reachability_recheck) {
+		if net_me == nil {
+			continue
+		}
+		var flip bool
+		state, flip = reachability_debounce_step(state, net_reachable() == "public", now())
+		if flip {
+			net_reachable_public.Store(state.stable_public)
+			label := "not publicly reachable"
+			if state.stable_public {
+				label = "publicly reachable"
+			}
+			info("Net reachability stabilised as %s; updating relay service", label)
+			relay_service_update()
+		}
 	}
 }
 

@@ -239,7 +239,7 @@ func relay_service_update() {
 	if net_me == nil {
 		return
 	}
-	want := relay_offered() && net_reachable() == "public"
+	want := relay_offered() && net_reachable_public.Load()
 
 	relay_service_lock.Lock()
 	defer relay_service_lock.Unlock()

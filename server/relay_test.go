@@ -39,9 +39,9 @@ func TestPeerRelaysExpiry(t *testing.T) {
 
 	fresh, _ := test_host(t)
 	stale, _ := test_host(t)
-	peer_relay_seen(fresh)
+	peer_relay_seen(fresh, 0)
 	peer_relays_lock.Lock()
-	peer_relays[stale] = now() - peer_relay_maximum_age - 10
+	peer_relays[stale] = peer_relay_record{seen: now() - peer_relay_maximum_age - 10}
 	peer_relays_lock.Unlock()
 
 	got := map[string]bool{}
@@ -75,7 +75,7 @@ func TestPeerRelaySeenIgnoresSelf(t *testing.T) {
 	net_id = id
 	defer func() { net_id = saved }()
 
-	peer_relay_seen(id)
+	peer_relay_seen(id, 0)
 	for _, f := range peer_relays_fresh() {
 		if f == id {
 			t.Error("own id recorded as a relay")
@@ -127,12 +127,12 @@ func TestNetRelayCandidates(t *testing.T) {
 
 	flagged, _ := test_host(t)
 	peer_discovered_address(flagged, "/ip4/203.0.113.5/tcp/1443/p2p/"+flagged)
-	peer_relay_seen(flagged)
+	peer_relay_seen(flagged, 0)
 
 	hop, _ := test_host(t)
 	circuit, _ := test_host(t)
 	peer_discovered_address(circuit, "/ip4/192.0.2.1/tcp/1443/p2p/"+hop+"/p2p-circuit/p2p/"+circuit)
-	peer_relay_seen(circuit)
+	peer_relay_seen(circuit, 0)
 
 	got := map[string]bool{}
 	for ai := range net_relay_candidates(context.Background(), 16) {
@@ -155,6 +155,54 @@ func TestNetRelayCandidates(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("count cap yielded %d candidates, want 1", count)
+	}
+}
+
+// TestPeerPublishEventRelayLoad: a relay's advertised load is recorded so
+// candidate selection can prefer relays with headroom, and updates on
+// re-announcement.
+func TestPeerPublishEventRelayLoad(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, key := test_host(t)
+	rec := test_signed_record(t, key, id, []string{"/ip4/192.0.2.7/tcp/1443"}, 1)
+	peer_publish_event(&Event{origin: id, content: map[string]any{"record": rec, "relay": "true", "relay/load": "95"}})
+	if relay_candidate_load(id) != 95 {
+		t.Errorf("relay/load from publish = %d, want 95", relay_candidate_load(id))
+	}
+
+	rec2 := test_signed_record(t, key, id, []string{"/ip4/192.0.2.7/tcp/1443"}, 2)
+	peer_publish_event(&Event{origin: id, content: map[string]any{"record": rec2, "relay": "true", "relay/load": "10"}})
+	if relay_candidate_load(id) != 10 {
+		t.Errorf("relay/load not updated, = %d want 10", relay_candidate_load(id))
+	}
+}
+
+// TestNetRelayCandidatesPrefersLessLoaded: a heavily-loaded relay (higher
+// tier) is offered after a comfortable one.
+func TestNetRelayCandidatesPrefersLessLoaded(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	saved := peers_bootstrap
+	peers_bootstrap = nil
+	defer func() { peers_bootstrap = saved }()
+
+	loaded, _ := test_host(t)
+	peer_discovered_address(loaded, "/ip4/203.0.113.1/tcp/1443/p2p/"+loaded)
+	peer_relay_seen(loaded, 100) // full tier
+
+	free, _ := test_host(t)
+	peer_discovered_address(free, "/ip4/203.0.113.2/tcp/1443/p2p/"+free)
+	peer_relay_seen(free, 10) // comfortable tier
+
+	var order []string
+	for ai := range net_relay_candidates(context.Background(), 16) {
+		order = append(order, ai.ID.String())
+	}
+	if len(order) != 2 || order[0] != free || order[1] != loaded {
+		t.Errorf("order = %v, want free (%s) before loaded (%s)", order, free, loaded)
 	}
 }
 

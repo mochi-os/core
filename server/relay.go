@@ -31,6 +31,8 @@ package main
 
 import (
 	"context"
+	"math/rand/v2"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,8 +60,10 @@ var (
 	relay_service      *relay.Relay
 	relay_service_lock = &sync.Mutex{}
 
-	// peer_relays maps a peer id to when it last announced it relays.
-	peer_relays      = map[string]int64{}
+	// peer_relays maps a peer id to its last relay announcement: when it was
+	// seen, and whether the relay advertised itself full so candidate
+	// selection can avoid it.
+	peer_relays      = map[string]peer_relay_record{}
 	peer_relays_lock = &sync.Mutex{}
 
 	relay_reservations atomic.Int64 // reservations the relay service currently holds (gauge)
@@ -81,9 +85,13 @@ func (relay_metrics) ConnectionRequestHandled(pbv2.Status) {}
 func (relay_metrics) ReservationAllowed(renewal bool) {
 	if !renewal {
 		relay_reservations.Add(1)
+		relay_load_changed()
 	}
 }
-func (relay_metrics) ReservationClosed(count int) { relay_reservations.Add(-int64(count)) }
+func (relay_metrics) ReservationClosed(count int) {
+	relay_reservations.Add(-int64(count))
+	relay_load_changed()
+}
 func (relay_metrics) ReservationRequestHandled(status pbv2.Status) {
 	if status != pbv2.Status_OK {
 		relay_rejected.Add(1)
@@ -168,6 +176,60 @@ func relay_enabled() bool {
 	return relay_service != nil
 }
 
+// relay_load_percent is our relay's current reservation utilisation as a
+// percentage (0-100), advertised in peers/publish so NAT'd peers can prefer
+// a relay with more headroom. 0 when we run no relay.
+func relay_load_percent() int {
+	if !relay_enabled() {
+		return 0
+	}
+	maximum := ini_int("relay", "reservations", relay_reservations_default)
+	if maximum <= 0 {
+		return 0
+	}
+	held := int(relay_reservations.Load())
+	if held < 0 {
+		held = 0
+	}
+	pct := held * 100 / maximum
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
+}
+
+// relay_load_tier buckets a utilisation percentage into coarse tiers
+// (0 comfortable, 1 busy, 2 high, 3 full) so candidate ordering is stable
+// against small load changes and stale announcements.
+func relay_load_tier(load int) int {
+	switch {
+	case load >= 95:
+		return 3
+	case load >= 80:
+		return 2
+	case load >= 50:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// relay_announced_tier is the load tier our last publish reflected; only
+// relay_load_changed touches it.
+var relay_announced_tier atomic.Int32
+
+// relay_load_changed requests a republish when our relay's load tier moves,
+// so peers learn it is filling up (or freeing) without waiting for the hourly
+// publish. Cheap to call on every reservation change: the tier debounce limits
+// republishes to boundary crossings, and the publish loop's minimum interval
+// rate-limits further.
+func relay_load_changed() {
+	tier := int32(relay_load_tier(relay_load_percent()))
+	if relay_announced_tier.Swap(tier) != tier {
+		peers_publish_request()
+	}
+}
+
 // relay_service_update starts or stops the relay service to match the
 // current state: serve iff the operator permits it and AutoNAT has
 // found us publicly reachable. Called from the reachability watcher and
@@ -243,13 +305,33 @@ func relay_saturation_check() {
 }
 
 // peer_relay_seen records that a peer announced it relays.
-func peer_relay_seen(id string) {
+// peer_relay_record is one peer's last relay announcement.
+type peer_relay_record struct {
+	seen int64
+	load int // advertised reservation utilisation, 0-100 (100 = full)
+}
+
+func peer_relay_seen(id string, load int) {
 	if id == "" || id == net_id {
 		return
 	}
+	if load < 0 {
+		load = 0
+	} else if load > 100 {
+		load = 100
+	}
 	peer_relays_lock.Lock()
-	peer_relays[id] = now()
+	peer_relays[id] = peer_relay_record{seen: now(), load: load}
 	peer_relays_lock.Unlock()
+}
+
+// relay_candidate_load returns a relay's last-advertised reservation
+// utilisation (0-100); 0 when unknown, so an un-announced relay is treated
+// as having capacity.
+func relay_candidate_load(id string) int {
+	peer_relays_lock.Lock()
+	defer peer_relays_lock.Unlock()
+	return peer_relays[id].load
 }
 
 // peer_relays_fresh returns the peers that announced relay recently
@@ -259,8 +341,8 @@ func peer_relays_fresh() []string {
 	peer_relays_lock.Lock()
 	defer peer_relays_lock.Unlock()
 	var out []string
-	for id, t := range peer_relays {
-		if t >= cutoff {
+	for id, r := range peer_relays {
+		if r.seen >= cutoff {
 			out = append(out, id)
 		}
 	}
@@ -272,8 +354,8 @@ func peer_relays_fresh() []string {
 func peer_relays_sweep() {
 	cutoff := now() - peer_relay_maximum_age
 	peer_relays_lock.Lock()
-	for id, t := range peer_relays {
-		if t < cutoff {
+	for id, r := range peer_relays {
+		if r.seen < cutoff {
 			delete(peer_relays, id)
 		}
 	}
@@ -308,36 +390,93 @@ func relay_addrinfo(id string, addresses []string) p2p_peer.AddrInfo {
 // anchors), then peers that have announced they relay. Switching from a
 // static bootstrap-only list to this lets a NAT'd server reserve a slot
 // on any public peer in the network, not just the bootstraps.
+// relay_candidate_latency returns the libp2p-measured RTT to a peer (0 when
+// there is no sample yet), used to prefer the closest relay.
+func relay_candidate_latency(id string) time.Duration {
+	if net_me == nil {
+		return 0
+	}
+	pid, err := p2p_peer.Decode(id)
+	if err != nil {
+		return 0
+	}
+	return net_me.Peerstore().LatencyEWMA(pid)
+}
+
+// relay_latency_bucket coarse-buckets a measured RTT (50 ms granularity) so
+// relays of similar distance tie and the shuffle spreads peers across them;
+// an unmeasured relay (0) sorts after all measured ones.
+func relay_latency_bucket(latency time.Duration) int {
+	if latency <= 0 {
+		return 1 << 30
+	}
+	return int(latency / (50 * time.Millisecond))
+}
+
+// net_relay_candidates is the AutoRelay candidate source: bootstrap relays
+// plus peers that recently advertised they relay. It drops candidates we
+// already know are unreachable, and orders the rest so a NAT'd peer reserves
+// on the best relay available — by lowest advertised load tier, then nearest
+// latency, with a shuffle spreading peers across equally-good relays. The
+// fullest relays sort last as a fallback rather than being excluded, so a
+// peer with only loaded relays still has something to try.
 func net_relay_candidates(ctx context.Context, num int) <-chan p2p_peer.AddrInfo {
 	out := make(chan p2p_peer.AddrInfo, num)
 	go func() {
 		defer close(out)
-		sent := 0
-		send := func(ai p2p_peer.AddrInfo) bool {
-			if len(ai.Addrs) == 0 {
-				return sent < num
-			}
-			select {
-			case out <- ai:
-				sent++
-			case <-ctx.Done():
-				return false
-			}
-			return sent < num
+
+		type candidate struct {
+			ai     p2p_peer.AddrInfo
+			tier   int
+			bucket int
 		}
-		for _, bp := range peers_bootstrap {
-			if bp.ID == net_id {
-				continue
-			}
-			if !send(relay_addrinfo(bp.ID, peer_address_strings(bp.addresses))) {
+		var cands []candidate
+		seen := map[string]bool{}
+		add := func(id string, addresses []string) {
+			if id == "" || id == net_id || seen[id] || peer_is_silent(id) {
 				return
 			}
+			ai := relay_addrinfo(id, addresses)
+			if len(ai.Addrs) == 0 {
+				return
+			}
+			seen[id] = true
+			cands = append(cands, candidate{
+				ai:     ai,
+				tier:   relay_load_tier(relay_candidate_load(id)),
+				bucket: relay_latency_bucket(relay_candidate_latency(id)),
+			})
+		}
+
+		for _, bp := range peers_bootstrap {
+			add(bp.ID, peer_address_strings(bp.addresses))
 		}
 		for _, id := range peer_relays_fresh() {
 			peers_lock.Lock()
 			addresses := peer_address_strings(peers[id].addresses)
 			peers_lock.Unlock()
-			if !send(relay_addrinfo(id, addresses)) {
+			add(id, addresses)
+		}
+
+		// Shuffle first so relays that tie on (load tier, latency bucket)
+		// land in random order — light jitter that stops every peer piling
+		// onto the same one. Then prefer the lowest load tier, then the
+		// nearest latency bucket.
+		rand.Shuffle(len(cands), func(i, j int) { cands[i], cands[j] = cands[j], cands[i] })
+		sort.SliceStable(cands, func(i, j int) bool {
+			if cands[i].tier != cands[j].tier {
+				return cands[i].tier < cands[j].tier
+			}
+			return cands[i].bucket < cands[j].bucket
+		})
+
+		for i, c := range cands {
+			if i >= num {
+				return
+			}
+			select {
+			case out <- c.ai:
+			case <-ctx.Done():
 				return
 			}
 		}

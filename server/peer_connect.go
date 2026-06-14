@@ -350,9 +350,11 @@ func peers_publish() {
 		if record := peer_record_announce(); record != "" {
 			m.set("record", record)
 		}
-		// Advertise that we relay so NAT'd peers can reserve a slot.
+		// Advertise that we relay so NAT'd peers can reserve a slot, plus
+		// our reservation load (0-100) so they prefer a relay with headroom.
 		if relay_enabled() {
 			m.set("relay", "true")
+			m.set("relay/load", itoa(relay_load_percent()))
 		}
 		if name := peer_names_announce(); name != "" {
 			m.set("name", name)
@@ -405,7 +407,7 @@ func peer_publish_event(e *Event) {
 	// selection. Not security-sensitive: a false claim just fails to
 	// grant a reservation.
 	if e.get("relay", "") == "true" {
-		peer_relay_seen(e.origin)
+		peer_relay_seen(e.origin, int(atoi(e.get("relay/load", "0"), 0)))
 	}
 
 	// Prefer the signed record: self-certifying and replay-protected.

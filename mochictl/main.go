@@ -20,9 +20,13 @@ import (
 
 	"core/common/adminclient"
 	"core/common/ini"
+	"core/common/paths"
 )
 
-const default_config = "/etc/mochi/mochi.conf"
+// default_config is the platform default mochi.conf path (e.g.
+// /etc/mochi/mochi.conf on Linux, %ProgramData%\Mochi\mochi.conf on
+// Windows), shared with the server via core/common/paths.
+var default_config = paths.Config()
 
 var (
 	build_version string // set via -ldflags "-X main.build_version=..."
@@ -44,11 +48,12 @@ type command struct {
 // Subcommand handlers are populated in commands.go to keep main.go small.
 var commands map[string]command
 
-// client builds an HTTP-over-UDS client targeting the admin socket.
+// client builds an HTTP client targeting the admin transport.
 // Resolution order:
 //  1. -s flag if set
-//  2. <data_dir>/run/admin.sock from the loaded mochi.conf
-//  3. /var/lib/mochi/run/admin.sock (Linux default)
+//  2. Unix: <data_dir>/run/admin.sock from the loaded mochi.conf, falling
+//     back to the platform default data directory
+//  3. Windows: the fixed \\.\pipe\mochi-admin named pipe
 //
 // Optional timeout overrides the default 30-second deadline. Pass 0 for
 // long-running endpoints (e.g. /_/admin/backup streams the whole tarball).

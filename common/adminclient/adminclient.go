@@ -81,18 +81,12 @@ func (c *Client) Post(path, kind string, body io.Reader) (*http.Response, error)
 }
 
 // connect_error replaces the noisy net/http error chain with a clean,
-// user-facing message. The common cases — server not running and socket
-// missing — are detected and rendered as one-line errors.
+// user-facing message. The common cases — server not running, socket
+// missing, caller not permitted — are detected by the per-platform
+// connect_hint and rendered as one-line errors.
 func (c *Client) connect_error(err error) error {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Errorf("server is not running (no listener at %s)", c.socket)
-	case strings.Contains(msg, "no such file or directory"):
-		return fmt.Errorf("admin socket not found at %s (server not started?)", c.socket)
-	case strings.Contains(msg, "permission denied"):
-		return fmt.Errorf("permission denied on %s (run as the mochi user, or join the mochi group)", c.socket)
-	default:
-		return fmt.Errorf("admin socket %s: %v", c.socket, err)
+	if hint := connect_hint(c.socket, err); hint != nil {
+		return hint
 	}
+	return fmt.Errorf("admin socket %s: %v", c.socket, err)
 }

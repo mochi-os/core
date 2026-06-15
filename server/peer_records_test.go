@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	p2p_crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -75,6 +76,39 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 	}
 	if peer_record_get(id) == nil {
 		t.Error("record not cached for relay")
+	}
+}
+
+// TestPeerRecordFiltersUnroutable: a signed record carries whatever the
+// signer advertised, including its loopback WebSocket listener; the apply
+// path must drop undialable addresses (loopback, link-local, unspecified)
+// the same way the plain-list path does, so a remote peer's
+// /ip4/127.0.0.1/.../ws never lands in the registry or on the status page.
+func TestPeerRecordFiltersUnroutable(t *testing.T) {
+	cleanup := setup_peer_discovery_test(t)
+	defer cleanup()
+
+	id, key := test_host(t)
+	encoded := test_signed_record(t, key, id, []string{
+		"/ip4/192.0.2.10/tcp/1443",        // routable, keep
+		"/ip4/127.0.0.1/tcp/36336/ws",     // loopback WS, drop
+		"/ip6/::1/tcp/1443",               // loopback, drop
+		"/ip6/fe80::1/tcp/1443",           // link-local, drop
+		"/ip4/192.0.2.10/udp/443/quic-v1", // routable, keep
+	}, 100)
+
+	addresses, ok := peer_record_apply(id, encoded)
+	if !ok {
+		t.Fatal("valid record rejected")
+	}
+	if len(addresses) != 2 {
+		t.Fatalf("returned %d addresses, want 2 (routable only): %v", len(addresses), addresses)
+	}
+	joined := strings.Join(addresses, " ")
+	for _, bad := range []string{"127.0.0.1", "/ws", "::1", "fe80"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("undialable address (%s) survived filtering: %v", bad, addresses)
+		}
 	}
 }
 

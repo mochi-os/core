@@ -142,6 +142,17 @@ func peer_record_verify(encoded string) (id string, addresses []string, sequence
 	suffix := "/p2p/" + id
 	addresses = make([]string, 0, len(rec.Addrs))
 	for _, a := range rec.Addrs {
+		// Drop addresses no remote host could dial (loopback, unspecified,
+		// link-local). A signed record is self-certifying but still carries
+		// whatever the signer advertised — notably its loopback WebSocket
+		// listener (/ip4/127.0.0.1/tcp/N/ws), which libp2p puts in the
+		// certified record even though the AddrsFactory drops it from the
+		// plain announcement. The plain-list path (peer_apply_addresses)
+		// already filters these; without the same filter here, the
+		// preferred record pollutes the registry and the status page.
+		if net_unroutable(a) {
+			continue
+		}
 		addresses = append(addresses, a.String()+suffix)
 	}
 	return id, addresses, rec.Seq, data, true

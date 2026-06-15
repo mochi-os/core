@@ -429,7 +429,12 @@ release: clean deb rpm msi pkg docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
-	rsync -av --delete ../packages/ root@packages.mochi-os.org:/srv/packages/
+	# Publish to both hosts by name (not the packages.mochi-os.org alias) so the
+	# target is deterministic regardless of where that record points. yuzu is the
+	# primary, wasabi the secondary; both serve the same signed tree and both
+	# install from a local file:/srv/apt source, so neither depends on the other.
+	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/
+	rsync -av --delete ../packages/ root@wasabi.mochi-os.org:/srv/packages/
 
 format:
 	go fmt server/*.go

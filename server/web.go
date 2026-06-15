@@ -559,9 +559,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		if !c.Writer.Written() {
 			if result != sl.None {
 				c.JSON(http.StatusOK, sl_decode(result))
-			} else {
-				// NoRoute pre-sets status to 404 — override when action succeeded
-				// without writing a response (e.g. fire-and-forget POSTs).
+			} else if serving, _ := s.thread.Local("file_serving").(bool); !serving {
+				// NoRoute pre-sets status to 404 — override when a fire-and-forget
+				// action succeeded without writing a response (e.g. POSTs). NOT when
+				// the action served a file: http.ServeContent may have set 304 Not
+				// Modified (no body written, so Writer.Written() is false), and
+				// forcing 200 here yields a 200 with an empty body — which breaks
+				// conditional GETs such as apt's If-Modified-Since on the repo
+				// InRelease, failing with "Clearsigned file isn't valid, got NOSPLIT".
 				c.Status(http.StatusOK)
 			}
 		}

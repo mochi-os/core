@@ -235,9 +235,26 @@ loop:
 	go func() {
 		queue_drain(10 * time.Second) // outbound queue (bounded)
 		peers_shutdown()              // bye to connected peers (bounded)
-		relay_shutdown()              // stop the circuit-relay service
-		if net_me != nil {
-			net_me.Close() // close the libp2p host — the usual culprit
+		// relay_shutdown (relay_service.Close) and net_me.Close (the libp2p host
+		// close) are BOTH unbounded libp2p teardowns, and on a busy PUBLIC host
+		// they reliably never quiesce: the web server is still accepting on the
+		// shared :443 listener and the QUIC/relay connections won't drain, so
+		// this phase WAS the entire 30s hang-then-kill on every restart (an idle
+		// NAT'd host closes in milliseconds). Give it a brief window for a clean
+		// close, then move on — peers already got goodbye, the OS reclaims the
+		// sockets on exit, and peers treat the dropped connection like any other.
+		netdone := make(chan struct{})
+		go func() {
+			relay_shutdown() // stop the circuit-relay service
+			if net_me != nil {
+				net_me.Close() // close the libp2p host
+			}
+			close(netdone)
+		}()
+		select {
+		case <-netdone:
+		case <-time.After(2 * time.Second):
+			info("libp2p teardown did not quiesce within 2s; proceeding to exit")
 		}
 		audit_close()
 		close(done)
@@ -247,13 +264,12 @@ loop:
 	case <-done:
 		info("Shutdown complete")
 	case <-time.After(shutdown_grace):
-		// info, not warn: on a busy public host libp2p's host Close routinely
-		// doesn't quiesce within the grace, so this fires on ~every restart.
-		// The forced exit is the designed, safe fallback (SQLite is crash-safe;
-		// the alternative was the 90s SIGKILL), so it's not operator-actionable
-		// — log it for diagnosability, but don't email a "Mochi error" each
-		// deploy.
-		info("Shutdown exceeded %s; forcing exit (libp2p host close did not quiesce)", shutdown_grace)
+		// Backstop only: the libp2p teardown is individually bounded above, so
+		// reaching here means queue_drain / peers_shutdown / audit_close itself
+		// overran — rare. info, not warn: the forced exit is the designed, safe
+		// fallback (SQLite is crash-safe; the alternative was the 90s SIGKILL),
+		// so it's not operator-actionable — log it, don't email a "Mochi error".
+		info("Shutdown exceeded %s; forcing exit", shutdown_grace)
 		os.Exit(exit_code)
 	}
 	return exit_code

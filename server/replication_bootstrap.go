@@ -642,20 +642,32 @@ func file_is_sqlite_sidecar(name string) bool {
 // `<scope-root>/<prefix>` and returns one BootstrapFileEntry per file
 // with size + sha256. Skips symlinks (we never copy symlinks to a
 // replica; if the source has one the operator must reconstruct it on
-// the replica). V2: returns the full list in one page; pagination is
-// a V3 follow-up. Caller is responsible for splitting into multiple
-// BootstrapFileManifestResult messages if size becomes a concern.
-func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error) {
+// the replica). The bootstrap file-manifest event handler streams the
+// result in pages via bootstrap_walk_manifest_stream; this slice form is
+// retained for tests and full-list callers.
+//
+// bootstrap_walk_manifest_stream walks the scope tree and invokes `emit`
+// once per page of up to pageSize entries AS the walk progresses, plus once
+// more for any trailing partial page. Streaming — rather than hashing the
+// whole tree into one slice before returning — means the receiver gets its
+// first page (and resets its per-read deadline) within seconds even on a
+// huge tree (wasabi: 446k files / 12.7 GB took minutes to hash, far past
+// the receiver's manifest-read deadline, so every fetch — and every retry —
+// timed out before a single page arrived). `emit` must not retain the slice
+// it is passed: the backing array is reused between pages, and the stream
+// writer encodes it synchronously, so callers that need to keep entries
+// copy them (append does).
+func bootstrap_walk_manifest_stream(scope, prefix string, pageSize int, emit func([]BootstrapFileEntry) error) error {
 	root, err := bootstrap_file_scope_root(scope)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	start_dir, err := bootstrap_safe_path(root, prefix)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var entries []BootstrapFileEntry
+	page := make([]BootstrapFileEntry, 0, pageSize)
 	walk_error := filepath.Walk(start_dir, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Missing prefix dir → empty manifest, not an error. Anything
@@ -678,8 +690,7 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 		// after the userdbs snapshot landed first and the files-scope
 		// raw copy overwrote chunks 0..600 with whatever the live DB
 		// (under concurrent writes) had at walk time.
-		name := info.Name()
-		if file_is_sqlite_sidecar(name) {
+		if file_is_sqlite_sidecar(info.Name()) {
 			return nil
 		}
 		rel_path, err := filepath.Rel(root, absPath)
@@ -690,15 +701,36 @@ func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error)
 		if err != nil {
 			return err
 		}
-		entries = append(entries, BootstrapFileEntry{
+		page = append(page, BootstrapFileEntry{
 			Path:   filepath.ToSlash(rel_path),
 			Size:   info.Size(),
 			Sha256: hash,
 		})
+		if len(page) >= pageSize {
+			if err := emit(page); err != nil {
+				return err
+			}
+			page = page[:0]
+		}
 		return nil
 	})
 	if walk_error != nil && walk_error != io.EOF {
-		return nil, walk_error
+		return walk_error
+	}
+	if len(page) > 0 {
+		return emit(page)
+	}
+	return nil
+}
+
+func bootstrap_walk_manifest(scope, prefix string) ([]BootstrapFileEntry, error) {
+	var entries []BootstrapFileEntry
+	err := bootstrap_walk_manifest_stream(scope, prefix, bootstrap_manifest_page_size, func(page []BootstrapFileEntry) error {
+		entries = append(entries, page...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -769,10 +801,13 @@ const bootstrap_manifest_page_size = 5000
 
 // replication_bootstrap_file_manifest_event is the sender's stream
 // handler for sync-RPC manifest fetch. Reads the request from the
-// stream, walks the requested path prefix, writes one or more
-// BootstrapFileManifestResult pages back on the same stream. Each
-// page carries up to bootstrap_manifest_page_size entries; the final
-// page has Done=true.
+// stream, then walks the requested path prefix and writes each
+// BootstrapFileManifestResult page back on the same stream AS the walk
+// produces it (up to bootstrap_manifest_page_size entries per page),
+// followed by a final empty Done=true page. Streaming during the walk —
+// not hashing the whole tree first — is what lets the receiver read its
+// first page within seconds on a huge tree instead of timing out while
+// the source hashes hundreds of thousands of files.
 func replication_bootstrap_file_manifest_event(e *Event) {
 	if e.stream == nil {
 		info("Replication bootstrap-file-manifest: no stream (queued retry?) — dropping")
@@ -785,38 +820,25 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 	scope, _ := e.content["scope"].(string)
 	prefix, _ := e.content["prefix"].(string)
 
-	entries, err := bootstrap_walk_manifest(scope, prefix)
-	if err != nil {
+	walk_err := bootstrap_walk_manifest_stream(scope, prefix, bootstrap_manifest_page_size, func(page []BootstrapFileEntry) error {
+		return e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Entries: page})
+	})
+	if walk_err != nil {
 		info("Replication bootstrap-file-manifest: walk failed (scope=%q prefix=%q from=%q): %v",
-			scope, prefix, e.peer, err)
-		// Reply with an empty Done=true page so the receiver can
-		// transition the scope; a retried request will produce the
-		// same response and the receiver can backoff + retry if the
-		// operator fixes the underlying filesystem issue.
-		_ = e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true})
+			scope, prefix, e.peer, walk_err)
+		// Do NOT send Done=true: the manifest is incomplete, and marking the
+		// scope done would silently drop the un-walked files. Returning closes
+		// the stream; the receiver's next read errors, the scope stays
+		// non-done, and the retry driver re-walks (the receiver-side diff
+		// keeps whatever pages already landed). A write failure (receiver gone)
+		// surfaces here too and is handled the same way.
 		return
 	}
-	// Empty manifest is still a single page with Done=true so the
-	// receiver knows to transition the scope to 'done'.
-	if len(entries) == 0 {
-		_ = e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true})
-		return
-	}
-	for i := 0; i < len(entries); i += bootstrap_manifest_page_size {
-		end := i + bootstrap_manifest_page_size
-		if end > len(entries) {
-			end = len(entries)
-		}
-		done := end == len(entries)
-		if err := e.stream.write(&BootstrapFileManifestResult{
-			Scope:   scope,
-			Prefix:  prefix,
-			Entries: entries[i:end],
-			Done:    done,
-		}); err != nil {
-			info("Replication bootstrap-file-manifest: write page failed: %v", err)
-			return
-		}
+	// Final empty page marks completion. An empty tree (or a missing prefix
+	// dir, which the walker treats as empty) sends only this page, so the
+	// receiver still transitions the scope to 'done'.
+	if err := e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Done: true}); err != nil {
+		info("Replication bootstrap-file-manifest: write final page failed: %v", err)
 	}
 }
 
@@ -1095,6 +1117,12 @@ func replication_bootstrap_file_manifest_fetch_impl(peer, scope, prefix string) 
 		return
 	}
 	defer s.close()
+	// The source streams a page per bootstrap_manifest_page_size files as it
+	// walks + hashes the tree; on a large tree the gap before the first page
+	// (and between pages) can exceed the framework's default 30s read
+	// deadline, so use the same generous per-read deadline as the bulk
+	// transfers. Per-read, so each streamed page resets it.
+	s.timeout.read = bootstrap_stream_timeout
 
 	if err := s.write(&BootstrapFileManifestRequest{Scope: scope, Prefix: prefix}); err != nil {
 		info("Replication bootstrap-file-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
@@ -1681,6 +1709,17 @@ func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEnt
 func bootstrap_is_active_source(scope, peer string) bool {
 	rdb := db_open("db/replication.db")
 	exists, _ := rdb.exists("select 1 from bootstrap where scope=? and peer=? and state != 'done'", scope, peer)
+	return exists
+}
+
+// bootstrap_in_progress reports whether ANY scope is still bootstrapping
+// from `peer` (queued or active). Used by the stalled-stream recovery to
+// stand down while a join's bulk transfer + keys-transfer backfill are
+// still landing — escalating "operator re-join" or re-pulling a stream
+// mid-join is a false alarm, since the join itself is the re-seed.
+func bootstrap_in_progress(peer string) bool {
+	rdb := db_open("db/replication.db")
+	exists, _ := rdb.exists("select 1 from bootstrap where peer=? and state in ('queued','active')", peer)
 	return exists
 }
 
@@ -2360,6 +2399,10 @@ func replication_bootstrap_db_manifest_fetch_impl(peer, scope, user string) {
 		return
 	}
 	defer s.close()
+	// Building the DB manifest (walk + size/hash every DB) can also exceed
+	// the default 30s read deadline on a host with many or large DBs; use
+	// the same generous deadline as the file manifest + bulk transfers.
+	s.timeout.read = bootstrap_stream_timeout
 
 	if err := s.write(&BootstrapDBManifestRequest{Scope: scope, User: user}); err != nil {
 		info("Replication bootstrap-db-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
@@ -2459,7 +2502,61 @@ func replication_pair_backfill_impl(peer string) {
 	}
 	replication_pair_backfill_users(peer)
 	replication_pair_backfill_system(peer)
+	replication_pair_backfill_schedule(peer)
 	info("Replication pair-backfill: dispatched users + system rows to peer %q", peer)
+}
+
+// replication_pair_backfill_schedule re-sends every user's scheduled events
+// to the joining peer. schedule.db is a shared core DB that isn't snapshot-
+// bootstrapped, and schedule rows replicate as self-anchoring idempotent ops
+// (see replication_emit_to_real), so a fresh replica receives the EXISTING
+// schedule only if we re-emit it at join time; live changes thereafter flow
+// over the normal op channel. System events (user=="") are host-local and
+// never replicated, so they're skipped. Idempotent on the receiver
+// (replication_schedule_row_apply inserts only if absent).
+func replication_pair_backfill_schedule(peer string) {
+	sdb := schedule_db()
+	rows, err := sdb.rows("select user, app, due, event, data, interval, created from schedule")
+	if err != nil {
+		warn("Replication pair-backfill schedule: enumerate failed: %v", err)
+		return
+	}
+	count := 0
+	for _, r := range rows {
+		user, _ := r["user"].(string)
+		app, _ := r["app"].(string)
+		event, _ := r["event"].(string)
+		if user == "" || app == "" || event == "" {
+			continue // system events are host-local, not replicated
+		}
+		due, _ := r["due"].(int64)
+		interval, _ := r["interval"].(int64)
+		created, _ := r["created"].(int64)
+		data, _ := r["data"].(string)
+		op := &ReplicationOp{
+			Scope:     repl_scope_app,
+			User:      user,
+			Database:  "schedule",
+			Table:     "schedule",
+			Operation: "schedule-row.set",
+			Payload: cbor_encode(&ScheduleRow{
+				Key: map[string]string{
+					"user":    user,
+					"app":     app,
+					"event":   event,
+					"created": fmt.Sprintf("%d", created),
+				},
+				Cols: map[string]string{
+					"due":      fmt.Sprintf("%d", due),
+					"data":     data,
+					"interval": fmt.Sprintf("%d", interval),
+				},
+			}),
+		}
+		replication_emit_to_peer(user, op, peer)
+		count++
+	}
+	debug("Replication pair-backfill: schedule rows sent to peer %q: %d", peer, count)
 }
 
 // replication_pair_backfill_users enumerates active users.db.users and

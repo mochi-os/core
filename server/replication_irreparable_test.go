@@ -313,6 +313,36 @@ func TestWipedRebootstrapSystemRowEscalates(t *testing.T) {
 	}
 }
 
+// TestWipedRebootstrapSkipsDuringBootstrap: while a bootstrap from the peer is
+// still in progress, the recovery must NOT escalate a system-row stream (or
+// re-pull a file stream) — the join itself is the re-seed, so an unanchored
+// stream mid-join is expected, not broken. Regression for the false "operator
+// re-join" email yuzu sent during its 2026-06-15 pair-join.
+func TestWipedRebootstrapSkipsDuringBootstrap(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rebootstrap_attempts = map[string]rebootstrap_state{}
+	db := db_open("db/replication.db")
+	old := now() - int64(rebootstrap_unanchored_seconds) - 60
+
+	// A whole-server bootstrap from this peer is mid-flight.
+	db.exec("insert into bootstrap (scope, peer, state, position) values ('files', 'peer-bs', 'active', '5')")
+
+	// An unanchored system-row stream and an unanchored file stream, same peer.
+	sys := repl_stream_key(repl_stream_class_system, "schedule")
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-bs', 'app', 'u1', ?, 7, 6, 1, ?, ?)", sys, []byte{0x00}, old)
+	db.exec("insert into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values ('peer-bs', 'app', 'u2', 'app:feeds', 7, 6, 1, ?, ?)", []byte{0x00}, old)
+
+	replication_wiped_rebootstrap()
+
+	if n := db.integer("select count(*) from irreparable where peer='peer-bs'"); n != 0 {
+		t.Errorf("must NOT escalate while a bootstrap from the peer is in progress; markers = %d, want 0", n)
+	}
+	if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, "peer-bs"); st != "" {
+		t.Errorf("must NOT start a userdbs re-pull during an in-progress bootstrap; state = %q", st)
+	}
+}
+
 // TestWipedRebootstrapCapEscalates: after rebootstrap_attempt_cap futile pulls
 // the loop gives up — escalates to irreparable and stops re-pulling.
 func TestWipedRebootstrapCapEscalates(t *testing.T) {

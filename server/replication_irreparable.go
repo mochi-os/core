@@ -367,6 +367,20 @@ func replication_wiped_rebootstrap() {
 			continue // anchored gap (divergence risk), non-user, or still settling
 		}
 
+		// Stand down while a bootstrap from this peer is still running. A
+		// fresh join's bulk transfer AND its keys-transfer backfill (which is
+		// what seeds system-row streams) are still landing, so a stream that
+		// hasn't anchored YET is expected, not broken. Escalating "operator
+		// re-join", or re-pulling, mid-join is a false alarm — the join IS the
+		// re-seed. Once the bootstrap settles, a still-unanchored stream is a
+		// genuine gap and the checks below fire. (Observed live 2026-06-15:
+		// yuzu emailed "auto-recovery gave up … system:schedule … re-join"
+		// 11 min into an in-progress pair-join while files/apps were still
+		// transferring.) This also subsumes the old userdbs-only debounce.
+		if bootstrap_in_progress(s.Peer) {
+			continue
+		}
+
 		// System-row streams (system:users / sessions / schedule) are seeded
 		// only by a keys-transfer at join time, never by the per-user file
 		// pull below — so a pull can never anchor them, and retrying it was
@@ -374,11 +388,6 @@ func replication_wiped_rebootstrap() {
 		// irreparable: the operator's re-join re-sends the keys (and Seeds).
 		if strings.HasPrefix(s.Database, repl_stream_class_system+":") {
 			replication_rebootstrap_give_up(s, "system-row stream needs a keys-transfer re-seed (operator re-join)")
-			continue
-		}
-
-		// Debounce: a bootstrap for this peer is already running.
-		if st, _ := bootstrap_get_state(bootstrap_scope_userdbs, s.Peer); st == bootstrap_state_queued || st == bootstrap_state_active {
 			continue
 		}
 

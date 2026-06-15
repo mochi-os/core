@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +93,50 @@ func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
 
 // TestBootstrapWalkManifest: walks a small tree, asserts (path, size,
 // sha256) for each entry. Symlinks and non-regular files are skipped.
+// TestBootstrapWalkManifestStreamPaginates: the streaming walker emits
+// entries in pages of the given size AS it walks (so the receiver gets its
+// first page before the whole tree is hashed), no page exceeds pageSize,
+// and the slice wrapper still returns every entry.
+func TestBootstrapWalkManifestStreamPaginates(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	files := filepath.Join(data_dir, "users", "alice", "feed", "files")
+	_ = os.MkdirAll(files, 0o755)
+	const n = 5
+	for i := 0; i < n; i++ {
+		if err := os.WriteFile(filepath.Join(files, "f"+strconv.Itoa(i)+".md"), []byte("body"+strconv.Itoa(i)), 0o644); err != nil {
+			t.Fatalf("write f%d: %v", i, err)
+		}
+	}
+
+	var pages [][]BootstrapFileEntry
+	var total int
+	err := bootstrap_walk_manifest_stream(bootstrap_scope_files, "", 2, func(page []BootstrapFileEntry) error {
+		if len(page) > 2 {
+			t.Errorf("page size %d exceeds pageSize 2", len(page))
+		}
+		// emit reuses the backing array, so copy before retaining.
+		cp := append([]BootstrapFileEntry(nil), page...)
+		pages = append(pages, cp)
+		total += len(cp)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream walk: %v", err)
+	}
+	if total != n {
+		t.Errorf("streamed entries total = %d, want %d", total, n)
+	}
+	if len(pages) < 2 {
+		t.Errorf("expected multiple pages for %d files at pageSize 2; got %d page(s)", n, len(pages))
+	}
+	// Wrapper returns the full set.
+	all, err := bootstrap_walk_manifest(bootstrap_scope_files, "")
+	if err != nil || len(all) != n {
+		t.Fatalf("bootstrap_walk_manifest = %d entries (err %v), want %d", len(all), err, n)
+	}
+}
+
 func TestBootstrapWalkManifest(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

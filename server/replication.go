@@ -2143,6 +2143,19 @@ func replication_emit_to_peer(user string, op *ReplicationOp, peer string) {
 // Production points it at replication_emit_to_real.
 var replication_emit_to = replication_emit_to_real
 
+// replication_op_self_anchoring reports whether an op belongs to a stream
+// that replicates as idempotent, order-independent rows and so emits each op
+// SELF-ANCHORED (Prev=0) rather than chained onto the previous op. Currently
+// just the schedule stream: replication_schedule_row_apply is an insert-if-
+// absent / delete-by-natural-key upsert, so ordering and gap-detection buy
+// nothing — and chaining actively breaks a fresh replica, whose stream has no
+// anchor for the source's pre-existing schedule history (the system:schedule
+// stall + false "operator re-join" escalation observed on yuzu 2026-06-15).
+// Dedup via the `seen` table still drops true repeats.
+func replication_op_self_anchoring(op *ReplicationOp) bool {
+	return op.Database == "schedule"
+}
+
 func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	if peers == nil {
 		peers = recipients(user)
@@ -2207,6 +2220,14 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	op.Sequence = replication_sequence_next(user, op.Scope)
 	op.Prev = replication_tail_advance(user, op.Scope, stream, op.Sequence)
 	stream_mu.Unlock()
+
+	// Self-anchoring streams emit each op with Prev=0 (see
+	// replication_op_self_anchoring). The receive gate applies a Prev==0 op
+	// unconditionally and anchors, so the receiver never has to chain onto
+	// the source's pre-existing history — which a fresh replica has none of.
+	if replication_op_self_anchoring(op) {
+		op.Prev = 0
+	}
 
 	// Auto-fill the fence when the caller declared a leader scope/key
 	// but didn't supply the fence explicitly. Receivers compare against

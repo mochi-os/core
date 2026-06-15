@@ -96,13 +96,9 @@ const (
 )
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
-// when mochi.conf doesn't override [publisher] peer; serves the
-// published-app catalogue.
-//
-// TEMPORARY (until yuzu runs as prod): reverted to wasabi because yuzu is
-// not serving the publisher catalogue yet. Restore yuzu's id
-// "12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR" once it is.
-const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH" // wasabi
+// when mochi.conf doesn't override [publisher] peer. Yuzu's libp2p id;
+// serves the published-app catalogue.
+const peer_default_publisher_hardcoded = "12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR" // yuzu
 
 // bootstrap_addresses_hardcoded is the fallback list of bootstrap
 // multiaddresses when mochi.conf doesn't override [bootstrap]
@@ -117,14 +113,11 @@ const peer_default_publisher_hardcoded = "12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6
 // bootstrap runs with [p2p] https enabled; until then dialling them
 // fails harmlessly while 1443 carries the connection.
 //
-// TEMPORARY (until yuzu is running): yuzu's entries are removed so wasabi
-// is the only bootstrap. To restore yuzu as the primary, prepend these
-// (yuzu first, ahead of wasabi) back into the list below:
-//   /ip4/51.178.97.142/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR,
-//   /ip6/2001:41d0:30f:8e00::1/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR,
-//   /ip4/51.178.97.142/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR,
-//   /ip6/2001:41d0:30f:8e00::1/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR,
-const bootstrap_addresses_hardcoded = "/ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
+// yuzu (primary) is listed first; wasabi second as failover. A server
+// keeps a connection to the most-preferred reachable bootstrap, so wasabi
+// is dialled only while yuzu is unreachable, and yuzu is preferred again
+// the moment it recovers.
+const bootstrap_addresses_hardcoded = "/ip4/51.178.97.142/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/51.178.97.142/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH"
 
 var (
 	// peer_default_publisher + peers_bootstrap start at the hardcoded

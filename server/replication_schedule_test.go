@@ -5,6 +5,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
 )
@@ -71,5 +72,56 @@ func TestReplicationPairBackfillSchedule(t *testing.T) {
 		if e.user == "" {
 			t.Error("a host-local system event (user=\"\") was replicated; it must be skipped")
 		}
+	}
+}
+
+// TestReplicationBootstrapReconcileOnComplete: the source re-runs the full
+// pair-backfill to a pair peer only once its bulk bootstrap is fully acked
+// (no bootstrap_served rows) — never while scopes are still being served, and
+// never to a non-pair peer.
+func TestReplicationBootstrapReconcileOnComplete(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+
+	calls := make(chan string, 4)
+	orig := replication_pair_backfill
+	replication_pair_backfill = func(peer string) { calls <- peer }
+	defer func() { replication_pair_backfill = orig }()
+
+	fired := func() bool {
+		select {
+		case <-calls:
+			return true
+		case <-time.After(200 * time.Millisecond):
+			return false
+		}
+	}
+
+	// 1. Bulk bootstrap still in progress (a served scope remains) → no reconcile.
+	rdb.exec("insert into pair (peer, added) values ('p1', 1)")
+	rdb.exec("insert into bootstrap_served (peer, scope, started) values ('p1', 'files', 1)")
+	replication_bootstrap_reconcile_on_complete("p1")
+	if fired() {
+		t.Error("must NOT reconcile while a scope is still served")
+	}
+
+	// 2. All scopes acked but NOT a pair member → no reconcile.
+	replication_bootstrap_reconcile_on_complete("p2") // p2: no bootstrap_served, not paired
+	if fired() {
+		t.Error("must NOT reconcile a non-pair peer")
+	}
+
+	// 3. Pair member, all scopes acked (no served rows) → full backfill fires.
+	rdb.exec("delete from bootstrap_served where peer='p1'")
+	replication_bootstrap_reconcile_on_complete("p1")
+	select {
+	case got := <-calls:
+		if got != "p1" {
+			t.Errorf("reconcile backfilled %q, want p1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("must reconcile (full backfill) once a pair peer's bulk bootstrap is fully acked")
 	}
 }

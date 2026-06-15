@@ -305,6 +305,18 @@ func cmd_replication_progress(args []string) error {
 	}
 	scopeCol += 2 // gap before the state column
 
+	// stateCol must fit the widest state value — "incomplete" is 10 chars.
+	// pad() clamps the fill to zero so a value wider than its column can never
+	// make strings.Repeat panic on a negative count — which it did the moment
+	// a scope settled to 'incomplete' (stateCol was 8).
+	const stateCol = 12
+	pad := func(width, n int) string {
+		if width > n {
+			return strings.Repeat(" ", width-n)
+		}
+		return ""
+	}
+
 	for i, peer := range peers {
 		if i > 0 {
 			fmt.Println()
@@ -325,10 +337,9 @@ func cmd_replication_progress(args []string) error {
 			}
 			return rows[a].scope < rows[b].scope
 		})
-		const stateCol = 8
 		for _, r := range rows {
-			scopeStr := label(r.scope) + strings.Repeat(" ", scopeCol-len(label(r.scope)))
-			stateStr := r.state + strings.Repeat(" ", stateCol-len(r.state))
+			scopeStr := label(r.scope) + pad(scopeCol, len(label(r.scope)))
+			stateStr := r.state + pad(stateCol, len(r.state))
 			tail := ""
 			if r.state == "active" && r.position != "" {
 				tail = r.position + " items remaining"

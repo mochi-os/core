@@ -247,9 +247,13 @@ loop:
 	case <-done:
 		info("Shutdown complete")
 	case <-time.After(shutdown_grace):
-		// Rate-limited per format string, so this surfaces the degradation
-		// without emailing on every restart while the host stays busy.
-		warn("Shutdown exceeded %s; forcing exit (libp2p host close did not quiesce)", shutdown_grace)
+		// info, not warn: on a busy public host libp2p's host Close routinely
+		// doesn't quiesce within the grace, so this fires on ~every restart.
+		// The forced exit is the designed, safe fallback (SQLite is crash-safe;
+		// the alternative was the 90s SIGKILL), so it's not operator-actionable
+		// — log it for diagnosability, but don't email a "Mochi error" each
+		// deploy.
+		info("Shutdown exceeded %s; forcing exit (libp2p host close did not quiesce)", shutdown_grace)
 		os.Exit(exit_code)
 	}
 	return exit_code

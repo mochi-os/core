@@ -548,6 +548,37 @@ func replication_bootstrap_scope_done_event(e *Event) {
 	}
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from bootstrap_served where peer=? and scope=?", e.peer, done.Scope)
+	replication_bootstrap_reconcile_on_complete(e.peer)
+}
+
+// replication_bootstrap_reconcile_on_complete re-runs the point-in-time
+// pair-backfill (users + system DBs + schedule) to `peer` once its bulk
+// bootstrap is fully acked (no bootstrap_served rows left) and it's a
+// whole-server pair member.
+//
+// The join-time backfill is a point-in-time snapshot, so any row carried that
+// way — schedule events, settings/apps/domains rows, a new user — CREATED
+// during the (potentially hours-long) bootstrap can be missed. These paths
+// are last-write-wins or emit-once, so unlike the sequenced per-app DB
+// streams (a gap buffers and the stalled-stream recovery re-bootstraps) and
+// the continuously-resynced file trees, a missed one never self-heals.
+// Re-running the backfill once now — when the bulk transfer is done and the
+// live op channel is stable — brackets the bootstrap window with a second
+// point-in-time pass and closes it. Idempotent (creates-if-absent / REPLACE /
+// insert-if-absent on the receiver). Pair members only; a per-user link would
+// need a per-user reconcile.
+//
+// Observed live 2026-06-15: 2 of 16 schedule rows were absent on yuzu after a
+// re-bootstrap until a manual backfill — the schedule case of this window.
+func replication_bootstrap_reconcile_on_complete(peer string) {
+	rdb := db_open("db/replication.db")
+	if remaining, _ := rdb.exists("select 1 from bootstrap_served where peer=?", peer); remaining {
+		return // bulk bootstrap still in progress
+	}
+	if paired, _ := rdb.exists("select 1 from pair where peer=?", peer); !paired {
+		return
+	}
+	go replication_pair_backfill(peer)
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)

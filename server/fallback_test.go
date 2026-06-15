@@ -97,7 +97,10 @@ func TestFallbackAddrsFactory(t *testing.T) {
 	}
 
 	t.Setenv("MOCHI_P2P_HTTPS", "true")
-	db_open("db/domains.db").exec("insert into domains (domain, verified, created, updated) values ('mochi-os.org', 1, 1, 1)")
+	// The server hosts a user's content domain. It must NEVER be advertised
+	// as a server address: the factory publishes no domain-based address at
+	// all (a server's identity is its peer ID + IPs, never a name it serves).
+	db_open("db/domains.db").exec("insert into domains (domain, verified, created, updated) values ('someuser.example', 1, 1, 1)")
 	got := fallback_addrs_factory(in)
 	joined := ""
 	for _, a := range got {
@@ -106,11 +109,12 @@ func TestFallbackAddrsFactory(t *testing.T) {
 	if strings.Contains(joined, "/127.0.0.1/tcp/40001/ws") {
 		t.Error("loopback ws was not dropped from advertised addresses")
 	}
-	// Dual-stack: /dns resolves both A and AAAA so a v6-only client can
-	// reach the WSS fallback too (was /dns4, v4-only).
-	if !strings.Contains(joined, "/dns/mochi-os.org/tcp/443/tls/ws") {
-		t.Errorf("public WSS address not injected: %s", joined)
+	// No domain-based address is ever advertised: no /dns, no WSS, and above
+	// all no served (user) domain.
+	if strings.Contains(joined, "/dns") || strings.Contains(joined, "/tls/ws") || strings.Contains(joined, "someuser.example") {
+		t.Errorf("a domain-based address was advertised (must be none): %s", joined)
 	}
+	// IP-based addresses are kept (the QUIC/443 and 1443 paths still work).
 	if !strings.Contains(joined, "/ip4/198.51.100.4/tcp/1443") {
 		t.Error("normal address was dropped")
 	}

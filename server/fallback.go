@@ -100,27 +100,29 @@ func fallback_listen_addresses() []string {
 	}
 }
 
-// fallback_addrs_factory rewrites the host's advertised addresses for
-// the 443 fallback: it drops the loopback WebSocket listener (no remote
-// peer can reach it directly — they arrive through the web server) and
-// injects the public WSS address on a served domain, the name the TLS
-// certificate is bound to. QUIC/443 needs no injection: libp2p
-// advertises it from the identify-observed address like any other.
+// fallback_addrs_factory rewrites the host's advertised addresses for the
+// 443 fallback: it drops the loopback WebSocket listener (an internal
+// bridge address — no remote peer can reach 127.0.0.1).
+//
+// It deliberately advertises NO domain-based (WSS) address. A domain is a
+// name a server *serves*, never its own identity, and a server may have
+// none — so there is no correct domain to publish as a system address, and
+// auto-publishing a served one leaks to the whole network which users'
+// domains a server hosts. Hostile-network reach over TCP/443 is provided by
+// the curated bootstrap entries (which carry the project's own name), not
+// by each server advertising a name for itself. The IP-based QUIC/443
+// fallback still propagates from the identify-observed address like any
+// other.
 func fallback_addrs_factory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	if !fallback_enabled() {
 		return addrs
 	}
-	out := make([]multiaddr.Multiaddr, 0, len(addrs)+1)
+	out := make([]multiaddr.Multiaddr, 0, len(addrs))
 	for _, a := range addrs {
 		if fallback_is_loopback_ws(a) {
 			continue
 		}
 		out = append(out, a)
-	}
-	if host := fallback_host(); host != "" {
-		if wss, err := multiaddr.NewMultiaddr("/dns/" + host + "/tcp/443/tls/ws"); err == nil {
-			out = append(out, wss)
-		}
 	}
 	return out
 }
@@ -134,23 +136,6 @@ func fallback_is_loopback_ws(a multiaddr.Multiaddr) bool {
 		return false
 	}
 	return strings.HasPrefix(s, "/ip4/127.") || strings.HasPrefix(s, "/ip6/::1/")
-}
-
-// fallback_host returns a served domain to advertise the WSS address on
-// — the name the certificate covers. Prefers a TXT-verified domain;
-// falls back to the first served domain (the web server obtains a
-// certificate for any domain it serves). Empty when none.
-func fallback_host() string {
-	domains := domain_list()
-	for _, d := range domains {
-		if d.Verified != 0 {
-			return d.Domain
-		}
-	}
-	if len(domains) > 0 {
-		return domains[0].Domain
-	}
-	return ""
 }
 
 // fallback_capture records the loopback port the WebSocket transport

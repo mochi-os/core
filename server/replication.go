@@ -57,21 +57,25 @@ const (
 // `replication.db.fence_witness` and drop the op when a higher fence
 // has already been seen (stale-leader output).
 type ReplicationOp struct {
-	Scope       string `cbor:"scope"`
-	User        string `cbor:"user,omitempty"`
-	Database    string `cbor:"db"`
-	Table       string `cbor:"table,omitempty"`
-	UID         string `cbor:"uid,omitempty"`
-	Operation   string `cbor:"operation"`
-	Payload     []byte `cbor:"payload"`
-	Sequence    int64  `cbor:"sequence"`
-	Prev        int64  `cbor:"prev,omitempty"`
+	Scope     string `cbor:"scope"`
+	User      string `cbor:"user,omitempty"`
+	Database  string `cbor:"db"`
+	Table     string `cbor:"table,omitempty"`
+	UID       string `cbor:"uid,omitempty"`
+	Operation string `cbor:"operation"`
+	Payload   []byte `cbor:"payload"`
+	Sequence  int64  `cbor:"sequence"`
+	Prev      int64  `cbor:"prev,omitempty"`
+	// Origin is a uid minted once on the host where the write originated,
+	// preserved verbatim through every transit relay. It is the stable
+	// cross-hop identity the relay dedups on (the per-hop Sequence re-keys
+	// at each relay and can't terminate a loop). Empty on un-relayed ops.
+	Origin      string `cbor:"origin,omitempty"`
 	Schema      int    `cbor:"schema,omitempty"`
 	LeaderScope string `cbor:"leader_scope,omitempty"`
 	LeaderKey   string `cbor:"leader_key,omitempty"`
 	Fence       int64  `cbor:"fence,omitempty"`
 }
-
 
 // KeysTransfer carries a user's identity (the users-row fields plus every
 // owned entity, including the private keys) from one host to another.
@@ -536,6 +540,9 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		// debug("Replication op applied: peer=%q scope=%q user=%q db=%q seq=%d prev=%d table=%q op=%q",
 		// 	peer, op.Scope, op.User, op.Database, op.Sequence, op.Prev, op.Table, op.Operation)
 		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, op.UID)
+		// Bridge the per-user/server-pair seam: forward to the rest of the
+		// user's host set, minus the peer it came from.
+		replication_relay(peer, op)
 	case ApplyDeferred:
 		replication_pending_buffer(db, peer, op)
 		// debug("Replication op deferred: peer=%q scope=%q user=%q db=%q seq=%d",
@@ -835,9 +842,9 @@ func replication_manager() {
 // endpoint. The reason this matters: last time, exactly this kind of "the
 // system is working hard to repair itself" symptom ran unnoticed for days.
 const (
-	health_stalled_alert   = 10        // stalled streams that aren't draining
-	health_recovery_alert  = 20        // bootstraps started in the trailing window
-	health_recovery_window = 60 * 60   // trailing window for the recovery rate, seconds
+	health_stalled_alert   = 10      // stalled streams that aren't draining
+	health_recovery_alert  = 20      // bootstraps started in the trailing window
+	health_recovery_window = 60 * 60 // trailing window for the recovery rate, seconds
 )
 
 var (
@@ -1167,6 +1174,20 @@ func replication_pending_drain() {
 			user, _ := s["user"].(string)
 			database, _ := s["db"].(string)
 			replication_stream_drain(db, peer, scope, user, database)
+			// Collect orphans: chain ops at or below the cursor can never
+			// drain (the chain-walk extends from prev==cursor forward,
+			// never backward) and their effect is already present —
+			// applied in-order, or carried wholesale by a bootstrap
+			// cursor-seed that jumped the cursor past them. Left
+			// uncollected they pile up unboundedly (21k+ observed on a
+			// paired dev rig, 8k on wasabi) until the 30-day TTL GC. Keep
+			// prev==0 rows: a buffered stream-restart still applies below
+			// the cursor via replication_stream_drain's prev==0 path.
+			if cursor, anchored := replication_cursor(db, peer, scope, user, database); anchored {
+				db.exec(
+					"delete from pending where peer=? and scope=? and user=? and db=? and sequence<=? and prev!=0",
+					peer, scope, user, database, cursor)
+			}
 		}
 	}
 
@@ -1905,7 +1926,6 @@ func to_bytes(v any) []byte {
 	return nil
 }
 
-
 // replication_peer_forget clears this host's receive-side stream state for a
 // (user, peer) whose copy of the user is gone: apply cursors, undelivered
 // pending ops, and the app-scope dedup rows. A purged host that later
@@ -2184,6 +2204,10 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		return
 	}
 
+	// Stamp the cross-hop origin id on a freshly-originated op so transit
+	// relays can dedup it. A no-op on already-relayed ops (origin set).
+	replication_origin_ensure(op)
+
 	// Pick any owned identity for this user as the signing entity. The
 	// `user` column is now the TEXT uid (v53), so the join is direct.
 	udb := db_open("db/users.db")
@@ -2242,6 +2266,59 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		m.add(op)
 		m.send_peer(peer)
 	}
+}
+
+// replication_relayed_mark records that this host has applied-and-relayed
+// the given origin op, returning true the first time and false on every
+// repeat. Backs the transit relay's loop termination: the second sight of
+// an origin (another path, or a bounce) returns false and is not relayed.
+func replication_relayed_mark(user, origin string) bool {
+	if origin == "" {
+		return false
+	}
+	db := db_open("db/replication.db")
+	result, err := db.internal.Exec(
+		"insert or ignore into relayed (user, origin, seen) values (?, ?, ?)", user, origin, now())
+	if err != nil {
+		return false
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0
+}
+
+// replication_origin_ensure stamps a fresh origin id on an app-scope op
+// the first time it is emitted (where the write originated) and records it
+// so the op never relays back through here. A no-op on relayed ops, whose
+// origin is already set, and on non-app-scope ops, which do not relay.
+func replication_origin_ensure(op *ReplicationOp) {
+	if op.Scope != repl_scope_app || op.Origin != "" {
+		return
+	}
+	op.Origin = uid()
+	replication_relayed_mark(op.User, op.Origin)
+}
+
+// replication_relay forwards an op this host has just applied on to the
+// rest of the user's host set, minus the peer it arrived from. This is
+// what bridges the per-user/server-pair seam: an op that lands via one
+// relationship reaches the others (claude/plans/replication.md "Transit
+// relay across membership sources"). Gated to app-scope ops carrying an
+// origin, and to one relay per origin so it terminates.
+func replication_relay(source string, op *ReplicationOp) {
+	if op.Scope != repl_scope_app || op.Origin == "" {
+		return
+	}
+	if !replication_relayed_mark(op.User, op.Origin) {
+		return
+	}
+	targets := recipients(op.User)
+	kept := make([]string, 0, len(targets))
+	for _, peer := range targets {
+		if peer != source {
+			kept = append(kept, peer)
+		}
+	}
+	replication_emit_to(op.User, op, kept)
 }
 
 // ============================================================

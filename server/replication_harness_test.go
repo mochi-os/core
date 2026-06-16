@@ -54,8 +54,8 @@ type harness_delivery struct {
 	sender   string
 	receiver string
 	op       *ReplicationOp
-	sys_set   *SystemSet
-	sys_row   *SystemRow
+	sys_set  *SystemSet
+	sys_row  *SystemRow
 	fed_move *harness_federation_move
 }
 
@@ -99,6 +99,19 @@ type harness struct {
 	pair_members map[string]bool
 	user_hosts   map[string]map[string]bool
 
+	// host_recipients[host][user] overrides recipients_per_user for an
+	// asymmetric chain that isn't a clique - e.g. D <-user-user-> W
+	// <-server-pair-> Y, where each host's recipient set differs and D
+	// and Y never connect directly. Hosts with no entry fall back to the
+	// global pair_members/user_hosts resolution.
+	host_recipients map[string]map[string]map[string]bool
+
+	// gated routes op deliveries through the production inbound path
+	// replication_op_receive (the in-order gate, op_land, and the
+	// transit relay) instead of the raw replication_apply_op, so a test
+	// exercises the real receive path and any relay it triggers.
+	gated bool
+
 	// federation_hosts[entity] is the set of host names that own a
 	// replica of the named entity. Federation emits (attachment_notify_*)
 	// route to (federation_hosts[entity] minus sender) - matching how
@@ -109,13 +122,13 @@ type harness struct {
 	// entity may genuinely have zero subscribers).
 	federation_hosts map[string]map[string]bool
 
-	original_data                    string
-	original_p2p                     string
-	original_emit_to                 func(user string, op *ReplicationOp, peers []string)
-	original_emit_system_set         func(database, table, row, field, value string)
-	original_emit_system_row         func(database, table string, key, cols map[string]string, del bool)
-	original_drain_async             func(user, app_id string)
-	original_attachment_notify_move  func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string)
+	original_data                   string
+	original_p2p                    string
+	original_emit_to                func(user string, op *ReplicationOp, peers []string)
+	original_emit_system_set        func(database, table, row, field, value string)
+	original_emit_system_row        func(database, table string, key, cols map[string]string, del bool)
+	original_drain_async            func(user, app_id string)
+	original_attachment_notify_move func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string)
 }
 
 // new_harness mints N host contexts, swaps the three emit vars for
@@ -191,6 +204,25 @@ func (h *harness) set_user_hosts(user string, names ...string) {
 	h.user_hosts[user] = set
 }
 
+// set_host_recipients declares the recipient host set visible FROM
+// `host` for `user` (asymmetric, per-host), modelling a chain where each
+// host has a different recipient set.
+func (h *harness) set_host_recipients(host, user string, names ...string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.host_recipients == nil {
+		h.host_recipients = map[string]map[string]map[string]bool{}
+	}
+	if h.host_recipients[host] == nil {
+		h.host_recipients[host] = map[string]map[string]bool{}
+	}
+	set := map[string]bool{}
+	for _, name := range names {
+		set[name] = true
+	}
+	h.host_recipients[host][user] = set
+}
+
 // cleanup restores all originals and removes both host data_dirs.
 // Safe to call multiple times.
 func (h *harness) cleanup() {
@@ -238,6 +270,19 @@ func (h *harness) recipients_per_user(user, sender string) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	set := map[string]bool{}
+	if recipients, ok := h.host_recipients[sender]; ok {
+		// Asymmetric chain: this sender has an explicit recipient set,
+		// so D->{W}, W->{D,Y}, Y->{W} model a user-user/pair chain.
+		for name := range recipients[user] {
+			set[name] = true
+		}
+		delete(set, sender)
+		out := make([]string, 0, len(set))
+		for name := range set {
+			out = append(out, name)
+		}
+		return out
+	}
 	for name := range h.pair_members {
 		set[name] = true
 	}
@@ -313,6 +358,9 @@ func (h *harness) recipients_pair(sender string) []string {
 
 func (h *harness) capture_emit_to(user string, op *ReplicationOp, peers []string) {
 	sender := h.current
+	// Production stamps the origin in replication_emit_to_real, which the
+	// harness bypasses; mirror it so transit-relay dedup works in tests.
+	replication_origin_ensure(op)
 	for _, receiver := range h.recipients_per_user(user, sender) {
 		h.enqueue(harness_delivery{sender: sender, receiver: receiver, op: op})
 	}
@@ -403,7 +451,11 @@ func (h *harness) flush() {
 func (h *harness) apply_one(d harness_delivery) {
 	switch {
 	case d.op != nil:
-		replication_apply_op(d.op)
+		if h.gated {
+			replication_op_receive(h.hosts[d.sender].p2p, d.op)
+		} else {
+			replication_apply_op(d.op)
+		}
 	case d.sys_set != nil:
 		replication_system_set_apply(h.hosts[d.sender].p2p, d.sys_set)
 	case d.sys_row != nil:

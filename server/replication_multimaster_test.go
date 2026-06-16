@@ -401,6 +401,14 @@ func seed_three_hosts(t *testing.T, h *harness) {
 		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 		setup_sessions_test_schema()
 		mm_settings_schema()
+		// Inbound-stream bookkeeping, needed when a test routes deliveries
+		// through the production receive path (h.gated) instead
+		// of raw replication_apply_op. Harmless no-op for the raw-apply tests.
+		rdb := db_open("db/replication.db")
+		rdb.exec("create table if not exists seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+		rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+		rdb.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+		rdb.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
 	}
 }
 
@@ -541,6 +549,75 @@ func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
 		if got, _ := row["username"].(string); got == "renamed-on-h1" {
 			t.Errorf("%s: pair-only username leaked across per-user link: %q", name, got)
 		}
+	}
+}
+
+// TestReplicationTransitRelayUserUserToPair is the executable target for
+// claude/plans/replication.md "Transit relay across membership sources".
+// The production HA chain is asymmetric:
+//
+//	D --user-user--> W --server-pair--> Y
+//
+// A write on D reaches W (D's per-user host) and MUST transit through W to
+// Y (W's pair member); D and Y are never directly connected. Today a write
+// W *receives* is applied but never re-sent to W's other relationship, so Y
+// diverges. RED until replication_op_receive relays an applied op to
+// recipients(U) minus the source peer. flushIterationLimit asserts the
+// relay terminates rather than bouncing.
+func TestReplicationTransitRelayUserUserToPair(t *testing.T) {
+	h := new_harness(t, tt_h1, tt_h2, tt_h3) // D=h1, W=h2, Y=h3
+	defer h.cleanup()
+	h.gated = true
+	h.set_host_recipients(tt_h1, ttUID, tt_h2)        // D -> {W} (user-user)
+	h.set_host_recipients(tt_h2, ttUID, tt_h1, tt_h3) // W -> {D, Y} (link + pair)
+	h.set_host_recipients(tt_h3, ttUID, tt_h2)        // Y -> {W} (pair)
+	seed_three_hosts(t, h)
+
+	h.switch_to(tt_h1)
+	if schedule_create(ttUID, "feeds", 1000, "from-D", "{}", 60) == 0 {
+		t.Fatal("D schedule_create returned 0")
+	}
+	h.flush()
+
+	// Sanity: W is D's direct per-user host - must have it (else setup bug).
+	h.switch_to(tt_h2)
+	if ok, _ := schedule_db().exists("select 1 from schedule where user=? and event='from-D'", ttUID); !ok {
+		t.Fatal("W: missing write from its per-user peer D (setup bug, not the relay gap)")
+	}
+	// The gap: Y is reachable only by transiting W's pair.
+	h.switch_to(tt_h3)
+	if ok, _ := schedule_db().exists("select 1 from schedule where user=? and event='from-D'", ttUID); !ok {
+		t.Error("Y: write on D did not transit W's pair to Y (transit relay missing)")
+	}
+}
+
+// TestReplicationTransitRelayPairToUserUser is the reverse direction of the
+// same chain: a write on Y (W's pair member) must transit W to reach D (W's
+// per-user host). One relay mechanism covers both directions.
+func TestReplicationTransitRelayPairToUserUser(t *testing.T) {
+	h := new_harness(t, tt_h1, tt_h2, tt_h3) // D=h1, W=h2, Y=h3
+	defer h.cleanup()
+	h.gated = true
+	h.set_host_recipients(tt_h1, ttUID, tt_h2)        // D -> {W} (user-user)
+	h.set_host_recipients(tt_h2, ttUID, tt_h1, tt_h3) // W -> {D, Y} (link + pair)
+	h.set_host_recipients(tt_h3, ttUID, tt_h2)        // Y -> {W} (pair)
+	seed_three_hosts(t, h)
+
+	h.switch_to(tt_h3)
+	if schedule_create(ttUID, "feeds", 2000, "from-Y", "{}", 60) == 0 {
+		t.Fatal("Y schedule_create returned 0")
+	}
+	h.flush()
+
+	// Sanity: W is Y's direct pair - must have it.
+	h.switch_to(tt_h2)
+	if ok, _ := schedule_db().exists("select 1 from schedule where user=? and event='from-Y'", ttUID); !ok {
+		t.Fatal("W: missing write from its pair peer Y (setup bug, not the relay gap)")
+	}
+	// The gap: D is reachable only by transiting W's per-user link.
+	h.switch_to(tt_h1)
+	if ok, _ := schedule_db().exists("select 1 from schedule where user=? and event='from-Y'", ttUID); !ok {
+		t.Error("D: write on Y did not transit W's per-user link to D (transit relay missing)")
 	}
 }
 
@@ -1146,6 +1223,14 @@ func seed_four_hosts(t *testing.T, h *harness) {
 		schedule_db().exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 		setup_sessions_test_schema()
 		mm_settings_schema()
+		// Inbound-stream bookkeeping, needed when a test routes deliveries
+		// through the production receive path (h.gated) instead
+		// of raw replication_apply_op. Harmless no-op for the raw-apply tests.
+		rdb := db_open("db/replication.db")
+		rdb.exec("create table if not exists seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+		rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+		rdb.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+		rdb.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
 	}
 }
 

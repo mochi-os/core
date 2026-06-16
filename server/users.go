@@ -37,17 +37,17 @@ type Session struct {
 }
 
 type User struct {
-	UID           string `db:"uid"`
-	Username      string
-	Role          string
-	Methods       string
-	Disabled      string
+	UID             string `db:"uid"`
+	Username        string
+	Role            string
+	Methods         string
+	Disabled        string
 	Status          string
 	RestoreSource   string `db:"restore_source"`
 	RestorePasskeys bool   `db:"restore_passkeys"`
 	Preferences     map[string]string
-	Identity      *Entity
-	db            *DB // Used by actions
+	Identity        *Entity
+	db              *DB // Used by actions
 }
 
 // user_pending reports whether the user is mid-bootstrap — either a
@@ -438,7 +438,7 @@ func user_from_code(code string) (*User, string) {
 // user_create inserts a new user with the given username (email), applies the
 // first-user-becomes-administrator rule, and sends the admin notification. Used
 // by both email-code signup and OAuth signup paths. New users have no required
-// login factor (methods=''); any one registered factor signs them in, and a
+// login factor (methods=”); any one registered factor signs them in, and a
 // mandatory factor is an explicit opt-in. Returns the created user
 // and an error reason ("" on success, "invalid" if the row could not be read
 // back).
@@ -1239,6 +1239,7 @@ func user_remove(id string) (string, error) {
 //     everywhere.
 //   - false (leave-set / "delete this replica"): remove the entities locally
 //     only; they survive on the other hosts, so no tombstone, no replicate.
+//
 // purging tracks users whose local copy is mid-teardown. Row deletions
 // during the teardown can trigger replication emits after the user's
 // identity entities are already gone; the emit's missing-signing-entity
@@ -1317,6 +1318,7 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	rdb := db_open("db/replication.db")
 	rdb.exec("delete from hosts where user=?", id)
 	rdb.exec("delete from seen where user=?", id)
+	rdb.exec("delete from relayed where user=?", id)
 	rdb.exec("delete from pending where user=?", id)
 	rdb.exec("delete from sequence where user=?", id)
 	rdb.exec("delete from tail where user=?", id)

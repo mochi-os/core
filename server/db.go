@@ -56,7 +56,7 @@ const (
 )
 
 const (
-	schema_version = 87
+	schema_version = 88
 )
 
 var (
@@ -336,6 +336,11 @@ func db_create() {
 	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
 	replication.exec("create index pending_received on pending(received)")
 	replication.exec("create index pending_chain on pending(peer, scope, user, db, prev)")
+	// relayed: cross-hop dedup for the transit relay - one row per origin
+	// op this host has applied-and-relayed, so a copy arriving by another
+	// path (or bouncing back) is dropped instead of re-relayed forever.
+	replication.exec("create table relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
+	replication.exec("create index relayed_seen on relayed(seen)")
 	// hosts: a user's per-user replica set, one row per hosting peer. Each
 	// row is that peer's self-assertion that it hosts the user, carrying its
 	// libp2p-key attestation and a `seen` refresh timestamp. A peer can only
@@ -922,6 +927,8 @@ func db_upgrade() {
 			db_upgrade_86()
 		case 87:
 			db_upgrade_87()
+		case 88:
+			db_upgrade_88()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1428,6 +1435,15 @@ func db_upgrade_87() {
 	if has, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='attempts'"); !has {
 		r.exec("alter table bootstrap add column attempts integer not null default 0")
 	}
+}
+
+// db_upgrade_88 adds the relayed table: cross-hop dedup for the transit
+// relay, so an op that reaches a host by more than one path (or bounces
+// back) is applied-and-relayed at most once. See claude/plans/replication.md.
+func db_upgrade_88() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
+	r.exec("create index if not exists relayed_seen on relayed(seen)")
 }
 
 // db_upgrade_85 re-keys replication.db cursor/tail/pending stream
@@ -2066,7 +2082,6 @@ func db_purge_prefix(dir string) {
 		h.Close()
 	}
 }
-
 
 func (db *DB) exec(query string, values ...any) {
 	must(db.internal.Exec(query, values...))

@@ -509,7 +509,15 @@ func bootstrap_pending_decrement(scope, peer string) int64 {
 // the next server restart), and send a `bootstrap/scope/done` ack to
 // the source so it can clear its `bootstrap_served` row and the
 // per-pair-member Syncing/Synced status settles symmetrically.
-func bootstrap_scope_settled(peer, scope string) {
+// Indirected through a package var so setup_replication_test can no-op the
+// whole hook: it spawns goroutines (replication_pending_drain,
+// apps_load_published) that read data_dir via db_open and would race a
+// test's data_dir reset on cleanup. The scope's done-state is set before
+// this hook fires, so no test depends on the hook's side effects; tests
+// exercising them call bootstrap_scope_settled_impl directly.
+var bootstrap_scope_settled = bootstrap_scope_settled_impl
+
+func bootstrap_scope_settled_impl(peer, scope string) {
 	go replication_pending_drain()
 	if scope == bootstrap_scope_apps {
 		go apps_load_published()

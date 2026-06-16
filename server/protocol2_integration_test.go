@@ -184,9 +184,22 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 	}
 	restore := stash_sender(t, peer, s)
 	go s.write_loop()
-	go s.read_loop()
+	read_done := make(chan struct{})
+	go func() {
+		defer close(read_done)
+		s.read_loop()
+	}()
 	return s, func() {
 		s.shutdown()
+		// Block until read_loop has fully exited before returning. The
+		// caller's cleanup resets the data_dir / net_id globals, and a
+		// still-running read_loop (handle_inbound -> peer_mark_progress ->
+		// db_open, which reads data_dir) would race that reset — the
+		// pre-existing flaky -race in this and later tests. shutdown()
+		// Resets the stream, which closes the io.Pipe and unblocks
+		// read_loop's frame_read, so this never hangs. Production never
+		// resets data_dir, so this is purely a test-isolation concern.
+		<-read_done
 		restore()
 	}
 }

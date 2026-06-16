@@ -96,6 +96,14 @@ func setup_replication_test(t *testing.T) func() {
 	orig_emit_bootstrap_scope_done := replication_bootstrap_emit_scope_done
 	replication_bootstrap_emit_scope_done = func(peer, scope string) {}
 
+	// The scope-settled hook also spawns replication_pending_drain /
+	// apps_load_published goroutines that read data_dir via db_open and
+	// would race the data_dir reset on cleanup. No-op the whole hook; the
+	// done-state it follows is already set by the caller. Tests that need
+	// the side effects call bootstrap_scope_settled_impl directly.
+	orig_scope_settled := bootstrap_scope_settled
+	bootstrap_scope_settled = func(peer, scope string) {}
+
 	// db_upgrade_63 adds the bootstrap_served table that
 	// replication_join_approve_core populates. Without it the
 	// approve path errors out.
@@ -103,6 +111,7 @@ func setup_replication_test(t *testing.T) func() {
 
 	return func() {
 		replication_bootstrap_emit_scope_done = orig_emit_bootstrap_scope_done
+		bootstrap_scope_settled = orig_scope_settled
 		replication_emit_system_set = orig_emit_system_set
 		replication_emit_system_row = orig_emit_system_row
 		replication_emit_link_denied = orig_emit_link_denied

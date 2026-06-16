@@ -254,6 +254,18 @@ func TestBroadcastResyncThrottle(t *testing.T) {
 	}
 }
 
+// broadcast_acknowledge_reset_for_test clears the pending-ack map so any
+// in-flight coalesce-window AfterFunc timers scheduled by a test find no
+// entry and return at broadcast_acknowledge_flush's nil-check, before the
+// user_by_uid -> db_open call that reads the data_dir global. Registered via
+// t.Cleanup by tests that enqueue acks, so a leaked 250 ms timer can't race
+// a later test's data_dir reset.
+func broadcast_acknowledge_reset_for_test() {
+	broadcast_acknowledge_lock.Lock()
+	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
+	broadcast_acknowledge_lock.Unlock()
+}
+
 // TestBroadcastAcknowledgeCoalesce — burst enqueues for the same
 // (user, key, peer) tuple bump the pending sequence in place rather
 // than queuing N separate flushes. Different tuples track
@@ -264,6 +276,12 @@ func TestBroadcastAcknowledgeCoalesce(t *testing.T) {
 	broadcast_acknowledge_lock.Lock()
 	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
 	broadcast_acknowledge_lock.Unlock()
+	// Drain the pending map at test end so the 250 ms AfterFunc timers this
+	// test schedules fire into an empty map — broadcast_acknowledge_flush
+	// no-ops on a missing tag instead of calling user_by_uid -> db_open,
+	// which reads the data_dir global and would race a later test's
+	// data_dir reset (pre-existing flaky -race).
+	t.Cleanup(broadcast_acknowledge_reset_for_test)
 
 	// First enqueue for (u1, k, p1) creates an entry at seq=5.
 	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 5)
@@ -309,6 +327,9 @@ func TestBroadcastAcknowledgeFlush(t *testing.T) {
 	broadcast_acknowledge_lock.Lock()
 	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
 	broadcast_acknowledge_lock.Unlock()
+	// See TestBroadcastAcknowledgeCoalesce: drain so leaked coalesce-window
+	// timers can't run db_open after the test and race data_dir.
+	t.Cleanup(broadcast_acknowledge_reset_for_test)
 
 	broadcast_acknowledge_enqueue("u1", "app1", "from1", "to1", "k", "p1", 5)
 	// Cannot call broadcast_acknowledge_flush directly without a

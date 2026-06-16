@@ -2218,6 +2218,13 @@ func bootstrap_start(peer string) {
 		return
 	}
 	bootstrap_progress_start(peer, "", []string{bootstrap_scope_files, bootstrap_scope_apps, bootstrap_scope_userdbs})
+	// Capture the manifest-fetch hooks into locals before spawning. These
+	// are package-level test seams; reading them from inside the goroutines
+	// would race a test that restores its stubs on cleanup while a goroutine
+	// is still in flight. The local read happens-before the `go`, so the
+	// goroutine sees a stable value. See setup_replication_test.
+	file_fetch := replication_bootstrap_file_manifest_fetch
+	db_fetch := replication_bootstrap_db_manifest_fetch
 	// Manifests first: open a phase so the per-scope bulk drivers are held
 	// until every manifest has been fetched, then released together. See
 	// the §2 block above bootstrap_start.
@@ -2228,14 +2235,14 @@ func bootstrap_start(peer string) {
 		wg.Add(1)
 		go func(scope string) {
 			defer wg.Done()
-			replication_bootstrap_file_manifest_fetch(peer, scope, "")
+			file_fetch(peer, scope, "")
 		}(scope)
 	}
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, "")
+		db_fetch(peer, bootstrap_scope_userdbs, "")
 	}()
 	audit_replication_bootstrap_started(peer)
 	// Release the deferred bulk drivers once every manifest has landed.
@@ -2275,6 +2282,12 @@ func bootstrap_start_user(peer, uid string) {
 		return
 	}
 	bootstrap_progress_start(peer, uid, []string{bootstrap_scope_files, bootstrap_scope_userdbs})
+	// Capture the manifest-fetch hooks into locals before spawning, so the
+	// goroutines don't read these package-level test seams directly and race
+	// a test's stub-restore on cleanup. See bootstrap_start / the comment in
+	// setup_replication_test.
+	file_fetch := replication_bootstrap_file_manifest_fetch
+	db_fetch := replication_bootstrap_db_manifest_fetch
 	// Manifests first (see §2 block above bootstrap_start).
 	bootstrap_phase_begin(peer)
 	var wg sync.WaitGroup
@@ -2282,13 +2295,13 @@ func bootstrap_start_user(peer, uid string) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		replication_bootstrap_file_manifest_fetch(peer, bootstrap_scope_files, uid+"/")
+		file_fetch(peer, bootstrap_scope_files, uid+"/")
 	}()
 	bootstrap_set_state(bootstrap_scope_userdbs, peer, bootstrap_state_queued, "")
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		replication_bootstrap_db_manifest_fetch(peer, bootstrap_scope_userdbs, uid)
+		db_fetch(peer, bootstrap_scope_userdbs, uid)
 	}()
 	audit_replication_bootstrap_started(peer)
 	go func() {

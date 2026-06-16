@@ -628,6 +628,8 @@ func replication_apply_sql(op *ReplicationOp) ApplyResult {
 		return users_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "sessions" && (op.Operation == "sessions-row.set" || op.Operation == "sessions-row.delete"):
 		return sessions_row_decode_and_apply(op.Payload, op.User)
+	case op.Scope == repl_scope_app && op.Database == "links" && (op.Operation == "link-row.set" || op.Operation == "link-row.delete"):
+		return link_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "schedule" && (op.Operation == "schedule-row.set" || op.Operation == "schedule-row.delete"):
 		return schedule_row_decode_and_apply(op.Payload, op.User)
 	case op.Scope == repl_scope_app && op.Database == "notifications" && op.Table == "webpush_delivered":
@@ -3613,10 +3615,31 @@ func replication_system_row_apply(originPeer string, s *SystemRow) {
 		replication_system_row_apply_users_users(originPeer, s)
 	case "settings.documents":
 		replication_system_row_apply_settings_documents(originPeer, s)
+	case "replication.joins":
+		replication_system_row_apply_joins(originPeer, s)
 	default:
 		warn("Replication system-row: unsupported destination %q.%q (from peer %q)",
 			s.Database, s.Table, originPeer)
 	}
+}
+
+// replication_system_row_apply_joins lands a pending whole-server
+// join-request shared across the pair so any member can show and approve
+// it. Keyed by the joiner's peer; Delete clears it once a member resolved.
+func replication_system_row_apply_joins(originPeer string, s *SystemRow) {
+	peer := s.Key["peer"]
+	if peer == "" {
+		info("Replication system-row replication.joins dropping: missing peer key (from peer %q)", originPeer)
+		return
+	}
+	rdb := db_open("db/replication.db")
+	if s.Delete {
+		rdb.exec("delete from joins where peer=?", peer)
+		return
+	}
+	rdb.exec(
+		"insert or replace into joins (peer, label, received, expires) values (?, ?, ?, ?)",
+		peer, s.Cols["label"], atoi(s.Cols["received"], 0), atoi(s.Cols["expires"], 0))
 }
 
 // replication_system_users_users_mutable is the column whitelist for
@@ -4509,6 +4532,64 @@ func sessions_row_decode_and_apply(payload []byte, user string) ApplyResult {
 		return ApplyInvalid
 	}
 	return replication_sessions_row_apply(user, &r)
+}
+
+// LinkRow is a pending per-user link-request, replicated to the user's
+// host set so any member of a paired cluster can show and approve it. A
+// request that lands on one paired host (the source the joiner happened
+// to reach) must be actionable on the round-robin sibling too; without
+// this the request is invisible on the other member. Set carries the row;
+// Delete clears it on approve/deny.
+type LinkRow struct {
+	Peer        string `cbor:"peer"`
+	Label       string `cbor:"label,omitempty"`
+	Placeholder string `cbor:"placeholder,omitempty"`
+	Received    int64  `cbor:"received,omitempty"`
+	Expires     int64  `cbor:"expires,omitempty"`
+	Delete      bool   `cbor:"delete,omitempty"`
+}
+
+// replication_emit_link_row replicates a links-table change to the user's
+// host set. It goes through replication_emit, so the transit relay fans it
+// out across the per-user/server-pair seam like any other app-scope op.
+func replication_emit_link_row(user string, r *LinkRow) {
+	if user == "" || r.Peer == "" {
+		return
+	}
+	operation := "link-row.set"
+	if r.Delete {
+		operation = "link-row.delete"
+	}
+	replication_emit(user, &ReplicationOp{
+		Scope:     repl_scope_app,
+		User:      user,
+		Database:  "links",
+		Table:     "links",
+		Operation: operation,
+		Payload:   cbor_encode(r),
+	})
+}
+
+// link_row_decode_and_apply lands a replicated links-table change: upsert
+// the pending request, or delete it once a sibling host resolved it.
+func link_row_decode_and_apply(payload []byte, user string) ApplyResult {
+	var r LinkRow
+	if err := cbor.Unmarshal(payload, &r); err != nil {
+		info("Replication link-row decode failed: %v", err)
+		return ApplyInvalid
+	}
+	if r.Peer == "" {
+		return ApplyInvalid
+	}
+	rdb := db_open("db/replication.db")
+	if r.Delete {
+		rdb.exec("delete from links where user=? and peer=?", user, r.Peer)
+		return ApplyApplied
+	}
+	rdb.exec(
+		"insert or replace into links (user, peer, label, placeholder, received, expires) values (?, ?, ?, ?, ?, ?)",
+		user, r.Peer, r.Label, r.Placeholder, r.Received, r.Expires)
+	return ApplyApplied
 }
 
 // partial_create wraps the insert into sessions.db.partial + the

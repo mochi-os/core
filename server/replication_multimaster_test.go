@@ -409,6 +409,8 @@ func seed_three_hosts(t *testing.T, h *harness) {
 		rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
 		rdb.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
 		rdb.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
+		rdb.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+		rdb.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
 	}
 }
 
@@ -548,6 +550,91 @@ func TestThreeHostUserUserUserPairOnlyStaysLocal(t *testing.T) {
 		row, _ := db_open("db/users.db").row("select username from users where uid=?", ttUID)
 		if got, _ := row["username"].(string); got == "renamed-on-h1" {
 			t.Errorf("%s: pair-only username leaked across per-user link: %q", name, got)
+		}
+	}
+}
+
+// TestReplicationLinkRowReachesClusterSiblings: a pending per-user
+// link-request that lands on one member of a paired cluster must show on
+// the others, so the user can approve it whichever member a round-robin
+// front routed them to. Resolving on one member must clear it everywhere.
+func TestReplicationLinkRowReachesClusterSiblings(t *testing.T) {
+	h := new_harness(t, tt_h1, tt_h2, tt_h3) // a 3-member cluster (all paired)
+	defer h.cleanup()
+	seed_three_hosts(t, h)
+
+	// A link-request lands on h1 only (the member the joiner reached).
+	h.switch_to(tt_h1)
+	db_open("db/replication.db").exec(
+		"insert or replace into links (user, peer, label, placeholder, received, expires) values (?, ?, ?, ?, ?, ?)",
+		ttUID, "peer-joiner", "joiner", "ph-1", int64(1000), int64(4600))
+	replication_emit_link_row(ttUID, &LinkRow{
+		Peer: "peer-joiner", Label: "joiner", Placeholder: "ph-1", Received: 1000, Expires: 4600,
+	})
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switch_to(name)
+		if ok, _ := db_open("db/replication.db").exists(
+			"select 1 from links where user=? and peer=?", ttUID, "peer-joiner"); !ok {
+			t.Errorf("%s: pending link-request did not replicate from the member that received it", name)
+		}
+	}
+
+	// Resolve (approve/deny) on h2 - clears the request cluster-wide.
+	h.switch_to(tt_h2)
+	db_open("db/replication.db").exec("delete from links where user=? and peer=?", ttUID, "peer-joiner")
+	replication_emit_link_row(ttUID, &LinkRow{Peer: "peer-joiner", Delete: true})
+	h.flush()
+
+	for _, name := range []string{tt_h1, tt_h3} {
+		h.switch_to(name)
+		if ok, _ := db_open("db/replication.db").exists(
+			"select 1 from links where user=? and peer=?", ttUID, "peer-joiner"); ok {
+			t.Errorf("%s: link-request not cleared after it was resolved on a sibling", name)
+		}
+	}
+}
+
+// TestReplicationJoinRowReachesPairSiblings: a pending whole-server
+// join-request that lands on one pair member must show on the others, so
+// the operator can approve it on whichever member their admin UI reached.
+// Pair-scoped (server-signed), keyed by the joiner's peer, no user.
+func TestReplicationJoinRowReachesPairSiblings(t *testing.T) {
+	h := new_harness(t, tt_h1, tt_h2, tt_h3) // a paired cluster
+	defer h.cleanup()
+	seed_three_hosts(t, h)
+
+	// A join-request lands on h1 only.
+	h.switch_to(tt_h1)
+	db_open("db/replication.db").exec(
+		"insert or replace into joins (peer, label, received, expires) values (?, ?, ?, ?)",
+		"peer-joiner", "joiner", int64(1000), int64(1600))
+	replication_emit_system_row("replication", "joins",
+		map[string]string{"peer": "peer-joiner"},
+		map[string]string{"label": "joiner", "received": "1000", "expires": "1600"}, false)
+	h.flush()
+
+	for _, name := range []string{tt_h2, tt_h3} {
+		h.switch_to(name)
+		if ok, _ := db_open("db/replication.db").exists(
+			"select 1 from joins where peer=?", "peer-joiner"); !ok {
+			t.Errorf("%s: pending join-request did not replicate across the pair", name)
+		}
+	}
+
+	// Resolve on h2 - clears the request across the pair.
+	h.switch_to(tt_h2)
+	db_open("db/replication.db").exec("delete from joins where peer=?", "peer-joiner")
+	replication_emit_system_row("replication", "joins",
+		map[string]string{"peer": "peer-joiner"}, nil, true)
+	h.flush()
+
+	for _, name := range []string{tt_h1, tt_h3} {
+		h.switch_to(name)
+		if ok, _ := db_open("db/replication.db").exists(
+			"select 1 from joins where peer=?", "peer-joiner"); ok {
+			t.Errorf("%s: join-request not cleared after it was resolved on a sibling", name)
 		}
 	}
 }
@@ -1231,6 +1318,8 @@ func seed_four_hosts(t *testing.T, h *harness) {
 		rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
 		rdb.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
 		rdb.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
+		rdb.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+		rdb.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
 	}
 }
 

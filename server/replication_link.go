@@ -135,6 +135,16 @@ func replication_link_request_apply(originPeer string, lr *LinkRequest) {
 		"insert or replace into links (user, peer, label, placeholder, received, expires) values (?, ?, ?, ?, ?, ?)",
 		u.UID, originPeer, lr.Label, lr.Placeholder, received, received+link_request_ttl_seconds)
 
+	// Replicate the pending request to the user's other hosts so any
+	// member of a paired cluster can show and approve it (round-robin
+	// safety - the request landed only on whichever member the joiner
+	// reached). originPeer is the joiner and isn't yet in the host set,
+	// so it carries in the row, not via the recipient list.
+	replication_emit_link_row(u.UID, &LinkRow{
+		Peer: originPeer, Label: lr.Label, Placeholder: lr.Placeholder,
+		Received: received, Expires: received + link_request_ttl_seconds,
+	})
+
 	debug("Replication link-request stored: user=%q peer=%q label=%q placeholder=%q",
 		u.UID, originPeer, lr.Label, lr.Placeholder)
 
@@ -786,6 +796,9 @@ func replication_link_approve(user, peer string) (string, error) {
 		// Another tab won the race.
 		return "already-approved", nil
 	}
+	// Clear the pending request on the user's other hosts too, so the
+	// round-robin sibling stops showing a request this member resolved.
+	replication_emit_link_row(user, &LinkRow{Peer: peer, Delete: true})
 
 	fresh, err := replication_link_freshness_probe(peer, placeholder)
 	if err != nil {
@@ -979,6 +992,9 @@ func replication_link_deny(user, peer string) string {
 		return "already-handled"
 	}
 
+	// Clear the pending request on the user's other hosts too.
+	replication_emit_link_row(user, &LinkRow{Peer: peer, Delete: true})
+
 	if placeholder != "" {
 		replication_emit_link_denied(peer, placeholder, "denied")
 	}
@@ -1065,6 +1081,15 @@ func replication_join_request_apply(originPeer string, jr *JoinRequest) {
 	rdb.exec(
 		"insert or replace into joins (peer, label, received, expires) values (?, ?, ?, ?)",
 		originPeer, jr.Label, received, received+join_request_ttl_seconds)
+
+	// Replicate the pending join-request to the rest of the pair so the
+	// operator can approve it on whichever member their admin UI reached.
+	// The joiner isn't a pair member yet, so it carries in the row's key,
+	// not the (pair-scoped) recipient list.
+	replication_emit_system_row("replication", "joins",
+		map[string]string{"peer": originPeer},
+		map[string]string{"label": jr.Label, "received": i64toa(received), "expires": i64toa(received + join_request_ttl_seconds)},
+		false)
 
 	debug("Replication join-request stored: peer=%q label=%q", originPeer, jr.Label)
 }
@@ -1324,6 +1349,13 @@ func replication_join_approve_core(peer string) (string, []string, []string, err
 		return "already-approved", nil, nil, nil
 	}
 
+	// Clear the pending request on the rest of the (current) pair too, so
+	// the operator's other admin endpoints stop showing a request this one
+	// resolved. Emitted before the joiner is added below, so it reaches the
+	// existing members that hold the pending row.
+	replication_emit_system_row("replication", "joins",
+		map[string]string{"peer": peer}, nil, true)
+
 	rdb.exec("insert or replace into pair (peer, added, role) values (?, ?, '')", peer, now())
 	pair_membership_refresh()
 
@@ -1404,6 +1436,9 @@ func replication_join_deny_core(peer string) string {
 	if affected == 0 {
 		return "already-handled"
 	}
+	// Clear the pending request on the rest of the pair too.
+	replication_emit_system_row("replication", "joins",
+		map[string]string{"peer": peer}, nil, true)
 	return "denied"
 }
 

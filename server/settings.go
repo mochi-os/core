@@ -302,7 +302,8 @@ var system_settings = map[string]SystemSetting{
 		Pattern:      "text",
 		Default:      "",
 		Description:  "google-services.json downloaded from Firebase Console (Project settings → General → Your apps). Public-by-design — exposed to the Android client by /notifications/-/push/setup. Setting this enables FCM as the primary push transport; leave empty to fall back to UnifiedPush.",
-		UserReadable: false,
+		UserReadable: true,
+		Public:       true,
 		ReadOnly:     false,
 	},
 	"fcm.service_account": {

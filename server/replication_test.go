@@ -5279,6 +5279,49 @@ func TestSystemRowApplyUsersUsersDeleteIsNoop(t *testing.T) {
 	}
 }
 
+// TestSystemRowApplyUsersUsersCreatesMissingRow is the #34 receiver half: a
+// pair users.users op carrying username (the only NOT-NULL-without-default
+// column) creates the row if absent — so an entity-less user's bare-row seed
+// lands on the partner. status is NOT carried, so the new row takes the schema
+// default 'active'.
+func TestSystemRowApplyUsersUsersCreatesMissingRow(t *testing.T) {
+	cleanup, _ := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": "uid-seed"},
+		Cols: map[string]string{"username": "dzung@example.com", "role": "user"},
+	})
+	row, _ := db_open("db/users.db").row("select username, status from users where uid=?", "uid-seed")
+	if row == nil {
+		t.Fatal("entity-less bare-row seed did not create the user row")
+	}
+	if got, _ := row["username"].(string); got != "dzung@example.com" {
+		t.Errorf("created username = %q, want dzung@example.com", got)
+	}
+	if got, _ := row["status"].(string); got != "active" {
+		t.Errorf("created status = %q, want active (schema default)", got)
+	}
+}
+
+// TestSystemRowApplyUsersUsersRoleOnlyDoesNotCreate: a change op without
+// username can't satisfy username NOT NULL, so it stays update-only and never
+// creates a row — only an existing row would get the role change.
+func TestSystemRowApplyUsersUsersRoleOnlyDoesNotCreate(t *testing.T) {
+	cleanup, _ := setup_users_users_system_test(t)
+	defer cleanup()
+
+	replication_system_row_apply("peer-A", &SystemRow{
+		Database: "users", Table: "users",
+		Key:  map[string]string{"uid": "uid-absent"},
+		Cols: map[string]string{"role": "administrator"},
+	})
+	if exists, _ := db_open("db/users.db").exists("select 1 from users where uid=?", "uid-absent"); exists {
+		t.Error("role-only op (no username) MUST NOT create a row")
+	}
+}
+
 // setup_documents_system_test seeds db/settings.db with the documents
 // table the apply path writes against. Settings DB already exists from
 // the parent helper.

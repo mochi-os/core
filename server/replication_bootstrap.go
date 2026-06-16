@@ -1009,7 +1009,7 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		// scope as a local — `res` (=&page) is reused across the manifest
 		// pagination loop, so the closure must not read res lazily.
 		scope := res.Scope
-		bootstrap_phase_drive(originPeer, func() {
+		bootstrap_phase_drive(originPeer, scope, func() {
 			bootstrap_file_scope_driver(originPeer, scope, needed)
 		})
 	}
@@ -2109,29 +2109,44 @@ var (
 	// bootstrap_phases holds, per peer, the bulk drives deferred during
 	// that peer's manifest phase. A peer absent from the map is not in a
 	// manifest phase — its drives run immediately.
-	bootstrap_phases = map[string]*[]func(){}
+	bootstrap_phases = map[string]*[]bootstrap_drive{}
 )
+
+// bootstrap_drive is a deferred bulk-scope drive plus the scope it belongs
+// to, so bootstrap_bulk_run can refresh the right (peer, scope) row's
+// progress while it waits for a concurrency slot (#33).
+type bootstrap_drive struct {
+	scope string
+	run   func()
+}
+
+// bootstrap_bulk_touch is how often bootstrap_bulk_run refreshes a waiting
+// scope's progress timestamp — half the stall window, so a scope queued on
+// the concurrency semaphore stays comfortably "live" to the retry driver.
+// A var so tests can shorten it.
+var bootstrap_bulk_touch = (bootstrap_stall_seconds / 2) * time.Second
 
 // bootstrap_phase_begin opens a manifest phase for `peer`: bulk drives are
 // collected rather than run until bootstrap_phase_end.
 func bootstrap_phase_begin(peer string) {
 	bootstrap_phase_mu.Lock()
-	deferred := []func(){}
+	deferred := []bootstrap_drive{}
 	bootstrap_phases[peer] = &deferred
 	bootstrap_phase_mu.Unlock()
 }
 
 // bootstrap_phase_drive runs `drive` now (under the concurrency bound), or
-// defers it if `peer` is in a manifest phase.
-func bootstrap_phase_drive(peer string, drive func()) {
+// defers it if `peer` is in a manifest phase. scope names the (peer, scope)
+// row so the concurrency wait can keep its progress fresh (#33).
+func bootstrap_phase_drive(peer, scope string, drive func()) {
 	bootstrap_phase_mu.Lock()
 	if deferred, ok := bootstrap_phases[peer]; ok {
-		*deferred = append(*deferred, drive)
+		*deferred = append(*deferred, bootstrap_drive{scope: scope, run: drive})
 		bootstrap_phase_mu.Unlock()
 		return
 	}
 	bootstrap_phase_mu.Unlock()
-	go bootstrap_bulk_run(drive)
+	go bootstrap_bulk_run(peer, scope, drive)
 }
 
 // bootstrap_phase_end closes `peer`'s manifest phase and releases every
@@ -2144,17 +2159,38 @@ func bootstrap_phase_end(peer string) {
 	if deferred == nil {
 		return
 	}
-	for _, drive := range *deferred {
-		go bootstrap_bulk_run(drive)
+	for _, d := range *deferred {
+		go bootstrap_bulk_run(peer, d.scope, d.run)
 	}
 }
 
-// bootstrap_bulk_run runs one bulk-scope drive under the global
-// concurrency bound.
-func bootstrap_bulk_run(drive func()) {
-	bootstrap_bulk_sem <- struct{}{}
+// bootstrap_bulk_run runs one bulk-scope drive under the global concurrency
+// bound. While it waits for a slot — e.g. queued behind a much larger scope
+// holding all bootstrap_bulk_concurrency slots — it refreshes the (peer,
+// scope) row's progress every bootstrap_bulk_touch so the retry driver sees
+// the scope as starved (correctly waiting), not stalled, and doesn't
+// needlessly re-fire its manifest (#33). Waiting on a local semaphore is not
+// a failure: a vanished source surfaces when drive() runs, not here.
+func bootstrap_bulk_run(peer, scope string, drive func()) {
+acquire:
+	for {
+		select {
+		case bootstrap_bulk_sem <- struct{}{}:
+			break acquire
+		case <-time.After(bootstrap_bulk_touch):
+			bootstrap_progress_touch(peer, scope)
+		}
+	}
 	defer func() { <-bootstrap_bulk_sem }()
 	drive()
+}
+
+// bootstrap_progress_touch refreshes a scope's progress timestamp without
+// otherwise changing the row, so a scope correctly waiting for a concurrency
+// slot isn't mistaken for stalled by bootstrap_retry_eligible (#33).
+func bootstrap_progress_touch(peer, scope string) {
+	rdb := db_open("db/replication.db")
+	rdb.exec("update bootstrap set progress=? where scope=? and peer=?", now(), scope, peer)
 }
 
 // bootstrap_start kicks off a whole-replica bootstrap from `peer`.
@@ -2492,7 +2528,7 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 	// phase and starve another scope's manifest read.
 	scope := res.Scope
 	entries := res.Entries
-	bootstrap_phase_drive(originPeer, func() {
+	bootstrap_phase_drive(originPeer, scope, func() {
 		bootstrap_db_scope_driver(originPeer, scope, entries)
 	})
 }
@@ -2598,12 +2634,13 @@ func replication_pair_backfill_schedule(peer string) {
 // each entity.
 func replication_pair_backfill_users(peer string) {
 	udb := db_open("db/users.db")
-	rows, err := udb.rows("select uid from users where status = 'active'")
+	rows, err := udb.rows("select uid, username, role from users where status = 'active'")
 	if err != nil {
 		warn("Replication pair-backfill users: enumerate failed: %v", err)
 		return
 	}
 	count := 0
+	seeded := 0
 	for _, r := range rows {
 		uid, _ := r["uid"].(string)
 		if uid == "" {
@@ -2611,9 +2648,23 @@ func replication_pair_backfill_users(peer string) {
 		}
 		if replication_transfer_keys_var(uid, peer) {
 			count++
+			continue
 		}
+		// No signing entity (a signup that hasn't created an identity yet):
+		// keys-transfer skips them, but the bare user row must still reach the
+		// partner so a replicated session resolves there (#34). Seed it via the
+		// unsigned, peer-targeted pair system-row path (create-or-update).
+		username, _ := r["username"].(string)
+		if username == "" {
+			continue
+		}
+		role, _ := r["role"].(string)
+		replication_system_row_to_peer_var(peer, "users", "users",
+			map[string]string{"uid": uid},
+			map[string]string{"username": username, "role": role}, false)
+		seeded++
 	}
-	debug("Replication pair-backfill: keys-transfer queued for %d users to peer %q", count, peer)
+	debug("Replication pair-backfill: keys-transfer queued for %d users, bare-row seeded %d entity-less users, to peer %q", count, seeded, peer)
 }
 
 // replication_pair_backfill_system enumerates every replicated row of

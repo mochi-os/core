@@ -28,6 +28,10 @@ const (
 	qid_search_empty_ttl = time.Hour
 	qid_backoff_base     = 60 * time.Second
 	qid_backoff_max      = 30 * time.Minute
+	// Wikimedia's User-Agent policy throttles/blocks generic or missing UAs
+	// hard (the cause of the 429 storm in #35); a descriptive UA with a
+	// contact URL gets far higher limits.
+	qid_user_agent = "Mochi/1.0 (+https://mochi-os.org)"
 )
 
 var api_qid = sls.FromStringDict(sl.String("mochi.qid"), sl.StringDict{
@@ -55,13 +59,18 @@ func qid_db() *DB {
 	return db_open("db/external.db")
 }
 
-// qid_rate_wait enforces 1 request per second to Wikidata plus any active 429 backoff
-func qid_rate_wait() {
+// qid_rate_wait paces Wikidata requests at 1/second and reports whether the
+// caller may proceed. It returns false when a 429 backoff window is active so
+// the caller skips the request and returns empty/cached immediately, instead of
+// blocking: a Starlark handler must not sleep out the 40-50s backoff, which
+// stacked on the AI call blew past the 90s watchdog (#35). The 1-request/second
+// spacing still applies to requests that do proceed.
+func qid_rate_wait() bool {
 	qid_backoff_lock.Lock()
-	wait := time.Until(qid_backoff_until)
+	active := time.Now().Before(qid_backoff_until)
 	qid_backoff_lock.Unlock()
-	if wait > 0 {
-		time.Sleep(wait)
+	if active {
+		return false
 	}
 	qid_rate_lock.Lock()
 	defer qid_rate_lock.Unlock()
@@ -70,6 +79,7 @@ func qid_rate_wait() {
 		time.Sleep(time.Second - elapsed)
 	}
 	qid_rate_last = time.Now()
+	return true
 }
 
 // qid_handle_429 records a 429 response and sets an exponential backoff window.
@@ -224,7 +234,11 @@ func qid_fetch_labels(qids []string, lang string) map[string]string {
 		}
 		batch := qids[i:end]
 
-		qid_rate_wait()
+		if !qid_rate_wait() {
+			// Active 429 backoff; stop fetching rather than block the caller.
+			// Return the labels gathered so far (best-effort, #35).
+			break
+		}
 
 		// Build Wikidata API URL
 		ids := strings.Join(batch, "|")
@@ -240,7 +254,7 @@ func qid_fetch_labels(qids []string, lang string) map[string]string {
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "Mochi/1.0")
+		req.Header.Set("User-Agent", qid_user_agent)
 
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
@@ -347,7 +361,11 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		}
 	}
 
-	qid_rate_wait()
+	if !qid_rate_wait() {
+		// Wikidata is in a 429 backoff window; skip rather than block the
+		// caller. Empty + uncached so a later call retries once it clears (#35).
+		return sl_encode([]map[string]any{}), nil
+	}
 
 	u := fmt.Sprintf("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%s&language=%s&limit=10&format=json",
 		url.QueryEscape(query), url.QueryEscape(lang))
@@ -356,7 +374,7 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if err != nil {
 		return sl_encode([]map[string]any{}), nil
 	}
-	req.Header.Set("User-Agent", "Mochi/1.0")
+	req.Header.Set("User-Agent", qid_user_agent)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

@@ -75,6 +75,55 @@ func TestReplicationPairBackfillSchedule(t *testing.T) {
 	}
 }
 
+// TestReplicationPairBackfillUsersSeedsEntityLess is the #34 emit half: in the
+// pair-backfill, a user whose keys-transfer is skipped (no signing entity) must
+// still have its bare row seeded to the peer via the system-row path, while an
+// entity-bearing user goes through keys-transfer and is NOT seeded.
+func TestReplicationPairBackfillUsersSeedsEntityLess(t *testing.T) {
+	cleanup := setup_system_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username, role) values ('u-ent', 'has@x', 'user')")
+	udb.exec("insert into users (uid, username, role) values ('u-bare', 'bare@x', 'user')")
+
+	// u-ent has an entity (keys-transfer succeeds); u-bare doesn't (skipped).
+	orig_keys := replication_transfer_keys_var
+	replication_transfer_keys_var = func(uid, peer string) bool { return uid == "u-ent" }
+	defer func() { replication_transfer_keys_var = orig_keys }()
+
+	type seed struct {
+		peer, db, table string
+		key, cols       map[string]string
+	}
+	var seeds []seed
+	orig_row := replication_system_row_to_peer_var
+	replication_system_row_to_peer_var = func(peer, db, table string, key, cols map[string]string, del bool) {
+		seeds = append(seeds, seed{peer, db, table, key, cols})
+	}
+	defer func() { replication_system_row_to_peer_var = orig_row }()
+
+	replication_pair_backfill_users("peer-X")
+
+	if len(seeds) != 1 {
+		t.Fatalf("seeded %d rows, want exactly 1 (only the entity-less user)", len(seeds))
+	}
+	s := seeds[0]
+	if s.peer != "peer-X" || s.db != "users" || s.table != "users" {
+		t.Errorf("seed target = %s %s.%s, want peer-X users.users", s.peer, s.db, s.table)
+	}
+	if s.key["uid"] != "u-bare" {
+		t.Errorf("seeded uid = %q, want u-bare", s.key["uid"])
+	}
+	if s.cols["username"] != "bare@x" || s.cols["role"] != "user" {
+		t.Errorf("seed cols = %v, want username=bare@x role=user", s.cols)
+	}
+	if _, has := s.cols["status"]; has {
+		t.Error("seed must NOT carry status (it relies on the INSERT default)")
+	}
+}
+
 // TestReplicationBootstrapReconcileOnComplete: the source re-runs the full
 // pair-backfill to a pair peer only once its bulk bootstrap is fully acked
 // (no bootstrap_served rows) — never while scopes are still being served, and

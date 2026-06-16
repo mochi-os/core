@@ -1475,7 +1475,7 @@ func TestBootstrapPhaseDefersBulk(t *testing.T) {
 	// In a phase: deferred until phase_end.
 	ran := make(chan struct{}, 1)
 	bootstrap_phase_begin("phase-peer")
-	bootstrap_phase_drive("phase-peer", func() { ran <- struct{}{} })
+	bootstrap_phase_drive("phase-peer", "files", func() { ran <- struct{}{} })
 
 	select {
 	case <-ran:
@@ -1494,12 +1494,66 @@ func TestBootstrapPhaseDefersBulk(t *testing.T) {
 
 	// No phase active: runs immediately.
 	ran2 := make(chan struct{}, 1)
-	bootstrap_phase_drive("no-phase-peer", func() { ran2 <- struct{}{} })
+	bootstrap_phase_drive("no-phase-peer", "files", func() { ran2 <- struct{}{} })
 	select {
 	case <-ran2:
 		// Correct.
 	case <-time.After(2 * time.Second):
 		t.Fatal("bulk drive with no active phase did not run")
+	}
+}
+
+// TestBootstrapBulkRunStarvationKeepsProgressFresh is the #33 fix: a bulk
+// drive starved waiting for a concurrency slot (all slots held by a bigger
+// scope) must refresh its scope's progress timestamp, so the retry driver
+// treats it as starved (correctly waiting), not stalled, and doesn't
+// needlessly re-fire its manifest.
+func TestBootstrapBulkRunStarvationKeepsProgressFresh(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	// Shorten the touch interval, and always leave the global semaphore empty
+	// for other tests.
+	orig := bootstrap_bulk_touch
+	bootstrap_bulk_touch = 15 * time.Millisecond
+	defer func() { bootstrap_bulk_touch = orig }()
+	defer func() {
+		for len(bootstrap_bulk_sem) > 0 {
+			<-bootstrap_bulk_sem
+		}
+	}()
+
+	rdb := db_open("db/replication.db")
+	old := now() - 1000
+	rdb.exec("insert into bootstrap (scope, peer, state, position, progress, attempts) values ('apps', 'p', 'active', '5', ?, 0)", old)
+
+	// Fill every slot so the drive cannot acquire and must wait.
+	for i := 0; i < bootstrap_bulk_concurrency; i++ {
+		bootstrap_bulk_sem <- struct{}{}
+	}
+
+	ran := make(chan struct{}, 1)
+	go bootstrap_bulk_run("p", "apps", func() { ran <- struct{}{} })
+
+	// While starved, progress must advance past the stale value (touch fired).
+	time.Sleep(80 * time.Millisecond)
+	if got := int64(rdb.integer("select progress from bootstrap where scope='apps' and peer='p'")); got <= old {
+		t.Fatalf("starved drive did not refresh progress: got %d, want > %d", got, old)
+	}
+
+	// It must NOT have run yet — no slot was freed.
+	select {
+	case <-ran:
+		t.Fatal("drive ran before a slot was freed")
+	default:
+	}
+
+	// Free one slot; the drive acquires and runs.
+	<-bootstrap_bulk_sem
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drive did not run after a slot was freed")
 	}
 }
 

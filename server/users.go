@@ -456,6 +456,14 @@ func user_create(username string) (*User, string) {
 	var u User
 	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)
+		// Seed the bare user row to operator-paired hosts. A brand-new signup
+		// has no entity yet, so the signed keys-transfer / per-user paths can't
+		// carry it; without this the row is absent on the partner and a
+		// replicated session won't resolve there under active-active / failover
+		// (#34). Entity-bearing replication later carries the full identity.
+		replication_emit_users_users_pair_set(u.UID, map[string]string{
+			"username": u.Username, "role": u.Role,
+		})
 		return &u, ""
 	}
 

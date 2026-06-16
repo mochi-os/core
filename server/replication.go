@@ -3547,7 +3547,10 @@ func replication_system_row_apply(originPeer string, s *SystemRow) {
 // between operator-paired hosts (sharing one operator's full identity
 // state); other users.users columns either replicate via the per-user
 // path (preferences, methods, status — see replication_users_users_mutable)
-// or stay strictly local per host.
+// or stay strictly local per host. status deliberately stays OFF this path
+// (a pair op must not be able to suspend/activate an account); an entity-less
+// user's bare-row seed (#34) relies on the INSERT default status='active'
+// instead of carrying it.
 var replication_system_users_users_mutable = map[string]bool{
 	"username": true,
 	"role":     true,
@@ -3571,26 +3574,50 @@ func replication_system_row_apply_users_users(originPeer string, s *SystemRow) {
 		// no-op so an errant emitter can't lose accounts.
 		return
 	}
-	sets := []string{}
+	cols := []string{}
 	vals := []any{}
 	for col, v := range s.Cols {
 		if !replication_system_users_users_mutable[col] {
 			continue
 		}
-		sets = append(sets, col+"=?")
+		cols = append(cols, col)
 		vals = append(vals, v)
 	}
-	if len(sets) == 0 {
+	if len(cols) == 0 {
 		return
 	}
-	vals = append(vals, uid)
 	db := db_open("db/users.db")
-	// Use db.internal.Exec directly so a UNIQUE-constraint refusal
-	// (the documented collision-at-apply case for username changes)
-	// surfaces as a log line instead of panicking the receiver. The
-	// local row stays at its pre-replication value; no data is
-	// destroyed.
-	if _, err := db.internal.Exec("update users set "+strings.Join(sets, ", ")+" where uid=?", vals...); err != nil {
+	// username is the only NOT-NULL column without a default, so its presence
+	// means we have enough to INSERT a fresh row (role/methods/status default).
+	// Upsert in that case so an entity-less user's bare-row seed (#34) creates
+	// the row on the partner — required for a replicated session to resolve
+	// there. A change op carrying only role (no username) implies the row
+	// already exists, so it stays update-only (can't satisfy username NOT NULL).
+	// Deletes are a no-op above, so this can create or amend an account but
+	// never remove one. db.internal.Exec directly so a UNIQUE-constraint refusal
+	// (the documented username-collision case) surfaces as a log line instead
+	// of panicking the receiver; the local row is left untouched on error.
+	var err error
+	if _, hasUsername := s.Cols["username"]; hasUsername {
+		insertCols := append([]string{"uid"}, cols...)
+		placeholders := make([]string, len(insertCols))
+		setClauses := make([]string, len(cols))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		for i, col := range cols {
+			setClauses[i] = col + "=excluded." + col
+		}
+		args := append([]any{uid}, vals...)
+		_, err = db.internal.Exec("insert into users ("+strings.Join(insertCols, ", ")+") values ("+strings.Join(placeholders, ", ")+") on conflict(uid) do update set "+strings.Join(setClauses, ", "), args...)
+	} else {
+		sets := make([]string, len(cols))
+		for i, col := range cols {
+			sets[i] = col + "=?"
+		}
+		_, err = db.internal.Exec("update users set "+strings.Join(sets, ", ")+" where uid=?", append(vals, uid)...)
+	}
+	if err != nil {
 		warn("Replication system-row users.users refused: uid=%q cols=%v err=%v (from %q)", uid, s.Cols, err, originPeer)
 		return
 	}

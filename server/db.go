@@ -2269,6 +2269,12 @@ func db_user_for_thread(t *sl.Thread) (*User, error) {
 // whether to actually emit (table not excluded, user has UID, app
 // resolvable) lives in replication_emit_sql_command.
 func db_replicate_after_exec(t *sl.Thread, sql string, args []any) {
+	// Migrations (database_create/upgrade/downgrade) run with this flag set so
+	// their writes don't replicate — every replica migrates itself. See
+	// (*AppVersion).starlark_db.
+	if suppressed, _ := t.Local("replication_suppressed").(bool); suppressed {
+		return
+	}
 	u, err := db_user_for_thread(t)
 	if err != nil || u == nil {
 		return
@@ -2470,6 +2476,7 @@ type TransactionHandle struct {
 	tx            *sqlx.Tx
 	closed        bool
 	pending_emits []sql_pending_emit
+	suppressed    bool // set when opened inside a migration: commit emits nothing
 	user          *User
 	app           *App
 	av            *AppVersion
@@ -2649,8 +2656,10 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "commit failed: %v", err)
 	}
 	h.closed = true
-	for _, e := range h.pending_emits {
-		replication_emit_sql_command(h.user, h.app, h.av, e.sql, e.args)
+	if !h.suppressed {
+		for _, e := range h.pending_emits {
+			replication_emit_sql_command(h.user, h.app, h.av, e.sql, e.args)
+		}
 	}
 	h.pending_emits = nil
 	return sl.None, nil
@@ -2697,6 +2706,9 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	h := &TransactionHandle{tx: tx}
+	if suppressed, _ := t.Local("replication_suppressed").(bool); suppressed {
+		h.suppressed = true
+	}
 	if user, _ := db_user_for_thread(t); user != nil {
 		if app, _ := t.Local("app").(*App); app != nil {
 			h.user = user

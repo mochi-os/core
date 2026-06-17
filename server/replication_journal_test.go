@@ -390,6 +390,132 @@ func TestJournalCrashRecoveryReusesSequence(t *testing.T) {
 	}
 }
 
+// journal_gate_fixture (#13) drives the FULL journal pipeline end to end:
+// db_execute_journal writes on a SENDER, then journal_drain produces a real
+// (sequence, prev) op stream via the production replication_journal_assign. It
+// returns those three ops (re-targeted at the receiver user so the gate's apply
+// lands in the receiver's DB), the app, and the receiver UID — so a caller can
+// deliver them through the real receive gate in any (faulty) order and assert
+// convergence. Teardown is registered via t.Cleanup.
+func journal_gate_fixture(t *testing.T) (ops []*ReplicationOp, app *App, receiverUID string) {
+	t.Helper()
+	t.Cleanup(setup_replication_test(t))
+	setup_users_test_schema()
+
+	// db_app's first-touch fires a background post-migration drain that races
+	// the cleanup's data_dir restore; stub it for the test.
+	origDrain := post_migration_drain_async
+	post_migration_drain_async = func(user, appID string) {}
+	t.Cleanup(func() { post_migration_drain_async = origDrain })
+
+	udb := db_open("db/users.db")
+	senderUID := "uid-journal-sender"
+	receiverUID = "uid-journal-receiver"
+	udb.exec("insert into users (uid, username) values (?, ?)", senderUID, "bob")
+	udb.exec("insert into users (uid, username) values (?, ?)", receiverUID, "alice")
+
+	app_id := "journalapp"
+	av := &AppVersion{Version: "1"}
+	av.Architecture.Engine = "starlark"
+	av.Architecture.Version = 4
+	av.Database.File = "journalapp.db"
+	av.Database.Schema = 1
+	av.Database.create_function = func(db *DB) {
+		db.exec("create table posts (id text primary key, title text not null)")
+	}
+	app = &App{id: app_id, versions: map[string]*AppVersion{"1": av}, internal: av}
+	av.app = app
+	apps_lock.Lock()
+	if apps == nil {
+		apps = map[string]*App{}
+	}
+	apps[app_id] = app
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		delete(apps, app_id)
+		apps_lock.Unlock()
+	})
+
+	// SENDER: real journal writes, then drain to capture the emitted op stream.
+	sdb := db_app(&User{UID: senderUID}, app)
+	if sdb == nil {
+		t.Fatal("sender db nil")
+	}
+	ctx := context.Background()
+	conn, err := sdb.starlark.Connx(ctx)
+	if err != nil {
+		t.Fatalf("connx: %v", err)
+	}
+	for _, args := range [][]any{{"p1", "One"}, {"p2", "Two"}, {"p3", "Three"}} {
+		if _, _, werr := db_execute_journal(ctx, conn, sdb, av, false, "insert into posts (id, title) values (?, ?)", args); werr != nil {
+			conn.Close()
+			t.Fatalf("journal write: %v", werr)
+		}
+	}
+	conn.Close()
+
+	origShip := journal_ship
+	journal_ship = func(userUID string, op *ReplicationOp, peers []string) { ops = append(ops, op) }
+	journal_drain(senderUID, app_id, sdb)
+	journal_ship = origShip
+
+	if len(ops) != 3 {
+		t.Fatalf("journal emitted %d ops, want 3", len(ops))
+	}
+	for i, op := range ops { // the drain produced a contiguous prev-chain
+		if op.Sequence != int64(i+1) {
+			t.Fatalf("op %d sequence = %d, want %d", i, op.Sequence, i+1)
+		}
+		op.User = receiverUID // route the apply at the receiver
+	}
+	return ops, app, receiverUID
+}
+
+// assert_journal_converged checks the receiver holds all three rows.
+func assert_journal_converged(t *testing.T, app *App, receiverUID string) {
+	t.Helper()
+	rdb := db_app(&User{UID: receiverUID}, app)
+	if n := rdb.integer("select count(*) from posts"); n != 3 {
+		t.Fatalf("receiver posts = %d, want 3 (converged)", n)
+	}
+	for _, id := range []string{"p1", "p2", "p3"} {
+		if n := rdb.integer("select count(*) from posts where id=?", id); n != 1 {
+			t.Fatalf("receiver missing row %q", id)
+		}
+	}
+}
+
+// TestJournalStreamConvergesUnderReorder (#13): the journal-produced op stream
+// delivered REVERSED through the real gate buffers the later ops in `pending`
+// and drains them once the Prev==0 anchor lands — the receiver converges.
+func TestJournalStreamConvergesUnderReorder(t *testing.T) {
+	ops, app, receiverUID := journal_gate_fixture(t)
+	for i := len(ops) - 1; i >= 0; i-- {
+		replication_op_receive("sender-peer", ops[i])
+	}
+	assert_journal_converged(t, app, receiverUID)
+}
+
+// TestJournalStreamConvergesAfterDroppedOpRedelivered (#13): a middle op is
+// "dropped" — op1 anchors and applies, op3 buffers behind the gap (so only one
+// row lands), then redelivering op2 applies it and drains op3. The receiver
+// converges. Models a lost-then-retransmitted packet.
+func TestJournalStreamConvergesAfterDroppedOpRedelivered(t *testing.T) {
+	ops, app, receiverUID := journal_gate_fixture(t)
+
+	replication_op_receive("sender-peer", ops[0]) // anchors, applies p1
+	replication_op_receive("sender-peer", ops[2]) // prev > cursor -> buffered
+
+	rdb := db_app(&User{UID: receiverUID}, app)
+	if n := rdb.integer("select count(*) from posts"); n != 1 {
+		t.Fatalf("after op1+op3 (op2 dropped): posts = %d, want 1 (op3 buffered behind the gap)", n)
+	}
+
+	replication_op_receive("sender-peer", ops[1]) // fills the gap, drains op3
+	assert_journal_converged(t, app, receiverUID)
+}
+
 // TestReplicationSequenceNextAtomic (#6): N goroutines allocating on the same
 // (user, scope) with NO mutex must each get a distinct sequence forming 1..N —
 // the property the UPSERT...RETURNING rewrite guarantees and the old

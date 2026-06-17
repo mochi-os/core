@@ -630,7 +630,9 @@ func (e *Event) sl_dump(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(map[string]any{"from": e.from, "to": e.to, "service": e.service, "event": e.event, "app": e.sender_app, "services": e.sender_services, "content": e.content}), nil
 }
 
-// e.header(name) -> string: Get an event header (from, to, service, event)
+// e.header(name) -> string: Get an event header (from, to, service, event,
+// app, services, peer). "local" -> bool: true iff the event originated
+// in-process on this host (see the case below).
 func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <header: string>")
@@ -656,6 +658,15 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_encode(e.sender_services), nil
 	case "peer":
 		return sl_encode(e.peer), nil
+	case "local":
+		// True when the event originated in-process on this host: the
+		// self-loop stream path sets e.peer to net_id, while a remote stream
+		// carries the dialing peer's real id. Unforgeable from off-host (a
+		// remote peer can't make e.peer == our net_id), so handlers can use
+		// it to grant a local caller access a remote peer must not have — e.g.
+		// the publisher serving a restricted app to this host's own app-update
+		// loopback while still refusing remote peers.
+		return sl.Bool(net_id != "" && e.peer == net_id), nil
 	default:
 		return sl_error(fn, "invalid header %q", header)
 	}

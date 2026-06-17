@@ -554,6 +554,37 @@ func TestReplicationSequenceNextAtomic(t *testing.T) {
 	}
 }
 
+// TestReplicationStallAlertDedup (#3): the early stall alert fires once per
+// stall episode (not every tick), re-arms after the stream drains, and never
+// fires for a stream that hasn't been stalled long enough.
+func TestReplicationStallAlertDedup(t *testing.T) {
+	stall_alerted_mutex.Lock()
+	stall_alerted = map[string]bool{}
+	stall_alerted_mutex.Unlock()
+
+	const threshold = int64(1000)
+	s := StalledStream{Peer: "p", Scope: "app", User: "u", Database: "app:feeds", Oldest: 100} // stalled long enough
+
+	if fresh := replication_stall_alert_new([]StalledStream{s}, threshold); len(fresh) != 1 {
+		t.Fatalf("first pass: fresh = %d, want 1 (alert)", len(fresh))
+	}
+	if fresh := replication_stall_alert_new([]StalledStream{s}, threshold); len(fresh) != 0 {
+		t.Fatalf("second pass (still stalled): fresh = %d, want 0 (deduped)", len(fresh))
+	}
+
+	// Stream drains (absent) -> alert cleared; a re-stall alerts again.
+	replication_stall_alert_new(nil, threshold)
+	if fresh := replication_stall_alert_new([]StalledStream{s}, threshold); len(fresh) != 1 {
+		t.Fatalf("after drain + re-stall: fresh = %d, want 1 (re-armed)", len(fresh))
+	}
+
+	// A stream stalled but not yet past the threshold never alerts.
+	young := StalledStream{Peer: "p2", Scope: "app", User: "u", Database: "app:wikis", Oldest: threshold + 1}
+	if fresh := replication_stall_alert_new([]StalledStream{young}, threshold); len(fresh) != 0 {
+		t.Fatalf("young stream: fresh = %d, want 0 (not stalled long enough)", len(fresh))
+	}
+}
+
 // TestSQLIsMutating (#7) backs the guard that keeps mutations out of the
 // read-only row/rows/exists APIs (which don't journal the write).
 func TestSQLIsMutating(t *testing.T) {

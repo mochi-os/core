@@ -914,16 +914,58 @@ const pending_gc_period_seconds = 60 * 60
 // naturally within a minute.
 const stall_warn_seconds = 15 * 60
 
+// stall_alerted tracks which inbound streams have already raised an early
+// stall alert, so the per-tick check warns ONCE when a stream first crosses
+// stall_warn_seconds rather than every 30s for as long as it stays stuck. An
+// entry is cleared when its stream drains (drops out of replication_pending_
+// stalled), so a later re-stall alerts again.
+var (
+	stall_alerted_mutex sync.Mutex
+	stall_alerted       = map[string]bool{}
+)
+
+// replication_stall_alert_new returns the stalled streams that crossed the
+// stall threshold (Oldest <= threshold) and have NOT been alerted yet, marking
+// them alerted. It also clears alerted entries for streams no longer present
+// (drained) so a future re-stall re-arms. Pure of warn()/DB so the dedup is
+// directly testable.
+func replication_stall_alert_new(stalled []StalledStream, threshold int64) []StalledStream {
+	stall_alerted_mutex.Lock()
+	defer stall_alerted_mutex.Unlock()
+
+	present := make(map[string]bool, len(stalled))
+	var fresh []StalledStream
+	for _, s := range stalled {
+		key := s.Peer + "|" + s.Scope + "|" + s.User + "|" + s.Database
+		present[key] = true
+		if s.Oldest > threshold {
+			continue // stalled, but not yet long enough to alert
+		}
+		if !stall_alerted[key] {
+			stall_alerted[key] = true
+			fresh = append(fresh, s)
+		}
+	}
+	for key := range stall_alerted {
+		if !present[key] {
+			delete(stall_alerted, key)
+		}
+	}
+	return fresh
+}
+
+// replication_pending_warn_stalled raises an EARLY, de-duplicated alert for any
+// inbound stream stuck on an undrainable gap past stall_warn_seconds (15m).
+// This catches a SINGLE stalled stream, which the hourly replication_health_scan
+// (gated on a stalled-count >= 10 that is also climbing) never surfaces. warn()
+// is rate-limited per format (task #24), and the per-stream dedup above keeps it
+// to one alert per stall episode, so re-enabling it can't storm.
 func replication_pending_warn_stalled() {
 	threshold := now() - stall_warn_seconds
-	for _, s := range replication_pending_stalled() {
-		if s.Oldest > threshold {
-			continue
-		}
-		// warn("Replication stream stalled: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d age=%ds",
-		// 	s.Peer, s.Scope, s.User, s.Database,
-		// 	s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count,
-		// 	now()-s.Oldest)
+	for _, s := range replication_stall_alert_new(replication_pending_stalled(), threshold) {
+		warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d",
+			now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
+			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count)
 	}
 }
 

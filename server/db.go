@@ -2096,6 +2096,34 @@ func (db *DB) exec(query string, values ...any) {
 // Schema DDL (create table, create index, alter table) must keep using
 // the plain exec — receivers create their own tables on first open.
 func (db *DB) exec_replicated(query string, values ...any) {
+	// App-system writes (access, attachments in app.db) journal the op in the
+	// same transaction as the data, so it can't be lost relative to the data
+	// (Gap A/B) — same guarantee as mochi.db.execute. user-core stays on the
+	// legacy emit (core-scope signing isn't wired; #34).
+	if db.kind == db_kind_app_system && db.user != nil && db.user.UID != "" && db.app != nil &&
+		journal_table_replicates(sql_target_table(query)) {
+		journal_ensure(db)
+		if tx, err := db.internal.Beginx(); err == nil {
+			if _, err := tx.Exec(query, values...); err != nil {
+				tx.Rollback()
+				must[any](nil, err)
+				return
+			}
+			if err := journal_record_tx(tx, repl_op_exec_app_system, 0, query, values); err != nil {
+				tx.Rollback()
+				must[any](nil, err)
+				return
+			}
+			if err := tx.Commit(); err != nil {
+				must[any](nil, err)
+				return
+			}
+			journal_wake(db)
+			return
+		}
+		// tx open failed: fall through to the non-atomic write + legacy emit.
+	}
+
 	must(db.internal.Exec(query, values...))
 	if db.user == nil || db.user.UID == "" {
 		return
@@ -2127,15 +2155,46 @@ func (db *DB) exec_replicated(query string, values ...any) {
 // Schema DDL stays on plain exec — receivers create their own tables
 // on first open via the `create table if not exists` helpers.
 func (db *DB) exec_app_user(query string, values ...any) {
-	must(db.internal.Exec(query, values...))
 	if db.user == nil || db.user.UID == "" || db.app == nil {
+		must(db.internal.Exec(query, values...))
 		return
 	}
 	av := db.app.active(db.user)
 	if av == nil {
+		must(db.internal.Exec(query, values...))
 		return
 	}
-	replication_emit_sql_command(db.user, db.app, av, query, values)
+	if !journal_replicates(false, av, query) {
+		must(db.internal.Exec(query, values...))
+		return
+	}
+
+	// Record the op in the data DB's journal in the same transaction as the
+	// write, then wake the drainer — same atomicity guarantee as
+	// mochi.db.execute (claude/plans/replication-journal.md).
+	journal_ensure(db)
+	tx, err := db.internal.Beginx()
+	if err != nil {
+		// Can't open a tx: fall back to the non-atomic write so the broadcast
+		// helper still makes progress (panics on a real SQL error, as before).
+		must(db.internal.Exec(query, values...))
+		return
+	}
+	if _, err := tx.Exec(query, values...); err != nil {
+		tx.Rollback()
+		must[any](nil, err) // preserve the panic-on-SQL-error contract
+		return
+	}
+	if err := journal_record_tx(tx, repl_op_exec, av.Database.Schema, query, values); err != nil {
+		tx.Rollback()
+		must[any](nil, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		must[any](nil, err)
+		return
+	}
+	journal_wake(db)
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {
@@ -2678,7 +2737,7 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 			if !journal_replicates(false, h.av, e.sql) {
 				continue
 			}
-			if err := journal_record_tx(h.tx, repl_op_exec, h.av, e.sql, e.args); err != nil {
+			if err := journal_record_tx(h.tx, repl_op_exec, h.av.Database.Schema, e.sql, e.args); err != nil {
 				h.tx.Rollback()
 				h.closed = true
 				h.pending_emits = nil

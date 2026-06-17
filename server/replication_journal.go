@@ -45,8 +45,12 @@ import (
 
 // journal_ensured caches which data-DB file paths have had their core-managed
 // `journal` table created this process, so the DDL runs once per file rather
-// than on every write.
-var journal_ensured sync.Map // db.path -> struct{}
+// than on every write. journal_ensure_mu serialises the create so concurrent
+// first-time writers to a fresh DB don't all run the DDL at once.
+var (
+	journal_ensured   sync.Map // db.path -> struct{}
+	journal_ensure_mu sync.Mutex
+)
 
 // journal_ensure lazily creates the per-DB replication journal on the internal
 // (server-trusted) pool. The table is visible to the starlark pool's
@@ -57,6 +61,11 @@ func journal_ensure(db *DB) {
 		return
 	}
 	if _, done := journal_ensured.Load(db.path); done {
+		return
+	}
+	journal_ensure_mu.Lock()
+	defer journal_ensure_mu.Unlock()
+	if _, done := journal_ensured.Load(db.path); done { // re-check under the lock
 		return
 	}
 	db.exec(`create table if not exists journal (
@@ -87,17 +96,54 @@ func journal_replicates(suppressed bool, av *AppVersion, statement string) bool 
 
 // journal_record_tx inserts the replication op for one app-scope write into the
 // journal within the caller's transaction. operation is repl_op_exec (per-app
-// data DB) or repl_op_exec_app_system (app.db). The (user, app) that own the
-// stream are implied by which journal the drainer reads, so they are not stored
-// on the row.
-func journal_record_tx(tx *sqlx.Tx, operation string, av *AppVersion, statement string, args []any) error {
+// data DB) or repl_op_exec_app_system (app.db); schema is the op's Schema stamp
+// (av.Database.Schema for the data path, 0 for app-system — matching the legacy
+// emit). The (user, app) that own the stream are implied by which journal the
+// drainer reads, so they are not stored on the row.
+func journal_record_tx(tx *sqlx.Tx, operation string, schema int, statement string, args []any) error {
 	_, err := tx.Exec(
 		"insert into journal (id, operation, statement, args, target, uid, schema, created, state) "+
 			"values (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
 		uid(), operation, statement, cbor_encode(args),
 		sql_target_table(statement), sql_target_uid(statement, args),
-		av.Database.Schema, now())
+		schema, now())
 	return err
+}
+
+// journal_table_replicates reports whether a parsed target table replicates on
+// the app-system path: non-empty and not a default-excluded infra table. The
+// app-system scope has no per-app exclude list, so this matches
+// replication_emit_app_system_exec's gate exactly.
+func journal_table_replicates(table string) bool {
+	if table == "" {
+		return false
+	}
+	for _, prefix := range sql_default_excluded {
+		if strings.HasPrefix(table, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// journal_app_dbs returns the relative paths of the DBs for one app that may
+// carry a journal: every data DB under db/ plus the system app.db. Only
+// existing files are returned, so callers can db_open each without creating
+// junk 0-byte files.
+func journal_app_dbs(userUID, appID string) []string {
+	var out []string
+	root := filepath.Join(data_dir, "users", userUID, appID)
+	if files, err := os.ReadDir(filepath.Join(root, "db")); err == nil {
+		for _, fe := range files {
+			if !fe.IsDir() && strings.HasSuffix(fe.Name(), ".db") {
+				out = append(out, fmt.Sprintf("users/%s/%s/db/%s", userUID, appID, fe.Name()))
+			}
+		}
+	}
+	if st, err := os.Stat(filepath.Join(root, "app.db")); err == nil && !st.IsDir() {
+		out = append(out, fmt.Sprintf("users/%s/%s/app.db", userUID, appID))
+	}
+	return out
 }
 
 // db_execute_journal runs a single app-scope write (mochi.db.execute) and, when
@@ -124,7 +170,7 @@ func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVer
 		tx.Rollback()
 		return false, err
 	}
-	if err := journal_record_tx(tx, repl_op_exec, av, query, args); err != nil {
+	if err := journal_record_tx(tx, repl_op_exec, av.Database.Schema, query, args); err != nil {
 		tx.Rollback()
 		return false, err
 	}
@@ -146,7 +192,10 @@ func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVer
 // fresh data_dir work. Keyed by the replication.db path so each test's temp
 // data_dir initialises once rather than a process-wide sync.Once that would
 // pin the first test's directory.
-var replication_journal_tables_ensured sync.Map // replication.db path -> struct{}
+var (
+	replication_journal_tables_ensured sync.Map // replication.db path -> struct{}
+	replication_journal_tables_mu      sync.Mutex
+)
 
 func replication_journal_tables_ensure() {
 	rdb := db_open("db/replication.db")
@@ -154,6 +203,11 @@ func replication_journal_tables_ensure() {
 		return
 	}
 	if _, done := replication_journal_tables_ensured.Load(rdb.path); done {
+		return
+	}
+	replication_journal_tables_mu.Lock()
+	defer replication_journal_tables_mu.Unlock()
+	if _, done := replication_journal_tables_ensured.Load(rdb.path); done { // re-check under the lock
 		return
 	}
 	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
@@ -386,11 +440,13 @@ func journal_drain_app(user *User, app *App) {
 	if user == nil || app == nil {
 		return
 	}
-	db := db_app(user, app)
-	if db == nil {
-		return
+	for _, rel := range journal_app_dbs(user.UID, app.id) {
+		db := db_open(rel)
+		if db == nil {
+			continue
+		}
+		journal_drain(user.UID, app.id, db)
 	}
-	journal_drain(user.UID, app.id, db)
 }
 
 // journal_manager drains the dirty set every second (low latency, like the
@@ -415,9 +471,10 @@ func journal_manager() {
 	}
 }
 
-// journal_sweep walks every per-user app data DB and drains any that carry a
-// pending journal. Bounded work: it only opens DBs that exist and only drains
-// those with a pending row. Runs at startup (crash recovery) and periodically.
+// journal_sweep walks every per-user app DB (data DBs + app.db) and drains any
+// that carry a pending journal, pruning shipped ops as it goes. Bounded work:
+// it only opens DBs that exist and only drains those with a pending row. Runs
+// at startup (crash recovery) and periodically.
 func journal_sweep() {
 	base := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(base)
@@ -438,16 +495,7 @@ func journal_sweep() {
 				continue
 			}
 			appID := ae.Name()
-			dbdir := filepath.Join(base, userUID, appID, "db")
-			files, err := os.ReadDir(dbdir)
-			if err != nil {
-				continue
-			}
-			for _, fe := range files {
-				if fe.IsDir() || !strings.HasSuffix(fe.Name(), ".db") {
-					continue
-				}
-				rel := fmt.Sprintf("users/%s/%s/db/%s", userUID, appID, fe.Name())
+			for _, rel := range journal_app_dbs(userUID, appID) {
 				db := db_open(rel)
 				if db == nil {
 					continue
@@ -552,16 +600,7 @@ func journal_backfill_peer(userUID, peer string) {
 			continue
 		}
 		appID := ae.Name()
-		dbdir := filepath.Join(base, appID, "db")
-		files, err := os.ReadDir(dbdir)
-		if err != nil {
-			continue
-		}
-		for _, fe := range files {
-			if fe.IsDir() || !strings.HasSuffix(fe.Name(), ".db") {
-				continue
-			}
-			rel := fmt.Sprintf("users/%s/%s/db/%s", userUID, appID, fe.Name())
+		for _, rel := range journal_app_dbs(userUID, appID) {
 			db := db_open(rel)
 			if db == nil {
 				continue

@@ -292,6 +292,9 @@ func peer_reconnect_manager() {
 				defer func() { <-sem }()
 				if peer_connect(id) {
 					debug("Peer %q reconnected successfully", id)
+					// Re-ship any retained journal ops the peer missed while
+					// it was gone (#23). Receiver dedups what it already has.
+					go journal_backfill_to_peer(id)
 					return
 				}
 				// The peer may be unreachable because our addresses for

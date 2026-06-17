@@ -4708,6 +4708,7 @@ func new_tx_handle(t *testing.T) (h *TransactionHandle, cleanup func()) {
 	a := app_by_id(app_id)
 	av := a.internal
 	db := db_app(u, a)
+	journal_ensure(db) // api_db_transaction does this before opening the tx
 	tx, err := db.starlark.Beginx()
 	if err != nil {
 		clean()

@@ -171,6 +171,7 @@ func main_serve(ready func()) int {
 	go self_loop_drain()
 	go ratelimit_manager()
 	go replication_manager()
+	go journal_manager()
 	go broadcast_manager()
 	go bootstrap_resume()
 	go bootstrap_retry_incomplete_manager()

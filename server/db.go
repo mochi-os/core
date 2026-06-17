@@ -2359,12 +2359,28 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	switch fn.Name() {
 	case "mochi.db.execute":
-		_, err := conn.ExecContext(ctx, query, as...)
+		// Replicated app-scope write: record the op in the data DB's journal
+		// in the SAME transaction as the mutation (db_execute_journal), then
+		// wake the drainer. The old direct emit (db_replicate_after_exec) is
+		// retired for this path — replication is driven by the journal so a
+		// crash can't leave the data committed with the op unrecorded, and a
+		// write made with no live peer is still journaled. See
+		// claude/plans/replication-journal.md.
+		u, _ := db_user_for_thread(t)
+		app, _ := t.Local("app").(*App)
+		var av *AppVersion
+		if u != nil && app != nil {
+			av = app.active(u)
+		}
+		suppressed, _ := t.Local("replication_suppressed").(bool)
+		recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, query, as)
 		if err != nil {
 			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
-		db_replicate_after_exec(t, query, as)
+		if recorded {
+			journal_wake(db)
+		}
 		return sl.None, nil
 
 	case "mochi.db.exists":
@@ -2650,18 +2666,38 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	if h.closed {
 		return sl_error(fn, "transaction is closed")
 	}
+	// Record journal rows for the buffered replicated writes INSIDE this
+	// transaction, so the data and the ops it emits commit atomically. The
+	// drainer assigns sequences and ships post-commit (see
+	// claude/plans/replication-journal.md). Replaces the old post-commit
+	// replication_emit_sql_command flush, whose emit could be lost if the
+	// process died after the data committed.
+	recorded := false
+	if !h.suppressed {
+		for _, e := range h.pending_emits {
+			if !journal_replicates(false, h.av, e.sql) {
+				continue
+			}
+			if err := journal_record_tx(h.tx, repl_op_exec, h.av, e.sql, e.args); err != nil {
+				h.tx.Rollback()
+				h.closed = true
+				h.pending_emits = nil
+				return sl_error(fn, "commit failed: %v", err)
+			}
+			recorded = true
+		}
+	}
+
 	if err := h.tx.Commit(); err != nil {
 		h.closed = true
 		h.pending_emits = nil
 		return sl_error(fn, "commit failed: %v", err)
 	}
 	h.closed = true
-	if !h.suppressed {
-		for _, e := range h.pending_emits {
-			replication_emit_sql_command(h.user, h.app, h.av, e.sql, e.args)
-		}
-	}
 	h.pending_emits = nil
+	if recorded {
+		journal_wake_app(h.user, h.app)
+	}
 	return sl.None, nil
 }
 
@@ -2699,6 +2735,10 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+
+	// Ensure the replication journal exists before the transaction opens, so
+	// sl_commit can insert journal rows on this same connection's tx.
+	journal_ensure(db)
 
 	tx, err := db.starlark.Beginx()
 	if err != nil {

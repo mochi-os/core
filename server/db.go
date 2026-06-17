@@ -2371,7 +2371,7 @@ func db_for_thread(t *sl.Thread) (*DB, error) {
 	return db, nil
 }
 
-// mochi.db.execute/exists/query/row/rows(sql, params...) -> nil/bool/list/dict/list: Execute database query
+// mochi.db.execute/exists/query/row/rows(sql, params...) -> int/bool/list/dict/list: Execute database query (execute returns rows affected)
 func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 {
 		return sl_error(fn, "syntax: <SQL statement: string>, [parameters: variadic strings]")
@@ -2384,6 +2384,17 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	if reason := db_starlark_sql_blocked(query); reason != "" {
 		return sl_error(fn, "%s", reason)
+	}
+
+	// The read APIs must not smuggle a write: a mutation run through
+	// row/rows/exists executes but is never journaled, so it would never
+	// replicate (silent divergence). Reject it — the write must go through
+	// mochi.db.execute (or mochi.db.transaction), which journals the op.
+	switch fn.Name() {
+	case "mochi.db.exists", "mochi.db.row", "mochi.db.rows":
+		if sql_is_mutating(query) {
+			return sl_error(fn, "%s cannot run a mutating statement (INSERT/UPDATE/DELETE/REPLACE); use mochi.db.execute so the write replicates", fn.Name())
+		}
 	}
 
 	as := sl_decode(args[1:]).([]any)
@@ -2432,7 +2443,7 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			av = app.active(u)
 		}
 		suppressed, _ := t.Local("replication_suppressed").(bool)
-		recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, query, as)
+		affected, recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, query, as)
 		if err != nil {
 			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
@@ -2440,7 +2451,10 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if recorded {
 			journal_wake(db)
 		}
-		return sl.None, nil
+		// Return the number of rows the statement changed (insert/update/
+		// delete count), so apps can branch on whether a conditional write
+		// took effect. Previously returned None.
+		return sl.MakeInt64(affected), nil
 
 	case "mochi.db.exists":
 		r, err := conn.QueryContext(ctx, query, as...)
@@ -2641,11 +2655,15 @@ func (h *TransactionHandle) sl_execute(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if _, err := h.tx.Exec(query, params...); err != nil {
+	res, err := h.tx.Exec(query, params...)
+	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
 	h.pending_emits = append(h.pending_emits, sql_pending_emit{sql: query, args: params})
-	return sl.None, nil
+	// Return rows affected, matching mochi.db.execute, so conditional writes
+	// inside a transaction can branch on whether they took effect.
+	affected, _ := res.RowsAffected()
+	return sl.MakeInt64(affected), nil
 }
 
 func (h *TransactionHandle) sl_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

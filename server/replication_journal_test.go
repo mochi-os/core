@@ -132,9 +132,12 @@ func TestDbExecuteJournalAtomic(t *testing.T) {
 	}
 	defer conn.Close()
 
-	recorded, err := db_execute_journal(ctx, conn, db, av, false, "insert into items (id) values (?)", []any{"a"})
+	affected, recorded, err := db_execute_journal(ctx, conn, db, av, false, "insert into items (id) values (?)", []any{"a"})
 	if err != nil || !recorded {
 		t.Fatalf("first write: recorded=%v err=%v", recorded, err)
+	}
+	if affected != 1 {
+		t.Fatalf("insert affected %d rows, want 1", affected)
 	}
 	if n := db.integer("select count(*) from items"); n != 1 {
 		t.Fatalf("items count = %d, want 1", n)
@@ -145,7 +148,7 @@ func TestDbExecuteJournalAtomic(t *testing.T) {
 
 	// Duplicate PK -> the data write fails; the tx rolls back, so NO new
 	// journal row and NO partial data row.
-	recorded, err = db_execute_journal(ctx, conn, db, av, false, "insert into items (id) values (?)", []any{"a"})
+	_, recorded, err = db_execute_journal(ctx, conn, db, av, false, "insert into items (id) values (?)", []any{"a"})
 	if err == nil {
 		t.Fatalf("duplicate insert unexpectedly succeeded")
 	}
@@ -154,6 +157,51 @@ func TestDbExecuteJournalAtomic(t *testing.T) {
 	}
 	if n := db.integer("select count(*) from journal"); n != 1 {
 		t.Fatalf("journal count after failed write = %d, want 1 (no half-state)", n)
+	}
+}
+
+// TestDbExecuteJournalReturnsRowsAffected (#5): mochi.db.execute returns the
+// number of rows the statement changed — 1 per insert, the match count for an
+// update/delete, 0 when nothing matches.
+func TestDbExecuteJournalReturnsRowsAffected(t *testing.T) {
+	defer journal_test_dir(t, "u1", "testapp")()
+
+	db := db_open("users/u1/testapp/db/data.db")
+	if db == nil {
+		t.Fatal("db_open returned nil")
+	}
+	db.exec("create table items (id text primary key, flag integer)")
+	av := &AppVersion{}
+	av.Database.Schema = 1
+
+	ctx := context.Background()
+	conn, err := db.starlark.Connx(ctx)
+	if err != nil {
+		t.Fatalf("connx: %v", err)
+	}
+	defer conn.Close()
+
+	exec := func(q string, args ...any) int64 {
+		n, _, err := db_execute_journal(ctx, conn, db, av, false, q, args)
+		if err != nil {
+			t.Fatalf("exec %q: %v", q, err)
+		}
+		return n
+	}
+
+	for _, id := range []string{"a", "b", "c"} {
+		if n := exec("insert into items (id, flag) values (?, 0)", id); n != 1 {
+			t.Fatalf("insert %s affected %d rows, want 1", id, n)
+		}
+	}
+	if n := exec("update items set flag=1"); n != 3 {
+		t.Fatalf("update-all affected %d rows, want 3", n)
+	}
+	if n := exec("update items set flag=2 where id='zzz'"); n != 0 {
+		t.Fatalf("no-match update affected %d rows, want 0", n)
+	}
+	if n := exec("delete from items"); n != 3 {
+		t.Fatalf("delete affected %d rows, want 3", n)
 	}
 }
 
@@ -339,6 +387,36 @@ func TestJournalCrashRecoveryReusesSequence(t *testing.T) {
 	rdb := db_open("db/replication.db")
 	if next := rdb.integer("select next from sequence where user='u1' and scope='app'"); int64(next) != seq0 {
 		t.Fatalf("global counter = %d, want %d (no second allocation)", next, seq0)
+	}
+}
+
+// TestSQLIsMutating (#7) backs the guard that keeps mutations out of the
+// read-only row/rows/exists APIs (which don't journal the write).
+func TestSQLIsMutating(t *testing.T) {
+	mutating := []string{
+		"insert into t (a) values (1)",
+		"INSERT OR IGNORE INTO t (a) values (1)",
+		"update t set a=1",
+		"  UPDATE t SET a=1 WHERE b=2",
+		"delete from t",
+		"replace into t (a) values (1)",
+		"\n\tdelete from t where a=1",
+	}
+	for _, q := range mutating {
+		if !sql_is_mutating(q) {
+			t.Errorf("sql_is_mutating(%q) = false, want true", q)
+		}
+	}
+	readonly := []string{
+		"select * from t",
+		"  SELECT a from t where b='update'",
+		"select count(*) from t",
+		"",
+	}
+	for _, q := range readonly {
+		if sql_is_mutating(q) {
+			t.Errorf("sql_is_mutating(%q) = true, want false", q)
+		}
 	}
 }
 

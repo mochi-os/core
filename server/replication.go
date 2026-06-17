@@ -3084,6 +3084,22 @@ var sql_default_excluded = []string{
 // match the verb, then take the next identifier as the table name. CTE
 // (WITH …) prefixes are not recognised and stay local; apps that need
 // CTE writes to replicate should reshape to a plain INSERT/UPDATE/DELETE.
+// sql_is_mutating reports whether sql is a row-changing statement
+// (INSERT / REPLACE / UPDATE / DELETE, including the INSERT OR ... forms).
+// Used to keep mutations out of the read-only mochi.db.row/rows/exists APIs,
+// which run the write but do NOT journal it — so the change would never
+// replicate (silent divergence). Such writes must go through mochi.db.execute.
+// CTE-prefixed mutations (WITH ... DELETE) are not detected — no app uses them
+// and the CI grep gate (#8) covers the literal case.
+func sql_is_mutating(sql string) bool {
+	verb, _ := sql_take_word(sql_strip_lead(sql))
+	switch strings.ToUpper(verb) {
+	case "INSERT", "REPLACE", "UPDATE", "DELETE":
+		return true
+	}
+	return false
+}
+
 func sql_target_table(sql string) string {
 	s := sql_strip_lead(sql)
 	verb, rest := sql_take_word(s)

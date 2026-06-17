@@ -148,36 +148,43 @@ func journal_app_dbs(userUID, appID string) []string {
 
 // db_execute_journal runs a single app-scope write (mochi.db.execute) and, when
 // the write replicates, records its journal row in the same transaction so the
-// data and the op commit atomically. Returns whether an journal row was written
-// (so the caller wakes the drainer) and any data-write error. A non-replicated
+// data and the op commit atomically. Returns the number of rows the write
+// affected (mochi.db.execute's return value), whether a journal row was written
+// (so the caller wakes the drainer), and any data-write error. A non-replicated
 // write keeps the cheap autocommit path. The caller supplies the already-
 // checked-out write connection (from db.starlark) so the journal insert shares
 // the data write's connection — required for the two to land in one
 // transaction.
-func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVersion, suppressed bool, query string, args []any) (bool, error) {
+func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVersion, suppressed bool, query string, args []any) (int64, bool, error) {
 	if !journal_replicates(suppressed, av, query) {
-		_, err := conn.ExecContext(ctx, query, args...)
-		return false, err
+		res, err := conn.ExecContext(ctx, query, args...)
+		if err != nil {
+			return 0, false, err
+		}
+		affected, _ := res.RowsAffected()
+		return affected, false, nil
 	}
 
 	journal_ensure(db)
 
 	tx, err := conn.BeginTxx(ctx, nil)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
-	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+	res, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
 		tx.Rollback()
-		return false, err
+		return 0, false, err
 	}
 	if err := journal_record_tx(tx, repl_op_exec, av.Database.Schema, query, args); err != nil {
 		tx.Rollback()
-		return false, err
+		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return true, nil
+	affected, _ := res.RowsAffected()
+	return affected, true, nil
 }
 
 // ============================================================

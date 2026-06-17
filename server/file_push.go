@@ -17,7 +17,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -332,33 +331,46 @@ func queue_send_file_push(q *QueueEntry) bool {
 	}
 	defer s.close()
 
-	// stream_open shipped the (empty) content map as the first post-ack
-	// segment so the receiver's receive_stream sets e.content. The
-	// FilePushHeader still needs to ride as the next CBOR segment because
-	// that's what the handler reads via e.segment(). q.Data is already
-	// CBOR-encoded so we ship it raw — the receiver's decoder reads it as
-	// the next value.
-	if len(q.Data) > 0 {
-		if werr := s.write_raw(q.Data); werr != nil {
-			return false
-		}
+	if s.writer == nil {
+		return false
 	}
 
-	// Stream the file body.
-	if err := file_push_send_body(s, q.File); err != nil {
-		// Same permanent-failure rule for the race where the file
-		// vanishes between the existence check above and the open.
+	// Open the body ONCE and size it from the OPEN fd, rewriting the header's
+	// Size to match. The file may have changed since it was stat'd at enqueue,
+	// and the receiver reads exactly header.Size bytes — so size and body must
+	// come from the same moment or they diverge (file grew: trailing bytes
+	// corrupt the stream framing; file shrank: receiver short-reads). A
+	// missing source is a permanent failure (the delete replicates separately
+	// and retrying can't succeed), so drop the row. (#14)
+	f, header, size, err := file_push_payload(q.File, q.Data)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			info("Queue file-push dropping %q: source file %q no longer exists", q.ID, q.File)
 			queue_drop(q.ID, "file-missing")
 			return true
 		}
-		debug("Queue file-push body send failed: %v", err)
+		debug("Queue file-push: cannot prepare body %q: %v", q.File, err)
 		return false
 	}
+	defer f.Close()
 
-	// Handler success was already signalled by the open ack at handshake
-	// time; if write_raw + file send succeeded, we're done.
+	// stream_open shipped the (empty) content map as the first post-ack
+	// segment; the (size-corrected) FilePushHeader rides as the next CBOR
+	// segment, which the handler reads via e.segment().
+	if len(header) > 0 {
+		if werr := s.write_raw(header); werr != nil {
+			return false
+		}
+	}
+
+	// Stream EXACTLY `size` bytes — the same count now stamped in the header.
+	// io.CopyN returns a short count + error if the file was truncated after
+	// the stat, so we never ship a body shorter than the header promised; the
+	// send fails and retries with a fresh stat.
+	if n, cerr := io.CopyN(s.writer, f, size); cerr != nil || n != size {
+		debug("Queue file-push: body send %q failed (%d/%d): %v", q.File, n, size, cerr)
+		return false
+	}
 	return true
 }
 
@@ -369,20 +381,31 @@ func decode_into(payload []byte, into any) error {
 	return cbor_decode_mode.Unmarshal(payload, into)
 }
 
-// file_push_send_body streams the file body to the wire.
-func file_push_send_body(s *Stream, path string) error {
+// file_push_payload opens the file to be pushed and sizes it from the OPEN
+// file descriptor, returning the fd plus a header whose Size matches that
+// just-read size. Taking size and body from the same open fd closes the
+// enqueue-stat vs send-body race (#14): header.Size always equals the number
+// of bytes the caller then streams (exactly `size`, via io.CopyN). The caller
+// owns the returned fd and must Close it.
+func file_push_payload(path string, original []byte) (*os.File, []byte, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open %q: %w", path, err)
+		return nil, nil, 0, err
 	}
-	defer f.Close()
-
-	if s.writer == nil {
-		return fmt.Errorf("stream not open for write")
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, 0, err
 	}
+	size := st.Size()
 
-	_, err = io.Copy(s.writer, f)
-	return err
+	header := original
+	var h FilePushHeader
+	if len(original) > 0 && decode_into(original, &h) == nil {
+		h.Size = size
+		header = cbor_encode(&h)
+	}
+	return f, header, size, nil
 }
 
 // split_services is a small helper to split a comma-separated services

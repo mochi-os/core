@@ -7,6 +7,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -232,5 +235,57 @@ func TestFilePushDropsMissingFile(t *testing.T) {
 	}
 	if has, _ := qdb.exists("select 1 from queue where id = 'fp-missing'"); has {
 		t.Error("queue row should be dropped when the source file is missing")
+	}
+}
+
+// TestFilePushPayloadSizesFromOpenFd (#14): the header Size is taken from the
+// open fd at send time and overrides any stale enqueue-time size, and the
+// returned fd streams exactly that many bytes — so header.Size always matches
+// the body the receiver reads.
+func TestFilePushPayloadSizesFromOpenFd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.bin")
+	body := []byte("hello world, this is the current body")
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Header as captured at enqueue, when the file was a DIFFERENT length.
+	original := cbor_encode(&FilePushHeader{User: "u", App: "a", Path: "f.bin", Size: 999})
+
+	f, header, size, err := file_push_payload(path, original)
+	if err != nil {
+		t.Fatalf("file_push_payload: %v", err)
+	}
+	defer f.Close()
+
+	if size != int64(len(body)) {
+		t.Fatalf("size = %d, want %d (current file length)", size, len(body))
+	}
+	var h FilePushHeader
+	if err := decode_into(header, &h); err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	if h.Size != int64(len(body)) {
+		t.Fatalf("header Size = %d, want %d (must match the file now, not the stale 999)", h.Size, len(body))
+	}
+	if h.Path != "f.bin" || h.User != "u" || h.App != "a" {
+		t.Fatalf("header non-size fields mangled: %+v", h)
+	}
+
+	// The fd streams exactly `size` bytes equal to the file contents.
+	got := make([]byte, size)
+	n, _ := io.ReadFull(f, got)
+	if int64(n) != size || string(got) != string(body) {
+		t.Fatalf("fd body = %q (n=%d), want %q", got[:n], n, body)
+	}
+}
+
+// TestFilePushPayloadMissingFile (#14): a vanished source surfaces as
+// fs.ErrNotExist so queue_send_file_push can drop the row (permanent failure).
+func TestFilePushPayloadMissingFile(t *testing.T) {
+	_, _, _, err := file_push_payload(filepath.Join(t.TempDir(), "nope.bin"), nil)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing-file error = %v, want fs.ErrNotExist", err)
 	}
 }

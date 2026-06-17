@@ -2098,14 +2098,21 @@ func replication_emit_lock(user, scope, database string) *sync.Mutex {
 // sequences are idempotent against late-arriving duplicates.
 func replication_sequence_next(user, scope string) int64 {
 	db := db_open("db/replication.db")
-	db.exec("insert or ignore into sequence (user, scope, next) values (?, ?, 0)", user, scope)
-	db.exec("update sequence set next = next + 1 where user=? and scope=?", user, scope)
-	if row, err := db.row("select next from sequence where user=? and scope=?", user, scope); err == nil && row != nil {
-		if v, ok := row["next"].(int64); ok {
-			return v
-		}
+	// Atomic allocate-and-return: one UPSERT...RETURNING increments the
+	// counter and reads it back in a single statement, so two callers can't
+	// both read the same pre-update value and hand out the same sequence.
+	// This is what makes callers OUTSIDE the per-stream emit mutex safe —
+	// notably replication_emit_pair_membership_change, which allocates a
+	// ("", "pair-membership") sequence with no mutex. (Mirrors the proven
+	// broadcast_next_local UPSERT.)
+	const allocate = "insert into sequence (user, scope, next) values (?, ?, 1) " +
+		"on conflict(user, scope) do update set next = sequence.next + 1 returning next"
+	var seq int64
+	if err := db.internal.QueryRow(allocate, user, scope).Scan(&seq); err != nil {
+		warn("Replication sequence_next: RETURNING failed for (user=%q, scope=%q): %v", user, scope, err)
+		return 0
 	}
-	return 0
+	return seq
 }
 
 // replication_tail_advance records `sequence` as the last op emitted
@@ -2227,19 +2234,16 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		return
 	}
 
-	// Serialise sequence allocation + tail advance per
-	// (user, scope, db). Both helpers use SELECT-then-UPDATE patterns
-	// that race when two goroutines emit concurrently: both read the
-	// same pre-update value, both write, both return the same prev
-	// or sequence. Receiver applies one op cleanly and silently drops
-	// the duplicate as "below cursor" - the stream chain corrupts and
-	// every subsequent op buffers forever waiting for the lost link.
-	// Surfaced on mochi2 as 668/272 entries stalled on feeds/projects;
-	// see task #93. The mutex covers the visible bug; the helpers'
-	// internal SELECT-then-UPDATE patterns should also be rewritten
-	// atomically (sequence_next via UPSERT...RETURNING; tail_advance
-	// via dual-column UPSERT...RETURNING the OLD value) as a follow-up
-	// so callers outside this critical section also stay safe.
+	// Serialise sequence allocation + tail advance per (user, scope, db).
+	// replication_sequence_next is now atomic on its own (UPSERT...RETURNING),
+	// so callers outside this mutex stay safe (e.g. the pair-membership emit).
+	// The mutex is still REQUIRED here, though: the (sequence, prev) PAIR must
+	// be allocated atomically per stream. Without it two emits could take
+	// seq 5 and 6 but advance the tail in the order 6-then-5, stamping seq 5's
+	// op with prev=6 and corrupting the chain — the failure that stalled
+	// mochi2 at 668/272 entries on feeds/projects (task #93). tail_advance has
+	// no caller outside this critical section, so its SELECT-then-UPSERT is
+	// safe under the mutex and needs no standalone-atomic rewrite.
 	stream := repl_op_stream(op)
 	stream_mu := replication_emit_lock(user, op.Scope, stream)
 	stream_mu.Lock()

@@ -390,6 +390,44 @@ func TestJournalCrashRecoveryReusesSequence(t *testing.T) {
 	}
 }
 
+// TestReplicationSequenceNextAtomic (#6): N goroutines allocating on the same
+// (user, scope) with NO mutex must each get a distinct sequence forming 1..N —
+// the property the UPSERT...RETURNING rewrite guarantees and the old
+// SELECT-then-UPDATE did not (it handed out duplicates under concurrency, the
+// pair-membership emit's latent race).
+func TestReplicationSequenceNextAtomic(t *testing.T) {
+	defer journal_test_dir(t, "u1", "testapp")()
+	replication_journal_tables_ensure() // creates the `sequence` table
+
+	const N = 50
+	seqs := make([]int64, N)
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			seqs[i] = replication_sequence_next("u1", "app")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := map[int64]bool{}
+	for _, s := range seqs {
+		if s == 0 {
+			t.Fatalf("allocation returned sequence 0")
+		}
+		if seen[s] {
+			t.Fatalf("duplicate sequence %d allocated under concurrency", s)
+		}
+		seen[s] = true
+	}
+	for i := int64(1); i <= N; i++ {
+		if !seen[i] {
+			t.Fatalf("sequence %d missing — not 1..N contiguous (got %v)", i, seqs)
+		}
+	}
+}
+
 // TestSQLIsMutating (#7) backs the guard that keeps mutations out of the
 // read-only row/rows/exists APIs (which don't journal the write).
 func TestSQLIsMutating(t *testing.T) {

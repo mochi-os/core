@@ -157,108 +157,108 @@ func db_create() {
 
 	// Settings
 	settings := db_open("db/settings.db")
-	settings.exec("create table settings ( name text not null primary key, value text not null )")
+	settings.exec("create table if not exists settings ( name text not null primary key, value text not null )")
 	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
 	// Documents: operator-customisable Markdown for server rules / terms / privacy.
 	// Bundled defaults live in core/server/documents/ (embedded); this table
 	// holds only operator overrides keyed by (name, language).
-	settings.exec("create table documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	settings.exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
 
 	// Users. `uid` is the globally-stable identifier used everywhere — for
 	// replication, cross-host data references, FK joins, and the on-disk
 	// `users/<uid>/` data directory. Callers supply the uid via the Go
 	// uid() helper at INSERT time; no triggers.
 	users := db_open("db/users.db")
-	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
-	users.exec("create unique index users_username on users (username)")
+	users.exec("create table if not exists users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
+	users.exec("create unique index if not exists users_username on users (username)")
 
 	// Services the user must re-link after a server move (restore). Populated
 	// at restore time from the bundle's linked.json; rows clear as the user
 	// re-links each on the destination. Drives the post-restore banner.
-	users.exec("create table relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
+	users.exec("create table if not exists relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
 
 	// Passkey credential definitions and sign count. Sign count is WebAuthn
 	// replay-prevention state and lives here so it survives sessions.db
 	// corruption. Only the cosmetic last-used timestamp lives in sessions.db.
-	users.exec("create table credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
-	users.exec("create index credentials_user on credentials(user)")
+	users.exec("create table if not exists credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create index if not exists credentials_user on credentials(user)")
 
 	// Recovery codes
-	users.exec("create table recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
-	users.exec("create index recovery_user on recovery(user)")
+	users.exec("create table if not exists recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
+	users.exec("create index if not exists recovery_user on recovery(user)")
 
 	// TOTP secrets
-	users.exec("create table totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
 
 	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
 	// Last-used timestamp lives in sessions.db.verifications so this cold
 	// reference store doesn't take a write on every OAuth login.
-	users.exec("create table oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
-	users.exec("create index oauth_user on oauth(user)")
+	users.exec("create table if not exists oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	users.exec("create index if not exists oauth_user on oauth(user)")
 
 	// API token definitions. Hot per-request "used" timestamp lives in
 	// sessions.db.accesses; here we keep just the definition so token loss
 	// doesn't follow sessions.db corruption.
-	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
-	users.exec("create index tokens_user on tokens(user)")
-	users.exec("create index tokens_app on tokens(app)")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create index if not exists tokens_user on tokens(user)")
+	users.exec("create index if not exists tokens_app on tokens(app)")
 
 	// Entities
-	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
-	users.exec("create index entities_fingerprint on entities(fingerprint)")
-	users.exec("create index entities_user on entities(user)")
-	users.exec("create index entities_parent on entities(parent)")
-	users.exec("create index entities_class on entities(class)")
-	users.exec("create index entities_name on entities(name)")
-	users.exec("create index entities_privacy on entities(privacy)")
-	users.exec("create index entities_published on entities(published)")
+	users.exec("create table if not exists entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create index if not exists entities_fingerprint on entities(fingerprint)")
+	users.exec("create index if not exists entities_user on entities(user)")
+	users.exec("create index if not exists entities_parent on entities(parent)")
+	users.exec("create index if not exists entities_class on entities(class)")
+	users.exec("create index if not exists entities_name on entities(name)")
+	users.exec("create index if not exists entities_privacy on entities(privacy)")
+	users.exec("create index if not exists entities_published on entities(published)")
 
 	// Sessions (login codes and sessions - transient auth data)
 	sessions := db_open("db/sessions.db")
-	sessions.exec("create table codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
-	sessions.exec("create index codes_expires on codes( expires )")
-	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
-	sessions.exec("create unique index sessions_code on sessions(code)")
-	sessions.exec("create index sessions_expires on sessions(expires)")
-	sessions.exec("create index sessions_user on sessions(user)")
+	sessions.exec("create table if not exists codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
+	sessions.exec("create index if not exists codes_expires on codes( expires )")
+	sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+	sessions.exec("create index if not exists sessions_expires on sessions(expires)")
+	sessions.exec("create index if not exists sessions_user on sessions(user)")
 
 	// WebAuthn ceremony sessions (temporary)
-	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create index ceremonies_expires on ceremonies(expires)")
+	sessions.exec("create table if not exists ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
+	sessions.exec("create index if not exists ceremonies_expires on ceremonies(expires)")
 
 	// Partial authentication sessions (for MFA)
-	sessions.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
-	sessions.exec("create index partial_expires on partial(expires)")
+	sessions.exec("create table if not exists partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
+	sessions.exec("create index if not exists partial_expires on partial(expires)")
 
 	// Step-up re-authentication proofs: short-lived single-use tokens
 	// earned by re-verifying the user's login factor(s) before a
 	// sensitive action. methods is the accrued set of factors verified.
-	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
-	sessions.exec("create index reauthentication_expires on reauthentication(expires)")
+	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create index if not exists reauthentication_expires on reauthentication(expires)")
 
 	// Last-login timestamps (kept here, not in users.db, so the cold reference
 	// store doesn't take a write on every login)
-	sessions.exec("create table logins (user text primary key, last integer not null)")
+	sessions.exec("create table if not exists logins (user text primary key, last integer not null)")
 
 	// Per-request token access timestamps. Split out of users.db.tokens so the
 	// every-request "used" write doesn't land on the cold reference store, but
 	// the token definitions themselves stay in users.db so token loss doesn't
 	// follow sessions.db corruption. `user` duplicated here for cascade.
-	sessions.exec("create table accesses (hash text primary key not null, user text not null, used integer not null default 0)")
-	sessions.exec("create index accesses_user on accesses(user)")
+	sessions.exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
+	sessions.exec("create index if not exists accesses_user on accesses(user)")
 
 	// Cosmetic last-used timestamp per passkey. Sign count (replay-prevention
 	// state) stays in users.db.credentials; only the cosmetic stat lives here.
-	sessions.exec("create table passkeys (credential blob primary key, user text not null, last integer not null default 0)")
-	sessions.exec("create index passkeys_user on passkeys(user)")
+	sessions.exec("create table if not exists passkeys (credential blob primary key, user text not null, last integer not null default 0)")
+	sessions.exec("create index if not exists passkeys_user on passkeys(user)")
 
 	// OAuth verification state (last time each linked identity was used to log
 	// in). Split from users.db.oauth so per-login writes don't land on the cold
 	// reference store. `oauth` references users.db.oauth(id); `user` duplicated
 	// here for cascade.
-	sessions.exec("create table verifications (oauth integer primary key, user text not null, last integer not null default 0)")
-	sessions.exec("create index verifications_user on verifications(user)")
+	sessions.exec("create table if not exists verifications (oauth integer primary key, user text not null, last integer not null default 0)")
+	sessions.exec("create index if not exists verifications_user on verifications(user)")
 
 	// Directory. One row per (entity, peer): each row is one host's listing
 	// of one entity, asserted by that host alone. There are no global rows;
@@ -268,21 +268,21 @@ func db_create() {
 	// signature over the claim, so any row can be re-served and verified
 	// regardless of how it arrived.
 	directory := db_open("db/directory.db")
-	directory.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
-	directory.exec("create index entries_name on entries( name )")
-	directory.exec("create index entries_class on entries( class )")
-	directory.exec("create index entries_fingerprint on entries( fingerprint )")
-	directory.exec("create index entries_peer on entries( peer )")
-	directory.exec("create index entries_seen on entries( seen )")
-	directory.exec("create index entries_created on entries( created )")
+	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	directory.exec("create index if not exists entries_name on entries( name )")
+	directory.exec("create index if not exists entries_class on entries( class )")
+	directory.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
+	directory.exec("create index if not exists entries_peer on entries( peer )")
+	directory.exec("create index if not exists entries_seen on entries( seen )")
+	directory.exec("create index if not exists entries_created on entries( created )")
 
 	// Peers
 	peers := db_open("db/peers.db")
-	peers.exec("create table peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
+	peers.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
 	// Claimed display names per peer with their verification verdict
-	peers.exec("create table names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
+	peers.exec("create table if not exists names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
 	// Latest signed peer record per peer: self-certifying addresses
-	peers.exec("create table records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
+	peers.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
 
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
@@ -313,89 +313,89 @@ func db_create() {
 
 	// Apps (for multi-version and user-configurable routing)
 	apps := db_open("db/apps.db")
-	apps.exec("create table classes (class text not null primary key, app text not null)")
-	apps.exec("create table services (service text not null primary key, app text not null)")
-	apps.exec("create table paths (path text not null primary key, app text not null)")
-	apps.exec("create table versions (app text not null primary key, version text, track text)")
-	apps.exec("create table tracks (app text not null, track text not null, version text not null, primary key (app, track))")
-	apps.exec("create table apps (app text not null primary key, installed integer not null)")
+	apps.exec("create table if not exists classes (class text not null primary key, app text not null)")
+	apps.exec("create table if not exists services (service text not null primary key, app text not null)")
+	apps.exec("create table if not exists paths (path text not null primary key, app text not null)")
+	apps.exec("create table if not exists versions (app text not null primary key, version text, track text)")
+	apps.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
+	apps.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
 
 	// Scheduled events
 	schedule := db_open("db/schedule.db")
-	schedule.exec("create table schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
-	schedule.exec("create index schedule_due on schedule(due)")
-	schedule.exec("create index schedule_app_event on schedule(app, event)")
+	schedule.exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+	schedule.exec("create index if not exists schedule_due on schedule(due)")
+	schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
 
 	// Replication: per-origin-peer dedup, schema-coordination buffer,
 	// per-user opt-in set, outbound sequence counters, server-pair members,
 	// lease-based leadership with fencing, bulk-bootstrap progress, paired
 	// server compatibility tracking. See claude/plans/replication.md.
 	replication := db_open("db/replication.db")
-	replication.exec("create table seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
-	replication.exec("create index seen_applied on seen(applied)")
-	replication.exec("create table pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
-	replication.exec("create index pending_received on pending(received)")
-	replication.exec("create index pending_chain on pending(peer, scope, user, db, prev)")
+	replication.exec("create table if not exists seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+	replication.exec("create index if not exists seen_applied on seen(applied)")
+	replication.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+	replication.exec("create index if not exists pending_received on pending(received)")
+	replication.exec("create index if not exists pending_chain on pending(peer, scope, user, db, prev)")
 	// relayed: cross-hop dedup for the transit relay - one row per origin
 	// op this host has applied-and-relayed, so a copy arriving by another
 	// path (or bouncing back) is dropped instead of re-relayed forever.
-	replication.exec("create table relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
-	replication.exec("create index relayed_seen on relayed(seen)")
+	replication.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
+	replication.exec("create index if not exists relayed_seen on relayed(seen)")
 	// hosts: a user's per-user replica set, one row per hosting peer. Each
 	// row is that peer's self-assertion that it hosts the user, carrying its
 	// libp2p-key attestation and a `seen` refresh timestamp. A peer can only
 	// add or remove its own membership; rows age out when un-refreshed.
-	replication.exec("create table hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, seen integer not null default 0, attestation text not null default '', primary key (user, peer))")
-	replication.exec("create table sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	replication.exec("create table if not exists hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, seen integer not null default 0, attestation text not null default '', primary key (user, peer))")
+	replication.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
 	// cursor: the contiguous in-order apply watermark per inbound
 	// (peer, scope, user, db) stream. Each op chains onto its db
 	// stream via op.Prev so a same-row op chain can't be reordered
 	// by a backlog drain. See claude/plans/replication-test.md
 	// Stage 19.
-	replication.exec("create table cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	replication.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
 	// tail: sender-side last-emitted sequence per (user, scope, db),
 	// stamped onto each outbound op as Prev — the per-db ordering chain.
-	replication.exec("create table tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
-	replication.exec("create table pair (peer text primary key, added integer not null, role text not null default '')")
-	replication.exec("create table leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
-	replication.exec("create index leadership_expires on leadership(expires)")
-	replication.exec("create table fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
-	replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
+	replication.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+	replication.exec("create table if not exists pair (peer text primary key, added integer not null, role text not null default '')")
+	replication.exec("create table if not exists leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
+	replication.exec("create index if not exists leadership_expires on leadership(expires)")
+	replication.exec("create table if not exists fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
+	replication.exec("create table if not exists bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
 	// bootstrap_served: source-side tracking of scopes we're currently
 	// serving to each joined peer. Inserted on join approval (one row
 	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
 	// Symmetry with the receiver's `bootstrap` table — the receiver
 	// sees "syncing" while it pulls; the source sees "syncing" while
 	// these rows exist.
-	replication.exec("create table bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
-	replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
+	replication.exec("create table if not exists bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
+	replication.exec("create table if not exists schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
 	// Per-user link-requests awaiting Approve / Deny in Settings → Replication.
 	// One row per (target user on this host, source peer); newest wins via
 	// INSERT OR REPLACE. Expiry is 1h from receipt; periodic sweep emits
 	// link-denied(reason="expired") to the source side. See "Per-user trigger"
 	// in claude/plans/replication.md.
-	replication.exec("create table links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
-	replication.exec("create index links_expires on links(expires)")
+	replication.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+	replication.exec("create index if not exists links_expires on links(expires)")
 	// Whole-server pair join-requests awaiting Approve / Deny on the Pair
 	// page. One row per source peer; newest wins via INSERT OR REPLACE.
 	// Expiry is 10 minutes from receipt; periodic sweep emits
 	// join-denied(reason="expired") to the replica. See "Operator UI" in
 	// claude/plans/replication.md.
-	replication.exec("create table joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
-	replication.exec("create index joins_expires on joins(expires)")
+	replication.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
+	replication.exec("create index if not exists joins_expires on joins(expires)")
 	// irreparable: a stream broken (stalled on an unfillable gap, or a
 	// member offline) past T_forget, when no lossless recovery remains.
 	// One row per (peer, scope, user, db); `notified` flips to 1 once the
 	// dual-side notification has fired so the manager neither re-notifies
 	// nor keeps warning. Cleared when the stream recovers or the operator
 	// removes the relationship. See replication_irreparable.go.
-	replication.exec("create table irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
+	replication.exec("create table if not exists irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
 	// unreachable: persisted "this peer's Sender has been failing to deliver
 	// since `since`" — set when a peer crosses the stall threshold, cleared on
 	// the next ack. notified guards the 24h offline notification. Survives
 	// restarts so a member offline past T_forget is recognised even across
 	// server bounces. See peer_progress.go + replication_irreparable.go.
-	replication.exec("create table unreachable (peer text not null primary key, since integer not null, notified integer not null default 0)")
+	replication.exec("create table if not exists unreachable (peer text not null primary key, since integer not null, notified integer not null default 0)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed.

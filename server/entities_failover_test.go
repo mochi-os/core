@@ -18,9 +18,9 @@ func add_directory_location_for_failover(t *testing.T, entity, peer string, seen
 }
 
 // TestEntityPeersFailoverActiveFirst — active peers (seen within the
-// active window) come before stale ones, ordered oldest-seen first
-// within the active set so the most stably-running replica gets the
-// initial attempt.
+// active window) come before stale ones, ordered most-recently-seen
+// first within the active set so the freshest (most-likely-alive and
+// up-to-date) replica gets the initial attempt.
 func TestEntityPeersFailoverActiveFirst(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -35,7 +35,7 @@ func TestEntityPeersFailoverActiveFirst(t *testing.T) {
 	add_directory_location_for_failover(t, entity, "peer-stale", now_ts-3*86400)    // 3 days ago
 
 	got := entity_peers_failover(entity)
-	want := []string{"peer-old-but-active", "peer-mid", "peer-recent", "peer-stale"}
+	want := []string{"peer-recent", "peer-mid", "peer-old-but-active", "peer-stale"}
 	if len(got) != len(want) {
 		t.Fatalf("len(got)=%d, want %d (got=%v)", len(got), len(want), got)
 	}

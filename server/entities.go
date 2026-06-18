@@ -308,10 +308,12 @@ func entity_peers(id string) []string {
 // stream / RPC failover.
 //
 // Tier 1 — "active": peers whose `seen` is within 2× the entity
-// republish interval (2 hours). They're presumed alive; among them
-// the row with the OLDEST `seen` comes first (the most stably-running
-// replica, not the one that just republished). Sticky-ish ordering
-// reduces routing chatter without hard-pinning.
+// republish interval (2 hours). They're presumed alive; among them the
+// MOST-recently-attested comes first — freshest liveness, hence the most
+// likely to be both up and running current code/data. (Preferring the
+// oldest `seen` here once steered clients onto a lagging replica that had
+// stopped updating; browser affinity is handled by the sticky-session
+// cookie, not this order.)
 //
 // Tier 2 — "stale but not aged out": peers with seen older than the
 // active window but still within the 30-day directory retention.
@@ -327,7 +329,7 @@ func entity_peers_failover(id string) []string {
 	active_cutoff := now_ts - directory_active_window
 	stale_cutoff := now_ts - 30*86400
 
-	active, _ := db.rows("select peer from entries where entity=? and peer!=? and seen > ? order by seen asc", id, net_id, active_cutoff)
+	active, _ := db.rows("select peer from entries where entity=? and peer!=? and seen > ? order by seen desc", id, net_id, active_cutoff)
 	stale, _ := db.rows("select peer from entries where entity=? and peer!=? and seen > ? and seen <= ? order by seen desc", id, net_id, stale_cutoff, active_cutoff)
 
 	seen_peer := map[string]bool{}

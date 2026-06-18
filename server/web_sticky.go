@@ -43,6 +43,18 @@ func web_sticky_session(c *gin.Context) {
 		return
 	}
 
+	// Skip cross-site requests. The sandboxed app iframe has an opaque origin,
+	// so its sub-resource (avatar/thumbnail/photo) and API requests are
+	// cross-site; the browser rejects a SameSite=Lax Set-Cookie in that context
+	// (and never sends the cookie back on such requests), so stamping is futile
+	// — it just floods the console with "cookie rejected … cross-site" warnings
+	// and can't pin anything. Sticky pinning only works for, and only matters
+	// for, same-site top-level navigations, which still get stamped below.
+	if c.GetHeader("Sec-Fetch-Site") == "cross-site" {
+		c.Next()
+		return
+	}
+
 	// Either the cookie is unset, names this peer (no-op above), or
 	// names a different peer. In the third case we need to decide
 	// whether to keep the cookie (it points at a known pair member —

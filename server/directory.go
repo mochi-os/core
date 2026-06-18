@@ -490,7 +490,12 @@ func directory_sync_event(e *Event) {
 	}
 	for _, en := range results {
 		if err := e.stream.write(en); err != nil {
-			warn("Directory write error for %q: %v", en.Entity, err)
+			// Routine: the peer that requested this sync closed the stream
+			// early (it reconnected, already had what it needed, or the
+			// connection flapped). Same class of transient as the
+			// open-failure and read-EOF paths above, so debug — not an
+			// admin-emailing warn.
+			debug("Directory sync to %q interrupted (peer closed stream): %v", en.Entity, err)
 			return
 		}
 	}

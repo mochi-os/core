@@ -5458,3 +5458,33 @@ func TestSystemRowApplySettingsDocumentsMissingKey(t *testing.T) {
 		t.Errorf("missing-language op should not write; got %d rows", len(rows))
 	}
 }
+
+// TestReplicationExecIdempotentReapply: a UNIQUE failure on the uid PK ("id") is
+// classified as a benign idempotent re-apply (debug, advance); a UNIQUE failure
+// on a SECONDARY column, and unrelated errors, are not — they stay warn().
+func TestReplicationExecIdempotentReapply(t *testing.T) {
+	benign := []string{
+		"sqlite3: constraint failed: UNIQUE constraint failed: threads.id",
+		"UNIQUE constraint failed: posts.id",
+	}
+	for _, m := range benign {
+		if !replication_exec_idempotent_reapply(fmt.Errorf("%s", m)) {
+			t.Errorf("expected benign re-apply for %q", m)
+		}
+	}
+	notBenign := []string{
+		"UNIQUE constraint failed: accounts.email", // secondary unique — possible real conflict
+		"UNIQUE constraint failed: members.handle",
+		"FOREIGN KEY constraint failed",
+		"no such column: updated",
+		"",
+	}
+	for _, m := range notBenign {
+		if replication_exec_idempotent_reapply(fmt.Errorf("%s", m)) {
+			t.Errorf("did not expect benign re-apply for %q", m)
+		}
+	}
+	if replication_exec_idempotent_reapply(nil) {
+		t.Error("nil error must not be a re-apply")
+	}
+}

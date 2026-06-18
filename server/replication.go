@@ -2465,6 +2465,22 @@ func replication_exec_forward_incompatible(err error) bool {
 		strings.Contains(msg, "has no column named")
 }
 
+// replication_exec_idempotent_reapply reports whether an apply error is a UNIQUE
+// constraint failure on the uid primary key ("<table>.id"). Under at-least-once
+// delivery and the bootstrap-live overlap window a create op can legitimately
+// re-arrive for a row that's already present; with uid PKs that's the SAME row
+// (uids don't collide), so the row is already in the desired state and the op is
+// idempotently applied. A UNIQUE failure on a SECONDARY column is NOT treated as
+// benign — it can be a genuine cross-host conflict — so it is left to warn() and
+// #29's convergence audit.
+func replication_exec_idempotent_reapply(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed:") && strings.Contains(msg, ".id")
+}
+
 // replication_deadletter records a forward-incompatible op that this host
 // can't apply: an audit-trail entry (greppable by scope/user/db/sequence,
 // the same way audit_replication_pending_purged records dropped pending
@@ -3463,6 +3479,16 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 		}
 		if replication_exec_forward_incompatible(err) {
 			replication_deadletter(op, cmd.Statement, err.Error())
+			return ApplyApplied
+		}
+		if replication_exec_idempotent_reapply(err) {
+			// A replicated INSERT that hits UNIQUE on the uid primary key means
+			// the row is already present — an expected idempotent re-apply under
+			// at-least-once delivery and the bootstrap-live overlap window. The
+			// row is in the desired state, so advance (as below) but debug, not
+			// an admin-emailing warn. A UNIQUE failure on a SECONDARY column is
+			// left to warn — it can be a genuine cross-host conflict.
+			debug("Replication exec idempotent re-apply (row already present): user=%q app=%q sql=%q", op.User, op.Database, cmd.Statement)
 			return ApplyApplied
 		}
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)

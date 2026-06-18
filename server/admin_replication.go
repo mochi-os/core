@@ -268,6 +268,18 @@ func admin_replication_reseed(c *gin.Context) {
 	})
 }
 
+// admin_replication_audit is GET /_/admin/replication/audit. Surfaces the
+// convergence audit's current findings: installed apps running stale on-disk
+// code (apps.db claims a version that has no directory on disk — e.g. a
+// restricted app frozen on a replica) and cross-host content divergences
+// confirmed stable across audit rounds.
+func admin_replication_audit(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"stale":       replication_stale_apps(),
+		"divergences": replication_audit_divergences(),
+	})
+}
+
 // admin_replication_progress is GET /_/admin/replication/progress.
 // Returns the per-(peer, scope) bulk-bootstrap progress as
 // {"rows": [{"peer", "scope", "state", "position"}, ...]}. Same data

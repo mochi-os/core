@@ -298,6 +298,9 @@ func init() {
 	a.event_anonymous("link/denied", replication_link_denied_event)
 	a.event_anonymous("lookup/freshness", replication_freshness_probe_event)
 	a.event_anonymous("lookup/user", replication_user_lookup_event)
+	// Cross-host convergence audit (see replication_audit.go): a member
+	// answers with its per-stream replicated-row-count manifest.
+	a.event_anonymous("audit/manifest", replication_audit_manifest_event)
 	// Whole-server pair join-request flow (see replication_join.go).
 	// Server-to-server: a fresh replica has no entities at all.
 	a.event_anonymous("join/request", replication_join_request_event)
@@ -828,6 +831,8 @@ func replication_manager() {
 			replication_offline_scan()
 			replication_pending_gc()
 			replication_health_scan()
+			replication_stale_apps_scan()
+			replication_convergence_audit()
 			last_gc = now()
 		}
 	}

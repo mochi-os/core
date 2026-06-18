@@ -203,6 +203,12 @@ func init() {
 			help: "Re-seed ONE stalled stream's DB from a source peer on a live populated replica (targeted alternative to a full 'replica reset'). Refuses if the local DB has un-shipped local writes unless --force. Args: <peer-id> <db-path> [--force]",
 			run:  cmd_replication_reseed,
 		},
+		"replication audit": {
+			help: "Convergence audit findings: apps running stale on-disk code (apps.db claims a version not on disk, e.g. a restricted app frozen on a replica) + cross-host content divergences confirmed stable across rounds",
+			run: func(args []string) error {
+				return get_dump("/_/admin/replication/audit", "stale", "divergences")
+			},
+		},
 		"broadcast lag": {
 			help: "Per-(user, app, peer, key) broadcast subscriber lag (received_last vs owner _log.max when this host owns the stream)",
 			run:  cmd_broadcast_lag,

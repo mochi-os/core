@@ -1249,6 +1249,22 @@ func web_login_identity(c *gin.Context) {
 		return
 	}
 
+	// Persist the language the user explicitly chose before signup as their
+	// language preference, so the Settings page and layout direction match the
+	// UI they already see. The explicit pick lives in the `mochi_language`
+	// cookie the web LanguagePicker writes; a browser whose only signal is
+	// Accept-Language sets no cookie and stays on auto-detect, which is correct.
+	// Only set it when the user has no explicit preference yet, and never the
+	// "auto" sentinel.
+	if cookie, cerr := c.Cookie("mochi_language"); cerr == nil && cookie != "" {
+		tag := strings.ToLower(cookie)
+		if tag != "auto" && valid(tag, "locale") {
+			if pref := strings.ToLower(user_preference_get(u, "language", "")); pref == "" || pref == "auto" {
+				user_preference_set(u, "language", tag)
+			}
+		}
+	}
+
 	// Simple notification hook. Deduped per (admin_address, new_user_uid)
 	// so two replicas processing the same signup don't email the admin
 	// twice.

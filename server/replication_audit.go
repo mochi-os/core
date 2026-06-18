@@ -163,15 +163,18 @@ type AuditManifestRequest struct {
 	Scope string `cbor:"scope,omitempty"`
 }
 
-// AuditStream is one stream's content fingerprint: the (user, stream) key (same
-// keying as the apply cursor, so two hosts' manifests line up) and the total
-// rows across the DB's REPLICATED tables. The journal and broadcast bookkeeping
-// are host-local and excluded via audit_table_replicates, so equal applied
-// ops ⇒ equal count.
+// AuditStream is one stream's fingerprint: the (user, stream) key (same keying
+// as the apply cursor and the tail, so two hosts' manifests line up), the total
+// rows across the DB's REPLICATED tables (journal + broadcast bookkeeping
+// excluded via audit_table_replicates, so equal applied ops ⇒ equal count), and
+// Tail — this host's highest emitted sequence for the stream, 0 if it doesn't
+// originate it. The receiver compares its cursor against the originator's Tail
+// to detect a stream that has stopped advancing (see replication_audit_liveness).
 type AuditStream struct {
 	User   string `cbor:"user"`
 	Stream string `cbor:"stream"`
 	Count  int64  `cbor:"count"`
+	Tail   int64  `cbor:"tail,omitempty"`
 }
 
 type AuditManifestResult struct {
@@ -198,7 +201,13 @@ func replication_audit_local_manifest() []AuditStream {
 		if count < 0 {
 			continue
 		}
-		out = append(out, AuditStream{User: e.User, Stream: bootstrap_stream_key(rel), Count: count})
+		stream := bootstrap_stream_key(rel)
+		out = append(out, AuditStream{
+			User:   e.User,
+			Stream: stream,
+			Count:  count,
+			Tail:   replication_tail(e.User, repl_scope_app, stream),
+		})
 	}
 	return out
 }
@@ -296,19 +305,23 @@ func audit_manifest_map(streams []AuditStream) map[string]int64 {
 }
 
 var (
-	audit_convergence_mutex         sync.Mutex
-	audit_last          int64
-	audit_previous      = map[string]int64{}            // this host, previous round
-	audit_peer_previous = map[string]map[string]int64{} // peer -> previous round's counts
-	audit_alerted       = map[string]bool{}             // "peer|user|stream" -> alerted
+	audit_convergence_mutex sync.Mutex
+	audit_last              int64
+	audit_previous          = map[string]int64{}            // this host, previous round
+	audit_peer_previous     = map[string]map[string]int64{} // peer -> previous round's counts
+	audit_alerted           = map[string]bool{}             // "peer|user|stream" -> divergence-alerted
+	audit_cursor_previous   = map[string]int64{}            // "peer|user|stream" -> apply cursor at previous round
+	audit_liveness_alerted  = map[string]bool{}             // "peer|user|stream" -> not-advancing-alerted
 )
 
 // replication_convergence_audit runs on the manager tick but throttles itself to
-// audit_period_seconds and is leader-gated per pair so only one member runs the
-// comparison. For each member it fetches a content manifest and compares to its
-// own — but ONLY for streams whose count is STABLE (unchanged since the previous
-// round) on BOTH hosts. An actively-replicating stream's count is still moving,
-// so it's skipped; a stable-but-unequal count is real divergence, not lag.
+// audit_period_seconds. For each pair member it fetches a manifest and runs two
+// checks. (1) Liveness (both sides, every round): is this host's apply cursor
+// keeping up with the peer's emitted tail? — see replication_audit_liveness.
+// (2) Content divergence (leader-gated so it emails once): compares row counts,
+// but ONLY for streams whose count is STABLE on BOTH hosts since the previous
+// round — an actively-replicating stream is still moving and is skipped, while a
+// stable-but-unequal count is real divergence, not lag.
 func replication_convergence_audit() {
 	if now()-audit_last < audit_period_seconds {
 		return
@@ -332,13 +345,21 @@ func replication_convergence_audit() {
 		if peer == "" {
 			continue
 		}
-		// Only one side runs the comparison so a divergence emails the admin once.
-		if !replication_leader_claim("audit", peer, false) {
-			continue
-		}
 		remote, err := replication_audit_request_manifest(peer)
 		if err != nil {
 			info("Replication audit: manifest fetch from %q failed: %v", peer, err)
+			continue
+		}
+
+		// Liveness runs on BOTH sides (no leader gate): each host audits its OWN
+		// receive direction against the peer's emitted tail, so a replica that
+		// has silently stopped catching up to the primary — the case the stall
+		// alert can't see — is actually covered.
+		replication_audit_liveness(peer, remote)
+
+		// The content-divergence compare is leader-gated so one divergence emails
+		// the admin once, not from both members.
+		if !replication_leader_claim("audit", peer, false) {
 			continue
 		}
 		remoteMap := audit_manifest_map(remote)
@@ -349,6 +370,48 @@ func replication_convergence_audit() {
 		audit_convergence_mutex.Unlock()
 
 		replication_audit_compare(peer, local, prevLocal, remoteMap, prevRemote)
+	}
+}
+
+// replication_audit_liveness flags a stream this host RECEIVES from `peer` whose
+// apply cursor is below the peer's emitted tail AND has not advanced since the
+// previous round — the host should be catching up but isn't. This closes the gap
+// neither other check sees: a stream that silently stops with no pending buffer
+// (so the stall alert #3 is blind) while the peer keeps emitting (so the content
+// audit's stability gate skips it). A stream that is behind but still advancing
+// is just lag and does not alert; confirmation needs two rounds (the first
+// sighting only records the cursor), and the alert re-arms once the stream
+// catches up or resumes progress.
+func replication_audit_liveness(peer string, remote []AuditStream) {
+	rdb := db_open("db/replication.db")
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
+	stuck := map[string]bool{}
+	for _, s := range remote {
+		if s.Tail <= 0 {
+			continue // peer doesn't originate this stream — nothing to keep up with
+		}
+		key := peer + "|" + s.User + "|" + s.Stream
+		cursor, _ := replication_cursor(rdb, peer, repl_scope_app, s.User, s.Stream)
+		prev, seen := audit_cursor_previous[key]
+		audit_cursor_previous[key] = cursor
+		if cursor >= s.Tail {
+			continue // caught up to the peer's tail
+		}
+		if !seen || cursor != prev {
+			continue // first sighting, or still advancing — lag, not stuck
+		}
+		stuck[key] = true
+		if !audit_liveness_alerted[key] {
+			audit_liveness_alerted[key] = true
+			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, and no pending buffer to trip the stall alert). Investigate; a targeted re-seed (mochictl replication reseed) may recover it.",
+				s.User, s.Stream, peer, cursor, s.Tail, s.Tail-cursor)
+		}
+	}
+	for key := range audit_liveness_alerted {
+		if strings.HasPrefix(key, peer+"|") && !stuck[key] {
+			delete(audit_liveness_alerted, key)
+		}
 	}
 }
 
@@ -395,6 +458,20 @@ func replication_audit_divergences() []string {
 	defer audit_convergence_mutex.Unlock()
 	out := make([]string, 0, len(audit_alerted))
 	for k := range audit_alerted {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// replication_audit_stuck_streams returns the streams currently alerted as not
+// advancing — apply cursor stuck below the peer's emitted tail — for the status
+// endpoint.
+func replication_audit_stuck_streams() []string {
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
+	out := make([]string, 0, len(audit_liveness_alerted))
+	for k := range audit_liveness_alerted {
 		out = append(out, k)
 	}
 	sort.Strings(out)

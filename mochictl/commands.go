@@ -206,7 +206,7 @@ func init() {
 		"replication audit": {
 			help: "Convergence audit findings: apps running stale on-disk code (apps.db claims a version not on disk, e.g. a restricted app frozen on a replica) + cross-host content divergences confirmed stable across rounds",
 			run: func(args []string) error {
-				return get_dump("/_/admin/replication/audit", "stale", "divergences")
+				return get_dump("/_/admin/replication/audit", "stale", "divergences", "stuck")
 			},
 		},
 		"broadcast lag": {

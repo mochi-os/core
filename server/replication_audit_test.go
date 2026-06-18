@@ -144,3 +144,96 @@ func TestReplicationAuditCompare(t *testing.T) {
 		t.Fatal("converged stream should clear its alert (re-arm)")
 	}
 }
+
+// TestReplicationAuditLiveness (#liveness): a stream whose apply cursor is below
+// the peer's emitted tail AND frozen since the previous round alerts as "not
+// advancing"; one that is behind but still advancing (lag), caught up, or not
+// originated by the peer (tail 0) does not; and the alert re-arms on catch-up.
+func TestReplicationAuditLiveness(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() {
+		data_dir = orig
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+
+	peer, stream := "peerP", "app:feeds"
+	setCursor := func(seq int64) {
+		rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, ?, 'u1', ?, ?) on conflict(peer, scope, user, db) do update set sequence=excluded.sequence",
+			peer, repl_scope_app, stream, seq)
+	}
+	manifest := func(tail int64) []AuditStream { return []AuditStream{{User: "u1", Stream: stream, Tail: tail}} }
+	alerted := func() bool {
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
+		return audit_liveness_alerted[peer+"|u1|"+stream]
+	}
+	reset := func() {
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}
+
+	// Behind + frozen -> alert (only after a second round confirms the freeze).
+	reset()
+	setCursor(100)
+	replication_audit_liveness(peer, manifest(200))
+	if alerted() {
+		t.Fatal("first round must not alert (freeze needs a second round)")
+	}
+	replication_audit_liveness(peer, manifest(200))
+	if !alerted() {
+		t.Fatal("behind + frozen should alert")
+	}
+
+	// Behind but advancing (lag) -> no alert.
+	reset()
+	setCursor(100)
+	replication_audit_liveness(peer, manifest(200))
+	setCursor(150)
+	replication_audit_liveness(peer, manifest(200))
+	if alerted() {
+		t.Fatal("advancing stream (lag, not stuck) should not alert")
+	}
+
+	// Caught up -> no alert.
+	reset()
+	setCursor(200)
+	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, manifest(200))
+	if alerted() {
+		t.Fatal("caught-up stream should not alert")
+	}
+
+	// Peer doesn't originate it (tail 0) -> no alert.
+	reset()
+	setCursor(100)
+	replication_audit_liveness(peer, manifest(0))
+	replication_audit_liveness(peer, manifest(0))
+	if alerted() {
+		t.Fatal("stream not originated by peer (tail 0) should not alert")
+	}
+
+	// Re-arm: alerted, then catches up -> alert cleared.
+	reset()
+	setCursor(100)
+	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, manifest(200))
+	if !alerted() {
+		t.Fatal("setup: should be alerted")
+	}
+	setCursor(200)
+	replication_audit_liveness(peer, manifest(200))
+	if alerted() {
+		t.Fatal("catching up should clear the liveness alert (re-arm)")
+	}
+}

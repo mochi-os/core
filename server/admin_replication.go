@@ -277,6 +277,7 @@ func admin_replication_audit(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"stale":       replication_stale_apps(),
 		"divergences": replication_audit_divergences(),
+		"stuck":       replication_audit_stuck_streams(),
 	})
 }
 

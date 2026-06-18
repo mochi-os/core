@@ -220,6 +220,7 @@ func replication_journal_tables_ensure() {
 	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
 	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
 	rdb.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
+	rdb.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
 	replication_journal_tables_ensured.Store(rdb.path, struct{}{})
 }
 
@@ -351,6 +352,7 @@ func journal_ship_real(userUID string, op *ReplicationOp, peers []string) {
 		return
 	}
 
+	stream := repl_op_stream(op)
 	for _, peer := range peers {
 		if irreparable_emit_skip(userUID, peer) {
 			continue
@@ -358,6 +360,10 @@ func journal_ship_real(userUID string, op *ReplicationOp, peers []string) {
 		m := message(from, from, "replication", "sql/op")
 		m.add(op)
 		m.send_peer(peer)
+		// Record the in-flight op so the transport ack can advance this peer's
+		// delivery cursor (#28) — lets the reconnect backfill ship only the
+		// delta above what the peer has already confirmed.
+		journal_inflight_record(m.ID, userUID, peer, stream, op.Sequence)
 	}
 }
 
@@ -514,6 +520,7 @@ func journal_sweep() {
 			}
 		}
 	}
+	journal_inflight_sweep() // drop inflight rows whose message never acked (#28)
 }
 
 // Retention bounds for shipped journal ops. A shipped op is kept so a
@@ -602,6 +609,11 @@ func journal_backfill_peer(userUID, peer string) {
 		return
 	}
 	rdb := db_open("db/replication.db")
+	// Delivery cursor per stream, read once at the start of the backfill (#28):
+	// ship only ops above what the peer has already confirmed, instead of the
+	// whole retained window. The receiver still dedups, so a stale cursor only
+	// costs a few redundant re-ships, never correctness.
+	cursors := map[string]int64{}
 	for _, ae := range apps {
 		if !ae.IsDir() {
 			continue
@@ -623,6 +635,15 @@ func journal_backfill_peer(userUID, peer string) {
 					continue
 				}
 				op.Sequence, op.Prev = seq, prev
+				stream := repl_op_stream(op)
+				cur, seen := cursors[stream]
+				if !seen {
+					cur = journal_delivery_cursor(rdb, userUID, peer, stream)
+					cursors[stream] = cur
+				}
+				if op.Sequence <= cur {
+					continue // peer already confirmed this op
+				}
 				if replication_op_self_anchoring(op) {
 					op.Prev = 0
 				}

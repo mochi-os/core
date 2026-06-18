@@ -75,7 +75,10 @@ func thumbnail_create(path string) (string, error) {
 
 	i, format, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
-		warn("Unable to decode image file %q to create thumbnail: %v", path, err)
+		// A decode failure reflects the input bytes (corrupt/truncated upload, or
+		// an image-extensioned file in a format the decoder doesn't support), not
+		// an admin-actionable server fault, so info() rather than warn() (no email).
+		info("Unable to decode image file %q to create thumbnail: %v", path, err)
 		return "", err
 	}
 

@@ -1761,7 +1761,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		return true
 	}
 
-	if thumbnail {
+	if thumbnail && is_image(att.Name) {
 		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
 			c.File(thumb)
 			return true

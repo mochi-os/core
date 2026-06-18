@@ -1402,6 +1402,11 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl.None, nil
 	}
 
+	// Only images have thumbnails; decoding a video/PDF/etc would fail
+	if !is_image(att.Name) {
+		return sl.None, nil
+	}
+
 	path := filepath.Join(data_dir, attachment_path(owner.UID, app.id, att.ID, att.Name))
 	thumb, err := thumbnail_create(path)
 	if err != nil || thumb == "" {

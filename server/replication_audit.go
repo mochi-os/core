@@ -296,7 +296,7 @@ func audit_manifest_map(streams []AuditStream) map[string]int64 {
 }
 
 var (
-	audit_mutex         sync.Mutex
+	audit_convergence_mutex         sync.Mutex
 	audit_last          int64
 	audit_previous      = map[string]int64{}            // this host, previous round
 	audit_peer_previous = map[string]map[string]int64{} // peer -> previous round's counts
@@ -322,10 +322,10 @@ func replication_convergence_audit() {
 	}
 
 	local := audit_manifest_map(replication_audit_local_manifest())
-	audit_mutex.Lock()
+	audit_convergence_mutex.Lock()
 	prevLocal := audit_previous
 	audit_previous = local
-	audit_mutex.Unlock()
+	audit_convergence_mutex.Unlock()
 
 	for _, m := range members {
 		peer, _ := m["peer"].(string)
@@ -343,10 +343,10 @@ func replication_convergence_audit() {
 		}
 		remoteMap := audit_manifest_map(remote)
 
-		audit_mutex.Lock()
+		audit_convergence_mutex.Lock()
 		prevRemote := audit_peer_previous[peer]
 		audit_peer_previous[peer] = remoteMap
-		audit_mutex.Unlock()
+		audit_convergence_mutex.Unlock()
 
 		replication_audit_compare(peer, local, prevLocal, remoteMap, prevRemote)
 	}
@@ -357,8 +357,8 @@ func replication_convergence_audit() {
 // re-armed once a stream converges or starts moving again. Comparison needs the
 // previous round, so the first round after start (prev maps empty) never alerts.
 func replication_audit_compare(peer string, local, prevLocal, remote, prevRemote map[string]int64) {
-	audit_mutex.Lock()
-	defer audit_mutex.Unlock()
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
 	diverged := map[string]bool{}
 	for key, lc := range local {
 		rc, ok := remote[key]
@@ -391,8 +391,8 @@ func replication_audit_compare(peer string, local, prevLocal, remote, prevRemote
 // replication_audit_divergences returns the currently-alerted divergence keys
 // ("peer|user|stream") for the status endpoint.
 func replication_audit_divergences() []string {
-	audit_mutex.Lock()
-	defer audit_mutex.Unlock()
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
 	out := make([]string, 0, len(audit_alerted))
 	for k := range audit_alerted {
 		out = append(out, k)

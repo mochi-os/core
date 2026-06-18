@@ -94,13 +94,13 @@ func TestDbReplicatedRowCount(t *testing.T) {
 func TestReplicationAuditCompare(t *testing.T) {
 	peer := "peerX"
 	reset := func() {
-		audit_mutex.Lock()
+		audit_convergence_mutex.Lock()
 		audit_alerted = map[string]bool{}
-		audit_mutex.Unlock()
+		audit_convergence_mutex.Unlock()
 	}
 	alerted := func(streamKey string) bool {
-		audit_mutex.Lock()
-		defer audit_mutex.Unlock()
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
 		return audit_alerted[peer+"|"+streamKey]
 	}
 	m := func(v int64) map[string]int64 { return map[string]int64{"u|s": v} }

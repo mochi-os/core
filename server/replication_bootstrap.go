@@ -1636,6 +1636,75 @@ func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 	replication_stream_drain(rdb, peer, repl_scope_app, user, stream)
 }
 
+// bootstrap_db_reseed re-seeds ONE DB stream from `peer` on a live,
+// populated replica — the targeted alternative to a full `replica
+// reset` when a single stream has wedged on an anchored gap that won't
+// self-heal (the feeds-stall class). It reuses the bootstrap snapshot
+// primitive (fetch + atomic land + cursor re-anchor + buffered-op
+// drain), then clears the state a re-seed leaves stale. The caller (the
+// admin handler) owns the safety gate — see reseed_local_journal_count.
+func bootstrap_db_reseed(peer, scope, path string) error {
+	target, err := bootstrap_db_target_path(scope, path, "", "", "")
+	if err != nil {
+		return err
+	}
+	if err := bootstrap_db_fetch_impl(peer, scope, path, "", "", ""); err != nil {
+		return err
+	}
+	reseed_finalize(peer, target)
+	return nil
+}
+
+// reseed_local_journal_count reports how many replication-journal rows
+// the local copy of `rel` holds — ops THIS host originated for that
+// stream. A re-seed overwrites the local DB with the source's snapshot,
+// so a non-zero count means local writes not yet shipped to the source
+// would be lost; the admin path refuses without an explicit force. A
+// pure-receiver stream (this host never wrote it) has no journal rows
+// and is always safe to re-seed.
+func reseed_local_journal_count(rel string) int {
+	full := filepath.Join(data_dir, filepath.FromSlash(rel))
+	if info, err := os.Stat(full); err != nil || info.IsDir() {
+		return 0
+	}
+	db := db_open(rel)
+	if db == nil {
+		return 0
+	}
+	if has, _ := db.exists("select 1 from sqlite_master where type = 'table' and name = 'journal'"); !has {
+		return 0
+	}
+	return db.integer("select count(*) from journal")
+}
+
+// reseed_finalize clears the two things a re-seed leaves stale. First,
+// the inherited journal: the snapshot carries the SOURCE's sender-state,
+// and the receiver must not drain and re-ship those ops as if it had
+// originated them — so the landed journal is emptied (the receiver
+// starts fresh, recording its own ops only if it later writes that DB).
+// Second, the stream's pending rows at or below the new cursor — ops
+// that buffered behind the gap we just jumped, now dead.
+// bootstrap_db_fetch_impl has already re-anchored the cursor and drained
+// anything that chains onto it.
+func reseed_finalize(peer, target string) {
+	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
+	if db := db_open(rel); db != nil {
+		if has, _ := db.exists("select 1 from sqlite_master where type = 'table' and name = 'journal'"); has {
+			db.exec("delete from journal")
+		}
+	}
+	stream := bootstrap_stream_key(rel)
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if stream == "" || len(parts) < 2 || parts[0] != "users" {
+		return
+	}
+	user := parts[1]
+	rdb := db_open("db/replication.db")
+	cursor, _ := replication_cursor(rdb, peer, repl_scope_app, user, stream)
+	rdb.exec("delete from pending where peer = ? and scope = ? and user = ? and db = ? and sequence <= ?",
+		peer, repl_scope_app, user, stream, cursor)
+}
+
 // bootstrap_db_land atomically installs the completed snapshot at
 // `partial` as `target`. The snapshot is a self-contained SQLite
 // online-backup output — no WAL needed. But `target` may already

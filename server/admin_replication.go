@@ -29,6 +29,7 @@ package main
 import (
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -214,6 +215,55 @@ func admin_replication_backfill(c *gin.Context) {
 	go replication_pair_backfill(input.Peer)
 	c.JSON(http.StatusOK, gin.H{
 		"peer":  input.Peer,
+		"state": "dispatched",
+	})
+}
+
+// admin_replication_reseed is POST /_/admin/replication/reseed. Re-seeds
+// ONE DB stream from a source peer on a live, populated replica — the
+// targeted alternative to a full `replica reset` when a single stream
+// has wedged on an anchored gap that won't self-heal. Input is {peer,
+// path, force}: `path` is the stream's DB path relative to the data dir
+// (e.g. "users/<u>/<app>/db/feeds.db"); the source serves a fresh
+// snapshot, which is landed and the cursor re-anchored to its sequence
+// point. Refuses if the local DB has originated writes (non-empty
+// journal) unless force=true — re-seeding overwrites the local DB, so
+// un-shipped local writes would be lost. The transfer runs in the
+// background; the response just acknowledges dispatch.
+func admin_replication_reseed(c *gin.Context) {
+	var input struct {
+		Peer  string `json:"peer"`
+		Path  string `json:"path"`
+		Force bool   `json:"force"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" || input.Path == "" {
+		respond_error(c, http.StatusBadRequest, "missing_peer_or_path", "errors.invalid_request", nil)
+		return
+	}
+	scope := bootstrap_scope_userdbs
+	if strings.HasPrefix(input.Path, "db/") {
+		scope = bootstrap_scope_sysdbs
+	}
+	if _, err := bootstrap_db_target_path(scope, input.Path, "", "", ""); err != nil {
+		respond_error(c, http.StatusBadRequest, "invalid_path", "errors.invalid_request", nil)
+		return
+	}
+	if !input.Force {
+		if reseed_local_journal_count(input.Path) > 0 {
+			respond_error(c, http.StatusConflict, "local_writes_present", "errors.local_writes_present", nil)
+			return
+		}
+	}
+	go func() {
+		if err := bootstrap_db_reseed(input.Peer, scope, input.Path); err != nil {
+			warn("Replication reseed: %q from peer %q failed: %v", input.Path, input.Peer, err)
+			return
+		}
+		info("Replication reseed: %q re-seeded from peer %q", input.Path, input.Peer)
+	}()
+	c.JSON(http.StatusOK, gin.H{
+		"peer":  input.Peer,
+		"path":  input.Path,
 		"state": "dispatched",
 	})
 }

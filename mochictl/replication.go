@@ -151,6 +151,62 @@ func cmd_replication_backfill(args []string) error {
 	return nil
 }
 
+// cmd_replication_reseed handles
+// `mochictl replication reseed <peer-id> <db-path> [--force]`.
+// Re-seeds ONE stalled stream's DB from `peer` on a live, populated
+// replica — the targeted alternative to a full `replica reset` when a
+// single stream has wedged on an anchored gap. `db-path` is the stream's
+// DB relative to the data dir, e.g.
+// users/<user>/<app>/db/feeds.db. The server fetches a fresh snapshot,
+// lands it, and re-anchors the cursor. It refuses if the local DB has
+// un-shipped local writes (non-empty journal) unless --force is given.
+//
+// Usage:
+//
+//	mochictl replication reseed <peer-id> <db-path> [--force]
+func cmd_replication_reseed(args []string) error {
+	var peer, path string
+	force := false
+	for _, a := range args {
+		switch {
+		case a == "--force":
+			force = true
+		case peer == "":
+			peer = a
+		case path == "":
+			path = a
+		}
+	}
+	if peer == "" || path == "" {
+		return fmt.Errorf("usage: mochictl replication reseed <peer-id> <db-path> [--force]")
+	}
+
+	body, err := json.Marshal(map[string]any{"peer": peer, "path": path, "force": force})
+	if err != nil {
+		return err
+	}
+
+	resp, err := client().Post("/_/admin/replication/reseed", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, raw)
+	}
+
+	if flag_json {
+		fmt.Println(string(raw))
+		return nil
+	}
+	if !flag_verbose {
+		return nil
+	}
+	fmt.Printf("Re-seed dispatched: %s from peer %s.\n", path, peer)
+	return nil
+}
+
 // cmd_replication_pending_gc handles `mochictl replication pending gc`.
 // Runs the unfillable-pending GC on demand and reports the number of
 // rows dropped. No arguments. Use after cleaning up a removed-and-

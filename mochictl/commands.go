@@ -199,6 +199,10 @@ func init() {
 			help: "Re-run the pair-join system-row backfill against the given peer",
 			run:  cmd_replication_backfill,
 		},
+		"replication reseed": {
+			help: "Re-seed ONE stalled stream's DB from a source peer on a live populated replica (targeted alternative to a full 'replica reset'). Refuses if the local DB has un-shipped local writes unless --force. Args: <peer-id> <db-path> [--force]",
+			run:  cmd_replication_reseed,
+		},
 		"broadcast lag": {
 			help: "Per-(user, app, peer, key) broadcast subscriber lag (received_last vs owner _log.max when this host owns the stream)",
 			run:  cmd_broadcast_lag,

@@ -75,6 +75,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.POST("/replication/resync", admin_replication_resync)
 	admin.POST("/replication/resume", admin_replication_resume)
 	admin.POST("/replication/backfill", admin_replication_backfill)
+	admin.POST("/replication/reseed", admin_replication_reseed)
 	admin.GET("/broadcast/lag", admin_broadcast_lag)
 	admin.POST("/broadcast/pending/gc", admin_broadcast_pending_gc)
 	admin.GET("/pipelining/status", admin_pipelining_status)
@@ -117,6 +118,7 @@ var admin_audited_routes = map[string]string{
 	"POST /_/admin/replication/resync":      "admin.replication.resync",
 	"POST /_/admin/replication/resume":      "admin.replication.resume",
 	"POST /_/admin/replication/backfill":    "admin.replication.backfill",
+	"POST /_/admin/replication/reseed":      "admin.replication.reseed",
 }
 
 // admin_audit_middleware records a daemon-facility audit row after each

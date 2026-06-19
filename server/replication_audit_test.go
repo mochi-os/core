@@ -26,7 +26,7 @@ func TestAppHighestVersionDir(t *testing.T) {
 // TestAuditTableReplicates: host-local infra tables are excluded from the
 // content count; app data tables are included.
 func TestAuditTableReplicates(t *testing.T) {
-	for _, name := range []string{"journal", "commits", "idempotency", "sequence", "received", "log", "acknowledged", "pending", "email_delivered", "sqlite_master", ""} {
+	for _, name := range []string{"journal", "commits", "idempotency", "sequence", "received", "log", "acknowledged", "pending", "email_delivered", "post_scores", "sqlite_master", ""} {
 		if audit_table_replicates(name) {
 			t.Errorf("%q should be host-local (excluded)", name)
 		}
@@ -261,14 +261,23 @@ func TestReplicationManagerHung(t *testing.T) {
 // keeps int 0, string "0", and NULL distinct (a type tag), so a value-type change
 // can't masquerade as identical content.
 func TestAuditRowHash(t *testing.T) {
-	if audit_row_hash(map[string]any{"x": int64(1), "y": "two"}) != audit_row_hash(map[string]any{"y": "two", "x": int64(1)}) {
+	if audit_row_hash(map[string]any{"x": int64(1), "y": "two"}, nil) != audit_row_hash(map[string]any{"y": "two", "x": int64(1)}, nil) {
 		t.Fatal("row hash must be independent of map key order")
 	}
-	h0 := audit_row_hash(map[string]any{"v": int64(0)})
-	hs := audit_row_hash(map[string]any{"v": "0"})
-	hn := audit_row_hash(map[string]any{"v": nil})
+	h0 := audit_row_hash(map[string]any{"v": int64(0)}, nil)
+	hs := audit_row_hash(map[string]any{"v": "0"}, nil)
+	hn := audit_row_hash(map[string]any{"v": nil}, nil)
 	if h0 == hs || h0 == hn || hs == hn {
 		t.Fatal(`int 0, string "0", and NULL must hash distinctly`)
+	}
+	// Excluded host-local columns don't affect the hash (#45): two rows differing
+	// ONLY in an excluded column hash equal; differing in a non-excluded one don't.
+	excl := map[string]bool{"score": true}
+	if audit_row_hash(map[string]any{"id": "a", "score": int64(1)}, excl) != audit_row_hash(map[string]any{"id": "a", "score": int64(99)}, excl) {
+		t.Fatal("rows differing only in an excluded column must hash equal")
+	}
+	if audit_row_hash(map[string]any{"id": "a", "score": int64(1)}, excl) == audit_row_hash(map[string]any{"id": "b", "score": int64(1)}, excl) {
+		t.Fatal("rows differing in a non-excluded column must hash differently")
 	}
 }
 

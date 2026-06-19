@@ -254,6 +254,25 @@ var audit_local_tables = map[string]bool{
 	"pending":         true,
 	"email_delivered": true,
 	"idempotency":     true,
+	// App tables that are computed/maintained per host, not replicated, so their
+	// row SET (not just a column) legitimately differs — the count audit must skip
+	// them too. post_scores is the feeds per-(post,viewer) ranking cache (each host
+	// scores its own view; row counts differ). This is a known-cases list, not
+	// exhaustive — see audit_local_columns and #45 for the app-declaration plan.
+	"post_scores": true,
+}
+
+// audit_local_columns lists, per table, columns that are host-LOCAL within an
+// otherwise-replicated table — computed scores, per-host timestamps — so the
+// content hash must skip them or two hosts legitimately differ on a row whose
+// replicated columns match. Found by manual divergence drill-down; a known-cases
+// registry, NOT exhaustive (keyed by bare table name, so it can't tell two apps'
+// same-named tables apart). The proper fix is for apps to DECLARE host-local
+// columns in their schema so this is derived, not hand-maintained (#45). Until
+// then content divergence stays advisory (it can still hit an unlisted column).
+var audit_local_columns = map[string]map[string]bool{
+	"tags":     {"relevance": true},      // feeds: computed relevance score
+	"accounts": {"last_delivered": true}, // user.db: per-host notification timestamp
 }
 
 // audit_table_replicates reports whether a table's rows are replicated content
@@ -323,9 +342,10 @@ func db_replicated_content_hash(rel string) string {
 		if err != nil {
 			return ""
 		}
+		exclude := audit_local_columns[name]
 		var acc [sha256.Size]byte
 		for _, r := range rows {
-			rh := audit_row_hash(r)
+			rh := audit_row_hash(r, exclude)
 			for i := range acc {
 				acc[i] ^= rh[i]
 			}
@@ -339,8 +359,10 @@ func db_replicated_content_hash(rel string) string {
 // audit_row_hash hashes one row deterministically: columns in sorted-name order,
 // each value written with a type tag so an int 0, "0", and NULL stay distinct.
 // Both hosts produce the same hash for the same logical row regardless of column
-// map iteration order.
-func audit_row_hash(r map[string]any) [sha256.Size]byte {
+// map iteration order. Columns in `exclude` are skipped — host-local columns
+// (computed scores, per-host timestamps) that legitimately differ per host and
+// must not register as content divergence.
+func audit_row_hash(r map[string]any, exclude map[string]bool) [sha256.Size]byte {
 	keys := make([]string, 0, len(r))
 	for k := range r {
 		keys = append(keys, k)
@@ -348,6 +370,9 @@ func audit_row_hash(r map[string]any) [sha256.Size]byte {
 	sort.Strings(keys)
 	h := sha256.New()
 	for _, k := range keys {
+		if exclude[k] {
+			continue
+		}
 		h.Write([]byte(k))
 		h.Write([]byte{0})
 		switch v := r[k].(type) {

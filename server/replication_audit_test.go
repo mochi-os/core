@@ -237,3 +237,22 @@ func TestReplicationAuditLiveness(t *testing.T) {
 		t.Fatal("catching up should clear the liveness alert (re-arm)")
 	}
 }
+
+// TestReplicationManagerHung (external-monitor dead-man's-switch): a fresh
+// heartbeat reads as not-hung with a small age; a heartbeat aged past the stall
+// threshold reads as hung — what /_/health exposes so an external monitor can
+// catch a manager that has stopped running scans/alerts.
+func TestReplicationManagerHung(t *testing.T) {
+	orig := replication_manager_heartbeat.Load()
+	defer replication_manager_heartbeat.Store(orig)
+
+	replication_manager_heartbeat.Store(now())
+	if hung, age := replication_manager_hung(); hung || age < 0 || age > 5 {
+		t.Fatalf("fresh heartbeat: hung=%v age=%d, want not-hung with small age", hung, age)
+	}
+
+	replication_manager_heartbeat.Store(now() - int64(replication_manager_stall_seconds) - 30)
+	if hung, age := replication_manager_hung(); !hung || age <= replication_manager_stall_seconds {
+		t.Fatalf("stale heartbeat: hung=%v age=%d, want hung with age > %d", hung, age, replication_manager_stall_seconds)
+	}
+}

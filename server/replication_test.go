@@ -5488,3 +5488,45 @@ func TestReplicationExecIdempotentReapply(t *testing.T) {
 		t.Error("nil error must not be a re-apply")
 	}
 }
+
+// TestStallAlertSuppress: the stall alert is muted for a stream already marked
+// irreparable (the gave-up alert covered it) and for a fully-defunct peer (an
+// orphan the GC clears), but NOT for a peer still known via peers.db or a
+// per-user host relationship.
+func TestStallAlertSuppress(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
+	rdb.exec("create table if not exists hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, seen integer not null default 0, primary key (user, peer))")
+	pdb := db_open("db/peers.db")
+	pdb.exec("create table if not exists peers (id text not null, address text not null, updated integer not null, primary key (id, address))")
+
+	stream := func(peer string) StalledStream {
+		return StalledStream{Peer: peer, Scope: "app", User: "u1", Database: "system:sessions"}
+	}
+
+	if !stall_alert_suppress(stream("defunctpeer")) {
+		t.Error("fully-defunct peer (nowhere) should be suppressed")
+	}
+
+	pdb.exec("insert into peers (id, address, updated) values ('knownpeer', '/ip4/1.2.3.4', 0)")
+	if stall_alert_suppress(stream("knownpeer")) {
+		t.Error("peer known in peers.db should NOT be suppressed")
+	}
+
+	rdb.exec("insert into hosts (user, peer, added) values ('u9', 'hostpeer', 0)")
+	if stall_alert_suppress(stream("hostpeer")) {
+		t.Error("per-user host peer should NOT be suppressed")
+	}
+
+	rdb.exec("insert into irreparable (peer, scope, user, db, reason, since) values ('irrpeer', 'app', 'u1', 'system:sessions', 'stalled', 0)")
+	if !stall_alert_suppress(stream("irrpeer")) {
+		t.Error("stream already marked irreparable should be suppressed")
+	}
+}

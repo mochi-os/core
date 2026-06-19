@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -820,9 +821,39 @@ func web_replication_progress(c *gin.Context) {
 // unfillable-pending GC so months of intermittent peer churn don't
 // silently accumulate dropped-but-buffered rows in replication.db.pending.
 // See replication_pending_gc.
+// replication_manager_heartbeat is the unix time of the replication manager's
+// last tick. The manager runs every replication health scan and alert, so a
+// stale heartbeat means alerting itself has died — the worst self-monitoring
+// failure, since a hung manager can't alert about its own death. /_/health
+// surfaces its age (manager_age) so an EXTERNAL monitor catches it.
+var replication_manager_heartbeat atomic.Int64
+
+// replication_manager_stall_seconds is how long the heartbeat may age before
+// /_/health reports the manager as hung — 4x the 30s tick.
+const replication_manager_stall_seconds = 120
+
+// replication_manager_hung reports whether the replication manager has gone
+// silent — its heartbeat has aged past the stall threshold, or it never ticked
+// at all despite the server being up well past that threshold. Also returns the
+// age of the last tick in seconds (-1 if it has never ticked). A hung manager
+// runs no health scans and sends no alerts, so /_/health exposes this for an
+// external monitor to catch the dead alerter.
+func replication_manager_hung() (bool, int) {
+	age := -1
+	if hb := replication_manager_heartbeat.Load(); hb > 0 {
+		age = int(now() - hb)
+	}
+	uptime := int(time.Since(server_started_at).Seconds())
+	hung := (age < 0 && uptime > replication_manager_stall_seconds) ||
+		age > replication_manager_stall_seconds
+	return hung, age
+}
+
 func replication_manager() {
+	replication_manager_heartbeat.Store(now())
 	last_gc := now()
 	for range time.Tick(30 * time.Second) {
+		replication_manager_heartbeat.Store(now())
 		replication_pending_drain()
 		replication_pending_warn_stalled()
 		replication_wiped_rebootstrap()
@@ -967,11 +998,62 @@ func replication_stall_alert_new(stalled []StalledStream, threshold int64) []Sta
 // to one alert per stall episode, so re-enabling it can't storm.
 func replication_pending_warn_stalled() {
 	threshold := now() - stall_warn_seconds
-	for _, s := range replication_stall_alert_new(replication_pending_stalled(), threshold) {
+
+	// Drop stalls that aren't worth an admin email before they enter the dedup:
+	// a stream already marked irreparable (the auto-recovery-gave-up alert
+	// covered it) or one whose peer is fully defunct (an orphan the unfillable-
+	// pending GC will clear — nothing for an operator to do). A stall from a
+	// live/known peer still alerts.
+	var actionable []StalledStream
+	for _, s := range replication_pending_stalled() {
+		if stall_alert_suppress(s) {
+			continue
+		}
+		actionable = append(actionable, s)
+	}
+
+	for _, s := range replication_stall_alert_new(actionable, threshold) {
 		warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d",
 			now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
 			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count)
 	}
+}
+
+// stall_alert_suppress reports whether a stalled stream is NOT worth emailing the
+// admin about: it's already marked irreparable (the auto-recovery-gave-up alert
+// covered it, so a stall alert would just duplicate it), or its peer is fully
+// defunct (gone from the pair, the per-user hosts, and the peer table) — an
+// orphan the GC will clear, with nothing for an operator to act on. A stall from
+// a live/known peer is left to alert.
+func stall_alert_suppress(s StalledStream) bool {
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return false
+	}
+	if has, _ := rdb.exists("select 1 from irreparable where peer=? and scope=? and user=? and db=?",
+		s.Peer, s.Scope, s.User, s.Database); has {
+		return true
+	}
+	return replication_peer_defunct(rdb, s.Peer)
+}
+
+// replication_peer_defunct reports whether `peer` is no longer known to this host
+// in any replication relationship — not a pair member, not a per-user host for
+// anyone, and absent from the peer table. Its buffered ops are orphaned and will
+// be GC'd, so a stall on it is not operator-actionable.
+func replication_peer_defunct(rdb *DB, peer string) bool {
+	if peer_is_pair(peer) {
+		return false
+	}
+	if has, _ := rdb.exists("select 1 from hosts where peer=?", peer); has {
+		return false
+	}
+	if pdb := db_open("db/peers.db"); pdb != nil {
+		if has, _ := pdb.exists("select 1 from peers where id=?", peer); has {
+			return false
+		}
+	}
+	return true
 }
 
 // replication_app_drain re-attempts pending-buffer drain for one

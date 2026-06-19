@@ -51,18 +51,31 @@ func health_status() (gin.H, int) {
 	// perfectly live host. Monitors alert on replication != "ok".
 	replication_status := "ok"
 	irreparable := replication_irreparable_count()
-	if irreparable > 0 {
+
+	// Manager liveness (dead-man's-switch): the replication manager ticks every
+	// 30s and runs every replication health scan + alert. A stale heartbeat means
+	// it has hung — alerting itself is dead and can't report its own death — so
+	// an external monitor catches it via manager_age. -1 = not yet started.
+	manager_hung, manager_age := replication_manager_hung()
+	uptime := int(time.Since(server_started_at).Seconds())
+
+	// Report degraded for ANY replication problem so an external poll of
+	// /_/health sees it independent of the server's own email path: a dead peer
+	// (irreparable), a hung manager, or any active alert (stall / not-advancing /
+	// divergence / stale app).
+	if irreparable > 0 || manager_hung || replication_active_alerts() > 0 {
 		replication_status = "degraded"
 	}
 
 	return gin.H{
 		"status":      status,
 		"version":     build_version,
-		"uptime":      int(time.Since(server_started_at).Seconds()),
+		"uptime":      uptime,
 		"database":    database_status,
 		"network":     network_status,
 		"replication": replication_status,
 		"irreparable": irreparable,
+		"manager_age": manager_age,
 	}, overall
 }
 

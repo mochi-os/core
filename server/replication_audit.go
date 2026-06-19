@@ -477,3 +477,24 @@ func replication_audit_stuck_streams() []string {
 	sort.Strings(out)
 	return out
 }
+
+// replication_active_alerts counts the replication problems currently held in
+// the in-memory alert state: stalled streams (#3), not-advancing streams and
+// content divergences (the convergence audit), and stale installed apps. These
+// are exactly the conditions the manager emails about, so surfacing the count in
+// /_/health lets an EXTERNAL monitor see a replication problem without depending
+// on the server's own (possibly broken) email path. Cheap — map lengths under
+// their mutexes, no scans — so it's safe on the frequently-hit health route.
+func replication_active_alerts() int {
+	n := 0
+	stall_alerted_mutex.Lock()
+	n += len(stall_alerted)
+	stall_alerted_mutex.Unlock()
+	audit_convergence_mutex.Lock()
+	n += len(audit_alerted) + len(audit_liveness_alerted)
+	audit_convergence_mutex.Unlock()
+	stale_app_mutex.Lock()
+	n += len(stale_app_alerted)
+	stale_app_mutex.Unlock()
+	return n
+}

@@ -15,21 +15,28 @@
 //       trip, since the host already knows both numbers.
 //
 //   (b) Cross-host content audit. The pair leader asks each member for a
-//       per-stream replicated-row-count manifest and compares. Lag is
-//       filtered by quiescence rather than by trusting cursors: a stream's
-//       count is compared ONLY when it is STABLE (unchanged since the
-//       previous round) on BOTH hosts — an actively-replicating stream is
-//       still moving and is skipped. A stable-but-unequal count is real
-//       divergence, not lag. Host-local tables (journal, broadcast
-//       bookkeeping) are excluded via audit_table_replicates so they
-//       never register as a false divergence.
+//       per-stream manifest (replicated-row COUNT + an order-independent
+//       content HASH) and compares. Lag is filtered by quiescence rather
+//       than by trusting cursors: a stream is compared ONLY when it is
+//       STABLE (unchanged since the previous round) on BOTH hosts — an
+//       actively-replicating stream is still moving and is skipped. A
+//       stable-but-unequal count is real divergence, not lag. The content
+//       hash catches the case the count cannot: counts MATCH but the row
+//       CONTENT differs — the dropped-UPDATE class (e.g. UPDATEs lost after
+//       a replica reset, where row counts stay identical). Host-local tables
+//       (journal, broadcast bookkeeping) are excluded via
+//       audit_table_replicates so they never register as a false divergence.
 
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -175,6 +182,12 @@ type AuditStream struct {
 	Stream string `cbor:"stream"`
 	Count  int64  `cbor:"count"`
 	Tail   int64  `cbor:"tail,omitempty"`
+	// Hash is an order-independent content fingerprint of the stream's replicated
+	// tables (db_replicated_content_hash). The count catches insert/delete
+	// divergence; the hash catches CONTENT divergence the count is blind to — two
+	// hosts with equal row counts but different row contents (the dropped-UPDATE
+	// class seen after a replica reset). "" if unreadable.
+	Hash string `cbor:"hash,omitempty"`
 }
 
 type AuditManifestResult struct {
@@ -207,6 +220,7 @@ func replication_audit_local_manifest() []AuditStream {
 			Stream: stream,
 			Count:  count,
 			Tail:   replication_tail(e.User, repl_scope_app, stream),
+			Hash:   db_replicated_content_hash(rel),
 		})
 	}
 	return out
@@ -276,6 +290,92 @@ func db_replicated_row_count(rel string) int64 {
 	return total
 }
 
+// db_replicated_content_hash is the content analogue of db_replicated_row_count:
+// an order-independent fingerprint of the actual ROW CONTENT across the DB's
+// replicated tables, so two hosts with equal row counts but diverged row values
+// (the dropped-UPDATE class — invisible to count(*)) produce different hashes.
+// Per table, each row is hashed (audit_row_hash) and the row hashes are XORed
+// together, so a differing PHYSICAL (rowid) order between hosts doesn't matter —
+// only the set of row contents does. Table hashes are folded in name order.
+// Returns "" if the file is absent/unreadable so callers skip it rather than
+// treat it as diverged. Cost: a full scan of every replicated table — acceptable
+// because the convergence audit runs on a multi-hour period (audit_period_seconds).
+func db_replicated_content_hash(rel string) string {
+	full := filepath.Join(data_dir, filepath.FromSlash(rel))
+	if info, err := os.Stat(full); err != nil || info.IsDir() {
+		return ""
+	}
+	db := db_open(rel)
+	if db == nil {
+		return ""
+	}
+	tables, err := db.rows("select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name")
+	if err != nil {
+		return ""
+	}
+	outer := sha256.New()
+	for _, t := range tables {
+		name, _ := t["name"].(string)
+		if !audit_table_replicates(name) {
+			continue
+		}
+		rows, err := db.rows("select * from \"" + name + "\"")
+		if err != nil {
+			return ""
+		}
+		var acc [sha256.Size]byte
+		for _, r := range rows {
+			rh := audit_row_hash(r)
+			for i := range acc {
+				acc[i] ^= rh[i]
+			}
+		}
+		outer.Write([]byte(name))
+		outer.Write(acc[:])
+	}
+	return hex.EncodeToString(outer.Sum(nil))
+}
+
+// audit_row_hash hashes one row deterministically: columns in sorted-name order,
+// each value written with a type tag so an int 0, "0", and NULL stay distinct.
+// Both hosts produce the same hash for the same logical row regardless of column
+// map iteration order.
+func audit_row_hash(r map[string]any) [sha256.Size]byte {
+	keys := make([]string, 0, len(r))
+	for k := range r {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		switch v := r[k].(type) {
+		case nil:
+			h.Write([]byte{'N'})
+		case int64:
+			h.Write([]byte{'I'})
+			h.Write([]byte(strconv.FormatInt(v, 10)))
+		case float64:
+			h.Write([]byte{'F'})
+			h.Write([]byte(strconv.FormatFloat(v, 'g', -1, 64)))
+		case string:
+			h.Write([]byte{'S'})
+			h.Write([]byte(v))
+		case []byte:
+			h.Write([]byte{'B'})
+			h.Write(v)
+		default:
+			h.Write([]byte{'?'})
+			h.Write([]byte(fmt.Sprint(v)))
+		}
+		h.Write([]byte{0})
+	}
+	var out [sha256.Size]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
 // replication_audit_request_manifest fetches a pair member's content manifest
 // over a synchronous Net stream (same request/response shape as
 // lookup/freshness — the response IS the ack, no queue involvement).
@@ -316,14 +416,25 @@ func audit_manifest_map(streams []AuditStream) map[string]int64 {
 	return m
 }
 
+func audit_manifest_hash_map(streams []AuditStream) map[string]string {
+	m := make(map[string]string, len(streams))
+	for _, s := range streams {
+		m[s.User+"|"+s.Stream] = s.Hash
+	}
+	return m
+}
+
 var (
-	audit_convergence_mutex sync.Mutex
-	audit_last              int64
-	audit_previous          = map[string]int64{}            // this host, previous round
-	audit_peer_previous     = map[string]map[string]int64{} // peer -> previous round's counts
-	audit_alerted           = map[string]bool{}             // "peer|user|stream" -> divergence-alerted
-	audit_cursor_previous   = map[string]int64{}            // "peer|user|stream" -> apply cursor at previous round
-	audit_liveness_alerted  = map[string]bool{}             // "peer|user|stream" -> not-advancing-alerted
+	audit_convergence_mutex  sync.Mutex
+	audit_last               int64
+	audit_previous           = map[string]int64{}             // this host, previous round
+	audit_peer_previous      = map[string]map[string]int64{}  // peer -> previous round's counts
+	audit_alerted            = map[string]bool{}              // "peer|user|stream" -> count-divergence-alerted
+	audit_cursor_previous    = map[string]int64{}             // "peer|user|stream" -> apply cursor at previous round
+	audit_liveness_alerted   = map[string]bool{}              // "peer|user|stream" -> not-advancing-alerted
+	audit_previous_hash      = map[string]string{}            // this host, previous round's content hashes
+	audit_peer_previous_hash = map[string]map[string]string{} // peer -> previous round's content hashes
+	audit_content_alerted    = map[string]bool{}              // "peer|user|stream" -> content-divergence-alerted
 )
 
 // replication_convergence_audit runs on the manager tick but throttles itself to
@@ -346,10 +457,14 @@ func replication_convergence_audit() {
 		return
 	}
 
-	local := audit_manifest_map(replication_audit_local_manifest())
+	localStreams := replication_audit_local_manifest()
+	local := audit_manifest_map(localStreams)
+	localHash := audit_manifest_hash_map(localStreams)
 	audit_convergence_mutex.Lock()
 	prevLocal := audit_previous
 	audit_previous = local
+	prevLocalHash := audit_previous_hash
+	audit_previous_hash = localHash
 	audit_convergence_mutex.Unlock()
 
 	for _, m := range members {
@@ -375,13 +490,17 @@ func replication_convergence_audit() {
 			continue
 		}
 		remoteMap := audit_manifest_map(remote)
+		remoteHash := audit_manifest_hash_map(remote)
 
 		audit_convergence_mutex.Lock()
 		prevRemote := audit_peer_previous[peer]
 		audit_peer_previous[peer] = remoteMap
+		prevRemoteHash := audit_peer_previous_hash[peer]
+		audit_peer_previous_hash[peer] = remoteHash
 		audit_convergence_mutex.Unlock()
 
 		replication_audit_compare(peer, local, prevLocal, remoteMap, prevRemote)
+		replication_audit_content_compare(peer, localHash, prevLocalHash, remoteHash, prevRemoteHash, local, remoteMap)
 	}
 }
 
@@ -463,14 +582,64 @@ func replication_audit_compare(peer string, local, prevLocal, remote, prevRemote
 	}
 }
 
+// replication_audit_content_compare is the content analogue of
+// replication_audit_compare. It alerts when a stream's row COUNTS match (so the
+// count compare stays silent) but its content HASHES differ AND both hashes have
+// been stable since the previous round on both hosts — the dropped-UPDATE
+// divergence class that equal counts hide (e.g. a replica reset that silently
+// dropped UPDATEs, where row counts stayed identical but values diverged).
+// Count-diverging streams are left to replication_audit_compare; a hash still
+// changing on either side (mid content-replication) is treated as lag. The
+// re-arm sweep clears a content alert once the hashes converge.
+func replication_audit_content_compare(peer string, localHash, prevLocalHash, remoteHash, prevRemoteHash map[string]string, localCount, remoteCount map[string]int64) {
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
+	diverged := map[string]bool{}
+	for key, lh := range localHash {
+		if lh == "" {
+			continue // we couldn't hash it (absent/unreadable) — skip
+		}
+		rh, ok := remoteHash[key]
+		if !ok || rh == "" {
+			continue // peer didn't hash it — can't compare
+		}
+		if localCount[key] != remoteCount[key] {
+			continue // count diverges — replication_audit_compare owns this one
+		}
+		pl, okl := prevLocalHash[key]
+		pr, okr := prevRemoteHash[key]
+		if !okl || !okr || pl != lh || pr != rh {
+			continue // content still settling on one side — lag, not divergence
+		}
+		if lh == rh {
+			continue // content converged
+		}
+		akey := peer + "|" + key
+		diverged[akey] = true
+		if !audit_content_alerted[akey] {
+			audit_content_alerted[akey] = true
+			warn("Replication audit: stream %q content-diverged from peer %q — row counts MATCH (%d rows) but the replicated row CONTENT differs, stable on both sides since the last round (not lag). This is the dropped-UPDATE class a count audit can't see (e.g. UPDATEs lost after a replica reset). Investigate; a targeted re-seed (mochictl replication reseed) converges it.",
+				key, peer, localCount[key])
+		}
+	}
+	for akey := range audit_content_alerted {
+		if strings.HasPrefix(akey, peer+"|") && !diverged[akey] {
+			delete(audit_content_alerted, akey)
+		}
+	}
+}
+
 // replication_audit_divergences returns the currently-alerted divergence keys
 // ("peer|user|stream") for the status endpoint.
 func replication_audit_divergences() []string {
 	audit_convergence_mutex.Lock()
 	defer audit_convergence_mutex.Unlock()
-	out := make([]string, 0, len(audit_alerted))
+	out := make([]string, 0, len(audit_alerted)+len(audit_content_alerted))
 	for k := range audit_alerted {
 		out = append(out, k)
+	}
+	for k := range audit_content_alerted {
+		out = append(out, k+" (content)")
 	}
 	sort.Strings(out)
 	return out
@@ -503,7 +672,7 @@ func replication_active_alerts() int {
 	n += len(stall_alerted)
 	stall_alerted_mutex.Unlock()
 	audit_convergence_mutex.Lock()
-	n += len(audit_alerted) + len(audit_liveness_alerted)
+	n += len(audit_alerted) + len(audit_content_alerted) + len(audit_liveness_alerted)
 	audit_convergence_mutex.Unlock()
 	stale_app_mutex.Lock()
 	n += len(stale_app_alerted)

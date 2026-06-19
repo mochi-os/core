@@ -256,3 +256,130 @@ func TestReplicationManagerHung(t *testing.T) {
 		t.Fatalf("stale heartbeat: hung=%v age=%d, want hung with age > %d", hung, age, replication_manager_stall_seconds)
 	}
 }
+
+// TestAuditRowHash (#36): the per-row hash is independent of column map order and
+// keeps int 0, string "0", and NULL distinct (a type tag), so a value-type change
+// can't masquerade as identical content.
+func TestAuditRowHash(t *testing.T) {
+	if audit_row_hash(map[string]any{"x": int64(1), "y": "two"}) != audit_row_hash(map[string]any{"y": "two", "x": int64(1)}) {
+		t.Fatal("row hash must be independent of map key order")
+	}
+	h0 := audit_row_hash(map[string]any{"v": int64(0)})
+	hs := audit_row_hash(map[string]any{"v": "0"})
+	hn := audit_row_hash(map[string]any{"v": nil})
+	if h0 == hs || h0 == hn || hs == hn {
+		t.Fatal(`int 0, string "0", and NULL must hash distinctly`)
+	}
+}
+
+// TestDbReplicatedContentHash (#36): the content hash is order-independent, is
+// SENSITIVE to a diverged UPDATE that leaves the row count unchanged (the class a
+// count audit misses), and ignores host-local tables.
+func TestDbReplicatedContentHash(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	mk := func(rel string, setup func(db *DB)) string {
+		if err := os.MkdirAll(filepath.Join(data_dir, filepath.FromSlash(filepath.Dir(rel))), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		setup(db_open(rel))
+		return db_replicated_content_hash(rel)
+	}
+	h1 := mk("users/u1/app1/db/feeds.db", func(db *DB) {
+		db.exec("create table posts (id text primary key, body text)")
+		db.exec("insert into posts (id, body) values ('a','x'),('b','y'),('c','z')")
+	})
+	// Same rows inserted in a DIFFERENT order -> SAME hash (order-independent).
+	h2 := mk("users/u2/app1/db/feeds.db", func(db *DB) {
+		db.exec("create table posts (id text primary key, body text)")
+		db.exec("insert into posts (id, body) values ('c','z'),('a','x'),('b','y')")
+	})
+	if h1 == "" || h1 != h2 {
+		t.Fatalf("same content in different order must hash equal: %q vs %q", h1, h2)
+	}
+	// A diverged UPDATE (same row count, one value changed) -> DIFFERENT hash.
+	h3 := mk("users/u3/app1/db/feeds.db", func(db *DB) {
+		db.exec("create table posts (id text primary key, body text)")
+		db.exec("insert into posts (id, body) values ('a','x'),('b','y'),('c','DIFFERENT')")
+	})
+	if h3 == h1 {
+		t.Fatal("a diverged UPDATE with equal row count must change the content hash")
+	}
+	// A host-local table (journal) must not affect the content hash.
+	h4 := mk("users/u4/app1/db/feeds.db", func(db *DB) {
+		db.exec("create table posts (id text primary key, body text)")
+		db.exec("insert into posts (id, body) values ('a','x'),('b','y'),('c','z')")
+		db.exec("create table journal (id text primary key)")
+		db.exec("insert into journal (id) values ('j1'),('j2')")
+	})
+	if h4 != h1 {
+		t.Fatal("host-local journal table must not affect the content hash")
+	}
+}
+
+// TestReplicationAuditContentCompare (#36): alerts only when counts MATCH, hashes
+// are stable on both sides since the last round, and the hashes DIFFER. Count
+// divergence is the count compare's job; a still-settling hash is lag; convergence
+// re-arms.
+func TestReplicationAuditContentCompare(t *testing.T) {
+	peer := "peerX"
+	reset := func() {
+		audit_convergence_mutex.Lock()
+		audit_content_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}
+	alerted := func() bool {
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
+		return audit_content_alerted[peer+"|u|s"]
+	}
+	hm := func(v string) map[string]string { return map[string]string{"u|s": v} }
+	cm := func(v int64) map[string]int64 { return map[string]int64{"u|s": v} }
+
+	// Counts match, hashes stable-but-different on both -> content divergence.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm("B"), hm("B"), cm(100), cm(100))
+	if !alerted() {
+		t.Fatal("count-equal + stable-but-different hashes should alert")
+	}
+
+	// Equal hashes -> no alert.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm("A"), hm("A"), cm(100), cm(100))
+	if alerted() {
+		t.Fatal("equal hashes should not alert")
+	}
+
+	// Counts differ -> deferred to the count compare, not alerted here.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm("B"), hm("B"), cm(100), cm(99))
+	if alerted() {
+		t.Fatal("count divergence is the count compare's job")
+	}
+
+	// Hash still settling on the local side -> lag, no alert.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("Z"), hm("B"), hm("B"), cm(100), cm(100))
+	if alerted() {
+		t.Fatal("a still-settling hash should not alert")
+	}
+
+	// Peer didn't hash it (empty) -> can't compare.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm(""), hm(""), cm(100), cm(100))
+	if alerted() {
+		t.Fatal("empty peer hash should not alert")
+	}
+
+	// Re-arm: a content-diverged stream that converges clears its alert.
+	reset()
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm("B"), hm("B"), cm(100), cm(100))
+	if !alerted() {
+		t.Fatal("setup: should be alerted")
+	}
+	replication_audit_content_compare(peer, hm("A"), hm("A"), hm("A"), hm("A"), cm(100), cm(100))
+	if alerted() {
+		t.Fatal("converged content should clear its alert (re-arm)")
+	}
+}

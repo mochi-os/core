@@ -1497,7 +1497,18 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 	rel := strings.TrimPrefix(source_path, data_dir+string(os.PathSeparator))
 	var seedSeq int64
 	if stream := bootstrap_stream_key(rel); stream != "" {
-		seedSeq = replication_tail(user, repl_scope_app, stream)
+		// Derive the owning user from the path, NOT the request's `user` field. A
+		// reseed fetch carries an empty user (bootstrap_db_reseed passes ""), so
+		// using it would make replication_tail return 0 and seed the receiver's
+		// cursor to 0 — harmless for a quiet stream (it re-syncs on the next write)
+		// but a wedge for a heavily-written one whose pruned journal can't backfill
+		// from zero. The path is authoritative and present for fresh and reseed
+		// fetches alike.
+		seedUser := user
+		if parts := strings.Split(filepath.ToSlash(rel), "/"); len(parts) >= 2 && parts[0] == "users" {
+			seedUser = parts[1]
+		}
+		seedSeq = replication_tail(seedUser, repl_scope_app, stream)
 	}
 
 	size, err := snapshot_copy_db(source_path, tmp_path)

@@ -5568,3 +5568,31 @@ func TestReplicationInboundReset(t *testing.T) {
 		}
 	}
 }
+
+// TestReplicationCursorForce (#35): the snapshot/reseed cursor seed must override
+// a stale (higher) cursor downward — where the monotonic replication_cursor_set
+// would silently keep the stale value (the reseed-doesn't-re-anchor bug). The
+// live _set must stay monotonic.
+func TestReplicationCursorForce(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+
+	seq := func() int {
+		return rdb.integer("select sequence from cursor where peer='p' and scope='app' and user='u' and db='app:x'")
+	}
+	replication_cursor_set(rdb, "p", "app", "u", "app:x", 14255) // stale-high cursor from before a source reset
+	replication_cursor_set(rdb, "p", "app", "u", "app:x", 453)   // monotonic: ignores the downward reseed
+	if got := seq(); got != 14255 {
+		t.Fatalf("monotonic _set should keep 14255 (got %d)", got)
+	}
+	replication_cursor_force(rdb, "p", "app", "u", "app:x", 453) // authoritative snapshot seed: rewinds
+	if got := seq(); got != 453 {
+		t.Fatalf("force should rewind to the snapshot point 453 (got %d)", got)
+	}
+}

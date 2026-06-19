@@ -1644,12 +1644,30 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	return nil
 }
 
+// replication_cursor_force sets the apply cursor unconditionally, overriding the
+// monotonic max() guard in replication_cursor_set. Used ONLY by the bootstrap /
+// reseed snapshot seed, where the snapshot's sequence point is authoritative and
+// may legitimately be BELOW a stale cursor — a reseed after the source did a
+// replica reset (which restarts its outbound sequence counter near zero) lands a
+// snapshot at a low sequence, and the receiver's pre-reset cursor must rewind to
+// match or it keeps dropping the source's resumed writes as already-applied (the
+// replica-reset misalignment). The live apply path keeps using the monotonic
+// _set so an out-of-order op can never rewind a healthy cursor.
+func replication_cursor_force(db *DB, peer, scope, user, database string, sequence int64) {
+	db.exec(
+		"insert into cursor (peer, scope, user, db, sequence) values (?, ?, ?, ?, ?) "+
+			"on conflict(peer, scope, user, db) do update set sequence=excluded.sequence",
+		peer, scope, user, database, sequence)
+}
+
 // bootstrap_db_seed_cursor seeds the in-order apply cursor for a
 // just-landed bootstrap DB at the snapshot's sequence point, then
 // drains any live ops that buffered for that stream while the
 // transfer was in flight. `target` is the absolute landed path; the
 // stream key and owning user are derived from it so source and
-// receiver agree without trusting the request fields.
+// receiver agree without trusting the request fields. Uses the forcing
+// cursor set: the snapshot point is authoritative and must override a
+// stale (higher) cursor left by a pre-reset source.
 func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
 	stream := bootstrap_stream_key(rel)
@@ -1659,7 +1677,7 @@ func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 	}
 	user := parts[1]
 	rdb := db_open("db/replication.db")
-	replication_cursor_set(rdb, peer, repl_scope_app, user, stream, seed)
+	replication_cursor_force(rdb, peer, repl_scope_app, user, stream, seed)
 	replication_stream_drain(rdb, peer, repl_scope_app, user, stream)
 }
 

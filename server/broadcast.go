@@ -277,7 +277,12 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
 	sequence := broadcast_next_local(db, key, peer)
-	db.exec_app_user("insert into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
+	// insert OR IGNORE: the log is append-only keyed on (key, peer, sequence) and
+	// the sender always allocates a fresh sequence, so a collision only happens on
+	// a replicated re-apply of a row already present (e.g. the snapshot/cursor
+	// overlap after a stream reseed). Ignoring it makes the re-apply a clean no-op
+	// instead of a UNIQUE error that the replication apply path emails about.
+	db.exec_app_user("insert or ignore into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
 	return sequence
 }
 

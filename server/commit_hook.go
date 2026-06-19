@@ -121,6 +121,7 @@ func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 // fired; failed ones stay pending for the next drain.
 func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string) {
 	commits_table_create(db)
+	commits_trim(db)
 	rows, err := db.rows("select seq, name, kind, row_uid from commits where fired=0 order by seq limit 100")
 	if err != nil {
 		return
@@ -237,4 +238,19 @@ func commits_mark_fired(db *DB, seq int64) {
 		return
 	}
 	db.exec("update commits set fired=1 where seq=?", seq)
+}
+
+// commits_log_age bounds how long a fired commit-hook row is retained. The fired
+// flag is set once and never cleared, so without a trim the log grows without
+// bound (31k rows observed on a busy app); fired rows have no further use, so this
+// is just a short debugging window.
+const commits_log_age = 86400 // 1 day
+
+// commits_trim deletes fired rows older than commits_log_age. Called from
+// commit_hook_drain — which runs on every commit_hook_fire — using the
+// commits_fired (fired, ts) index, so the table tracks ~a day of recent activity
+// rather than growing forever. Unfired (pending) rows are never trimmed, so a
+// stuck handler's retries are preserved regardless of age.
+func commits_trim(db *DB) {
+	db.exec("delete from commits where fired=1 and ts < ?", now()-commits_log_age)
 }

@@ -489,6 +489,14 @@ func replication_op_receive(peer string, op *ReplicationOp) {
 		// debug("Replication op below cursor: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d",
 		// 	peer, op.Scope, op.User, stream, op.Sequence, op.Prev, cursor)
 		return
+	case op.Prev > 0 && replication_stream_reached(db, op.Scope, op.User, stream, op.Prev):
+		// Cross-peer predecessor: op.Prev isn't THIS peer's cursor, but it IS
+		// already applied for the stream via another relay peer. A multi-source
+		// stream (a user with a per-user peer AND a paired server) delivers the
+		// shared per-stream sequence over more than one peer; op N can arrive from
+		// peer A while op N-1 was applied via peer B. A strictly per-peer chain-
+		// check would buffer it forever (the b8b3 stall, #43). The predecessor is
+		// present, so the chain is satisfied — apply and anchor.
 	default:
 		replication_pending_buffer(db, peer, op)
 		// debug("Replication op buffered out-of-order: peer=%q scope=%q user=%q db=%q seq=%d prev=%d cursor=%d anchored=%v",
@@ -514,6 +522,18 @@ func replication_cursor(db *DB, peer, scope, user, database string) (int64, bool
 	}
 	seq, _ := row["sequence"].(int64)
 	return seq, true
+}
+
+// replication_stream_reached reports whether ANY peer's apply cursor for the
+// (scope, user, database) stream has reached `sequence` — i.e. that sequence, and
+// the consecutive chain up to it, is already applied for the stream regardless of
+// which relay peer delivered it (cursors only advance on in-order applies, so a
+// cursor at S means 1..S are applied). The receive gate uses this so a multi-
+// source stream whose predecessor arrived via a different peer is not buffered
+// forever (#43). Scoped by db, so it never confuses a different stream's sequence.
+func replication_stream_reached(db *DB, scope, user, database string, sequence int64) bool {
+	reached, _ := db.exists("select 1 from cursor where scope=? and user=? and db=? and sequence>=?", scope, user, database, sequence)
+	return reached
 }
 
 // replication_cursor_set advances the apply watermark for a db-stream.
@@ -663,6 +683,18 @@ func replication_stream_drain(db *DB, peer, scope, user, database string) {
 		if row == nil {
 			row, _ = db.row(
 				"select sequence, payload from pending where peer=? and scope=? and user=? and db=? and prev=0 limit 1",
+				peer, scope, user, database)
+		}
+		if row == nil {
+			// Cross-peer (#43): the next buffered op's predecessor may have been
+			// applied via a DIFFERENT relay peer of this multi-source stream, so its
+			// prev isn't this peer's cursor. Take the lowest pending op whose prev is
+			// already reached for the stream (any peer's cursor) — drains an existing
+			// cross-peer stall without a reseed.
+			row, _ = db.row(
+				"select sequence, payload from pending p where p.peer=? and p.scope=? and p.user=? and p.db=? and p.prev>0 "+
+					"and exists (select 1 from cursor c where c.scope=p.scope and c.user=p.user and c.db=p.db and c.sequence>=p.prev) "+
+					"order by p.sequence limit 1",
 				peer, scope, user, database)
 		}
 		if row == nil {

@@ -5649,3 +5649,34 @@ func TestReplicationNewUserBootstrapMaybe(t *testing.T) {
 		t.Fatalf("empty peer/uid should be a no-op, got %v", captured)
 	}
 }
+
+// TestReplicationStreamReached (#43): the cross-peer chain check — a stream's
+// predecessor sequence counts as reached if ANY peer's cursor for that stream has
+// reached it (multi-source relay), and only for the matching stream.
+func TestReplicationStreamReached(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db := db_open("db/replication.db")
+	db.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	// Multi-source stream app:x: peerA (the pair) behind at 10, peerB (the
+	// relay / per-user peer) reached 21 — the b8b3 shape.
+	db.exec("insert into cursor (peer, scope, user, db, sequence) values ('peerA','app','u','app:x',10)")
+	db.exec("insert into cursor (peer, scope, user, db, sequence) values ('peerB','app','u','app:x',21)")
+
+	if !replication_stream_reached(db, "app", "u", "app:x", 21) {
+		t.Fatal("seq 21 reached via peerB's cursor — chain should be satisfied")
+	}
+	if !replication_stream_reached(db, "app", "u", "app:x", 10) {
+		t.Fatal("seq 10 (<= both cursors) should be satisfied")
+	}
+	if replication_stream_reached(db, "app", "u", "app:x", 22) {
+		t.Fatal("seq 22 reached by no peer — should NOT be satisfied")
+	}
+	if replication_stream_reached(db, "app", "u", "app:y", 21) {
+		t.Fatal("a different stream (app:y) must not be satisfied by app:x cursors")
+	}
+}

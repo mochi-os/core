@@ -6,6 +6,8 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -265,6 +267,10 @@ type KeysEntity struct {
 }
 
 func init() {
+	// Wire the per-user bootstrap spawn here (not as a package-var initializer)
+	// so the apply path's reference to it doesn't form an init cycle with the
+	// bootstrap vars.
+	replication_user_bootstrap_hook = func(peer, uid string) { go bootstrap_start_user(peer, uid) }
 	a := app("replication")
 	a.service("replication")
 	// User-scope ops carry the originating user-entity signature; the
@@ -547,6 +553,12 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		// Bridge the per-user/server-pair seam: forward to the rest of the
 		// user's host set, minus the peer it came from.
 		replication_relay(peer, op)
+		// A bare users-row.set for an entity-less user is the "new user
+		// registered here" signal; if its app data was never bootstrapped to
+		// this host, pull it now (entity users land via the keys-transfer hook).
+		if op.Database == "users" && op.Operation == "users-row.set" {
+			replication_new_user_bootstrap_maybe(peer, op.User)
+		}
 	case ApplyDeferred:
 		replication_pending_buffer(db, peer, op)
 		// debug("Replication op deferred: peer=%q scope=%q user=%q db=%q seq=%d",
@@ -557,6 +569,80 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		replication_cursor_set(db, peer, op.Scope, op.User, repl_op_stream(op), op.Sequence)
 	}
 	return res
+}
+
+// replication_user_bootstrap_hook, when non-nil, replaces the real per-user
+// bootstrap spawn — set by tests to capture the (peer, uid) calls. A separate
+// hook var (rather than making replication_user_bootstrap itself a var) avoids a
+// package-init cycle through bootstrap_start_user.
+var replication_user_bootstrap_hook func(peer, uid string)
+
+// replication_user_bootstrap pulls one user's app data (files + per-user DBs)
+// from `peer` via the hook, which init() wires to a backgrounded
+// bootstrap_start_user. (Wiring it in init() rather than the function body keeps
+// the apply path out of the bootstrap vars' package-init dependency cycle.)
+func replication_user_bootstrap(peer, uid string) {
+	if replication_user_bootstrap_hook != nil {
+		replication_user_bootstrap_hook(peer, uid)
+	}
+}
+
+var (
+	new_user_bootstrap_mutex  sync.Mutex
+	new_user_bootstrap_recent = map[string]int64{} // uid -> last-triggered unix time
+)
+
+// new_user_bootstrap_cooldown rate-limits the per-user bootstrap trigger so a
+// burst of backfilled records (or a re-sent keys-transfer) doesn't spawn
+// redundant fetches while the first is still landing.
+const new_user_bootstrap_cooldown = 300
+
+// replication_new_user_bootstrap_maybe pulls a freshly-registered user's app DBs
+// when only the user RECORD has reached this host. A user is introduced here via
+// a keys-transfer (entity users) or a bare users-row.set (entity-less users); if
+// that user has no app data on disk, its per-user app DBs were never bootstrapped
+// to this host — the new-user-in-the-bootstrap-window gap that left ede983's
+// notifications/chat/people on the origin only (2026-06-19). The record's arrival
+// is the signal to fetch the data, so trigger a per-user bootstrap from the peer
+// that introduced the user. Gated on app data being absent (so a record UPDATE to
+// a user that already has data doesn't re-fetch) and rate-limited per user. The
+// per-user bootstrap is idempotent, so a redundant fire (e.g. a brand-new user
+// whose data is also arriving over the live op stream) just re-lands the snapshot.
+func replication_new_user_bootstrap_maybe(peer, uid string) {
+	if peer == "" || uid == "" || peer == net_id {
+		return
+	}
+	if user_has_app_data(uid) {
+		return // already has local app data — not a missing-bootstrap case
+	}
+	new_user_bootstrap_mutex.Lock()
+	cooling := now()-new_user_bootstrap_recent[uid] < new_user_bootstrap_cooldown
+	if !cooling {
+		new_user_bootstrap_recent[uid] = now()
+	}
+	new_user_bootstrap_mutex.Unlock()
+	if cooling {
+		return
+	}
+	info("Replication: user %q introduced by peer %q has no local app data — triggering per-user bootstrap to fetch it", uid, peer)
+	replication_user_bootstrap(peer, uid)
+}
+
+// user_has_app_data reports whether this host holds any per-user app data for
+// uid — at least one app subdirectory under users/<uid>/. A user.db file alone
+// (e.g. created by the keys-transfer) does not count; an app subdir means the
+// app DBs were bootstrapped.
+func user_has_app_data(uid string) bool {
+	entries, err := os.ReadDir(filepath.Join(data_dir, "users", uid))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // replication_stream_drain applies buffered ops for one inbound
@@ -1671,7 +1757,28 @@ func replication_keys_transfer_event(e *Event) {
 		info("Replication keys-transfer dropping: cannot decode payload")
 		return
 	}
-	replication_keys_transfer_apply(e.from, e.peer, &kt)
+	// A keys-transfer that newly registers a user (entities inserted) is the
+	// "new entity user landed here" signal. If its app data was never
+	// bootstrapped to this host, pull it now from the introducing peer.
+	if replication_keys_transfer_apply(e.from, e.peer, &kt) > 0 {
+		replication_new_user_bootstrap_maybe(e.peer, replication_user_uid(kt.Username))
+	}
+}
+
+// replication_user_uid resolves a username to its uid in the local users.db,
+// or "" if absent. Used to key the per-user bootstrap trigger off a just-applied
+// keys-transfer, whose payload carries the username rather than the uid.
+func replication_user_uid(username string) string {
+	if username == "" {
+		return ""
+	}
+	udb := db_open("db/users.db")
+	row, err := udb.row("select uid from users where username=?", username)
+	if err != nil || row == nil {
+		return ""
+	}
+	uid, _ := row["uid"].(string)
+	return uid
 }
 
 // replication_keys_transfer_apply is the pure-DB half of the keys-transfer

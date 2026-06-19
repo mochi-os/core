@@ -5596,3 +5596,56 @@ func TestReplicationCursorForce(t *testing.T) {
 		t.Fatalf("force should rewind to the snapshot point 453 (got %d)", got)
 	}
 }
+
+// TestReplicationNewUserBootstrapMaybe (#38): a freshly-registered user with no
+// local app data triggers a per-user bootstrap from the introducing peer; a user
+// that already has app data does not; repeats are rate-limited; empty args no-op.
+func TestReplicationNewUserBootstrapMaybe(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+
+	var captured [][2]string
+	origHook := replication_user_bootstrap_hook
+	replication_user_bootstrap_hook = func(peer, uid string) { captured = append(captured, [2]string{peer, uid}) }
+	defer func() { replication_user_bootstrap_hook = origHook }()
+	reset := func() {
+		captured = nil
+		new_user_bootstrap_mutex.Lock()
+		new_user_bootstrap_recent = map[string]int64{}
+		new_user_bootstrap_mutex.Unlock()
+	}
+
+	// No local app data -> trigger a per-user bootstrap from the introducing peer.
+	reset()
+	replication_new_user_bootstrap_maybe("peerA", "u1")
+	if len(captured) != 1 || captured[0] != [2]string{"peerA", "u1"} {
+		t.Fatalf("absent app data should trigger bootstrap, got %v", captured)
+	}
+
+	// User already has app data (an app subdir under users/<uid>/) -> no trigger.
+	reset()
+	if err := os.MkdirAll(filepath.Join(data_dir, "users", "u2", "app1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	replication_new_user_bootstrap_maybe("peerA", "u2")
+	if len(captured) != 0 {
+		t.Fatalf("user with app data should not trigger, got %v", captured)
+	}
+
+	// Rate-limit: a second call for the same user within the cooldown is skipped.
+	reset()
+	replication_new_user_bootstrap_maybe("peerA", "u3")
+	replication_new_user_bootstrap_maybe("peerA", "u3")
+	if len(captured) != 1 {
+		t.Fatalf("rate-limit should suppress the second trigger, got %v", captured)
+	}
+
+	// Empty peer or uid -> no-op.
+	reset()
+	replication_new_user_bootstrap_maybe("", "u4")
+	replication_new_user_bootstrap_maybe("peerA", "")
+	if len(captured) != 0 {
+		t.Fatalf("empty peer/uid should be a no-op, got %v", captured)
+	}
+}

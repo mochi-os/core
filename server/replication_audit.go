@@ -218,16 +218,28 @@ func replication_audit_local_manifest() []AuditStream {
 // the pending buffer, the commit log). Their contents legitimately differ per
 // host, so the content audit must exclude them or every broadcast-using app
 // would look permanently diverged. journal_table_replicates is NOT reused here:
-// it gates the journal's write-replication decision (sql_default_excluded only
-// lists sqlite_/_commit_log), not which existing tables hold replicated data.
+// it gates the journal's write-replication decision (sql_default_excluded lists
+// only sqlite_), not which existing tables hold replicated data.
+// audit_local_tables are the tables that live inside a replicated DB but are
+// maintained per host, so they don't belong in the cross-host count: the journal
+// and broadcast bookkeeping (sender sequence/log, receiver received/acknowledged,
+// pending buffer, commit log), plus email_delivered — which IS replicated but is
+// pruned per host on a TTL, so its count wobbles transiently between hosts and
+// isn't worth a divergence alert. Host-local infra tables that live inside a
+// replicated app DB must be listed by name here: `commits` (the commit-hook
+// pending-fire log) and `idempotency` (the per-app idempotent-call cache),
+// both in app.db, are host-local, so their counts would otherwise read as
+// cross-host divergence.
 var audit_local_tables = map[string]bool{
-	"journal":      true,
-	"_commit_log":  true,
-	"sequence":     true,
-	"received":     true,
-	"log":          true,
-	"acknowledged": true,
-	"pending":      true,
+	"journal":         true,
+	"commits":         true,
+	"sequence":        true,
+	"received":        true,
+	"log":             true,
+	"acknowledged":    true,
+	"pending":         true,
+	"email_delivered": true,
+	"idempotency":     true,
 }
 
 // audit_table_replicates reports whether a table's rows are replicated content

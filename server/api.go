@@ -1112,7 +1112,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// source event UID so a replayed call (server restart, host failover,
 	// queue retry) doesn't produce a duplicate side-effect at the remote
 	// API. Stripe and other modern APIs honour the Idempotency-Key header
-	// natively; for APIs that don't, the per-app _idempotent_calls cache
+	// natively; for APIs that don't, the per-app idempotency cache
 	// (below) suppresses the duplicate request before it leaves.
 	var idempotency_key string
 	for _, kw := range kwargs {
@@ -1162,6 +1162,19 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 const url_idempotency_ttl int64 = 3600 // 1 hour
 
+// idempotency_setup ensures the per-app `idempotency` cache table in the
+// app system DB (app.db). On first creation it drops the pre-rename
+// `_idempotent_calls` orphan from the same file, so the rename leaves no
+// dead table behind. The drop is gated on the table not having existed,
+// so it runs at most once per (user, app).
+func idempotency_setup(sysdb *DB) {
+	existed, _ := sysdb.exists("select name from sqlite_master where type='table' and name='idempotency'")
+	idempotency_setup(sysdb)
+	if !existed {
+		sysdb.exec("drop table if exists _idempotent_calls")
+	}
+}
+
 // url_idempotency_lookup returns a cached response for the given key, or
 // nil when no entry exists or the entry has aged out. Stale rows are
 // purged opportunistically.
@@ -1170,10 +1183,10 @@ func url_idempotency_lookup(u *User, a *App, key string) map[string]any {
 	if sysdb == nil {
 		return nil
 	}
-	sysdb.exec("create table if not exists _idempotent_calls (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
-	sysdb.exec("delete from _idempotent_calls where ts < ?", now()-url_idempotency_ttl)
+	idempotency_setup(sysdb)
+	sysdb.exec("delete from idempotency where ts < ?", now()-url_idempotency_ttl)
 
-	row, _ := sysdb.row("select status, headers, body from _idempotent_calls where key=? and ts > ?", key, now()-url_idempotency_ttl)
+	row, _ := sysdb.row("select status, headers, body from idempotency where key=? and ts > ?", key, now()-url_idempotency_ttl)
 	if row == nil {
 		return nil
 	}
@@ -1204,8 +1217,8 @@ func url_idempotency_store(u *User, a *App, key string, status int, headers map[
 	if sysdb == nil {
 		return
 	}
-	sysdb.exec("create table if not exists _idempotent_calls (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
-	sysdb.exec("insert or replace into _idempotent_calls (key, status, headers, body, ts) values (?, ?, ?, ?, ?)",
+	idempotency_setup(sysdb)
+	sysdb.exec("insert or replace into idempotency (key, status, headers, body, ts) values (?, ?, ?, ?, ?)",
 		key, status, cbor_encode(headers), body, now())
 }
 

@@ -23,8 +23,9 @@ import (
 // SQL apply from running twice, but the hook fires on each invocation.
 //
 // V1 limitations (documented in claude/plans/replication.md pattern 1.6):
-//   - No durable _commit_log + drainer yet, so handler crash between
-//     commit and hook fire means a missed fire.
+//   - The commits log + drainer is best-effort: a handler crash between
+//     the commit and the log insert still means a missed fire (the
+//     underlying SQL write is durable, the hook fire is not).
 //   - Local-write hooking is opt-in via mochi.db.commit.fire; the
 //     framework only auto-fires from replication apply paths.
 //   - Only one handler per app version. Apps that need fan-out can
@@ -82,12 +83,14 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // No-op when the app isn't installed locally, the user isn't on this
 // host, or the app version declares no commit hook.
 //
-// The call writes a pending row to the per-app `_commit_log` table
-// before invoking the handler, then marks it fired on success. A failed
-// handler leaves the row pending so commit_hook_drain (run periodically
-// via replication_manager) retries later. Crash between the commit and
-// the log insert is the documented V1 gap — the underlying SQL write is
-// already durable but the hook fire would be lost.
+// The call writes a pending row to the per-app `commits` table in the
+// app system DB (app.db) before invoking the handler, then marks it
+// fired on success. A failed handler leaves the row pending so
+// commit_hook_drain retries on the next fire. Crash between the commit
+// and the log insert is the documented V1 gap — the underlying SQL write
+// is already durable but the hook fire would be lost. The log lives in
+// app.db (server-only, like access/attachments), so an app cannot tamper
+// with its own pending-fire bookkeeping via mochi.db.execute.
 func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 	u, a, av := commit_hook_resolve(userUID, appID)
 	if u == nil || a == nil || av == nil {
@@ -98,27 +101,27 @@ func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 		return
 	}
 
-	app_db := db_app(u, a)
-	if app_db == nil {
+	sys := commits_setup(u, a)
+	if sys == nil {
 		return
 	}
 	// Opportunistic retry of any previously-failed hooks before logging
 	// the new one — keeps the log from growing unboundedly while the
 	// app is active.
-	commit_hook_drain(app_db, av, a, u, function)
+	commit_hook_drain(sys, av, a, u, function)
 
-	seq := commit_log_append(app_db, table, kind, row_uid)
+	seq := commits_append(sys, table, kind, row_uid)
 	if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
-		commit_log_mark_fired(app_db, seq)
+		commits_mark_fired(sys, seq)
 	}
 }
 
-// commit_hook_drain walks pending _commit_log entries and retries each
+// commit_hook_drain walks pending `commits` entries and retries each
 // against the registered handler. Successful invocations mark the row
 // fired; failed ones stay pending for the next drain.
 func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string) {
-	commit_log_table_create(db)
-	rows, err := db.rows("select seq, name, kind, row_uid from _commit_log where fired=0 order by seq limit 100")
+	commits_table_create(db)
+	rows, err := db.rows("select seq, name, kind, row_uid from commits where fired=0 order by seq limit 100")
 	if err != nil {
 		return
 	}
@@ -128,7 +131,7 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string)
 		kind, _ := r["kind"].(string)
 		row_uid, _ := r["row_uid"].(string)
 		if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
-			commit_log_mark_fired(db, seq)
+			commits_mark_fired(db, seq)
 		}
 	}
 }
@@ -184,20 +187,43 @@ func commit_hook_function(av *AppVersion) string {
 	return av.Commit.Function
 }
 
-// commit_log_table_create lazily creates _commit_log for an app DB.
-func commit_log_table_create(db *DB) {
-	db.exec("create table if not exists _commit_log (seq integer primary key autoincrement, name text not null, kind text not null, row_uid text not null default '', ts integer not null, fired integer not null default 0)")
-	db.exec("create index if not exists commit_log_fired on _commit_log(fired, ts)")
+// commits_table_create lazily creates the `commits` pending-fire log and
+// its index on the handle it's given (the app system DB, app.db).
+func commits_table_create(db *DB) {
+	db.exec("create table if not exists commits (seq integer primary key autoincrement, name text not null, kind text not null, row_uid text not null default '', ts integer not null, fired integer not null default 0)")
+	db.exec("create index if not exists commits_fired on commits(fired, ts)")
 }
 
-// commit_log_append writes a pending row and returns its seq. The
-// "name" column holds the table that committed (renamed from the
-// parameter so it doesn't collide with SQL reserved-word handling).
-func commit_log_append(db *DB, table, kind, row_uid string) int64 {
-	commit_log_table_create(db)
-	db.exec("insert into _commit_log (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, row_uid, now())
+// commits_setup opens the app system DB (app.db), ensures the `commits`
+// table, and returns the handle. On first creation it drops the
+// pre-relocation `_commit_log` orphan from the app's data DB — the log
+// used to live there, where an app could tamper with it via
+// mochi.db.execute; it now lives in app.db alongside access/attachments,
+// which apps cannot write via SQL. The drop is gated on `commits` not
+// having existed, so it touches the data DB at most once per (user, app).
+func commits_setup(u *User, a *App) *DB {
+	sys := db_app_system(u, a)
+	if sys == nil {
+		return nil
+	}
+	existed, _ := sys.exists("select name from sqlite_master where type='table' and name='commits'")
+	commits_table_create(sys)
+	if !existed {
+		if data := db_app(u, a); data != nil {
+			data.exec("drop table if exists _commit_log")
+		}
+	}
+	return sys
+}
+
+// commits_append writes a pending row and returns its seq. The "name"
+// column holds the table that committed (renamed from the parameter so
+// it doesn't collide with SQL reserved-word handling).
+func commits_append(db *DB, table, kind, row_uid string) int64 {
+	commits_table_create(db)
+	db.exec("insert into commits (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, row_uid, now())
 	var seq int64
-	if row, _ := db.row("select seq from _commit_log where name=? and kind=? and row_uid=? and fired=0 order by seq desc limit 1", table, kind, row_uid); row != nil {
+	if row, _ := db.row("select seq from commits where name=? and kind=? and row_uid=? and fired=0 order by seq desc limit 1", table, kind, row_uid); row != nil {
 		if v, ok := row["seq"].(int64); ok {
 			seq = v
 		}
@@ -205,10 +231,10 @@ func commit_log_append(db *DB, table, kind, row_uid string) int64 {
 	return seq
 }
 
-// commit_log_mark_fired marks a row as fired. Idempotent.
-func commit_log_mark_fired(db *DB, seq int64) {
+// commits_mark_fired marks a row as fired. Idempotent.
+func commits_mark_fired(db *DB, seq int64) {
 	if seq <= 0 {
 		return
 	}
-	db.exec("update _commit_log set fired=1 where seq=?", seq)
+	db.exec("update commits set fired=1 where seq=?", seq)
 }

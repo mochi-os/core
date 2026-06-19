@@ -3217,13 +3217,15 @@ type SQLCommand struct {
 	Args      []any  `cbor:"args,omitempty"`
 }
 
-// sql_default_excluded names tables that never replicate, no matter
-// what the app declares. SQLite's internal namespace plus the
-// session-local commit log used by the future mochi.db.commit.hook
-// drainer.
+// sql_default_excluded names tables that never replicate on the data-DB
+// path, no matter what the app declares — SQLite's internal namespace.
+// The commit-hook log used to be listed here too, when it lived in the
+// app data DB; it now lives in app.db (server-only) as `commits`, written
+// via plain db.exec (never journalled), so it needs no entry — and a bare
+// name here would wrongly suppress an app's own data table of the same
+// name on the data-DB path.
 var sql_default_excluded = []string{
 	"sqlite_",
-	"_commit_log",
 }
 
 // sql_target_table extracts the target table from a mutating SQL

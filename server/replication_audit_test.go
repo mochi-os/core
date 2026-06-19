@@ -26,7 +26,7 @@ func TestAppHighestVersionDir(t *testing.T) {
 // TestAuditTableReplicates: host-local infra tables are excluded from the
 // content count; app data tables are included.
 func TestAuditTableReplicates(t *testing.T) {
-	for _, name := range []string{"journal", "_commit_log", "sequence", "received", "log", "acknowledged", "pending", "sqlite_master", ""} {
+	for _, name := range []string{"journal", "commits", "idempotency", "sequence", "received", "log", "acknowledged", "pending", "email_delivered", "sqlite_master", ""} {
 		if audit_table_replicates(name) {
 			t.Errorf("%q should be host-local (excluded)", name)
 		}

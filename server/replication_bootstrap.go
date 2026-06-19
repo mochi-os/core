@@ -583,10 +583,37 @@ func replication_bootstrap_reconcile_on_complete(peer string) {
 	if remaining, _ := rdb.exists("select 1 from bootstrap_served where peer=?", peer); remaining {
 		return // bulk bootstrap still in progress
 	}
+	// We just served `peer` a full bootstrap, so it re-synced its data FROM us —
+	// which means it wiped its replication.db and RESET its outbound sequence
+	// counter to ~0 (a `replica reset` / fresh rejoin). Its resumed writes will
+	// therefore arrive at LOW sequences. Our inbound cursor + seen for it are
+	// stale-high from before its reset and would silently drop those ops as
+	// "already applied" (sequence <= cursor) — the replica-reset sequence-space
+	// misalignment that silently diverged wasabi->yuzu (2026-06-19). Reset our
+	// inbound state for it so its fresh stream is accepted and idempotently
+	// re-applied. No-op for a brand-new peer (we have no prior state for it).
+	replication_inbound_reset(rdb, peer)
 	if paired, _ := rdb.exists("select 1 from pair where peer=?", peer); !paired {
 		return
 	}
 	go replication_pair_backfill(peer)
+}
+
+// replication_inbound_reset clears this host's inbound replication state for
+// `peer` — apply cursors, the seen-dedup set, and any buffered pending ops.
+// Called after we serve `peer` a full bootstrap (it has re-synced from us and
+// reset its outbound sequence counter), so we must treat its incoming stream as
+// fresh; otherwise its low-sequence resumed writes are dropped below our
+// stale-high cursor and replication silently diverges. Safe because the peer's
+// data now matches our snapshot, so re-applying its subsequent ops is idempotent.
+func replication_inbound_reset(rdb *DB, peer string) {
+	if rdb == nil || peer == "" {
+		return
+	}
+	rdb.exec("delete from cursor where peer=?", peer)
+	rdb.exec("delete from seen where peer=?", peer)
+	rdb.exec("delete from pending where peer=?", peer)
+	info("Replication inbound state reset for peer %q after serving its bootstrap — now accepts its fresh sequence space", peer)
 }
 
 // bootstrap_scopes_for_peer returns every (scope, state, position)

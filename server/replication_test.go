@@ -765,8 +765,8 @@ func TestReplicationPendingGcDropsAgedUnfillable(t *testing.T) {
 	db := db_open("db/replication.db")
 	// 1-day TTL via setting override.
 	setting_set("replication.pending.unfillable_ttl_days", "1")
-	old_ts := now() - 5*86400      // 5 days old -> dropped
-	recent_ts := now() - 1*3600    // 1 hour old -> kept
+	old_ts := now() - 5*86400   // 5 days old -> dropped
+	recent_ts := now() - 1*3600 // 1 hour old -> kept
 
 	// Stalled stream (unanchored, no Prev==0). Two old rows + one
 	// recent row.
@@ -917,7 +917,7 @@ func TestReplicationGatedStreamAppliesInSequenceOrder(t *testing.T) {
 		Scope: repl_scope_app, User: "uid-gate",
 		Database: "sessions", Table: "sessions", Operation: repl_op_delete,
 		Sequence: 2, Prev: 1,
-		Payload:  cbor_encode(&SessionDelete{Code: "sess-G"}),
+		Payload: cbor_encode(&SessionDelete{Code: "sess-G"}),
 	}
 
 	// Buffer them delete-first, so received order is the wrong order.
@@ -4048,8 +4048,11 @@ func TestSQLTableExcluded(t *testing.T) {
 	if !sql_table_excluded(nil, "sqlite_sequence") {
 		t.Error("sqlite_sequence must be excluded by default")
 	}
-	if !sql_table_excluded(nil, "_commit_log") {
-		t.Error("_commit_log must be excluded by default")
+	// commits is the relocated commit-hook log; it lives in app.db, not the
+	// data DB, so it must NOT be in the data-DB default-exclude set — a bare
+	// name there would wrongly suppress an app table called "commits".
+	if sql_table_excluded(nil, "commits") {
+		t.Error("commits must NOT be excluded on the data-DB path")
 	}
 	if sql_table_excluded(nil, "posts") {
 		t.Error("posts must NOT be excluded by default")
@@ -4377,7 +4380,6 @@ func TestReplicationEmitConcurrentChainIntact(t *testing.T) {
 		t.Errorf("tail row missing or read failed: %v", err)
 	}
 }
-
 
 // ============================================================
 // Extra apply / loop-prevention / replay tests
@@ -5528,5 +5530,41 @@ func TestStallAlertSuppress(t *testing.T) {
 	rdb.exec("insert into irreparable (peer, scope, user, db, reason, since) values ('irrpeer', 'app', 'u1', 'system:sessions', 'stalled', 0)")
 	if !stall_alert_suppress(stream("irrpeer")) {
 		t.Error("stream already marked irreparable should be suppressed")
+	}
+}
+
+// TestReplicationInboundReset (#34): after serving a peer's bootstrap, this
+// host's inbound state for that peer (cursor + seen + pending) is cleared so its
+// post-reset low-sequence writes are accepted — without touching any other
+// peer's state.
+func TestReplicationInboundReset(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	rdb.exec("create table if not exists seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
+	rdb.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
+
+	ins := func(peer string) {
+		rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, 'app', 'u1', 'app:x', 14255)", peer)
+		rdb.exec("insert into seen (peer, scope, user, sequence, applied) values (?, 'app', 'u1', 5, 0)", peer)
+		rdb.exec("insert into pending (peer, scope, user, db, sequence, payload, received) values (?, 'app', 'u1', 'app:x', 6, x'00', 0)", peer)
+	}
+	ins("peerA")
+	ins("peerB")
+
+	replication_inbound_reset(rdb, "peerA")
+
+	for _, tbl := range []string{"cursor", "seen", "pending"} {
+		if n := rdb.integer("select count(*) from " + tbl + " where peer='peerA'"); n != 0 {
+			t.Errorf("%s: peerA rows not cleared (%d remain)", tbl, n)
+		}
+		if n := rdb.integer("select count(*) from " + tbl + " where peer='peerB'"); n != 1 {
+			t.Errorf("%s: peerB rows wrongly affected (got %d, want 1)", tbl, n)
+		}
 	}
 }

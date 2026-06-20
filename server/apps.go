@@ -81,8 +81,6 @@ type AppTheme struct {
 	Hue            float64           `json:"hue"`
 	Chroma         float64           `json:"chroma"`
 	HueBG          float64           `json:"hue_bg"`
-	Preview        string            `json:"preview"`
-	PreviewDark    string            `json:"preview_dark"`
 	BorderRadius   string            `json:"border_radius"`
 	Spacing        string            `json:"spacing"`
 	FontSans       string            `json:"font_sans"`
@@ -2521,10 +2519,6 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 					"hue":     t.Hue,
 					"chroma":  t.Chroma,
 					"hue_bg":  t.HueBG,
-					"preview": t.Preview,
-				}
-				if t.PreviewDark != "" {
-					themes[i]["preview_dark"] = t.PreviewDark
 				}
 			}
 			result["themes"] = themes
@@ -2629,11 +2623,7 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			"hue":         theme.Hue,
 			"chroma":      theme.Chroma,
 			"hue_bg":      theme.HueBG,
-			"preview":     theme.Preview,
 			"development": !is_entity_id(a.id),
-		}
-		if theme.PreviewDark != "" {
-			result["preview_dark"] = theme.PreviewDark
 		}
 		if theme.BorderRadius != "" {
 			result["border_radius"] = theme.BorderRadius

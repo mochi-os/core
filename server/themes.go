@@ -197,6 +197,7 @@ func append_style_preset(style_parts *[]string, density string) {
 func web_user_theme_style(user *User) string {
 	user_density := user_preference_get(user, "density", "theme")
 	user_radius := user_preference_get(user, "radius", "theme")
+	user_card := user_preference_get(user, "card", "theme")
 	user_background := user_preference_get(user, "background", "theme")
 	user_font_size := user_preference_get(user, "font_size", "theme")
 	user_font := user_preference_get(user, "font", "theme")
@@ -256,6 +257,16 @@ func web_user_theme_style(user *User) string {
 				style_parts = append(style_parts, fmt.Sprintf("%s: %s", key, val))
 			}
 		}
+	}
+
+	// Card surface treatment: user override wins over the theme's card vars.
+	// Appended after the theme overrides above so it takes precedence. Each
+	// option sets both axes (border width + shadow) explicitly.
+	switch user_card {
+	case "flat":
+		style_parts = append(style_parts, "--card-border-width: var(--border-width)", "--card-shadow: none")
+	case "raised":
+		style_parts = append(style_parts, "--card-border-width: var(--border-width)", "--card-shadow: var(--shadow-sm)")
 	}
 
 	// Effective density: user override wins, else theme's spacing.

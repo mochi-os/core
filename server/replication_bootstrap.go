@@ -1814,6 +1814,17 @@ func bootstrap_db_land(partial, target string) error {
 	if restore_error != nil {
 		return fmt.Errorf("bootstrap-db-fetch: restore %q into %q: %w", partial, rel, restore_error)
 	}
+	// The Restore replaced every page of the destination, including its `journal`
+	// table — and a pure-receiver source has none (the apply path never creates one,
+	// replication.go), so B's journal is now gone. Drop the stale journal_ensured
+	// entry so the next journaled write re-runs journal_ensure and re-creates B's own
+	// journal, instead of early-returning on the stale cache and failing every write
+	// with "no such table: journal" (#424). Verified live: with this line the post-
+	// reseed write re-creates the journal (cached=false → MISS); without it the write
+	// fails (cached=true → early-return, table gone). Covers BOTH write paths, since
+	// both gate on journal_ensure: execute via db_execute_journal and transaction via
+	// api_db_transaction. Matches reseed_finalize's "receiver starts journal fresh".
+	journal_ensured.Delete(db.path)
 	_ = os.Remove(partial)
 	return nil
 }
@@ -2692,7 +2703,6 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 // the old inode. Pair-backfill copies system DB rows over the wire
 // after the receiver is running, so the writes land in the SAME open
 // connection.
-
 
 // replication_pair_backfill runs on the source after approving a pair
 // join. Direct-emits every replicated row to the new peer via the

@@ -392,3 +392,42 @@ func TestReplicationAuditContentCompare(t *testing.T) {
 		t.Fatal("converged content should clear its alert (re-arm)")
 	}
 }
+
+// TestAuditContentCandidates (#48): only streams present on BOTH hosts with equal
+// counts are content-hash candidates — count-diverging or one-sided streams aren't.
+func TestAuditContentCandidates(t *testing.T) {
+	local := map[string]int64{"u|a": 10, "u|b": 5, "u|c": 3}
+	remote := map[string]int64{"u|a": 10, "u|b": 7, "u|d": 1}
+	got := audit_content_candidates(local, remote)
+	if len(got) != 1 || got[0].User != "u" || got[0].Stream != "a" {
+		t.Fatalf("want exactly [{u a}] (equal count, both present), got %v", got)
+	}
+}
+
+// TestReplicationAuditContentHash (#48): the mtime-cached hash is stable for
+// unchanged content, recomputes when the DB changes, and is "" for a missing DB.
+func TestReplicationAuditContentHash(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if replication_audit_content_hash("db/missing.db") != "" {
+		t.Fatal("missing DB must hash to \"\"")
+	}
+	db := db_open("db/test.db")
+	db.exec("create table t (id text primary key, v text)")
+	db.exec("insert into t values ('1','a')")
+	h1 := replication_audit_content_hash("db/test.db")
+	if h1 == "" {
+		t.Fatal("expected a non-empty hash")
+	}
+	if replication_audit_content_hash("db/test.db") != h1 {
+		t.Fatal("unchanged content must hash the same")
+	}
+	db.exec("insert into t values ('2','b')")
+	if replication_audit_content_hash("db/test.db") == h1 {
+		t.Fatal("changed content must produce a different hash (cache keyed on mtime)")
+	}
+}

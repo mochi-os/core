@@ -306,8 +306,10 @@ func init() {
 	a.event_anonymous("lookup/freshness", replication_freshness_probe_event)
 	a.event_anonymous("lookup/user", replication_user_lookup_event)
 	// Cross-host convergence audit (see replication_audit.go): a member
-	// answers with its per-stream replicated-row-count manifest.
+	// answers with its per-stream replicated-row-count manifest, and (on a
+	// follow-up request) the content hashes of specific count-matching streams.
 	a.event_anonymous("audit/manifest", replication_audit_manifest_event)
+	a.event_anonymous("audit/hash", replication_audit_hash_event)
 	// Whole-server pair join-request flow (see replication_join.go).
 	// Server-to-server: a fresh replica has no entities at all.
 	a.event_anonymous("join/request", replication_join_request_event)

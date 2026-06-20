@@ -182,16 +182,96 @@ type AuditStream struct {
 	Stream string `cbor:"stream"`
 	Count  int64  `cbor:"count"`
 	Tail   int64  `cbor:"tail,omitempty"`
-	// Hash is an order-independent content fingerprint of the stream's replicated
-	// tables (db_replicated_content_hash). The count catches insert/delete
-	// divergence; the hash catches CONTENT divergence the count is blind to — two
-	// hosts with equal row counts but different row contents (the dropped-UPDATE
-	// class seen after a replica reset). "" if unreadable.
-	Hash string `cbor:"hash,omitempty"`
 }
 
 type AuditManifestResult struct {
 	Streams []AuditStream `cbor:"streams"`
+}
+
+// AuditKey identifies one stream for the on-demand content-hash exchange.
+type AuditKey struct {
+	User   string `cbor:"user"`
+	Stream string `cbor:"stream"`
+}
+
+// AuditHashRequest asks a peer for the content hashes of specific streams — only
+// the ones whose row COUNTS already match, where a dropped-UPDATE could hide.
+// Sending that subset (not every stream) is what keeps the response cheap: the
+// expensive full-content hash never blocks the manifest exchange.
+type AuditHashRequest struct {
+	Keys []AuditKey `cbor:"keys"`
+}
+
+// AuditHashEntry / AuditHashResult carry the answer: one content hash per stream.
+type AuditHashEntry struct {
+	User   string `cbor:"user"`
+	Stream string `cbor:"stream"`
+	Hash   string `cbor:"hash"`
+}
+
+type AuditHashResult struct {
+	Hashes []AuditHashEntry `cbor:"hashes"`
+}
+
+// audit_hash_cache memoises db_replicated_content_hash per DB, keyed by a cheap
+// change fingerprint, so an UNCHANGED DB is never re-hashed. Between audit rounds
+// almost no DB changes, so almost every lookup is a cache hit — this is what makes
+// hashing cheap enough to compute on demand instead of eagerly in the manifest (#48).
+var (
+	audit_hash_mutex sync.Mutex
+	audit_hash_cache = map[string]auditHashCacheEntry{}
+)
+
+type auditHashCacheEntry struct {
+	fingerprint string
+	hash        string
+}
+
+// audit_db_fingerprint is a cheap change-indicator for a DB: the mtime+size of the
+// main file AND of its -wal sidecar. SQLite runs in WAL mode (db.go), so writes
+// land in <db>-wal and DON'T bump the main file's mtime until a checkpoint —
+// keying on the main file alone would serve a stale hash and miss real changes.
+// "" if the DB is absent.
+func audit_db_fingerprint(rel string) string {
+	full := filepath.Join(data_dir, filepath.FromSlash(rel))
+	st, err := os.Stat(full)
+	if err != nil || st.IsDir() {
+		return ""
+	}
+	fp := fmt.Sprintf("%d:%d", st.ModTime().UnixNano(), st.Size())
+	if w, err := os.Stat(full + "-wal"); err == nil {
+		fp += fmt.Sprintf(":%d:%d", w.ModTime().UnixNano(), w.Size())
+	}
+	return fp
+}
+
+// replication_audit_content_hash returns rel's content hash, recomputing only when
+// the DB (main file or -wal) has changed since the last hash. "" if unreadable.
+func replication_audit_content_hash(rel string) string {
+	fp := audit_db_fingerprint(rel)
+	if fp == "" {
+		return ""
+	}
+	audit_hash_mutex.Lock()
+	e, ok := audit_hash_cache[rel]
+	audit_hash_mutex.Unlock()
+	if ok && e.fingerprint == fp {
+		return e.hash
+	}
+	h := db_replicated_content_hash(rel)
+	audit_hash_mutex.Lock()
+	audit_hash_cache[rel] = auditHashCacheEntry{fingerprint: fp, hash: h}
+	audit_hash_mutex.Unlock()
+	return h
+}
+
+// audit_entry_rel resolves a DB-manifest entry to its relative path under data_dir.
+func audit_entry_rel(e BootstrapDBEntry) string {
+	rel := e.Path
+	if rel == "" && e.User != "" && e.App != "" && e.DB != "" {
+		rel = "users/" + e.User + "/" + e.App + "/db/" + e.DB
+	}
+	return rel
 }
 
 // replication_audit_local_manifest computes this host's per-stream content
@@ -203,10 +283,7 @@ func replication_audit_local_manifest() []AuditStream {
 	}
 	out := make([]AuditStream, 0, len(entries))
 	for _, e := range entries {
-		rel := e.Path
-		if rel == "" && e.User != "" && e.App != "" && e.DB != "" {
-			rel = "users/" + e.User + "/" + e.App + "/db/" + e.DB
-		}
+		rel := audit_entry_rel(e)
 		if rel == "" {
 			continue
 		}
@@ -220,10 +297,64 @@ func replication_audit_local_manifest() []AuditStream {
 			Stream: stream,
 			Count:  count,
 			Tail:   replication_tail(e.User, repl_scope_app, stream),
-			Hash:   db_replicated_content_hash(rel),
 		})
 	}
 	return out
+}
+
+// replication_audit_hashes computes this host's content hash for each requested
+// (user, stream) — used both to answer a peer's audit/hash request and to hash the
+// local side of the same comparison. Walks the cheap DB manifest and hashes only
+// the requested streams via the mtime cache, so unchanged DBs aren't re-hashed.
+func replication_audit_hashes(keys []AuditKey) []AuditHashEntry {
+	if len(keys) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		want[k.User+"|"+k.Stream] = true
+	}
+	entries, err := bootstrap_walk_db_manifest(bootstrap_scope_userdbs, "")
+	if err != nil {
+		return nil
+	}
+	out := make([]AuditHashEntry, 0, len(keys))
+	for _, e := range entries {
+		rel := audit_entry_rel(e)
+		if rel == "" {
+			continue
+		}
+		stream := bootstrap_stream_key(rel)
+		if !want[e.User+"|"+stream] {
+			continue
+		}
+		out = append(out, AuditHashEntry{User: e.User, Stream: stream, Hash: replication_audit_content_hash(rel)})
+	}
+	return out
+}
+
+// audit_content_candidates returns the streams present on both hosts with EQUAL
+// row counts — the only ones a content (dropped-UPDATE) divergence can hide in, so
+// the only ones worth fetching content hashes for.
+func audit_content_candidates(local, remote map[string]int64) []AuditKey {
+	var out []AuditKey
+	for key, lc := range local {
+		if rc, ok := remote[key]; ok && rc == lc {
+			if parts := strings.SplitN(key, "|", 2); len(parts) == 2 {
+				out = append(out, AuditKey{User: parts[0], Stream: parts[1]})
+			}
+		}
+	}
+	return out
+}
+
+// audit_hash_map keys content-hash entries by "user|stream" for comparison.
+func audit_hash_map(entries []AuditHashEntry) map[string]string {
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		m[e.User+"|"+e.Stream] = e.Hash
+	}
+	return m
 }
 
 // audit_local_tables are the core-created host-local infrastructure tables that
@@ -441,12 +572,41 @@ func audit_manifest_map(streams []AuditStream) map[string]int64 {
 	return m
 }
 
-func audit_manifest_hash_map(streams []AuditStream) map[string]string {
-	m := make(map[string]string, len(streams))
-	for _, s := range streams {
-		m[s.User+"|"+s.Stream] = s.Hash
+// replication_audit_request_hashes fetches a pair member's content hashes for the
+// given (count-matching) streams over a synchronous Net stream — same shape as the
+// manifest request, but the response carries only the requested subset.
+func replication_audit_request_hashes(peer string, keys []AuditKey) (map[string]string, error) {
+	s, err := stream_to_peer(peer, "", "", "replication", "audit/hash", "", nil)
+	if err != nil {
+		return nil, err
 	}
-	return m
+	defer s.close()
+	if err := s.write(&AuditHashRequest{Keys: keys}); err != nil {
+		return nil, err
+	}
+	var res AuditHashResult
+	if err := s.read(&res); err != nil {
+		return nil, err
+	}
+	return audit_hash_map(res.Hashes), nil
+}
+
+// replication_audit_hash_event answers a pair member's request for the content
+// hashes of specific streams. Live stream only; a queued retry has no caller. The
+// write failure is info, not warn — content divergence is advisory, so a missed
+// hash exchange must not email (the count audit owns the alerting path).
+func replication_audit_hash_event(e *Event) {
+	if e.stream == nil {
+		return
+	}
+	var req AuditHashRequest
+	if err := e.stream.read(&req); err != nil {
+		return
+	}
+	res := &AuditHashResult{Hashes: replication_audit_hashes(req.Keys)}
+	if err := e.stream.write(res); err != nil {
+		info("Replication audit-hash: failed to write response: %v", err)
+	}
 }
 
 var (
@@ -484,12 +644,9 @@ func replication_convergence_audit() {
 
 	localStreams := replication_audit_local_manifest()
 	local := audit_manifest_map(localStreams)
-	localHash := audit_manifest_hash_map(localStreams)
 	audit_convergence_mutex.Lock()
 	prevLocal := audit_previous
 	audit_previous = local
-	prevLocalHash := audit_previous_hash
-	audit_previous_hash = localHash
 	audit_convergence_mutex.Unlock()
 
 	for _, m := range members {
@@ -515,16 +672,34 @@ func replication_convergence_audit() {
 			continue
 		}
 		remoteMap := audit_manifest_map(remote)
-		remoteHash := audit_manifest_hash_map(remote)
 
 		audit_convergence_mutex.Lock()
 		prevRemote := audit_peer_previous[peer]
 		audit_peer_previous[peer] = remoteMap
+		audit_convergence_mutex.Unlock()
+
+		replication_audit_compare(peer, local, prevLocal, remoteMap, prevRemote)
+
+		// Content compare: only streams whose row COUNTS already match can hide a
+		// dropped-UPDATE, so fetch content hashes for just that subset (cheap and
+		// mtime-cached on both sides) rather than hashing every stream every round.
+		candidates := audit_content_candidates(local, remoteMap)
+		if len(candidates) == 0 {
+			continue
+		}
+		localHash := audit_hash_map(replication_audit_hashes(candidates))
+		remoteHash, err := replication_audit_request_hashes(peer, candidates)
+		if err != nil {
+			info("Replication audit: hash fetch from %q failed: %v", peer, err)
+			continue
+		}
+		audit_convergence_mutex.Lock()
+		prevLocalHash := audit_previous_hash
+		audit_previous_hash = localHash
 		prevRemoteHash := audit_peer_previous_hash[peer]
 		audit_peer_previous_hash[peer] = remoteHash
 		audit_convergence_mutex.Unlock()
 
-		replication_audit_compare(peer, local, prevLocal, remoteMap, prevRemote)
 		replication_audit_content_compare(peer, localHash, prevLocalHash, remoteHash, prevRemoteHash, local, remoteMap)
 	}
 }

@@ -1,7 +1,10 @@
 # Makefile for Mochi
-# Copyright Alistair Cunningham 2024-2026
+# Copyright © 2026 Mochi OÜ
+# SPDX-License-Identifier: AGPL-3.0-only
+# This file is part of Mochi, licensed under the GNU AGPL v3 with the
+# Mochi Application Interface Exception - see LICENSE and LICENSE-EXCEPTION.md.
 
-version = 0.4.146
+version = 0.4.148
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.

@@ -1234,8 +1234,9 @@ func web_login_identity(c *gin.Context) {
 	}
 
 	var input struct {
-		Name    string `json:"name"`
-		Privacy string `json:"privacy"`
+		Name     string `json:"name"`
+		Privacy  string `json:"privacy"`
+		Language string `json:"language"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
@@ -1251,17 +1252,21 @@ func web_login_identity(c *gin.Context) {
 
 	// Persist the language the user explicitly chose before signup as their
 	// language preference, so the Settings page and layout direction match the
-	// UI they already see. The explicit pick lives in the `mochi_language`
-	// cookie the web LanguagePicker writes; a browser whose only signal is
-	// Accept-Language sets no cookie and stays on auto-detect, which is correct.
-	// Only set it when the user has no explicit preference yet, and never the
-	// "auto" sentinel.
-	if cookie, cerr := c.Cookie("mochi_language"); cerr == nil && cookie != "" {
-		tag := strings.ToLower(cookie)
-		if tag != "auto" && valid(tag, "locale") {
-			if pref := strings.ToLower(user_preference_get(u, "language", "")); pref == "" || pref == "auto" {
-				user_preference_set(u, "language", tag)
-			}
+	// UI they already see. Source order: an explicit `language` field in the
+	// request body (the web login client sends it; non-web clients can too),
+	// else the `mochi_language` cookie the LanguagePicker writes. A browser
+	// whose only signal is Accept-Language provides neither and stays on
+	// auto-detect, which is correct. Only set it when the user has no explicit
+	// preference yet, and never the "auto" sentinel.
+	lang := strings.ToLower(strings.TrimSpace(input.Language))
+	if lang == "" {
+		if cookie, cerr := c.Cookie("mochi_language"); cerr == nil {
+			lang = strings.ToLower(cookie)
+		}
+	}
+	if lang != "" && lang != "auto" && valid(lang, "locale") {
+		if pref := strings.ToLower(user_preference_get(u, "language", "")); pref == "" || pref == "auto" {
+			user_preference_set(u, "language", lang)
 		}
 	}
 

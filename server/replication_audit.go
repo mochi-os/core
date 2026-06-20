@@ -1,5 +1,8 @@
 // Mochi server: active convergence audit (#29)
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see LICENSE and LICENSE-EXCEPTION.md.
 //
 // Two complementary checks, both driven off replication_manager's hourly
 // tick:
@@ -375,7 +378,18 @@ func audit_hash_map(entries []AuditHashEntry) map[string]string {
 // pending-fire log) and `idempotency` (the per-app idempotent-call cache),
 // both in app.db, are host-local, so their counts would otherwise read as
 // cross-host divergence.
-var audit_local_tables = map[string]bool{
+// audit_local_tables_core are the CORE-created host-local infrastructure tables
+// that may live inside any app DB but never hold replicated content: the
+// replication journal, the broadcast bookkeeping (sender sequence/log, receiver
+// received/acknowledged, the pending buffer), the commit-hook fire log
+// (`commits`), the idempotent-call cache (`idempotency`), and email_delivered
+// (replicated but TTL-pruned per host, so its count wobbles). These are present
+// in many DBs and aren't app-declared, so they stay built-in. App-specific
+// host-local tables (caches like feeds' post_scores/score_cache/poll_locks) are
+// NOT listed here — they come from each app's database.replicate.exclude.tables,
+// merged per-DB by audit_excludes_for_path (see
+// claude/plans/audit-host-local-columns.md).
+var audit_local_tables_core = map[string]bool{
 	"journal":         true,
 	"commits":         true,
 	"sequence":        true,
@@ -385,31 +399,91 @@ var audit_local_tables = map[string]bool{
 	"pending":         true,
 	"email_delivered": true,
 	"idempotency":     true,
-	// App tables that are computed/maintained per host, not replicated, so their
-	// row SET (not just a column) legitimately differs — the count audit must skip
-	// them too. post_scores is the feeds per-(post,viewer) ranking cache (each host
-	// scores its own view; row counts differ). This is a known-cases list, not
-	// exhaustive — see audit_local_columns and #45 for the app-declaration plan.
-	"post_scores": true,
 }
 
-// audit_local_columns lists, per table, columns that are host-LOCAL within an
-// otherwise-replicated table — computed scores, per-host timestamps — so the
-// content hash must skip them or two hosts legitimately differ on a row whose
-// replicated columns match. Found by manual divergence drill-down; a known-cases
-// registry, NOT exhaustive (keyed by bare table name, so it can't tell two apps'
-// same-named tables apart). The proper fix is for apps to DECLARE host-local
-// columns in their schema so this is derived, not hand-maintained (#45). Until
-// then content divergence stays advisory (it can still hit an unlisted column).
-var audit_local_columns = map[string]map[string]bool{
-	"tags":     {"relevance": true},      // feeds: computed relevance score
+// audit_local_columns_core lists, per table, host-LOCAL columns in CORE DBs
+// (user.db and the like) that legitimately differ per host so the content hash
+// must skip them. App data-DB columns are NOT listed here — they come from each
+// app's database.replicate.exclude.columns, resolved per-DB by
+// audit_excludes_for_path, which keys by the owning app so two apps' same-named
+// tables can't collide.
+var audit_local_columns_core = map[string]map[string]bool{
 	"accounts": {"last_delivered": true}, // user.db: per-host notification timestamp
 }
 
+// audit_app_id_from_path returns the app id owning the data DB at a
+// replication-relative path of the form users/<user>/<app>/db/<file>, or "" for
+// core DBs (users/<user>/user.db) and app system DBs (users/<user>/<app>/app.db).
+// App declarations describe only the app's own data DB; app.db is core-managed.
+func audit_app_id_from_path(rel string) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) == 5 && parts[0] == "users" && parts[3] == "db" {
+		return parts[2]
+	}
+	return ""
+}
+
+// audit_app_excludes returns the host-local tables and per-table columns an app
+// declares in its app.json (database.replicate.exclude). Reads the app's active
+// version; the declaration is schema-stable so the exact version doesn't matter.
+// Returns nil maps for an unknown/unloaded app.
+func audit_app_excludes(app_id string) (tables map[string]bool, columns map[string]map[string]bool) {
+	a := app_by_id(app_id)
+	if a == nil {
+		return nil, nil
+	}
+	av := a.active(nil)
+	if av == nil {
+		return nil, nil
+	}
+	if len(av.Database.Replicate.Exclude.Tables) > 0 {
+		tables = map[string]bool{}
+		for _, t := range av.Database.Replicate.Exclude.Tables {
+			tables[t] = true
+		}
+	}
+	if len(av.Database.Replicate.Exclude.Columns) > 0 {
+		columns = map[string]map[string]bool{}
+		for table, cols := range av.Database.Replicate.Exclude.Columns {
+			m := map[string]bool{}
+			for _, c := range cols {
+				m[c] = true
+			}
+			columns[table] = m
+		}
+	}
+	return tables, columns
+}
+
+// audit_excludes_for_path returns the host-local exclude-set for the DB at a
+// replication-relative path: the always-excluded core infra tables, plus — for
+// an app's data DB — that app's declared exclude tables and columns; for a core
+// or app-system DB, the core host-local columns. Keying app declarations by the
+// owning app (not a global table name) is what lets two apps' same-named tables
+// carry different exclusions without colliding.
+func audit_excludes_for_path(rel string) (tables map[string]bool, columns map[string]map[string]bool) {
+	tables = map[string]bool{}
+	for t := range audit_local_tables_core {
+		tables[t] = true
+	}
+	if app_id := audit_app_id_from_path(rel); app_id != "" {
+		appTables, appColumns := audit_app_excludes(app_id)
+		for t := range appTables {
+			tables[t] = true
+		}
+		columns = appColumns
+		return tables, columns
+	}
+	// Core / app-system DB: the core host-local columns (e.g. user.db accounts).
+	columns = audit_local_columns_core
+	return tables, columns
+}
+
 // audit_table_replicates reports whether a table's rows are replicated content
-// (so they belong in the cross-host count) rather than host-local bookkeeping.
-func audit_table_replicates(name string) bool {
-	return name != "" && !strings.HasPrefix(name, "sqlite_") && !audit_local_tables[name]
+// (so they belong in the cross-host count) rather than host-local bookkeeping,
+// given the DB's resolved local-table set from audit_excludes_for_path.
+func audit_table_replicates(name string, local map[string]bool) bool {
+	return name != "" && !strings.HasPrefix(name, "sqlite_") && !local[name]
 }
 
 // db_replicated_row_count sums count(*) over the replicated tables of the DB at
@@ -429,10 +503,11 @@ func db_replicated_row_count(rel string) int64 {
 	if err != nil {
 		return -1
 	}
+	localTables, _ := audit_excludes_for_path(rel)
 	var total int64
 	for _, t := range tables {
 		name, _ := t["name"].(string)
-		if !audit_table_replicates(name) {
+		if !audit_table_replicates(name, localTables) {
 			continue
 		}
 		total += int64(db.integer("select count(*) from \"" + name + "\""))
@@ -463,17 +538,18 @@ func db_replicated_content_hash(rel string) string {
 	if err != nil {
 		return ""
 	}
+	localTables, localColumns := audit_excludes_for_path(rel)
 	outer := sha256.New()
 	for _, t := range tables {
 		name, _ := t["name"].(string)
-		if !audit_table_replicates(name) {
+		if !audit_table_replicates(name, localTables) {
 			continue
 		}
 		rows, err := db.rows("select * from \"" + name + "\"")
 		if err != nil {
 			return ""
 		}
-		exclude := audit_local_columns[name]
+		exclude := localColumns[name]
 		var acc [sha256.Size]byte
 		for _, r := range rows {
 			rh := audit_row_hash(r, exclude)

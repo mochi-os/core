@@ -1,5 +1,8 @@
 // Mochi server: Apps
-// Copyright Alistair Cunningham 2024-2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see LICENSE and LICENSE-EXCEPTION.md.
 
 package main
 
@@ -126,12 +129,19 @@ type AppVersion struct {
 		// Replicate controls which writes to this app's per-user DB
 		// fan out to the user's other hosts. Default is opt-out: every
 		// INSERT/UPDATE/DELETE replays on every replica. Apps list
-		// caches and other local-only state in
-		// `database.replicate.exclude.tables` to keep them off the wire.
-		// See claude/plans/replication.md.
+		// whole caches / local-only TABLES in
+		// `database.replicate.exclude.tables` to keep them off the wire,
+		// and host-LOCAL COLUMNS (computed scores, per-host timestamps)
+		// inside otherwise-replicated tables in
+		// `database.replicate.exclude.columns` (table -> column names).
+		// The content-convergence audit derives its exclude-set from both
+		// (see claude/plans/audit-host-local-columns.md), so a column
+		// whose value legitimately differs per host isn't read as
+		// divergence. See claude/plans/replication.md.
 		Replicate struct {
 			Exclude struct {
-				Tables []string `json:"tables"`
+				Tables  []string            `json:"tables"`
+				Columns map[string][]string `json:"columns"`
 			} `json:"exclude"`
 		} `json:"replicate"`
 		create_function func(*DB) `json:"-"`
@@ -1349,6 +1359,7 @@ func apps_manager() {
 //     override (set via mochi.app.service.set) survives;
 //   - it skips any service a dev app provides, so local-development precedence
 //     (dev apps win) is preserved.
+//
 // A user's own binding (a.user.app.service.set) always takes precedence over the
 // system binding, so per-user overrides are unaffected either way. Idempotent:
 // safe to run on every apps_manager pass.
@@ -2514,11 +2525,11 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			themes := make([]map[string]any, len(av.Themes))
 			for i, t := range av.Themes {
 				themes[i] = map[string]any{
-					"id":      t.ID,
-					"label":   a.label(user, av, t.Label),
-					"hue":     t.Hue,
-					"chroma":  t.Chroma,
-					"hue_bg":  t.HueBG,
+					"id":     t.ID,
+					"label":  a.label(user, av, t.Label),
+					"hue":    t.Hue,
+					"chroma": t.Chroma,
+					"hue_bg": t.HueBG,
 				}
 			}
 			result["themes"] = themes

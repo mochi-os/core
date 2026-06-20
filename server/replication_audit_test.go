@@ -1,5 +1,8 @@
 // Mochi server: convergence audit (#29) unit tests
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see LICENSE and LICENSE-EXCEPTION.md.
 
 package main
 
@@ -23,18 +26,82 @@ func TestAppHighestVersionDir(t *testing.T) {
 	}
 }
 
-// TestAuditTableReplicates: host-local infra tables are excluded from the
-// content count; app data tables are included.
+// TestAuditTableReplicates: core host-local infra tables are excluded from the
+// content count; app data tables are included. post_scores is NOT core anymore
+// (it's app-declared) so against the core set it counts — see
+// TestAuditExcludesForPath for the per-app derivation.
 func TestAuditTableReplicates(t *testing.T) {
-	for _, name := range []string{"journal", "commits", "idempotency", "sequence", "received", "log", "acknowledged", "pending", "email_delivered", "post_scores", "sqlite_master", ""} {
-		if audit_table_replicates(name) {
+	core := audit_local_tables_core
+	for _, name := range []string{"journal", "commits", "idempotency", "sequence", "received", "log", "acknowledged", "pending", "email_delivered", "sqlite_master", ""} {
+		if audit_table_replicates(name, core) {
 			t.Errorf("%q should be host-local (excluded)", name)
 		}
 	}
-	for _, name := range []string{"posts", "feeds", "sources", "items"} {
-		if !audit_table_replicates(name) {
-			t.Errorf("%q should count as replicated", name)
+	for _, name := range []string{"posts", "feeds", "sources", "items", "post_scores"} {
+		if !audit_table_replicates(name, core) {
+			t.Errorf("%q should count as replicated against the core set", name)
 		}
+	}
+}
+
+// TestAuditExcludesForPath: the resolver merges core infra with each app's
+// app.json declarations, keyed by the owning app so same-named tables in
+// different apps don't collide, and uses core columns for core DBs.
+func TestAuditExcludesForPath(t *testing.T) {
+	// Path parsing: only users/<u>/<app>/db/<file> resolves an app id.
+	for path, want := range map[string]string{
+		"users/U/APPID/db/feeds.db": "APPID",
+		"users/U/APPID/app.db":      "",
+		"users/U/user.db":           "",
+		"db/sessions.db":            "",
+	} {
+		if got := audit_app_id_from_path(path); got != want {
+			t.Errorf("audit_app_id_from_path(%q) = %q, want %q", path, got, want)
+		}
+	}
+
+	// Two apps with a same-named `tags` table: APP1 declares tags.relevance
+	// host-local, APP2 declares nothing. The resolver must scope to the owner.
+	mk := func(id string, tables []string, cols map[string][]string) *App {
+		av := &AppVersion{}
+		av.Database.Replicate.Exclude.Tables = tables
+		av.Database.Replicate.Exclude.Columns = cols
+		return &App{id: id, internal: av}
+	}
+	apps_lock.Lock()
+	apps["AUDITT1"] = mk("AUDITT1", []string{"post_scores"}, map[string][]string{"tags": {"relevance"}})
+	apps["AUDITT2"] = mk("AUDITT2", nil, nil)
+	apps_lock.Unlock()
+	defer func() {
+		apps_lock.Lock()
+		delete(apps, "AUDITT1")
+		delete(apps, "AUDITT2")
+		apps_lock.Unlock()
+	}()
+
+	tables1, columns1 := audit_excludes_for_path("users/U/AUDITT1/db/feeds.db")
+	if !tables1["journal"] || !tables1["commits"] {
+		t.Error("APP1 data DB should still carry the core infra table exclusions")
+	}
+	if !tables1["post_scores"] {
+		t.Error("APP1 data DB should pick up the declared post_scores table exclusion")
+	}
+	if columns1["tags"] == nil || !columns1["tags"]["relevance"] {
+		t.Error("APP1 should exclude its declared tags.relevance column")
+	}
+
+	_, columns2 := audit_excludes_for_path("users/U/AUDITT2/db/feeds.db")
+	if columns2["tags"]["relevance"] {
+		t.Error("APP2's tags.relevance must NOT be excluded — collision across apps")
+	}
+
+	// Core DB path: no app, core columns apply (user.db accounts.last_delivered).
+	tablesCore, columnsCore := audit_excludes_for_path("users/U/user.db")
+	if !tablesCore["journal"] {
+		t.Error("core DB should carry the core infra table exclusions")
+	}
+	if columnsCore["accounts"] == nil || !columnsCore["accounts"]["last_delivered"] {
+		t.Error("core DB should exclude accounts.last_delivered")
 	}
 }
 

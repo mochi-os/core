@@ -1,5 +1,8 @@
 // Mochi server: api_server_network unit tests
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Verifies the outbound-queue counts surfaced by mochi.server.network():
 // broadcasts (target='pubsub') under "queued", and direct messages whose

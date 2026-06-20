@@ -1,5 +1,8 @@
 // Mochi server: bulk bootstrap protocol (#66) — V1 scaffolding
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // When a fresh replica B joins a populated pair member A via
 // `mochictl replica join <A-id>` + source-side Approve, B's local

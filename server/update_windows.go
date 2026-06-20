@@ -1,5 +1,8 @@
 // Mochi server: Windows-specific helpers for the self-install path.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Spawns the detached cmd.exe wrapper that runs ping (for a settling
 // delay) and then msiexec to install the downloaded MSI. Two Windows

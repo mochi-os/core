@@ -1,3 +1,8 @@
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
+
 // Tests for queue_send_direct's self-loop fast path and the
 // queue_sending / queue_unsending / queue_is_inflight helpers that keep
 // the async resolver from racing queue_process.

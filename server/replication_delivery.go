@@ -1,5 +1,8 @@
 // Mochi server: per-peer journal delivery cursor (#28)
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // The journal's reconnect backfill (#23) re-ships a peer's ENTIRE retained
 // window and lets the receiver dedup via `seen`. Correct but wasteful. This

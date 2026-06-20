@@ -1,4 +1,9 @@
 #!/bin/bash
+# Copyright © 2026 Mochi OÜ
+# SPDX-License-Identifier: AGPL-3.0-only
+# This file is part of Mochi, licensed under the GNU AGPL v3 with the
+# Mochi Application Interface Exception - see license.txt and license-exception.md.
+
 # Mochi external replication monitor — the dead-man's-switch for the servers'
 # own, in-process, email-based alerting.
 #

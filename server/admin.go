@@ -1,5 +1,8 @@
 // Mochi server: cross-platform /_/admin/* handlers (read-only and lifecycle).
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Handlers run only on the UDS admin listener (registered in admin_linux.go).
 // Read-only handlers (status, version, config, identity) read internal state

@@ -1,5 +1,8 @@
 // Mochi server: SQLite online-backup helper
-// Copyright Alistair Cunningham 2025-2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Cross-platform wrapper around the ncruces driver's online-backup
 // API (sqlite3_backup_init). Page-copying preserves byte offsets

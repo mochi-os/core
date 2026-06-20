@@ -1,5 +1,8 @@
 // Mochi server: User interest profiles API
-// Copyright Alistair Cunningham 2025-2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Provides mochi.interests.* builtins for managing user interest profiles.
 // Interests are stored as Wikidata QIDs with weights (-100 to 100) in user.db.

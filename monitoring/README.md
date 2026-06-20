@@ -65,3 +65,9 @@ From `/_/health` (public, unauthenticated), defined in `core/server/health.go`:
 - `irreparable` — count of streams/peers given up on
 - `manager_age` — seconds since the last replication-manager tick (`-1` = never
   started)
+
+## Licence
+
+Part of the Mochi server - licensed under the GNU AGPL version 3 with the Mochi
+Application Interface Exception. See the [license.txt](../license.txt) and
+[license-exception.md](../license-exception.md) files at the repository root.

@@ -1,5 +1,8 @@
 // mochictl: supervisor detection + shell-out for `mochictl start`.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // `mochictl start` is awkward by definition — if the server isn't running,
 // the UDS socket doesn't exist and we have nothing to talk to. Best we can

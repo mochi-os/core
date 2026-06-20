@@ -1,6 +1,9 @@
 // Mochi server: admin route registration, audit middleware, and the
 // platform-neutral peer-credential type.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // These pieces are transport-agnostic: the same Gin router and audit
 // middleware are served over a Unix domain socket (Linux/macOS, admin_unix.go)

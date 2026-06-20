@@ -1,6 +1,9 @@
 // Mochi server: Unix admin transport — UDS listener, peer-credential auth,
 // admin_start, and the flock-based snapshot lock.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // The admin listener exposes /_/admin/* (registered in admin_routes.go) over a
 // Unix domain socket at <data_dir>/run/admin.sock with mode 0660 (group

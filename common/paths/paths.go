@@ -1,7 +1,10 @@
 // Package paths resolves the platform default locations of mochi.conf and
 // the cache/data directories. Shared by mochi-server and mochictl so both
 // see the same installed layout on every platform.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 
 package paths
 

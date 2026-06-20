@@ -4,7 +4,10 @@
 // Linux/macOS, a named pipe on Windows (see admin_dial in the platform files);
 // the rest of mochictl makes regular http.Get / http.Post calls.
 //
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 
 package adminclient
 

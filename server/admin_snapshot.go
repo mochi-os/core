@@ -1,5 +1,8 @@
 // Mochi server: admin snapshot / vacuum / backup handlers.
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Snapshot writes a `.backup` sibling next to every live `*.db` in the data
 // dir using SQLite's online backup API (sqlite3_backup_init), so page offsets

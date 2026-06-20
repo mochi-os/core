@@ -1,5 +1,8 @@
 // Mochi server: broadcast pending buffer
-// Copyright Alistair Cunningham 2026
+// Copyright © 2026 Mochi OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Per-app `pending` table that buffers out-of-order
 // broadcast events on the subscriber side. Replaces the previous

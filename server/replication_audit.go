@@ -669,8 +669,9 @@ func replication_audit_request_hashes(peer string, keys []AuditKey) (map[string]
 
 // replication_audit_hash_event answers a pair member's request for the content
 // hashes of specific streams. Live stream only; a queued retry has no caller. The
-// write failure is info, not warn — content divergence is advisory, so a missed
-// hash exchange must not email (the count audit owns the alerting path).
+// write failure is info, not warn — a missed hash exchange is a transient transport
+// hiccup the audit re-fetches next round, so it must not email; the divergence
+// itself (once a hash is obtained) is what alerts (#47).
 func replication_audit_hash_event(e *Event) {
 	if e.stream == nil {
 		return
@@ -894,16 +895,16 @@ func replication_audit_content_compare(peer string, localHash, prevLocalHash, re
 		diverged[akey] = true
 		if !audit_content_alerted[akey] {
 			audit_content_alerted[akey] = true
-			// ADVISORY only (info, not warn): does NOT email and does NOT degrade
-			// /_/health — it appears in the audit-divergences status list for an
-			// operator to inspect. The table-level content hash can't distinguish a
-			// real dropped-UPDATE divergence from a host-LOCAL column legitimately
-			// differing per host (computed scores like feeds.post_scores/tags.relevance,
-			// per-host timestamps like accounts.last_delivered, WebAuthn sign counters),
-			// so a hit needs manual per-table inspection before it means anything. A
-			// column-aware content audit (hash only replicated columns) would let this
-			// become an auto-alert again — until then it's a hint, not an alarm.
-			info("Replication audit (advisory): stream %q content differs from peer %q — equal row count (%d) but different content, stable both sides. May be host-local columns (scores/timestamps); drill the per-table hashes before treating as real divergence. Not emailed.",
+			// Alerting (warn): emails and degrades /_/health. The content audit is now
+			// column-aware (#45) and every host-LOCAL table/column is excluded via app
+			// declarations — database.replicate.exclude.{tables,columns}, resolved per
+			// DB by audit_excludes_for_path (#47) — plus the core host-local set. So a
+			// stable content mismatch on EQUAL row counts is a real dropped-UPDATE
+			// divergence (e.g. UPDATEs lost after a replica reset), not a per-host
+			// computed value. If a genuinely new false positive appears, an app has an
+			// UNDECLARED host-local column: declare it in
+			// database.replicate.exclude.columns rather than re-muting this alert.
+			warn("Replication audit: stream %q content-diverged from peer %q — row counts MATCH (%d rows) but the replicated row CONTENT differs, stable on both sides since the last round (not lag). Host-local columns/tables are excluded via app declarations (#45/#47), so this is the dropped-UPDATE class a count audit can't see. Investigate; a targeted re-seed (mochictl replication reseed) converges it.",
 				key, peer, localCount[key])
 		}
 	}
@@ -945,22 +946,23 @@ func replication_audit_stuck_streams() []string {
 }
 
 // replication_active_alerts counts the replication problems currently held in
-// the in-memory alert state: stalled streams (#3), not-advancing streams (the
-// convergence audit), and stale installed apps. These are exactly the conditions
-// the manager emails about, so surfacing the count in /_/health lets an EXTERNAL
-// monitor see a replication problem without depending on the server's own
-// (possibly broken) email path. Content divergence is deliberately EXCLUDED — it's
-// advisory only (host-local columns make it too noisy to gate health on). Cheap —
-// map lengths under their mutexes, no scans — safe on the frequently-hit health route.
+// the in-memory alert state: stalled streams (#3), not-advancing streams and
+// content divergences (the convergence audit), and stale installed apps. These
+// are exactly the conditions the manager emails about, so surfacing the count in
+// /_/health lets an EXTERNAL monitor see a replication problem without depending
+// on the server's own (possibly broken) email path. Content divergence is counted
+// again (#47): host-local tables/columns are now excluded via app declarations, so
+// a stable content mismatch is a real signal. Cheap — map lengths under their
+// mutexes, no scans — safe on the frequently-hit health route.
 func replication_active_alerts() int {
 	n := 0
 	stall_alerted_mutex.Lock()
 	n += len(stall_alerted)
 	stall_alerted_mutex.Unlock()
 	audit_convergence_mutex.Lock()
-	// audit_content_alerted is deliberately NOT counted: content divergence is
-	// advisory (host-local columns make it noisy), so it must not degrade health.
-	n += len(audit_alerted) + len(audit_liveness_alerted)
+	// audit_content_alerted is counted again (#47): host-local tables/columns are
+	// excluded via app declarations, so a content divergence is a real signal.
+	n += len(audit_alerted) + len(audit_content_alerted) + len(audit_liveness_alerted)
 	audit_convergence_mutex.Unlock()
 	stale_app_mutex.Lock()
 	n += len(stale_app_alerted)

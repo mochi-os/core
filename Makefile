@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see LICENSE and LICENSE-EXCEPTION.md.
 
-version = 0.4.148
+version = 0.4.149
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.

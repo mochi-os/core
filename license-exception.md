@@ -1,8 +1,4 @@
-<!-- DRAFT v0.1 - NOT YET REVIEWED BY LEGAL COUNSEL. For internal review only. -->
-
 # Mochi Application Interface Exception
-
-**Version 0.1 (DRAFT) - 10 June 2026**
 
 This is an additional permission under section 7 of the GNU Affero General Public License, version 3 ("AGPLv3"), granted by Mochi OÜ as copyright holder of the Mochi software.
 

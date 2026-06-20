@@ -1,8 +1,4 @@
-<!-- DRAFT v0.1 - NOT YET REVIEWED BY LEGAL COUNSEL. For internal review only. -->
-
 # Mochi Trademark Policy
-
-**Version 0.1 (DRAFT) - 10 June 2026**
 
 This policy covers the name "Mochi", the Mochi logo, and any confusingly similar names or marks (together, the "Mochi Marks"), which are trademarks of Mochi OÜ.
 

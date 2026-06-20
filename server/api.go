@@ -1169,8 +1169,13 @@ const url_idempotency_ttl int64 = 3600 // 1 hour
 // so it runs at most once per (user, app).
 func idempotency_setup(sysdb *DB) {
 	existed, _ := sysdb.exists("select name from sqlite_master where type='table' and name='idempotency'")
-	idempotency_setup(sysdb)
+	sysdb.exec("create table if not exists idempotency (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
 	if !existed {
+		// FUTURE CLEANUP (post-rename migration): drops the pre-rename
+		// `_idempotent_calls` orphan. Removable once no system in the fleet can
+		// still carry the old table — manually confirmed gone on
+		// yuzu/wasabi/mochi1/mochi2 (2026-06-20). When removing, delete this
+		// `if !existed` branch and the now-unused `existed` lookup above.
 		sysdb.exec("drop table if exists _idempotent_calls")
 	}
 }

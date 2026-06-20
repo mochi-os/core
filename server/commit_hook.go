@@ -210,6 +210,11 @@ func commits_setup(u *User, a *App) *DB {
 	existed, _ := sys.exists("select name from sqlite_master where type='table' and name='commits'")
 	commits_table_create(sys)
 	if !existed {
+		// FUTURE CLEANUP (post-relocation migration): drops the pre-relocation
+		// `_commit_log` orphan from the app's data DB. Removable once no system
+		// in the fleet can still carry the old table — manually confirmed gone
+		// on yuzu/wasabi/mochi1/mochi2 (2026-06-20). When removing, delete this
+		// `if !existed` branch and the now-unused `existed` lookup above.
 		if data := db_app(u, a); data != nil {
 			data.exec("drop table if exists _commit_log")
 		}

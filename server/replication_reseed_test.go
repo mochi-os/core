@@ -12,40 +12,67 @@ import (
 	"testing"
 )
 
-// TestReseedLocalJournalCount (#9) covers the re-seed safety gate. A
-// stream this host has never written has no replication journal and is
-// safe to re-seed (count 0); a stream it HAS written carries journal
-// rows, so a re-seed — which overwrites the local DB with the source's
-// snapshot — would lose any un-shipped local writes, and the admin path
-// refuses unless forced.
-func TestReseedLocalJournalCount(t *testing.T) {
+// TestReseedSourceMissingOps (#9) covers the direction-aware re-seed safety gate.
+// A re-seed overwrites the local DB with the source's snapshot, so it must block
+// only when the source actually lacks ops THIS host originated: un-sent `pending`
+// journal ops, or shipped ops the source has not acked up to our emitted tail. A
+// pure-receiver stream, or one the source has fully acked (even with retained-
+// shipped journal rows it already holds), is safe — the old count-all gate wrongly
+// refused those.
+func TestReseedSourceMissingOps(t *testing.T) {
 	orig := data_dir
 	data_dir = t.TempDir()
 	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	rel := "users/u1/app1/db/feeds.db"
+	peer := "peerS"
+	stream := bootstrap_stream_key(rel) // app:app1
 	full := filepath.Join(data_dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Missing DB file → 0 (nothing local to lose).
-	if n := reseed_local_journal_count(rel); n != 0 {
-		t.Fatalf("missing DB file: got %d, want 0", n)
+	// Missing DB file → nothing local to lose.
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("missing DB file: want false")
 	}
 
-	// DB present but no journal table → pure receiver → 0.
+	// DB present, no journal table → pure receiver.
 	db := db_open(rel)
 	db.exec("create table posts (id text primary key)")
-	if n := reseed_local_journal_count(rel); n != 0 {
-		t.Fatalf("no journal table (pure receiver): got %d, want 0", n)
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("no journal table (pure receiver): want false")
 	}
 
-	// Journal rows present → local writes → non-zero (re-seed refused).
-	db.exec("create table journal (id text primary key, state text)")
-	db.exec("insert into journal (id, state) values ('a', 'shipped'), ('b', 'pending')")
-	if n := reseed_local_journal_count(rel); n != 2 {
-		t.Fatalf("local writes present: got %d, want 2", n)
+	// A pending (un-sent) op → the source lacks it → block.
+	db.exec("create table journal (id text primary key, state text not null default 'pending')")
+	db.exec("insert into journal (id, state) values ('p1', 'pending')")
+	if !reseed_source_missing_ops(rel, peer) {
+		t.Fatal("pending op present: want true")
+	}
+
+	// Only retained-shipped ops now; record our emitted tail = 5.
+	db.exec("delete from journal")
+	db.exec("insert into journal (id, state) values ('s1', 'shipped'), ('s2', 'shipped')")
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+	rdb.exec("insert into tail (user, scope, db, last) values ('u1', ?, ?, 5)", repl_scope_app, stream)
+	rdb.exec("create table if not exists journal_delivery (user text not null, peer text not null, stream text not null, sequence integer not null, primary key (user, peer, stream))")
+
+	// Source acked below our tail (2 < 5) → it dropped our shipped ops → block.
+	rdb.exec("insert into journal_delivery (user, peer, stream, sequence) values ('u1', ?, ?, 2)", peer, stream)
+	if !reseed_source_missing_ops(rel, peer) {
+		t.Fatal("source acked below tail: want true")
+	}
+
+	// Source acked up to our tail (5 ≥ 5) → it holds everything → allow, even
+	// though retained-shipped journal rows remain.
+	rdb.exec("update journal_delivery set sequence = 5 where user = 'u1' and peer = ? and stream = ?", peer, stream)
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("source acked up to tail: want false")
 	}
 }
 

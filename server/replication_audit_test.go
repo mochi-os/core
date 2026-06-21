@@ -253,11 +253,11 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Behind + frozen -> alert (only after a second round confirms the freeze).
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if alerted() {
 		t.Fatal("first round must not alert (freeze needs a second round)")
 	}
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if !alerted() {
 		t.Fatal("behind + frozen should alert")
 	}
@@ -265,9 +265,9 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Behind but advancing (lag) -> no alert.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	setCursor(150)
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if alerted() {
 		t.Fatal("advancing stream (lag, not stuck) should not alert")
 	}
@@ -275,8 +275,8 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Caught up -> no alert.
 	reset()
 	setCursor(200)
-	replication_audit_liveness(peer, manifest(200))
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if alerted() {
 		t.Fatal("caught-up stream should not alert")
 	}
@@ -284,8 +284,8 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Peer doesn't originate it (tail 0) -> no alert.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, manifest(0))
-	replication_audit_liveness(peer, manifest(0))
+	replication_audit_liveness(peer, nil, manifest(0))
+	replication_audit_liveness(peer, nil, manifest(0))
 	if alerted() {
 		t.Fatal("stream not originated by peer (tail 0) should not alert")
 	}
@@ -293,15 +293,74 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Re-arm: alerted, then catches up -> alert cleared.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, manifest(200))
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if !alerted() {
 		t.Fatal("setup: should be alerted")
 	}
 	setCursor(200)
-	replication_audit_liveness(peer, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200))
 	if alerted() {
 		t.Fatal("catching up should clear the liveness alert (re-arm)")
+	}
+}
+
+// TestReplicationAuditLivenessConverged (#55): a frozen cursor whose CONTENT is
+// already converged must NOT alert — the multi-host false positive where the same
+// rows arrived via another path, leaving this per-peer cursor permanently behind
+// with no data missing. The convergence verdict (audit_stream_converged) is stubbed
+// so the gate is exercised without a live peer: stubbed converged -> silent even
+// when frozen below tail; stubbed not-converged -> the genuine-gap path still alerts.
+func TestReplicationAuditLivenessConverged(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	origConverged := audit_stream_converged
+	defer func() {
+		data_dir = orig
+		audit_stream_converged = origConverged
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+
+	peer, stream := "peerP", "app:feeds"
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, ?, 'u1', ?, 0) on conflict(peer, scope, user, db) do update set sequence=0",
+		peer, repl_scope_app, stream)
+	manifest := []AuditStream{{User: "u1", Stream: stream, Count: 5, Tail: 19}}
+	alerted := func() bool {
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
+		return audit_liveness_alerted[peer+"|u1|"+stream]
+	}
+	reset := func() {
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}
+
+	// Converged content -> suppress, even though the cursor (0) is frozen below tail (19).
+	audit_stream_converged = func(string, AuditStream, map[string]int64) bool { return true }
+	reset()
+	replication_audit_liveness(peer, nil, manifest) // round 1: record cursor
+	replication_audit_liveness(peer, nil, manifest) // round 2: frozen, but converged
+	if alerted() {
+		t.Fatal("converged stream (content matches peer) must not alert despite a frozen cursor")
+	}
+
+	// Not converged (genuine gap or dropped UPDATE) -> still alerts.
+	audit_stream_converged = func(string, AuditStream, map[string]int64) bool { return false }
+	reset()
+	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest)
+	if !alerted() {
+		t.Fatal("non-converged frozen stream must still alert")
 	}
 }
 

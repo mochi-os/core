@@ -252,7 +252,7 @@ func admin_replication_reseed(c *gin.Context) {
 		return
 	}
 	if !input.Force {
-		if reseed_local_journal_count(input.Path) > 0 {
+		if reseed_source_missing_ops(input.Path, input.Peer) {
 			respond_error(c, http.StatusConflict, "local_writes_present", "errors.local_writes_present", nil)
 			return
 		}

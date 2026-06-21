@@ -13,11 +13,14 @@
 #   - the replication manager goroutine hangs   -> no scans run, no alerts fire
 #   - the server's local mail path breaks        -> alerts generated, never sent
 #
-# Run THIS on a host OUTSIDE the mochi mesh (we use falcon, the mail relay) on a
-# short cron. It polls each server's public /_/health and alerts via an
-# INDEPENDENT path when a server is unreachable, its replication is degraded, or
-# its replication manager has hung (heartbeat stale). Fields consumed are set in
-# core/server/health.go. Requires: curl, jq, and a working `mail` (or ALERT_CMD).
+# Run THIS on a host SEPARATE from the monitored servers, with its own mail path
+# (we use sansho). It polls each server's public /_/health on a short cron and
+# alerts via an INDEPENDENT path when a server is unreachable, its replication is
+# degraded, or its replication manager has hung (heartbeat stale). Repeated
+# alerts for an unchanged, persistent problem are deduped (STATE/REALERT) so a
+# long-lived condition (e.g. a dead peer kept until cleaned manually) doesn't
+# mail every run. Fields consumed are set in core/server/health.go. Requires:
+# curl, jq, and a working `mail` (or ALERT_CMD).
 
 set -u
 
@@ -26,6 +29,8 @@ SERVERS="${MOCHI_MONITOR_SERVERS:-https://yuzu.mochi-os.org https://wasabi.mochi
 ALERT_TO="${MOCHI_MONITOR_TO:-alistair@acunningham.org}"
 MANAGER_STALL="${MOCHI_MONITOR_MANAGER_STALL:-180}" # seconds; the manager ticks every 30s
 TIMEOUT="${MOCHI_MONITOR_TIMEOUT:-15}"
+STATE="${MOCHI_MONITOR_STATE:-/var/lib/mochi-monitor/state}" # dedup state file
+REALERT="${MOCHI_MONITOR_REALERT:-21600}"                    # re-alert an UNCHANGED problem at most every 6h
 # ---------------------------------------------------------------------------
 
 problems=""
@@ -53,13 +58,37 @@ for url in $SERVERS; do
 	fi
 done
 
-if [ -n "$problems" ]; then
-	msg=$(printf 'Mochi external monitor detected problems:\n\n%bPolled: %s\n' "$problems" "$SERVERS")
+# send: subject as $1, body on stdin -> ALERT_CMD (if set), else mail.
+send() {
 	if [ -n "${ALERT_CMD:-}" ]; then
-		printf '%s\n' "$msg" | sh -c "$ALERT_CMD"
+		sh -c "$ALERT_CMD"
 	else
-		printf '%s\n' "$msg" | mail -s "Mochi MONITOR alert" "$ALERT_TO"
+		mail -s "$1" "$ALERT_TO"
+	fi
+}
+
+# Dedup: a stateless cron would mail on EVERY run while a problem persists — and
+# replication peers are kept until cleaned manually, so a problem CAN persist a
+# long time. Remember the last alerted problem-set + timestamp and re-send only
+# when the set CHANGES or REALERT seconds have elapsed. When problems clear, send
+# one "recovered" note and reset.
+if [ -n "$problems" ]; then
+	sig=$(printf '%s' "$problems" | md5sum 2>/dev/null | awk '{print $1}')
+	nowts=$(date +%s)
+	last_sig=""; last_ts=0
+	if [ -f "$STATE" ]; then read -r last_sig last_ts < "$STATE" 2>/dev/null || true; fi
+	case "${last_ts:-}" in ""|*[!0-9]*) last_ts=0 ;; esac
+	if [ "$sig" != "$last_sig" ] || [ "$((nowts - last_ts))" -ge "$REALERT" ]; then
+		printf 'Mochi external monitor detected problems:\n\n%bPolled: %s\n' "$problems" "$SERVERS" | send "Mochi MONITOR alert"
+		mkdir -p "$(dirname "$STATE")" 2>/dev/null
+		printf '%s %s\n' "$sig" "$nowts" > "$STATE"
 	fi
 	exit 1
+fi
+
+# All clear. If we were previously alerting, send one recovery note and reset.
+if [ -f "$STATE" ]; then
+	printf 'Mochi external monitor: previously-detected problem(s) have CLEARED.\nPolled: %s\n' "$SERVERS" | send "Mochi MONITOR recovered"
+	rm -f "$STATE"
 fi
 exit 0

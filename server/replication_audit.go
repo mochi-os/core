@@ -741,7 +741,7 @@ func replication_convergence_audit() {
 		// receive direction against the peer's emitted tail, so a replica that
 		// has silently stopped catching up to the primary — the case the stall
 		// alert can't see — is actually covered.
-		replication_audit_liveness(peer, remote)
+		replication_audit_liveness(peer, local, remote)
 
 		// The content-divergence compare is leader-gated so one divergence emails
 		// the admin once, not from both members.
@@ -790,11 +790,27 @@ func replication_convergence_audit() {
 // is just lag and does not alert; confirmation needs two rounds (the first
 // sighting only records the cursor), and the alert re-arms once the stream
 // catches up or resumes progress.
-func replication_audit_liveness(peer string, remote []AuditStream) {
+//
+// A frozen cursor is NOT alerted when the stream's CONTENT is already converged
+// (audit_stream_converged): in a multi-host set the same rows can arrive via a
+// different peer or via local writes, leaving this per-peer cursor permanently
+// behind the emitted tail with no data missing — a false positive. Only a genuine
+// gap (row-count mismatch) or a dropped UPDATE (count match, content-hash
+// mismatch) still alerts.
+func replication_audit_liveness(peer string, local map[string]int64, remote []AuditStream) {
 	rdb := db_open("db/replication.db")
+
+	// Phase 1 (locked): snapshot this round's cursors and collect the streams
+	// frozen below the peer's tail. The convergence check in phase 2 does a P2P
+	// hash fetch, so it must run OUTSIDE audit_convergence_mutex — never hold the
+	// lock across network I/O.
+	type frozenStream struct {
+		key    string
+		s      AuditStream
+		cursor int64
+	}
+	var frozen []frozenStream
 	audit_convergence_mutex.Lock()
-	defer audit_convergence_mutex.Unlock()
-	stuck := map[string]bool{}
 	for _, s := range remote {
 		if s.Tail <= 0 {
 			continue // peer doesn't originate this stream — nothing to keep up with
@@ -809,11 +825,31 @@ func replication_audit_liveness(peer string, remote []AuditStream) {
 		if !seen || cursor != prev {
 			continue // first sighting, or still advancing — lag, not stuck
 		}
-		stuck[key] = true
-		if !audit_liveness_alerted[key] {
-			audit_liveness_alerted[key] = true
+		frozen = append(frozen, frozenStream{key, s, cursor})
+	}
+	audit_convergence_mutex.Unlock()
+
+	// Phase 2 (unlocked): drop frozen streams whose content already matches the
+	// peer (the multi-host false positive). What remains is genuinely stuck.
+	stuck := map[string]bool{}
+	var alert []frozenStream
+	for _, f := range frozen {
+		if audit_stream_converged(peer, f.s, local) {
+			continue // content matches — not a real gap; leave out of `stuck` so any prior alert clears
+		}
+		stuck[f.key] = true
+		alert = append(alert, f)
+	}
+
+	// Phase 3 (locked): one alert per episode for the genuinely stuck streams, and
+	// re-arm any whose alert no longer applies (converged, caught up, or resumed).
+	audit_convergence_mutex.Lock()
+	defer audit_convergence_mutex.Unlock()
+	for _, f := range alert {
+		if !audit_liveness_alerted[f.key] {
+			audit_liveness_alerted[f.key] = true
 			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, and no pending buffer to trip the stall alert). Investigate; a targeted re-seed (mochictl replication reseed) may recover it.",
-				s.User, s.Stream, peer, cursor, s.Tail, s.Tail-cursor)
+				f.s.User, f.s.Stream, peer, f.cursor, f.s.Tail, f.s.Tail-f.cursor)
 		}
 	}
 	for key := range audit_liveness_alerted {
@@ -821,6 +857,31 @@ func replication_audit_liveness(peer string, remote []AuditStream) {
 			delete(audit_liveness_alerted, key)
 		}
 	}
+}
+
+// audit_stream_converged reports whether a frozen-cursor stream's content already
+// matches the peer's, despite the apply cursor lagging the emitted tail — the
+// multi-host case where the same rows arrived via another peer or via local
+// writes, so this per-peer cursor sits permanently behind with NO data missing.
+// Only then is the "not advancing" alert a false positive and safe to suppress. A
+// row-count mismatch is a genuine gap; a count match with a differing content hash
+// is a dropped UPDATE — both return false so both still alert. A var so tests can
+// stub the verdict without a live peer.
+var audit_stream_converged = func(peer string, s AuditStream, local map[string]int64) bool {
+	lc, ok := local[s.User+"|"+s.Stream]
+	if !ok || lc != s.Count {
+		return false // missing locally or row counts differ — a real gap
+	}
+	key := AuditKey{User: s.User, Stream: s.Stream}
+	localHashes := replication_audit_hashes([]AuditKey{key})
+	if len(localHashes) == 0 || localHashes[0].Hash == "" {
+		return false // can't hash locally — don't suppress
+	}
+	remoteHashes, err := replication_audit_request_hashes(peer, []AuditKey{key})
+	if err != nil {
+		return false // couldn't fetch the peer's hash — don't suppress
+	}
+	return remoteHashes[s.User+"|"+s.Stream] == localHashes[0].Hash
 }
 
 // replication_audit_compare flags streams that both hosts hold at a STABLE but

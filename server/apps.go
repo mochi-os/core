@@ -1303,6 +1303,49 @@ func app_write_publisher(base string, peer string) {
 	debug("Wrote publisher peer %q to %s", peer, path)
 }
 
+// apps_manager_wake lets a replicated publisher-catalog write trigger an early
+// apps_manager pass instead of waiting out the 24-hour poll — this is what
+// kills the version-skew window on replica-pair hosts. Buffered at 1 so a
+// deploy's burst of publisher ops (a new version writes several rows)
+// coalesces into a single queued pass.
+var apps_manager_wake = make(chan struct{}, 1)
+
+// apps_manager_signal wakes apps_manager without blocking. A full buffer means
+// a pass is already queued, so the extra signal is harmlessly dropped.
+func apps_manager_signal() {
+	select {
+	case apps_manager_wake <- struct{}{}:
+	default:
+	}
+}
+
+var (
+	apps_publisher_lock     sync.Mutex
+	apps_publisher_id_value string
+)
+
+// apps_publisher_id returns the memoised local publisher app id — the app
+// serving the "publisher" service. Resolved by apps_manager on each pass (after
+// the install checks) so the replication apply path only reads a cached string
+// rather than scanning the app registry per op. Empty until the first pass.
+func apps_publisher_id() string {
+	apps_publisher_lock.Lock()
+	defer apps_publisher_lock.Unlock()
+	return apps_publisher_id_value
+}
+
+func apps_publisher_id_set(id string) {
+	apps_publisher_lock.Lock()
+	apps_publisher_id_value = id
+	apps_publisher_lock.Unlock()
+}
+
+// apps_publisher_op reports whether a replicated op is a write to the publisher
+// app's catalog — the signal that a peer published a new app version.
+func apps_publisher_op(op *ReplicationOp, publisher string) bool {
+	return op != nil && publisher != "" && op.Scope == repl_scope_app && op.Database == publisher
+}
+
 // Manage which apps and their versions are installed
 func apps_manager() {
 	time.Sleep(time.Second)
@@ -1346,7 +1389,20 @@ func apps_manager() {
 		// service name (see apps_pin_default_services).
 		apps_pin_default_services(apps_default)
 
-		time.Sleep(24 * time.Hour)
+		// Cache the local publisher app id so the replication apply path can
+		// recognise a replicated publisher-catalog write cheaply (a string read,
+		// no registry scan per op).
+		if a := app_for_service(nil, "publisher"); a != nil {
+			apps_publisher_id_set(a.id)
+		}
+
+		// Wait out the poll, but wake early when a replicated publisher write
+		// signals that a peer published a new version (replica-pair hosts).
+		select {
+		case <-time.After(24 * time.Hour):
+		case <-apps_manager_wake:
+			debug("apps_manager woken early by a replicated publisher write")
+		}
 	}
 }
 

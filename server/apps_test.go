@@ -2042,3 +2042,56 @@ func TestAppIsLogin(t *testing.T) {
 		t.Error("ownership must follow the override")
 	}
 }
+
+// TestAppsPublisherOp (#52) covers the predicate that recognises a replicated
+// write to the publisher catalog — the trigger that wakes apps_manager early so
+// a replica-pair host installs a freshly published version without waiting out
+// the 24-hour poll. It must fire only for an app-scope op whose db is the
+// resolved publisher id, and never when the publisher id is unknown.
+func TestAppsPublisherOp(t *testing.T) {
+	pub := "12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3"
+	cases := []struct {
+		name      string
+		op        *ReplicationOp
+		publisher string
+		want      bool
+	}{
+		{"match", &ReplicationOp{Scope: repl_scope_app, Database: pub}, pub, true},
+		{"other app", &ReplicationOp{Scope: repl_scope_app, Database: "12someotherappentityid"}, pub, false},
+		{"wrong scope", &ReplicationOp{Scope: "user", Database: pub}, pub, false},
+		{"publisher unknown", &ReplicationOp{Scope: repl_scope_app, Database: pub}, "", false},
+		{"nil op", nil, pub, false},
+	}
+	for _, c := range cases {
+		if got := apps_publisher_op(c.op, c.publisher); got != c.want {
+			t.Errorf("%s: apps_publisher_op = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestAppsManagerSignal (#52) checks the wake channel coalesces: repeated
+// signals while a pass is pending collapse into a single queued wake (buffer of
+// 1), and signalling never blocks even when the buffer is full.
+func TestAppsManagerSignal(t *testing.T) {
+	// Drain any residual signal so the test starts from empty.
+	select {
+	case <-apps_manager_wake:
+	default:
+	}
+
+	apps_manager_signal()
+	apps_manager_signal() // second signal must not block; coalesces into the one slot
+	apps_manager_signal()
+
+	select {
+	case <-apps_manager_wake:
+	default:
+		t.Fatal("expected a queued wake after signalling")
+	}
+	// Exactly one wake should have been queued.
+	select {
+	case <-apps_manager_wake:
+		t.Fatal("wake channel held more than one signal — coalescing failed")
+	default:
+	}
+}

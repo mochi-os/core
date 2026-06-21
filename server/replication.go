@@ -575,6 +575,13 @@ func replication_op_land(db *DB, peer string, op *ReplicationOp) ApplyResult {
 		// debug("Replication op applied: peer=%q scope=%q user=%q db=%q seq=%d prev=%d table=%q op=%q",
 		// 	peer, op.Scope, op.User, op.Database, op.Sequence, op.Prev, op.Table, op.Operation)
 		commit_hook_fire(op.User, op.Database, op.Table, op.Operation, op.UID)
+		// A replicated write to the publisher app's catalog means a peer just
+		// published a new app version; wake apps_manager so this host installs
+		// it now rather than at the next 24-hour poll (the replica-pair
+		// version-skew window).
+		if apps_publisher_op(op, apps_publisher_id()) {
+			apps_manager_signal()
+		}
 		// Bridge the per-user/server-pair seam: forward to the rest of the
 		// user's host set, minus the peer it came from.
 		replication_relay(peer, op)

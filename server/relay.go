@@ -290,9 +290,32 @@ func relay_manager() {
 	}
 }
 
+// relay_saturation_threshold is the fraction of MaxReservations at or above
+// which refused reservations mean genuine saturation — the relay is full and
+// turning NAT'd peers away. Below it, a refusal comes from libp2p's per-peer /
+// per-IP / per-ASN sub-limits (enforced independently of the global cap) on a
+// near-empty relay, which is normal and not actionable: raising [relay]
+// reservations or adding relays wouldn't change it, so it must not page the
+// admin.
+const relay_saturation_threshold = 0.8
+
+// relay_saturation_alert reports whether refused reservations warrant an admin
+// alert: there must be NEW refusals since the last check (rejected > alerted)
+// AND the relay must be near its global capacity (held at/above the threshold
+// fraction of maximum). This is what keeps a lone per-peer/per-IP refusal at
+// low utilisation from firing the "relay full" alert.
+func relay_saturation_alert(rejected, alerted, held, maximum int64) bool {
+	if rejected <= alerted || maximum <= 0 {
+		return false
+	}
+	return float64(held) >= relay_saturation_threshold*float64(maximum)
+}
+
 // relay_saturation_check warns the admin when the relay refused reservations
-// since the last check — peers being turned away is the signal to raise
-// [relay] reservations or stand up more relays. warn()'s per-format dedup
+// since the last check WHILE near capacity — genuine "turning peers away"
+// saturation, the signal to raise [relay] reservations or stand up more relays.
+// The watermark advances regardless so a benign low-utilisation refusal is
+// remembered (not re-counted) but never alerts. warn()'s per-format dedup
 // throttles the email to at most once per hour.
 func relay_saturation_check() {
 	if !relay_enabled() {
@@ -300,9 +323,11 @@ func relay_saturation_check() {
 		return
 	}
 	rejected := relay_rejected.Load()
-	if rejected > relay_rejected_alerted {
-		warn("Relay service refused %d reservation(s) since startup (%d of %d slots held) — it is turning NAT'd peers away; raise [relay] reservations or stand up more relays",
-			rejected, relay_reservations.Load(), ini_int("relay", "reservations", relay_reservations_default))
+	held := relay_reservations.Load()
+	maximum := int64(ini_int("relay", "reservations", relay_reservations_default))
+	if relay_saturation_alert(rejected, relay_rejected_alerted, held, maximum) {
+		warn("Relay service refused %d reservation(s) since startup and is near capacity (%d of %d slots held) — it is turning NAT'd peers away; raise [relay] reservations or stand up more relays",
+			rejected, held, maximum)
 	}
 	relay_rejected_alerted = rejected
 }

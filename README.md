@@ -1,8 +1,7 @@
 # Mochi server
 
-The Mochi server, written in Go.
-Documentation is at https://docs.mochi-os.org/
-Source code is at https://git.mochi-os.org/
+The Mochi server, written in Go.  Documentation is at https://docs.mochi-os.org/
+and source code is at https://git.mochi-os.org/
 
 ## Licence
 

@@ -408,7 +408,8 @@ var audit_local_tables_core = map[string]bool{
 // audit_excludes_for_path, which keys by the owning app so two apps' same-named
 // tables can't collide.
 var audit_local_columns_core = map[string]map[string]bool{
-	"accounts": {"last_delivered": true}, // user.db: per-host notification timestamp
+	"accounts":    {"last_delivered": true}, // user.db: per-host notification timestamp
+	"attachments": {"entity": true},         // app.db: per-host owned("")-vs-foreign(<source>) pointer
 }
 
 // audit_app_id_from_path returns the app id owning the data DB at a

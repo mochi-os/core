@@ -567,10 +567,27 @@ func setting_get(name string, def string) string {
 	return def
 }
 
+// setting_local reports whether a setting is host-LOCAL — per-host state that
+// must never replicate to (or be accepted from) a pair member. `schema` is the
+// critical one: it is each host's own DB migration progress, so replicating it
+// makes the host that deploys SECOND adopt the first's bumped version and SKIP
+// its own migrations (#75 — the production primary silently skipped two
+// migrations). `server_started` is likewise per-host. Gates both the emit
+// (setting_set) and the apply (replication_system_set_apply_settings).
+func setting_local(name string) bool {
+	switch name {
+	case "schema", "server_started":
+		return true
+	}
+	return false
+}
+
 func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
-	replication_emit_system_set("settings", "settings", name, "value", value)
+	if !setting_local(name) {
+		replication_emit_system_set("settings", "settings", name, "value", value)
+	}
 }
 
 // setting_delete removes a setting row entirely. Distinguished from

@@ -3881,6 +3881,13 @@ func replication_system_set_apply_settings(originPeer string, s *SystemSet) {
 		info("Replication system-set settings.settings: unsupported field %q (from peer %q)", s.Field, originPeer)
 		return
 	}
+	if setting_local(s.Row) {
+		// Host-local setting (#75) — our own per-host state (e.g. the DB schema
+		// migration version). Never adopt a peer's value, even from an old peer
+		// still emitting it during the transition, or we'd skip our migrations.
+		debug("Replication system-set settings.settings: ignoring host-local %q (from %q)", s.Row, originPeer)
+		return
+	}
 	db := db_open("db/settings.db")
 	if s.Value == "" {
 		db.exec("delete from settings where name=?", s.Row)

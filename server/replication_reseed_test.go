@@ -76,6 +76,67 @@ func TestReseedSourceMissingOps(t *testing.T) {
 	}
 }
 
+// TestReseedSourceMissingOpsUserDB (#63) covers the non-journal scopes the guard
+// now vets via the users-row delivery cursor: the per-user user.db (checked on
+// BOTH core:user and the pair-only system:users) and a conservative block for
+// server-level db/ DBs that span many users' streams.
+func TestReseedSourceMissingOpsUserDB(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	peer := "peerS"
+
+	rel := "users/u1/user.db" // bootstrap_stream_key -> core:user
+	full := filepath.Join(data_dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db_open(rel).exec("create table accounts (id text primary key)") // no journal — a core DB
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+	rdb.exec("create table if not exists journal_delivery (user text not null, peer text not null, stream text not null, sequence integer not null, primary key (user, peer, stream))")
+
+	// No emissions on either stream → pure receiver → safe.
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("user.db, no emissions: want false")
+	}
+
+	// Emitted on core:user (tail 5), source acked only to 2 → block.
+	rdb.exec("insert into tail (user, scope, db, last) values ('u1', ?, 'core:user', 5)", repl_scope_app)
+	rdb.exec("insert into journal_delivery (user, peer, stream, sequence) values ('u1', ?, 'core:user', 2)", peer)
+	if !reseed_source_missing_ops(rel, peer) {
+		t.Fatal("user.db core:user source behind: want true")
+	}
+
+	// Source caught up on core:user → safe again.
+	rdb.exec("update journal_delivery set sequence = 5 where user='u1' and peer=? and stream='core:user'", peer)
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("user.db core:user source caught up: want false")
+	}
+
+	// Also emitted on the pair-only system:users (tail 3) with no ack at all → block.
+	rdb.exec("insert into tail (user, scope, db, last) values ('u1', ?, 'system:users', 3)", repl_scope_app)
+	if !reseed_source_missing_ops(rel, peer) {
+		t.Fatal("user.db system:users source behind: want true")
+	}
+
+	// Source acks system:users too → both streams caught up → safe.
+	rdb.exec("insert into journal_delivery (user, peer, stream, sequence) values ('u1', ?, 'system:users', 3)", peer)
+	if reseed_source_missing_ops(rel, peer) {
+		t.Fatal("user.db both streams caught up: want false")
+	}
+
+	// A server-level db/ DB spans many users' streams → conservative block.
+	db_open("db/users.db").exec("create table users (uid text primary key)")
+	if !reseed_source_missing_ops("db/users.db", peer) {
+		t.Fatal("db/ system DB: want true (conservative block)")
+	}
+}
+
 // TestReseedFinalize (#9) checks the post-fetch cleanup. The inherited
 // journal — the source's sender-state, carried in the snapshot — must be
 // emptied so the receiver never re-ships those ops as its own. And the

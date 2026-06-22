@@ -1714,17 +1714,30 @@ func bootstrap_db_reseed(peer, scope, path string) error {
 	return nil
 }
 
+// reseed_stream_one_missing reports whether `peer` is missing ops THIS host
+// emitted on a single (user, stream): we emitted something (tail > 0) that the
+// peer has not acked (its delivery cursor sits below our emitted tail). Returns
+// false when we emitted nothing — the source can't be missing what we never sent.
+func reseed_stream_one_missing(rdb *DB, user, peer, stream string) bool {
+	tail := rdb.integer("select coalesce(last, 0) from tail where user = ? and scope = ? and db = ?", user, repl_scope_app, stream)
+	if tail <= 0 {
+		return false
+	}
+	return journal_delivery_cursor(rdb, user, peer, stream) < int64(tail)
+}
+
 // reseed_source_missing_ops reports whether the SOURCE peer is missing any op
 // THIS host originated for `rel` — the data a re-seed (page-copy overwrite from
-// the source) would silently discard. It replaces an earlier count-all gate that
-// counted RETAINED-SHIPPED journal rows the source already holds (kept for
-// backfill up to journal_retention_minimum), and so false-refused every active
-// stream. The source is missing our ops iff EITHER (1) the journal holds un-sent
-// `pending` ops, OR (2) it has not acked up to our emitted tail for this stream
-// (its delivery cursor lags — e.g. its inbound replication dropped our shipped
-// ops). A pure-receiver stream (no journal) or one the source has fully acked is
-// safe to re-seed. The stream key / user are derivable only for a per-user
-// app/core DB; for anything else the pending check alone is the gate.
+// the source) would silently discard. The source is missing our ops iff it has
+// not acked up to our emitted tail for the DB's stream(s) (or, for an app DB,
+// the journal holds un-sent `pending` ops). By scope:
+//   - App data DB (has a journal): pending check + delivery-cursor check on the
+//     single app: stream (the journal ships and delivery-tracks these).
+//   - Per-user user.db (no journal): delivery-cursor check on BOTH its streams,
+//     core:user and the pair-only system:users — now delivery-tracked because the
+//     users-row ship path records inflight (#63).
+//   - Server-level db/ DBs span many users' streams and aren't cheaply vettable
+//     here: refuse force=false conservatively (force=true after a manual check).
 func reseed_source_missing_ops(rel, peer string) bool {
 	full := filepath.Join(data_dir, filepath.FromSlash(rel))
 	if info, err := os.Stat(full); err != nil || info.IsDir() {
@@ -1734,30 +1747,53 @@ func reseed_source_missing_ops(rel, peer string) bool {
 	if db == nil {
 		return false
 	}
-	if has, _ := db.exists("select 1 from sqlite_master where type = 'table' and name = 'journal'"); !has {
-		return false
-	}
-	// (1) Un-sent local writes: the source definitely lacks them.
-	if db.integer("select count(*) from journal where state = 'pending'") > 0 {
-		return true
-	}
-	// (2) Shipped ops: missing at the source only if it has not acked up to our
-	// emitted tail (its delivery cursor lags our emitted sequence).
-	stream := bootstrap_stream_key(rel)
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if stream == "" || len(parts) < 2 || parts[0] != "users" {
-		return false
-	}
-	user := parts[1]
 	rdb := db_open("db/replication.db")
 	if rdb == nil {
 		return false
 	}
-	tail := rdb.integer("select coalesce(last, 0) from tail where user = ? and scope = ? and db = ?", user, repl_scope_app, stream)
-	if tail <= 0 {
-		return false // we emitted nothing — the source can't be missing our ops
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	stream := bootstrap_stream_key(rel)
+
+	// App data / app-system DB (app:<id>[/system]): journal-shipped and
+	// delivery-tracked. A missing journal table means this host never wrote here
+	// (a pure receiver) — nothing to lose.
+	if strings.HasPrefix(stream, "app:") {
+		hasJournal, _ := db.exists("select 1 from sqlite_master where type = 'table' and name = 'journal'")
+		if !hasJournal {
+			return false
+		}
+		if db.integer("select count(*) from journal where state = 'pending'") > 0 {
+			return true // un-sent local writes the source definitely lacks
+		}
+		if len(parts) < 2 {
+			return false
+		}
+		return reseed_stream_one_missing(rdb, parts[1], peer, stream)
 	}
-	return journal_delivery_cursor(rdb, user, peer, stream) < int64(tail)
+
+	// Per-user core DB (core:<file>, e.g. user.db). Its ops aren't journalled but
+	// the users-row ship path now delivery-tracks them (#63), so vet precisely.
+	// user.db also fans identity columns to the pair-only system:users channel.
+	if strings.HasPrefix(stream, "core:") {
+		if len(parts) < 2 {
+			return false
+		}
+		user := parts[1]
+		streams := []string{stream}
+		if stream == "core:user" {
+			streams = append(streams, "system:users")
+		}
+		for _, s := range streams {
+			if reseed_stream_one_missing(rdb, user, peer, s) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Server-level db/ DBs (stream "") span many users' streams and aren't cheaply
+	// vettable here — refuse force=false conservatively.
+	return true
 }
 
 // reseed_finalize clears the two things a re-seed leaves stale. First,

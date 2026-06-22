@@ -2551,6 +2551,13 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 		m := message(from, from, "replication", "sql/op")
 		m.add(op)
 		m.send_peer(peer)
+		// Record the send so the peer's ACK advances its delivery cursor for the
+		// stream — the same inflight->ack->journal_delivery bridge the journal
+		// uses (journal_ship_real). Without this the non-journal core/system
+		// streams (core:user, system:users, system:apps, ...) have no delivery
+		// cursor, which is why the reseed guard couldn't vet user.db. Now it can,
+		// and pair backfill of these streams can ship only the delta. (#63)
+		journal_inflight_record(m.ID, user, peer, stream, op.Sequence)
 	}
 }
 

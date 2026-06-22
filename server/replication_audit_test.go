@@ -364,6 +364,72 @@ func TestReplicationAuditLivenessConverged(t *testing.T) {
 	}
 }
 
+// TestReplicationAuditLivenessHomeHostSkipped (#62) checks that a stream THIS
+// host originates (it has a local emitted tail) is never treated as a
+// not-advancing candidate: the peer's tail is just our own ops echoed back, so
+// our per-peer cursor lags by design. It must be skipped before the convergence
+// check — otherwise a home-host cursor=0 stream stays a permanent frozen
+// candidate that re-alerts whenever the phase-2 hash fetch flaps (the #60 chat
+// false positive). A pure receiver (no local tail) must still alert.
+func TestReplicationAuditLivenessHomeHostSkipped(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	origConverged := audit_stream_converged
+	defer func() {
+		data_dir = orig
+		audit_stream_converged = origConverged
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+
+	peer, stream := "peerP", "app:chat"
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, ?, 'u1', ?, 0)", peer, repl_scope_app, stream)
+	manifest := []AuditStream{{User: "u1", Stream: stream, Count: 5, Tail: 19}}
+	alerted := func() bool {
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
+		return audit_liveness_alerted[peer+"|u1|"+stream]
+	}
+	reset := func() {
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}
+
+	called := false
+	audit_stream_converged = func(string, AuditStream, map[string]int64) bool { called = true; return false }
+
+	// Pure receiver (no local tail): frozen + not converged -> alerts (no regression).
+	reset()
+	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest)
+	if !alerted() {
+		t.Fatal("pure-receiver frozen stream must still alert")
+	}
+
+	// This host originates the stream (local tail > 0): skipped entirely.
+	rdb.exec("insert into tail (user, scope, db, last) values ('u1', ?, ?, 7)", repl_scope_app, stream)
+	reset()
+	called = false
+	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest)
+	if alerted() {
+		t.Fatal("home-host-originated stream (local tail>0) must not be flagged as not-advancing")
+	}
+	if called {
+		t.Fatal("home-host stream must be skipped before the convergence check")
+	}
+}
+
 // TestReplicationManagerHung (external-monitor dead-man's-switch): a fresh
 // heartbeat reads as not-hung with a small age; a heartbeat aged past the stall
 // threshold reads as hung — what /_/health exposes so an external monitor can

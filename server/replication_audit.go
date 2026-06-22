@@ -815,6 +815,17 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 		if s.Tail <= 0 {
 			continue // peer doesn't originate this stream — nothing to keep up with
 		}
+		// This host ORIGINATES the stream (it has its own emitted tail), so the
+		// peer's emitted tail is largely our own ops relayed back as echo — our
+		// per-peer apply cursor sits permanently behind it with nothing missing.
+		// cursor-vs-tail is not a meaningful liveness signal for an originator
+		// (convergence is covered by the content audit, replication_audit_compare),
+		// so don't let such a stream become a permanent frozen candidate that
+		// re-alerts whenever the phase-2 hash fetch flaps. This is the home-host
+		// cursor=0 false positive seen on the chat stream in task #60. (#62)
+		if rdb.integer("select coalesce(last, 0) from tail where user=? and scope=? and db=?", s.User, repl_scope_app, s.Stream) > 0 {
+			continue
+		}
 		key := peer + "|" + s.User + "|" + s.Stream
 		cursor, _ := replication_cursor(rdb, peer, repl_scope_app, s.User, s.Stream)
 		prev, seen := audit_cursor_previous[key]

@@ -356,6 +356,17 @@ func db_create() {
 	// by a backlog drain. See claude/plans/replication-test.md
 	// Stage 19.
 	replication.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	// (#65) cursor.epoch: the highest sender generation seen for this inbound
+	// (peer, scope, user, db) stream. A sender bumps its epoch to now() when it
+	// resets its outbound sequence space (replica reset / rebootstrap); a higher
+	// epoch than recorded here is a fresh generation that re-anchors the cursor
+	// instead of being dropped as already-applied — closing the N>=3 hole #34
+	// can't reach. Additive (default 0 = legacy); idempotent alter for DBs
+	// created before the column existed. Read/written when the gate change lands
+	// (claude/plans/replication-epoch.md).
+	if has, _ := replication.exists("select 1 from pragma_table_info('cursor') where name='epoch'"); !has {
+		replication.exec("alter table cursor add column epoch integer not null default 0")
+	}
 	// tail: sender-side last-emitted sequence per (user, scope, db),
 	// stamped onto each outbound op as Prev — the per-db ordering chain.
 	replication.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")

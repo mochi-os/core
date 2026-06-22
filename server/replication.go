@@ -81,6 +81,18 @@ type ReplicationOp struct {
 	LeaderScope string `cbor:"leader_scope,omitempty"`
 	LeaderKey   string `cbor:"leader_key,omitempty"`
 	Fence       int64  `cbor:"fence,omitempty"`
+	// Epoch is the sender's generation number, bumped to now() each time it
+	// resets its outbound sequence space (replica reset / rebootstrap). Carried
+	// on every op so a receiver recognises a reset from the ops themselves: an
+	// epoch higher than it has recorded for the (peer, stream) is a fresh
+	// generation — reset the apply cursor and accept, rather than dropping the
+	// reset host's low sequences as already-applied. This closes the N>=3 hole
+	// the bootstrap-serve inbound reset (#34) can't reach: a third host that
+	// didn't serve the bootstrap still learns of the reset from the epoch. 0 is
+	// the legacy generation (a host that has never reset). Wired in stages — the
+	// gate/stamp/bump land together as a focused unit. See
+	// claude/plans/replication-epoch.md. (#65)
+	Epoch int64 `cbor:"epoch,omitempty"`
 }
 
 // KeysTransfer carries a user's identity (the users-row fields plus every

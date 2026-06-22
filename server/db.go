@@ -59,7 +59,7 @@ const (
 )
 
 const (
-	schema_version = 88
+	schema_version = 89
 )
 
 var (
@@ -356,17 +356,20 @@ func db_create() {
 	// by a backlog drain. See claude/plans/replication-test.md
 	// Stage 19.
 	replication.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
-	// (#65) cursor.epoch: the highest sender generation seen for this inbound
-	// (peer, scope, user, db) stream. A sender bumps its epoch to now() when it
-	// resets its outbound sequence space (replica reset / rebootstrap); a higher
-	// epoch than recorded here is a fresh generation that re-anchors the cursor
-	// instead of being dropped as already-applied — closing the N>=3 hole #34
-	// can't reach. Additive (default 0 = legacy); idempotent alter for DBs
-	// created before the column existed. Read/written when the gate change lands
-	// (claude/plans/replication-epoch.md).
-	if has, _ := replication.exists("select 1 from pragma_table_info('cursor') where name='epoch'"); !has {
-		replication.exec("alter table cursor add column epoch integer not null default 0")
-	}
+	// (#65) Replication generation (epoch) tables. epoch: this host's outbound
+	// generation — a 1-row counter bumped to now() when the host resets its
+	// outbound sequence space (a replica reset / rejoin, detected at the
+	// receiver's bootstrap completion). Stamped on every emitted op. peer_epoch:
+	// the highest generation seen from each peer; a higher epoch than recorded
+	// triggers a one-time inbound reset of that peer's stream state, so a restart
+	// is self-announced to ANY host, not just the one that served the bootstrap
+	// (#34 for N>=3). See claude/plans/replication-epoch.md.
+	replication.exec("create table if not exists epoch (singleton integer primary key check (singleton = 1), value integer not null default 0)")
+	// peer_epoch.pending=1 marks a peer we just bootstrapped FROM: its cursors are
+	// freshly seeded at its current generation, so the first op from it adopts
+	// that generation as our baseline WITHOUT an inbound reset (which would clear
+	// the good seed and stall a mid-stream peer). Cleared on adoption.
+	replication.exec("create table if not exists peer_epoch (peer text primary key, epoch integer not null default 0, pending integer not null default 0)")
 	// tail: sender-side last-emitted sequence per (user, scope, db),
 	// stamped onto each outbound op as Prev — the per-db ordering chain.
 	replication.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
@@ -943,6 +946,8 @@ func db_upgrade() {
 			db_upgrade_87()
 		case 88:
 			db_upgrade_88()
+		case 89:
+			db_upgrade_89()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1458,6 +1463,17 @@ func db_upgrade_88() {
 	r := db_open("db/replication.db")
 	r.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
 	r.exec("create index if not exists relayed_seen on relayed(seen)")
+}
+
+// db_upgrade_89 adds the replication generation (epoch) tables (#65): the host's
+// own outbound generation and the highest generation seen per peer. A host bumps
+// its epoch when it resets its outbound sequence space; a peer seeing the higher
+// epoch performs a one-time inbound reset, so a restart is self-announced to any
+// host (a generalised #34 for N>=3). See claude/plans/replication-epoch.md.
+func db_upgrade_89() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists epoch (singleton integer primary key check (singleton = 1), value integer not null default 0)")
+	r.exec("create table if not exists peer_epoch (peer text primary key, epoch integer not null default 0, pending integer not null default 0)")
 }
 
 // db_upgrade_85 re-keys replication.db cursor/tail/pending stream
@@ -2223,6 +2239,20 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 // integer returns the first column as an integer, or 0 on error
 func (db *DB) integer(query string, values ...any) int {
 	var result int
+	err := db.internal.QueryRow(query, values...).Scan(&result)
+	if err != nil {
+		return 0
+	}
+	return result
+}
+
+// integer64 reads a single integer column as int64, so a value beyond the 32-bit
+// range (a timestamp, a large sequence, a generation epoch) is not truncated on
+// the 32-bit builds (armhf/armv7hl) where integer()'s int return would be. Use
+// this for any column whose value can exceed ~2.1e9. Returns 0 on no-row/error,
+// matching integer().
+func (db *DB) integer64(query string, values ...any) int64 {
+	var result int64
 	err := db.internal.QueryRow(query, values...).Scan(&result)
 	if err != nil {
 		return 0

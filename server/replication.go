@@ -465,6 +465,41 @@ func replication_op_event(e *Event) {
 // exercised end-to-end.
 func replication_op_receive(peer string, op *ReplicationOp) {
 	db := db_open("db/replication.db")
+
+	// (#65) Generation gate — MUST run before the seen-dedup below. A sender
+	// stamps its outbound generation (epoch) on every op and bumps it to now()
+	// when it resets its outbound sequence space (replica reset / rejoin). An
+	// epoch higher than we've recorded for this peer means its sequences have
+	// restarted near zero, so we reset our inbound state for it — the same action
+	// #34 does on bootstrap-serve, but self-announced by the op, so a third host
+	// that never served the bootstrap re-anchors too (the N>=3 hole). This has to
+	// precede the seen check: the restarted low sequences collide with stale
+	// `seen` rows and would otherwise be dropped as duplicates. A lower epoch is a
+	// straggler from a superseded generation — drop it. epoch==0 is the legacy
+	// generation (a peer that has never reset), so legacy and never-reset peers
+	// fall straight through to today's behaviour. The recorded epoch is seeded at
+	// bootstrap (replication_bootstrap.go) so a freshly-bootstrapped mid-stream
+	// peer at a non-zero epoch does NOT trip a spurious reset.
+	if op.Epoch > 0 {
+		recorded := db.integer64("select coalesce(epoch, 0) from peer_epoch where peer = ?", peer)
+		pending := db.integer("select coalesce(pending, 0) from peer_epoch where peer = ?", peer) != 0
+		switch {
+		case pending:
+			// We just bootstrapped FROM this peer; its cursors are freshly seeded
+			// at its current generation, so adopt that generation as our baseline
+			// without an inbound reset (a reset would clear the good seed and
+			// stall a mid-stream peer). Clears the marker.
+			db.exec("update peer_epoch set epoch = ?, pending = 0 where peer = ?", op.Epoch, peer)
+		case op.Epoch > recorded:
+			replication_inbound_reset(db, peer)
+			db.exec("insert into peer_epoch (peer, epoch, pending) values (?, ?, 0) on conflict(peer) do update set epoch = max(epoch, ?), pending = 0", peer, op.Epoch, op.Epoch)
+			info("Replication generation advanced: peer=%q epoch=%d (was %d) — inbound state reset, accepting its restarted sequence space", peer, op.Epoch, recorded)
+		case op.Epoch < recorded:
+			debug("Replication op from superseded generation: peer=%q epoch=%d < recorded=%d — dropped", peer, op.Epoch, recorded)
+			return
+		}
+	}
+
 	seen, _ := db.exists(
 		"select 1 from seen where peer=? and scope=? and user=? and sequence=?",
 		peer, op.Scope, op.User, op.Sequence)
@@ -562,6 +597,33 @@ func replication_cursor_set(db *DB, peer, scope, user, database string, sequence
 		"insert into cursor (peer, scope, user, db, sequence) values (?, ?, ?, ?, ?) "+
 			"on conflict(peer, scope, user, db) do update set sequence=max(sequence, excluded.sequence)",
 		peer, scope, user, database, sequence)
+}
+
+// replication_epoch_current returns this host's outbound generation — the value
+// stamped on every emitted op. 0 until the host first resets its outbound
+// sequence space (replica reset / rejoin), after which it is the now() of that
+// reset. Monotonic across resets, so a receiver can tell a fresh generation from
+// a replayed one. (#65)
+func replication_epoch_current() int64 {
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return 0
+	}
+	return rdb.integer64("select coalesce(value, 0) from epoch where singleton = 1")
+}
+
+// replication_epoch_bump advances this host's outbound generation to now(),
+// called when the host has reset its outbound sequence space (its receiver-side
+// bootstrap completed). Every op emitted afterwards carries the higher epoch, so
+// peers holding a stale-high inbound cursor re-anchor instead of dropping the
+// restarted low sequences. max() keeps it monotonic across a backwards clock. (#65)
+func replication_epoch_bump() {
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return
+	}
+	ts := now()
+	rdb.exec("insert into epoch (singleton, value) values (1, ?) on conflict(singleton) do update set value = max(value, ?)", ts, ts)
 }
 
 // replication_pending_buffer stores an op that can't apply yet — a gap
@@ -2542,6 +2604,9 @@ func replication_emit_to_real(user string, op *ReplicationOp, peers []string) {
 	op.Sequence = replication_sequence_next(user, op.Scope)
 	op.Prev = replication_tail_advance(user, op.Scope, stream, op.Sequence)
 	stream_mu.Unlock()
+	// (#65) Stamp our current outbound generation so a receiver re-anchors if we
+	// have reset our sequence space since it last heard from us.
+	op.Epoch = replication_epoch_current()
 
 	// Self-anchoring streams emit each op with Prev=0 (see
 	// replication_op_self_anchoring). The receive gate applies a Prev==0 op

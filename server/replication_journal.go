@@ -345,6 +345,9 @@ func journal_ship_real(userUID string, op *ReplicationOp, peers []string) {
 	if op.LeaderScope != "" && op.LeaderKey != "" && op.Fence == 0 {
 		op.Fence = replication_leader_fence(op.LeaderScope, op.LeaderKey)
 	}
+	// (#65) Stamp our current outbound generation so a receiver re-anchors if we
+	// have reset our sequence space since it last heard from us.
+	op.Epoch = replication_epoch_current()
 
 	// Signing entity for this user (the user column is the TEXT uid).
 	udb := db_open("db/users.db")

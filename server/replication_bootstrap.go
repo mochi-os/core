@@ -528,6 +528,38 @@ func bootstrap_scope_settled_impl(peer, scope string) {
 	if peer != "" {
 		go replication_bootstrap_emit_scope_done(peer, scope)
 	}
+	bootstrap_receiver_complete(peer)
+}
+
+// bootstrap_receiver_complete runs the receiver-side completion work ONCE, when
+// ALL of this peer's bootstrap scopes have settled to 'done' — i.e. we have just
+// finished pulling a full bootstrap from it (a join / reset / rejoin / wiped-
+// replica recovery). It fires before the lazy first-write re-init of our outbound
+// sequence space (replication_journal_assign), so two things land in time (#65):
+//   - Bump OUR outbound generation: our sequence space is now fresh, so every op
+//     we emit afterwards carries a higher epoch and our peers re-anchor instead
+//     of dropping our restarted low sequences as already-applied.
+//   - Mark the SOURCE peer's epoch baseline 'pending': its cursors are freshly
+//     seeded at its current generation, so the first op we receive from it adopts
+//     that generation as our baseline rather than tripping a spurious inbound
+//     reset (constraint 2 in claude/plans/replication-epoch.md).
+//
+// Firing on every scope-settle is fine: it no-ops until the last scope is done,
+// and a benign double-fire (two scopes settling concurrently) is idempotent.
+func bootstrap_receiver_complete(peer string) {
+	if peer == "" {
+		return
+	}
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return
+	}
+	if remaining, _ := rdb.exists("select 1 from bootstrap where peer=? and state!=?", peer, bootstrap_state_done); remaining {
+		return // more scopes still pulling — not complete yet
+	}
+	replication_epoch_bump()
+	rdb.exec("insert into peer_epoch (peer, epoch, pending) values (?, 0, 1) on conflict(peer) do update set pending=1", peer)
+	info("Replication receiver bootstrap complete from peer %q — outbound generation bumped, source epoch baseline pending", peer)
 }
 
 // replication_bootstrap_emit_scope_done sends a `bootstrap/scope/done`

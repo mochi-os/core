@@ -85,6 +85,18 @@ func entity_create(u *User, class string, name string, privacy string, data stri
 	e := Entity{ID: public, Private: private, Fingerprint: fingerprint, User: u.UID, Parent: parent, Class: class, Name: name, Privacy: privacy, Data: data, Published: 0}
 	replication_emit_users_entities_create(u.UID, &e)
 
+	// A user's FIRST entity can't bootstrap to a whole-server pair partner via
+	// the signed op channel: the entity-create op above is signed by this very
+	// entity, which the partner doesn't yet hold to verify it, so the op is
+	// dropped and the identity strands until the next pair-backfill (the bug that
+	// left one user's identity off the partner, found 2026-06-22). Push it via
+	// the server-authenticated keys-transfer so a signup on a paired host lands
+	// on the partner. Later entities are signed by an already-transferred
+	// identity, so the op channel suffices — only the first needs this. (#69)
+	if db.integer("select count(*) from entities where user=?", u.UID) == 1 {
+		replication_pair_keys_transfer(u.UID)
+	}
+
 	// Audit log entity/identity creation
 	audit_identity_created(u.Username, public, class)
 	audit_key_generated(public, class)

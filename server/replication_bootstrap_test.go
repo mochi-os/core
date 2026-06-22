@@ -1951,3 +1951,53 @@ func TestJournalEnsureStaleCacheRegression(t *testing.T) {
 		t.Fatal("after cache invalidation, journal_ensure must re-create the table")
 	}
 }
+
+// TestReplicationPairKeysTransfer (#69) checks that a user's identity is pushed
+// to every whole-server pair member (skipping self) via the keys-transfer — the
+// path that lets a first-entity signup on a paired host reach the partner
+// instead of stranding behind the signed op channel it can't bootstrap.
+func TestReplicationPairKeysTransfer(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table pair (peer text primary key, added integer, role text)")
+	rdb.exec("insert into pair (peer) values ('peerA'), ('peerB'), ('self')")
+
+	savedNet := net_id
+	net_id = "self"
+	defer func() { net_id = savedNet }()
+
+	origTransfer := replication_transfer_keys_var
+	defer func() { replication_transfer_keys_var = origTransfer }()
+	got := make(chan string, 8)
+	replication_transfer_keys_var = func(uid, peer string) bool {
+		got <- uid + "|" + peer
+		return true
+	}
+
+	replication_pair_keys_transfer("u1")
+
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case c := <-got:
+			seen[c] = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for transfers; got %v", seen)
+		}
+	}
+	if !seen["u1|peerA"] || !seen["u1|peerB"] {
+		t.Errorf("expected transfers to peerA and peerB, got %v", seen)
+	}
+	// self must be skipped — no third call should arrive.
+	select {
+	case c := <-got:
+		t.Errorf("unexpected transfer (self should be skipped): %s", c)
+	case <-time.After(150 * time.Millisecond):
+	}
+}

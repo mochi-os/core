@@ -4334,6 +4334,32 @@ func replication_emit_users_entities_create(uid string, e *Entity) {
 	})
 }
 
+// replication_pair_keys_transfer pushes a user's identity (entities + keys) to
+// every whole-server pair member via the keys-transfer channel. A user's FIRST
+// entity can't reach a partner via the signed op stream — the entity-create op
+// is signed by that very entity, which the partner doesn't yet hold to verify
+// it, so the op is dropped. The keys-transfer is server-authenticated (not
+// entity-signed), so it bootstraps the first identity. Idempotent and async.
+// Per-user link partners get their keys-transfer via the link-approve flow, so
+// this targets only `pair` members. (#69)
+func replication_pair_keys_transfer(uid string) {
+	if uid == "" {
+		return
+	}
+	rdb := db_open("db/replication.db")
+	rows, err := rdb.rows("select peer from pair")
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		if peer == "" || peer == net_id {
+			continue
+		}
+		go replication_transfer_keys_var(uid, peer)
+	}
+}
+
 // replication_emit_users_entities_update replicates a partial column
 // update against an existing entity row. The id is always included in
 // fields so the receiver can identify the target row.

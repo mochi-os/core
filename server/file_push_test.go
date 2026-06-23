@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -323,5 +324,88 @@ func TestFilePushResumeWire(t *testing.T) {
 	var r FilePushResume
 	if err := decode_into(cbor_encode(&FilePushResume{Offset: 4096}), &r); err != nil || r.Offset != 4096 {
 		t.Fatalf("resume reply round-trip: err=%v Offset=%d", err, r.Offset)
+	}
+}
+
+type filePushTestWriteCloser struct{ io.Writer }
+
+func (filePushTestWriteCloser) Close() error { return nil }
+
+// TestFilePushReceiverResume drives the receiver handler (replication_file_push_event)
+// end-to-end over an in-memory stream pair (#78): given bytes already in
+// <path>.partial, it must advertise that offset as the resume point, append only
+// the remaining body the sender streams, and atomic-rename to the final path with
+// the correct full content. Covers resume, fresh (no partial), and an oversized
+// stale partial that must be discarded and restarted.
+func TestFilePushReceiverResume(t *testing.T) {
+	const size = int64(100000)
+	full := bytes.Repeat([]byte("X"), int(size))
+
+	cases := []struct {
+		name       string
+		seed       int64 // bytes pre-existing in .partial (0 = none)
+		wantOffset int64 // offset the receiver should advertise + resume from
+	}{
+		{"resume from partial", 40000, 40000},
+		{"fresh, no partial", 0, 0},
+		{"oversized stale partial discarded", size + 5000, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := data_dir
+			data_dir = t.TempDir()
+			defer func() { data_dir = orig }()
+
+			udb := db_open("db/users.db")
+			udb.exec("create table if not exists users (uid text, username text)")
+			udb.exec("insert into users (uid, username) values ('u1', 'u1@example.com')")
+
+			base := file_user_app_base("u1", "app1")
+			target := filepath.Join(base, "dir", "f.bin")
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.seed > 0 {
+				if err := os.WriteFile(target+".partial", bytes.Repeat([]byte("X"), int(tc.seed)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Wire the receiver reads: the header, then only the body bytes a
+			// resuming sender would stream (from the offset it should advertise).
+			header := cbor_encode(&FilePushHeader{User: "u1", App: "app1", Path: "dir/f.bin", Size: size, Resume: true})
+			var wire bytes.Buffer
+			wire.Write(header)
+			wire.Write(full[tc.wantOffset:])
+
+			var reply bytes.Buffer
+			s := &Stream{
+				reader: io.NopCloser(bytes.NewReader(wire.Bytes())),
+				writer: filePushTestWriteCloser{&reply},
+			}
+			replication_file_push_event(&Event{from: "signer", peer: "peerX", stream: s})
+
+			// 1. The receiver advertised the resume offset.
+			var resume FilePushResume
+			if err := decode_into(reply.Bytes(), &resume); err != nil {
+				t.Fatalf("decode FilePushResume reply (%d bytes): %v", reply.Len(), err)
+			}
+			if resume.Offset != tc.wantOffset {
+				t.Fatalf("advertised offset = %d, want %d", resume.Offset, tc.wantOffset)
+			}
+
+			// 2. The transfer completed: .partial renamed away, final content full.
+			if _, err := os.Stat(target + ".partial"); !os.IsNotExist(err) {
+				t.Fatalf(".partial should be renamed away on completion (err=%v)", err)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("read completed file: %v", err)
+			}
+			if !bytes.Equal(got, full) {
+				t.Fatalf("completed file mismatch: %d bytes, want %d", len(got), size)
+			}
+		})
 	}
 }

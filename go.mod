@@ -37,11 +37,11 @@ require (
 	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/wneessen/go-mail v0.7.2
 	go.starlark.net v0.0.0-20250906160240-bf296ed553ea
-	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.53.0
+	golang.org/x/crypto v0.52.0
+	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.36.0
+	golang.org/x/sys v0.45.0
+	golang.org/x/text v0.37.0
 	gopkg.in/ini.v1 v1.67.0
 	nhooyr.io/websocket v1.8.11
 )

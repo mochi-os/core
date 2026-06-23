@@ -22,6 +22,25 @@ import (
 	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 )
 
+// snapshot_integrity_ok reports whether the SQLite database at path passes a
+// quick integrity check. Gates a freshly-fetched bootstrap snapshot before it
+// is landed, so a corrupt source or transfer is rejected and retried rather
+// than installed and then re-propagated to other peers — the corruption
+// ping-pong that wrecked feeds.db (#6). quick_check returns a single "ok" row on
+// a clean DB and error rows otherwise; opened read-only so it can't touch a WAL.
+func snapshot_integrity_ok(path string) bool {
+	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	var result string
+	if err := d.QueryRow("PRAGMA quick_check").Scan(&result); err != nil {
+		return false
+	}
+	return result == "ok"
+}
+
 // snapshot_copy_db copies srcPath to dstPath using SQLite's online
 // backup API. Returns the size of the resulting file.
 func snapshot_copy_db(srcPath, dstPath string) (int64, error) {

@@ -315,13 +315,30 @@ func bootstrap_set_state(scope, peer, state, position string) {
 	rdb := db_open("db/replication.db")
 	if state == bootstrap_state_active {
 		// Reaching (or staying) active means the manifest or a chunk just
-		// landed — real forward progress. Stamp `progress` and clear the
-		// retry-backoff counter so the universal-retry driver sees the
-		// transfer as live and leaves it alone (bootstrap_retry_eligible).
+		// landed — real forward progress. Stamp `progress` so the universal-
+		// retry driver sees the transfer as live and leaves it alone while it
+		// keeps moving (bootstrap_retry_eligible's idle < bootstrap_stall_
+		// seconds gate). Do NOT reset `attempts` here: a scope that makes a
+		// little progress every retry window but never reaches 'done' (e.g. a
+		// large DB that keeps diverging, or a misaligned stream) would
+		// otherwise re-fire at the 30s floor forever — the tight re-bootstrap
+		// loop that starved the WAL checkpoint and corrupted feeds.db
+		// (2026-06-23). Keeping `attempts` monotonic lets the per-row backoff
+		// grow to its 30-minute cap so a non-converging scope settles into a
+		// slow probe instead of churning. `attempts` is reset to 0 only on
+		// 'done' (below) and by an explicit operator resume/resync.
 		rdb.exec(
 			"insert into bootstrap (scope, peer, state, position, progress, attempts) values (?, ?, ?, ?, ?, 0) "+
-				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, progress=excluded.progress, attempts=0",
+				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, progress=excluded.progress",
 			scope, peer, state, position, now())
+	} else if state == bootstrap_state_done {
+		// Success: clear the retry-backoff counter so a future re-bootstrap of
+		// this scope starts fresh at the 30s floor rather than inheriting the
+		// (possibly capped) attempts of the streak that just completed.
+		rdb.exec(
+			"insert into bootstrap (scope, peer, state, position, attempts) values (?, ?, ?, ?, 0) "+
+				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, attempts=0",
+			scope, peer, state, position)
 	} else {
 		rdb.exec(
 			"insert into bootstrap (scope, peer, state, position) values (?, ?, ?, ?) "+
@@ -1712,6 +1729,15 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: close partial %q: %w", partial, err)
 	}
+	// Integrity-gate the received snapshot before landing it: a corrupt source
+	// or transfer is rejected here (and retried) rather than Restored into the
+	// live DB and then re-propagated to other peers — the corruption ping-pong
+	// that wrecked feeds.db (#6). The seed cursor is NOT advanced, so the
+	// receiver stays behind and re-fetches instead of declaring false sync.
+	if !snapshot_integrity_ok(partial) {
+		_ = os.Remove(partial)
+		return fmt.Errorf("bootstrap-db-fetch: snapshot for %q failed integrity check; rejecting (corrupt source or transfer) — will retry", target)
+	}
 	if err := bootstrap_db_land(partial, target); err != nil {
 		return err
 	}
@@ -2138,6 +2164,13 @@ const bootstrap_retry_interval = 30 * time.Second
 // link so a live-but-slow transfer is never disturbed.
 const bootstrap_stall_seconds = 120
 
+// bootstrap_retry_escalate_attempts is the consecutive-retry count past which a
+// non-converging scope is logged at warn level (chronically stuck — operator
+// resume/resync or a look at why it never reaches 'done' is warranted). With
+// the monotonic backoff this is ~a few hours of 30-minute probes; it does NOT
+// abandon the scope (the retry keeps probing in case the source recovers).
+const bootstrap_retry_escalate_attempts = 10
+
 func bootstrap_retry_incomplete_manager() {
 	for {
 		time.Sleep(bootstrap_retry_interval)
@@ -2204,7 +2237,11 @@ func bootstrap_retry_incomplete_once() {
 		// bootstrap_set_state(active).
 		rdb.exec("update bootstrap set state='queued', position='', failed=0, attempts=attempts+1, progress=? where scope=? and peer=?", now(), scope, peer)
 		uid := bootstrap_peer_user(peer)
-		debug("Replication bootstrap-retry: scope=%q peer=%q uid=%q state=%q attempts=%d re-firing manifest", scope, peer, uid, state, attempts+1)
+		if attempts+1 >= bootstrap_retry_escalate_attempts {
+			warn("Replication bootstrap-retry: scope=%q peer=%q uid=%q state=%q STILL not done after %d attempts — chronically stuck; re-firing on the backed-off (~30min) schedule. Investigate why it never reaches 'done' (diverging large DB / misaligned stream); an operator resume/resync may be needed.", scope, peer, uid, state, attempts+1)
+		} else {
+			debug("Replication bootstrap-retry: scope=%q peer=%q uid=%q state=%q attempts=%d re-firing manifest", scope, peer, uid, state, attempts+1)
+		}
 		bootstrap_refire_manifest(peer, scope, uid)
 	}
 }

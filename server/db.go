@@ -717,9 +717,75 @@ func db_vacuum_all() (int, int64) {
 	return count, total
 }
 
+// db_wal_warn_bytes is the WAL size past which the watchdog force-checkpoints
+// and (if it can't reclaim) warns. A healthy WAL is single-digit MB
+// (auto-checkpoint defaults to ~4 MB); the runaway that corrupted feeds.db
+// reached 2.9 GB with NO alert. 256 MB catches a starved checkpoint ~10x
+// earlier. var (not const) so tests can lower it.
+var db_wal_warn_bytes int64 = 256 * 1024 * 1024
+
+// db_wal_warn_strikes is how many consecutive over-threshold minutes before the
+// watchdog warns. A transient spike (a just-finished bootstrap land dumps the
+// DB into the WAL for a few seconds) is reclaimed by the per-minute checkpoint
+// below and never warns; only a SUSTAINED runaway the checkpoint can't drain —
+// a genuinely starved checkpoint (a long-lived reader pinning an old WAL frame,
+// or writes outpacing it) — crosses the strike count.
+const db_wal_warn_strikes = 3
+
+var db_wal_strikes sync.Map // db.path -> consecutive over-threshold checks
+
+// db_wal_watchdog runs every db_manager tick. For each open DB whose -wal has
+// grown past db_wal_warn_bytes it force-checkpoints (TRUNCATE) to reclaim it,
+// and warns once the WAL stays oversized across db_wal_warn_strikes ticks — the
+// checkpoint-starvation that ballooned feeds.db's WAL to 2.9 GB and led to the
+// corruption (#6). Best-effort and non-fatal: a reader can block the truncate,
+// but the warning then surfaces the runaway early instead of silently.
+func db_wal_watchdog() {
+	databases_lock.Lock()
+	open := make([]*DB, 0, len(databases))
+	for _, db := range databases {
+		if db.closed == 0 {
+			open = append(open, db)
+		}
+	}
+	databases_lock.Unlock()
+
+	for _, db := range open {
+		if st, err := os.Stat(db.path + "-wal"); err != nil || st.Size() < db_wal_warn_bytes {
+			db_wal_strikes.Delete(db.path)
+			continue
+		}
+		// Force a truncate checkpoint to reclaim it.
+		if conn, err := db.internal.Conn(context.Background()); err == nil {
+			// Short lock-wait: if a reader is starving the checkpoint, waiting
+			// won't help (the strike + warn handle the persistent case); an
+			// uncontended checkpoint still completes regardless.
+			_, _ = conn.ExecContext(context.Background(), "PRAGMA busy_timeout=1000")
+			_, _ = conn.ExecContext(context.Background(), "PRAGMA wal_checkpoint(TRUNCATE)")
+			_ = conn.Close()
+		}
+		// A transient spike (e.g. a just-finished bootstrap land) drained above
+		// and accrues no strike; only a WAL the checkpoint couldn't reclaim does.
+		st, err := os.Stat(db.path + "-wal")
+		if err != nil || st.Size() < db_wal_warn_bytes {
+			db_wal_strikes.Delete(db.path)
+			continue
+		}
+		n := 1
+		if v, ok := db_wal_strikes.Load(db.path); ok {
+			n = v.(int) + 1
+		}
+		db_wal_strikes.Store(db.path, n)
+		if n == db_wal_warn_strikes {
+			warn("Database WAL runaway: %q -wal is %d MB after %d min, checkpoint starved (a long-lived reader pinning an old frame).", db.path, st.Size()/(1024*1024), n)
+		}
+	}
+}
+
 func db_manager() {
 	for range time.Tick(time.Minute) {
 		now := now()
+		db_wal_watchdog()
 		pass := now-db_vacuum_last >= db_vacuum_period
 
 		// Collect under the lock, but vacuum and close outside it: both

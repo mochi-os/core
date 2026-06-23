@@ -36,7 +36,28 @@ type FilePushHeader struct {
 	App  string `cbor:"app"`
 	Path string `cbor:"path"`
 	Size int64  `cbor:"size"`
+	// Resume signals the sender supports resumable transfer (#78): right after
+	// this header it reads a FilePushResume from the receiver and streams the
+	// body from that offset, so an interrupted push continues instead of
+	// restarting from 0. Backward compatible: an old sender never sets it (the
+	// receiver takes the one-shot path), and an old receiver ignores it and
+	// never replies (the sender's resume read times out and falls back to a full
+	// send-from-0).
+	Resume bool `cbor:"resume,omitempty"`
 }
+
+// FilePushResume is the receiver's reply to a resumable file/push header: the
+// number of contiguous bytes it already holds in <path>.partial. The sender
+// seeks to this offset and streams the remaining Size-Offset bytes. (#78)
+type FilePushResume struct {
+	Offset int64 `cbor:"offset"`
+}
+
+// file_push_resume_timeout caps how long a resumable sender waits for the
+// receiver's FilePushResume before falling back to a full send-from-0 — short,
+// because the reply is tiny and only an OLD receiver (which never sends one)
+// should ever hit it. (#78)
+const file_push_resume_timeout = 8
 
 // FileDelete is the payload for a file/delete event: tiny, fits the
 // regular ops flow with no body.
@@ -201,6 +222,56 @@ func replication_file_push_event(e *Event) {
 	}
 
 	partial := header.Path + ".partial"
+
+	if header.Resume {
+		// (#78) Resumable path: keep any bytes a prior attempt left in .partial,
+		// tell the sender that offset, then append the remainder. On an
+		// incomplete transfer we KEEP the .partial so the next round resumes
+		// instead of restarting — that's what turns a transient drop on a flaky
+		// link into eventual completion rather than a permanent "Retrying 1 file".
+		f, err := root.OpenFile(partial, os.O_WRONLY|os.O_CREATE, 0644) // no O_TRUNC
+		if err != nil {
+			warn("Replication file-push: cannot open %q: %v", partial, err)
+			e.stream.close_read()
+			return
+		}
+		var have int64
+		if info, serr := f.Stat(); serr == nil {
+			have = info.Size()
+		}
+		if have > header.Size {
+			f.Truncate(0) // stale/oversized partial — would leave a garbage tail
+			have = 0
+		}
+		if werr := e.stream.write(&FilePushResume{Offset: have}); werr != nil {
+			f.Close()
+			e.stream.close_read()
+			return
+		}
+		if _, serr := f.Seek(have, io.SeekStart); serr != nil {
+			f.Close()
+			e.stream.close_read()
+			return
+		}
+		written, copyErr := file_push_copy(f, e.stream.raw_reader(), header.Size-have)
+		f.Close()
+		if copyErr != nil || have+written != header.Size {
+			warn("Replication file-push: resume body incomplete (%d+%d/%d): %v", have, written, header.Size, copyErr)
+			e.stream.close_read() // KEEP .partial for the next round's resume
+			return
+		}
+		if err := root.Rename(partial, header.Path); err != nil {
+			warn("Replication file-push: cannot rename %q → %q: %v", partial, header.Path, err)
+			root.Remove(partial)
+			e.stream.close_read()
+			return
+		}
+		debug("Replication file-push: applied (resumed from %d) user=%q app=%q path=%q size=%d", have, header.User, header.App, header.Path, header.Size)
+		return
+	}
+
+	// Legacy one-shot path (old sender, no Resume flag): truncate, read Size
+	// from offset 0, remove the partial on any failure (the sender retries from 0).
 	f, err := root.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		warn("Replication file-push: cannot open %q: %v", partial, err)
@@ -208,9 +279,9 @@ func replication_file_push_event(e *Event) {
 		return
 	}
 
-	// Stream exactly `Size` bytes from the wire to .partial, hashing
-	// as we go. raw_reader() picks up any bytes already buffered by
-	// the CBOR decoder before falling through to s.reader.
+	// Stream exactly `Size` bytes from the wire to .partial. raw_reader() picks
+	// up any bytes already buffered by the CBOR decoder before falling through
+	// to s.reader.
 	written, copyErr := file_push_copy(f, e.stream.raw_reader(), header.Size)
 	f.Close()
 
@@ -368,12 +439,26 @@ func queue_send_file_push(q *QueueEntry) bool {
 		}
 	}
 
-	// Stream EXACTLY `size` bytes — the same count now stamped in the header.
-	// io.CopyN returns a short count + error if the file was truncated after
-	// the stat, so we never ship a body shorter than the header promised; the
-	// send fails and retries with a fresh stat.
-	if n, cerr := io.CopyN(s.writer, f, size); cerr != nil || n != size {
-		debug("Queue file-push: body send %q failed (%d/%d): %v", q.File, n, size, cerr)
+	// (#78) Resumable transfer: read the receiver's FilePushResume — how many
+	// contiguous bytes it already holds — and stream the body from there, so an
+	// interrupted push continues instead of restarting at 0. A short read
+	// deadline means an OLD receiver (which never replies) just times out here
+	// and we fall back to a full send-from-0.
+	var offset int64
+	s.timeout.read = file_push_resume_timeout
+	var resume FilePushResume
+	if rerr := s.read(&resume); rerr == nil && resume.Offset > 0 && resume.Offset <= size {
+		if _, serr := f.Seek(resume.Offset, io.SeekStart); serr == nil {
+			offset = resume.Offset
+		}
+	}
+
+	// Stream EXACTLY `size-offset` bytes — the same total now stamped in the
+	// header (offset already on the receiver). io.CopyN returns a short count +
+	// error if the file was truncated after the stat, so we never ship a body
+	// shorter than promised; the send fails and retries with a fresh stat.
+	if n, cerr := io.CopyN(s.writer, f, size-offset); cerr != nil || n != size-offset {
+		debug("Queue file-push: body send %q failed (resume=%d, %d/%d): %v", q.File, offset, n, size-offset, cerr)
 		return false
 	}
 	return true
@@ -408,6 +493,7 @@ func file_push_payload(path string, original []byte) (*os.File, []byte, int64, e
 	var h FilePushHeader
 	if len(original) > 0 && decode_into(original, &h) == nil {
 		h.Size = size
+		h.Resume = true // advertise resumable transfer (#78)
 		header = cbor_encode(&h)
 	}
 	return f, header, size, nil

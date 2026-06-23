@@ -336,21 +336,25 @@ func TestBootstrapDiffManifestSkipsMatchingFiles(t *testing.T) {
 // bootstrap_max_chunk_size chunks; zero-byte file gets a single
 // (0, 0) request as the create-empty-file signal.
 func TestBootstrapChunkRequestsForEntry(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir() // no .partial files present → requests start at offset 0
+	defer func() { data_dir = orig }()
+
 	// Zero-byte file → single request with length 0.
-	reqs := bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "x", Size: 0})
+	reqs := bootstrap_chunk_requests_for_entry("files", BootstrapFileEntry{Path: "x", Size: 0})
 	if len(reqs) != 1 || reqs[0].Length != 0 || reqs[0].Offset != 0 {
 		t.Errorf("zero-byte file: got %+v, want [{Offset:0 Length:0}]", reqs)
 	}
 
 	// File just under one chunk.
-	reqs = bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "y", Size: bootstrap_max_chunk_size - 1})
+	reqs = bootstrap_chunk_requests_for_entry("files", BootstrapFileEntry{Path: "y", Size: bootstrap_max_chunk_size - 1})
 	if len(reqs) != 1 || reqs[0].Length != bootstrap_max_chunk_size-1 {
 		t.Errorf("short file: got %d requests, want 1 of size %d", len(reqs), bootstrap_max_chunk_size-1)
 	}
 
 	// File spanning multiple chunks.
 	size := int64(bootstrap_max_chunk_size)*2 + 17
-	reqs = bootstrap_chunk_requests_for_entry(BootstrapFileEntry{Path: "z", Size: size})
+	reqs = bootstrap_chunk_requests_for_entry("files", BootstrapFileEntry{Path: "z", Size: size})
 	if len(reqs) != 3 {
 		t.Fatalf("multi-chunk: got %d requests, want 3 (got: %+v)", len(reqs), reqs)
 	}
@@ -371,6 +375,67 @@ func TestBootstrapChunkRequestsForEntry(t *testing.T) {
 	}
 	if covered != size {
 		t.Errorf("total covered = %d, want %d", covered, size)
+	}
+}
+
+// TestBootstrapChunkRequestsResume: a partial file on disk makes the chunk
+// requests resume from its size instead of restarting at offset 0, so a
+// re-fetch after a dropped connection makes forward progress (#78).
+func TestBootstrapChunkRequestsResume(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+
+	root, err := bootstrap_file_scope_root("files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := bootstrap_safe_path(root, "bigfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chunk := int64(bootstrap_max_chunk_size)
+	size := chunk*4 + 7 // 5 chunks
+	entry := BootstrapFileEntry{Path: "bigfile", Size: size}
+
+	// No partial → full fetch from offset 0 (5 chunks).
+	if reqs := bootstrap_chunk_requests_for_entry("files", entry); len(reqs) != 5 || reqs[0].Offset != 0 {
+		t.Fatalf("no partial: want 5 reqs from 0, got %d from %d", len(reqs), reqs[0].Offset)
+	}
+
+	// 2 chunks already on disk → resume from offset 2*chunk (3 chunks left),
+	// last request still reaching Size (its EOF triggers the rename).
+	if err := os.WriteFile(final+".partial", make([]byte, chunk*2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reqs := bootstrap_chunk_requests_for_entry("files", entry)
+	if len(reqs) != 3 || reqs[0].Offset != chunk*2 {
+		t.Fatalf("resume: want 3 reqs from %d, got %d from %d", chunk*2, len(reqs), reqs[0].Offset)
+	}
+	if last := reqs[len(reqs)-1]; last.Offset+last.Length != size {
+		t.Fatalf("resume: last req must reach Size, got %d+%d != %d", last.Offset, last.Length, size)
+	}
+
+	// Partial at full size but unrenamed (EOF lost) → re-fetch the final chunk.
+	if err := os.WriteFile(final+".partial", make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if reqs := bootstrap_chunk_requests_for_entry("files", entry); len(reqs) != 1 || reqs[0].Offset != chunk*4 {
+		t.Fatalf("complete-unrenamed: want 1 final chunk from %d, got %d from %d", chunk*4, len(reqs), reqs[0].Offset)
+	}
+
+	// Oversized stale partial → discarded, full re-fetch from 0.
+	if err := os.WriteFile(final+".partial", make([]byte, size+chunk), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if reqs := bootstrap_chunk_requests_for_entry("files", entry); len(reqs) != 5 || reqs[0].Offset != 0 {
+		t.Fatalf("oversized partial: want full re-fetch from 0, got %d from %d", len(reqs), reqs[0].Offset)
+	}
+	if _, err := os.Stat(final + ".partial"); !os.IsNotExist(err) {
+		t.Fatal("oversized stale partial should have been removed")
 	}
 }
 

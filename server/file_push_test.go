@@ -275,6 +275,9 @@ func TestFilePushPayloadSizesFromOpenFd(t *testing.T) {
 	if h.Path != "f.bin" || h.User != "u" || h.App != "a" {
 		t.Fatalf("header non-size fields mangled: %+v", h)
 	}
+	if !h.Resume {
+		t.Fatal("payload must set Resume=true so the sender advertises resumable transfer (#78)")
+	}
 
 	// The fd streams exactly `size` bytes equal to the file contents.
 	got := make([]byte, size)
@@ -290,5 +293,35 @@ func TestFilePushPayloadMissingFile(t *testing.T) {
 	_, _, _, err := file_push_payload(filepath.Join(t.TempDir(), "nope.bin"), nil)
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing-file error = %v, want fs.ErrNotExist", err)
+	}
+}
+
+// TestFilePushResumeWire: the Resume flag and the FilePushResume reply survive a
+// CBOR round-trip, and an OLD header (no resume field) decodes with Resume=false
+// — the backward-compat contract that lets a new receiver fall back to the
+// one-shot path for an old sender (#78).
+func TestFilePushResumeWire(t *testing.T) {
+	// New header with Resume set round-trips.
+	var h FilePushHeader
+	if err := decode_into(cbor_encode(&FilePushHeader{User: "u", App: "a", Path: "p", Size: 10, Resume: true}), &h); err != nil || !h.Resume {
+		t.Fatalf("resume header round-trip: err=%v Resume=%v", err, h.Resume)
+	}
+
+	// Old header (no resume field at all) decodes with Resume=false.
+	old := cbor_encode(&struct {
+		User string `cbor:"user"`
+		App  string `cbor:"app"`
+		Path string `cbor:"path"`
+		Size int64  `cbor:"size"`
+	}{"u", "a", "p", 10})
+	var h2 FilePushHeader
+	if err := decode_into(old, &h2); err != nil || h2.Resume {
+		t.Fatalf("old header must decode with Resume=false: err=%v Resume=%v", err, h2.Resume)
+	}
+
+	// The FilePushResume reply round-trips.
+	var r FilePushResume
+	if err := decode_into(cbor_encode(&FilePushResume{Offset: 4096}), &r); err != nil || r.Offset != 4096 {
+		t.Fatalf("resume reply round-trip: err=%v Offset=%d", err, r.Offset)
 	}
 }

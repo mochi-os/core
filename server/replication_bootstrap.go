@@ -980,18 +980,48 @@ func bootstrap_diff_manifest(scope, prefix string, remote []BootstrapFileEntry) 
 }
 
 // bootstrap_chunk_requests_for_entry yields the sequence of
-// (offset, length) chunk requests needed to fetch the full file. Uses
+// (offset, length) chunk requests needed to fetch the file. Uses
 // bootstrap_max_chunk_size as the chunk granularity; the last chunk
 // is short. A zero-byte file gets one (0, 0) request — the sender
 // responds with EOF=true and an empty Data, which is the explicit
 // "create an empty file here" signal.
-func bootstrap_chunk_requests_for_entry(entry BootstrapFileEntry) []BootstrapFileChunkRequest {
+//
+// RESUMES from the partial file already on disk (#78): bootstrap_write_chunk
+// streams to `<final>.partial`, only renaming to the final path on EOF, so an
+// interrupted transfer leaves the contiguous bytes received so far. Starting the
+// next round at that size — instead of always at 0 — means each re-fetch makes
+// forward progress, so a large file over a connection that drops mid-transfer
+// eventually completes rather than restarting from zero forever (the
+// "Files: Retrying 1 file" wedge). The partial is written whole-chunk-at-a-time,
+// so its size is chunk-aligned; we align down defensively and re-fetch the final
+// chunk if the partial looks complete (its EOF, which triggers the rename, was
+// lost). A partial larger than the source is stale — discard it.
+func bootstrap_chunk_requests_for_entry(scope string, entry BootstrapFileEntry) []BootstrapFileChunkRequest {
 	if entry.Size == 0 {
 		return []BootstrapFileChunkRequest{{Path: entry.Path, Offset: 0, Length: 0}}
 	}
+	var have int64
+	if root, err := bootstrap_file_scope_root(scope); err == nil {
+		if final, err := bootstrap_safe_path(root, entry.Path); err == nil {
+			partial := final + ".partial"
+			if info, serr := os.Stat(partial); serr == nil {
+				have = info.Size()
+				if have > entry.Size {
+					os.Remove(partial) // stale/oversized — would leave a garbage tail
+					have = 0
+				}
+			}
+		}
+	}
+	if have >= entry.Size {
+		have = entry.Size - 1 // complete on disk but unrenamed — re-fetch the EOF chunk
+	}
+	have -= have % int64(bootstrap_max_chunk_size) // chunk-align the resume point
+	if have < 0 {
+		have = 0
+	}
 	var out []BootstrapFileChunkRequest
-	var offset int64
-	for offset < entry.Size {
+	for offset := have; offset < entry.Size; {
 		length := int64(bootstrap_max_chunk_size)
 		if remaining := entry.Size - offset; remaining < length {
 			length = remaining
@@ -1163,7 +1193,7 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 	for _, entry := range needed {
 		ok := true
 		var size int64
-		for _, req := range bootstrap_chunk_requests_for_entry(entry) {
+		for _, req := range bootstrap_chunk_requests_for_entry(scope, entry) {
 			resp, err := bootstrap_chunk_fetch_with_retry(peer, scope, req.Path, req.Offset, req.Length)
 			if err != nil {
 				info("Bootstrap file-scope driver: fetch failed after retries (scope=%q path=%q offset=%d from=%q): %v",

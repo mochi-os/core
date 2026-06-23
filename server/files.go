@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,6 +22,21 @@ import (
 
 // Maximum file storage per user (10GB)
 var file_max_storage int64 = 10 * 1024 * 1024 * 1024
+
+// user_storage_remaining reports how many more bytes the user may store before
+// reaching the per-user storage quota (file_max_storage). Administrators are
+// exempt from the quota and always have effectively unlimited space; returning
+// early also spares them the full-tree dir_size walk on every write.
+func user_storage_remaining(u *User) (int64, error) {
+	if u != nil && u.administrator() {
+		return math.MaxInt64, nil
+	}
+	current, err := dir_size(user_storage_dir(u))
+	if err != nil {
+		return 0, err
+	}
+	return file_max_storage - current, nil
+}
 
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
@@ -404,12 +420,12 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	// Check storage limit (10GB per user across all apps)
-	current, err := dir_size(user_storage_dir(user))
+	// Check storage limit (10GB per user across all apps; admins exempt)
+	remaining, err := user_storage_remaining(user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	if current+int64(len(data)) > file_max_storage {
+	if int64(len(data)) > remaining {
 		return sl_error(fn, "storage limit exceeded")
 	}
 

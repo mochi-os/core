@@ -666,12 +666,12 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "unable to get file field %q: %v", field, err)
 	}
 
-	// Check storage limit (10GB per user across all apps)
-	current, err := dir_size(user_storage_dir(a.user))
+	// Check storage limit (10GB per user across all apps; admins exempt)
+	remaining, err := user_storage_remaining(a.user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	if current+ff.Size > file_max_storage {
+	if ff.Size > remaining {
 		return sl_error(fn, "storage limit exceeded")
 	}
 

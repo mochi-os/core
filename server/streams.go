@@ -453,13 +453,12 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	// Check storage limit and calculate remaining space
-	current, err := dir_size(user_storage_dir(user))
+	// Check storage limit and calculate remaining space (admins exempt)
+	remaining, err := user_storage_remaining(user)
 	if err != nil {
 		s.close_read()
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	remaining := file_max_storage - current
 	if remaining <= 0 {
 		s.close_read()
 		return sl_error(fn, "storage limit exceeded")

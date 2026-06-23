@@ -340,12 +340,12 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			return sl_error(fn, "file too large: %d bytes", fh.Size)
 		}
 
-		// Check storage limit (10GB per user across all apps)
-		current, err := dir_size(user_storage_dir(owner))
+		// Check storage limit (10GB per user across all apps; admins exempt)
+		remaining, err := user_storage_remaining(owner)
 		if err != nil {
 			return sl_error(fn, "unable to measure storage: %v", err)
 		}
-		if current+fh.Size > file_max_storage {
+		if fh.Size > remaining {
 			return sl_error(fn, "storage limit exceeded")
 		}
 
@@ -491,12 +491,12 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "file too large: %d bytes", len(bytes))
 	}
 
-	// Check storage limit (10GB per user across all apps)
-	current, err := dir_size(user_storage_dir(owner))
+	// Check storage limit (10GB per user across all apps; admins exempt)
+	remaining, err := user_storage_remaining(owner)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	if current+int64(len(bytes)) > file_max_storage {
+	if int64(len(bytes)) > remaining {
 		return sl_error(fn, "storage limit exceeded")
 	}
 
@@ -626,13 +626,12 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 	db.attachments_setup()
 
-	// Check storage limit and calculate remaining space
-	current, err := dir_size(user_storage_dir(owner))
+	// Check storage limit and calculate remaining space (admins exempt)
+	remaining, err := user_storage_remaining(owner)
 	if err != nil {
 		stream.close_read()
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	remaining := file_max_storage - current
 	if remaining <= 0 {
 		stream.close_read()
 		return sl_error(fn, "storage limit exceeded")
@@ -776,12 +775,12 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "file too large: %d bytes", len(bytes))
 	}
 
-	// Check storage limit (10GB per user across all apps)
-	current, err := dir_size(user_storage_dir(owner))
+	// Check storage limit (10GB per user across all apps; admins exempt)
+	remaining, err := user_storage_remaining(owner)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
-	if current+int64(len(bytes)) > file_max_storage {
+	if int64(len(bytes)) > remaining {
 		return sl_error(fn, "storage limit exceeded")
 	}
 

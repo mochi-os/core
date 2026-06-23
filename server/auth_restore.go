@@ -126,7 +126,15 @@ func web_auth_restore(c *gin.Context) {
 	}
 
 	staging := filepath.Join(restore_dir, "staging")
-	bundle, err := restore_unzip(zip_path, staging)
+	// Cap the decompressed bundle at the per-user storage quota — the restored
+	// account is subject to it anyway. Administrators are quota-exempt (the
+	// first-user bootstrap can be a large operator account), so they get a
+	// generous finite ceiling, which still guards against a zip-bomb.
+	restore_cap := file_max_storage
+	if role == "administrator" {
+		restore_cap = 50 * 1024 * 1024 * 1024
+	}
+	bundle, err := restore_unzip(zip_path, staging, restore_cap)
 	if err != nil {
 		user_delete(uid)
 		respond_error(c, http.StatusBadRequest, "bundle_invalid", "errors.bundle_invalid", nil)
@@ -345,10 +353,21 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 	}
 }
 
+// restore_max_entries caps the bundle's file count; maxBytes (passed in) caps
+// the total decompressed size. The bundle is uploaded by an unauthenticated
+// signup-via-restore caller (when signup is enabled), so without these a
+// zip-bomb could exhaust the disk. The byte cap is the per-user storage quota
+// (file_max_storage) for an ordinary restore — a backup decompressing to more
+// than that is for an over-quota account and shouldn't restore here;
+// administrators are quota-exempt (see user_storage_remaining) and get a
+// generous finite ceiling, set by the caller.
+const restore_max_entries = 5_000_000
+
 // restore_unzip extracts zip_path into dest and returns the bundle root
-// (the single top-level directory inside the archive). Guards against
-// path traversal in entry names.
-func restore_unzip(zip_path, dest string) (string, error) {
+// (the single top-level directory inside the archive). Guards against path
+// traversal in entry names and against decompression-bomb exhaustion (total
+// decompressed bytes capped at maxBytes, entry count at restore_max_entries).
+func restore_unzip(zip_path, dest string, maxBytes int64) (string, error) {
 	r, err := zip.OpenReader(zip_path)
 	if err != nil {
 		return "", err
@@ -357,7 +376,11 @@ func restore_unzip(zip_path, dest string) (string, error) {
 
 	clean := filepath.Clean(dest) + string(os.PathSeparator)
 	var top string
-	for _, f := range r.File {
+	var total int64
+	for i, f := range r.File {
+		if i >= restore_max_entries {
+			return "", fmt.Errorf("bundle has too many entries (limit %d)", restore_max_entries)
+		}
 		target := filepath.Join(dest, f.Name)
 		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), clean) &&
 			filepath.Clean(target) != filepath.Clean(dest) {
@@ -384,13 +407,19 @@ func restore_unzip(zip_path, dest string) (string, error) {
 			in.Close()
 			return "", err
 		}
-		if _, err := io.Copy(out, in); err != nil {
-			in.Close()
-			out.Close()
-			return "", err
-		}
+		// Cap each copy at the remaining budget (+1 to detect overflow): a
+		// zip-bomb declaring a small compressed size can still decompress to
+		// petabytes, so bound the running total rather than trust the header.
+		n, copyErr := io.Copy(out, io.LimitReader(in, maxBytes-total+1))
 		in.Close()
 		out.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		total += n
+		if total > maxBytes {
+			return "", fmt.Errorf("bundle exceeds the %d-byte decompressed limit", maxBytes)
+		}
 	}
 	if top == "" {
 		return "", fmt.Errorf("empty bundle")

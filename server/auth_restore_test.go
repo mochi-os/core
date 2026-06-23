@@ -86,7 +86,7 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 
 	// ---- Restore into a fresh destination ----
 	stage := filepath.Join(data_dir, "users", "u-dst", "restore", "staging")
-	bundle, err := restore_unzip(zip_path, stage)
+	bundle, err := restore_unzip(zip_path, stage, file_max_storage)
 	if err != nil {
 		t.Fatalf("unzip: %v", err)
 	}

@@ -1588,20 +1588,11 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		return
 	}
 
-	tmp, err := os.CreateTemp("", "mochi-bootstrap-*.db")
-	if err != nil {
-		info("Replication bootstrap-db-fetch: tempfile create failed (from=%q): %v", e.peer, err)
-		return
-	}
-	tmp_path := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(tmp_path)
-
-	// Read this DB's replication tail before snapshotting, so the EOF
-	// chunk can carry it as the receiver's apply-cursor seed. Reading
-	// before the snapshot guarantees the seed is at — or just behind —
-	// the snapshot's sequence point: a tiny idempotent re-apply window,
-	// never a gap that would drop ops.
+	// Read this DB's replication tail before dumping, so the "complete" message
+	// can carry it as the receiver's apply-cursor seed. Reading before the
+	// snapshot guarantees the seed is at — or just behind — the snapshot's
+	// sequence point: a tiny idempotent re-apply window, never a gap that would
+	// drop ops.
 	rel := strings.TrimPrefix(source_path, data_dir+string(os.PathSeparator))
 	var seedSeq int64
 	if stream := bootstrap_stream_key(rel); stream != "" {
@@ -1619,57 +1610,23 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 		seedSeq = replication_tail(seedUser, repl_scope_app, stream)
 	}
 
-	size, err := snapshot_copy_db(source_path, tmp_path)
-	if err != nil {
-		info("Replication bootstrap-db-fetch: backup %q failed (from=%q): %v", source_path, e.peer, err)
+	source := db_open(rel)
+	if source == nil {
+		info("Replication bootstrap-db-fetch: open source %q failed (from=%q)", rel, e.peer)
 		return
 	}
-
-	f, err := os.Open(tmp_path)
-	if err != nil {
-		info("Replication bootstrap-db-fetch: reopen snapshot failed (from=%q): %v", e.peer, err)
-		return
-	}
-	defer f.Close()
-
-	// Bulk DB transfer can run for minutes on a large user DB; bump
-	// the per-call write deadline so flow-control backpressure
-	// from a slow-disk receiver doesn't trip the 30s default.
+	// Bulk DB transfer can run for minutes on a large user DB; bump the write
+	// deadline so backpressure from a slow receiver doesn't trip the 30s default.
 	e.stream.timeout.write = bootstrap_stream_timeout
 
-	buf := make([]byte, bootstrap_max_chunk_size)
-	var offset int64
-	for {
-		n, readErr := f.Read(buf)
-		eof := readErr == io.EOF || offset+int64(n) >= size
-		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			c := &BootstrapDBChunk{
-				Scope:  scope,
-				User:   user,
-				App:    app,
-				DB:     db,
-				Offset: offset,
-				Data:   chunk,
-				EOF:    eof,
-			}
-			if eof {
-				c.Seed = seedSeq
-			}
-			if write_error := e.stream.write(c); write_error != nil {
-				info("Replication bootstrap-db-fetch: write chunk failed at %d (from=%q): %v", offset, e.peer, write_error)
-				return
-			}
-			offset += int64(n)
-		}
-		if eof {
-			break
-		}
-		if readErr != nil {
-			info("Replication bootstrap-db-fetch: read failed at %d (from=%q): %v", offset, e.peer, readErr)
-			return
-		}
+	// Dump the DB as logical row batches within one consistent snapshot, ending
+	// with a "complete" carrying the apply-cursor seed read above. Host-local
+	// tables (journal etc.) are skipped — the receiver starts its own fresh.
+	if err := bootstrap_logical_serve(source, bootstrap_db_skip_tables, 0, seedSeq, func(env *BootstrapDBMessage) error {
+		return e.stream.write(env)
+	}); err != nil {
+		info("Replication bootstrap-db-fetch: serve %q failed (from=%q): %v", rel, e.peer, err)
+		return
 	}
 }
 
@@ -1703,18 +1660,10 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: target path: %w", err)
 	}
-	partial := target + ".partial"
+	scratch := target + ".rebuild"
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: mkdir for %q: %w", target, err)
 	}
-	// Truncate any pre-existing partial so a resumed fetch doesn't
-	// preserve stale bytes past the new EOF (different snapshots may
-	// differ in length).
-	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("bootstrap-db-fetch: open partial %q: %w", partial, err)
-	}
-	defer f.Close()
 
 	s, err := stream_to_peer(peer, "", "", "replication", "bootstrap/db/fetch", "", nil)
 	if err != nil {
@@ -1740,47 +1689,25 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 		return fmt.Errorf("bootstrap-db-fetch: write request: %w", err)
 	}
 
-	var seed int64
-	var received int64
-	for {
-		var chunk BootstrapDBChunk
-		if err := s.read(&chunk); err != nil {
-			return fmt.Errorf("bootstrap-db-fetch: read chunk: %w", err)
-		}
-		if _, err := f.Seek(chunk.Offset, io.SeekStart); err != nil {
-			return fmt.Errorf("bootstrap-db-fetch: seek partial %q: %w", partial, err)
-		}
-		n, err := f.Write(chunk.Data)
-		if err != nil {
-			return fmt.Errorf("bootstrap-db-fetch: write partial %q: %w", partial, err)
-		}
-		if n != len(chunk.Data) {
-			return fmt.Errorf("bootstrap-db-fetch: short write at offset %d: wrote %d of %d", chunk.Offset, n, len(chunk.Data))
-		}
-		received += int64(n)
-		if chunk.EOF {
-			seed = chunk.Seed
-			break
-		}
-	}
-
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("bootstrap-db-fetch: close partial %q: %w", partial, err)
-	}
-	// Integrity-gate the received snapshot before landing it: a corrupt source
-	// or transfer is rejected here (and retried) rather than Restored into the
-	// live DB and then re-propagated to other peers — the corruption ping-pong
-	// that wrecked feeds.db (#6). The seed cursor is NOT advanced, so the
-	// receiver stays behind and re-fetches instead of declaring false sync.
-	if !snapshot_integrity_ok(partial) {
-		_ = os.Remove(partial)
-		return fmt.Errorf("bootstrap-db-fetch: snapshot for %q failed integrity check; rejecting (corrupt source or transfer) — will retry", target)
-	}
-	if err := bootstrap_db_land(partial, target); err != nil {
+	// Rebuild + verify a scratch file from the streamed row batches. A corrupt
+	// or incomplete transfer fails verification (quick_check + per-table
+	// count/checksum) and the live DB is never touched — the corruption class
+	// is structurally impossible because nothing is page-copied into the live
+	// handle. On success, atomically swap it in and seed the apply cursor to the
+	// snapshot's sequence so the op-stream resumes exactly at the boundary.
+	sequence, err := bootstrap_logical_fetch(scratch, func(env *BootstrapDBMessage) error {
+		return s.read(env)
+	})
+	if err != nil {
+		_ = os.Remove(scratch)
 		return err
 	}
-	bootstrap_db_seed_cursor(peer, target, seed)
-	bootstrap_progress_transfer(peer, "database", received)
+	if err := bootstrap_db_swap(target, scratch); err != nil {
+		_ = os.Remove(scratch)
+		return err
+	}
+	bootstrap_db_seed_cursor(peer, target, sequence)
+	bootstrap_progress_transfer(peer, "database", 0)
 	return nil
 }
 

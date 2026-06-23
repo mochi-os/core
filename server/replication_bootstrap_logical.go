@@ -44,6 +44,14 @@ type BootstrapTableDone struct {
 	Checksum uint64 `cbor:"checksum"` // order-independent XOR of per-row hashes
 }
 
+// bootstrap_db_skip_tables are host-local tables never transferred in a logical
+// DB bootstrap — the receiver keeps/recreates its own. journal/journal_delivery
+// are the per-DB replication change-capture + delivery bookkeeping.
+var bootstrap_db_skip_tables = map[string]bool{
+	"journal":          true,
+	"journal_delivery": true,
+}
+
 // bootstrap_row_hash is an order-independent per-row hash: the same row always
 // hashes the same, and a table's checksum is the XOR of its rows' hashes, so
 // source and destination agree without forcing identical row order.

@@ -782,10 +782,67 @@ func db_wal_watchdog() {
 	}
 }
 
+// db_integrity_period is how often each open DB is re-checked for corruption.
+// The 2026-06-23 feeds.db corruption ran silently for hours before anyone
+// noticed; an hourly quick_check turns that into a prompt alert.
+var db_integrity_period int64 = 3600
+
+// db_integrity_max_per_check bounds how many DBs the watchdog quick_checks per
+// tick, so a host with many large DBs spreads the scan load instead of stalling
+// on a thundering herd of full-DB checks. var so tests can lift the cap.
+var db_integrity_max_per_check = 2
+
+// db_integrity_state maps db.path -> last-ok unix time (int64), or the string
+// "corrupt" once a DB has been flagged (so it isn't re-scanned or re-alerted).
+var db_integrity_state sync.Map
+
+// db_integrity_watchdog quick_checks a few due DBs each tick and warns the
+// moment one is found corrupt — proactive detection so corruption surfaces as
+// an alert in minutes rather than as a silent multi-hour outage (#6). The check
+// is read-only (db_quick_check opens its own ro handle), and a transient
+// open/lock miss (ran=false) is ignored rather than mistaken for corruption.
+func db_integrity_watchdog() {
+	databases_lock.Lock()
+	open := make([]*DB, 0, len(databases))
+	for _, db := range databases {
+		if db.closed == 0 {
+			open = append(open, db)
+		}
+	}
+	databases_lock.Unlock()
+
+	checked := 0
+	for _, db := range open {
+		if checked >= db_integrity_max_per_check {
+			break
+		}
+		if v, ok := db_integrity_state.Load(db.path); ok {
+			if v == "corrupt" {
+				continue // already flagged + alerted
+			}
+			if t, ok := v.(int64); ok && now()-t < db_integrity_period {
+				continue // checked clean recently
+			}
+		}
+		result, ran := db_quick_check(db.path)
+		if !ran {
+			continue // couldn't run (locked/transient) — retry next cycle, no alert
+		}
+		checked++
+		if result == "ok" {
+			db_integrity_state.Store(db.path, now())
+			continue
+		}
+		db_integrity_state.Store(db.path, "corrupt")
+		warn("Database integrity: %q is corrupt — quick_check: %s. Recover from backup.", db.path, result)
+	}
+}
+
 func db_manager() {
 	for range time.Tick(time.Minute) {
 		now := now()
 		db_wal_watchdog()
+		db_integrity_watchdog()
 		pass := now-db_vacuum_last >= db_vacuum_period
 
 		// Collect under the lock, but vacuum and close outside it: both

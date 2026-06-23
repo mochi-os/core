@@ -937,6 +937,10 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 	// one request segment was sent on the stream.
 	scope, _ := e.content["scope"].(string)
 	prefix, _ := e.content["prefix"].(string)
+	if !bootstrap_serve_files_ok(e.peer, scope, prefix) {
+		info("Replication bootstrap-file-manifest: refusing scope=%q prefix=%q to per-user peer %q", scope, prefix, e.peer)
+		return
+	}
 
 	walk_err := bootstrap_walk_manifest_stream(scope, prefix, bootstrap_manifest_page_size, func(page []BootstrapFileEntry) error {
 		return e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Entries: page})
@@ -1207,6 +1211,15 @@ func bootstrap_chunk_fetch_with_retry(peer, scope, path string, offset, length i
 var bootstrap_file_scope_driver = bootstrap_file_scope_driver_impl
 
 func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFileEntry) {
+	// A per-user host is authorized for one user's file subtree only. It must
+	// never drive the server-wide `apps` scope, and every path it serves must
+	// sit under users/<uid>/ (enforced again at the write below, against the
+	// path the sender actually returns). uid comes from the local hosts table.
+	uid := bootstrap_peer_user(peer)
+	if uid != "" && scope != bootstrap_scope_files {
+		warn("Bootstrap: refusing scope %q from per-user peer %q (authorized for user %q only)", scope, peer, uid)
+		return
+	}
 	for _, entry := range needed {
 		ok := true
 		var size int64
@@ -1215,6 +1228,11 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 			if err != nil {
 				info("Bootstrap file-scope driver: fetch failed after retries (scope=%q path=%q offset=%d from=%q): %v",
 					scope, req.Path, req.Offset, peer, err)
+				ok = false
+				break
+			}
+			if !bootstrap_files_relpath_authorized(uid, resp.Path) {
+				warn("Bootstrap: per-user peer %q returned files path %q outside users/%s/ — rejecting", peer, resp.Path, uid)
 				ok = false
 				break
 			}
@@ -1306,6 +1324,10 @@ func replication_bootstrap_file_chunk_fetch_event(e *Event) {
 	// calling e.segment which would EOF (only one segment was sent).
 	scope, _ := e.content["scope"].(string)
 	path, _ := e.content["path"].(string)
+	if !bootstrap_serve_files_ok(e.peer, scope, path) {
+		info("Replication bootstrap-file-chunk-fetch: refusing scope=%q path=%q to per-user peer %q", scope, path, e.peer)
+		return
+	}
 	offset := row_int(e.content, "offset")
 	length := row_int(e.content, "length")
 	// Length=0 is the "empty file marker" produced by
@@ -1539,6 +1561,10 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 	user, _ := e.content["user"].(string)
 	app, _ := e.content["app"].(string)
 	db, _ := e.content["db"].(string)
+	if !bootstrap_serve_db_ok(e.peer, scope, user) {
+		info("Replication bootstrap-db-fetch: refusing scope=%q user=%q to per-user peer %q", scope, user, e.peer)
+		return
+	}
 
 	// For sysdb exclusion the basename is what matters — path-bearing
 	// (modern) requests have the basename embedded in path; legacy
@@ -1660,6 +1686,18 @@ var bootstrap_db_fetch = bootstrap_db_fetch_impl
 func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if peer == "" {
 		return fmt.Errorf("bootstrap-db-fetch: empty peer")
+	}
+	// A per-user host is authorized for exactly one user's DBs and never the
+	// server-wide sysdbs scope. uid is the local hosts-table authorization, not
+	// the wire, so a malicious peer can't fetch (and overwrite) another user's
+	// DBs — including their app.db access table (#19).
+	if uid := bootstrap_peer_user(peer); uid != "" {
+		if scope != bootstrap_scope_userdbs {
+			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q (user %q) may not fetch scope %q", peer, uid, scope)
+		}
+		if user != uid {
+			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q authorized for user %q, refused db for user %q", peer, uid, user)
+		}
 	}
 	target, err := bootstrap_db_target_path(scope, path, user, app, db)
 	if err != nil {
@@ -2100,6 +2138,47 @@ func bootstrap_peer_user(peer string) string {
 	}
 	uid, _ := row["user"].(string)
 	return uid
+}
+
+// bootstrap_files_relpath_authorized reports whether a files-scope path
+// (relative to data_dir/users) may be written for this peer. Pair members
+// (uid == "") replicate the whole server, so any user's subtree is allowed —
+// the scope-root containment in bootstrap_safe_path is the only bound. A
+// per-user host (uid != "", read from the local hosts table via
+// bootstrap_peer_user — never from the wire) is confined to its one user: the
+// path must lie within "<uid>/". This narrows bootstrap_safe_path's "anywhere
+// under users/" to "under users/<uid>/", so a malicious per-user peer can't
+// tunnel into another user's data (#19).
+func bootstrap_files_relpath_authorized(uid, relpath string) bool {
+	if uid == "" {
+		return true
+	}
+	clean := filepath.Clean(relpath)
+	return clean == uid || strings.HasPrefix(clean, uid+"/")
+}
+
+// bootstrap_serve_files_ok gates a files-scope SERVE (manifest prefix or chunk
+// path) to a requesting peer. A pair member is unrestricted; a per-user host
+// gets only the files scope and only its own user's subtree — so it can neither
+// enumerate nor pull another user's files (privacy + integrity mirror of the
+// receiver-side clamp, #19).
+func bootstrap_serve_files_ok(peer, scope, relpath string) bool {
+	uid := bootstrap_peer_user(peer)
+	if uid == "" {
+		return true
+	}
+	return scope == bootstrap_scope_files && bootstrap_files_relpath_authorized(uid, relpath)
+}
+
+// bootstrap_serve_db_ok gates a db-scope SERVE to a requesting peer. A pair
+// member is unrestricted; a per-user host gets only the userdbs scope and only
+// its own user's DBs (never another user's, never the server-wide sysdbs).
+func bootstrap_serve_db_ok(peer, scope, user string) bool {
+	uid := bootstrap_peer_user(peer)
+	if uid == "" {
+		return true
+	}
+	return scope == bootstrap_scope_userdbs && user == uid
 }
 
 // bootstrap_refire_manifest re-fires the appropriate manifest fetch for
@@ -2816,6 +2895,10 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 	// would EOF because only one request segment was written).
 	scope, _ := e.content["scope"].(string)
 	user, _ := e.content["user"].(string)
+	if !bootstrap_serve_db_ok(e.peer, scope, user) {
+		info("Replication bootstrap-db-manifest: refusing scope=%q user=%q to per-user peer %q", scope, user, e.peer)
+		return
+	}
 
 	entries, err := bootstrap_walk_db_manifest(scope, user)
 	if err != nil {

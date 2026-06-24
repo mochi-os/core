@@ -926,6 +926,13 @@ func replication_bootstrap_file_manifest_event(e *Event) {
 		return
 	}
 
+	// A large scope's manifest walk (apps: every per-user app DB across all
+	// users) can exceed the default 30s stream write deadline, closing the
+	// stream mid-page so the receiver sees "unexpected EOF", retries forever and
+	// the app DBs never land (P4 wedge, 2026-06-24). Match the DB-transfer
+	// handler's longer write deadline.
+	e.stream.timeout.write = bootstrap_stream_timeout
+
 	walk_err := bootstrap_walk_manifest_stream(scope, prefix, bootstrap_manifest_page_size, func(page []BootstrapFileEntry) error {
 		return e.stream.write(&BootstrapFileManifestResult{Scope: scope, Prefix: prefix, Entries: page})
 	})
@@ -2756,6 +2763,10 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 		info("Replication bootstrap-db-manifest: refusing scope=%q user=%q to per-user peer %q", scope, user, e.peer)
 		return
 	}
+
+	// Match the file-manifest + DB-transfer handlers' longer write deadline so a
+	// large user DB list can't trip the default 30s on the result write.
+	e.stream.timeout.write = bootstrap_stream_timeout
 
 	entries, err := bootstrap_walk_db_manifest(scope, user)
 	if err != nil {

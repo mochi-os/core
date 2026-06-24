@@ -7,7 +7,10 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -384,6 +387,20 @@ func replication_wiped_rebootstrap() {
 			continue
 		}
 
+		// SAFETY GATE (#27, 2026-06-24 SEV1): a re-bootstrap re-pulls the user's
+		// DBs from the peer and OVERWRITES the local copies. "Unanchored" means a
+		// broken CURSOR, not an empty DB — under cursor misalignment a fully
+		// populated host looks unanchored. If the user has local data this is NOT
+		// a wiped replica; re-pulling would overwrite real data with the peer's
+		// (possibly incomplete) copy — exactly what wiped 28 DBs on the live
+		// primary. Skip; the cursor re-anchors via the op stream or a targeted
+		// reseed, never a destructive whole-user re-pull.
+		if replication_user_has_local_data(s.User) {
+			info("Replication wiped-replica recovery: SKIP peer=%q user=%q db=%q — local user has data (cursor misalignment, not a wipe)",
+				s.Peer, s.User, s.Database)
+			continue
+		}
+
 		// System-row streams (system:users / sessions / schedule) are seeded
 		// only by a keys-transfer at join time, never by the per-user file
 		// pull below — so a pull can never anchor them, and retrying it was
@@ -584,4 +601,62 @@ func replication_irreparable_event(e *Event) {
 	urgent := replication_irreparable_last_copy(db_open("db/replication.db"), scope, user, e.peer)
 	replication_irreparable_notify_local(scope, user, urgent)
 	info("Replication irreparable reported by peer: peer=%q scope=%q user=%q", e.peer, scope, user)
+}
+
+// replication_user_has_local_data reports whether uid has any populated DB on
+// disk. It is the safety gate for replication_wiped_rebootstrap (#27): an
+// "unanchored" stream means a broken cursor, NOT an empty DB, so a fully
+// populated host can look unanchored under cursor misalignment. Re-bootstrapping
+// such a host overwrites its real data with the peer's (possibly incomplete)
+// copy — the 2026-06-24 incident that wiped 28 DBs on the live primary. Fails
+// SAFE: any error returns true (assume data present; do not re-pull).
+func replication_user_has_local_data(uid string) bool {
+	if uid == "" {
+		return false
+	}
+	root := filepath.Join(data_dir, "users", uid)
+	has := false
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || has {
+			return nil
+		}
+		if !strings.HasSuffix(p, ".db") || strings.Contains(p, ".backup") {
+			return nil
+		}
+		if db_file_has_rows(p) {
+			has = true
+		}
+		return nil
+	})
+	return has
+}
+
+// db_file_has_rows opens a sqlite file read-only and reports whether any
+// non-internal table holds at least one row. Fails SAFE: an open/query error
+// returns true (treat as "has data").
+func db_file_has_rows(path string) bool {
+	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+	if err != nil {
+		return true
+	}
+	defer d.Close()
+	rows, err := d.Query("select name from sqlite_master where type='table' and name not like 'sqlite_%'")
+	if err != nil {
+		return true
+	}
+	var tables []string
+	for rows.Next() {
+		var t string
+		if rows.Scan(&t) == nil {
+			tables = append(tables, t)
+		}
+	}
+	rows.Close()
+	for _, t := range tables {
+		var n int
+		if d.QueryRow(`select count(*) from "`+t+`"`).Scan(&n) == nil && n > 0 {
+			return true
+		}
+	}
+	return false
 }

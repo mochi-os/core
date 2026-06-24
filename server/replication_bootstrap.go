@@ -2532,7 +2532,9 @@ func bootstrap_start(peer string) {
 //
 // Fully asynchronous: returns immediately after firing the entry-point
 // goroutines.
-func bootstrap_start_user(peer, uid string) {
+// bootstrap_start_user is a var so the wiped-replica recovery guard can be
+// regression-tested (#27) without a live network bootstrap.
+var bootstrap_start_user = func(peer, uid string) {
 	if peer == "" || uid == "" {
 		return
 	}

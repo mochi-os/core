@@ -65,3 +65,45 @@ func TestBootstrapDbSwap(t *testing.T) {
 		t.Errorf("scratch file should have been renamed away")
 	}
 }
+
+// TestBootstrapDbSwapReseedsJournal (#424): the rebuilt file has no journal
+// table (skipped on the wire), so swapping it over a destination whose journal
+// was cached as "ensured" must invalidate that cache — otherwise the next
+// journaled write early-returns on the stale cache and fails forever with
+// "no such table: journal".
+func TestBootstrapDbSwapReseedsJournal(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	tdb := db_open("swap-journal.db")
+	journal_ensure(tdb)
+	target := tdb.path
+	if _, done := journal_ensured.Load(target); !done {
+		t.Fatal("setup: destination journal should be cached as ensured")
+	}
+
+	// Rebuilt scratch with NO journal table.
+	scratch := target + ".rebuild"
+	sd, err := sql.Open("sqlite3", "file:"+scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd.Exec("create table messages (id text primary key)")
+	sd.Close()
+
+	if err := bootstrap_db_swap(target, scratch); err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+
+	if _, done := journal_ensured.Load(target); done {
+		t.Fatal("bootstrap_db_swap must invalidate journal_ensured for the swapped path (#424)")
+	}
+	db := db_open("swap-journal.db")
+	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); has {
+		t.Fatal("setup check: rebuilt file should have no journal table")
+	}
+	journal_ensure(db)
+	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); !has {
+		t.Fatal("journal table must be re-created after cache invalidation")
+	}
+}

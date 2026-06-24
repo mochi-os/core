@@ -1628,10 +1628,10 @@ func TestBootstrapBulkRunStarvationKeepsProgressFresh(t *testing.T) {
 // The 2026-05-21 "database disk image is malformed" crash (bootstrap
 // renamed a new .db into place but left the previous WAL beside it, which
 // the next open replayed against the new file) is now prevented by design:
-// bootstrap_db_land restores INTO the live connection instead of renaming,
-// so the live WAL is never orphaned and there are no stale sidecars to
-// clear. TestBootstrapDbLandRestoresIntoLiveHandle (replication_land_test.go)
-// covers the replacement behaviour end to end.
+// bootstrap_db_swap renames the rebuilt file in, removes the stale -wal/-shm
+// sidecars, and reopens fresh pools under databases_lock, so no connection
+// ever replays an orphaned WAL. TestBootstrapDbSwap
+// (replication_bootstrap_swap_test.go) covers the cutover end to end.
 
 // TestBootstrapDBManifestResultSpawnsDriver: receiver handler spawns
 // the per-scope driver goroutine with the full entry list. Replaces
@@ -1931,60 +1931,12 @@ func TestPairBackfillSkipsEmptyPeer(t *testing.T) {
 	}
 }
 
-// TestBootstrapDbLandReseedsJournal (#424): bootstrap_db_land page-copies a
-// (journal-less, pure-receiver) snapshot over a destination whose journal table
-// was cached as "ensured". It must invalidate that cache so the next journaled
-// write re-creates the journal, instead of failing forever with
-// "no such table: journal".
-func TestBootstrapDbLandReseedsJournal(t *testing.T) {
-	orig := data_dir
-	data_dir = t.TempDir()
-	defer func() { data_dir = orig }()
-	if err := os.MkdirAll(filepath.Join(data_dir, "users/u/app/db"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Destination: an existing DB whose journal table is cached as ensured.
-	rel := "users/u/app/db/chat.db"
-	tdb := db_open(rel)
-	journal_ensure(tdb)
-	if _, done := journal_ensured.Load(tdb.path); !done {
-		t.Fatal("setup: destination journal should be cached as ensured")
-	}
-
-	// Source snapshot: a valid SQLite DB with NO journal table (a pure receiver,
-	// whose apply path never created one).
-	srcRel := "users/u/app/db/source.db"
-	sdb := db_open(srcRel)
-	sdb.exec("create table messages (id text primary key)")
-	sdb.exec("pragma wal_checkpoint(truncate)") // standalone, like the online-backup snapshot
-	partial := filepath.Join(data_dir, srcRel)
-
-	if err := bootstrap_db_land(partial, filepath.Join(data_dir, rel)); err != nil {
-		t.Fatalf("bootstrap_db_land: %v", err)
-	}
-
-	// The fix: the stale ensured-cache entry must be gone.
-	if _, done := journal_ensured.Load(tdb.path); done {
-		t.Fatal("bootstrap_db_land must invalidate journal_ensured for the landed path (#424)")
-	}
-	// The page-copy wiped the journal table; journal_ensure must re-create it.
-	db := db_open(rel)
-	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); has {
-		t.Fatal("setup check: journal table should be gone after the page-copy")
-	}
-	journal_ensure(db)
-	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); !has {
-		t.Fatal("journal table must be re-created after cache invalidation")
-	}
-}
-
 // TestJournalEnsureStaleCacheRegression (#424): demonstrates the exact failure the
-// bootstrap_db_land fix prevents. When a DB path is cached in journal_ensured but
-// its journal table has been wiped (the page-copy), journal_ensure early-returns on
-// the stale cache and does NOT re-create the table — so journaled writes fail
-// forever ("no such table: journal"). Clearing the cache (what bootstrap_db_land now
-// does) lets journal_ensure re-create the table on the next write.
+// bootstrap_db_swap journal_ensured invalidation prevents. When a DB path is cached
+// in journal_ensured but its journal table has been replaced away (the rebuilt file
+// has none), journal_ensure early-returns on the stale cache and does NOT re-create
+// the table — so journaled writes fail forever ("no such table: journal"). Clearing
+// the cache (what bootstrap_db_swap now does) lets journal_ensure re-create it.
 func TestJournalEnsureStaleCacheRegression(t *testing.T) {
 	orig := data_dir
 	data_dir = t.TempDir()
@@ -2008,7 +1960,7 @@ func TestJournalEnsureStaleCacheRegression(t *testing.T) {
 		t.Fatal("stale cache: journal_ensure must NOT re-create the table (this is the #424 bug)")
 	}
 
-	// THE FIX: clearing the cache (bootstrap_db_land's journal_ensured.Delete) lets
+	// THE FIX: clearing the cache (bootstrap_db_swap's journal_ensured.Delete) lets
 	// the next journal_ensure re-create the table — journaled writes work again.
 	journal_ensured.Delete(db.path)
 	journal_ensure(db)

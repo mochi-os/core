@@ -61,6 +61,12 @@ func bootstrap_db_swap(target, scratch string) error {
 	_ = os.Remove(target + "-wal")
 	_ = os.Remove(target + "-shm")
 
+	// The rebuilt file omits journal/journal_delivery (skipped on the wire — the
+	// receiver owns its own change-capture). Drop the stale journal_ensured cache
+	// entry so the next replicated write re-creates them instead of failing with
+	// "no such table: journal" (#424).
+	journal_ensured.Delete(target)
+
 	internal_db, err := sqlitedrv.Open(target, db_setup_conn)
 	if err != nil {
 		return fmt.Errorf("bootstrap-swap: open internal pool %q: %w", target, err)

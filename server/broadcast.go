@@ -122,12 +122,13 @@ func broadcast_received_table_create(db *DB) {
 // broadcast_log_table_create lazily creates log for an app DB on
 // first emission. Replication carries the table to paired hosts two
 // ways:
-//   - Bulk bootstrap: a new pair member receives the per-app DB
-//     snapshot (db_snapshot.go) which page-copies the entire file
-//     including log + the BootstrapDBChunk.Seed cursor seed, so
-//     subsequent live ops chain correctly from where the snapshot
-//     ended. The new member can serve resync requests for any of
-//     the (key, peer) streams the existing pair members had logged.
+//   - Bulk bootstrap: a new pair member rebuilds the per-app DB from
+//     logical row batches (replication_bootstrap_logical.go), so log's
+//     rows come over with the rest; the snapshot's op-stream sequence
+//     (the final "complete" message) seeds the cursor, so subsequent live
+//     ops chain correctly from where the snapshot ended. The new member
+//     can serve resync requests for any of the (key, peer) streams the
+//     existing pair members had logged.
 //   - Live: each broadcast_log_append uses exec_app_user, which
 //     emits a sql/op that replays as the same insert on every paired
 //     host. Both pair members converge in steady state.

@@ -23,10 +23,12 @@
 //     sender enumerates a path prefix and returns `(path, size,
 //     sha256)` per entry; the receiver compares to its local copy
 //     and requests chunks for files that are missing or differ.
-//   - SQLite snapshot sync: BootstrapDBSnapshot + BootstrapDBChunk.
-//     The sender takes a `VACUUM INTO` of the live DB and streams
-//     the result; new writes during the transfer are buffered and
-//     flushed as standard `op` events once the snapshot lands.
+//   - SQLite logical sync: BootstrapDBFetchRequest + BootstrapDBMessage.
+//     The sender dumps the live DB as row batches within one consistent
+//     snapshot (replication_bootstrap_logical.go); the receiver rebuilds a
+//     verified scratch file and atomically swaps it in (never page-copying
+//     into a live handle), then resumes the op stream at the snapshot's
+//     sequence point carried in the final "complete" message.
 //
 // Per-(scope, peer) progress is tracked in replication.db.bootstrap
 // (state ∈ {'queued', 'active', 'done'}; position is the remaining
@@ -67,7 +69,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -79,7 +80,6 @@ import (
 	"sync"
 	"time"
 
-	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 )
 
 // Bootstrap scope names. Used as the `scope` key in
@@ -183,9 +183,9 @@ type BootstrapFileChunk struct {
 }
 
 // BootstrapDBFetchRequest is the receiver→sender request opening a
-// stream for one DB. The sender takes a SQLite online-backup snapshot
-// to a tempfile and writes the bytes back as a sequence of
-// BootstrapDBChunk segments on the SAME stream, terminated by EOF.
+// stream for one DB. The sender dumps the DB as a sequence of
+// BootstrapDBMessage envelopes (schema, row batches, table-dones, then a
+// final "complete") on the SAME stream.
 //
 // Replaces the earlier queue-based snapshot-request + chunk events
 // which fanned out N queue rows per chunk per DB and snowballed
@@ -249,22 +249,6 @@ type BootstrapDBEntry struct {
 	User string `cbor:"user,omitempty"`
 	App  string `cbor:"app,omitempty"`
 	DB   string `cbor:"db,omitempty"`
-}
-
-// BootstrapDBChunk is the sender→receiver chunk of a DB snapshot.
-// Offset + len(Data) == EOF position when EOF=true. The EOF chunk also
-// carries Seed — the sender's replication tail for this DB's stream,
-// read just before the snapshot — so the receiver can seed the
-// in-order apply cursor at the snapshot's exact sequence point.
-type BootstrapDBChunk struct {
-	Scope  string `cbor:"scope"`
-	User   string `cbor:"user,omitempty"`
-	App    string `cbor:"app,omitempty"`
-	DB     string `cbor:"db"`
-	Offset int64  `cbor:"offset"`
-	Data   []byte `cbor:"data"`
-	EOF    bool   `cbor:"eof,omitempty"`
-	Seed   int64  `cbor:"seed,omitempty"`
 }
 
 // bootstrap_stream_key maps a bootstrapped DB file — by its relative
@@ -1536,10 +1520,9 @@ func bootstrap_db_basename_safe(name string) bool {
 // replication_bootstrap_db_fetch_event is the source's stream handler.
 // Reads the BootstrapDBFetchRequest from e.content (single-segment
 // stream RPC, same pattern as user/lookup, freshness/probe, and
-// bootstrap/file/chunk/fetch), takes a SQLite online-backup snapshot
-// to a tempfile, and writes the contents as a sequence of
-// BootstrapDBChunk segments on the same stream. Terminated by a
-// chunk with EOF=true.
+// bootstrap/file/chunk/fetch), then dumps the DB as a sequence of
+// BootstrapDBMessage envelopes (schema + row batches + a final
+// "complete") on the same stream.
 //
 // V4 caveat: writes to the live DB during the snapshot are not
 // buffered — they will be picked up by the standard replication op
@@ -1633,9 +1616,8 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 // bootstrap_db_fetch is the receiver-side synchronous-stream fetch
 // for one DB. Opens a stream to `peer`, writes a single
 // BootstrapDBFetchRequest as the first segment, then reads
-// BootstrapDBChunk segments off the same stream until one arrives
-// with EOF=true. Each chunk lands in <target>.partial; on EOF the
-// partial is atomic-renamed to <target>.
+// BootstrapDBMessage envelopes off the same stream, rebuilding and
+// verifying a scratch file that is atomically swapped over <target>.
 //
 // Package-level alias so tests can stub the network call.
 var bootstrap_db_fetch = bootstrap_db_fetch_impl
@@ -1877,73 +1859,6 @@ func reseed_finalize(peer, target string) {
 		peer, repl_scope_app, user, stream, cursor)
 }
 
-// bootstrap_db_land atomically installs the completed snapshot at
-// `partial` as `target`. The snapshot is a self-contained SQLite
-// online-backup output — no WAL needed. But `target` may already
-// exist with a `-wal`/`-shm` from the server's prior use of that
-// path. Renaming only the `.db` would leave the new snapshot beside
-// the OLD write-ahead log; the next connection replays a log that
-// belongs to the previous database and SQLite reports "database disk
-// image is malformed" — which, raised inside a Starlark goroutine,
-// crashed the server outright (2026-05-21). So the order is:
-//  1. evict the cached handle so the server isn't pinned to the
-//     pre-swap inode,
-//  2. drop the stale -wal/-shm/-journal sidecars,
-//  3. rename the snapshot into place.
-//
-// A fresh open then sees the snapshot with no sidecars and creates
-// its own clean WAL.
-func bootstrap_db_land(partial, target string) error {
-	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
-	// Page-copy the snapshot INTO the live connection rather than evicting
-	// the cached handle and renaming the file under it. The old evict+rename
-	// closed the pooled handle mid-use — a borrower's next query hit "database
-	// is closed" and panicked the worker — and left an evict→rename gap where
-	// a concurrent re-open saw the old file with its WAL already deleted
-	// ("database disk image is malformed"). Restore keeps the handle and its
-	// WAL intact: SQLite replaces the destination's pages under its own
-	// locking, and other pool connections pick up the new content on their
-	// next read. db_open creates the file if absent, so a first-time landing
-	// works too.
-	db := db_open(rel)
-	if db == nil {
-		return fmt.Errorf("bootstrap-db-fetch: open target %q for restore", rel)
-	}
-	conn, err := db.internal.Conn(context.Background())
-	if err != nil {
-		return fmt.Errorf("bootstrap-db-fetch: restore conn for %q: %w", rel, err)
-	}
-	defer conn.Close()
-	// Wait through brief writer contention on the destination rather than
-	// failing the whole landing (WAL readers don't block the restore writer).
-	if _, err := conn.ExecContext(context.Background(), "PRAGMA busy_timeout=10000"); err != nil {
-		return fmt.Errorf("bootstrap-db-fetch: busy_timeout for %q: %w", rel, err)
-	}
-	source := "file:" + partial + "?mode=ro"
-	restore_error := conn.Raw(func(driverConn any) error {
-		dc, ok := driverConn.(sqlitedrv.Conn)
-		if !ok {
-			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
-		}
-		return dc.Raw().Restore("main", source)
-	})
-	if restore_error != nil {
-		return fmt.Errorf("bootstrap-db-fetch: restore %q into %q: %w", partial, rel, restore_error)
-	}
-	// The Restore replaced every page of the destination, including its `journal`
-	// table — and a pure-receiver source has none (the apply path never creates one,
-	// replication.go), so B's journal is now gone. Drop the stale journal_ensured
-	// entry so the next journaled write re-runs journal_ensure and re-creates B's own
-	// journal, instead of early-returning on the stale cache and failing every write
-	// with "no such table: journal" (#424). Verified live: with this line the post-
-	// reseed write re-creates the journal (cached=false → MISS); without it the write
-	// fails (cached=true → early-return, table gone). Covers BOTH write paths, since
-	// both gate on journal_ensure: execute via db_execute_journal and transaction via
-	// api_db_transaction. Matches reseed_finalize's "receiver starts journal fresh".
-	journal_ensured.Delete(db.path)
-	_ = os.Remove(partial)
-	return nil
-}
 
 // bootstrap_db_scope_driver runs in its own goroutine per (scope, peer)
 // pair. Fetches each DB sequentially via stream RPC, calling

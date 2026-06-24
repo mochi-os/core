@@ -1319,6 +1319,12 @@ func replication_bootstrap_file_chunk_fetch_event(e *Event) {
 		info("Replication bootstrap-file-chunk-fetch: refusing scope=%q path=%q to per-user peer %q", scope, path, e.peer)
 		return
 	}
+	// Under the load of a concurrent big-DB re-bootstrap, even a small chunk
+	// write can block past the default 30s deadline (backpressure), closing the
+	// stream so the receiver retries forever. Match the other bootstrap serve
+	// handlers (manifest, db-manifest, db-fetch) longer write deadline.
+	e.stream.timeout.write = bootstrap_stream_timeout
+
 	offset := row_int(e.content, "offset")
 	length := row_int(e.content, "length")
 	// Length=0 is the "empty file marker" produced by

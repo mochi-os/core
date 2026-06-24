@@ -325,7 +325,7 @@ func net_addresses() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, a := range net_me.Addrs() {
-		if net_unroutable(a) || container[net_address_ip(a)] {
+		if container[net_address_ip(a)] {
 			continue
 		}
 		s := a.String()
@@ -339,20 +339,6 @@ func net_addresses() []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// net_unroutable reports whether a multiaddress carries an IP no other
-// host could ever dial — loopback, unspecified, or link-local (fe80::/10
-// and 169.254/16 need an interface scope/zone, so they're meaningless
-// across hosts). Used both to reject junk in received announcements and to
-// keep it out of what we advertise. Private (RFC1918) and ULA (fc00::/7)
-// addresses are deliberately NOT rejected — they're legitimately dialable
-// between peers on the same LAN (mDNS discovery). Addresses with no IP
-// component (dns/dns4/dns6/dnsaddr) are kept.
-func net_unroutable(a multiaddr.Multiaddr) bool {
-	ip := gonet.ParseIP(net_address_ip(a))
-	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast())
 }
 
 // net_address_ip returns the leading IP component of a multiaddress,

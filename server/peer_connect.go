@@ -460,9 +460,6 @@ func peer_apply_addresses(id string, addresses []string) {
 		if net_id != "" && strings.Contains(address, "/p2p/"+net_id+"/p2p-circuit") {
 			continue
 		}
-		if net_unroutable(ma) {
-			continue
-		}
 		debug("Peer %q discovered at address %q", id, address)
 		peer_discovered_address(id, address)
 		applied++

@@ -176,25 +176,6 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 	}
 }
 
-// TestPeerPublishEventRejectsUnroutable: a mesh-wide announcement
-// carrying loopback or unspecified addresses is junk for every receiver
-// (same-host peers learn loopback over mDNS); only routable entries
-// apply.
-func TestPeerPublishEventRejectsUnroutable(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
-
-	origin, _ := test_host(t)
-	announced := "/ip4/127.0.0.1/tcp/1443/p2p/" + origin +
-		",/ip6/::1/tcp/1443/p2p/" + origin +
-		",/ip4/0.0.0.0/tcp/1443/p2p/" + origin +
-		",/ip4/192.0.2.30/tcp/1443/p2p/" + origin
-	peer_publish_event(publish_event(origin, announced))
-
-	if n := peer_addresses_count(origin); n != 1 {
-		t.Errorf("addresses applied = %d, want 1 (loopback/unspecified rejected)", n)
-	}
-}
 
 // TestPeerPublishEventDropsSelfRelay: a circuit address that relays
 // through ourselves is dead weight (we reach the peer directly over its

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Deploy the published mochi-server package to the production hosts via their
+# local file:/srv/apt repo (already rsync'd there by `make release`). Secondary
+# (wasabi) first, then the live primary (yuzu), each verified — so the primary
+# is upgraded only after the backup proves the new build. Each `apt install`
+# runs the package prerm/postinst, which gracefully restarts mochi-server.
+#
+# Invoked by `make -C core deploy`, the single allow-listed entry point for the
+# production deploy: the ssh calls run inside the allowed make process rather
+# than as separately-gated production writes. Extra apt flags (e.g. --reinstall
+# to redeploy an identical version on `/release same`) are passed as arguments.
+set -euo pipefail
+
+flags="$*"
+
+deploy() {
+	local host="$1" role="$2"
+	echo "=== Deploying mochi-server to $host ($role) ==="
+	ssh "root@$host" "apt update && apt install -y $flags mochi-server"
+	ssh "root@$host" "dpkg-query -W -f='$host mochi-server \${Version}\n' mochi-server; systemctl is-active mochi-server"
+}
+
+deploy wasabi.mochi-os.org secondary
+deploy yuzu.mochi-os.org primary

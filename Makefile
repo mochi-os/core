@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 0.4.161
+version = 0.4.163
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -438,6 +438,13 @@ release: clean deb rpm msi pkg docker
 	# install from a local file:/srv/apt source, so neither depends on the other.
 	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/
 	rsync -av --delete ../packages/ root@wasabi.mochi-os.org:/srv/packages/
+
+# Install the published version on the production hosts (wasabi secondary first,
+# then yuzu primary, each verified). Separate from `release` (which only
+# publishes packages) so deploying stays an explicit step. Pass apt flags via
+# `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical version.
+deploy:
+	./build/scripts/deploy $(DEPLOY_FLAGS)
 
 format:
 	go fmt server/*.go

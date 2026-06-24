@@ -29,6 +29,10 @@ type BootstrapSchema struct {
 	Tables  []string `cbor:"tables"`  // CREATE TABLE statements (applied first)
 	Indexes []string `cbor:"indexes"` // CREATE INDEX statements (applied after rows)
 	Version int      `cbor:"version"` // app schema version
+	// AUTOINCREMENT high-water marks (sqlite_sequence: table -> seq). Its sql is
+	// NULL so it never appears as a dumped table; restored verbatim after load so
+	// the destination doesn't reissue ids the source already consumed.
+	Sequences map[string]int64 `cbor:"sequences,omitempty"`
 }
 
 type BootstrapRowBatch struct {
@@ -127,6 +131,23 @@ func bootstrap_logical_dump(db *DB, skip map[string]bool, batchSize int, version
 		return err
 	}
 	rows.Close()
+
+	// AUTOINCREMENT high-water marks. sqlite_sequence exists only when the DB has
+	// an AUTOINCREMENT table; the query errors otherwise, which we treat as "none".
+	if seqRows, err := tx.Query("select name, seq from sqlite_sequence"); err == nil {
+		for seqRows.Next() {
+			var name string
+			var seq int64
+			if err := seqRows.Scan(&name, &seq); err == nil && !skip[name] {
+				if schema.Sequences == nil {
+					schema.Sequences = map[string]int64{}
+				}
+				schema.Sequences[name] = seq
+			}
+		}
+		seqRows.Close()
+	}
+
 	if err := emit(&schema); err != nil {
 		return err
 	}
@@ -211,9 +232,10 @@ func bootstrap_dump_table(tx interface {
 type bootstrapLoader struct {
 	path     string
 	d        *sql.DB
-	tx       *sql.Tx
-	indexes  []string
-	inserts  map[string]*sql.Stmt
+	tx        *sql.Tx
+	indexes   []string
+	sequences map[string]int64
+	inserts   map[string]*sql.Stmt
 	count    map[string]int64
 	checksum map[string]uint64
 	expected map[string]BootstrapTableDone
@@ -229,7 +251,17 @@ func bootstrap_logical_loader(scratchPath string) (*bootstrapLoader, error) {
 	}
 	// journal+synchronous off: the scratch file is rebuilt on any failure, so
 	// mid-load durability is pointless and these make the bulk load fast.
-	d, err := sql.Open("sqlite3", "file:"+scratchPath+"?_pragma=journal_mode(off)&_pragma=synchronous(off)")
+	//
+	// foreign_keys off is REQUIRED, not just an optimisation: a bootstrap is a
+	// faithful row-copy of the source's current contents, which may legitimately
+	// hold FK-inconsistent rows (data predating a constraint, an app that never
+	// enabled enforcement, rows the source's own FK-on connection would now
+	// reject). The ncruces driver defaults foreign_keys ON, so without this the
+	// loader re-validates every insert and a single dangling reference fails the
+	// whole DB — silently dropping it from the transfer, where the old physical
+	// page-copy reproduced it byte-for-byte. It also frees us from inserting
+	// parent rows before children across tables.
+	d, err := sql.Open("sqlite3", "file:"+scratchPath+"?_pragma=journal_mode(off)&_pragma=synchronous(off)&_pragma=foreign_keys(off)")
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +300,7 @@ func (l *bootstrapLoader) applySchema(s *BootstrapSchema) error {
 		}
 	}
 	l.indexes = append(l.indexes, s.Indexes...)
+	l.sequences = s.Sequences
 	tx, err := l.d.Begin()
 	if err != nil {
 		return err
@@ -380,6 +413,21 @@ func (l *bootstrapLoader) finishWork() error {
 		}
 		if _, err := l.d.Exec(idx); err != nil {
 			return fmt.Errorf("bootstrap-load: create index: %w", err)
+		}
+	}
+	// Restore AUTOINCREMENT high-water marks after the data load (the inserts
+	// themselves only bump sqlite_sequence to max(id), which understates a
+	// source whose top rows were since deleted). sqlite_sequence exists because
+	// any table here is AUTOINCREMENT; INSERT OR REPLACE seeds or overrides.
+	for name, seq := range l.sequences {
+		// sqlite_sequence has no unique constraint on name, so INSERT OR REPLACE
+		// would append a duplicate rather than overwrite the auto-inserted row.
+		// Clear then insert to leave exactly one row at the source's value.
+		if _, err := l.d.Exec("delete from sqlite_sequence where name=?", name); err != nil {
+			return fmt.Errorf("bootstrap-load: clear sequence %q: %w", name, err)
+		}
+		if _, err := l.d.Exec("insert into sqlite_sequence (name, seq) values (?, ?)", name, seq); err != nil {
+			return fmt.Errorf("bootstrap-load: restore sequence %q: %w", name, err)
 		}
 	}
 	var qc string

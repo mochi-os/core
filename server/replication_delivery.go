@@ -96,6 +96,12 @@ func journal_inflight_acked(ids []string) {
 		return
 	}
 	rdb := db_open("db/replication.db")
+	// journal_delivery is created lazily by replication_journal_tables_ensure
+	// (the journaling path calls it); the delivery-ack path must too, or a fresh
+	// replication.db — e.g. just after a replica reset+rejoin, before any local
+	// journal op has run — panics the whole server with "no such table:
+	// journal_delivery" on the insert below.
+	replication_journal_tables_ensure()
 	matched := make([]any, 0, len(rows))
 	mph := make([]string, 0, len(rows))
 	for _, r := range rows {

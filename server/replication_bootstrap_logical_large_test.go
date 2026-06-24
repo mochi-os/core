@@ -105,6 +105,7 @@ func TestBootstrapLogicalPreservesSequence(t *testing.T) {
 	src.exec("create table items (id integer primary key autoincrement, name text)")
 	src.exec("insert into items (name) values ('a'), ('b'), ('c')") // ids 1,2,3 → seq=3
 	src.exec("delete from items where id = 3")                       // seq stays 3, max(id)=2
+	src.exec("pragma user_version = 42")                             // app schema version
 	var srcSeq int64
 	if err := src.internal.Get(&srcSeq, "select seq from sqlite_sequence where name='items'"); err != nil || srcSeq != 3 {
 		t.Fatalf("source seq=%d err=%v, want 3", srcSeq, err)
@@ -138,5 +139,9 @@ func TestBootstrapLogicalPreservesSequence(t *testing.T) {
 	}
 	if dstSeq != 3 {
 		t.Errorf("rebuilt seq=%d, want 3 (sqlite_sequence not preserved)", dstSeq)
+	}
+	var uv int
+	if err := out.QueryRow("pragma user_version").Scan(&uv); err != nil || uv != 42 {
+		t.Errorf("rebuilt user_version=%d err=%v, want 42 (not preserved → app re-runs database_upgrade)", uv, err)
 	}
 }

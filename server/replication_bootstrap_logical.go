@@ -105,6 +105,15 @@ func bootstrap_logical_dump(db *DB, skip map[string]bool, batchSize int, version
 	defer tx.Rollback()
 
 	schema := BootstrapSchema{Version: version}
+	// The app DB schema version lives in pragma user_version (db.go reads/writes
+	// it). The row-copy doesn't carry it, so read it here and restore it on the
+	// receiver — otherwise every rebuilt DB lands at 0 and the server re-runs
+	// database_upgrade from scratch, erroring on non-idempotent migrations
+	// (observed live on wasabi: "no such column: category").
+	var userVersion int
+	if err := tx.QueryRow("pragma user_version").Scan(&userVersion); err == nil {
+		schema.Version = userVersion
+	}
 	var tables []string
 	rows, err := tx.Query("select type, name, tbl_name, sql from sqlite_master where type in ('table','index') and sql is not null and name not like 'sqlite_%' order by case type when 'table' then 0 else 1 end")
 	if err != nil {
@@ -235,6 +244,7 @@ type bootstrapLoader struct {
 	tx        *sql.Tx
 	indexes   []string
 	sequences map[string]int64
+	version   int
 	inserts   map[string]*sql.Stmt
 	count    map[string]int64
 	checksum map[string]uint64
@@ -301,6 +311,7 @@ func (l *bootstrapLoader) applySchema(s *BootstrapSchema) error {
 	}
 	l.indexes = append(l.indexes, s.Indexes...)
 	l.sequences = s.Sequences
+	l.version = s.Version
 	tx, err := l.d.Begin()
 	if err != nil {
 		return err
@@ -428,6 +439,14 @@ func (l *bootstrapLoader) finishWork() error {
 		}
 		if _, err := l.d.Exec("insert into sqlite_sequence (name, seq) values (?, ?)", name, seq); err != nil {
 			return fmt.Errorf("bootstrap-load: restore sequence %q: %w", name, err)
+		}
+	}
+	// Restore the app DB schema version so the receiver doesn't re-run
+	// database_upgrade from 0. PRAGMA takes no bind params; version is an int
+	// read from the source, so the format is safe.
+	if l.version != 0 {
+		if _, err := l.d.Exec(fmt.Sprintf("pragma user_version = %d", l.version)); err != nil {
+			return fmt.Errorf("bootstrap-load: restore user_version: %w", err)
 		}
 	}
 	var qc string

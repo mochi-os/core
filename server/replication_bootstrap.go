@@ -1677,9 +1677,16 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	// is structurally impossible because nothing is page-copied into the live
 	// handle. On success, atomically swap it in and seed the apply cursor to the
 	// snapshot's sequence so the op-stream resumes exactly at the boundary.
+	// Bound concurrent wazero DB rebuilds: each holds the DB's working set in
+	// its own WASM SQLite instance, and 16 in parallel (the bulk concurrency,
+	// sized for IO-bound file transfers) OOM-killed a 3.7GB box rebuilding
+	// 1.4GB feeds.db simultaneously. Gate only the memory-heavy rebuild here;
+	// file transfers keep the wider bulk limit.
+	bootstrap_rebuild_sem <- struct{}{}
 	sequence, err := bootstrap_logical_fetch(scratch, func(env *BootstrapDBMessage) error {
 		return s.read(env)
 	})
+	<-bootstrap_rebuild_sem
 	if err != nil {
 		_ = os.Remove(scratch)
 		return err
@@ -2330,8 +2337,16 @@ func bootstrap_progress_settle(peer, scope, state string) {
 // without throttling the handful of drivers a normal bootstrap runs.
 const bootstrap_bulk_concurrency = 16
 
+// bootstrap_rebuild_concurrency caps concurrent logical DB rebuilds, which are
+// memory-bound, not IO-bound: each is a wazero WASM SQLite instance holding the
+// DB's working set, so a few GB-scale rebuilds at once can exhaust a small box
+// (16 concurrent OOM-killed a 3.7GB wasabi rebuilding 1.4GB feeds.db). File
+// transfers keep the wider bulk bound above.
+const bootstrap_rebuild_concurrency = 3
+
 var (
-	bootstrap_bulk_sem = make(chan struct{}, bootstrap_bulk_concurrency)
+	bootstrap_bulk_sem    = make(chan struct{}, bootstrap_bulk_concurrency)
+	bootstrap_rebuild_sem = make(chan struct{}, bootstrap_rebuild_concurrency)
 	bootstrap_phase_mu sync.Mutex
 	// bootstrap_phases holds, per peer, the bulk drives deferred during
 	// that peer's manifest phase. A peer absent from the map is not in a

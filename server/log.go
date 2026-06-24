@@ -14,6 +14,7 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -68,7 +69,25 @@ func warn(message string, values ...any) {
 	if suppressed > 0 {
 		out = fmt.Sprintf("%s\n\n(%d further warning(s) of this kind were suppressed since the last email.)", out, suppressed)
 	}
-	email_send(admin, "Mochi error", out)
+	subject := "Mochi error"
+	if host := server_hostname(); host != "" {
+		subject += " on " + host
+	}
+	email_send(admin, subject, out)
+}
+
+// server_hostname returns the operator-facing name for this box for use in
+// admin notifications: the `hostname` setting if set, otherwise the OS
+// hostname. Unlike peer_names_announce it ignores hostname_publish — the admin
+// email goes only to the operator, who already knows which box it is.
+func server_hostname() string {
+	name := strings.TrimSpace(setting_get("hostname", ""))
+	if name == "" {
+		if h, err := os.Hostname(); err == nil {
+			name = strings.TrimSpace(h)
+		}
+	}
+	return name
 }
 
 type warn_email_record struct {

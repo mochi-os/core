@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -42,6 +43,13 @@ type DB struct {
 	// databases_lock - same primitive that guards the cache map this
 	// DB lives in, so no new synchronisation primitive is introduced.
 	closed int64
+
+	// stmt_cache holds prepared statements for the internal pool, keyed
+	// by SQL text, populated lazily by prepared() when the development
+	// cache_prepare flag is set. Guarded by stmt_lock. Closed on
+	// eviction (stmts_close). Nil/empty when the flag is off.
+	stmt_lock  sync.Mutex
+	stmt_cache map[string]*sqlx.Stmt
 }
 
 // db_kind_* tag a DB handle with the per-host file role so the
@@ -156,6 +164,8 @@ func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _
 }
 
 func db_create() {
+	db_migrating.Add(1)
+	defer db_migrating.Add(-1)
 	info("Creating new database")
 
 	// Settings
@@ -864,6 +874,7 @@ func db_manager() {
 		// just before its handles close.
 		for _, db := range evicting {
 			db.vacuum()
+			db.stmts_close()
 			db.internal.Close()
 			db.starlark.Close()
 		}
@@ -967,6 +978,8 @@ func db_start() bool {
 }
 
 func db_upgrade() {
+	db_migrating.Add(1)
+	defer db_migrating.Add(-1)
 	schema := atoi(setting_get("schema", ""), 1)
 
 	if schema > schema_version {
@@ -2236,7 +2249,111 @@ func db_purge_prefix(dir string) {
 	}
 }
 
+// db_stmt_cache_max bounds the per-DB prepared-statement cache. On
+// overflow the whole cache is flushed (closing a statement is safe even
+// if one is mid-flight — database/sql reference-counts open uses), so
+// dynamically-built SQL can't grow it without bound.
+const db_stmt_cache_max = 512
+
+// prepared returns a cached prepared statement on the internal pool for
+// query, or nil to fall back to the uncached path. Active only under the
+// development cache_prepare flag, so the default path is byte-for-byte
+// unchanged. These statements are pool-level and are never used inside a
+// transaction (the *DB query methods all run on the pool, not on a tx),
+// so they cannot leak a write out of a transaction. Schema changes are
+// handled by the driver: ncruces prepares with prepare_v3, so a cached
+// statement auto-re-prepares on SQLITE_SCHEMA.
+func (db *DB) prepared(query string) *sqlx.Stmt {
+	if !cache_prepare {
+		return nil
+	}
+	// Never cache while a migration runs, and never cache schema
+	// introspection. A cached statement can carry a stale schema view on a
+	// pooled connection; that made a pragma_table_info idempotency guard
+	// report a present column as absent, re-running an ALTER and crashing a
+	// migration (#10). The uncached path prepares fresh each call, which
+	// reloads the connection's schema.
+	if db_migrating.Load() > 0 || sql_is_introspection(query) {
+		return nil
+	}
+	db.stmt_lock.Lock()
+	defer db.stmt_lock.Unlock()
+	if st, ok := db.stmt_cache[query]; ok {
+		return st
+	}
+	if db.stmt_cache == nil {
+		db.stmt_cache = make(map[string]*sqlx.Stmt)
+	}
+	if len(db.stmt_cache) >= db_stmt_cache_max {
+		for _, st := range db.stmt_cache {
+			st.Close()
+		}
+		db.stmt_cache = make(map[string]*sqlx.Stmt)
+	}
+	st, err := db.internal.Preparex(query)
+	if err != nil {
+		return nil // fall back to the uncached path
+	}
+	db.stmt_cache[query] = st
+	return st
+}
+
+// stmts_close closes every cached prepared statement. Called from the
+// db_manager eviction path before the pool is closed.
+func (db *DB) stmts_close() {
+	db.stmt_lock.Lock()
+	defer db.stmt_lock.Unlock()
+	for _, st := range db.stmt_cache {
+		st.Close()
+	}
+	db.stmt_cache = nil
+}
+
+// db_migrating is >0 while a schema migration runs (db_create/db_upgrade).
+// prepared() returns nil during that window so every migration statement
+// is prepared fresh, never carrying a stale schema view across the
+// migration's DDL (#10). A counter so nested migrations compose.
+var db_migrating atomic.Int32
+
+// sql_is_introspection reports whether a query reads schema metadata
+// (pragma_*, sqlite_master, sqlite_schema). These must not be cached: a
+// cached introspection statement can report a stale schema on a pooled
+// connection, which breaks migration idempotency guards (see #10 and
+// prepared()).
+func sql_is_introspection(query string) bool {
+	q := strings.ToLower(query)
+	return strings.Contains(q, "pragma_") ||
+		strings.Contains(q, "sqlite_master") ||
+		strings.Contains(q, "sqlite_schema")
+}
+
+// sql_is_schema reports whether a statement changes the database schema
+// (DDL). Such a statement invalidates the prepared-statement cache:
+// statements compiled against the old schema return stale or empty
+// results afterwards (verified — ncruces' prepare_v3 auto-re-prepare does
+// not save us through the database/sql + sqlx path), so the cache is
+// flushed when one runs.
+func sql_is_schema(query string) bool {
+	verb, _ := sql_take_word(sql_strip_lead(query))
+	switch strings.ToUpper(verb) {
+	case "ALTER", "CREATE", "DROP", "REINDEX":
+		return true
+	}
+	return false
+}
+
 func (db *DB) exec(query string, values ...any) {
+	// DDL changes the schema, which invalidates cached statements; run it
+	// uncached and flush. (Migrations run DDL through db.exec.)
+	if cache_prepare && sql_is_schema(query) {
+		must(db.internal.Exec(query, values...))
+		db.stmts_close()
+		return
+	}
+	if st := db.prepared(query); st != nil {
+		must(st.Exec(values...))
+		return
+	}
 	must(db.internal.Exec(query, values...))
 }
 
@@ -2351,7 +2468,13 @@ func (db *DB) exec_app_user(query string, values ...any) {
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {
-	r, err := db.internal.Query(query, values...)
+	var r *sql.Rows
+	var err error
+	if st := db.prepared(query); st != nil {
+		r, err = st.Query(values...)
+	} else {
+		r, err = db.internal.Query(query, values...)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -2362,7 +2485,12 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 // integer returns the first column as an integer, or 0 on error
 func (db *DB) integer(query string, values ...any) int {
 	var result int
-	err := db.internal.QueryRow(query, values...).Scan(&result)
+	var err error
+	if st := db.prepared(query); st != nil {
+		err = st.QueryRow(values...).Scan(&result)
+	} else {
+		err = db.internal.QueryRow(query, values...).Scan(&result)
+	}
 	if err != nil {
 		return 0
 	}
@@ -2376,7 +2504,12 @@ func (db *DB) integer(query string, values ...any) int {
 // matching integer().
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64
-	err := db.internal.QueryRow(query, values...).Scan(&result)
+	var err error
+	if st := db.prepared(query); st != nil {
+		err = st.QueryRow(values...).Scan(&result)
+	} else {
+		err = db.internal.QueryRow(query, values...).Scan(&result)
+	}
 	if err != nil {
 		return 0
 	}
@@ -2384,7 +2517,13 @@ func (db *DB) integer64(query string, values ...any) int64 {
 }
 
 func (db *DB) row(query string, values ...any) (map[string]any, error) {
-	r, err := db.internal.Queryx(query, values...)
+	var r *sqlx.Rows
+	var err error
+	if st := db.prepared(query); st != nil {
+		r, err = st.Queryx(values...)
+	} else {
+		r, err = db.internal.Queryx(query, values...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2410,7 +2549,13 @@ func (db *DB) row(query string, values ...any) (map[string]any, error) {
 func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 	var results []map[string]any
 
-	r, err := db.internal.Queryx(query, values...)
+	var r *sqlx.Rows
+	var err error
+	if st := db.prepared(query); st != nil {
+		r, err = st.Queryx(values...)
+	} else {
+		r, err = db.internal.Queryx(query, values...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2432,7 +2577,12 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 }
 
 func (db *DB) scan(out any, query string, values ...any) bool {
-	err := db.internal.QueryRowx(query, values...).StructScan(out)
+	var err error
+	if st := db.prepared(query); st != nil {
+		err = st.QueryRowx(values...).StructScan(out)
+	} else {
+		err = db.internal.QueryRowx(query, values...).StructScan(out)
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false
@@ -2444,6 +2594,9 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 }
 
 func (db *DB) scans(out any, query string, values ...any) error {
+	if st := db.prepared(query); st != nil {
+		return st.Select(out, values...)
+	}
 	return db.internal.Select(out, query, values...)
 }
 

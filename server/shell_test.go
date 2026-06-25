@@ -38,6 +38,12 @@ func TestMain(m *testing.M) {
 	}
 	shell_html = string(html_bytes)
 	shell_js = string(js_bytes)
+	// Allow running the whole suite with the DB prepared-statement cache
+	// forced on (every query routed through it), to validate the
+	// cache_prepare path: MOCHI_TEST_CACHE_PREPARE=1 go test ./server
+	if os.Getenv("MOCHI_TEST_CACHE_PREPARE") == "1" {
+		cache_prepare = true
+	}
 	os.Exit(m.Run())
 }
 

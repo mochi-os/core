@@ -45,6 +45,133 @@ func create_test_db(t *testing.T) (*DB, func()) {
 }
 
 // Test db.exec creates tables
+// TestPreparedStatementCache exercises the development cache_prepare path:
+// every *DB query method routed through a cached prepared statement, that
+// repeated calls reuse the cache, that writes stay visible to cached
+// reads, and — the critical safety case — that a cached `SELECT *` picks
+// up a column added by ALTER (ncruces prepare_v3 auto-re-prepares on
+// SQLITE_SCHEMA). Also checks stmts_close clears the cache and queries
+// still work afterwards.
+func TestPreparedStatementCache(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	orig := cache_prepare
+	cache_prepare = true
+	defer func() { cache_prepare = orig }()
+
+	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 2, "bob")
+
+	// row, run twice: the second call is a cache hit, same correct result.
+	for i := 0; i < 2; i++ {
+		r, err := db.row("SELECT name FROM t WHERE id=?", 1)
+		if err != nil || r == nil || r["name"] != "alice" {
+			t.Fatalf("row try %d = %v err=%v, want alice", i, r, err)
+		}
+	}
+	if n := db.integer("SELECT count(*) FROM t"); n != 2 {
+		t.Errorf("integer = %d, want 2", n)
+	}
+	if all, _ := db.rows("SELECT id, name FROM t ORDER BY id"); len(all) != 2 {
+		t.Errorf("rows = %d, want 2", len(all))
+	}
+	if ok, _ := db.exists("SELECT 1 FROM t WHERE name=?", "bob"); !ok {
+		t.Error("exists(bob) = false, want true")
+	}
+
+	// A write must be visible to a subsequently cached read.
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 3, "carol")
+	if r, _ := db.row("SELECT name FROM t WHERE id=?", 3); r == nil || r["name"] != "carol" {
+		t.Errorf("row(3) after insert = %v, want carol", r)
+	}
+
+	// Statements were actually cached.
+	db.stmt_lock.Lock()
+	cached := len(db.stmt_cache)
+	db.stmt_lock.Unlock()
+	if cached == 0 {
+		t.Error("stmt_cache is empty; expected cached statements")
+	}
+
+	// Safety: a cached `SELECT *` must reflect a column added by ALTER.
+	if _, err := db.row("SELECT * FROM t WHERE id=?", 1); err != nil {
+		t.Fatalf("select * before ALTER: %v", err)
+	}
+	db.exec("ALTER TABLE t ADD COLUMN age INTEGER DEFAULT 7")
+	r, err := db.row("SELECT * FROM t WHERE id=?", 1)
+	if err != nil {
+		t.Fatalf("select * after ALTER: %v", err)
+	}
+	if _, ok := r["age"]; !ok {
+		t.Errorf("cached `SELECT *` did not reflect new column after ALTER; got %v", r)
+	}
+
+	// stmts_close clears the cache; queries still work (re-prepare).
+	db.stmts_close()
+	db.stmt_lock.Lock()
+	afterClose := len(db.stmt_cache)
+	db.stmt_lock.Unlock()
+	if afterClose != 0 {
+		t.Errorf("stmt_cache not cleared after stmts_close: %d", afterClose)
+	}
+	if r, _ := db.row("SELECT name FROM t WHERE id=?", 2); r == nil || r["name"] != "bob" {
+		t.Errorf("row after stmts_close = %v, want bob", r)
+	}
+}
+
+// TestPreparedStatementCacheMigrationSafety covers the #10 fix: schema
+// introspection (pragma_*/sqlite_master/sqlite_schema) is never cached, and
+// the cache is bypassed entirely while a migration runs. Both keep migration
+// idempotency guards reading the live schema, so an "add column if absent"
+// guard runs its ALTER exactly once instead of re-running it (which crashed
+// on enable). The real cross-connection reproduction is mochi2's data; this
+// asserts the fix mechanisms are in place.
+func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+	orig := cache_prepare
+	cache_prepare = true
+	defer func() { cache_prepare = orig }()
+
+	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+	// Part 1: introspection queries must not be cached.
+	introspect := "select 1 from pragma_table_info('t') where name='age'"
+	db.exists(introspect)
+	db.stmt_lock.Lock()
+	_, cached := db.stmt_cache[introspect]
+	db.stmt_lock.Unlock()
+	if cached {
+		t.Error("pragma_table_info query was cached; introspection must bypass the cache (#10 part 1)")
+	}
+
+	// The idempotent add-column guard must run the ALTER exactly once — a
+	// stale cached guard would re-run it and panic with a duplicate column.
+	addAge := func() {
+		if ok, _ := db.exists(introspect); !ok {
+			db.exec("alter table t add column age integer not null default 0")
+		}
+	}
+	addAge()
+	addAge() // must be a no-op, not a duplicate-column panic
+	if ok, _ := db.exists(introspect); !ok {
+		t.Error("age column should exist after the guard")
+	}
+
+	// Part 2: while a migration runs, prepared() returns nil even for an
+	// ordinary cacheable query; caching resumes once the window closes.
+	db_migrating.Add(1)
+	if st := db.prepared("select id from t where id=?"); st != nil {
+		t.Error("prepared() must return nil while db_migrating > 0 (#10 part 2)")
+	}
+	db_migrating.Add(-1)
+	if st := db.prepared("select id from t where id=?"); st == nil {
+		t.Error("prepared() should cache again after the migration window closes")
+	}
+}
+
 func TestDBExec(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -1085,11 +1212,11 @@ func TestDbUserForThread(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		user    *User
-		owner   *User
-		action  *Action
-		want    *User
+		name     string
+		user     *User
+		owner    *User
+		action   *Action
+		want     *User
 		want_err bool
 	}{
 		{
@@ -1099,9 +1226,9 @@ func TestDbUserForThread(t *testing.T) {
 			want:  alice,
 		},
 		{
-			name:    "anonymous_with_no_owner_errors",
-			user:    nil,
-			owner:   nil,
+			name:     "anonymous_with_no_owner_errors",
+			user:     nil,
+			owner:    nil,
 			want_err: true,
 		},
 		{
@@ -1133,10 +1260,10 @@ func TestDbUserForThread(t *testing.T) {
 			want:   bob,
 		},
 		{
-			name:    "logged_in_under_domain_routing_no_owner_errors",
-			user:    alice,
-			owner:   nil,
-			action:  action_with_route("/blog"),
+			name:     "logged_in_under_domain_routing_no_owner_errors",
+			user:     alice,
+			owner:    nil,
+			action:   action_with_route("/blog"),
 			want_err: true,
 		},
 		// An action with an empty domain context is not "domain routing"

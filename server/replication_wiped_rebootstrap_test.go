@@ -158,3 +158,33 @@ func TestBootstrapDbSwapRefusesEmptyOverPopulated(t *testing.T) {
 		t.Errorf("legit swap did not land the data")
 	}
 }
+
+// TestDbFileHasRowsNonexistentIsNotProtected is the #37 regression: a
+// non-existent path has nothing to protect, so db_file_has_rows must report
+// false — otherwise the swap-guard refuses to place authoritative (even empty)
+// source DBs at paths the receiver doesn't have yet, stranding ~220 unused-app
+// DBs and leaving the bootstrap stuck incomplete.
+func TestDbFileHasRowsNonexistentIsNotProtected(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	if db_file_has_rows(filepath.Join(data_dir, "does_not_exist.db")) {
+		t.Errorf("#37: db_file_has_rows reported true for a non-existent path — swap-guard would refuse to place empty source DBs")
+	}
+
+	// The swap itself: an empty source DB onto a non-existent target must succeed.
+	scratch := filepath.Join(data_dir, "empty_scratch.db")
+	d, err := sql.Open("sqlite3", "file:"+scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Exec("create table t (id integer primary key)") // valid DB, zero rows
+	d.Close()
+	target := filepath.Join(data_dir, "fresh_target.db") // does not exist
+	if err := bootstrap_db_swap(target, scratch); err != nil {
+		t.Errorf("#37: swap of an empty source DB onto a non-existent target was refused: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("#37: target not created after swap: %v", err)
+	}
+}

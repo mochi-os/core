@@ -635,6 +635,17 @@ func replication_user_has_local_data(uid string) bool {
 // non-internal table holds at least one row. Fails SAFE: an open/query error
 // returns true (treat as "has data").
 func db_file_has_rows(path string) bool {
+	// No file at this path → nothing to protect. A bootstrap placing an
+	// authoritative source DB here (even an empty one — an app the user has
+	// installed but never used) MUST be allowed; the swap creates the file. The
+	// query path below fails-safe to "has rows" on any open/query error, which
+	// for a NON-EXISTENT target made the swap-guard refuse to place every empty
+	// source DB — leaving the receiver stuck incomplete with ~220 unused-app DBs
+	// never transferred (#37, rig 2026-06-25). An existing-but-unreadable file
+	// still fails safe (true) via the open/query errors below.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false
+	}
 	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
 	if err != nil {
 		return true

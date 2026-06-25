@@ -115,3 +115,46 @@ func TestUserHasLocalDataPredicate(t *testing.T) {
 		t.Errorf("populated user reported as having NO data — guard would wipe it")
 	}
 }
+
+// TestBootstrapDbSwapRefusesEmptyOverPopulated is the #27 defense-in-depth: the
+// swap itself must never replace a populated live DB with an empty scratch,
+// whatever path requested it — while still allowing the legitimate
+// fresh-replica swap (empty live, full scratch).
+func TestBootstrapDbSwapRefusesEmptyOverPopulated(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	mkdb := func(name string, rows int) string {
+		p := filepath.Join(data_dir, name)
+		d, err := sql.Open("sqlite3", "file:"+p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Exec("create table posts (id integer primary key, body text)")
+		for i := 0; i < rows; i++ {
+			d.Exec("insert into posts (body) values ('x')")
+		}
+		d.Close()
+		return p
+	}
+
+	// Populated live + EMPTY scratch -> REFUSE, target untouched.
+	target := mkdb("live.db", 5)
+	scratch := mkdb("scratch_empty.db", 0)
+	if err := bootstrap_db_swap(target, scratch); err == nil {
+		t.Errorf("empty scratch over populated target was NOT refused — data-loss guard missing")
+	}
+	if !db_file_has_rows(target) {
+		t.Errorf("target was wiped despite the guard")
+	}
+
+	// Empty live + populated scratch -> legit fresh bootstrap, must SUCCEED.
+	target2 := mkdb("live_empty.db", 0)
+	scratch2 := mkdb("scratch_full.db", 5)
+	if err := bootstrap_db_swap(target2, scratch2); err != nil {
+		t.Errorf("legit fresh-bootstrap swap (empty live, full scratch) was refused: %v", err)
+	}
+	if !db_file_has_rows(target2) {
+		t.Errorf("legit swap did not land the data")
+	}
+}

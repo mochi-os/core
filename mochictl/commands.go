@@ -143,6 +143,10 @@ func init() {
 			help: "Leave the pair set (stops sync; does not wipe local data)",
 			run:  cmd_replica_leave,
 		},
+		"replica approve": {
+			help: "Approve a pending pair-join request from <peer-id> (headless equivalent of the settings Approve button). Args: <peer-id>",
+			run:  cmd_replica_approve,
+		},
 		"replica status": {
 			help: "Show current pair / pending-join state",
 			run:  cmd_replica_status,

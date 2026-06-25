@@ -150,6 +150,26 @@ func admin_replica_leave(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"state": "left", "former_members": members})
 }
 
+// admin_replica_approve is POST /_/admin/replica/approve. Approves a pending
+// pair-join request from <peer>, adding it to the pair set and firing the
+// join-approved op — the headless-ops equivalent of the settings Approve
+// button.
+func admin_replica_approve(c *gin.Context) {
+	var input struct {
+		Peer string `json:"peer"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Peer == "" {
+		respond_error(c, http.StatusBadRequest, "source_required", "errors.source_required", nil)
+		return
+	}
+	status, err := replication_join_approve(input.Peer)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"state": "error", "peer": input.Peer, "detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"state": status, "peer": input.Peer})
+}
+
 // admin_replica_status is GET /_/admin/replica/status.
 // Polled by mochictl during `replica join`. Reconciles the pending
 // state in settings.db with the current pair table:

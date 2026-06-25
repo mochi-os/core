@@ -64,6 +64,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.POST("/stop", admin_stop)
 	admin.POST("/restart", admin_restart)
 	admin.POST("/replica/join", admin_replica_join)
+	admin.POST("/replica/approve", admin_replica_approve)
 	admin.POST("/replica/leave", admin_replica_leave)
 	admin.GET("/replica/status", admin_replica_status)
 	admin.GET("/replication/status", admin_replication_status)
@@ -117,6 +118,7 @@ var admin_audited_routes = map[string]string{
 	"POST /_/admin/stop":                    "admin.stop",
 	"POST /_/admin/restart":                 "admin.restart",
 	"POST /_/admin/replica/join":            "admin.replica.join",
+	"POST /_/admin/replica/approve":         "admin.replica.approve",
 	"POST /_/admin/replica/leave":           "admin.replica.leave",
 	"POST /_/admin/replication/pair/remove": "admin.replication.pair.remove",
 	"POST /_/admin/replication/resync":      "admin.replication.resync",

@@ -196,6 +196,27 @@ func cmd_replica_leave(args []string) error {
 	return nil
 }
 
+// cmd_replica_approve handles `mochictl replica approve <peer-id>`. POSTs to
+// the admin endpoint to approve a pending pair-join — the headless-ops
+// equivalent of the settings-UI Approve button.
+func cmd_replica_approve(args []string) error {
+	if len(args) < 1 || args[0] == "" {
+		return fmt.Errorf("usage: mochictl replica approve <peer-id>")
+	}
+	body, _ := json.Marshal(map[string]string{"peer": args[0]})
+	resp, err := client().Post("/_/admin/replica/approve", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, out)
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
 // cmd_replica_status is the one-shot diagnostic read.
 func cmd_replica_status(args []string) error {
 	return get_dump("/_/admin/replica/status", "state", "peer", "fingerprint", "addresses", "source", "members", "names", "reason", "delivery")

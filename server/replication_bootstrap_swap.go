@@ -38,6 +38,17 @@ func bootstrap_db_swap(target, scratch string) error {
 	databases_lock.Lock()
 	defer databases_lock.Unlock()
 
+	// Defense-in-depth data-loss guard (#27): never atomically replace a
+	// populated live DB with an EMPTY scratch. The wiped-replica recovery guard
+	// blocks the known trigger; this blocks the catastrophe at the swap itself,
+	// whatever path requested it (reseed, a future bidirectional reconcile). A
+	// genuinely fresh replica's live DB is empty, so legitimate first-bootstrap
+	// swaps still pass.
+	if db_file_has_rows(target) && !db_file_has_rows(scratch) {
+		_ = os.Remove(scratch)
+		return fmt.Errorf("bootstrap-db-swap: refusing to replace populated %q with an empty scratch (data-loss guard #27)", target)
+	}
+
 	// Find the existing cache entry for this file (keyed by path for bootstrap
 	// targets, but scan by path so a custom cache key is still caught).
 	var oldDB *DB

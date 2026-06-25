@@ -688,6 +688,18 @@ var replication_user_bootstrap_hook func(peer, uid string)
 // bootstrap_start_user. (Wiring it in init() rather than the function body keeps
 // the apply path out of the bootstrap vars' package-init dependency cycle.)
 func replication_user_bootstrap(peer, uid string) {
+	// Skip the per-user trigger while a whole-server (pair) userdbs bootstrap
+	// from this peer is still running: it already pulls every user's DBs and
+	// owns the shared (userdbs, peer) bootstrap row. A concurrent per-user
+	// bootstrap_start_user writes that same row via set_pending, clobbering the
+	// shared pending counter so a small per-user batch drains to 0 and settles
+	// the whole scope 'done' before the pair transfer finishes — a silently
+	// incomplete replica (#36, 2026-06-25: userdbs 'done' with DBs still
+	// missing). Once the pair bootstrap is 'done', a genuinely new user record
+	// falls through here and fetches normally.
+	if bootstrap_userdbs_in_progress(peer) {
+		return
+	}
 	if replication_user_bootstrap_hook != nil {
 		replication_user_bootstrap_hook(peer, uid)
 	}

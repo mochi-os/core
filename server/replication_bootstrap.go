@@ -360,6 +360,20 @@ func bootstrap_get_failed(scope, peer string) int64 {
 	return int64(rdb.integer("select failed from bootstrap where scope=? and peer=?", scope, peer))
 }
 
+// bootstrap_userdbs_in_progress reports whether a userdbs-scope bootstrap from
+// `peer` is still running (a row exists in a non-'done' state). Used to suppress
+// the per-user new-user-bootstrap trigger while a whole-server (pair) bootstrap
+// owns the shared (userdbs, peer) row — see replication_user_bootstrap (#36).
+func bootstrap_userdbs_in_progress(peer string) bool {
+	rdb := db_open("db/replication.db")
+	row, _ := rdb.row("select state from bootstrap where scope=? and peer=?", bootstrap_scope_userdbs, peer)
+	if row == nil {
+		return false
+	}
+	state, _ := row["state"].(string)
+	return state != "" && state != bootstrap_state_done
+}
+
 // bootstrap_failed_increment atomically bumps the (scope, peer) row's
 // failed counter. Called from the file + db scope drivers when a
 // transfer gives up after exhausting its retry budget. Must be paired
@@ -2794,10 +2808,46 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 // chunk of every DB was a queue row).
 func replication_bootstrap_db_manifest_result_apply(originPeer string, res *BootstrapDBManifestResult) {
 	if len(res.Entries) == 0 {
-		bootstrap_set_state(res.Scope, originPeer, bootstrap_state_done, "")
-		audit_replication_bootstrap_scope_done(originPeer, res.Scope)
-		bootstrap_scope_settled(originPeer, res.Scope)
-		bootstrap_progress_settle(originPeer, res.Scope, bootstrap_state_done)
+		// Mirror the file scope's res.Done handler: a 0-entry manifest result
+		// settles the scope ONLY if the bulk driver has already drained
+		// (pending==0), read under the pending lock, and then via
+		// bootstrap_settled_state so a prior failed transfer yields 'incomplete'
+		// not 'done'. Hardcoding 'done' here was the silent-incomplete bug: a
+		// transient empty manifest (the source momentarily mid-walk / restarting)
+		// arriving while the driver still had DBs in flight (pending>0, failures
+		// not yet counted) clobbered the whole scope to 'done' with DBs still
+		// missing — a replica that believes it is fully synced (rig T4 + verify,
+		// 2026-06-25: userdbs 'done' failed=120, 184 DBs absent incl a
+		// schema-only feeds.db). The pending==0 guard is the piece a
+		// settled_state-only fix missed, because `failed` is still 0 at the
+		// instant the stray empty result lands.
+		bootstrap_pending_lock.Lock()
+		rdb := db_open("db/replication.db")
+		row, _ := rdb.row("select position, state from bootstrap where scope=? and peer=?", res.Scope, originPeer)
+		settle := false
+		if row == nil {
+			settle = true
+		} else {
+			state, _ := row["state"].(string)
+			position_string, _ := row["position"].(string)
+			count, _ := strconv.ParseInt(position_string, 10, 64)
+			settle = state != bootstrap_state_done && count == 0
+		}
+		var settledState string
+		if settle {
+			settledState = bootstrap_settled_state(res.Scope, originPeer)
+			bootstrap_set_state(res.Scope, originPeer, settledState, "")
+			if settledState == bootstrap_state_done {
+				audit_replication_bootstrap_scope_done(originPeer, res.Scope)
+			}
+		}
+		bootstrap_pending_lock.Unlock()
+		if settle && settledState == bootstrap_state_done {
+			bootstrap_scope_settled(originPeer, res.Scope)
+		}
+		if settle {
+			bootstrap_progress_settle(originPeer, res.Scope, settledState)
+		}
 		return
 	}
 	bootstrap_set_pending(res.Scope, originPeer, int64(len(res.Entries)))

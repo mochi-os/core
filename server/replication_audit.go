@@ -856,11 +856,10 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 	// Phase 3 (locked): one alert per episode for the genuinely stuck streams, and
 	// re-arm any whose alert no longer applies (converged, caught up, or resumed).
 	audit_convergence_mutex.Lock()
-	defer audit_convergence_mutex.Unlock()
 	for _, f := range alert {
 		if !audit_liveness_alerted[f.key] {
 			audit_liveness_alerted[f.key] = true
-			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, and no pending buffer to trip the stall alert). Investigate; a targeted re-seed (mochictl replication reseed) may recover it.",
+			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, and no pending buffer to trip the stall alert). Auto-recovery will attempt a targeted re-seed.",
 				f.s.User, f.s.Stream, peer, f.cursor, f.s.Tail, f.s.Tail-f.cursor)
 		}
 	}
@@ -868,6 +867,22 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 		if strings.HasPrefix(key, peer+"|") && !stuck[key] {
 			delete(audit_liveness_alerted, key)
 		}
+	}
+	audit_convergence_mutex.Unlock()
+
+	// #33: the dormant cursor-misalignment class — a pure-receiver stream
+	// (Phase-1 guard above restricts this to our emitted tail==0) frozen below
+	// the peer's tail with NO pending buffer, so replication_wiped_rebootstrap
+	// never sees it (it only scans buffered-pending streams). Auto-recover with
+	// the SAME safe gated reseed used for the pending class: reseed_source_
+	// missing_ops re-confirms the source is authoritative, and the reanchor
+	// backoff/attempt-cap paces it and escalates to irreparable if it won't
+	// anchor. Run unlocked — the reseed opens DBs and must not hold the audit
+	// convergence lock.
+	for _, f := range alert {
+		replication_reanchor_misaligned(StalledStream{
+			Peer: peer, Scope: repl_scope_app, User: f.s.User, Database: f.s.Stream,
+		})
 	}
 }
 

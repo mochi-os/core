@@ -183,6 +183,56 @@ func TestWipedRebootstrapReanchorsPopulated(t *testing.T) {
 	}
 }
 
+// TestAuditLivenessAutoReseeds: the dormant cursor-misalignment class — a
+// pure-receiver stream frozen below the peer's tail with NO pending buffer, so
+// replication_wiped_rebootstrap never sees it. The audit detects it and must
+// now auto-invoke the safe gated reseed (#33), not just warn. Without the audit
+// hook the stream would sit stuck until a manual `mochictl replication reseed`.
+func TestAuditLivenessAutoReseeds(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	reanchor_reset()
+	resetAudit := func() {
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}
+	resetAudit()
+	defer resetAudit()
+
+	got := make(chan string, 4)
+	orig := bootstrap_db_reseed
+	bootstrap_db_reseed = func(peer, scope, path string) error { got <- path; return nil }
+	defer func() { bootstrap_db_reseed = orig }()
+
+	// Pure-receiver app stream (no journal → source authoritative) whose DB
+	// exists on disk so the reseed has a target.
+	uid, entity := "u1", "feedsE"
+	mkapp(t, uid, entity, "feeds.db", 0, 0)
+	stream := "app:" + entity
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+	peer := "peerP"
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, ?, ?, ?, 100) on conflict(peer, scope, user, db) do update set sequence=100",
+		peer, repl_scope_app, uid, stream)
+	manifest := []AuditStream{{User: uid, Stream: stream, Tail: 200}}
+
+	// Two rounds: behind + frozen → genuinely stuck → audit auto-reseeds.
+	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest)
+
+	select {
+	case p := <-got:
+		if p != "users/"+uid+"/"+entity+"/db/feeds.db" {
+			t.Errorf("audit auto-reseed path = %q, want the feeds.db path", p)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("#33: audit-detected dormant stuck stream (no pending buffer) was NOT auto-reseeded — it would need a manual reseed")
+	}
+}
+
 // TestStreamDbPaths pins the stream-key → DB-path inverse used to target the
 // reseed (only existing files returned).
 func TestStreamDbPaths(t *testing.T) {

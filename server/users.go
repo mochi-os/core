@@ -547,6 +547,7 @@ func (u *User) set_service_app(service, app string) {
 		db.exec_replicated("replace into services (service, app) values (?, ?)", service, app)
 	}
 	audit_user_routing_changed(u.Username, "service", service, app)
+	resolution_invalidate() // user service binding changed
 }
 
 // path_app returns the user's preferred app for a path, or empty string if not set
@@ -592,6 +593,7 @@ func (u *User) set_app_version(app, version, track string) {
 		db.exec_replicated("replace into versions (app, version, track) values (?, ?, ?)", app, version, track)
 	}
 	audit_user_version_changed(u.Username, app, version, track)
+	resolution_invalidate() // user version preference changed
 }
 
 // mochi.user.get(id) -> dict | None: Get a user by ID (admin only). The bare

@@ -982,6 +982,10 @@ func create_test_routing_env(t *testing.T) func() {
 	orig_apps := apps
 	apps = make(map[string]*App)
 
+	// Drop any resolution-cache entries pointing into a prior test's apps
+	// map so resolution starts clean for this test.
+	resolution_invalidate()
+
 	cleanup := func() {
 		apps = orig_apps
 		data_dir = orig_data_dir
@@ -1063,6 +1067,89 @@ func TestAppForServiceForResolution(t *testing.T) {
 	result = app_for_service(user, "notifications")
 	if result == nil || result.id != "notif-app-2" {
 		t.Errorf("app_for_service with user binding = %v, want notif-app-2", result)
+	}
+}
+
+// TestAppForServiceInternalFastPath verifies that core internal services
+// (replication, directory, peers) resolve directly to their built-in
+// handler — ahead of, and immune to, user/system bindings — so a
+// user-installed app cannot shadow a core service by declaring its name,
+// and so core P2P traffic never triggers the O(apps) fallback scan. It
+// also confirms the fast path leaves ordinary service resolution intact.
+func TestAppForServiceInternalFastPath(t *testing.T) {
+	cleanup := create_test_routing_env(t)
+	defer cleanup()
+
+	// Registered at startup by directory.go / peer_connect.go /
+	// replication.go init(); present in internal_services even though
+	// create_test_routing_env swapped out the apps map.
+	for _, svc := range []string{"replication", "directory", "peers"} {
+		got := app_for_service(nil, svc)
+		if got == nil || got.id != svc {
+			t.Fatalf("app_for_service(%q) = %v, want internal app %q", svc, got, svc)
+		}
+		if got.internal == nil {
+			t.Errorf("app_for_service(%q) returned non-internal app %q", svc, got.id)
+		}
+	}
+
+	// Shadow protection: a user-installed app declaring "replication",
+	// with BOTH a system binding and a user binding pointing at it, must
+	// still lose to the built-in handler.
+	imposterAV := &AppVersion{Version: "1.0", Services: []string{"replication"}}
+	apps["imposter-app"] = &App{id: "imposter-app", versions: map[string]*AppVersion{"1.0": imposterAV}, latest: imposterAV}
+	apps_service_set("replication", "imposter-app")
+	user := &User{UID: "u1", Username: "user1@example.com"}
+	user.set_service_app("replication", "imposter-app")
+	if got := app_for_service(user, "replication"); got == nil || got.id != "replication" {
+		t.Errorf("app_for_service(replication) with imposter bindings = %v, want internal replication", got)
+	}
+
+	// Regression: an ordinary (non-internal) service still resolves via
+	// the normal binding path, unaffected by the fast path.
+	ordAV := &AppVersion{Version: "1.0", Services: []string{"notifications"}}
+	apps["notif-app"] = &App{id: "notif-app", versions: map[string]*AppVersion{"1.0": ordAV}, latest: ordAV}
+	apps_service_set("notifications", "notif-app")
+	if got := app_for_service(nil, "notifications"); got == nil || got.id != "notif-app" {
+		t.Errorf("app_for_service(notifications) = %v, want notif-app", got)
+	}
+}
+
+// TestResolutionCacheInvalidation verifies the version-resolution cache
+// serves correct results across the writes that must invalidate it: a
+// system-default change and a per-user preference change are both
+// reflected immediately, and the anonymous and per-user keys stay
+// independent.
+func TestResolutionCacheInvalidation(t *testing.T) {
+	cleanup := create_test_routing_env(t)
+	defer cleanup()
+
+	av1 := &AppVersion{Version: "1.0", Services: []string{"svc"}}
+	av2 := &AppVersion{Version: "2.0", Services: []string{"svc"}}
+	a := &App{id: "app-x", versions: map[string]*AppVersion{"1.0": av1, "2.0": av2}, latest: av2}
+	apps["app-x"] = a
+
+	// No default and no preference: active falls back to latest (2.0).
+	// This caches the (anonymous, app-x) entry.
+	if got := a.active(nil); got == nil || got.Version != "2.0" {
+		t.Fatalf("active(nil) = %v, want 2.0 (latest)", got)
+	}
+
+	// Pin the system default to 1.0 — the cache must invalidate.
+	a.set_default_version("1.0", "", "")
+	if got := a.active(nil); got == nil || got.Version != "1.0" {
+		t.Errorf("active(nil) after set_default_version(1.0) = %v, want 1.0", got)
+	}
+
+	// A per-user preference for 2.0 overrides the default for that user.
+	user := &User{UID: "u1", Username: "user1@example.com"}
+	user.set_app_version("app-x", "2.0", "")
+	if got := a.active(user); got == nil || got.Version != "2.0" {
+		t.Errorf("active(user) after set_app_version(2.0) = %v, want 2.0", got)
+	}
+	// The anonymous key is independent and still sees the system default.
+	if got := a.active(nil); got == nil || got.Version != "1.0" {
+		t.Errorf("active(nil) = %v, want 1.0 (default unchanged)", got)
 	}
 }
 

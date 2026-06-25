@@ -233,6 +233,7 @@ func (a *App) set_default_version(version, track, admin string) {
 	if admin != "" {
 		audit_default_version_changed(admin, a.id, version, track)
 	}
+	resolution_invalidate() // system default version changed
 }
 
 // track returns the version for a named track, or empty string if not set
@@ -262,6 +263,7 @@ func (a *App) set_track(name, version, admin string) {
 	if admin != "" {
 		audit_default_track_changed(admin, a.id, name, version)
 	}
+	resolution_invalidate() // system track changed
 }
 
 // tracks returns all tracks for this app as a map of track name to version
@@ -291,11 +293,27 @@ func (a *App) active(user *User) *AppVersion {
 // active_locked is the internal version of active.
 // Must be called with apps_lock held.
 func (a *App) active_locked(user *User) *AppVersion {
-	// Internal Go apps have a single version
+	// Internal Go apps have a single version — free to resolve, never
+	// cached.
 	if a.internal != nil {
 		return a.internal
 	}
 
+	// The resolution below runs uncached SQL (per-user preference, system
+	// default, track lookup); on the per-event routing path that cost
+	// dominates. Serve from the version cache when fresh.
+	key := resolution_key{resolution_user_key(user), a.id}
+	if av, ok := resolution_version_get(key); ok {
+		return av
+	}
+	av := a.resolve_active_locked(user)
+	resolution_version_put(key, av)
+	return av
+}
+
+// resolve_active_locked resolves the active version from its inputs,
+// without consulting the cache. Must be called with apps_lock held.
+func (a *App) resolve_active_locked(user *User) *AppVersion {
 	// 1. Check user's preference
 	if user != nil {
 		version, track := user.app_version(a.id)
@@ -458,6 +476,13 @@ var (
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}
 	apps_lock            = &sync.Mutex{}
+
+	// internal_services maps a core service name (replication, directory,
+	// peers) to its built-in handler. Populated once at startup when an
+	// internal app calls service(); never written afterwards. Lets core
+	// P2P traffic resolve directly (see app_for_service) instead of
+	// scanning every installed app on each event.
+	internal_services = map[string]*App{}
 
 	api_app_package = sls.FromStringDict(sl.String("mochi.app.package"), sl.StringDict{
 		"get":     sl.NewBuiltin("mochi.app.package.get", api_app_package_get),
@@ -788,6 +813,31 @@ func app_download_version(id, version string) bool {
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this service (dev apps first, then by install time)
 func app_for_service(user *User, service string) *App {
+	// 0. Core internal services (replication, directory, peers) have a
+	// single built-in handler registered at startup. Resolve them
+	// directly: this skips the user/system binding lookups and the
+	// O(apps) fallback scan that would otherwise run on every core P2P
+	// event, and guarantees a user-installed app cannot shadow a core
+	// service by declaring its name.
+	if a := internal_service_app(service); a != nil {
+		return a
+	}
+
+	// The remaining steps hit the DB (per-user and system bindings) and
+	// may scan every installed app (fallback); on the per-event routing
+	// path that cost dominates. Serve from the service cache when fresh.
+	key := resolution_key{resolution_user_key(user), service}
+	if a, ok := resolution_service_get(key); ok {
+		return a
+	}
+	a := app_for_service_resolve(user, service)
+	resolution_service_put(key, a)
+	return a
+}
+
+// app_for_service_resolve resolves the handler app from its inputs,
+// without consulting the cache. See app_for_service for the order.
+func app_for_service_resolve(user *User, service string) *App {
 	// 1. Check user's binding
 	if user != nil {
 		if app_id := user.service_app(service); app_id != "" {
@@ -842,6 +892,18 @@ func app_services(a *App, user *User) []string {
 		}
 	}
 	return result
+}
+
+// internal_service_app returns the built-in app handling a core internal
+// service (replication, directory, peers), or nil. The map is written
+// only at startup (service()), so the locked read is a tight, cheap
+// critical section that never nests with the locks app_for_service's
+// other steps take.
+func internal_service_app(service string) *App {
+	apps_lock.Lock()
+	a := internal_services[service]
+	apps_lock.Unlock()
+	return a
 }
 
 // app_for_service_fallback finds the first app that declares a service.
@@ -1130,6 +1192,7 @@ func apps_service_set(service, app string) {
 	db := db_apps()
 	db.exec("replace into services (service, app) values (?, ?)", service, app)
 	replication_emit_system_set("apps", "services", service, "app", app)
+	resolution_invalidate() // system service binding changed
 }
 
 // apps_service_delete removes a service binding (empty-value op).
@@ -1897,6 +1960,7 @@ func (a *App) load_version(av *AppVersion) {
 		a.latest = av
 	}
 	apps_lock.Unlock()
+	resolution_invalidate() // installed version set changed
 
 	debug("App %q, %q version %q loaded", av.labels["en"][av.Label], a.id, av.Version)
 }
@@ -1904,6 +1968,9 @@ func (a *App) load_version(av *AppVersion) {
 // Register a service for an internal app
 func (a *App) service(service string) {
 	a.internal.Services = append(a.internal.Services, service)
+	apps_lock.Lock()
+	internal_services[service] = a
+	apps_lock.Unlock()
 }
 
 // Find the action best matching the specified name
@@ -2204,6 +2271,7 @@ func (av *AppVersion) reload() {
 	av.labels = labels
 	av.app_json_mtime = mtime
 	apps_lock.Unlock()
+	resolution_invalidate() // declared services / version metadata changed
 }
 
 // mochi.app.get(id) -> dict or None: Get details of an app

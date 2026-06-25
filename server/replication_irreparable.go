@@ -361,7 +361,14 @@ func replication_wiped_rebootstrap() {
 	}
 	rebootstrap_mutex.Lock()
 	for k := range rebootstrap_attempts {
-		if !live[k] {
+		// Keys are "peer|user" (whole-user re-pull) or "peer|user|stream"
+		// (targeted reseed, #33); keep a key while its peer|user is still
+		// stalled so its backoff + attempt count survive between ticks.
+		pu := k
+		if parts := strings.SplitN(k, "|", 3); len(parts) >= 2 {
+			pu = parts[0] + "|" + parts[1]
+		}
+		if !live[pu] {
 			delete(rebootstrap_attempts, k)
 		}
 	}
@@ -387,27 +394,31 @@ func replication_wiped_rebootstrap() {
 			continue
 		}
 
-		// SAFETY GATE (#27, 2026-06-24 SEV1): a re-bootstrap re-pulls the user's
-		// DBs from the peer and OVERWRITES the local copies. "Unanchored" means a
-		// broken CURSOR, not an empty DB — under cursor misalignment a fully
-		// populated host looks unanchored. If the user has local data this is NOT
-		// a wiped replica; re-pulling would overwrite real data with the peer's
-		// (possibly incomplete) copy — exactly what wiped 28 DBs on the live
-		// primary. Skip; the cursor re-anchors via the op stream or a targeted
-		// reseed, never a destructive whole-user re-pull.
-		if replication_user_has_local_data(s.User) {
-			info("Replication wiped-replica recovery: SKIP peer=%q user=%q db=%q — local user has data (cursor misalignment, not a wipe)",
-				s.Peer, s.User, s.Database)
+		// System-row streams (system:users / sessions / schedule) are seeded
+		// only by a keys-transfer at join time, never by the per-user file pull
+		// below nor by a per-DB reseed — so neither can anchor them, and
+		// retrying was the infinite loop this function used to be. Escalate
+		// straight to irreparable: the operator's re-join re-sends the keys (and
+		// Seeds). Checked ahead of the populated branch so it applies whether or
+		// not the user has local data.
+		if strings.HasPrefix(s.Database, repl_stream_class_system+":") {
+			replication_rebootstrap_give_up(s, "system-row stream needs a keys-transfer re-seed (operator re-join)")
 			continue
 		}
 
-		// System-row streams (system:users / sessions / schedule) are seeded
-		// only by a keys-transfer at join time, never by the per-user file
-		// pull below — so a pull can never anchor them, and retrying it was
-		// the infinite loop this function used to be. Escalate straight to
-		// irreparable: the operator's re-join re-sends the keys (and Seeds).
-		if strings.HasPrefix(s.Database, repl_stream_class_system+":") {
-			replication_rebootstrap_give_up(s, "system-row stream needs a keys-transfer re-seed (operator re-join)")
+		// SAFETY GATE (#27, 2026-06-24 SEV1) + RE-ANCHOR (#33): the whole-user
+		// re-pull below re-fetches the user's DBs and OVERWRITES the local
+		// copies. "Unanchored" means a broken CURSOR, not an empty DB — under
+		// cursor misalignment a fully populated host looks unanchored, and
+		// re-pulling it overwrote real data with the peer's (possibly
+		// incomplete) copy: the 28-DB wipe on the live primary. So a populated
+		// host is NEVER whole-user-re-pulled. Instead re-anchor THIS stream
+		// non-destructively via the targeted reseed, gated per-DB on the source
+		// being authoritative (not missing any op we originated). A source that
+		// is behind us on a DB is genuine divergence, never overwritten — left
+		// for operator/merge resolution (#22).
+		if replication_user_has_local_data(s.User) {
+			replication_reanchor_misaligned(s)
 			continue
 		}
 
@@ -466,6 +477,172 @@ func replication_rebootstrap_give_up(s StalledStream, why string) {
 	db.exec("insert into irreparable (peer, scope, user, db, reason, since, notified) values (?, ?, ?, ?, 'stalled', ?, 0)",
 		s.Peer, s.Scope, s.User, s.Database, now())
 	warn("Replication auto-recovery gave up: peer=%q user=%q db=%q - %s", s.Peer, s.User, s.Database, why)
+}
+
+// reanchor_inflight tracks targeted reseeds the auto-recovery has launched but
+// not yet finished, keyed by data-dir-relative DB path. It both dedups (one
+// reseed per DB at a time) and caps total concurrency: a freshly-misaligned
+// pair can have many stalled streams, and each reseed is a full snapshot fetch,
+// so firing dozens at once would swamp the link and the rebuild memory. The
+// memory-heavy rebuild is already bounded by bootstrap_rebuild_sem; this bounds
+// the whole fetch.
+var (
+	reanchor_inflight   = map[string]bool{}
+	reanchor_mutex      sync.Mutex
+	reanchor_concurrent = 2
+)
+
+// reanchor_acquire reserves a reseed slot for rel, or returns false if rel is
+// already reseeding or the concurrency cap is reached. Paired with
+// reanchor_release in the launched goroutine's defer.
+func reanchor_acquire(rel string) bool {
+	reanchor_mutex.Lock()
+	defer reanchor_mutex.Unlock()
+	if reanchor_inflight[rel] || len(reanchor_inflight) >= reanchor_concurrent {
+		return false
+	}
+	reanchor_inflight[rel] = true
+	return true
+}
+
+func reanchor_release(rel string) {
+	reanchor_mutex.Lock()
+	delete(reanchor_inflight, rel)
+	reanchor_mutex.Unlock()
+}
+
+// replication_reanchor_misaligned re-anchors a populated host's unanchored
+// (cursor-misaligned) stream non-destructively — the safe alternative to the
+// whole-user re-pull that wiped 28 DBs (#27, #33). For each DB file backing the
+// stream it runs the targeted reseed (the same primitive as `mochictl
+// replication reseed`), but ONLY where reseed_source_missing_ops reports the
+// source is authoritative — not missing any op this host originated. A source
+// that is behind us on a DB is genuine bidirectional divergence, not a
+// misalignment; overwriting it would lose local-origin rows, so it is left for
+// operator/merge resolution (#22). Paced by the shared per-stream backoff +
+// attempt cap (key "peer|user|stream"); after the cap it escalates to
+// irreparable so an operator is told. bootstrap_db_reseed blocks on a full
+// snapshot fetch, so it runs in a bounded background goroutine and the manager
+// tick returns at once.
+func replication_reanchor_misaligned(s StalledStream) {
+	paths := replication_stream_db_paths(s.User, s.Database)
+	if len(paths) == 0 {
+		// No DB file on disk yet for this stream (the row can arrive before its
+		// file). Nothing to reseed; the op stream anchors when the file lands.
+		return
+	}
+
+	key := s.Peer + "|" + s.User + "|" + s.Database
+	rebootstrap_mutex.Lock()
+	state := rebootstrap_attempts[key]
+	if state.gaveup {
+		rebootstrap_mutex.Unlock()
+		return
+	}
+	delay := int64(rebootstrap_unanchored_seconds) << uint(state.attempts)
+	if delay > rebootstrap_backoff_cap {
+		delay = rebootstrap_backoff_cap
+	}
+	if state.last != 0 && now()-state.last < delay {
+		rebootstrap_mutex.Unlock()
+		return
+	}
+	if state.attempts >= rebootstrap_attempt_cap {
+		state.gaveup = true
+		rebootstrap_attempts[key] = state
+		rebootstrap_mutex.Unlock()
+		replication_rebootstrap_give_up(s, fmt.Sprintf("targeted reseed did not anchor after %d attempts", state.attempts))
+		return
+	}
+	rebootstrap_mutex.Unlock()
+
+	launched, diverged := false, false
+	for _, rel := range paths {
+		// #27 gate, per-DB: only overwrite from a source that is not missing any
+		// op we originated. A source behind us here is divergence, not a wipe.
+		if reseed_source_missing_ops(rel, s.Peer) {
+			diverged = true
+			continue
+		}
+		if !reanchor_acquire(rel) {
+			continue // already reseeding this DB, or at the concurrency cap
+		}
+		launched = true
+		info("Replication re-anchor: peer=%q user=%q db=%q path=%q targeted reseed attempt %d/%d",
+			s.Peer, s.User, s.Database, rel, state.attempts+1, rebootstrap_attempt_cap)
+		go func(rel string) {
+			defer reanchor_release(rel)
+			if err := bootstrap_db_reseed(s.Peer, bootstrap_scope_userdbs, rel); err != nil {
+				warn("Replication re-anchor reseed %q from peer %q failed: %v", rel, s.Peer, err)
+				return
+			}
+			info("Replication re-anchor: %q re-seeded from peer %q (cursor re-anchored)", rel, s.Peer)
+		}(rel)
+	}
+
+	// Consume a backoff attempt only when we actually launched a reseed; a tick
+	// blocked purely by the concurrency cap retries next window for free.
+	if launched {
+		rebootstrap_mutex.Lock()
+		state = rebootstrap_attempts[key]
+		state.attempts++
+		state.last = now()
+		rebootstrap_attempts[key] = state
+		rebootstrap_mutex.Unlock()
+		return
+	}
+	if diverged {
+		info("Replication re-anchor: SKIP peer=%q user=%q db=%q — source is behind on this stream (divergence, not a wipe); operator/merge required",
+			s.Peer, s.User, s.Database)
+	}
+}
+
+// replication_stream_db_paths maps a stalled (user, stream-key) back to the
+// data-dir-relative path(s) of the DB file(s) backing the stream — the inverse
+// of bootstrap_stream_key — for the targeted reseed. Only files that exist on
+// disk are returned.
+//
+//	app:<id>         → users/<u>/<id>/db/*.db   (app data DBs)
+//	app:<id>/system  → users/<u>/<id>/app.db    (per-app config DB)
+//	core:<file>      → users/<u>/<file>.db       (per-user infra DB)
+func replication_stream_db_paths(user, stream string) []string {
+	if user == "" || stream == "" {
+		return nil
+	}
+	exists := func(rel string) bool {
+		st, err := os.Stat(filepath.Join(data_dir, filepath.FromSlash(rel)))
+		return err == nil && !st.IsDir()
+	}
+	switch {
+	case strings.HasPrefix(stream, repl_stream_class_app+":"):
+		rest := strings.TrimPrefix(stream, repl_stream_class_app+":")
+		if app := strings.TrimSuffix(rest, "/system"); app != rest {
+			rel := "users/" + user + "/" + app + "/app.db"
+			if exists(rel) {
+				return []string{rel}
+			}
+			return nil
+		}
+		entries, err := os.ReadDir(filepath.Join(data_dir, "users", user, rest, "db"))
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".db") {
+				continue
+			}
+			out = append(out, "users/"+user+"/"+rest+"/db/"+e.Name())
+		}
+		return out
+	case strings.HasPrefix(stream, repl_stream_class_core+":"):
+		rel := "users/" + user + "/" + strings.TrimPrefix(stream, repl_stream_class_core+":") + ".db"
+		if exists(rel) {
+			return []string{rel}
+		}
+		return nil
+	}
+	return nil
 }
 
 // replication_irreparable_notify_local raises a Mochi notification on this

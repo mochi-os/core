@@ -1771,7 +1771,9 @@ func bootstrap_db_seed_cursor(peer, target string, seed int64) {
 // primitive (fetch + atomic land + cursor re-anchor + buffered-op
 // drain), then clears the state a re-seed leaves stale. The caller (the
 // admin handler) owns the safety gate — see reseed_source_missing_ops.
-func bootstrap_db_reseed(peer, scope, path string) error {
+// bootstrap_db_reseed is a var so the auto-recovery re-anchor (#33) can be
+// exercised without a live snapshot fetch in tests.
+var bootstrap_db_reseed = func(peer, scope, path string) error {
 	target, err := bootstrap_db_target_path(scope, path, "", "", "")
 	if err != nil {
 		return err

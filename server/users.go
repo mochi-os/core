@@ -525,6 +525,7 @@ func (u *User) set_class_app(class, app string) {
 		db.exec_replicated("replace into classes (class, app) values (?, ?)", class, app)
 	}
 	audit_user_routing_changed(u.Username, "class", class, app)
+	resolution_invalidate() // user class binding changed
 }
 
 // service_app returns the user's preferred app for a service, or empty string if not set
@@ -570,6 +571,7 @@ func (u *User) set_path_app(path, app string) {
 		db.exec_replicated("replace into paths (path, app) values (?, ?)", path, app)
 	}
 	audit_user_routing_changed(u.Username, "path", path, app)
+	resolution_invalidate() // user path binding changed
 }
 
 // app_version returns the user's preferred version and track for an app

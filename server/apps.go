@@ -827,11 +827,11 @@ func app_for_service(user *User, service string) *App {
 	// may scan every installed app (fallback); on the per-event routing
 	// path that cost dominates. Serve from the service cache when fresh.
 	key := resolution_key{resolution_user_key(user), service}
-	if a, ok := resolution_service_get(key); ok {
+	if a, ok := resolution_services.get(key); ok {
 		return a
 	}
 	a := app_for_service_resolve(user, service)
-	resolution_service_put(key, a)
+	resolution_services.put(key, a)
 	return a
 }
 
@@ -983,6 +983,21 @@ func app_login_owns(raw string) bool {
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this path (dev apps first, then by install time)
 func app_for_path(user *User, path string) *App {
+	// The steps below hit the DB (per-user and system bindings) and may
+	// scan every installed app (fallback); on the per-request routing path
+	// that cost dominates. Serve from the path cache when fresh.
+	key := resolution_key{resolution_user_key(user), path}
+	if a, ok := resolution_paths.get(key); ok {
+		return a
+	}
+	a := app_for_path_resolve(user, path)
+	resolution_paths.put(key, a)
+	return a
+}
+
+// app_for_path_resolve resolves the handler app from its inputs, without
+// consulting the cache. See app_for_path for the order.
+func app_for_path_resolve(user *User, path string) *App {
 	// 1. Check user's binding
 	if user != nil {
 		if app_id := user.path_app(path); app_id != "" {
@@ -1046,6 +1061,21 @@ func app_declares_class(app *App, user *User, class string) bool {
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this class (dev apps first, then by install time)
 func class_app_for(user *User, class string) *App {
+	// The steps below hit the DB (per-user and system bindings) and may
+	// scan every installed app (fallback). Serve from the class cache when
+	// fresh.
+	key := resolution_key{resolution_user_key(user), class}
+	if a, ok := resolution_classes.get(key); ok {
+		return a
+	}
+	a := class_app_resolve(user, class)
+	resolution_classes.put(key, a)
+	return a
+}
+
+// class_app_resolve resolves the handler app from its inputs, without
+// consulting the cache. See class_app_for for the order.
+func class_app_resolve(user *User, class string) *App {
 	// 1. Check user's binding
 	if user != nil {
 		if app_id := user.class_app(class); app_id != "" {
@@ -1167,6 +1197,7 @@ func apps_class_set(class, app string) {
 	db := db_apps()
 	db.exec("replace into classes (class, app) values (?, ?)", class, app)
 	replication_emit_system_set("apps", "classes", class, "app", app)
+	resolution_invalidate() // system class binding changed
 }
 
 // apps_class_delete removes a class binding. Emits a system-set with
@@ -1175,6 +1206,7 @@ func apps_class_delete(class string) {
 	db := db_apps()
 	db.exec("delete from classes where class = ?", class)
 	replication_emit_system_set("apps", "classes", class, "app", "")
+	resolution_invalidate() // system class binding removed
 }
 
 // apps_service_get returns the app ID bound to a service, or empty string if not set
@@ -1200,6 +1232,7 @@ func apps_service_delete(service string) {
 	db := db_apps()
 	db.exec("delete from services where service = ?", service)
 	replication_emit_system_set("apps", "services", service, "app", "")
+	resolution_invalidate() // system service binding removed
 }
 
 // apps_path_get returns the app ID bound to a path, or empty string if not set
@@ -1217,6 +1250,7 @@ func apps_path_set(path, app string) {
 	db := db_apps()
 	db.exec("replace into paths (path, app) values (?, ?)", path, app)
 	replication_emit_system_set("apps", "paths", path, "app", app)
+	resolution_invalidate() // system path binding changed
 }
 
 // apps_path_delete removes a path binding (empty-value op).
@@ -1224,6 +1258,7 @@ func apps_path_delete(path string) {
 	db := db_apps()
 	db.exec("delete from paths where path = ?", path)
 	replication_emit_system_set("apps", "paths", path, "app", "")
+	resolution_invalidate() // system path binding removed
 }
 
 // apps_record stamps an app's install timestamp and emits a system-set

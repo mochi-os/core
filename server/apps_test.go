@@ -1220,6 +1220,52 @@ func TestAppForPathForResolution(t *testing.T) {
 	}
 }
 
+// TestResolutionCachePathClass verifies the path and class resolution
+// caches invalidate when a binding is changed: re-binding the same path
+// or class to a different app must be reflected immediately (not served
+// stale from cache), and the anonymous and per-user keys stay
+// independent.
+func TestResolutionCachePathClass(t *testing.T) {
+	cleanup := create_test_routing_env(t)
+	defer cleanup()
+
+	a1 := &App{id: "app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"shop"}, Classes: []string{"product"}}}}
+	a2 := &App{id: "app-2", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"shop"}, Classes: []string{"product"}}}}
+	apps["app-1"] = a1
+	apps["app-2"] = a2
+
+	// Path: bind -> app-1, resolve (caches), then re-bind -> app-2.
+	apps_path_set("shop", "app-1")
+	if got := app_for_path(nil, "shop"); got == nil || got.id != "app-1" {
+		t.Fatalf("app_for_path(shop) = %v, want app-1", got)
+	}
+	apps_path_set("shop", "app-2")
+	if got := app_for_path(nil, "shop"); got == nil || got.id != "app-2" {
+		t.Errorf("app_for_path(shop) after re-bind = %v, want app-2 (stale cache?)", got)
+	}
+
+	// A per-user path binding overrides the system one for that user; the
+	// anonymous key still resolves to the system binding.
+	user := &User{UID: "u1", Username: "user1@example.com"}
+	user.set_path_app("shop", "app-1")
+	if got := app_for_path(user, "shop"); got == nil || got.id != "app-1" {
+		t.Errorf("app_for_path(user, shop) = %v, want app-1", got)
+	}
+	if got := app_for_path(nil, "shop"); got == nil || got.id != "app-2" {
+		t.Errorf("app_for_path(nil, shop) = %v, want app-2 (system binding)", got)
+	}
+
+	// Class: same re-bind invalidation via class_app_for.
+	apps_class_set("product", "app-1")
+	if got := class_app_for(nil, "product"); got == nil || got.id != "app-1" {
+		t.Fatalf("class_app_for(product) = %v, want app-1", got)
+	}
+	apps_class_set("product", "app-2")
+	if got := class_app_for(nil, "product"); got == nil || got.id != "app-2" {
+		t.Errorf("class_app_for(product) after re-bind = %v, want app-2 (stale cache?)", got)
+	}
+}
+
 // =============================================================================
 // Edge Case Tests
 // =============================================================================

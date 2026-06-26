@@ -584,6 +584,30 @@ func peer_addresses_failed(id string) {
 	db.exec("update peers set failure=failure+1 where id=?", id)
 }
 
+// peer_address_drop removes a single stale address from `id` (both the in-memory
+// peer and peers.db). `bare` is the dialled multiaddr as it appears in a swarm
+// dial error — without the trailing /p2p/<id> the stored form carries — so match
+// the stored address either bare or with that suffix. See
+// net_drop_rotated_addresses (#48).
+func peer_address_drop(id, bare string) {
+	peers_lock.Lock()
+	if p, found := peers[id]; found {
+		kept := make([]PeerAddress, 0, len(p.addresses))
+		for _, a := range p.addresses {
+			if a.Address == bare || strings.HasPrefix(a.Address, bare+"/p2p/") {
+				continue
+			}
+			kept = append(kept, a)
+		}
+		p.addresses = kept
+		peers[id] = p
+	}
+	peers_lock.Unlock()
+
+	db := db_open("db/peers.db")
+	db.exec("delete from peers where id=? and ( address=? or address like ? )", id, bare, bare+"/p2p/%")
+}
+
 // Clean up stale peers.
 func peers_manager() {
 	for range time.Tick(24 * time.Hour) {

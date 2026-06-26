@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	gonet "net"
 	"os"
@@ -24,9 +25,11 @@ import (
 	p2p_host "github.com/libp2p/go-libp2p/core/host"
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	p2p_sec "github.com/libp2p/go-libp2p/core/sec"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	p2p_eventbus "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	p2p_rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	p2p_swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	holepunch "github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	p2p_ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	multiaddr "github.com/multiformats/go-multiaddr"
@@ -102,12 +105,33 @@ func net_connect(peer string, addresses []string) bool {
 
 	err = net_me.Connect(net_context, ai)
 	if err != nil {
-		//debug("Net error connecting to %q: %s", peer, err)
+		net_drop_rotated_addresses(peer, err)
 		return false
 	}
 
 	//debug("Net connected to peer %q", peer)
 	return true
+}
+
+// net_drop_rotated_addresses inspects a failed dial for per-address peer-id
+// mismatches: an address we hold for `peer` that now answers as a DIFFERENT
+// peer — its identity rotated (a re-paired or rebuilt server reusing the same
+// host/port with a fresh key). Such an address is provably stale, so drop it;
+// otherwise the reconnect manager re-dials the defunct id forever, each dial a
+// CRYPTO_ERROR peer-id-mismatch (the high-CPU churn, #48). Ordinary dial
+// failures (offline, transient, no transport) are left untouched.
+func net_drop_rotated_addresses(peer string, dialErr error) {
+	var de *p2p_swarm.DialError
+	if !errors.As(dialErr, &de) {
+		return
+	}
+	for _, te := range de.DialErrors {
+		var mm p2p_sec.ErrPeerIDMismatch
+		if errors.As(te.Cause, &mm) && mm.Actual.String() != peer {
+			debug("Net peer %q: address %q now answers as %q — dropping stale address (#48)", peer, te.Address, mm.Actual)
+			peer_address_drop(peer, te.Address.String())
+		}
+	}
 }
 
 // Start p2p

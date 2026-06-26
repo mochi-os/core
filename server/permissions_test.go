@@ -411,6 +411,27 @@ func TestPermissionRevokeSurvivesResetup(t *testing.T) {
 	}
 }
 
+// TestComptrollerDefaultPermissions guards the apps_default entry that the
+// per-user reconcile (apps_seed_default_permissions) and bootstrap both seed
+// from: the Comptroller must grant the two Stripe url permissions and the AI
+// permission, or every checkout 403s at Mochi's url gate (the #446 outage,
+// caused when 7c10d8c dropped these from app.json without adding them here).
+func TestComptrollerDefaultPermissions(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	user := create_permission_test_user(t, "u1")
+	comptroller := "1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5"
+
+	app_user_setup(user, comptroller)
+
+	for _, perm := range []string{"url:api.stripe.com", "url:connect.stripe.com", "accounts/ai"} {
+		if !permission_granted(user, comptroller, perm) {
+			t.Errorf("comptroller default permission %q not granted by app_user_setup", perm)
+		}
+	}
+}
+
 func TestPermissionsList(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)

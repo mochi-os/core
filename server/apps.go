@@ -418,6 +418,11 @@ var (
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", nil},
 		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", nil},
+		{"1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5", "Comptroller", []struct{ Permission, Object string }{
+			{"url", "api.stripe.com"},
+			{"url", "connect.stripe.com"},
+			{"accounts/ai", ""},
+		}},
 		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", nil},
 		{"test", "Test", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
@@ -1487,6 +1492,13 @@ func apps_manager() {
 		// service name (see apps_pin_default_services).
 		apps_pin_default_services(apps_default)
 
+		// Re-apply each default app's permission grants to already-set-up
+		// users, so a change to an app's apps_default set reaches users
+		// provisioned before the change — and a service app driven only by
+		// inbound P2P events (the Comptroller) gets its defaults seeded at all
+		// (app_user_setup otherwise fires only from a same-host service call).
+		apps_seed_default_permissions()
+
 		// Cache the local publisher app id so the replication apply path can
 		// recognise a replicated publisher-catalog write cheaply (a string read,
 		// no registry scan per op).
@@ -1557,6 +1569,39 @@ func apps_pin_default_services(defaults []DefaultApp) {
 		}
 		apps_service_set(c.service, c.app)
 		debug("Pinned default service %q to app %q", c.service, c.app)
+	}
+}
+
+// apps_seed_default_permissions re-applies every default app's apps_default
+// permission grants to each already-set-up user. The normal grant path,
+// app_user_setup(), runs only from a same-host service call (api_service_call /
+// service_call_as_server), so two gaps exist: a service app driven solely by
+// inbound P2P events (the Comptroller) never has its defaults seeded for its
+// owner, and a CHANGE to an existing app's apps_default set never reaches users
+// provisioned before the change. This sweep closes both. It is safe to run on
+// every apps_manager pass: app_user_setup is idempotent and count-change-aware
+// (it early-returns when the stored grant count already matches, and uses
+// insert-or-ignore so a user-revoked grant is never re-granted), so it is a
+// cheap no-op once every user is current. user_pending users are skipped inside
+// app_user_setup — they are seeded when their bootstrap completes.
+func apps_seed_default_permissions() {
+	db := db_open("db/users.db")
+	if db == nil {
+		return
+	}
+	rows, _ := db.rows("select uid from users where status = 'active'")
+	for _, row := range rows {
+		uid, _ := row["uid"].(string)
+		if uid == "" {
+			continue
+		}
+		u := user_by_uid(uid)
+		if u == nil {
+			continue
+		}
+		for _, app := range apps_default {
+			app_user_setup(u, app.ID)
+		}
 	}
 }
 

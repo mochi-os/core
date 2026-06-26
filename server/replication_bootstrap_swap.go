@@ -49,6 +49,23 @@ func bootstrap_db_swap(target, scratch string) error {
 		return fmt.Errorf("bootstrap-db-swap: refusing to replace populated %q with an empty scratch (data-loss guard #27)", target)
 	}
 
+	// Defense-in-depth NO-SHRINK guard (#42): the empty-scratch guard above
+	// misses a scratch that holds a row or two but is missing the BULK of the
+	// populated target — exactly how a cursor-misaligned reseed from a
+	// near-empty replica overwrote 1.56M rows on the live primary (the reseed's
+	// own gate trusted the misaligned cursors and wrongly judged the empty side
+	// authoritative). This guard reads ACTUAL replicated DATA rows (journal/
+	// journal_delivery excluded, since the scratch omits them), so a misaligned
+	// cursor can't fool it. A legitimate catch-up reseed brings MORE rows (the
+	// receiver was behind) and passes; only a wrong-direction / near-empty
+	// source — which would more than halve a populated target — is refused.
+	if tr := db_file_data_rows(target); tr > 0 {
+		if sr := db_file_data_rows(scratch); sr >= 0 && sr*2 < tr {
+			_ = os.Remove(scratch)
+			return fmt.Errorf("bootstrap-db-swap: refusing to shrink populated %q from %d to %d data rows (no-shrink guard #42)", target, tr, sr)
+		}
+	}
+
 	// Find the existing cache entry for this file (keyed by path for bootstrap
 	// targets, but scan by path so a custom cache key is still caught).
 	var oldDB *DB

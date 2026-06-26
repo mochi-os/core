@@ -532,6 +532,21 @@ func replication_reanchor_misaligned(s StalledStream) {
 		return
 	}
 
+	// Originator guard (#42): NEVER reseed a stream this host has emitted ops on
+	// (tail>0). A reseed overwrites the local DB with the peer's copy; if we
+	// originated data here, a misaligned cursor that made the peer look
+	// authoritative would wipe our OWN data — the 2026-06-25 SEV1, where yuzu
+	// (which originated 164k feed posts) reseeded its feeds.db from a near-empty
+	// wasabi. Only a pure receiver (tail==0) has nothing of its own to lose. The
+	// audit path already guards this; this covers the wiped-rebootstrap path too,
+	// since both funnel through here. The no-shrink swap-guard is the final
+	// backstop if this is ever bypassed.
+	if replication_tail(s.User, s.Scope, s.Database) > 0 {
+		info("Replication re-anchor: SKIP peer=%q user=%q db=%q — this host originated the stream (tail>0); a reseed would risk our own data",
+			s.Peer, s.User, s.Database)
+		return
+	}
+
 	key := s.Peer + "|" + s.User + "|" + s.Database
 	rebootstrap_mutex.Lock()
 	state := rebootstrap_attempts[key]
@@ -847,4 +862,45 @@ func db_file_has_rows(path string) bool {
 		}
 	}
 	return false
+}
+
+// db_file_data_rows returns the total rows across a DB's replicated DATA tables
+// — every non-internal table EXCEPT the host-local change-capture tables
+// (journal, journal_delivery) that a freshly-rebuilt bootstrap scratch
+// structurally omits — so the count is directly comparable between a live
+// receiver (which has those tables) and a scratch (which doesn't). Returns -1
+// on any open/query error so the caller treats the result as "unknown" rather
+// than a false shrink verdict. Backs the swap-guard's no-shrink check (#42):
+// unlike a cursor comparison it reads actual rows, so a misaligned cursor can't
+// fool it.
+func db_file_data_rows(path string) int64 {
+	if st, err := os.Stat(path); err != nil || st.IsDir() {
+		return -1
+	}
+	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+	if err != nil {
+		return -1
+	}
+	defer d.Close()
+	rows, err := d.Query("select name from sqlite_master where type='table' and name not like 'sqlite_%' and name not in ('journal', 'journal_delivery')")
+	if err != nil {
+		return -1
+	}
+	var tables []string
+	for rows.Next() {
+		var t string
+		if rows.Scan(&t) == nil {
+			tables = append(tables, t)
+		}
+	}
+	rows.Close()
+	var total int64
+	for _, t := range tables {
+		var n int64
+		if d.QueryRow(`select count(*) from "`+t+`"`).Scan(&n) != nil {
+			return -1 // can't count a table → unknown; don't risk a false verdict
+		}
+		total += n
+	}
+	return total
 }

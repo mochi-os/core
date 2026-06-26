@@ -27,6 +27,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +63,13 @@ const (
 	sender_ping_interval    = 30 * time.Second
 	sender_ping_timeout     = 90
 )
+
+// peer_stream_open_timeout bounds net_me.NewStream so a stale "Connected" peer
+// (libp2p reports the conn up but it is dead — e.g. a stale relay circuit) can't
+// hang the open forever (#47). On timeout the caller's peer_mark_send_failed →
+// reconnect path recovers. Matches the 10s per-peer op timeout net_ping_peer
+// uses. A var (not const) so tests can lower it.
+var peer_stream_open_timeout = 10 * time.Second
 
 // errSenderUnreachable is returned by peer_send when the target peer
 // isn't reachable and the call can't even open a sender. queue_fail
@@ -791,7 +799,9 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 		return nil, fmt.Errorf("invalid peer id %q: %w", peer, err)
 	}
 
-	s, err := net_me.NewStream(net_context, pid, p2p_protocol.ID(prefer))
+	sctx, cancel := context.WithTimeout(net_context, peer_stream_open_timeout)
+	defer cancel()
+	s, err := net_me.NewStream(sctx, pid, p2p_protocol.ID(prefer))
 	if err != nil {
 		if is_protocol_not_supported(err) {
 			debug("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)

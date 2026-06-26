@@ -18,7 +18,7 @@ func deliveryTestSetup(t *testing.T) func() {
 	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	replication_journal_tables_ensure() // creates journal_delivery in this temp replication.db
+	journal_tables_test() // creates journal_delivery in this temp replication.db
 	return func() {
 		data_dir = orig
 		journal_inflight_active.Store(false) // don't leak the global into other tests
@@ -113,13 +113,12 @@ func TestJournalBackfillSkipsBelowDeliveryCursor(t *testing.T) {
 	if db == nil {
 		t.Fatal("db_open returned nil")
 	}
-	journal_ensure(db)
+	db.journal_setup()
 	db.exec("insert into journal (id, operation, statement, args, target, uid, schema, created, state) values (?,?,?,?,?,?,?,?,'shipped')",
 		"o5", repl_op_exec, "insert into items (id) values (?)", cbor_encode([]any{"x5"}), "items", "x5", 0, 100)
 	db.exec("insert into journal (id, operation, statement, args, target, uid, schema, created, state) values (?,?,?,?,?,?,?,?,'shipped')",
 		"o6", repl_op_exec, "insert into items (id) values (?)", cbor_encode([]any{"x6"}), "items", "x6", 0, 101)
 
-	replication_journal_tables_ensure()
 	rdb := db_open("db/replication.db")
 	stream := repl_stream_key(repl_stream_class_app, "testapp")
 	rdb.exec("insert into journal_sequence (id, user, scope, stream, sequence, prev) values (?,?,?,?,?,?)", "o5", "u1", repl_scope_app, stream, 5, 4)

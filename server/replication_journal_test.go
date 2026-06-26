@@ -29,7 +29,28 @@ func journal_test_dir(t *testing.T, userUID, appID string) func() {
 	if err := os.MkdirAll(filepath.Join(data_dir, "users", userUID, appID, "db"), 0o755); err != nil {
 		t.Fatalf("mkdir app db: %v", err)
 	}
+	journal_tables_test() // production creates these eagerly in db_create()/db_upgrade_90
 	return func() { data_dir = orig }
+}
+
+// journal_tables_test creates the journal cursor tables in the current temp
+// data_dir — sequence/tail/journal_sequence/journal_delivery in replication.db
+// and journal_inflight in queue.db. Production creates these eagerly in
+// db_create()/db_upgrade_90; tests that don't run the full db_create() seed them
+// directly.
+func journal_tables_test() {
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return
+	}
+	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
+	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+	rdb.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
+	rdb.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
+	qdb := db_open("db/queue.db")
+	if qdb != nil {
+		qdb.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
+	}
 }
 
 // TestJournalAssignIdempotent is the Gap-B core: a sequence is allocated once
@@ -75,7 +96,7 @@ func TestJournalDrainShipsOnceAndMarksShipped(t *testing.T) {
 	if db == nil {
 		t.Fatal("db_open returned nil")
 	}
-	journal_ensure(db)
+	db.journal_setup()
 	db.exec("insert into journal (id, operation, statement, args, target, uid, schema, created, state) values (?,?,?,?,?,?,?,?,'pending')",
 		"o1", repl_op_exec, "insert into items (id) values (?)", cbor_encode([]any{"x1"}), "items", "x1", 3, 100)
 
@@ -126,6 +147,7 @@ func TestDbExecuteJournalAtomic(t *testing.T) {
 		t.Fatal("db_open returned nil")
 	}
 	db.exec("create table items (id text primary key)")
+	db.journal_setup() // db_app does this at open; this test opens the data DB directly
 
 	av := &AppVersion{}
 	av.Database.Schema = 3
@@ -176,6 +198,7 @@ func TestDbExecuteJournalReturnsRowsAffected(t *testing.T) {
 		t.Fatal("db_open returned nil")
 	}
 	db.exec("create table items (id text primary key, flag integer)")
+	db.journal_setup() // db_app does this at open; this test opens the data DB directly
 	av := &AppVersion{}
 	av.Database.Schema = 1
 
@@ -220,12 +243,11 @@ func TestJournalBackfillResendsShippedToPeer(t *testing.T) {
 	if db == nil {
 		t.Fatal("db_open returned nil")
 	}
-	journal_ensure(db)
+	db.journal_setup()
 	db.exec("insert into journal (id, operation, statement, args, target, uid, schema, created, state) values (?,?,?,?,?,?,?,?,'shipped')",
 		"o1", repl_op_exec, "insert into items (id) values (?)", cbor_encode([]any{"x1"}), "items", "x1", 0, 100)
 
 	// Bind o1 -> (sequence 5, prev 4) as a prior drain would have.
-	replication_journal_tables_ensure()
 	rdb := db_open("db/replication.db")
 	rdb.exec("insert into journal_sequence (id, user, scope, stream, sequence, prev) values (?,?,?,?,?,?)",
 		"o1", "u1", repl_scope_app, repl_stream_key(repl_stream_class_app, "testapp"), 5, 4)
@@ -264,8 +286,7 @@ func TestJournalPruneRetainsRecentAndPending(t *testing.T) {
 	if db == nil {
 		t.Fatal("db_open returned nil")
 	}
-	journal_ensure(db)
-	replication_journal_tables_ensure()
+	db.journal_setup()
 	rdb := db_open("db/replication.db")
 
 	origAge, origMin := journal_retention_age, journal_retention_minimum
@@ -362,7 +383,7 @@ func TestJournalCrashRecoveryReusesSequence(t *testing.T) {
 	if db == nil {
 		t.Fatal("db_open returned nil")
 	}
-	journal_ensure(db)
+	db.journal_setup()
 	db.exec("insert into journal (id, operation, statement, args, target, uid, schema, created, state) values (?,?,?,?,?,?,?,?,'pending')",
 		"o1", repl_op_exec, "insert into items (id) values (?)", cbor_encode([]any{"x1"}), "items", "x1", 0, 100)
 
@@ -528,7 +549,6 @@ func TestJournalStreamConvergesAfterDroppedOpRedelivered(t *testing.T) {
 // pair-membership emit's latent race).
 func TestReplicationSequenceNextAtomic(t *testing.T) {
 	defer journal_test_dir(t, "u1", "testapp")()
-	replication_journal_tables_ensure() // creates the `sequence` table
 
 	const N = 50
 	seqs := make([]int64, N)

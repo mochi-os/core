@@ -22,7 +22,6 @@ package main
 
 import (
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
@@ -32,29 +31,7 @@ import (
 // seconds.
 const journal_inflight_ttl = 24 * 60 * 60
 
-var (
-	journal_inflight_active   atomic.Bool
-	journal_inflight_ensured  sync.Map // qdb.path -> struct{}
-	journal_inflight_ensureMu sync.Mutex
-)
-
-// journal_inflight_ensure lazily creates the inflight table in queue.db, so no
-// schema migration is needed and the table only appears on hosts that journal.
-func journal_inflight_ensure(qdb *DB) {
-	if qdb == nil || qdb.path == "" {
-		return
-	}
-	if _, done := journal_inflight_ensured.Load(qdb.path); done {
-		return
-	}
-	journal_inflight_ensureMu.Lock()
-	defer journal_inflight_ensureMu.Unlock()
-	if _, done := journal_inflight_ensured.Load(qdb.path); done { // re-check under the lock
-		return
-	}
-	qdb.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
-	journal_inflight_ensured.Store(qdb.path, struct{}{})
-}
+var journal_inflight_active atomic.Bool
 
 // journal_inflight_record notes that message `id` carries op `sequence` of
 // (user, peer, stream), so the ack path can advance the delivery cursor when the
@@ -67,7 +44,6 @@ func journal_inflight_record(id, user, peer, stream string, sequence int64) {
 	if qdb == nil {
 		return
 	}
-	journal_inflight_ensure(qdb)
 	qdb.exec("insert into journal_inflight (id, user, peer, stream, sequence, created) values (?, ?, ?, ?, ?, ?) on conflict(id) do nothing",
 		id, user, peer, stream, sequence, now())
 	journal_inflight_active.Store(true)
@@ -96,12 +72,6 @@ func journal_inflight_acked(ids []string) {
 		return
 	}
 	rdb := db_open("db/replication.db")
-	// journal_delivery is created lazily by replication_journal_tables_ensure
-	// (the journaling path calls it); the delivery-ack path must too, or a fresh
-	// replication.db — e.g. just after a replica reset+rejoin, before any local
-	// journal op has run — panics the whole server with "no such table:
-	// journal_delivery" on the insert below.
-	replication_journal_tables_ensure()
 	matched := make([]any, 0, len(rows))
 	mph := make([]string, 0, len(rows))
 	for _, r := range rows {

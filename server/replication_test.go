@@ -48,6 +48,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_81() // hosts: seen + attestation columns (membership v2)
 	db_upgrade_87() // bootstrap: progress + attempts columns (universal retry)
 	db_upgrade_89() // epoch + peer_epoch tables (replication generations, #65)
+	db_upgrade_90() // journal_sequence/journal_delivery (replication.db) + journal_inflight (queue.db), #28/#424
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise
@@ -4714,7 +4715,6 @@ func new_tx_handle(t *testing.T) (h *TransactionHandle, cleanup func()) {
 	a := app_by_id(app_id)
 	av := a.internal
 	db := db_app(u, a)
-	journal_ensure(db) // api_db_transaction does this before opening the tx
 	tx, err := db.starlark.Beginx()
 	if err != nil {
 		clean()

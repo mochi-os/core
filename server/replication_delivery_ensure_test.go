@@ -1,8 +1,13 @@
-// Mochi server: delivery-ack must ensure journal_delivery exists (P4 prod crash).
+// Mochi server: journal cursor tables exist eagerly, so the delivery-ack path
+// never panics on a missing table (#28/#424 P4 prod crash).
 //
-// A freshly reset+rejoined replication.db has no journal_delivery table until a
-// lazy ensure runs. The journaling path ensures it; the delivery-ack path must
-// too, or the first ack panics the whole server ("no such table:
+// journal_sequence/journal_delivery (replication.db) and journal_inflight
+// (queue.db) are created by db_create()/db_upgrade_90 at boot, not lazily on
+// first journal op. A freshly reset+rejoined host recreates them on restart
+// (replica reset requires the server stopped), so the delivery-ack path can
+// insert into journal_delivery without first ensuring it exists. Previously the
+// tables were lazy-created per code path, and the ack path hitting a not-yet-
+// created journal_delivery panicked the whole server ("no such table:
 // journal_delivery") — observed live on wasabi during the yuzu re-pair.
 //
 // Copyright © 2026 Mochi OÜ
@@ -14,18 +19,20 @@ package main
 
 import "testing"
 
-func TestJournalInflightAckedEnsuresDeliveryTable(t *testing.T) {
-	cleanup := setup_replication_test(t)
+func TestJournalInflightAckedAdvancesDeliveryCursor(t *testing.T) {
+	cleanup := setup_replication_test(t) // runs db_upgrade_90: journal tables exist eagerly
 	defer cleanup()
 
-	// Simulate the post-reset state: replication.db without journal_delivery.
 	rdb := db_open("db/replication.db")
-	rdb.exec("drop table if exists journal_delivery")
+	if has, _ := rdb.exists("select 1 from sqlite_master where type='table' and name='journal_delivery'"); !has {
+		t.Fatal("journal_delivery not created by db_upgrade_90")
+	}
 
-	// Record an inflight op, then ack it. The ack inserts into journal_delivery;
-	// without the ensure on the ack path this panics on the missing table.
+	// Record an inflight op, then ack it. The ack inserts into journal_delivery
+	// with no lazy ensure on the path; the table is already present from the
+	// migration, so this must not panic.
 	journal_inflight_record("op1", "u", "peer1", "core:user", 5)
-	journal_inflight_acked([]string{"op1"}) // must NOT panic
+	journal_inflight_acked([]string{"op1"})
 
 	if seq := journal_delivery_cursor(rdb, "u", "peer1", "core:user"); seq != 5 {
 		t.Errorf("journal_delivery cursor = %d, want 5 (ack did not land)", seq)

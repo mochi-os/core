@@ -1931,13 +1931,12 @@ func TestPairBackfillSkipsEmptyPeer(t *testing.T) {
 	}
 }
 
-// TestJournalEnsureStaleCacheRegression (#424): demonstrates the exact failure the
-// bootstrap_db_swap journal_ensured invalidation prevents. When a DB path is cached
-// in journal_ensured but its journal table has been replaced away (the rebuilt file
-// has none), journal_ensure early-returns on the stale cache and does NOT re-create
-// the table — so journaled writes fail forever ("no such table: journal"). Clearing
-// the cache (what bootstrap_db_swap now does) lets journal_ensure re-create it.
-func TestJournalEnsureStaleCacheRegression(t *testing.T) {
+// TestJournalSetupIdempotent (#424): journal_setup is memoless, so calling it
+// again after the journal table has been wiped (e.g. a bootstrap page-copy
+// replaced the file) re-creates the table — journaled writes never hit "no such
+// table: journal". The old lazy journal_ensure cached "already ensured" and
+// skipped the re-create on a stale cache; the eager memoless setup cannot.
+func TestJournalSetupIdempotent(t *testing.T) {
 	orig := data_dir
 	data_dir = t.TempDir()
 	defer func() { data_dir = orig }()
@@ -1945,27 +1944,18 @@ func TestJournalEnsureStaleCacheRegression(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := db_open("db/x.db")
-	journal_ensure(db) // creates the journal table AND caches db.path as ensured
-	if _, done := journal_ensured.Load(db.path); !done {
-		t.Fatal("setup: path should be cached as ensured")
+	db.journal_setup()
+	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); !has {
+		t.Fatal("journal_setup must create the journal table")
 	}
 
-	// Simulate the page-copy wiping the journal table while the cache still says ensured.
+	// Simulate a bootstrap page-copy wiping the journal table.
 	db.exec("drop table journal")
 
-	// THE BUG: stale cache → journal_ensure early-returns, table is NOT re-created,
-	// so a journaled write would hit "no such table: journal".
-	journal_ensure(db)
-	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); has {
-		t.Fatal("stale cache: journal_ensure must NOT re-create the table (this is the #424 bug)")
-	}
-
-	// THE FIX: clearing the cache (bootstrap_db_swap's journal_ensured.Delete) lets
-	// the next journal_ensure re-create the table — journaled writes work again.
-	journal_ensured.Delete(db.path)
-	journal_ensure(db)
+	// Memoless: the next setup re-creates it (the stale-cache #424 bug cannot recur).
+	db.journal_setup()
 	if has, _ := db.exists("select 1 from sqlite_master where type='table' and name='journal'"); !has {
-		t.Fatal("after cache invalidation, journal_ensure must re-create the table")
+		t.Fatal("journal_setup must re-create the journal table after it was dropped")
 	}
 }
 

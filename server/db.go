@@ -67,7 +67,7 @@ const (
 )
 
 const (
-	schema_version = 89
+	schema_version = 90
 )
 
 var (
@@ -311,6 +311,11 @@ func db_create() {
 	queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 	queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
+	// journal_inflight bridges send->ack for the per-peer journal delivery
+	// cursor (#28): one row per shipped journal op, resolved when the
+	// transport ACK lands so journal_delivery can advance. Co-located with
+	// the ack delete so the resolve is a same-DB lookup.
+	queue.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
 
 	// Domains
 	domains := db_open("db/domains.db")
@@ -383,6 +388,13 @@ func db_create() {
 	// tail: sender-side last-emitted sequence per (user, scope, db),
 	// stamped onto each outbound op as Prev — the per-db ordering chain.
 	replication.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
+	// journal_sequence binds each journal op id to its allocated (sequence,
+	// prev) so a post-crash re-drain reuses the binding instead of consuming
+	// a fresh sequence (#28). journal_delivery is the per-(user, peer, stream)
+	// delivery cursor — the highest sequence a peer has acked — so reconnect
+	// backfill ships only the delta above it.
+	replication.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
+	replication.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
 	replication.exec("create table if not exists pair (peer text primary key, added integer not null, role text not null default '')")
 	replication.exec("create table if not exists leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index if not exists leadership_expires on leadership(expires)")
@@ -570,6 +582,13 @@ func db_app(u *User, app *App) *DB {
 		}
 	}
 
+	// Create the core-managed replication journal on this data DB eagerly at
+	// open — like db_app_system's access/attachments setup — not lazily on the
+	// first journaled write (#424). Idempotent; covers both fresh and
+	// pre-existing files. Only on the non-reused open, so it runs once per
+	// process per (path, version).
+	db.journal_setup()
+
 	// Opportunistic resync probe: kick the replication pending-buffer
 	// drain for this (user, app) tuple in the background. If a sender's
 	// ops were deferred for schema-skew and the migration above just
@@ -613,6 +632,7 @@ func db_app_system(u *User, app *App) *DB {
 	// Create system tables
 	db.access_setup()
 	db.attachments_setup()
+	db.journal_setup()
 
 	return db
 }
@@ -1084,6 +1104,8 @@ func db_upgrade() {
 			db_upgrade_88()
 		case 89:
 			db_upgrade_89()
+		case 90:
+			db_upgrade_90()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1599,6 +1621,20 @@ func db_upgrade_88() {
 	r := db_open("db/replication.db")
 	r.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
 	r.exec("create index if not exists relayed_seen on relayed(seen)")
+}
+
+// db_upgrade_90 creates the journal cursor tables eagerly so they exist on every
+// host from boot, not lazily on first journal op (#28/#424). journal_sequence and
+// journal_delivery live in replication.db; journal_inflight in queue.db. Their
+// absence on a fresh-but-not-yet-journaled replication.db (e.g. just after a
+// replica reset+rejoin) previously panicked the server with "no such table:
+// journal_delivery" on the delivery-ack write.
+func db_upgrade_90() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
+	r.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
+	q := db_open("db/queue.db")
+	q.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
 }
 
 // db_upgrade_89 adds the replication generation (epoch) tables (#65): the host's
@@ -2372,7 +2408,6 @@ func (db *DB) exec_replicated(query string, values ...any) {
 	// legacy emit (core-scope signing isn't wired; #34).
 	if db.kind == db_kind_app_system && db.user != nil && db.user.UID != "" && db.app != nil &&
 		journal_table_replicates(sql_target_table(query)) {
-		journal_ensure(db)
 		if tx, err := db.internal.Beginx(); err == nil {
 			if _, err := tx.Exec(query, values...); err != nil {
 				tx.Rollback()
@@ -2441,8 +2476,8 @@ func (db *DB) exec_app_user(query string, values ...any) {
 
 	// Record the op in the data DB's journal in the same transaction as the
 	// write, then wake the drainer — same atomicity guarantee as
-	// mochi.db.execute (claude/plans/replication-journal.md).
-	journal_ensure(db)
+	// mochi.db.execute (claude/plans/replication-journal.md). The journal table
+	// is created eagerly at DB open (db_app), so it already exists here.
 	tx, err := db.internal.Beginx()
 	if err != nil {
 		// Can't open a tx: fall back to the non-atomic write so the broadcast
@@ -3132,10 +3167,6 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-
-	// Ensure the replication journal exists before the transaction opens, so
-	// sl_commit can insert journal rows on this same connection's tx.
-	journal_ensure(db)
 
 	tx, err := db.starlark.Beginx()
 	if err != nil {

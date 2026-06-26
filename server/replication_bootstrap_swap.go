@@ -19,8 +19,8 @@ import (
 	"os"
 	"time"
 
-	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 	"github.com/jmoiron/sqlx"
+	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 )
 
 // bootstrap_swap_grace is how long the old pools stay open after a swap before
@@ -72,12 +72,6 @@ func bootstrap_db_swap(target, scratch string) error {
 	_ = os.Remove(target + "-wal")
 	_ = os.Remove(target + "-shm")
 
-	// The rebuilt file omits journal/journal_delivery (skipped on the wire — the
-	// receiver owns its own change-capture). Drop the stale journal_ensured cache
-	// entry so the next replicated write re-creates them instead of failing with
-	// "no such table: journal" (#424).
-	journal_ensured.Delete(target)
-
 	internal_db, err := sqlitedrv.Open(target, db_setup_conn)
 	if err != nil {
 		return fmt.Errorf("bootstrap-swap: open internal pool %q: %w", target, err)
@@ -87,12 +81,19 @@ func bootstrap_db_swap(target, scratch string) error {
 		internal_db.Close()
 		return fmt.Errorf("bootstrap-swap: open starlark pool %q: %w", target, err)
 	}
-	databases[oldKey] = &DB{
+	newDB := &DB{
 		key:      oldKey,
 		path:     target,
 		internal: sqlx.NewDb(internal_db, "sqlite3"),
 		starlark: sqlx.NewDb(starlark_db, "sqlite3"),
 	}
+	// The rebuilt file omits the per-app journal table (skipped on the wire —
+	// the receiver owns its own change-capture), so re-create it on the new
+	// handle now. The cached handle means the next db_app open is reused and
+	// won't run journal_setup, so a missing table would otherwise fail the next
+	// replicated write with "no such table: journal" (#424).
+	newDB.journal_setup()
+	databases[oldKey] = newDB
 
 	if oldDB != nil {
 		go func() {

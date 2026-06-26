@@ -48,29 +48,15 @@ import (
 // Write side: record the op atomically with the data mutation
 // ============================================================
 
-// journal_ensured caches which data-DB file paths have had their core-managed
-// `journal` table created this process, so the DDL runs once per file rather
-// than on every write. journal_ensure_mu serialises the create so concurrent
-// first-time writers to a fresh DB don't all run the DDL at once.
-var (
-	journal_ensured   sync.Map // db.path -> struct{}
-	journal_ensure_mu sync.Mutex
-)
-
-// journal_ensure lazily creates the per-DB replication journal on the internal
-// (server-trusted) pool. The table is visible to the starlark pool's
+// journal_setup creates the per-DB replication journal on the internal
+// (server-trusted) pool. Called once per open from db_app / db_app_system (the
+// per-app equivalent of db_create), alongside access/attachments setup — not
+// lazily on first write. The table is visible to the starlark pool's
 // connections (same file), so the in-transaction insert on the write
-// connection finds it.
-func journal_ensure(db *DB) {
+// connection finds it. Idempotent: a pre-existing DB gets the table on its next
+// open.
+func (db *DB) journal_setup() {
 	if db == nil || db.internal == nil || db.path == "" {
-		return
-	}
-	if _, done := journal_ensured.Load(db.path); done {
-		return
-	}
-	journal_ensure_mu.Lock()
-	defer journal_ensure_mu.Unlock()
-	if _, done := journal_ensured.Load(db.path); done { // re-check under the lock
 		return
 	}
 	db.exec(`create table if not exists journal (
@@ -85,7 +71,6 @@ func journal_ensure(db *DB) {
 		state text not null default 'pending'
 	)`)
 	db.exec("create index if not exists journal_pending on journal(state, created)")
-	journal_ensured.Store(db.path, struct{}{})
 }
 
 // journal_replicates reports whether an app-scope write should be journaled to
@@ -170,8 +155,6 @@ func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVer
 		return affected, false, nil
 	}
 
-	journal_ensure(db)
-
 	tx, err := conn.BeginTxx(ctx, nil)
 	if err != nil {
 		return 0, false, err
@@ -196,39 +179,6 @@ func db_execute_journal(ctx context.Context, conn *sqlx.Conn, db *DB, av *AppVer
 // Drain side: assign a sequence idempotently and ship
 // ============================================================
 
-// replication_journal_tables_ensure lazily creates the replication.db tables
-// backing idempotent sequence assignment (journal_sequence binds an op id to
-// its allocated sequence/prev). The `sequence`/`tail` creates are
-// belt-and-suspenders (production creates them at
-// init) so assignment is robust if it runs before that init and so tests with a
-// fresh data_dir work. Keyed by the replication.db path so each test's temp
-// data_dir initialises once rather than a process-wide sync.Once that would
-// pin the first test's directory.
-var (
-	replication_journal_tables_ensured sync.Map // replication.db path -> struct{}
-	replication_journal_tables_mu      sync.Mutex
-)
-
-func replication_journal_tables_ensure() {
-	rdb := db_open("db/replication.db")
-	if rdb == nil || rdb.path == "" {
-		return
-	}
-	if _, done := replication_journal_tables_ensured.Load(rdb.path); done {
-		return
-	}
-	replication_journal_tables_mu.Lock()
-	defer replication_journal_tables_mu.Unlock()
-	if _, done := replication_journal_tables_ensured.Load(rdb.path); done { // re-check under the lock
-		return
-	}
-	rdb.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
-	rdb.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
-	rdb.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
-	rdb.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
-	replication_journal_tables_ensured.Store(rdb.path, struct{}{})
-}
-
 // replication_journal_binding returns the (sequence, prev) already bound to an
 // journal id, if any. A re-drain after a crash finds the binding and reuses it.
 func replication_journal_binding(rdb *DB, journalID string) (int64, int64, bool) {
@@ -248,7 +198,6 @@ func replication_journal_binding(rdb *DB, journalID string) (int64, int64, bool)
 // idempotency that closes Gap B's assign-then-crash window. Returns (0, 0) on
 // failure; the caller leaves the row pending for the next drain.
 func replication_journal_assign(userUID string, op *ReplicationOp, journalID string) (int64, int64) {
-	replication_journal_tables_ensure()
 	stream := repl_op_stream(op)
 	rdb := db_open("db/replication.db")
 
@@ -521,6 +470,11 @@ func journal_sweep() {
 				if db == nil {
 					continue
 				}
+				// The startup sweep is the eager-creation pass for pre-existing
+				// per-app journals: create the table here so a later write via
+				// this same cached handle (app.db shares this cache key) never
+				// hits a missing table (#424).
+				db.journal_setup()
 				if has, _ := db.exists("select 1 from journal where state='pending' limit 1"); has {
 					journal_drain(userUID, appID, db)
 				}

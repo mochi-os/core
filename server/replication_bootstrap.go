@@ -551,9 +551,12 @@ func bootstrap_scope_settled_impl(peer, scope string) {
 // finished pulling a full bootstrap from it (a join / reset / rejoin / wiped-
 // replica recovery). It fires before the lazy first-write re-init of our outbound
 // sequence space (replication_journal_assign), so two things land in time (#65):
-//   - Bump OUR outbound generation: our sequence space is now fresh, so every op
-//     we emit afterwards carries a higher epoch and our peers re-anchor instead
-//     of dropping our restarted low sequences as already-applied.
+//   - Bump OUR outbound generation, but ONLY if our sequence space was actually
+//     wiped (a real replica reset / rejoin leaves `sequence` empty; a targeted or
+//     recovery bootstrap leaves it intact). When wiped, every op we emit
+//     afterwards carries a higher epoch so peers re-anchor instead of dropping
+//     our restarted low sequences. When intact we keep emitting HIGH sequences,
+//     so a bump would only strand peers' cursors at 0 with converged data (#33).
 //   - Mark the SOURCE peer's epoch baseline 'pending': its cursors are freshly
 //     seeded at its current generation, so the first op we receive from it adopts
 //     that generation as our baseline rather than tripping a spurious inbound
@@ -572,9 +575,23 @@ func bootstrap_receiver_complete(peer string) {
 	if remaining, _ := rdb.exists("select 1 from bootstrap where peer=? and state!=?", peer, bootstrap_state_done); remaining {
 		return // more scopes still pulling — not complete yet
 	}
-	replication_epoch_bump()
+	// Bump OUR outbound generation only if our outbound sequence space was
+	// actually wiped. A `replica reset` / fresh rejoin recreates an empty
+	// replication.db, so `sequence` is empty until the first post-bootstrap write
+	// — and this hook runs before that write. A targeted or recovery bootstrap
+	// leaves the `sequence` counter intact, so we keep emitting HIGH continuing
+	// sequences; bumping the epoch there would make every peer delete its inbound
+	// cursors for us and then stall on the high ops it can't chain — cursor=0 with
+	// converged data (#33, the forums stall). The receiver only needs the bump
+	// when restarted LOW sequences are actually coming.
+	populated, _ := rdb.exists("select 1 from sequence")
+	if !populated {
+		replication_epoch_bump()
+		info("Replication receiver bootstrap complete from peer %q — outbound sequence space reset, generation bumped, source epoch baseline pending", peer)
+	} else {
+		info("Replication receiver bootstrap complete from peer %q — outbound sequence space intact, generation unchanged, source epoch baseline pending", peer)
+	}
 	rdb.exec("insert into peer_epoch (peer, epoch, pending) values (?, 0, 1) on conflict(peer) do update set pending=1", peer)
-	info("Replication receiver bootstrap complete from peer %q — outbound generation bumped, source epoch baseline pending", peer)
 }
 
 // replication_bootstrap_emit_scope_done sends a `bootstrap/scope/done`

@@ -159,6 +159,14 @@ type KeysTransfer struct {
 	// File-bootstrapped streams seed per-file from the DB snapshot
 	// instead — see claude/plans/replication-per-db-handoff.md piece 3.
 	Seeds map[string]int64 `cbor:"seeds,omitempty"`
+	// CoreSeeds is the same idea for the user's per-event CORE-class
+	// sub-streams (links, notifications) — the ones replicated as typed
+	// rows rather than a DB file, so they have no per-file snapshot to seed
+	// from and previously started unanchored (the core:links / core:notifications
+	// missing-cursor stalls, #54). Bare logical keys (stable wire format);
+	// the receiver re-qualifies them to the core class. Optional — an older
+	// peer omits it and the receiver simply seeds nothing extra.
+	CoreSeeds map[string]int64 `cbor:"core_seeds,omitempty"`
 }
 
 // KeysSchedule is one scheduled event for the user. Mirrors
@@ -597,6 +605,40 @@ func replication_cursor_set(db *DB, peer, scope, user, database string, sequence
 		"insert into cursor (peer, scope, user, db, sequence) values (?, ?, ?, ?, ?) "+
 			"on conflict(peer, scope, user, db) do update set sequence=max(sequence, excluded.sequence)",
 		peer, scope, user, database, sequence)
+}
+
+// repl_core_seed_streams are the per-event CORE-class sub-streams that have no
+// DB-file snapshot to seed an inbound cursor from, so a fresh replica must seed
+// their cursors at keys-transfer time or the first op stalls forever on a
+// predecessor gap (the core:links / core:notifications missing-cursor class, #54).
+var repl_core_seed_streams = []string{"links", "notifications"}
+
+// replication_core_seeds snapshots the source's tail for each core-seed stream
+// for `user`, keyed by bare logical name (the stable wire form carried in
+// KeysTransfer.CoreSeeds). A stream the source has never emitted yields 0 and is
+// skipped on apply.
+func replication_core_seeds(user string) map[string]int64 {
+	seeds := map[string]int64{}
+	for _, stream := range repl_core_seed_streams {
+		seeds[stream] = replication_tail(user, repl_scope_app, repl_stream_key(repl_stream_class_core, stream))
+	}
+	return seeds
+}
+
+// replication_seed_core_cursors anchors the inbound cursor for the user's
+// core-class sub-streams to the source's tail (from KeysTransfer.CoreSeeds), the
+// mirror of the Seeds loop for system streams. cursor_set is monotonic so
+// re-applying is idempotent; a tail of 0 is skipped since the stream's first op
+// (Prev==0) self-anchors.
+func replication_seed_core_cursors(rdb *DB, peer, user string, seeds map[string]int64) {
+	for stream, seq := range seeds {
+		if seq <= 0 {
+			continue
+		}
+		key := repl_stream_key(repl_stream_class_core, stream)
+		replication_cursor_set(rdb, peer, repl_scope_app, user, key, seq)
+		replication_stream_drain(rdb, peer, repl_scope_app, user, key)
+	}
 }
 
 // replication_epoch_current returns this host's outbound generation — the value
@@ -2063,6 +2105,9 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 		replication_cursor_set(rdb, originPeer, repl_scope_app, userUID, key, seq)
 		replication_stream_drain(rdb, originPeer, repl_scope_app, userUID, key)
 	}
+	// And the per-event core sub-streams (links, notifications), which have no
+	// file snapshot to seed from (#54).
+	replication_seed_core_cursors(rdb, originPeer, userUID, kt.CoreSeeds)
 
 	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d credentials=%d recovery=%d tokens=%d totp=%v (from peer %q)",
 		kt.Username, len(kt.Entities), inserted, len(kt.OAuth),
@@ -2144,6 +2189,8 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 		"users":    replication_tail(user_uid, repl_scope_app, repl_stream_key(repl_stream_class_system, "users")),
 		"sessions": replication_tail(user_uid, repl_scope_app, repl_stream_key(repl_stream_class_system, "sessions")),
 	}
+	// Same, for the per-event core sub-streams that aren't file-bootstrapped (#54).
+	kt.CoreSeeds = replication_core_seeds(user_uid)
 	if oauth_rows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauth_rows {
 			link := KeysOauth{

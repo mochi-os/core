@@ -44,7 +44,8 @@ func TestBootstrapReceiverComplete(t *testing.T) {
 		t.Fatalf("incomplete bootstrap must not set pending, got %d", p)
 	}
 
-	// Last scope done → complete → bump + pending baseline for the source.
+	// Last scope done → complete. `sequence` is empty here (a wiped / reset
+	// outbound space), so the gate bumps the epoch + sets the pending baseline.
 	rdb.exec("update bootstrap set state=? where peer=? and scope='userdbs'", bootstrap_state_done, peer)
 	bootstrap_receiver_complete(peer)
 	if e := replication_epoch_current(); e <= 0 {
@@ -52,6 +53,35 @@ func TestBootstrapReceiverComplete(t *testing.T) {
 	}
 	if p := rdb.integer("select coalesce(pending, 0) from peer_epoch where peer=?", peer); p != 1 {
 		t.Fatalf("complete bootstrap must set source epoch pending, got %d", p)
+	}
+}
+
+// TestBootstrapReceiverCompleteSkipsBumpWhenSequenceIntact covers the #33 fix:
+// the epoch bump on a complete bootstrap is gated on the outbound sequence space
+// actually having been wiped. A targeted / recovery bootstrap leaves the
+// `sequence` counter intact, so the host keeps emitting HIGH continuing sequences
+// — bumping the epoch there makes every peer delete its inbound cursors for us
+// and then stall on the high ops it can't chain (cursor=0 with converged data,
+// the forums stall). The source epoch baseline is still marked pending either way.
+func TestBootstrapReceiverCompleteSkipsBumpWhenSequenceIntact(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rdb := db_open("db/replication.db")
+	peer := "peerSrc"
+
+	// Our outbound sequence counter survived the bootstrap (high — NOT a reset).
+	rdb.exec("insert into sequence (user, scope, next) values ('u1', ?, 14508)", repl_scope_app)
+
+	rdb.exec("insert into bootstrap (scope, peer, state) values ('files', ?, ?)", peer, bootstrap_state_done)
+	rdb.exec("insert into bootstrap (scope, peer, state) values ('userdbs', ?, ?)", peer, bootstrap_state_done)
+	bootstrap_receiver_complete(peer)
+
+	if e := replication_epoch_current(); e != 0 {
+		t.Fatalf("intact sequence space must NOT bump epoch (a bump strands peers' cursors at 0, #33), got %d", e)
+	}
+	// The source epoch baseline is still marked pending regardless of the gate.
+	if p := rdb.integer("select coalesce(pending, 0) from peer_epoch where peer=?", peer); p != 1 {
+		t.Fatalf("source epoch pending must still be set, got %d", p)
 	}
 }
 

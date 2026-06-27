@@ -290,6 +290,9 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 		replication_cursor_set(rdb, originPeer, repl_scope_app, placeholder, key, seq)
 		replication_stream_drain(rdb, originPeer, repl_scope_app, placeholder, key)
 	}
+	// And the per-event core sub-streams (links, notifications), which have no
+	// file snapshot to seed from (#54).
+	replication_seed_core_cursors(rdb, originPeer, placeholder, kt.CoreSeeds)
 
 	// Backfill this user's existing data from the source. Without
 	// this the placeholder would have the schema in place (via lazy
@@ -859,6 +862,8 @@ func replication_link_approve(user, peer string) (string, error) {
 		"users":    replication_tail(user, repl_scope_app, repl_stream_key(repl_stream_class_system, "users")),
 		"sessions": replication_tail(user, repl_scope_app, repl_stream_key(repl_stream_class_system, "sessions")),
 	}
+	// Same, for the per-event core sub-streams that aren't file-bootstrapped (#54).
+	keys.CoreSeeds = replication_core_seeds(user)
 
 	replication_emit_link_approved(peer, placeholder, keys)
 	audit_replication_link_approved(user, peer)

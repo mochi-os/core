@@ -296,6 +296,8 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 	// And the app-class /system sub-streams whose cursor the file bootstrap
 	// doesn't seed (#61).
 	replication_seed_app_system_cursors(rdb, originPeer, placeholder, kt.AppSystemSeeds)
+	// And the historical link rows the cursor seed alone leaves behind (#57).
+	replication_seed_links(rdb, placeholder, kt.Links)
 
 	// Backfill this user's existing data from the source. Without
 	// this the placeholder would have the schema in place (via lazy
@@ -870,6 +872,8 @@ func replication_link_approve(user, peer string) (string, error) {
 	// And the app-class /system sub-streams whose cursor the file bootstrap
 	// doesn't seed (#61).
 	keys.AppSystemSeeds = replication_app_system_seeds(user)
+	// And the user's historical link rows (#57).
+	keys.Links = replication_user_links(user)
 
 	replication_emit_link_approved(peer, placeholder, keys)
 	audit_replication_link_approved(user, peer)

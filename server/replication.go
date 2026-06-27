@@ -175,6 +175,12 @@ type KeysTransfer struct {
 	// stream keys (per app, no bare form). Optional — an older peer omits it
 	// and the receiver seeds nothing extra.
 	AppSystemSeeds map[string]int64 `cbor:"app_system_seeds,omitempty"`
+	// Links is the user's pending/active replication-link rows (the links table)
+	// at transfer time. #54/#61 seed the core:links CURSOR so live link ops chain,
+	// but the cursor alone leaves a fresh replica missing the HISTORICAL links (the
+	// rows created before the seed point). Carry the rows so the replica has the
+	// actual links, not just an anchored cursor (#57).
+	Links []LinkRow `cbor:"links,omitempty"`
 }
 
 // KeysSchedule is one scheduled event for the user. Mirrors
@@ -687,6 +693,47 @@ func replication_seed_app_system_cursors(rdb *DB, peer, user string, seeds map[s
 		}
 		replication_cursor_set(rdb, peer, repl_scope_app, user, key, seq)
 		replication_stream_drain(rdb, peer, repl_scope_app, user, key)
+	}
+}
+
+// replication_user_links reads the user's replication-link rows (the links table
+// in replication.db) for inclusion in a keys-transfer, so a fresh replica gets the
+// HISTORICAL links that the core:links cursor seed (#54) alone leaves behind (#57).
+func replication_user_links(user string) []LinkRow {
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return nil
+	}
+	rows, err := rdb.rows("select peer, label, placeholder, received, expires from links where user = ?", user)
+	if err != nil {
+		return nil
+	}
+	var out []LinkRow
+	for _, r := range rows {
+		peer, _ := r["peer"].(string)
+		if peer == "" {
+			continue
+		}
+		label, _ := r["label"].(string)
+		placeholder, _ := r["placeholder"].(string)
+		received, _ := r["received"].(int64)
+		expires, _ := r["expires"].(int64)
+		out = append(out, LinkRow{Peer: peer, Label: label, Placeholder: placeholder, Received: received, Expires: expires})
+	}
+	return out
+}
+
+// replication_seed_links upserts a keys-transfer's link rows into the receiver's
+// links table, idempotently (insert-or-replace keyed on (user, peer)) — the
+// historical-data backfill matching the core:links cursor seed (#57).
+func replication_seed_links(rdb *DB, user string, links []LinkRow) {
+	for _, r := range links {
+		if r.Peer == "" {
+			continue
+		}
+		rdb.exec(
+			"insert or replace into links (user, peer, label, placeholder, received, expires) values (?, ?, ?, ?, ?, ?)",
+			user, r.Peer, r.Label, r.Placeholder, r.Received, r.Expires)
 	}
 }
 
@@ -2169,6 +2216,8 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 	// And the app-class /system sub-streams: their data rides in the app DB file,
 	// but the file-bootstrap cursor seed only anchors the main app stream (#61).
 	replication_seed_app_system_cursors(rdb, originPeer, userUID, kt.AppSystemSeeds)
+	// And the historical link rows the core:links cursor seed alone leaves behind (#57).
+	replication_seed_links(rdb, userUID, kt.Links)
 
 	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d credentials=%d recovery=%d tokens=%d totp=%v (from peer %q)",
 		kt.Username, len(kt.Entities), inserted, len(kt.OAuth),
@@ -2255,6 +2304,9 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	// And the app-class /system sub-streams whose data rides in the app DB file
 	// but whose cursor the file bootstrap doesn't seed (#61).
 	kt.AppSystemSeeds = replication_app_system_seeds(user_uid)
+	// And the user's link ROWS — the cursor seed (#54) anchors the core:links
+	// stream but leaves a fresh replica missing the historical links (#57).
+	kt.Links = replication_user_links(user_uid)
 	if oauth_rows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauth_rows {
 			link := KeysOauth{

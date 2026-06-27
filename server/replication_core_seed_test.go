@@ -113,3 +113,32 @@ func TestKeysTransferSeedsAppSystemCursors(t *testing.T) {
 		t.Fatalf("re-seed rewound the cursor to %d, want 500 (monotonic)", seq)
 	}
 }
+
+// TestKeysTransferCarriesLinkRows: #57 — the keys-transfer carries the user's
+// links-table ROWS so a fresh replica gets the HISTORICAL links, not just the
+// anchored core:links cursor (#54). Cursor seed alone leaves the rows missing.
+func TestKeysTransferCarriesLinkRows(t *testing.T) {
+	defer setup_replication_test(t)()
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
+	const user = "u-links"
+
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values (?, 'peerA', 'lbl-a', 'ph-a', 100, 200)", user)
+	rdb.exec("insert into links (user, peer, label, placeholder, received, expires) values (?, 'peerB', '', 'ph-b', 5, 9)", user)
+
+	links := replication_user_links(user)
+	if len(links) != 2 {
+		t.Fatalf("user_links = %d, want 2", len(links))
+	}
+
+	// Apply onto a cleared receiver — the rows must round-trip via the transfer.
+	rdb.exec("delete from links where user = ?", user)
+	replication_seed_links(rdb, user, links)
+	if n := rdb.integer("select count(*) from links where user = ?", user); n != 2 {
+		t.Fatalf("seeded links = %d, want 2", n)
+	}
+	row, _ := rdb.row("select label, placeholder, expires from links where user = ? and peer = 'peerA'", user)
+	if row == nil || row["label"] != "lbl-a" || row["placeholder"] != "ph-a" {
+		t.Fatalf("link row round-trip failed: %v", row)
+	}
+}

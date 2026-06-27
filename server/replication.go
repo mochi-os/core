@@ -1211,6 +1211,7 @@ func replication_manager() {
 		replication_pending_drain()
 		replication_pending_warn_stalled()
 		replication_wiped_rebootstrap()
+		replication_convergence_audit_critical() // #41: fast auth-critical liveness pass (self-throttled to 5 min)
 		if now()-last_gc >= pending_gc_period_seconds {
 			replication_irreparable_scan()
 			replication_offline_scan()

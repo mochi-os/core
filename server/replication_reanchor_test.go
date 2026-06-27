@@ -220,8 +220,8 @@ func TestAuditLivenessAutoReseeds(t *testing.T) {
 	manifest := []AuditStream{{User: uid, Stream: stream, Tail: 200}}
 
 	// Two rounds: behind + frozen → genuinely stuck → audit auto-reseeds.
-	replication_audit_liveness(peer, nil, manifest)
-	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest, false)
+	replication_audit_liveness(peer, nil, manifest, false)
 
 	select {
 	case p := <-got:

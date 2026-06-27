@@ -261,11 +261,11 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Behind + frozen -> alert (only after a second round confirms the freeze).
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if alerted() {
 		t.Fatal("first round must not alert (freeze needs a second round)")
 	}
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if !alerted() {
 		t.Fatal("behind + frozen should alert")
 	}
@@ -273,9 +273,9 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Behind but advancing (lag) -> no alert.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	setCursor(150)
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if alerted() {
 		t.Fatal("advancing stream (lag, not stuck) should not alert")
 	}
@@ -283,8 +283,8 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Caught up -> no alert.
 	reset()
 	setCursor(200)
-	replication_audit_liveness(peer, nil, manifest(200))
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if alerted() {
 		t.Fatal("caught-up stream should not alert")
 	}
@@ -292,8 +292,8 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Peer doesn't originate it (tail 0) -> no alert.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, nil, manifest(0))
-	replication_audit_liveness(peer, nil, manifest(0))
+	replication_audit_liveness(peer, nil, manifest(0), false)
+	replication_audit_liveness(peer, nil, manifest(0), false)
 	if alerted() {
 		t.Fatal("stream not originated by peer (tail 0) should not alert")
 	}
@@ -301,13 +301,13 @@ func TestReplicationAuditLiveness(t *testing.T) {
 	// Re-arm: alerted, then catches up -> alert cleared.
 	reset()
 	setCursor(100)
-	replication_audit_liveness(peer, nil, manifest(200))
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if !alerted() {
 		t.Fatal("setup: should be alerted")
 	}
 	setCursor(200)
-	replication_audit_liveness(peer, nil, manifest(200))
+	replication_audit_liveness(peer, nil, manifest(200), false)
 	if alerted() {
 		t.Fatal("catching up should clear the liveness alert (re-arm)")
 	}
@@ -356,8 +356,8 @@ func TestReplicationAuditLivenessConverged(t *testing.T) {
 	// Converged content -> suppress, even though the cursor (0) is frozen below tail (19).
 	audit_stream_converged = func(string, AuditStream, map[string]int64) bool { return true }
 	reset()
-	replication_audit_liveness(peer, nil, manifest) // round 1: record cursor
-	replication_audit_liveness(peer, nil, manifest) // round 2: frozen, but converged
+	replication_audit_liveness(peer, nil, manifest, false) // round 1: record cursor
+	replication_audit_liveness(peer, nil, manifest, false) // round 2: frozen, but converged
 	if alerted() {
 		t.Fatal("converged stream (content matches peer) must not alert despite a frozen cursor")
 	}
@@ -365,8 +365,8 @@ func TestReplicationAuditLivenessConverged(t *testing.T) {
 	// Not converged (genuine gap or dropped UPDATE) -> still alerts.
 	audit_stream_converged = func(string, AuditStream, map[string]int64) bool { return false }
 	reset()
-	replication_audit_liveness(peer, nil, manifest)
-	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest, false)
+	replication_audit_liveness(peer, nil, manifest, false)
 	if !alerted() {
 		t.Fatal("non-converged frozen stream must still alert")
 	}
@@ -418,8 +418,8 @@ func TestReplicationAuditLivenessHomeHostSkipped(t *testing.T) {
 
 	// Pure receiver (no local tail): frozen + not converged -> alerts (no regression).
 	reset()
-	replication_audit_liveness(peer, nil, manifest)
-	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest, false)
+	replication_audit_liveness(peer, nil, manifest, false)
 	if !alerted() {
 		t.Fatal("pure-receiver frozen stream must still alert")
 	}
@@ -428,8 +428,8 @@ func TestReplicationAuditLivenessHomeHostSkipped(t *testing.T) {
 	rdb.exec("insert into tail (user, scope, db, last) values ('u1', ?, ?, 7)", repl_scope_app, stream)
 	reset()
 	called = false
-	replication_audit_liveness(peer, nil, manifest)
-	replication_audit_liveness(peer, nil, manifest)
+	replication_audit_liveness(peer, nil, manifest, false)
+	replication_audit_liveness(peer, nil, manifest, false)
 	if alerted() {
 		t.Fatal("home-host-originated stream (local tail>0) must not be flagged as not-advancing")
 	}
@@ -629,5 +629,94 @@ func TestReplicationAuditContentHash(t *testing.T) {
 	db.exec("insert into t values ('2','b')")
 	if replication_audit_content_hash("db/test.db") == h1 {
 		t.Fatal("changed content must produce a different hash (cache keyed on mtime)")
+	}
+}
+
+// TestAuditStreamIsCritical (#41): only core:user and system:users are auth-
+// critical; sessions/schedule/notifications and app streams are not.
+func TestAuditStreamIsCritical(t *testing.T) {
+	want := map[string]bool{
+		repl_stream_key(repl_stream_class_core, "user"):             true,
+		repl_stream_key(repl_stream_class_system, "users"):          true,
+		repl_stream_key(repl_stream_class_system, "sessions"):       false,
+		repl_stream_key(repl_stream_class_system, "schedule"):       false,
+		repl_stream_key(repl_stream_class_core, "notifications"):    false,
+		repl_stream_key(repl_stream_class_app, "12abc"):             false,
+		repl_stream_key(repl_stream_class_app, "12abc") + "/system": false,
+	}
+	for stream, w := range want {
+		if got := audit_stream_is_critical(stream); got != w {
+			t.Errorf("audit_stream_is_critical(%q) = %v, want %v", stream, got, w)
+		}
+	}
+}
+
+// TestCriticalLivenessRouting (#41): the fast auth-critical pass (critical=true)
+// and the slow pass (critical=false) own DISJOINT stream sets and keep SEPARATE
+// previous-cursor state, so neither corrupts the other's two-round freeze
+// detection. A single first-sighting call records only the cursors for the
+// streams that pass owns, and only in that pass's own map.
+func TestCriticalLivenessRouting(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() {
+		data_dir = orig
+		audit_convergence_mutex.Lock()
+		audit_cursor_previous = map[string]int64{}
+		audit_critical_cursor_previous = map[string]int64{}
+		audit_liveness_alerted = map[string]bool{}
+		audit_convergence_mutex.Unlock()
+	}()
+	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
+
+	audit_convergence_mutex.Lock()
+	audit_cursor_previous = map[string]int64{}
+	audit_critical_cursor_previous = map[string]int64{}
+	audit_liveness_alerted = map[string]bool{}
+	audit_convergence_mutex.Unlock()
+
+	peer, user := "peerP", "u1"
+	critStream := repl_stream_key(repl_stream_class_core, "user") // core:user
+	appStream := repl_stream_key(repl_stream_class_app, "feeds")  // app:feeds
+	set := func(stream string, seq int64) {
+		rdb.exec("insert into cursor (peer, scope, user, db, sequence) values (?, ?, ?, ?, ?) on conflict(peer, scope, user, db) do update set sequence=excluded.sequence",
+			peer, repl_scope_app, user, stream, seq)
+	}
+	set(critStream, 50)
+	set(appStream, 50)
+	remote := []AuditStream{
+		{User: user, Stream: critStream, Tail: 100},
+		{User: user, Stream: appStream, Tail: 100},
+	}
+	has := func(m map[string]int64, stream string) bool {
+		audit_convergence_mutex.Lock()
+		defer audit_convergence_mutex.Unlock()
+		_, ok := m[peer+"|"+user+"|"+stream]
+		return ok
+	}
+
+	// Fast pass owns ONLY core:user, and writes ONLY the critical map.
+	replication_audit_liveness(peer, nil, remote, true)
+	if !has(audit_critical_cursor_previous, critStream) {
+		t.Error("fast pass should record core:user in the critical previous-cursor map")
+	}
+	if has(audit_critical_cursor_previous, appStream) {
+		t.Error("fast pass must NOT touch the non-critical app stream")
+	}
+	if has(audit_cursor_previous, critStream) || has(audit_cursor_previous, appStream) {
+		t.Error("fast pass must not write the slow pass's previous-cursor map")
+	}
+
+	// Slow pass owns ONLY app:feeds, and writes ONLY the slow map.
+	replication_audit_liveness(peer, nil, remote, false)
+	if !has(audit_cursor_previous, appStream) {
+		t.Error("slow pass should record app:feeds in the slow previous-cursor map")
+	}
+	if has(audit_cursor_previous, critStream) {
+		t.Error("slow pass must NOT touch the auth-critical stream")
 	}
 }

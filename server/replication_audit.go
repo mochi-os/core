@@ -167,6 +167,14 @@ func replication_stale_apps_scan() {
 // consecutive rounds, so the effective confirm latency is ~2 periods.
 const audit_period_seconds = 6 * 60 * 60
 
+// audit_critical_period_seconds is the fast cadence for the auth-critical
+// liveness pass (#41). core:user (login methods / identities) and system:users
+// (roles, account status) must reach a failover host promptly; waiting on the
+// 6h content audit means up to ~12h to detect+heal a stuck stream, far too long
+// for credential / authorization state. This dedicated pass runs liveness +
+// reanchor for only those streams every 5 min (~2 rounds → ~10 min confirm).
+const audit_critical_period_seconds = 5 * 60
+
 // AuditManifestRequest asks a pair member for its content manifest. Empty for
 // now — the member returns every replicated per-user stream.
 type AuditManifestRequest struct {
@@ -700,6 +708,14 @@ var (
 	audit_content_alerted    = map[string]bool{}              // "peer|user|stream" -> content-divergence-alerted
 )
 
+// #41: separate state for the fast auth-critical liveness pass, kept apart from
+// the slow audit's previous-cursor map so the two cadences don't corrupt each
+// other's two-round freeze detection.
+var (
+	audit_critical_last            int64
+	audit_critical_cursor_previous = map[string]int64{}
+)
+
 // replication_convergence_audit runs on the manager tick but throttles itself to
 // audit_period_seconds. For each pair member it fetches a manifest and runs two
 // checks. (1) Liveness (both sides, every round): is this host's apply cursor
@@ -742,7 +758,7 @@ func replication_convergence_audit() {
 		// receive direction against the peer's emitted tail, so a replica that
 		// has silently stopped catching up to the primary — the case the stall
 		// alert can't see — is actually covered.
-		replication_audit_liveness(peer, local, remote)
+		replication_audit_liveness(peer, local, remote, false)
 
 		// The content-divergence compare is leader-gated so one divergence emails
 		// the admin once, not from both members.
@@ -782,6 +798,51 @@ func replication_convergence_audit() {
 	}
 }
 
+// replication_convergence_audit_critical runs ONLY the liveness check, and only
+// for the auth-critical streams, on a fast 5-min cadence (#41). It fetches the
+// cheap manifest (no content hashing) from each pair member and lets the shared
+// liveness logic detect + reanchor a stuck core:user / system:users stream, so
+// credential and authorization changes on the primary reach a failover host in
+// ~10 min instead of the content audit's ~12h. The slow audit (false) skips
+// these streams, so each owns a disjoint set.
+func replication_convergence_audit_critical() {
+	if now()-audit_critical_last < audit_critical_period_seconds {
+		return
+	}
+	audit_critical_last = now()
+
+	rdb := db_open("db/replication.db")
+	members, err := rdb.rows("select peer from pair")
+	if err != nil || len(members) == 0 {
+		return
+	}
+
+	local := audit_manifest_map(replication_audit_local_manifest())
+	for _, m := range members {
+		peer, _ := m["peer"].(string)
+		if peer == "" {
+			continue
+		}
+		remote, err := replication_audit_request_manifest(peer)
+		if err != nil {
+			info("Replication critical-stream audit: manifest fetch from %q failed: %v", peer, err)
+			continue
+		}
+		replication_audit_liveness(peer, local, remote, true)
+	}
+}
+
+// audit_stream_is_critical reports whether a stream carries auth-critical state
+// that must reach a failover host fast (#41): core:user (per-user login methods
+// and identities) and system:users (server user table — roles, account status).
+// A lag there means the failover serves stale credentials or authorization.
+// Sessions and schedule are self-healing (a failover just re-authenticates), so
+// they stay on the slow audit.
+func audit_stream_is_critical(stream string) bool {
+	return stream == repl_stream_key(repl_stream_class_core, "user") ||
+		stream == repl_stream_key(repl_stream_class_system, "users")
+}
+
 // replication_audit_liveness flags a stream this host RECEIVES from `peer` whose
 // apply cursor is below the peer's emitted tail AND has not advanced since the
 // previous round — the host should be catching up but isn't. This closes the gap
@@ -798,8 +859,17 @@ func replication_convergence_audit() {
 // behind the emitted tail with no data missing — a false positive. Only a genuine
 // gap (row-count mismatch) or a dropped UPDATE (count match, content-hash
 // mismatch) still alerts.
-func replication_audit_liveness(peer string, local map[string]int64, remote []AuditStream) {
+func replication_audit_liveness(peer string, local map[string]int64, remote []AuditStream, critical bool) {
 	rdb := db_open("db/replication.db")
+
+	// #41: the fast auth-critical pass (critical=true) and the slow 6h pass
+	// (critical=false) each own a disjoint set of streams and keep separate
+	// previous-cursor state, so the auth streams get a 5-min cadence without the
+	// two passes corrupting each other's two-round freeze detection.
+	prevMap := audit_cursor_previous
+	if critical {
+		prevMap = audit_critical_cursor_previous
+	}
 
 	// Phase 1 (locked): snapshot this round's cursors and collect the streams
 	// frozen below the peer's tail. The convergence check in phase 2 does a P2P
@@ -816,6 +886,9 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 		if s.Tail <= 0 {
 			continue // peer doesn't originate this stream — nothing to keep up with
 		}
+		if audit_stream_is_critical(s.Stream) != critical {
+			continue // each pass owns only its stream set (#41)
+		}
 		// This host ORIGINATES the stream (it has its own emitted tail), so the
 		// peer's emitted tail is largely our own ops relayed back as echo — our
 		// per-peer apply cursor sits permanently behind it with nothing missing.
@@ -829,8 +902,8 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 		}
 		key := peer + "|" + s.User + "|" + s.Stream
 		cursor, _ := replication_cursor(rdb, peer, repl_scope_app, s.User, s.Stream)
-		prev, seen := audit_cursor_previous[key]
-		audit_cursor_previous[key] = cursor
+		prev, seen := prevMap[key]
+		prevMap[key] = cursor
 		if cursor >= s.Tail {
 			continue // caught up to the peer's tail
 		}
@@ -864,9 +937,16 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 		}
 	}
 	for key := range audit_liveness_alerted {
-		if strings.HasPrefix(key, peer+"|") && !stuck[key] {
-			delete(audit_liveness_alerted, key)
+		if !strings.HasPrefix(key, peer+"|") || stuck[key] {
+			continue
 		}
+		// Re-arm only streams THIS pass owns: the fast and slow passes share the
+		// alerted map, so without this filter one pass would clear the other's
+		// alerts for streams it never examined this round (#41).
+		if audit_stream_is_critical(key[strings.LastIndex(key, "|")+1:]) != critical {
+			continue
+		}
+		delete(audit_liveness_alerted, key)
 	}
 	audit_convergence_mutex.Unlock()
 

@@ -45,9 +45,8 @@ type DB struct {
 	closed int64
 
 	// stmt_cache holds prepared statements for the internal pool, keyed
-	// by SQL text, populated lazily by prepared() when the development
-	// cache_prepare flag is set. Guarded by stmt_lock. Closed on
-	// eviction (stmts_close). Nil/empty when the flag is off.
+	// by SQL text, populated lazily by prepared(). Guarded by stmt_lock.
+	// Closed on eviction (stmts_close).
 	stmt_lock  sync.Mutex
 	stmt_cache map[string]*sqlx.Stmt
 }
@@ -2311,17 +2310,13 @@ func db_purge_prefix(dir string) {
 const db_stmt_cache_max = 512
 
 // prepared returns a cached prepared statement on the internal pool for
-// query, or nil to fall back to the uncached path. Active only under the
-// development cache_prepare flag, so the default path is byte-for-byte
-// unchanged. These statements are pool-level and are never used inside a
-// transaction (the *DB query methods all run on the pool, not on a tx),
-// so they cannot leak a write out of a transaction. Schema changes are
-// handled by the driver: ncruces prepares with prepare_v3, so a cached
-// statement auto-re-prepares on SQLITE_SCHEMA.
+// query, or nil to fall back to the uncached path. These statements are
+// pool-level and are never used inside a transaction (the *DB query
+// methods all run on the pool, not on a tx), so they cannot leak a write
+// out of a transaction. Schema changes are handled by the driver: ncruces
+// prepares with prepare_v3, so a cached statement auto-re-prepares on
+// SQLITE_SCHEMA.
 func (db *DB) prepared(query string) *sqlx.Stmt {
-	if !cache_prepare {
-		return nil
-	}
 	// Never cache while a migration runs, and never cache schema
 	// introspection. A cached statement can carry a stale schema view on a
 	// pooled connection; that made a pragma_table_info idempotency guard
@@ -2400,7 +2395,7 @@ func sql_is_schema(query string) bool {
 func (db *DB) exec(query string, values ...any) {
 	// DDL changes the schema, which invalidates cached statements; run it
 	// uncached and flush. (Migrations run DDL through db.exec.)
-	if cache_prepare && sql_is_schema(query) {
+	if sql_is_schema(query) {
 		must(db.internal.Exec(query, values...))
 		db.stmts_close()
 		return

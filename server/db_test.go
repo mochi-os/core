@@ -45,7 +45,7 @@ func create_test_db(t *testing.T) (*DB, func()) {
 }
 
 // Test db.exec creates tables
-// TestPreparedStatementCache exercises the development cache_prepare path:
+// TestPreparedStatementCache exercises the prepared-statement cache:
 // every *DB query method routed through a cached prepared statement, that
 // repeated calls reuse the cache, that writes stay visible to cached
 // reads, and — the critical safety case — that a cached `SELECT *` picks
@@ -55,10 +55,6 @@ func create_test_db(t *testing.T) (*DB, func()) {
 func TestPreparedStatementCache(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
-
-	orig := cache_prepare
-	cache_prepare = true
-	defer func() { cache_prepare = orig }()
 
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
@@ -131,9 +127,6 @@ func TestPreparedStatementCache(t *testing.T) {
 func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
-	orig := cache_prepare
-	cache_prepare = true
-	defer func() { cache_prepare = orig }()
 
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 

@@ -26,7 +26,6 @@ var (
 	data_dir         string
 	dev_apps_dir     string
 	dev_reload       bool
-	cache_prepare    bool
 	web_cache        bool
 	web_compress     string
 	web_gzip_level   int
@@ -124,7 +123,6 @@ func main_serve(ready func()) int {
 
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
-	cache_prepare = ini_bool("development", "cache_prepare", false)
 	web_cache = ini_bool("web", "cache", true)
 	web_compress = ini_string("web", "compress", "auto")
 	web_gzip_level = ini_int("web", "gzip", 6)

@@ -67,7 +67,7 @@ const (
 )
 
 const (
-	schema_version = 90
+	schema_version = 91
 )
 
 var (
@@ -399,7 +399,7 @@ func db_create() {
 	replication.exec("create table if not exists leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
 	replication.exec("create index if not exists leadership_expires on leadership(expires)")
 	replication.exec("create table if not exists fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
-	replication.exec("create table if not exists bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
+	replication.exec("create table if not exists bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, progressed integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
 	// bootstrap_served: source-side tracking of scopes we're currently
 	// serving to each joined peer. Inserted on join approval (one row
 	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
@@ -1106,6 +1106,8 @@ func db_upgrade() {
 			db_upgrade_89()
 		case 90:
 			db_upgrade_90()
+		case 91:
+			db_upgrade_91()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1635,6 +1637,23 @@ func db_upgrade_90() {
 	r.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
 	q := db_open("db/queue.db")
 	q.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
+}
+
+// db_upgrade_91 adds the bootstrap.progressed column: the timestamp of the
+// last REAL forward progress (an `active` transition), distinct from `progress`
+// which is also stamped on every retry re-fire (the backoff timer). It lets the
+// retry driver abandon a bootstrap that has clearly never advanced (a dead /
+// nonexistent source) — attempts past the cap AND no real progress for the
+// no-progress window — instead of probing + re-alerting until T_forget, WITHOUT
+// abandoning a slow-but-progressing large transfer (which keeps stamping
+// `progressed`). Existing in-flight rows are stamped now() so the cap gives them
+// a fresh no-progress window rather than firing on a 0 default. Idempotent.
+func db_upgrade_91() {
+	r := db_open("db/replication.db")
+	if has, _ := r.exists("select 1 from pragma_table_info('bootstrap') where name='progressed'"); !has {
+		r.exec("alter table bootstrap add column progressed integer not null default 0")
+		r.exec("update bootstrap set progressed=? where state != 'done'", now())
+	}
 }
 
 // db_upgrade_89 adds the replication generation (epoch) tables (#65): the host's
@@ -2249,7 +2268,7 @@ func db_upgrade_50() {
 		replication.exec("create index leadership_expires on leadership(expires)")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='bootstrap'"); !exists {
-		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
+		replication.exec("create table bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, progressed integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
 	}
 	if exists, _ := replication.exists("select 1 from sqlite_master where type='table' and name='schemas'"); !exists {
 		replication.exec("create table schemas (peer text primary key, core integer not null default 0, apps text not null default '')")

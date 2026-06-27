@@ -79,7 +79,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 )
 
 // Bootstrap scope names. Used as the `scope` key in
@@ -128,10 +127,11 @@ var bootstrap_sysdb_excluded = map[string]bool{
 // so a user with incomplete data stays on the /login/replicating page
 // rather than landing on a half-empty dashboard.
 const (
-	bootstrap_state_queued     = "queued"
-	bootstrap_state_active     = "active"
-	bootstrap_state_done       = "done"
-	bootstrap_state_incomplete = "incomplete"
+	bootstrap_state_queued      = "queued"
+	bootstrap_state_active      = "active"
+	bootstrap_state_done        = "done"
+	bootstrap_state_incomplete  = "incomplete"
+	bootstrap_state_irreparable = "irreparable" // abandoned past the no-progress retry cap; the retry driver skips it, resume/resync revives it
 )
 
 // BootstrapFileManifestRequest is the receiver→sender request for a
@@ -312,9 +312,9 @@ func bootstrap_set_state(scope, peer, state, position string) {
 		// slow probe instead of churning. `attempts` is reset to 0 only on
 		// 'done' (below) and by an explicit operator resume/resync.
 		rdb.exec(
-			"insert into bootstrap (scope, peer, state, position, progress, attempts) values (?, ?, ?, ?, ?, 0) "+
-				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, progress=excluded.progress",
-			scope, peer, state, position, now())
+			"insert into bootstrap (scope, peer, state, position, progress, progressed, attempts) values (?, ?, ?, ?, ?, ?, 0) "+
+				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position, progress=excluded.progress, progressed=excluded.progressed",
+			scope, peer, state, position, now(), now())
 	} else if state == bootstrap_state_done {
 		// Success: clear the retry-backoff counter so a future re-bootstrap of
 		// this scope starts fresh at the 30s floor rather than inheriting the
@@ -371,7 +371,10 @@ func bootstrap_userdbs_in_progress(peer string) bool {
 		return false
 	}
 	state, _ := row["state"].(string)
-	return state != "" && state != bootstrap_state_done
+	// An abandoned (irreparable) userdbs pull is NOT actively in progress — the
+	// dead pair source will never complete it, so per-user bootstrap triggers
+	// must fall through and fetch directly rather than defer to it forever.
+	return state != "" && state != bootstrap_state_done && state != bootstrap_state_irreparable
 }
 
 // bootstrap_failed_increment atomically bumps the (scope, peer) row's
@@ -1912,7 +1915,6 @@ func reseed_finalize(peer, target string) {
 		peer, repl_scope_app, user, stream, cursor)
 }
 
-
 // bootstrap_db_scope_driver runs in its own goroutine per (scope, peer)
 // pair. Fetches each DB sequentially via stream RPC, calling
 // bootstrap_pending_decrement after each completes. Failures drop the
@@ -2145,6 +2147,26 @@ const bootstrap_stall_seconds = 120
 // abandon the scope (the retry keeps probing in case the source recovers).
 const bootstrap_retry_escalate_attempts = 10
 
+// bootstrap_retry_abandon_attempts / _seconds: past this many retries
+// (~a day at the 30-min ceiling) AND no real forward progress for this long, the
+// retry driver abandons a bootstrap — marks the row irreparable and stops
+// re-firing — instead of probing + re-alerting until T_forget (30 days). A
+// never-advancing source (dead/nonexistent peer) trips the attempts gate (its
+// `progressed` never moves, so now()-progressed is always huge); a slow-but-
+// progressing transfer keeps stamping `progressed`, so now()-progressed stays
+// small and it is NEVER abandoned regardless of attempts. Vars (not consts) so
+// tests — and an accelerated rig run — can lower them.
+var bootstrap_retry_abandon_attempts int64 = 48
+var bootstrap_retry_abandon_seconds int64 = 6 * 3600
+
+// bootstrap_should_abandon reports whether a non-done bootstrap row has retried
+// past the cap with no real progress for the no-progress window — a clearly-dead
+// source to mark irreparable rather than retry forever. sinceProgress is
+// now()-progressed.
+func bootstrap_should_abandon(attempts, sinceProgress int64) bool {
+	return attempts >= bootstrap_retry_abandon_attempts && sinceProgress >= bootstrap_retry_abandon_seconds
+}
+
 func bootstrap_retry_incomplete_manager() {
 	for {
 		time.Sleep(bootstrap_retry_interval)
@@ -2186,7 +2208,7 @@ func bootstrap_retry_eligible(state string, idle, attempts int64) bool {
 // queued + stalled-active + incomplete, not only incomplete.)
 func bootstrap_retry_incomplete_once() {
 	rdb := db_open("db/replication.db")
-	rows, err := rdb.rows("select peer, scope, state, progress, attempts from bootstrap where state != ?", bootstrap_state_done)
+	rows, err := rdb.rows("select peer, scope, state, progress, progressed, attempts from bootstrap where state != ? and state != ?", bootstrap_state_done, bootstrap_state_irreparable)
 	if err != nil || len(rows) == 0 {
 		return
 	}
@@ -2198,7 +2220,18 @@ func bootstrap_retry_incomplete_once() {
 			continue
 		}
 		progress, _ := r["progress"].(int64)
+		progressed, _ := r["progressed"].(int64)
 		attempts, _ := r["attempts"].(int64)
+		// A bootstrap that has retried past the cap with no real forward
+		// progress (a dead/nonexistent source) is abandoned — marked irreparable
+		// and dropped from the retry set — rather than probed + re-alerted until
+		// T_forget. A slow-but-progressing transfer keeps stamping `progressed`,
+		// so now()-progressed stays small and this never fires for it.
+		if bootstrap_should_abandon(attempts, now()-progressed) {
+			rdb.exec("update bootstrap set state=? where scope=? and peer=?", bootstrap_state_irreparable, scope, peer)
+			warn("Replication bootstrap abandoned: scope=%q peer=%q uid=%q — %d retries with no forward progress for %ds; marked irreparable and stopped retrying. The source is unreachable or no longer holds this data; an operator resume/resync (or the source returning) revives it.", scope, peer, bootstrap_peer_user(peer), attempts, now()-progressed)
+			continue
+		}
 		if !bootstrap_retry_eligible(state, now()-progress, attempts) {
 			continue
 		}
@@ -2393,7 +2426,7 @@ const bootstrap_rebuild_concurrency = 3
 var (
 	bootstrap_bulk_sem    = make(chan struct{}, bootstrap_bulk_concurrency)
 	bootstrap_rebuild_sem = make(chan struct{}, bootstrap_rebuild_concurrency)
-	bootstrap_phase_mu sync.Mutex
+	bootstrap_phase_mu    sync.Mutex
 	// bootstrap_phases holds, per peer, the bulk drives deferred during
 	// that peer's manifest phase. A peer absent from the map is not in a
 	// manifest phase — its drives run immediately.

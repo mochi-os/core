@@ -170,7 +170,7 @@ func db_create() {
 	// Settings
 	settings := db_open("db/settings.db")
 	settings.exec("create table if not exists settings ( name text not null primary key, value text not null )")
-	settings.exec("replace into settings ( name, value ) values ( 'schema', ? )", schema_version)
+	settings.exec("insert or ignore into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
 	// Documents: operator-customisable Markdown for server rules / terms / privacy.
 	// Bundled defaults live in core/server/documents/ (embedded); this table
@@ -823,7 +823,70 @@ var db_integrity_max_per_check = 2
 
 // db_integrity_state maps db.path -> last-ok unix time (int64), or the string
 // "corrupt" once a DB has been flagged (so it isn't re-scanned or re-alerted).
+// Both the proactive watchdog and a reactive background-write fault (#8) write
+// the "corrupt" marker here, so they share one quarantine + one alert.
 var db_integrity_state sync.Map
+
+// db_quarantined reports whether a DB has been flagged corrupt — by the
+// integrity watchdog or by a background write that hit corruption. Background
+// ops (exec_bg) skip a quarantined DB so it can't crash-loop. The flag is
+// in-memory: it clears on restart (after the operator recovers the file) and is
+// cleared eagerly when a bootstrap reseed swaps a fresh copy in (#8).
+func db_quarantined(path string) bool {
+	v, ok := db_integrity_state.Load(path)
+	return ok && v == "corrupt"
+}
+
+// db_quarantine flags a DB corrupt and alerts the admin ONCE (only on the
+// transition into corrupt), sharing db_integrity_state with the watchdog so a
+// reactive quarantine and the proactive scan never double-alert.
+func db_quarantine(path, context string, err error) {
+	prev, _ := db_integrity_state.Load(path)
+	db_integrity_state.Store(path, "corrupt")
+	if prev != "corrupt" {
+		warn("Database %q corrupt during %s: %v — quarantined; further operations on it are skipped until it is repaired (recover from backup / reseed).", path, context, err)
+	}
+}
+
+// db_quarantine_clear lifts a corruption flag — called when a bootstrap reseed
+// has replaced the file with a fresh, verified copy, so background ops resume.
+func db_quarantine_clear(path string) {
+	if db_quarantined(path) {
+		db_integrity_state.Delete(path)
+		info("Database %q quarantine cleared (replaced by a fresh copy).", path)
+	}
+}
+
+// db_error_is_corruption matches the sqlite errors that mean the file is
+// structurally bad — the same set db_quick_check treats as definitive
+// corruption (db_snapshot.go).
+func db_error_is_corruption(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "malformed") ||
+		strings.Contains(msg, "not a database") ||
+		strings.Contains(msg, "disk image is malformed") ||
+		strings.Contains(msg, "corrupt")
+}
+
+// db_recover_background is a deferred backstop for a long-lived background loop:
+// a corruption panic that escaped exec_bg (a shared write still on db.exec, or
+// any unconverted site) is logged + swallowed so the loop and the whole process
+// survive; any OTHER panic re-fires so a genuine bug still crashes. The
+// integrity watchdog flags + quarantines the corrupt DB within the hour. (#8)
+func db_recover_background(context string) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if e, ok := r.(error); ok && db_error_is_corruption(e) {
+		warn("Background goroutine %s recovered from a corrupt-DB panic: %v — skipped to keep the server up; the integrity watchdog will flag the DB.", context, r)
+		return
+	}
+	panic(r)
+}
 
 // db_integrity_watchdog quick_checks a few due DBs each tick and warns the
 // moment one is found corrupt — proactive detection so corruption surfaces as
@@ -984,16 +1047,62 @@ func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
 	return db, created, false
 }
 
-func db_start() bool {
-	if file_exists(filepath.Join(data_dir, "db", "users.db")) {
-		db_upgrade()
-		go db_manager()
-	} else {
-		db_create()
-		go db_manager()
-		return true
+// db_transient_dbs are the host-local, self-healing core DBs: their contents are
+// re-derived after loss (queue from per-app journals, sessions by re-auth, peers
+// by re-discovery), so a corrupt or missing one can be rebuilt fresh instead of
+// crash-looping the server. Cold/critical DBs (users, domains, replication,
+// directory, apps, settings) are deliberately NOT in this set — a corrupt one is
+// left for operator restore from backup.
+var db_transient_dbs = []string{"queue", "sessions", "peers"}
+
+// db_heal_transient checks the self-healing transient core DBs at startup: it
+// deletes a corrupt one (so it rebuilds fresh) and reports whether any is now
+// missing. It returns true iff a transient DB's schema needs (re)creating, so
+// the caller re-runs the idempotent db_create ONLY then — never on a healthy
+// start. This breaks the crash-loop a corrupt/missing queue.db/sessions.db/
+// peers.db would otherwise cause (#65); a rebuilt DB's data is re-derived (queue
+// from journals, sessions by re-auth, peers by re-discovery). The per-start cost
+// is a quick_check of these three (normally small) DBs only.
+func db_heal_transient() bool {
+	rebuild := false
+	for _, name := range db_transient_dbs {
+		path := filepath.Join(data_dir, "db", name+".db")
+		if !file_exists(path) {
+			rebuild = true // missing → its schema must be (re)created
+			continue
+		}
+		if result, ran := db_quick_check(path); ran && result != "ok" {
+			warn("Transient core DB %q corrupt at startup (%s) — deleting so it rebuilds fresh; its data is re-derived (queue from journals / sessions re-auth / peers re-discovery).", path, result)
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				_ = os.Remove(path + suffix)
+			}
+			rebuild = true
+		}
 	}
-	return false
+	return rebuild
+}
+
+func db_start() bool {
+	fresh := !file_exists(filepath.Join(data_dir, "db", "users.db"))
+	// We do NOT run db_create on every start: re-running it touches every core DB
+	// and would recreate a *missing migrated* DB with only its base schema, after
+	// which db_upgrade skips its migrations (version reads current) — a silently
+	// incomplete schema. Instead db_heal_transient heals the self-healing
+	// transient DBs, and db_create re-runs only when one of those is actually
+	// missing/corrupt (rare), restoring that DB's schema (a no-op for the present
+	// DBs) and fixing the missing/corrupt-queue.db crash-loop. (#65)
+	rebuild := db_heal_transient()
+	switch {
+	case fresh:
+		db_create()
+	case rebuild:
+		db_create()
+		db_upgrade()
+	default:
+		db_upgrade()
+	}
+	go db_manager()
+	return fresh
 }
 
 func db_upgrade() {
@@ -2392,19 +2501,53 @@ func sql_is_schema(query string) bool {
 	return false
 }
 
+// exec runs a write and panics (via must) on any sqlite error — the fail-fast
+// contract for foreground/request and startup callers. Background goroutines
+// must use exec_bg instead so one corrupt user DB can't crash the multi-user
+// process (#8).
 func (db *DB) exec(query string, values ...any) {
+	must(db.exec_e(query, values...))
+}
+
+// exec_e is exec that RETURNS the sqlite error instead of panicking. Same
+// prepared-cache + DDL-flush behaviour; the caller decides how to handle the
+// error. Used by exec_bg (and any other path that needs to recover rather than
+// die on a DB fault).
+func (db *DB) exec_e(query string, values ...any) error {
 	// DDL changes the schema, which invalidates cached statements; run it
 	// uncached and flush. (Migrations run DDL through db.exec.)
 	if sql_is_schema(query) {
-		must(db.internal.Exec(query, values...))
+		if _, err := db.internal.Exec(query, values...); err != nil {
+			return err
+		}
 		db.stmts_close()
-		return
+		return nil
 	}
 	if st := db.prepared(query); st != nil {
-		must(st.Exec(values...))
+		_, err := st.Exec(values...)
+		return err
+	}
+	_, err := db.internal.Exec(query, values...)
+	return err
+}
+
+// exec_bg is the background-safe write: it NEVER panics, so a corrupt user DB
+// can't take down the whole process (#8). A DB already quarantined (flagged
+// corrupt) is skipped without touching it. A corruption error quarantines the
+// DB — skipping all further ops on it — and alerts the admin once; any other
+// error is logged. The caller keeps serving every other user. `context` names
+// the operation for the alert/log.
+func (db *DB) exec_bg(context, query string, values ...any) {
+	if db == nil || db_quarantined(db.path) {
 		return
 	}
-	must(db.internal.Exec(query, values...))
+	if err := db.exec_e(query, values...); err != nil {
+		if db_error_is_corruption(err) {
+			db_quarantine(db.path, context, err)
+		} else {
+			warn("Background DB write failed (%s) on %q: %v", context, db.path, err)
+		}
+	}
 }
 
 // exec_replicated runs a write against the local DB and, if the handle

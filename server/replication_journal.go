@@ -136,6 +136,32 @@ func journal_app_dbs(userUID, appID string) []string {
 	return out
 }
 
+// journal_guard opens rel and runs work against it, but never lets a corrupt
+// per-user DB crash the journal_manager goroutine — which has no recover of its
+// own and runs journal_sweep at startup, so a panic here was the corrupt-app-DB
+// crash-loop (#8). A quarantined DB is skipped; a corruption panic from any
+// journal write quarantines the DB and is swallowed so the sweep/drain moves on
+// to the next user; any other panic re-fires so a genuine bug still surfaces.
+func journal_guard(rel string, work func(db *DB)) {
+	if db_quarantined(rel) {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok && db_error_is_corruption(e) {
+				db_quarantine(rel, "journal sweep", e)
+				return
+			}
+			panic(r)
+		}
+	}()
+	db := db_open(rel)
+	if db == nil {
+		return
+	}
+	work(db)
+}
+
 // db_execute_journal runs a single app-scope write (mochi.db.execute) and, when
 // the write replicates, records its journal row in the same transaction so the
 // data and the op commit atomically. Returns the number of rows the write
@@ -411,11 +437,9 @@ func journal_drain_app(user *User, app *App) {
 		return
 	}
 	for _, rel := range journal_app_dbs(user.UID, app.id) {
-		db := db_open(rel)
-		if db == nil {
-			continue
-		}
-		journal_drain(user.UID, app.id, db)
+		journal_guard(rel, func(db *DB) {
+			journal_drain(user.UID, app.id, db)
+		})
 	}
 }
 
@@ -466,19 +490,17 @@ func journal_sweep() {
 			}
 			appID := ae.Name()
 			for _, rel := range journal_app_dbs(userUID, appID) {
-				db := db_open(rel)
-				if db == nil {
-					continue
-				}
-				// The startup sweep is the eager-creation pass for pre-existing
-				// per-app journals: create the table here so a later write via
-				// this same cached handle (app.db shares this cache key) never
-				// hits a missing table (#424).
-				db.journal_setup()
-				if has, _ := db.exists("select 1 from journal where state='pending' limit 1"); has {
-					journal_drain(userUID, appID, db)
-				}
-				journal_prune(db)
+				journal_guard(rel, func(db *DB) {
+					// The startup sweep is the eager-creation pass for pre-existing
+					// per-app journals: create the table here so a later write via
+					// this same cached handle (app.db shares this cache key) never
+					// hits a missing table (#424).
+					db.journal_setup()
+					if has, _ := db.exists("select 1 from journal where state='pending' limit 1"); has {
+						journal_drain(userUID, appID, db)
+					}
+					journal_prune(db)
+				})
 			}
 		}
 	}

@@ -279,7 +279,7 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 // Mark a message as acknowledged (remove from queue)
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
-	db.exec("delete from queue where id = ?", id)
+	db.exec_bg("queue ack delete", "delete from queue where id = ?", id)
 	journal_inflight_acked([]string{id}) // advance the delivery cursor if this was a journal op (#28)
 	//debug("Queue ACK received for %q", id)
 }
@@ -395,7 +395,7 @@ func queue_ack_flush(ids []string) {
 		placeholders = append(placeholders, '?')
 		args[i] = id
 	}
-	db.exec("delete from queue where id in ("+string(placeholders)+")", args...)
+	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
 	journal_inflight_acked(ids) // advance delivery cursors for any journal ops in the batch (#28)
 }
 
@@ -437,7 +437,7 @@ func queue_drop(id, reason string) {
 	db := db_open("db/queue.db")
 	var q QueueEntry
 	have := db.scan(&q, "select * from queue where id = ?", id)
-	db.exec("delete from queue where id = ?", id)
+	db.exec_bg("queue drop on nack", "delete from queue where id = ?", id)
 	debug("Queue dropping message %q on NACK reason %q (no retry)", id, reason)
 	// Surface a terminal NACK to the sending app — after the delete, so the
 	// handler never runs while the row is being removed. unknown/rejected
@@ -502,7 +502,7 @@ func nack_should_drop(reason string) bool {
 // Mark a message as being sent (prevents other processors from picking it up)
 func queue_sending(id string) {
 	db := db_open("db/queue.db")
-	db.exec("update queue set status='sending' where id=?", id)
+	db.exec_bg("queue mark sending", "update queue set status='sending' where id=?", id)
 }
 
 // queue_unsending rolls back queue_sending when the async send path
@@ -511,7 +511,7 @@ func queue_sending(id string) {
 // next queue_select picks it up.
 func queue_unsending(id string) {
 	db := db_open("db/queue.db")
-	db.exec("update queue set status='pending' where id=? and status='sending'", id)
+	db.exec_bg("queue unsending rollback", "update queue set status='pending' where id=? and status='sending'", id)
 }
 
 // queue_is_inflight returns true when the row is currently owned by
@@ -534,7 +534,7 @@ func queue_is_inflight(id string) bool {
 // attempts counter / retry-backoff escalation shouldn't escalate.
 func queue_defer(id string, delay int64) {
 	db := db_open("db/queue.db")
-	db.exec("update queue set next_retry = ? where id = ?", now()+delay, id)
+	db.exec_bg("queue defer", "update queue set next_retry = ? where id = ?", now()+delay, id)
 }
 
 // queue_defer_target pushes every pending row for a target forward to
@@ -549,7 +549,7 @@ func queue_defer_target(target string, until int64) {
 		return
 	}
 	db := db_open("db/queue.db")
-	db.exec("update queue set next_retry = ? where target = ? and status = 'pending' and next_retry < ?", until, target, until)
+	db.exec_bg("queue defer target", "update queue set next_retry = ? where target = ? and status = 'pending' and next_retry < ?", until, target, until)
 }
 
 // queue_resurrect_peer brings every deferred row for a peer back into
@@ -563,7 +563,7 @@ func queue_resurrect_peer(target string) {
 	}
 	db := db_open("db/queue.db")
 	t := now()
-	db.exec("update queue set next_retry = ? where target = ? and status = 'pending' and next_retry > ?", t, target, t)
+	db.exec_bg("queue resurrect peer", "update queue set next_retry = ? where target = ? and status = 'pending' and next_retry > ?", t, target, t)
 	queue_wake()
 }
 
@@ -581,12 +581,12 @@ func queue_fail(id string, err string) {
 
 	if age > queue_max_age {
 		//warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q", attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
-		db.exec("delete from queue where id = ?", id)
+		db.exec_bg("queue fail drop aged", "delete from queue where id = ?", id)
 		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)
-		db.exec("update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?", attempts, next, err, id)
+		db.exec_bg("queue fail retry reschedule", "update queue set status = 'pending', attempts = ?, next_retry = ?, last_error = ? where id = ?", attempts, next, err, id)
 		//debug("Queue message %q scheduled for retry %d at %d: %s", id, attempts, next, err)
 	}
 }
@@ -869,14 +869,14 @@ func queue_process() int {
 	for _, q := range entries {
 		if q.Expires > 0 && q.Expires < now() {
 			debug("Queue message %q expired", q.ID)
-			db.exec("delete from queue where id = ?", q.ID)
+			db.exec_bg("queue gc expired delete", "delete from queue where id = ?", q.ID)
 			processed++
 			continue
 		}
 		if q.FromEntity != "" {
 			if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
 				info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
-				db.exec("delete from queue where id = ?", q.ID)
+				db.exec_bg("queue gc deleted-entity delete", "delete from queue where id = ?", q.ID)
 				processed++
 				continue
 			}
@@ -1001,7 +1001,7 @@ func queue_process() int {
 			}
 
 			if ok {
-				db.exec("delete from queue where id = ?", q.ID)
+				db.exec_bg("queue process sent delete", "delete from queue where id = ?", q.ID)
 			} else if !queue_is_inflight(q.ID) {
 				// /mochi/2 paths set status='sending' and return
 				// false; the async resolver (sender_read /
@@ -1020,11 +1020,11 @@ func queue_check_ack_timeout() {
 	db := db_open("db/queue.db")
 	// Messages sent more than 30 seconds ago without ACK
 	timeout := now() - 30
-	db.exec("update queue set status = 'pending', next_retry = ? where status = 'sent' and created < ?",
+	db.exec_bg("queue ack-timeout requeue", "update queue set status = 'pending', next_retry = ? where status = 'sent' and created < ?",
 		queue_next_retry(0), timeout)
 	// Messages stuck in 'sending' for more than 60 seconds (safety net)
 	stuck := now() - 60
-	db.exec("update queue set status = 'pending', next_retry = ? where status = 'sending' and created < ?",
+	db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where status = 'sending' and created < ?",
 		queue_next_retry(0), stuck)
 }
 
@@ -1067,7 +1067,7 @@ func queue_cleanup() {
 		warn("Database error loading expired queue entries: %v", err)
 		return
 	}
-	db.exec("delete from queue where "+aged, repl_cutoff, gen_cutoff)
+	db.exec_bg("queue cleanup", "delete from queue where "+aged, repl_cutoff, gen_cutoff)
 
 	// Surface each aged-out send as message/timeout to its sending app,
 	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes

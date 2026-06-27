@@ -44,7 +44,7 @@ func journal_inflight_record(id, user, peer, stream string, sequence int64) {
 	if qdb == nil {
 		return
 	}
-	qdb.exec("insert into journal_inflight (id, user, peer, stream, sequence, created) values (?, ?, ?, ?, ?, ?) on conflict(id) do nothing",
+	qdb.exec_bg("journal inflight record", "insert into journal_inflight (id, user, peer, stream, sequence, created) values (?, ?, ?, ?, ?, ?) on conflict(id) do nothing",
 		id, user, peer, stream, sequence, now())
 	journal_inflight_active.Store(true)
 }
@@ -80,12 +80,12 @@ func journal_inflight_acked(ids []string) {
 		peer, _ := r["peer"].(string)
 		stream, _ := r["stream"].(string)
 		seq, _ := r["sequence"].(int64)
-		rdb.exec("insert into journal_delivery (user, peer, stream, sequence) values (?, ?, ?, ?) on conflict(user, peer, stream) do update set sequence = max(journal_delivery.sequence, excluded.sequence)",
+		rdb.exec_bg("journal delivery advance", "insert into journal_delivery (user, peer, stream, sequence) values (?, ?, ?, ?) on conflict(user, peer, stream) do update set sequence = max(journal_delivery.sequence, excluded.sequence)",
 			user, peer, stream, seq)
 		matched = append(matched, id)
 		mph = append(mph, "?")
 	}
-	qdb.exec("delete from journal_inflight where id in ("+strings.Join(mph, ",")+")", matched...)
+	qdb.exec_bg("journal inflight clear", "delete from journal_inflight where id in ("+strings.Join(mph, ",")+")", matched...)
 }
 
 // journal_delivery_cursor returns the highest sequence `peer` has confirmed for
@@ -114,5 +114,5 @@ func journal_inflight_sweep() {
 	if qdb == nil {
 		return
 	}
-	qdb.exec("delete from journal_inflight where created < ?", now()-journal_inflight_ttl)
+	qdb.exec_bg("journal inflight sweep", "delete from journal_inflight where created < ?", now()-journal_inflight_ttl)
 }

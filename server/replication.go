@@ -167,6 +167,14 @@ type KeysTransfer struct {
 	// the receiver re-qualifies them to the core class. Optional — an older
 	// peer omits it and the receiver simply seeds nothing extra.
 	CoreSeeds map[string]int64 `cbor:"core_seeds,omitempty"`
+	// AppSystemSeeds is the same idea for the user's app-class /system
+	// sub-streams (app:<entity>/system). Their DATA rides inside the app DB
+	// file, so the file bootstrap transfers it — but the file-bootstrap cursor
+	// seed only anchors the MAIN app:<entity> stream, leaving the /system
+	// sub-stream cursor at 0 to stall (#61, the app-DB analog of #54). FULL
+	// stream keys (per app, no bare form). Optional — an older peer omits it
+	// and the receiver seeds nothing extra.
+	AppSystemSeeds map[string]int64 `cbor:"app_system_seeds,omitempty"`
 }
 
 // KeysSchedule is one scheduled event for the user. Mirrors
@@ -636,6 +644,47 @@ func replication_seed_core_cursors(rdb *DB, peer, user string, seeds map[string]
 			continue
 		}
 		key := repl_stream_key(repl_stream_class_core, stream)
+		replication_cursor_set(rdb, peer, repl_scope_app, user, key, seq)
+		replication_stream_drain(rdb, peer, repl_scope_app, user, key)
+	}
+}
+
+// replication_app_system_seeds snapshots the source's tail for each of the user's
+// app-class /system sub-streams (app:<entity>/system). Their DATA rides inside the
+// app DB file (so the file bootstrap transfers it), but the file-bootstrap cursor
+// seed anchors only the main app:<entity> stream — the /system sub-stream cursor
+// stays at 0 and stalls (#61, the app-DB analog of #54). Carried in
+// KeysTransfer.AppSystemSeeds under FULL stream keys (per app, no bare form).
+func replication_app_system_seeds(user string) map[string]int64 {
+	seeds := map[string]int64{}
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return seeds
+	}
+	rows, err := rdb.rows("select db, last from tail where user = ? and scope = ? and db like 'app:%/system'", user, repl_scope_app)
+	if err != nil {
+		return seeds
+	}
+	for _, r := range rows {
+		key, _ := r["db"].(string)
+		last, _ := r["last"].(int64)
+		if key != "" && last > 0 {
+			seeds[key] = last
+		}
+	}
+	return seeds
+}
+
+// replication_seed_app_system_cursors anchors the receiver's inbound cursor for
+// each app:<entity>/system sub-stream to the source's tail (from
+// KeysTransfer.AppSystemSeeds) so the first live /system op chains instead of
+// buffering forever. The keys are already full stream keys; cursor_set is monotonic
+// so a re-applied transfer never rewinds a stream a live op has advanced past.
+func replication_seed_app_system_cursors(rdb *DB, peer, user string, seeds map[string]int64) {
+	for key, seq := range seeds {
+		if seq <= 0 {
+			continue
+		}
 		replication_cursor_set(rdb, peer, repl_scope_app, user, key, seq)
 		replication_stream_drain(rdb, peer, repl_scope_app, user, key)
 	}
@@ -2108,6 +2157,9 @@ func replication_keys_transfer_apply(signer, originPeer string, kt *KeysTransfer
 	// And the per-event core sub-streams (links, notifications), which have no
 	// file snapshot to seed from (#54).
 	replication_seed_core_cursors(rdb, originPeer, userUID, kt.CoreSeeds)
+	// And the app-class /system sub-streams: their data rides in the app DB file,
+	// but the file-bootstrap cursor seed only anchors the main app stream (#61).
+	replication_seed_app_system_cursors(rdb, originPeer, userUID, kt.AppSystemSeeds)
 
 	debug("Replication keys-transfer applied: username=%q entities=%d inserted=%d oauth=%d credentials=%d recovery=%d tokens=%d totp=%v (from peer %q)",
 		kt.Username, len(kt.Entities), inserted, len(kt.OAuth),
@@ -2191,6 +2243,9 @@ func build_keys_transfer(user_uid string) (*KeysTransfer, bool) {
 	}
 	// Same, for the per-event core sub-streams that aren't file-bootstrapped (#54).
 	kt.CoreSeeds = replication_core_seeds(user_uid)
+	// And the app-class /system sub-streams whose data rides in the app DB file
+	// but whose cursor the file bootstrap doesn't seed (#61).
+	kt.AppSystemSeeds = replication_app_system_seeds(user_uid)
 	if oauth_rows, err := users.rows("select provider, subject, email, verified, name, created from oauth where user=?", user_uid); err == nil {
 		for _, or := range oauth_rows {
 			link := KeysOauth{

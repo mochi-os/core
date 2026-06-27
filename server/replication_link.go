@@ -293,6 +293,9 @@ func replication_link_apply_keys(originPeer, placeholder string, kt *KeysTransfe
 	// And the per-event core sub-streams (links, notifications), which have no
 	// file snapshot to seed from (#54).
 	replication_seed_core_cursors(rdb, originPeer, placeholder, kt.CoreSeeds)
+	// And the app-class /system sub-streams whose cursor the file bootstrap
+	// doesn't seed (#61).
+	replication_seed_app_system_cursors(rdb, originPeer, placeholder, kt.AppSystemSeeds)
 
 	// Backfill this user's existing data from the source. Without
 	// this the placeholder would have the schema in place (via lazy
@@ -864,6 +867,9 @@ func replication_link_approve(user, peer string) (string, error) {
 	}
 	// Same, for the per-event core sub-streams that aren't file-bootstrapped (#54).
 	keys.CoreSeeds = replication_core_seeds(user)
+	// And the app-class /system sub-streams whose cursor the file bootstrap
+	// doesn't seed (#61).
+	keys.AppSystemSeeds = replication_app_system_seeds(user)
 
 	replication_emit_link_approved(peer, placeholder, keys)
 	audit_replication_link_approved(user, peer)

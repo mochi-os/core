@@ -859,7 +859,7 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 	for _, f := range alert {
 		if !audit_liveness_alerted[f.key] {
 			audit_liveness_alerted[f.key] = true
-			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, and no pending buffer to trip the stall alert). Auto-recovery will attempt a targeted re-seed.",
+			warn("Replication stream not advancing: user=%q stream=%q from peer=%q — apply cursor=%d is stuck below the peer's emitted tail=%d (behind %d ops, no progress since the last audit round, no pending buffer: the missing-cursor / frozen-cursor class, #33). Auto-recovery will attempt a targeted re-seed; if it persists, run the /replication-audit plumbing pass for the remedy.",
 				f.s.User, f.s.Stream, peer, f.cursor, f.s.Tail, f.s.Tail-f.cursor)
 		}
 	}

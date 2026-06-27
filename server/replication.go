@@ -1320,7 +1320,16 @@ func replication_pending_warn_stalled() {
 	}
 
 	for _, s := range replication_stall_alert_new(actionable, threshold) {
-		warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d",
+		if s.Cursor == 0 && !s.Anchored {
+			// The missing-cursor class (#54/#61): no inbound cursor was ever seeded,
+			// so the data may already be converged via the file / keys-transfer yet
+			// every live op buffers forever. Not a lost op — a never-anchored cursor
+			// — so the fix is a cursor seed, not a chase for a missing predecessor.
+			warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q — MISSING inbound cursor (never seeded): live ops buffer forever though the data may already be converged (the missing-cursor class, #54/#61). count=%d. Remedy: run the /replication-audit plumbing pass — it classifies the stream and emits the exact reseed (file-backed) or backfill (per-event) command.",
+				now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database, s.Count)
+			continue
+		}
+		warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d — an anchored gap (a predecessor op never arrived). Remedy: run the /replication-audit plumbing pass, then reseed.",
 			now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
 			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count)
 	}

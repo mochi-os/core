@@ -632,7 +632,7 @@ func TestReplicationAuditContentHash(t *testing.T) {
 	}
 }
 
-// TestAuditStreamIsCritical (#41): only core:user and system:users are auth-
+// TestAuditStreamIsCritical: only core:user and system:users are auth-
 // critical; sessions/schedule/notifications and app streams are not.
 func TestAuditStreamIsCritical(t *testing.T) {
 	want := map[string]bool{
@@ -651,7 +651,7 @@ func TestAuditStreamIsCritical(t *testing.T) {
 	}
 }
 
-// TestCriticalLivenessRouting (#41): the fast auth-critical pass (critical=true)
+// TestCriticalLivenessRouting: the fast auth-critical pass (critical=true)
 // and the slow pass (critical=false) own DISJOINT stream sets and keep SEPARATE
 // previous-cursor state, so neither corrupts the other's two-round freeze
 // detection. A single first-sighting call records only the cursors for the

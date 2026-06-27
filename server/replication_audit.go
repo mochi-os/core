@@ -708,7 +708,7 @@ var (
 	audit_content_alerted    = map[string]bool{}              // "peer|user|stream" -> content-divergence-alerted
 )
 
-// #41: separate state for the fast auth-critical liveness pass, kept apart from
+// separate state for the fast auth-critical liveness pass, kept apart from
 // the slow audit's previous-cursor map so the two cadences don't corrupt each
 // other's two-round freeze detection.
 var (
@@ -862,7 +862,7 @@ func audit_stream_is_critical(stream string) bool {
 func replication_audit_liveness(peer string, local map[string]int64, remote []AuditStream, critical bool) {
 	rdb := db_open("db/replication.db")
 
-	// #41: the fast auth-critical pass (critical=true) and the slow 6h pass
+	// the fast auth-critical pass (critical=true) and the slow 6h pass
 	// (critical=false) each own a disjoint set of streams and keep separate
 	// previous-cursor state, so the auth streams get a 5-min cadence without the
 	// two passes corrupting each other's two-round freeze detection.
@@ -887,7 +887,7 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 			continue // peer doesn't originate this stream — nothing to keep up with
 		}
 		if audit_stream_is_critical(s.Stream) != critical {
-			continue // each pass owns only its stream set (#41)
+			continue // each pass owns only its stream set
 		}
 		// This host ORIGINATES the stream (it has its own emitted tail), so the
 		// peer's emitted tail is largely our own ops relayed back as echo — our

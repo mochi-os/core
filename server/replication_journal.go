@@ -636,3 +636,142 @@ func journal_backfill_peer(userUID, peer string) {
 		}
 	}
 }
+
+// --- Receiver-initiated gap-fill ------------------------------------------
+//
+// An anchored gap — a predecessor op that never arrived — wedges an inbound
+// stream and does not self-heal: the drain only re-evaluates already-buffered
+// ops, and the reconnect backfill (journal_backfill_peer) skips anything the
+// peer's delivery cursor already marked confirmed. So an op the peer recorded as
+// received but the receiver never APPLIED (lost/dropped after receipt) is never
+// re-sent. The receiver alone knows the exact missing range, so it asks the peer
+// to re-ship it. Purely additive — the ops land through the normal chain gate —
+// so there is no reseed and none of the #42 wipe risk. A gap the peer can no
+// longer fill (ops pruned past T_forget) stays stalled and falls through to the
+// existing operator alert; an auto-reseed fallback is deliberately out of scope
+// until a row-level subset gate exists (#70/#42).
+
+// gapfill_min_stall_seconds is how long an anchored gap must persist before we
+// ask the peer to re-ship — long enough for ordinary in-flight lag to resolve
+// itself first. gapfill_backoff_seconds bounds how often a still-wedged stream
+// is re-asked.
+const gapfill_min_stall_seconds = 60
+const gapfill_backoff_seconds = 60
+
+// gapfill_requested remembers the last request per stream so the 30s manager
+// tick re-asks with backoff, not every pass. Only the (single) manager goroutine
+// touches it, via replication_gapfill_request.
+var gapfill_requested = map[string]int64{}
+
+// replication_gapfill_request asks each peer to re-ship the ops missing from a
+// wedged inbound stream (the self-healing half of an anchored gap). Called from the
+// replication manager after the drain.
+func replication_gapfill_request() {
+	for _, s := range replication_pending_stalled() {
+		// v1: app streams only (journal-replayable), and only true anchored gaps
+		// (a real missing predecessor — not a fresh, un-seeded stream).
+		if !s.Anchored || !strings.HasPrefix(s.Database, "app:") {
+			continue
+		}
+		if now()-s.Oldest < gapfill_min_stall_seconds {
+			continue // let ordinary in-flight lag resolve first
+		}
+		key := s.Peer + "|" + s.Scope + "|" + s.User + "|" + s.Database
+		ts := now()
+		if last, ok := gapfill_requested[key]; ok && ts-last < gapfill_backoff_seconds {
+			continue
+		}
+		gapfill_requested[key] = ts
+		m := message("", "", "replication", "replica/gapfill")
+		m.content = map[string]any{
+			"scope": s.Scope,
+			"user":  s.User,
+			"db":    s.Database,
+			"from":  s.Cursor + 1,
+			"to":    s.Predecessor.Maximum,
+		}
+		m.send_peer(s.Peer)
+		info("Replication gap-fill requested: peer=%q user=%q db=%q range=[%d,%d] (stalled %ds)",
+			s.Peer, s.User, s.Database, s.Cursor+1, s.Predecessor.Maximum, now()-s.Oldest)
+	}
+}
+
+// replication_gapfill_event serves a peer's gap-fill request: it has wedged on an
+// anchored gap in its inbound stream from us and wants the missing op range
+// re-shipped so it can self-heal without an operator reseed.
+func replication_gapfill_event(e *Event) {
+	scope, _ := e.content["scope"].(string)
+	user, _ := e.content["user"].(string)
+	database, _ := e.content["db"].(string)
+	from := gapfill_seq(e.content["from"])
+	to := gapfill_seq(e.content["to"])
+	if scope == "" || user == "" || database == "" || from <= 0 || to < from {
+		return
+	}
+	n := journal_reship_range(user, e.peer, database, from, to)
+	info("Replication gap-fill served: peer=%q user=%q db=%q range=[%d,%d] reshipped=%d",
+		e.peer, user, database, from, to, n)
+}
+
+// gapfill_seq coerces a JSON-decoded numeric field (float64 over the wire) to int64.
+func gapfill_seq(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
+}
+
+// journal_reship_range re-ships this user's journal ops for one stream whose
+// binding sequence is in [from, to] to the requesting peer, reusing each op's
+// original (sequence, prev) so the receiver's chain lines up. Unlike
+// journal_backfill_peer it is NOT delivery-cursor-gated — the receiver asked
+// precisely because it never applied these ops, so the "already confirmed" skip
+// must not apply. Additive only. Returns the number of ops re-shipped.
+func journal_reship_range(userUID, peer, stream string, from, to int64) int {
+	// Only a host that is genuinely in this user's host set may pull their ops.
+	if peer == "" || peer == net_id || !slices.Contains(recipients(userUID), peer) {
+		return 0
+	}
+	// v1: app-scope streams only (journal-shipped + replayable).
+	if !strings.HasPrefix(stream, "app:") {
+		return 0
+	}
+	appID := strings.TrimSuffix(strings.TrimPrefix(stream, "app:"), "/system")
+	rdb := db_open("db/replication.db")
+	if rdb == nil {
+		return 0
+	}
+	shipped := 0
+	for _, rel := range journal_app_dbs(userUID, appID) {
+		db := db_open(rel)
+		if db == nil {
+			continue
+		}
+		rows, err := db.rows("select id, operation, statement, args, target, uid, schema from journal where state='shipped' order by created, id")
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			id, op := journal_row_to_op(userUID, appID, r)
+			seq, prev, ok := replication_journal_binding(rdb, id)
+			if !ok {
+				continue
+			}
+			op.Sequence, op.Prev = seq, prev
+			if repl_op_stream(op) != stream || seq < from || seq > to {
+				continue
+			}
+			if replication_op_self_anchoring(op) {
+				op.Prev = 0
+			}
+			journal_ship(userUID, op, []string{peer})
+			shipped++
+		}
+	}
+	return shipped
+}

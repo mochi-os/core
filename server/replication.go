@@ -382,6 +382,9 @@ func init() {
 	// irreparable (broken past T_forget) so both sides' admins are
 	// notified. See replication_irreparable.go.
 	a.event_anonymous("replica/irreparable", replication_irreparable_event)
+	// Receiver-initiated gap-fill: a peer wedged on an anchored gap asks us
+	// to re-ship the missing op range so it self-heals without an operator reseed.
+	a.event_anonymous("replica/gapfill", replication_gapfill_event)
 }
 
 // replication_op_event receives a single replication op from a peer in the
@@ -1221,6 +1224,7 @@ func replication_manager() {
 			defer db_recover_background("replication manager")
 			replication_manager_heartbeat.Store(now())
 			replication_pending_drain()
+			replication_gapfill_request()
 			replication_pending_warn_stalled()
 			replication_wiped_rebootstrap()
 			replication_convergence_audit_critical() // fast auth-critical liveness pass (self-throttled to 5 min)

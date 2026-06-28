@@ -165,6 +165,136 @@ func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	}
 }
 
+// TestStmtCacheClosedRetry covers the "sql: statement is closed" fix: when
+// prepared() hands back a cached statement that a concurrent stmts_close (DDL
+// flush / 512-overflow / eviction) closed before the caller executes it, the
+// query helpers must retry on the uncached pool path instead of surfacing the
+// error. Reproduced deterministically by closing the cached statement in place
+// so the next prepared() returns a closed handle.
+func TestStmtCacheClosedRetry(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+
+	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 2, "bob")
+
+	// closeCached primes the cache for query then closes the cached statement
+	// while leaving it in the map, so the next prepared() returns a closed
+	// handle — the exact state a caller hits when a flush races its execute.
+	closeCached := func(query string, prime func()) {
+		prime()
+		db.stmt_lock.Lock()
+		st, ok := db.stmt_cache[query]
+		db.stmt_lock.Unlock()
+		if !ok {
+			t.Fatalf("query not cached: %q", query)
+		}
+		st.Close()
+	}
+
+	// row
+	qRow := "SELECT name FROM t WHERE id=?"
+	closeCached(qRow, func() { db.row(qRow, 1) })
+	if r, err := db.row(qRow, 1); err != nil || r == nil || r["name"] != "alice" {
+		t.Fatalf("row after cached-stmt close = %v err=%v, want alice", r, err)
+	}
+
+	// rows
+	qRows := "SELECT id, name FROM t ORDER BY id"
+	closeCached(qRows, func() { db.rows(qRows) })
+	if all, err := db.rows(qRows); err != nil || len(all) != 2 {
+		t.Fatalf("rows after cached-stmt close = %v err=%v, want 2", all, err)
+	}
+
+	// scans
+	qScans := "SELECT name FROM t WHERE id<=? ORDER BY id"
+	var names []struct {
+		Name string `db:"name"`
+	}
+	closeCached(qScans, func() { db.scans(&names, qScans, 2) })
+	names = nil
+	if err := db.scans(&names, qScans, 2); err != nil || len(names) != 2 {
+		t.Fatalf("scans after cached-stmt close: err=%v len=%d, want 2", err, len(names))
+	}
+
+	// exec_e: a write through a closed cached statement must still apply.
+	qExec := "UPDATE t SET name=? WHERE id=?"
+	closeCached(qExec, func() { db.exec(qExec, "alice", 1) })
+	if err := db.exec_e(qExec, "alison", 1); err != nil {
+		t.Fatalf("exec_e after cached-stmt close: %v", err)
+	}
+	if r, _ := db.row("SELECT name FROM t WHERE id=?", 1); r == nil || r["name"] != "alison" {
+		t.Errorf("exec_e retry did not apply the update; got %v", r)
+	}
+}
+
+// TestStmtCacheConcurrentClose reproduces the race directly: many goroutines
+// run cached reads/writes while another hammers stmts_close (standing in for a
+// DDL flush / overflow / eviction). With the uncached-retry fix every operation
+// must still succeed — without it, some surface "sql: statement is closed".
+// Run under -race to also catch any data race on the cache.
+func TestStmtCacheConcurrentClose(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
+
+	stop := make(chan struct{})
+	var flusher sync.WaitGroup
+	flusher.Add(1)
+	go func() {
+		defer flusher.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				db.stmts_close()
+			}
+		}
+	}()
+
+	var readers sync.WaitGroup
+	errCh := make(chan error, 64)
+	for i := 0; i < 16; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for j := 0; j < 300; j++ {
+				r, err := db.row("SELECT name FROM t WHERE id=?", 1)
+				if err != nil {
+					errCh <- fmt.Errorf("row: %w", err)
+					return
+				}
+				if r == nil || r["name"] != "alice" {
+					errCh <- fmt.Errorf("row = %v, want alice", r)
+					return
+				}
+				// exercise the other fixed cached-stmt paths too
+				if ok, err := db.exists("SELECT 1 FROM t WHERE name=?", "alice"); err != nil {
+					errCh <- fmt.Errorf("exists: %w", err)
+					return
+				} else if !ok {
+					errCh <- fmt.Errorf("exists(alice) = false, want true")
+					return
+				}
+				if n := db.integer("SELECT count(*) FROM t WHERE id=?", 1); n != 1 {
+					errCh <- fmt.Errorf("integer = %d, want 1", n)
+					return
+				}
+			}
+		}()
+	}
+	readers.Wait()
+	close(stop)
+	flusher.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+}
+
 func TestDBExec(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()

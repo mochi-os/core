@@ -2468,6 +2468,19 @@ func (db *DB) stmts_close() {
 	db.stmt_cache = nil
 }
 
+// stmt_closed reports whether err is database/sql's "statement is closed"
+// sentinel. A cached prepared statement can be closed by a concurrent
+// stmts_close (DDL flush, 512-entry overflow, or eviction) in the window
+// between prepared() handing it out and the caller executing it outside
+// stmt_lock — under heavy concurrent load on one DB this surfaced as
+// intermittent "sql: statement is closed" (e.g. group_memberships on the hot
+// access-check path). The query helpers treat it as a transient cache miss and
+// retry once on the uncached pool path, which re-prepares fresh. The sentinel
+// is unexported in database/sql, so match on its stable message.
+func stmt_closed(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "statement is closed")
+}
+
 // db_migrating is >0 while a schema migration runs (db_create/db_upgrade).
 // prepared() returns nil during that window so every migration statement
 // is prepared fresh, never carrying a stale schema view across the
@@ -2524,8 +2537,10 @@ func (db *DB) exec_e(query string, values ...any) error {
 		return nil
 	}
 	if st := db.prepared(query); st != nil {
-		_, err := st.Exec(values...)
-		return err
+		if _, err := st.Exec(values...); !stmt_closed(err) {
+			return err
+		}
+		// cached statement closed by a concurrent cache flush; retry uncached
 	}
 	_, err := db.internal.Exec(query, values...)
 	return err
@@ -2664,6 +2679,10 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Query(values...)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			r, err = db.internal.Query(query, values...)
+		}
 	} else {
 		r, err = db.internal.Query(query, values...)
 	}
@@ -2680,6 +2699,10 @@ func (db *DB) integer(query string, values ...any) int {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			err = db.internal.QueryRow(query, values...).Scan(&result)
+		}
 	} else {
 		err = db.internal.QueryRow(query, values...).Scan(&result)
 	}
@@ -2699,6 +2722,10 @@ func (db *DB) integer64(query string, values ...any) int64 {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			err = db.internal.QueryRow(query, values...).Scan(&result)
+		}
 	} else {
 		err = db.internal.QueryRow(query, values...).Scan(&result)
 	}
@@ -2713,6 +2740,10 @@ func (db *DB) row(query string, values ...any) (map[string]any, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Queryx(values...)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			r, err = db.internal.Queryx(query, values...)
+		}
 	} else {
 		r, err = db.internal.Queryx(query, values...)
 	}
@@ -2745,6 +2776,10 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Queryx(values...)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			r, err = db.internal.Queryx(query, values...)
+		}
 	} else {
 		r, err = db.internal.Queryx(query, values...)
 	}
@@ -2772,6 +2807,10 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRowx(values...).StructScan(out)
+		if stmt_closed(err) {
+			// cached statement closed by a concurrent cache flush; retry uncached
+			err = db.internal.QueryRowx(query, values...).StructScan(out)
+		}
 	} else {
 		err = db.internal.QueryRowx(query, values...).StructScan(out)
 	}
@@ -2787,7 +2826,10 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 
 func (db *DB) scans(out any, query string, values ...any) error {
 	if st := db.prepared(query); st != nil {
-		return st.Select(out, values...)
+		if err := st.Select(out, values...); !stmt_closed(err) {
+			return err
+		}
+		// cached statement closed by a concurrent cache flush; retry uncached
 	}
 	return db.internal.Select(out, query, values...)
 }

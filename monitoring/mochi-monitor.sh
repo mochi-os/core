@@ -81,14 +81,23 @@ if [ -n "$problems" ]; then
 	if [ "$sig" != "$last_sig" ] || [ "$((nowts - last_ts))" -ge "$REALERT" ]; then
 		printf 'Mochi external monitor detected problems:\n\n%bPolled: %s\n' "$problems" "$SERVERS" | send "Mochi MONITOR alert"
 		mkdir -p "$(dirname "$STATE")" 2>/dev/null
-		printf '%s %s\n' "$sig" "$nowts" > "$STATE"
+		# Persist the problem text (after the "sig ts" header line) so the
+		# eventual "cleared" note can name exactly what recovered.
+		printf '%s %s\n%b' "$sig" "$nowts" "$problems" > "$STATE"
 	fi
 	exit 1
 fi
 
-# All clear. If we were previously alerting, send one recovery note and reset.
+# All clear. If we were previously alerting, send one recovery note naming the
+# problem(s) that cleared (read back from the state file) and reset.
 if [ -f "$STATE" ]; then
-	printf 'Mochi external monitor: previously-detected problem(s) have CLEARED.\nPolled: %s\n' "$SERVERS" | send "Mochi MONITOR recovered"
+	cleared=$(tail -n +2 "$STATE")
+	if [ -n "$cleared" ]; then
+		printf 'Mochi external monitor: the following previously-detected problem(s) have CLEARED:\n\n%s\n\nPolled: %s\n' "$cleared" "$SERVERS" | send "Mochi MONITOR recovered"
+	else
+		# Legacy state file written before the problem text was recorded.
+		printf 'Mochi external monitor: previously-detected problem(s) have CLEARED.\nPolled: %s\n' "$SERVERS" | send "Mochi MONITOR recovered"
+	fi
 	rm -f "$STATE"
 fi
 exit 0

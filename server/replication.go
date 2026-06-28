@@ -1216,7 +1216,7 @@ func replication_manager() {
 		// Backstop: a corrupt-DB panic from a shared write still on db.exec
 		// (e.g. peer_forget) or any site exec_bg didn't reach is recovered so the
 		// apply driver and the whole process survive; a genuine bug still crashes
-		// (db_recover_background re-panics non-corruption). (#8)
+		// (db_recover_background re-panics non-corruption).
 		func() {
 			defer db_recover_background("replication manager")
 			replication_manager_heartbeat.Store(now())

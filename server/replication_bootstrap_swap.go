@@ -90,7 +90,7 @@ func bootstrap_db_swap(target, scratch string) error {
 	_ = os.Remove(target + "-shm")
 
 	// A fresh, verified copy is now in place — lift any corruption quarantine on
-	// this path so background ops resume on it (#8).
+	// this path so background ops resume on it.
 	db_quarantine_clear(target)
 
 	internal_db, err := sqlitedrv.Open(target, db_setup_conn)

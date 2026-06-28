@@ -823,7 +823,7 @@ var db_integrity_max_per_check = 2
 
 // db_integrity_state maps db.path -> last-ok unix time (int64), or the string
 // "corrupt" once a DB has been flagged (so it isn't re-scanned or re-alerted).
-// Both the proactive watchdog and a reactive background-write fault (#8) write
+// Both the proactive watchdog and a reactive background-write fault write
 // the "corrupt" marker here, so they share one quarantine + one alert.
 var db_integrity_state sync.Map
 
@@ -831,7 +831,7 @@ var db_integrity_state sync.Map
 // integrity watchdog or by a background write that hit corruption. Background
 // ops (exec_bg) skip a quarantined DB so it can't crash-loop. The flag is
 // in-memory: it clears on restart (after the operator recovers the file) and is
-// cleared eagerly when a bootstrap reseed swaps a fresh copy in (#8).
+// cleared eagerly when a bootstrap reseed swaps a fresh copy in.
 func db_quarantined(path string) bool {
 	v, ok := db_integrity_state.Load(path)
 	return ok && v == "corrupt"
@@ -875,7 +875,7 @@ func db_error_is_corruption(err error) bool {
 // a corruption panic that escaped exec_bg (a shared write still on db.exec, or
 // any unconverted site) is logged + swallowed so the loop and the whole process
 // survive; any OTHER panic re-fires so a genuine bug still crashes. The
-// integrity watchdog flags + quarantines the corrupt DB within the hour. (#8)
+// integrity watchdog flags + quarantines the corrupt DB within the hour.
 func db_recover_background(context string) {
 	r := recover()
 	if r == nil {
@@ -1060,7 +1060,7 @@ var db_transient_dbs = []string{"queue", "sessions", "peers"}
 // missing. It returns true iff a transient DB's schema needs (re)creating, so
 // the caller re-runs the idempotent db_create ONLY then — never on a healthy
 // start. This breaks the crash-loop a corrupt/missing queue.db/sessions.db/
-// peers.db would otherwise cause (#65); a rebuilt DB's data is re-derived (queue
+// peers.db would otherwise cause; a rebuilt DB's data is re-derived (queue
 // from journals, sessions by re-auth, peers by re-discovery). The per-start cost
 // is a quick_check of these three (normally small) DBs only.
 func db_heal_transient() bool {
@@ -1090,7 +1090,7 @@ func db_start() bool {
 	// incomplete schema. Instead db_heal_transient heals the self-healing
 	// transient DBs, and db_create re-runs only when one of those is actually
 	// missing/corrupt (rare), restoring that DB's schema (a no-op for the present
-	// DBs) and fixing the missing/corrupt-queue.db crash-loop. (#65)
+	// DBs) and fixing the missing/corrupt-queue.db crash-loop.
 	rebuild := db_heal_transient()
 	switch {
 	case fresh:
@@ -2517,7 +2517,7 @@ func sql_is_schema(query string) bool {
 // exec runs a write and panics (via must) on any sqlite error — the fail-fast
 // contract for foreground/request and startup callers. Background goroutines
 // must use exec_bg instead so one corrupt user DB can't crash the multi-user
-// process (#8).
+// process.
 func (db *DB) exec(query string, values ...any) {
 	must(db.exec_e(query, values...))
 }
@@ -2547,7 +2547,7 @@ func (db *DB) exec_e(query string, values ...any) error {
 }
 
 // exec_bg is the background-safe write: it NEVER panics, so a corrupt user DB
-// can't take down the whole process (#8). A DB already quarantined (flagged
+// can't take down the whole process. A DB already quarantined (flagged
 // corrupt) is skipped without touching it. A corruption error quarantines the
 // DB — skipping all further ops on it — and alerts the admin once; any other
 // error is logged. The caller keeps serving every other user. `context` names

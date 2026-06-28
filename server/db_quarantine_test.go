@@ -1,5 +1,5 @@
 // Mochi server: corrupt-DB resilience — a corrupt user DB must not crash the
-// multi-user process (#8). Covers the corruption matcher, the quarantine
+// multi-user process. Covers the corruption matcher, the quarantine
 // lifecycle, exec_bg's skip/no-over-quarantine behaviour, and the
 // db_recover_background backstop (swallow corruption, re-fire genuine bugs).
 //

@@ -139,7 +139,7 @@ func journal_app_dbs(userUID, appID string) []string {
 // journal_guard opens rel and runs work against it, but never lets a corrupt
 // per-user DB crash the journal_manager goroutine — which has no recover of its
 // own and runs journal_sweep at startup, so a panic here was the corrupt-app-DB
-// crash-loop (#8). A quarantined DB is skipped; a corruption panic from any
+// crash-loop. A quarantined DB is skipped; a corruption panic from any
 // journal write quarantines the DB and is swallowed so the sweep/drain moves on
 // to the next user; any other panic re-fires so a genuine bug still surfaces.
 func journal_guard(rel string, work func(db *DB)) {

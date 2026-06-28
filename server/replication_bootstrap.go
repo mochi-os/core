@@ -1108,6 +1108,12 @@ func bootstrap_file_chunk_fetch_impl(peer, scope, path string, offset, length in
 		return nil, fmt.Errorf("bootstrap-file-chunk-fetch: open stream: %w", err)
 	}
 	defer s.close()
+	// A 1 MB chunk can't arrive within the framework's default 30s read deadline
+	// on a slow/flaky link (~35 KB/s floor); every fetch then times out, the
+	// chunk-aligned resume never advances, and the bootstrap loops to the retry
+	// cap without completing (ticket #424). Use the same generous per-read
+	// deadline as every other bootstrap transfer (db fetch, file + db manifests).
+	s.timeout.read = bootstrap_stream_timeout
 
 	if err := s.write(&BootstrapFileChunkRequest{
 		Scope: scope, Path: path, Offset: offset, Length: length,

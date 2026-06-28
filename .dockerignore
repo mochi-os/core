@@ -9,3 +9,16 @@ local
 doc
 docs
 readme.txt
+
+# The image is built from pre-staged binaries (build/docker/bin/), not from
+# source — the Dockerfile only COPYs build/docker/. Keep the Go source, module
+# files, and other packaging trees out of the build context so the context
+# upload stays small.
+server
+common
+mochictl
+go.mod
+go.sum
+install
+Makefile
+Dockerfile

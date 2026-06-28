@@ -1,48 +1,27 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage Dockerfile for the Mochi server.
+# Single-stage Dockerfile for the Mochi server.
 #
-# Builder: golang:bookworm. No cgo or cross-toolchains: SQLite is bundled
-# via github.com/ncruces/go-sqlite3 (pure-Go WASM via wazero), so every
-# target arch is a plain GOOS/GOARCH build.
+# The server and mochictl are NOT compiled here. `make docker` stages the
+# pre-built static binaries — built once on the host, reusing the warm Go
+# build cache — into build/docker/bin/ named by GOARCH, and this image just
+# COPYs the right one per TARGETARCH. That removes the two full in-container
+# Go compiles (amd64 + arm64) that previously ran against a cold, separate
+# build cache on every release.
+#
+# The server binaries staged here are built with -X main.build_platform=docker
+# so a containerised server polls the docker versions.json for updates (see
+# server/update.go update_url_path); mochictl carries no platform tag, so its
+# host build is reused as-is.
+#
 # Runtime: gcr.io/distroless/static-debian12 — fully static binary, no libc
 # dependency at runtime.
 
-ARG VERSION=dev
-ARG GO_VERSION=1.25
-ARG DEBIAN_RELEASE=bookworm
-
-# ---------- Builder ---------------------------------------------------------
-
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-${DEBIAN_RELEASE} AS builder
-ARG VERSION
-ARG TARGETARCH
-ENV CGO_ENABLED=0 GOOS=linux
-
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
-
-COPY . .
-
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    case "$TARGETARCH" in \
-        amd64) export GOARCH=amd64 ;; \
-        arm64) export GOARCH=arm64 ;; \
-        *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac && \
-    go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION} -X main.build_platform=docker" \
-        -o /out/mochi-server ./server && \
-    go build -trimpath -ldflags "-s -w -X main.build_version=${VERSION}" \
-        -o /out/mochictl ./mochictl
-
-# ---------- Runtime ---------------------------------------------------------
-
 FROM gcr.io/distroless/static-debian12:latest AS runtime
+ARG TARGETARCH
 
-COPY --from=builder /out/mochi-server /usr/sbin/mochi-server
-COPY --from=builder /out/mochictl    /usr/bin/mochictl
-COPY build/docker/mochi.conf         /etc/mochi/mochi.conf
+COPY build/docker/bin/mochi-server-${TARGETARCH} /usr/sbin/mochi-server
+COPY build/docker/bin/mochictl-${TARGETARCH}     /usr/bin/mochictl
+COPY build/docker/mochi.conf                     /etc/mochi/mochi.conf
 
 VOLUME /var/lib/mochi
 EXPOSE 8080 8443 1443/tcp 1443/udp

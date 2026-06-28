@@ -8,6 +8,9 @@ access
 nohup.out
 server/server
 
+# Binaries staged into the Docker build context by `make docker-stage`
+build/docker/bin/
+
 # Test-runtime DB files created when go test opens a relative path
 # (e.g. db/replication.db from tests that don't set data_dir to a tmpdir
 # before opening). Harmless on disk but clutters `git status`.

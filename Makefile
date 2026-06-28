@@ -4,11 +4,21 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 0.4.178
+version = 0.4.180
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
 bin = ../bin
+
+# Parallel jobs for the release build phase. The independent packaging
+# branches (deb / rpm / msi / pkg / docker) build concurrently; override with
+# `make release JOBS=N`.
+JOBS ?= $(shell nproc)
+
+# Per-phase timing lines (`>>> ...`) are also appended here and printed as a
+# consolidated summary at the end of `release`, so the breakdown survives the
+# thousands of lines of build/buildx output that otherwise bury and truncate it.
+timing = /tmp/mochi-release-timing.txt
 
 # Linux build paths
 build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
@@ -20,7 +30,11 @@ deb_armhf = $(build_linux_armhf).deb
 rpm_x86_64 = /tmp/mochi-server-$(version)-1.x86_64.rpm
 rpm_aarch64 = /tmp/mochi-server-$(version)-1.aarch64.rpm
 rpm_armv7hl = /tmp/mochi-server-$(version)-1.armv7hl.rpm
-rpmbuild_dir = /tmp/mochi-rpmbuild
+# Per-arch rpmbuild trees so the three rpm targets can build concurrently
+# under `make -j` without clobbering a shared _topdir.
+rpmbuild_x86_64  = /tmp/mochi-rpmbuild-x86_64
+rpmbuild_aarch64 = /tmp/mochi-rpmbuild-aarch64
+rpmbuild_armv7hl = /tmp/mochi-rpmbuild-armv7hl
 
 # macOS build paths
 build_darwin_amd64 = /tmp/mochi-server_$(version)_darwin_amd64
@@ -42,13 +56,23 @@ msi = $(build_windows).msi
 ldflags_linux   = -s -w -X main.build_version=$(version) -X main.build_platform=linux
 ldflags_windows = -s -w -X main.build_version=$(version) -X main.build_platform=windows
 ldflags_macos   = -s -w -X main.build_version=$(version) -X main.build_platform=macos
+ldflags_docker  = -s -w -X main.build_version=$(version) -X main.build_platform=docker
 ldflags_mochictl = -s -w -X main.build_version=$(version)
+
+# Source prerequisites for the Go build targets. go.mod / go.sum are listed so
+# a dependency or `toolchain` bump rebuilds the binaries on an incremental
+# `make` — without them only *.go changes triggered a rebuild, so a
+# go.mod-only change (e.g. a Go toolchain pin) was silently ignored until the
+# next `make clean`. Simply-expanded (:=) so the find runs once at parse time.
+go_sources_server   := $(shell find server -name '*.go') $(shell find common -name '*.go') go.mod go.sum
+go_sources_mochictl := $(shell find mochictl -name '*.go') $(shell find common -name '*.go') go.mod go.sum
 
 all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
-	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
+	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64 $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64
 	rm -f $(bin)/mochictl $(bin)/mochictl.exe $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl-darwin-amd64 $(bin)/mochictl-darwin-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	rm -rf build/docker/bin
 
 # Order-only prerequisite: create $(bin) but don't trigger rebuilds when its
 # mtime changes.
@@ -63,32 +87,32 @@ $(bin):
 # plain GOOS/GOARCH build with CGO_ENABLED=0 — no cross-toolchains.
 # --------------------------------------------------------------------------
 
-$(bin)/mochi-server: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server ./server
 
 # Phony alias for the historical name.
 mochi-server: $(bin)/mochi-server
 
-$(bin)/mochictl: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl: $(go_sources_mochictl) | $(bin)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
 
 mochictl: $(bin)/mochictl
 
 # Windows mochictl: the server's admin listener is supported on windows via a
 # named pipe (LocalSystem/Administrators security descriptor).
-$(bin)/mochictl.exe: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl.exe: $(go_sources_mochictl) | $(bin)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl.exe ./mochictl
 
 mochictl.exe: $(bin)/mochictl.exe
 
 # macOS mochictl: the server's admin UDS listener is supported on darwin
 # (LOCAL_PEERCRED peer auth), so ship mochictl in the .pkg too.
-$(bin)/mochictl-darwin-amd64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl-darwin-amd64: $(go_sources_mochictl) | $(bin)
 	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-darwin-amd64 ./mochictl
 
 mochictl-darwin-amd64: $(bin)/mochictl-darwin-amd64
 
-$(bin)/mochictl-darwin-arm64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl-darwin-arm64: $(go_sources_mochictl) | $(bin)
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-darwin-arm64 ./mochictl
 
 mochictl-darwin-arm64: $(bin)/mochictl-darwin-arm64
@@ -134,22 +158,22 @@ mochi.7: $(bin)/mochi.7
 # Linux ARM cross-compile binaries
 # --------------------------------------------------------------------------
 
-$(bin)/mochi-server-linux-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server-linux-arm64: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm64 ./server
 
 mochi-server-linux-arm64: $(bin)/mochi-server-linux-arm64
 
-$(bin)/mochi-server-linux-arm: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server-linux-arm: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-arm ./server
 
 mochi-server-linux-arm: $(bin)/mochi-server-linux-arm
 
-$(bin)/mochictl-linux-arm64: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl-linux-arm64: $(go_sources_mochictl) | $(bin)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-linux-arm64 ./mochictl
 
 mochictl-linux-arm64: $(bin)/mochictl-linux-arm64
 
-$(bin)/mochictl-linux-arm: $(shell find mochictl -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochictl-linux-arm: $(go_sources_mochictl) | $(bin)
 	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl-linux-arm ./mochictl
 
 mochictl-linux-arm: $(bin)/mochictl-linux-arm
@@ -172,13 +196,13 @@ $(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi
 	cp -av install/* $(build_linux_amd64)
 	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/sbin
 	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
-	upx -qq $(build_linux_amd64)/usr/sbin/mochi-server
+	upx -1 -qq $(build_linux_amd64)/usr/sbin/mochi-server
 	mkdir -p $(build_linux_amd64)/usr/share/man/man1 $(build_linux_amd64)/usr/share/man/man5 $(build_linux_amd64)/usr/share/man/man7 $(build_linux_amd64)/usr/share/man/man8
 	cp $(bin)/mochictl.1     $(build_linux_amd64)/usr/share/man/man1/
 	cp $(bin)/mochi.conf.5   $(build_linux_amd64)/usr/share/man/man5/
 	cp $(bin)/mochi.7        $(build_linux_amd64)/usr/share/man/man7/
 	cp $(bin)/mochi-server.8 $(build_linux_amd64)/usr/share/man/man8/
-	dpkg-deb --build --root-owner-group $(build_linux_amd64)
+	dpkg-deb -Zxz -z9 --build --root-owner-group $(build_linux_amd64)
 	rm -rf $(build_linux_amd64)
 	ls -l $(deb_amd64)
 
@@ -197,7 +221,7 @@ $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)
 	cp $(bin)/mochi.conf.5   $(build_linux_arm64)/usr/share/man/man5/
 	cp $(bin)/mochi.7        $(build_linux_arm64)/usr/share/man/man7/
 	cp $(bin)/mochi-server.8 $(build_linux_arm64)/usr/share/man/man8/
-	dpkg-deb --build --root-owner-group $(build_linux_arm64)
+	dpkg-deb -Zxz -z9 --build --root-owner-group $(build_linux_arm64)
 	rm -rf $(build_linux_arm64)
 	ls -l $(deb_arm64)
 
@@ -216,7 +240,7 @@ $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/moc
 	cp $(bin)/mochi.conf.5   $(build_linux_armhf)/usr/share/man/man5/
 	cp $(bin)/mochi.7        $(build_linux_armhf)/usr/share/man/man7/
 	cp $(bin)/mochi-server.8 $(build_linux_armhf)/usr/share/man/man8/
-	dpkg-deb --build --root-owner-group $(build_linux_armhf)
+	dpkg-deb -Zxz -z9 --build --root-owner-group $(build_linux_armhf)
 	rm -rf $(build_linux_armhf)
 	ls -l $(deb_armhf)
 
@@ -231,63 +255,63 @@ deb: deb-amd64 deb-arm64 deb-armhf
 # x86_64 .rpm package
 # Requires: apt install rpm
 $(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp $(bin)/mochi-server $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochictl $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
-	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
-	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
-	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
-	cp $(rpmbuild_dir)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
-	rm -rf $(rpmbuild_dir)
+	rm -rf $(rpmbuild_x86_64)
+	mkdir -p $(rpmbuild_x86_64)/SOURCES $(rpmbuild_x86_64)/SPECS $(rpmbuild_x86_64)/BUILD $(rpmbuild_x86_64)/RPMS $(rpmbuild_x86_64)/SRPMS
+	cp $(bin)/mochi-server $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochictl $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochictl.1 $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_x86_64)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_x86_64)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_x86_64)/SOURCES/_mochictl
+	cp install/etc/mochi/mochi.conf $(rpmbuild_x86_64)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_x86_64)/SOURCES/
+	rpmbuild -bb --define "_topdir $(rpmbuild_x86_64)" --define "_version $(version)" --target x86_64 build/rpm/mochi-server.spec
+	cp $(rpmbuild_x86_64)/RPMS/x86_64/mochi-server-$(version)-1.x86_64.rpm $(rpm_x86_64)
+	rm -rf $(rpmbuild_x86_64)
 	ls -l $(rpm_x86_64)
 
 rpm-x86_64: $(rpm_x86_64)
 
 # aarch64 .rpm package
 $(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp $(bin)/mochi-server-linux-arm64 $(rpmbuild_dir)/SOURCES/mochi-server
-	cp $(bin)/mochictl-linux-arm64 $(rpmbuild_dir)/SOURCES/mochictl
-	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
-	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
-	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
-	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
-	cp $(rpmbuild_dir)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
-	rm -rf $(rpmbuild_dir)
+	rm -rf $(rpmbuild_aarch64)
+	mkdir -p $(rpmbuild_aarch64)/SOURCES $(rpmbuild_aarch64)/SPECS $(rpmbuild_aarch64)/BUILD $(rpmbuild_aarch64)/RPMS $(rpmbuild_aarch64)/SRPMS
+	cp $(bin)/mochi-server-linux-arm64 $(rpmbuild_aarch64)/SOURCES/mochi-server
+	cp $(bin)/mochictl-linux-arm64 $(rpmbuild_aarch64)/SOURCES/mochictl
+	cp $(bin)/mochictl.1 $(rpmbuild_aarch64)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_aarch64)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_aarch64)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_aarch64)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_aarch64)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_aarch64)/SOURCES/_mochictl
+	cp install/etc/mochi/mochi.conf $(rpmbuild_aarch64)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_aarch64)/SOURCES/
+	rpmbuild -bb --define "_topdir $(rpmbuild_aarch64)" --define "_version $(version)" --target aarch64 build/rpm/mochi-server.spec
+	cp $(rpmbuild_aarch64)/RPMS/aarch64/mochi-server-$(version)-1.aarch64.rpm $(rpm_aarch64)
+	rm -rf $(rpmbuild_aarch64)
 	ls -l $(rpm_aarch64)
 
 rpm-aarch64: $(rpm_aarch64)
 
 # armv7hl .rpm package
 $(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	rm -rf $(rpmbuild_dir)
-	mkdir -p $(rpmbuild_dir)/SOURCES $(rpmbuild_dir)/SPECS $(rpmbuild_dir)/BUILD $(rpmbuild_dir)/RPMS $(rpmbuild_dir)/SRPMS
-	cp $(bin)/mochi-server-linux-arm $(rpmbuild_dir)/SOURCES/mochi-server
-	cp $(bin)/mochictl-linux-arm $(rpmbuild_dir)/SOURCES/mochictl
-	cp $(bin)/mochictl.1 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi-server.8 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.conf.5 $(rpmbuild_dir)/SOURCES/
-	cp $(bin)/mochi.7 $(rpmbuild_dir)/SOURCES/
-	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_dir)/SOURCES/mochictl.bash
-	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_dir)/SOURCES/_mochictl
-	cp install/etc/mochi/mochi.conf $(rpmbuild_dir)/SOURCES/
-	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_dir)/SOURCES/
-	rpmbuild -bb --define "_topdir $(rpmbuild_dir)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
-	cp $(rpmbuild_dir)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
-	rm -rf $(rpmbuild_dir)
+	rm -rf $(rpmbuild_armv7hl)
+	mkdir -p $(rpmbuild_armv7hl)/SOURCES $(rpmbuild_armv7hl)/SPECS $(rpmbuild_armv7hl)/BUILD $(rpmbuild_armv7hl)/RPMS $(rpmbuild_armv7hl)/SRPMS
+	cp $(bin)/mochi-server-linux-arm $(rpmbuild_armv7hl)/SOURCES/mochi-server
+	cp $(bin)/mochictl-linux-arm $(rpmbuild_armv7hl)/SOURCES/mochictl
+	cp $(bin)/mochictl.1 $(rpmbuild_armv7hl)/SOURCES/
+	cp $(bin)/mochi-server.8 $(rpmbuild_armv7hl)/SOURCES/
+	cp $(bin)/mochi.conf.5 $(rpmbuild_armv7hl)/SOURCES/
+	cp $(bin)/mochi.7 $(rpmbuild_armv7hl)/SOURCES/
+	cp install/usr/share/bash-completion/completions/mochictl $(rpmbuild_armv7hl)/SOURCES/mochictl.bash
+	cp install/usr/share/zsh/site-functions/_mochictl $(rpmbuild_armv7hl)/SOURCES/_mochictl
+	cp install/etc/mochi/mochi.conf $(rpmbuild_armv7hl)/SOURCES/
+	cp install/etc/systemd/system/mochi-server.service $(rpmbuild_armv7hl)/SOURCES/
+	rpmbuild -bb --define "_topdir $(rpmbuild_armv7hl)" --define "_version $(version)" --target armv7hl build/rpm/mochi-server.spec
+	cp $(rpmbuild_armv7hl)/RPMS/armv7hl/mochi-server-$(version)-1.armv7hl.rpm $(rpm_armv7hl)
+	rm -rf $(rpmbuild_armv7hl)
 	ls -l $(rpm_armv7hl)
 
 rpm-armv7hl: $(rpm_armv7hl)
@@ -299,7 +323,7 @@ rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
 # --------------------------------------------------------------------------
 
 # Windows executable (cross-compile from Linux)
-$(bin)/mochi-server.exe: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server.exe: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -v -ldflags "$(ldflags_windows)" -o $(bin)/mochi-server.exe ./server
 
 mochi-server.exe: $(bin)/mochi-server.exe
@@ -322,12 +346,12 @@ windows: $(bin)/mochi-server.exe
 # macOS
 # --------------------------------------------------------------------------
 
-$(bin)/mochi-server-darwin-amd64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server-darwin-amd64: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-amd64 ./server
 
 mochi-server-darwin-amd64: $(bin)/mochi-server-darwin-amd64
 
-$(bin)/mochi-server-darwin-arm64: $(shell find server -name '*.go') $(shell find common -name '*.go') | $(bin)
+$(bin)/mochi-server-darwin-arm64: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -v -ldflags "$(ldflags_macos)" -o $(bin)/mochi-server-darwin-arm64 ./server
 
 mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
@@ -355,10 +379,32 @@ macos: $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
 docker_image = ghcr.io/mochi-os/mochi-server
 docker_minor = $(word 1,$(subst ., ,$(version))).$(word 2,$(subst ., ,$(version)))
 
+# Docker-tagged server binaries. Identical to the linux builds except for
+# -X main.build_platform=docker, so a containerised server polls the docker
+# versions.json (server/update.go update_url_path). Only ldflags differ, so
+# these relink in well under a second against the warm Go cache. mochictl
+# carries no platform tag, so the linux mochictl binaries are reused as-is.
+$(bin)/mochi-server-docker-amd64: $(go_sources_server) | $(bin)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -ldflags "$(ldflags_docker)" -o $(bin)/mochi-server-docker-amd64 ./server
+
+$(bin)/mochi-server-docker-arm64: $(go_sources_server) | $(bin)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -v -ldflags "$(ldflags_docker)" -o $(bin)/mochi-server-docker-arm64 ./server
+
+# Stage the pre-built static binaries into the Docker build context, named by
+# GOARCH so the Dockerfile COPYs the right one per TARGETARCH. Reusing the
+# host's warm Go cache here replaces two full in-container compiles per build.
+docker-stage: $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64 $(bin)/mochictl $(bin)/mochictl-linux-arm64
+	rm -rf build/docker/bin
+	mkdir -p build/docker/bin
+	cp $(bin)/mochi-server-docker-amd64 build/docker/bin/mochi-server-amd64
+	cp $(bin)/mochi-server-docker-arm64 build/docker/bin/mochi-server-arm64
+	cp $(bin)/mochictl                  build/docker/bin/mochictl-amd64
+	cp $(bin)/mochictl-linux-arm64      build/docker/bin/mochictl-arm64
+
 # Build for the host arch only — fast iteration during development. Tags as
 # :dev so it can't be confused with a real release.
-docker-local:
-	docker build --build-arg VERSION=$(version) -t $(docker_image):dev .
+docker-local: docker-stage
+	docker build -t $(docker_image):dev .
 
 # Run Trivy against the locally-built image. Fails (exit 1) on any HIGH or
 # CRITICAL finding — useful as a manual pre-release check, intentionally NOT
@@ -388,17 +434,16 @@ docker-scan: docker-local
 # Requires a multi-arch buildx builder (docker buildx create --use
 # --platform linux/amd64,linux/arm64) and docker login ghcr.io with a
 # PAT scoped to write:packages.
-docker:
-	docker buildx build \
+docker: docker-stage
+	@t=$$(date +%s); docker buildx build \
 	    --platform linux/amd64,linux/arm64 \
-	    --sbom=true --provenance=true \
-	    --build-arg VERSION=$(version) \
+	    --sbom=false --provenance=false \
 	    --tag $(docker_image):$(version) \
 	    --tag $(docker_image):$(docker_minor) \
 	    --tag $(docker_image):latest \
 	    --tag $(docker_image):production \
 	    --push \
-	    .
+	    . && echo ">>> docker build+push: $$(($$(date +%s)-t))s" | tee -a $(timing)
 
 # Reclaim disk left by repeated image builds: dangling images from :dev
 # retags, plus build cache from both the default daemon builder and the
@@ -415,15 +460,37 @@ docker-clean:
 # Release
 # --------------------------------------------------------------------------
 
-release: clean deb rpm msi pkg docker
+# `release` runs a parallel build phase then a serial publish phase. `clean`
+# runs first in its own sub-make so the rebuild can't race a stale binary; the
+# build and publish phases are separate sub-makes so `-j$(JOBS)` applies only
+# to the parallel-safe build (the publish steps must stay ordered).
+# Each phase prints its wall-clock as `>>> phase ...: Ns` so a release self-
+# reports where the time goes (grep the output for `>>>`). The build phase
+# figure includes the docker build+push; the publish figure includes the apt /
+# rpm reindex and the rsync to both hosts, each timed individually below.
+release:
+	@: > $(timing)
+	@t=$$(date +%s); $(MAKE) clean && echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing)
+	@t=$$(date +%s); $(MAKE) -j$(JOBS) release-build && echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing)
+	@t=$$(date +%s); $(MAKE) release-publish && echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing)
+	@echo; echo "=== release $(version) timing summary ==="; cat $(timing)
+
+# Parallel-safe build of every release artefact. The deb/rpm/msi/pkg/docker
+# branches are independent: each rpm target has its own _topdir, each deb its
+# own staging dir, pkg uses mktemp, and docker stages pre-built binaries — so
+# -j fans them across cores with no shared-state races. Shared binary targets
+# (mochi-server*, mochictl*, man pages) are built once and reused by make.
+release-build: deb rpm msi pkg docker
+
+release-publish:
 	git tag -fa $(version) -m "$(version)"
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
-	./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'`
+	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` && echo ">>> apt reindex (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
-	./build/scripts/rpm-repository-update ../packages/rpm
+	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
 	cp $(msi) ../packages/windows/mochi-server.msi
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/windows/versions.json
@@ -433,11 +500,24 @@ release: clean deb rpm msi pkg docker
 	mkdir -p ../packages/docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
 	# Publish to both hosts by name (not the packages.mochi-os.org alias) so the
-	# target is deterministic regardless of where that record points. yuzu is the
-	# primary, wasabi the secondary; both serve the same signed tree and both
-	# install from a local file:/srv/apt source, so neither depends on the other.
-	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/
-	rsync -av --delete ../packages/ root@wasabi.mochi-os.org:/srv/packages/
+	# target is deterministic regardless of where that record points. Upload the
+	# full tree to yuzu (primary) once, then have yuzu relay it to wasabi
+	# (secondary) over the datacenter link — so the local uplink (the release
+	# bottleneck) carries the ~200 MB tree once, not twice. If yuzu can't reach
+	# wasabi (ssh trust not yet provisioned), fall back to pushing wasabi
+	# directly from here, so a release never breaks. Both hosts then serve the
+	# same signed tree from a local file:/srv/apt source.
+	@t0=$$(date +%s); \
+	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
+	echo ">>> rsync local->yuzu: $$(($$(date +%s)-t0))s" | tee -a $(timing); \
+	t1=$$(date +%s); \
+	if ssh -o BatchMode=yes -o ConnectTimeout=8 root@yuzu.mochi-os.org 'rsync -av --delete /srv/packages/ root@wasabi.mochi-os.org:/srv/packages/'; then \
+	    echo ">>> rsync yuzu->wasabi (server-side relay): $$(($$(date +%s)-t1))s" | tee -a $(timing); \
+	else \
+	    echo ">>> yuzu->wasabi relay unavailable; falling back to direct local->wasabi" | tee -a $(timing); \
+	    rsync -av --delete ../packages/ root@wasabi.mochi-os.org:/srv/packages/ || exit 1; \
+	    echo ">>> rsync local->wasabi (fallback): $$(($$(date +%s)-t1))s" | tee -a $(timing); \
+	fi
 
 # Install the published version on the production hosts (wasabi secondary first,
 # then yuzu primary, each verified). Separate from `release` (which only

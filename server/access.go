@@ -39,12 +39,76 @@ var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	"revoke": sl.NewBuiltin("mochi.access.revoke", api_access_revoke),
 })
 
-// Create access control table in the system database (app.db)
+// Create access control table in the system database (app.db). The table is a
+// versioned LWW-Register: each (subject, resource, operation) carries a
+// per-key Lamport `version` and an originating-host `writer`, so concurrent
+// grants/denies/revokes from different hosts converge identically — a
+// deterministic max over (version, fail-closed-on-tie, writer). Revoke is a
+// `removed=1` tombstone, never a DELETE, so a stale grant can't resurrect a
+// revoked rule.
 func (db *DB) access_setup() {
-	db.exec("create table if not exists access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
+	db.exec("create table if not exists access ( subject text not null, resource text not null, operation text not null, grant integer not null, removed integer not null default 0, granter text not null, writer text not null default '', version integer not null default 1, created integer not null, primary key ( subject, resource, operation ) )")
+	db.access_migrate()
 	db.exec("create index if not exists access_resource on access( resource, operation )")
 	db.exec("create index if not exists access_subject on access( subject )")
 }
+
+// access_migrate rebuilds a legacy access table (autoincrement `id` PK, no
+// `version` column) into the versioned register. Each host runs it locally over
+// its already-converged rows, seeding version=1 / writer='' / removed=0
+// deterministically, so the rebuilt tables stay identical across hosts. No-op
+// once migrated.
+func (db *DB) access_migrate() {
+	if db.has_column("access", "version") {
+		return
+	}
+	db.exec("create table access_new ( subject text not null, resource text not null, operation text not null, grant integer not null, removed integer not null default 0, granter text not null, writer text not null default '', version integer not null default 1, created integer not null, primary key ( subject, resource, operation ) )")
+	db.exec("insert into access_new ( subject, resource, operation, grant, granter, created ) select subject, resource, operation, grant, granter, created from access")
+	db.exec("drop table access")
+	db.exec("alter table access_new rename to access")
+}
+
+// has_column reports whether table has the named column.
+func (db *DB) has_column(table string, column string) bool {
+	rows, err := db.internal.Query("select name from pragma_table_info('" + table + "')")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil && name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// access_upsert applies one versioned-register write (allow / deny / revoke) and
+// resolves conflicts deterministically so every host converges: a higher
+// per-key `version` wins; on a version tie a non-allow (deny or removed) beats an
+// allow (fail-closed); any remaining tie is settled by the higher `writer`. The
+// version is computed here (seen + 1) and carried as a literal — never recomputed
+// on apply, which would diverge per host.
+func (db *DB) access_upsert(subject string, resource string, operation string, grant int, removed int, granter string) {
+	var seen struct{ Version int64 }
+	db.scan(&seen, "select coalesce( max( version ), 0 ) as version from access where subject=? and resource=? and operation=?", subject, resource, operation)
+	db.exec_replicated(access_upsert_sql, subject, resource, operation, grant, removed, granter, net_id, seen.Version+1, now())
+}
+
+const access_upsert_sql = `insert into access ( subject, resource, operation, grant, removed, granter, writer, version, created )
+values ( ?, ?, ?, ?, ?, ?, ?, ?, ? )
+on conflict ( subject, resource, operation ) do update set
+	grant=excluded.grant, removed=excluded.removed, granter=excluded.granter,
+	writer=excluded.writer, version=excluded.version, created=excluded.created
+where excluded.version > access.version
+	or ( excluded.version = access.version
+		and ( case when excluded.removed=0 and excluded.grant=1 then 0 else 1 end )
+		> ( case when access.removed=0 and access.grant=1 then 0 else 1 end ) )
+	or ( excluded.version = access.version
+		and ( case when excluded.removed=0 and excluded.grant=1 then 0 else 1 end )
+		= ( case when access.removed=0 and access.grant=1 then 0 else 1 end )
+		and excluded.writer > access.writer )`
 
 // Check if a user has access to perform an operation on a resource
 // owner is the user whose user.db contains the groups
@@ -90,7 +154,7 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 		for _, act := range operations {
 			for _, subj := range subjects {
 				var a Access
-				if db.scan(&a, "select grant from access where subject=? and resource=? and operation=?", subj, res, act) {
+				if db.scan(&a, "select grant from access where subject=? and resource=? and operation=? and removed=0", subj, res, act) {
 					if a.Grant != 1 {
 						audit_access_denied(user, resource, operation)
 					}
@@ -111,36 +175,45 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 		g = 1
 	}
 
-	db.exec_replicated("replace into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? )", subject, resource, operation, g, granter, now())
+	db.access_upsert(subject, resource, operation, g, 0, granter)
 	audit_permission_changed(granter, subject, resource, operation, grant)
 }
 
-// Clear all access rules for a resource
+// Clear all access rules for a resource (and its sub-resources). Each rule is
+// tombstoned (a versioned removed=1 write), not deleted, so the clear converges
+// under multi-master and a stale concurrent grant can't survive it.
 func (db *DB) access_clear_resource(resource string) {
 	db.access_setup() // Ensure table exists
-	db.exec_replicated("delete from access where resource=? or resource like ?", resource, resource+"/%")
+	rows, _ := db.rows("select subject, resource, operation from access where ( resource=? or resource like ? ) and removed=0", resource, resource+"/%")
+	for _, r := range rows {
+		db.access_upsert(row_string(r, "subject"), row_string(r, "resource"), row_string(r, "operation"), 0, 1, "")
+	}
 }
 
-// Clear all access rules for a subject
+// Clear all access rules for a subject (tombstoned per-rule; see access_clear_resource).
 func (db *DB) access_clear_subject(subject string) {
 	db.access_setup() // Ensure table exists
-	db.exec_replicated("delete from access where subject=?", subject)
+	rows, _ := db.rows("select subject, resource, operation from access where subject=? and removed=0", subject)
+	for _, r := range rows {
+		db.access_upsert(row_string(r, "subject"), row_string(r, "resource"), row_string(r, "operation"), 0, 1, "")
+	}
 }
 
-// List access rules for a resource
+// List access rules for a resource (active rules only; tombstones hidden).
 func (db *DB) access_list_resource(resource string) ([]map[string]any, error) {
-	return db.rows("select * from access where resource=? order by subject", resource)
+	return db.rows("select subject, resource, operation, grant, granter, created from access where resource=? and removed=0 order by subject", resource)
 }
 
-// List access rules for a subject
+// List access rules for a subject (active rules only; tombstones hidden).
 func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
-	return db.rows("select * from access where subject=? order by resource, operation", subject)
+	return db.rows("select subject, resource, operation, grant, granter, created from access where subject=? and removed=0 order by resource, operation", subject)
 }
 
-// Revoke access
+// Revoke access. Writes a versioned removed=1 tombstone (never a DELETE) so a
+// later grant supersedes it and a stale earlier grant can't resurrect it.
 func (db *DB) access_revoke(subject string, resource string, operation string) {
 	db.access_setup() // Ensure table exists
-	db.exec_replicated("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
+	db.access_upsert(subject, resource, operation, 0, 1, "")
 }
 
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource

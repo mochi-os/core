@@ -80,7 +80,9 @@ var (
 		"row":         sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":        sl.NewBuiltin("mochi.db.rows", api_db_query),
 		"indexes":     sl.NewBuiltin("mochi.db.indexes", api_db_indexes),
+		"merge":       sl.NewBuiltin("mochi.db.merge", api_db_merge),
 		"table":       sl.NewBuiltin("mochi.db.table", api_db_table),
+		"tombstone":   sl.NewBuiltin("mochi.db.tombstone", api_db_tombstone),
 		"tables":      sl.NewBuiltin("mochi.db.tables", api_db_tables),
 		"transaction": sl.NewBuiltin("mochi.db.transaction", api_db_transaction),
 	})

@@ -479,7 +479,38 @@ func replication_op_event(e *Event) {
 		info("Replication op dropping: cannot decode payload")
 		return
 	}
+	if !replication_op_authorized(e.peer, op.User) {
+		info("Replication op dropped: peer %q not authorized for user %q", e.peer, op.User)
+		audit_message_rejected(e.peer, "unauthorized replication op for user "+op.User)
+		return
+	}
 	replication_op_receive(e.peer, &op)
+}
+
+// replication_op_authorized reports whether `peer` may deliver a per-user
+// replication op for `user` — the inbound counterpart of the recipients() fan-out.
+// Per-user (user-to-user) scope: a server-pair member is always allowed (it carries
+// any user's data under server-to-server replication); any other peer must hold an
+// explicit hosts row for this user, which only the user's own entity can create via
+// membership/join. This is exactly recipients(user) membership without materialising
+// the list. Without it, any peer that can sign an event could forge writes to any
+// user's app DB (threat-model finding A, claude/plans/replication-threat-model.md).
+// Gated here at the event boundary (the authenticated e.peer), not in
+// replication_op_receive — the in-order/dedup/apply machinery below is exercised
+// directly by tests and is the trusted layer beneath this gate.
+func replication_op_authorized(peer, user string) bool {
+	if peer_is_pair(peer) {
+		return true
+	}
+	if user == "" {
+		return false
+	}
+	db := db_open("db/replication.db")
+	if db == nil {
+		return false
+	}
+	has, _ := db.exists("select 1 from hosts where user=? and peer=?", user, peer)
+	return has
 }
 
 // replication_op_receive is the framework-layer entry point for an
@@ -3036,7 +3067,7 @@ func replication_apply_app_system_exec(op *ReplicationOp) ApplyResult {
 	if db == nil {
 		return ApplyDeferred
 	}
-	if _, err := db.internal.Exec(cmd.Statement, cmd.Args...); err != nil {
+	if _, err := db.exec_replicated_apply(cmd.Statement, cmd.Args...); err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			debug("Replication exec-app-system deferred (FK): user=%q app=%q table=%q sql=%q", op.User, op.Database, op.Table, cmd.Statement)
 			return ApplyDeferred
@@ -3068,7 +3099,7 @@ func replication_apply_user_core_exec(op *ReplicationOp) ApplyResult {
 	if db == nil {
 		return ApplyDeferred
 	}
-	if _, err := db.internal.Exec(cmd.Statement, cmd.Args...); err != nil {
+	if _, err := db.exec_replicated_apply(cmd.Statement, cmd.Args...); err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			debug("Replication exec-user-core deferred (FK): user=%q table=%q sql=%q", op.User, op.Table, cmd.Statement)
 			return ApplyDeferred
@@ -3987,7 +4018,7 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 	// would fail "no such table". Ensure by op target before applying.
 	broadcast_infra_table_ensure(db, op.Table)
 
-	if _, err := db.starlark.Exec(cmd.Statement, cmd.Args...); err != nil {
+	if _, err := db.exec_replicated_apply(cmd.Statement, cmd.Args...); err != nil {
 		// FK violations under out-of-order arrival (parallel-queue
 		// send sends N ops to one peer concurrently; receiver applies
 		// in arrival order). The parent row may arrive a fraction of
@@ -4048,6 +4079,16 @@ func replication_system_set_event(e *Event) {
 	var s SystemSet
 	if !e.segment(&s) {
 		info("Replication system-set dropping: cannot decode payload")
+		return
+	}
+	// Server-global core DBs (settings/apps/domains/...) replicate pair-to-pair
+	// only. These events are anonymous (libp2p-signed, no entity), so the sending
+	// peer is the only identity — it must be a server-pair member (threat-model
+	// finding A2, claude/plans/replication-threat-model.md). Gated at the event
+	// boundary; replication_system_set_apply below is exercised directly by tests.
+	if !peer_is_pair(e.peer) {
+		info("Replication system-set dropped: peer %q is not a pair member", e.peer)
+		audit_message_rejected(e.peer, "system-set from non-pair peer")
 		return
 	}
 	replication_system_set_apply(e.peer, &s)
@@ -4210,6 +4251,12 @@ func replication_system_row_event(e *Event) {
 	var s SystemRow
 	if !e.segment(&s) {
 		info("Replication system-row dropping: cannot decode payload")
+		return
+	}
+	// Pair-to-pair only — same rule and reason as replication_system_set_event.
+	if !peer_is_pair(e.peer) {
+		info("Replication system-row dropped: peer %q is not a pair member", e.peer)
+		audit_message_rejected(e.peer, "system-row from non-pair peer")
 		return
 	}
 	replication_system_row_apply(e.peer, &s)

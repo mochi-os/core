@@ -164,6 +164,59 @@ func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _
 	return sqlite3.AUTH_OK
 }
 
+// db_authorise_starlark_strict is db_authorise_starlark plus a DDL deny-list, used
+// ONLY by the replication apply path (exec_replicated_apply). A replicated op is
+// always DML — schema changes go through the suppressed migration system, never the
+// wire — so an inbound CREATE/DROP/ALTER of a table/index/view (or REINDEX) is a
+// malicious op (e.g. a compromised host sending "DROP TABLE posts") and is denied.
+func db_authorise_starlark_strict(action sqlite3.AuthorizerActionCode, name3rd, name4th, schema, inner string) sqlite3.AuthorizerReturnCode {
+	switch action {
+	case sqlite3.AUTH_CREATE_TABLE, sqlite3.AUTH_CREATE_TEMP_TABLE,
+		sqlite3.AUTH_DROP_TABLE, sqlite3.AUTH_DROP_TEMP_TABLE,
+		sqlite3.AUTH_ALTER_TABLE,
+		sqlite3.AUTH_CREATE_INDEX, sqlite3.AUTH_CREATE_TEMP_INDEX,
+		sqlite3.AUTH_DROP_INDEX, sqlite3.AUTH_DROP_TEMP_INDEX,
+		sqlite3.AUTH_CREATE_VIEW, sqlite3.AUTH_CREATE_TEMP_VIEW,
+		sqlite3.AUTH_DROP_VIEW, sqlite3.AUTH_DROP_TEMP_VIEW,
+		sqlite3.AUTH_REINDEX:
+		return sqlite3.AUTH_DENY
+	}
+	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
+}
+
+// exec_replicated_apply runs an inbound replicated SQL statement under the strict
+// authorizer (the base deny-list PLUS DDL). Every replication APPLY path routes
+// through it, so a malicious peer's op cannot DROP/ALTER the user's schema — nor,
+// on the core and app-system paths (which historically ran on the no-authorizer
+// `internal` pool), ATTACH another DB or run PRAGMA. The authorizer fires per
+// ACTION, so this is multi-statement-safe; a leading-verb check is not, because
+// db.starlark.Exec runs every statement in the string. The strict authorizer is set
+// on one checked-out connection for the duration of the apply and restored before
+// that connection returns to the pool, so app migrations — which legitimately run
+// DDL through the same pool — are unaffected.
+func (db *DB) exec_replicated_apply(statement string, args ...any) (sql.Result, error) {
+	ctx := context.Background()
+	conn, err := db.starlark.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	setauth := func(cb func(sqlite3.AuthorizerActionCode, string, string, string, string) sqlite3.AuthorizerReturnCode) error {
+		return conn.Raw(func(dc any) error {
+			raw, ok := dc.(interface{ Raw() *sqlite3.Conn })
+			if !ok {
+				return fmt.Errorf("replication apply: driver connection does not expose *sqlite3.Conn")
+			}
+			return raw.Raw().SetAuthorizer(cb)
+		})
+	}
+	if err := setauth(db_authorise_starlark_strict); err != nil {
+		return nil, err
+	}
+	defer setauth(db_authorise_starlark)
+	return conn.ExecContext(ctx, statement, args...)
+}
+
 func db_create() {
 	db_migrating.Add(1)
 	defer db_migrating.Add(-1)

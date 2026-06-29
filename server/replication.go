@@ -1426,6 +1426,12 @@ func replication_pending_warn_stalled() {
 			continue
 		}
 		if gapfill_reship_exhausted(s) {
+			// Operator-free self-heal (#101): reseed from the peer, gated by the
+			// row-level subset swap-guard (which refuses + re-escalates if the target
+			// uniquely holds data). Off by default; falls through to the operator warn.
+			if replication_auto_reseed_try(s) {
+				continue
+			}
 			warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d predecessor=[%d,%d] count=%d — anchored gap, RE-SHIP EXHAUSTED: the gap-fill asked the peer %d times with no progress; it cannot supply the missing ops (pruned past retention, or a journal gap), so self-heal is impossible — an operator reseed is required (run the /replication-audit plumbing pass for the subset-checked reseed command).",
 				now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
 				s.Cursor, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count, gapfill_max_attempts)

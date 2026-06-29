@@ -1394,6 +1394,12 @@ func replication_pending_warn_stalled() {
 				now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database, s.Count)
 			continue
 		}
+		if gapfill_reship_exhausted(s) {
+			warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d predecessor=[%d,%d] count=%d — anchored gap, RE-SHIP EXHAUSTED: the gap-fill asked the peer %d times with no progress; it cannot supply the missing ops (pruned past retention, or a journal gap), so self-heal is impossible — an operator reseed is required (run the /replication-audit plumbing pass for the subset-checked reseed command).",
+				now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
+				s.Cursor, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count, gapfill_max_attempts)
+			continue
+		}
 		warn("Replication stream stalled %ds: peer=%q scope=%q user=%q db=%q cursor=%d anchored=%v predecessor.minimum=%d predecessor.maximum=%d count=%d — an anchored gap (a predecessor op never arrived). Remedy: run the /replication-audit plumbing pass, then reseed.",
 			now()-s.Oldest, s.Peer, s.Scope, s.User, s.Database,
 			s.Cursor, s.Anchored, s.Predecessor.Minimum, s.Predecessor.Maximum, s.Count)

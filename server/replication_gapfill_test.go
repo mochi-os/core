@@ -151,3 +151,43 @@ func TestGapfillRequestServeCycleThroughCbor(t *testing.T) {
 		t.Fatalf("gap-fill cycle re-shipped seqs %v, want [6] (request->cbor wire->serve->reship)", shipped)
 	}
 }
+
+// Bounded retries (#80) + unfillability detection (#79): a stream whose cursor
+// never advances stops being re-requested after gapfill_max_attempts, reads as
+// re-ship-exhausted (so the stall alert escalates to an operator reseed), and a
+// cursor advance resets the counter and re-enables requests.
+func TestGapfillBoundedRetries(t *testing.T) {
+	orig := gapfill_requested
+	gapfill_requested = map[string]gapfill_attempt{}
+	defer func() { gapfill_requested = orig }()
+
+	key := "peerX|app|u1|app:test"
+	s := StalledStream{Peer: "peerX", Scope: "app", User: "u1", Database: "app:test"}
+	base := int64(1_000_000)
+
+	// No cursor progress (always 5), spaced past the backoff: exactly max_attempts fire.
+	sent := 0
+	for i := 0; i < gapfill_max_attempts+3; i++ {
+		if gapfill_should_request(key, 5, base+int64(i)*(gapfill_backoff_seconds+1)) {
+			sent++
+		}
+	}
+	if sent != gapfill_max_attempts {
+		t.Fatalf("bounded retries: sent %d requests, want %d", sent, gapfill_max_attempts)
+	}
+	if !gapfill_reship_exhausted(s) {
+		t.Fatal("stream should read re-ship-exhausted after max no-progress attempts")
+	}
+
+	// A cursor advance (re-ship or normal delivery made progress) resets the count.
+	if !gapfill_should_request(key, 6, base+9_000_000) {
+		t.Fatal("a cursor advance must reset the counter and re-enable requests")
+	}
+	if gapfill_reship_exhausted(s) {
+		t.Fatal("after progress the stream must no longer be exhausted")
+	}
+	// Backoff still applies: a second request within the window is refused.
+	if gapfill_should_request(key, 6, base+9_000_000+1) {
+		t.Fatal("a request within the backoff window must be refused")
+	}
+}

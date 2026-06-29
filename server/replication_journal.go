@@ -658,35 +658,94 @@ func journal_backfill_peer(userUID, peer string) {
 const gapfill_min_stall_seconds = 60
 const gapfill_backoff_seconds = 60
 
-// gapfill_requested remembers the last request per stream so the 30s manager
-// tick re-asks with backoff, not every pass. Only the (single) manager goroutine
-// touches it, via replication_gapfill_request.
-var gapfill_requested = map[string]int64{}
+// gapfill_attempt tracks per-stream gap-fill progress so the request loop can
+// bound retries: the last request time (backoff), the apply-cursor seen at that
+// request, and how many consecutive requests have NOT moved the cursor. Only the
+// (single) manager goroutine touches the map — from replication_gapfill_request
+// and the stall-alert's gapfill_reship_exhausted read.
+type gapfill_attempt struct {
+	last     int64 // unix-seconds of the last request
+	cursor   int64 // apply-cursor observed at the last request
+	attempts int   // consecutive requests with no cursor progress
+}
+
+var gapfill_requested = map[string]gapfill_attempt{}
+
+// gapfill_max_attempts bounds re-ship requests for one wedged stream: after this
+// many consecutive requests with no cursor progress, the peer evidently cannot
+// supply the missing ops (pruned past retention, or a journal gap), so we stop
+// asking and let the (sharpened) stall alert escalate it to an operator reseed.
+// At gapfill_backoff_seconds apart that's ~5 min — well under the 15-min stall
+// alert, so the gap is classified unfillable before the operator is paged.
+const gapfill_max_attempts = 5
+
+// gapfill_should_request advances the per-stream retry bookkeeping and reports
+// whether to send a re-ship request now. It resets the no-progress counter the
+// moment the cursor advances (re-ship or ordinary delivery made progress),
+// returns false once gapfill_max_attempts no-progress requests have been sent
+// (re-ship exhausted), and otherwise honours the backoff. nowSec is a parameter
+// so the bounding logic is unit-testable without the wire/queue path.
+func gapfill_should_request(key string, cursor, nowSec int64) bool {
+	st := gapfill_requested[key]
+	if cursor > st.cursor {
+		st.attempts = 0
+		st.cursor = cursor
+		gapfill_requested[key] = st
+	}
+	if st.attempts >= gapfill_max_attempts {
+		return false
+	}
+	if st.last != 0 && nowSec-st.last < gapfill_backoff_seconds {
+		return false
+	}
+	st.last = nowSec
+	st.cursor = cursor
+	st.attempts++
+	gapfill_requested[key] = st
+	return true
+}
+
+// gapfill_reship_exhausted reports whether the gap-fill has given up re-ship
+// requests for this stream (gapfill_max_attempts with no cursor progress) — the
+// peer can't supply the missing ops, so an operator reseed is the remedy. Read by
+// the stall alert to sharpen its message.
+func gapfill_reship_exhausted(s StalledStream) bool {
+	key := s.Peer + "|" + s.Scope + "|" + s.User + "|" + s.Database
+	return gapfill_requested[key].attempts >= gapfill_max_attempts
+}
 
 // replication_gapfill_request asks each peer to re-ship the ops missing from a
-// wedged inbound stream (the self-healing half of an anchored gap). Called from the
-// replication manager after the drain.
+// wedged inbound stream (the self-healing half of an anchored gap), bounded by
+// gapfill_max_attempts. Called from the replication manager after the drain.
 func replication_gapfill_request() {
+	live := map[string]bool{}
 	for _, s := range replication_pending_stalled() {
 		// v1: app streams only (journal-replayable), and only true anchored gaps
 		// (a real missing predecessor — not a fresh, un-seeded stream).
 		if !s.Anchored || !strings.HasPrefix(s.Database, "app:") {
 			continue
 		}
+		key := s.Peer + "|" + s.Scope + "|" + s.User + "|" + s.Database
+		live[key] = true
 		if now()-s.Oldest < gapfill_min_stall_seconds {
 			continue // let ordinary in-flight lag resolve first
 		}
-		key := s.Peer + "|" + s.Scope + "|" + s.User + "|" + s.Database
-		ts := now()
-		if last, ok := gapfill_requested[key]; ok && ts-last < gapfill_backoff_seconds {
-			continue
+		if !gapfill_should_request(key, s.Cursor, now()) {
+			continue // within backoff, or re-ship exhausted (stall alert escalates)
 		}
-		gapfill_requested[key] = ts
 		m := message("", "", "replication", "replica/gapfill")
 		m.content = gapfill_request_content(s)
 		m.send_peer(s.Peer)
-		info("Replication gap-fill requested: peer=%q user=%q db=%q range=[%d,%d] (stalled %ds)",
-			s.Peer, s.User, s.Database, s.Cursor+1, s.Predecessor.Maximum, now()-s.Oldest)
+		info("Replication gap-fill requested: peer=%q user=%q db=%q range=[%d,%d] attempt=%d/%d (stalled %ds)",
+			s.Peer, s.User, s.Database, s.Cursor+1, s.Predecessor.Maximum,
+			gapfill_requested[key].attempts, gapfill_max_attempts, now()-s.Oldest)
+	}
+	// Forget streams no longer stalled (healed/drained) so the map stays bounded
+	// and a future re-stall of the same stream starts its count fresh.
+	for key := range gapfill_requested {
+		if !live[key] {
+			delete(gapfill_requested, key)
+		}
 	}
 }
 

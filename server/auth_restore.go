@@ -250,6 +250,16 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 		}
 	}
 
+	// Integrity: every restored sqlite DB must pass quick_check. The manifest
+	// file-hash above is self-attested (the user signs their own bundle), so it
+	// does not prove a DB is structurally sound — without this a corrupt or
+	// malicious sqlite would be swapped in and only caught later by the runtime
+	// quarantine sweep, after an admin alert.
+	if bad, _ := restore_integrity_guard(bundle); bad != "" {
+		fail("bundle_corrupt: " + bad)
+		return
+	}
+
 	// Atomic-ish swap: rename each data entry into the user's directory.
 	restore_progress(uid, "unpacking", 45, "")
 	if err := restore_swap(uid, bundle); err != nil {
@@ -625,6 +635,36 @@ func restore_schema_guard(bundle string) (string, error) {
 		err = nil
 	}
 	return newer, err
+}
+
+// restore_integrity_guard rejects a bundle containing a sqlite DB file that fails
+// quick_check (corrupt, or unverifiable). The manifest file-hash is self-attested —
+// the user signs their own bundle — so it does not prove a DB is structurally
+// sound: a corrupt or malicious sqlite with a matching hash would otherwise be
+// swapped in (restore_swap) and only caught later by the runtime quarantine sweep,
+// after an admin alert. Returns the name of the first offending file, or "" if every
+// DB is clean. Reuses snapshot_integrity_ok — the same gate the bootstrap snapshot
+// uses (#6). Only *.db files are checked; their -wal/-shm siblings are not standalone
+// databases.
+func restore_integrity_guard(bundle string) (string, error) {
+	var bad string
+	err := filepath.WalkDir(bundle, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if filepath.Ext(d.Name()) != ".db" {
+			return nil
+		}
+		if !snapshot_integrity_ok(path) {
+			bad = d.Name()
+			return io.EOF
+		}
+		return nil
+	})
+	if err == io.EOF {
+		err = nil
+	}
+	return bad, err
 }
 
 // restore_db_version reads a SQLite DB's pragma user_version read-only,

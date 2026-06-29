@@ -683,16 +683,25 @@ func replication_gapfill_request() {
 		}
 		gapfill_requested[key] = ts
 		m := message("", "", "replication", "replica/gapfill")
-		m.content = map[string]any{
-			"scope": s.Scope,
-			"user":  s.User,
-			"db":    s.Database,
-			"from":  s.Cursor + 1,
-			"to":    s.Predecessor.Maximum,
-		}
+		m.content = gapfill_request_content(s)
 		m.send_peer(s.Peer)
 		info("Replication gap-fill requested: peer=%q user=%q db=%q range=[%d,%d] (stalled %ds)",
 			s.Peer, s.User, s.Database, s.Cursor+1, s.Predecessor.Maximum, now()-s.Oldest)
+	}
+}
+
+// gapfill_request_content builds the wire payload of a gap-fill request from a
+// stalled stream: the stream identity plus the exact missing window
+// [cursor+1 .. predecessor.max]. Factored out so the request->serve round-trip is
+// testable through real cbor — the from/to integers decode as uint64 on the wire,
+// which gapfill_seq must handle (the bug that made the serve handler a no-op).
+func gapfill_request_content(s StalledStream) map[string]any {
+	return map[string]any{
+		"scope": s.Scope,
+		"user":  s.User,
+		"db":    s.Database,
+		"from":  s.Cursor + 1,
+		"to":    s.Predecessor.Maximum,
 	}
 }
 

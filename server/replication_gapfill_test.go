@@ -98,3 +98,56 @@ func TestGapfillSeqCborWire(t *testing.T) {
 		t.Fatalf("cbor-wire from decoded as %T -> gapfill_seq=%d, want 44", decoded["from"], got)
 	}
 }
+
+// Full gap-fill cycle through the REAL cbor wire: a stalled stream (detect) ->
+// the request payload the requester builds -> cbor encode/decode (the wire, where
+// from/to become uint64) -> the serve handler -> the re-ship. This is the
+// regression guard the original unit tests lacked: they passed Go ints straight
+// to gapfill_seq and never exercised cbor, so the uint64 bug (serve handler
+// early-returning on every request -> the committed gap-fill never served) shipped
+// green. If gapfill_seq stops handling uint64, this fails. (Apply/drain of the
+// re-shipped op is the standard replication_op_receive path, covered elsewhere.)
+func TestGapfillRequestServeCycleThroughCbor(t *testing.T) {
+	defer journal_test_dir(t, "u1", "testapp")()
+	db := db_open("users/u1/testapp/db/data.db")
+	if db == nil {
+		t.Fatal("db_open returned nil")
+	}
+	db.journal_setup()
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists hosts (user text not null, peer text not null, added integer not null, primary key (user, peer))")
+	rdb.exec("insert into hosts (user, peer, added) values ('u1', 'peerX', 0)")
+	stream := repl_stream_key(repl_stream_class_app, "testapp")
+	// The missing predecessor the receiver needs: seq 6, prev 5.
+	gapfill_seed_op(db, rdb, stream, "o6", 6, 5)
+
+	// DETECT: the stalled stream the receiver would compute — applied up to
+	// cursor 5, a buffered op whose predecessor is seq 6, so the gap is exactly 6.
+	s := StalledStream{
+		Peer: "peerX", Scope: repl_scope_app, User: "u1", Database: stream,
+		Cursor: 5, Anchored: true,
+		Predecessor: PredecessorRange{Minimum: 6, Maximum: 6},
+	}
+	// REQUEST -> WIRE: the real payload, through real cbor (from/to come back uint64).
+	var decoded map[string]any
+	if err := cbor_decode_mode.Unmarshal(cbor_encode(gapfill_request_content(s)), &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	// SERVE: feed the wire-decoded request to the handler; capture the re-ship.
+	var shipped []int64
+	orig := journal_ship
+	journal_ship = func(userUID string, op *ReplicationOp, peers []string) {
+		if len(peers) == 1 && peers[0] == "peerX" {
+			shipped = append(shipped, op.Sequence)
+		}
+	}
+	defer func() { journal_ship = orig }()
+
+	replication_gapfill_event(&Event{content: decoded, peer: "peerX"})
+
+	// RESHIP: op 6 (the missing predecessor, range [cursor+1=6 .. max_prev=6]) re-shipped.
+	if len(shipped) != 1 || shipped[0] != 6 {
+		t.Fatalf("gap-fill cycle re-shipped seqs %v, want [6] (request->cbor wire->serve->reship)", shipped)
+	}
+}

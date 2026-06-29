@@ -103,13 +103,19 @@ func TestAuditExcludesForPath(t *testing.T) {
 	if columnsCore["accounts"] == nil || !columnsCore["accounts"]["last_delivered"] {
 		t.Error("core DB should exclude accounts.last_delivered")
 	}
+	if !tablesCore["settings"] {
+		t.Error("user.db should exclude the host-local settings table (interest_summary cache etc.)")
+	}
 
 	// App-system DB (app.db) also carries the core host-local columns, so the
 	// per-host attachments.entity (owned "" vs foreign source) pointer is
 	// excluded from the convergence hash. (#68)
-	_, columnsAppSys := audit_excludes_for_path("users/U/APPID/app.db")
+	tablesAppSys, columnsAppSys := audit_excludes_for_path("users/U/APPID/app.db")
 	if columnsAppSys["attachments"] == nil || !columnsAppSys["attachments"]["entity"] {
 		t.Error("app.db should exclude attachments.entity")
+	}
+	if tablesAppSys["settings"] {
+		t.Error("the settings exclusion must be scoped to user.db — app.db must NOT exclude settings")
 	}
 }
 

@@ -485,6 +485,13 @@ func audit_excludes_for_path(rel string) (tables map[string]bool, columns map[st
 	}
 	// Core / app-system DB: the core host-local columns (e.g. user.db accounts).
 	columns = audit_local_columns_core
+	// user.db's `settings` table holds per-host caches (e.g. interest_summary)
+	// written with db.exec, NOT exec_replicated — replicated user preferences live
+	// in `preferences`. Exclude it so a host-local cache row (present on one host,
+	// regenerated per host) isn't counted as a cross-host divergence.
+	if strings.HasSuffix(rel, "/user.db") {
+		tables["settings"] = true
+	}
 	return tables, columns
 }
 

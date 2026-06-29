@@ -716,11 +716,15 @@ func replication_gapfill_event(e *Event) {
 // gapfill_seq coerces a JSON-decoded numeric field (float64 over the wire) to int64.
 func gapfill_seq(v any) int64 {
 	switch n := v.(type) {
-	case float64:
-		return int64(n)
 	case int64:
 		return n
+	case uint64:
+		// cbor decodes positive integers into interface{} as uint64, so the
+		// wire-decoded from/to land here — not int64.
+		return int64(n)
 	case int:
+		return int64(n)
+	case float64:
 		return int64(n)
 	}
 	return 0

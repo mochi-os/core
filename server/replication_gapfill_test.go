@@ -84,3 +84,17 @@ func TestGapfillSeq(t *testing.T) {
 		t.Error("gapfill_seq should be 0 for non-numeric")
 	}
 }
+
+// The actual wire path: cbor decodes positive integers into interface{} as
+// uint64, not int64 — so gapfill_seq MUST handle uint64, or the gap-fill handler
+// reads from=0 and silently early-returns (the bug the rig e2e surfaced — the
+// direct-value test above never exercised the cbor round-trip).
+func TestGapfillSeqCborWire(t *testing.T) {
+	var decoded map[string]any
+	if err := cbor_decode_mode.Unmarshal(cbor_encode(map[string]any{"from": int64(44)}), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := gapfill_seq(decoded["from"]); got != 44 {
+		t.Fatalf("cbor-wire from decoded as %T -> gapfill_seq=%d, want 44", decoded["from"], got)
+	}
+}

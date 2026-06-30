@@ -38,6 +38,15 @@ type DB struct {
 	user     *User
 	app      *App
 	kind     string
+	// system_setup is set once db_app_system has run access_setup /
+	// attachments_setup / journal_setup on this handle. Gated on this — NOT on
+	// db_open_work's `reused` — so a handle first cached by a raw db_open (the
+	// convergence audit / sweep / bootstrap reading app.db's replicated tables)
+	// still gets its setups, and the access-table migration, on the first
+	// db_app_system call. Without it a passive replica's access table stays on
+	// the legacy schema and inbound new-schema access ops fail + deadletter (#111).
+	// Guarded by lock(path) at the setup site.
+	system_setup bool
 	// closed is the unix timestamp when this handle was last marked
 	// idle, or 0 while in use. Always read and written under
 	// databases_lock - same primitive that guards the cache map this
@@ -667,7 +676,7 @@ func db_app_system(u *User, app *App) *DB {
 	}
 
 	path := fmt.Sprintf("users/%s/%s/app.db", u.UID, app.id)
-	db, _, reused := db_open_work(path)
+	db, _, _ := db_open_work(path)
 	if db == nil {
 		return nil
 	}
@@ -675,18 +684,24 @@ func db_app_system(u *User, app *App) *DB {
 	db.app = app
 	db.kind = db_kind_app_system
 
-	if reused {
+	// Run the platform system-table setups (and the access-table migration) the
+	// first time THIS handle is used as an app-system DB — even if a raw db_open
+	// cached it first (which leaves system_setup false). Idempotent. (#111)
+	if db.system_setup {
 		return db
 	}
 
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
+	if db.system_setup {
+		return db
+	}
 
-	// Create system tables
 	db.access_setup()
 	db.attachments_setup()
 	db.journal_setup()
+	db.system_setup = true
 
 	return db
 }

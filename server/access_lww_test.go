@@ -103,3 +103,38 @@ func TestAccessMigrate(t *testing.T) {
 		t.Errorf("post-migration deny should win (v2 > v1): got %d, want 0", e)
 	}
 }
+
+// #111: a handle first cached by a raw db_open (e.g. the convergence audit reading
+// app.db) leaves system_setup=false; db_app_system must still run access_setup and
+// migrate the legacy table on the next call, rather than short-circuiting on `reused`.
+// Without this a passive replica's access table stays legacy and inbound new-schema
+// access ops fail with "no column named removed" and get deadlettered.
+func TestDbAppSystemMigratesReusedHandle(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+
+	db := db_app_system(u, a) // first open: new schema, system_setup=true
+	if db == nil {
+		t.Fatal("no app-system db")
+	}
+
+	// Simulate a handle that was cached without the setups having run, holding a
+	// legacy access table (the raw-db_open-then-db_app_system race).
+	db.exec("drop table access")
+	db.exec("create table access ( id integer primary key autoincrement, subject text not null, resource text not null, operation text not null, grant integer not null, granter text not null, created integer not null, unique( subject, resource, operation ) )")
+	db.exec("insert into access (subject,resource,operation,grant,granter,created) values ('u','r','x',1,'g',100)")
+	db.system_setup = false
+
+	// The next db_app_system must run the setups on the reused handle and migrate.
+	if db_app_system(u, a) != db {
+		t.Fatal("expected the same cached handle")
+	}
+	if !db.has_column("access", "version") {
+		t.Fatal("db_app_system did not migrate the access table on a reused handle (#111)")
+	}
+	if e := effective(db, "u", "r", "x"); e != 1 {
+		t.Errorf("migrated rule lost after reused-handle migration: got %d, want 1", e)
+	}
+}

@@ -487,10 +487,14 @@ func audit_excludes_for_path(rel string) (tables map[string]bool, columns map[st
 	columns = audit_local_columns_core
 	// user.db's `settings` table holds per-host caches (e.g. interest_summary)
 	// written with db.exec, NOT exec_replicated — replicated user preferences live
-	// in `preferences`. Exclude it so a host-local cache row (present on one host,
-	// regenerated per host) isn't counted as a cross-host divergence.
+	// in `preferences`. user.db's `apps` table holds the per-host app-setup counter
+	// (app -> default-permission set version applied locally), also db.exec and
+	// host-local by design: a passive replica that never runs an app's setup
+	// legitimately lacks its row even though the app's permissions replicate. Exclude
+	// both so a host-local row isn't counted as a cross-host divergence.
 	if strings.HasSuffix(rel, "/user.db") {
 		tables["settings"] = true
+		tables["apps"] = true
 	}
 	return tables, columns
 }

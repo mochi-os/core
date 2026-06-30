@@ -576,7 +576,7 @@ func TestReplicationLinkPrunesDeviceAccounts(t *testing.T) {
 		{"email", "alice@example.com"},
 		{"ai", "Claude"},
 	} {
-		user_db.exec("insert into accounts (type, label, created) values (?, ?, ?)", a.typ, a.label, now())
+		user_db.exec("insert into accounts (id, type, label, created) values (?, ?, ?, ?)", uid(), a.typ, a.label, now())
 	}
 
 	replication_link_prune_devices("u-alice")

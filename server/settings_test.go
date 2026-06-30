@@ -281,11 +281,12 @@ func TestUserPreferenceDelete(t *testing.T) {
 		t.Error("preference should be removed from map")
 	}
 
-	// Check database
+	// Check database: the preference is a versioned register, so a delete is a
+	// tombstone (removed=1), not a row removal — it must be gone from the live view.
 	db := db_user(user, "user")
-	exists, _ := db.exists("SELECT 1 FROM preferences WHERE name = ?", "to_delete")
+	exists, _ := db.exists("SELECT 1 FROM preferences WHERE name = ? AND removed=0", "to_delete")
 	if exists {
-		t.Error("preference should be removed from database")
+		t.Error("preference should be removed (tombstoned) from database")
 	}
 
 	// Delete again should return false

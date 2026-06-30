@@ -450,7 +450,7 @@ func TestUserIsFreshContentTables(t *testing.T) {
 		table string
 		ins   string
 	}{
-		{"accounts", "insert into accounts (type, identifier, created) values ('email', 'x@example.com', 0)"},
+		{"accounts", "insert into accounts (id, type, identifier, created) values ('a1', 'email', 'x@example.com', 0)"},
 		{"groups", "insert into groups (id, name, created) values ('g1', 'g', 0)"},
 		{"group_members", "insert into group_members (parent, member, type, created) values ('g1', 'u-fresh-content', 'user', 0)"},
 		{"interests", "insert into interests (qid, weight) values ('x', 1)"},

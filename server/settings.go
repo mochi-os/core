@@ -492,11 +492,16 @@ func setting_signup_enabled() bool {
 	return setting_get("signup_enabled", "true") == "true"
 }
 
+// reg_preferences is the user.db preferences register: a (name → value) versioned
+// LWW-Register so a preference (language, theme, …) the user changes on one host
+// converges on every host of the account.
+var reg_preferences = register_def{"preferences", []string{"name"}, []string{"value"}}
+
 // user_preferences_load loads all preferences for a user
 func user_preferences_load(u *User) map[string]string {
 	prefs := map[string]string{}
 	db := db_user(u, "user")
-	rows, err := db.rows("select * from preferences")
+	rows, err := db.rows("select * from preferences where deleted=0")
 	if err != nil {
 		return prefs
 	}
@@ -509,6 +514,11 @@ func user_preferences_load(u *User) map[string]string {
 	}
 	for _, obsolete := range []string{"style_preset", "border_radius"} {
 		if _, exists := prefs[obsolete]; exists {
+			// Local hard-delete, not a replicated tombstone: these are deprecated
+			// keys no longer written by any code (so nothing can resurrect them, and
+			// each host cleans its own copy on load), and user_preferences_load is
+			// reachable from the replication_emit_to package-var initializer, so a
+			// replicated write here would form an initialisation cycle.
 			db.exec("delete from preferences where name = ?", obsolete)
 			delete(prefs, obsolete)
 		}
@@ -538,7 +548,7 @@ func user_preference_get(u *User, name, def string) string {
 // (Caught 2026-05-21: language changed on mochi1 didn't reach mochi2.)
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
-	db.exec_replicated("replace into preferences (name, value) values (?, ?)", name, value)
+	db.register_write(reg_preferences, map[string]any{"name": name, "value": value}, 0)
 	if u.Preferences == nil {
 		u.Preferences = map[string]string{}
 	}
@@ -553,7 +563,7 @@ func user_preference_delete(u *User, name string) bool {
 		return false
 	}
 	db := db_user(u, "user")
-	db.exec_replicated("delete from preferences where name = ?", name)
+	db.register_remove(reg_preferences, map[string]any{"name": name})
 	delete(u.Preferences, name)
 	return true
 }

@@ -524,6 +524,7 @@ func db_user(u *User, name string) *DB {
 	// Create tables for user.db
 	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
+		db.register_columns(reg_preferences)
 		db.groups_setup()
 		db.permissions_setup()
 
@@ -532,16 +533,23 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists services (service text not null primary key, app text not null)")
 		db.exec("create table if not exists paths (path text not null primary key, app text not null)")
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
+		db.register_columns(reg_classes)
+		db.register_columns(reg_services)
+		db.register_columns(reg_paths)
+		db.register_columns(reg_versions)
 
 		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0)")
+		db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, deleted integer not null default 0, writer text not null default '', revision integer not null default 1)")
 		db.exec("create index if not exists accounts_type on accounts(type)")
 		if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='last_delivered'"); !exists {
 			db.exec("alter table accounts add column last_delivered integer not null default 0")
 		}
+		db.accounts_migrate()
+		db.register_columns(reg_accounts)
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
+		db.register_columns(reg_interests)
 
 		// Internal key-value settings (Go-only, no Starlark API)
 		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")

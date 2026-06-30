@@ -53,12 +53,12 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	// Parse optional account kwarg
-	var account_id int
+	account_id := ""
 	for _, kv := range kwargs {
 		key := string(kv[0].(sl.String))
 		if key == "account" {
-			id, err := sl.AsInt32(kv[1])
-			if err != nil {
+			id, ok := account_id_arg(kv[1])
+			if !ok {
 				return sl_error(fn, "invalid account id")
 			}
 			account_id = id
@@ -74,9 +74,9 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	var ptype, api_key, model string
 
-	if account_id > 0 {
+	if account_id != "" {
 		// Look up specific account
-		row, err := db.row("select type, data, enabled from accounts where id=?", account_id)
+		row, err := db.row("select type, data, enabled from accounts where id=? and deleted=0", account_id)
 		if err != nil || row == nil {
 			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 		}
@@ -97,7 +97,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		model, _ = data["model"].(string)
 	} else {
 		// Use the designated default AI account
-		row, err := db.row("select type, data, enabled from accounts where (',' || \"default\" || ',') like '%,ai,%' and enabled=1")
+		row, err := db.row("select type, data, enabled from accounts where (',' || \"default\" || ',') like '%,ai,%' and enabled=1 and deleted=0")
 		if err != nil || row == nil {
 			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 		}

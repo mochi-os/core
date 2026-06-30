@@ -180,7 +180,7 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 }
 
 // Clear all access rules for a resource (and its sub-resources). Each rule is
-// tombstoned (a versioned removed=1 write), not deleted, so the clear converges
+// tombstoned (a versioned removed=1 write), not removed, so the clear converges
 // under multi-master and a stale concurrent grant can't survive it.
 func (db *DB) access_clear_resource(resource string) {
 	db.access_setup() // Ensure table exists

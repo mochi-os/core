@@ -86,6 +86,37 @@ func TestAttachmentRecordWriteReplicatesMetadata(t *testing.T) {
 	}
 }
 
+// TestAttachmentRecordWritePushesOwnBytes locks the byte-replication wiring: an
+// owner-owned attachment (Entity == "") eagerly streams its bytes to the user's host
+// set (replication_emit_file_push), so a paired replica can render it on failover
+// without a source-entity round-trip; a foreign cached reference (Entity set) must NOT
+// push — its bytes are fetched on demand from the source entity. This is the behaviour
+// that makes attachments fully replicated for server-server DR and user-user migration.
+func TestAttachmentRecordWritePushesOwnBytes(t *testing.T) {
+	cleanup, user_uid, app_id := setup_sql_replication_test(t)
+	defer cleanup()
+
+	u := &User{UID: user_uid}
+	a := app_by_id(app_id)
+	db := db_app_system(u, a)
+	if db == nil {
+		t.Fatal("no app-system db")
+	}
+
+	var pushed []string
+	orig := replication_emit_file_push
+	replication_emit_file_push = func(uid, app, path string) { pushed = append(pushed, path) }
+	defer func() { replication_emit_file_push = orig }()
+
+	attachment_record_write(db, &Attachment{ID: "att-own", Object: "post-1", Entity: "", Name: "photo.jpg", Size: 3, Rank: 1, Created: 1})
+	attachment_record_write(db, &Attachment{ID: "att-foreign", Object: "post-2", Entity: "entity-99", Name: "remote.jpg", Size: 5, Rank: 1, Created: 2})
+
+	want := attachment_filename("att-own", "photo.jpg")
+	if len(pushed) != 1 || pushed[0] != want {
+		t.Fatalf("byte push = %v, want exactly [%q] — owner-owned bytes push, foreign cached ref must not", pushed, want)
+	}
+}
+
 // setup_attachment_move_test opens a fresh attachments DB under a
 // throwaway data_dir, seeds three rows (id=a,b,c with ranks 1,2,3)
 // scoped to the given entity, and returns the DB plus a cleanup

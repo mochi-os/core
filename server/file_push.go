@@ -26,6 +26,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // FilePushHeader rides in `data` on every file/push message. Tells the
@@ -36,6 +37,13 @@ type FilePushHeader struct {
 	App  string `cbor:"app"`
 	Path string `cbor:"path"`
 	Size int64  `cbor:"size"`
+	// Root selects the directory Path is resolved against on the receiver: "" (or
+	// "files") = the per-(user,app) files/ dir (attachments, mochi.file.*); "app" = the
+	// per-(user,app) dir itself, for app data that lives OUTSIDE files/ — the
+	// repositories app's bare git trees at <app>/<repo>/objects/... (#105). Backward
+	// compatible: an old sender omits it and an old receiver ignores it, both meaning
+	// the files/ root.
+	Root string `cbor:"root,omitempty"`
 	// Resume signals the sender supports resumable transfer (#78): right after
 	// this header it reads a FilePushResume from the receiver and streams the
 	// body from that offset, so an interrupted push continues instead of
@@ -67,11 +75,18 @@ type FileDelete struct {
 	Path string `cbor:"path"`
 }
 
-// replication_emit_file_push enqueues a file/push queue row for each
-// peer in the user's host set. The row references the file path on
-// disk; the queue worker reads + streams the file live at send time
-// via queue_send_file_push.
-func replication_emit_file_push(userUID, appID, path string) {
+// replication_emit_file_push enqueues a file/push for a files/-rooted path (the
+// attachment / mochi.file.* case). Kept as a var so tests stub it.
+var replication_emit_file_push = func(userUID, appID, path string) {
+	replication_emit_file_push_rooted(userUID, appID, "", path)
+}
+
+// replication_emit_file_push_rooted enqueues a file/push queue row for each peer in the
+// user's host set. The row references the file path on disk; the queue worker reads +
+// streams the file live at send time via queue_send_file_push. root selects where Path
+// is resolved (see file_push_base / FilePushHeader.Root): "" for files/, "app" for the
+// per-app dir (git trees). A var so tests can capture it.
+var replication_emit_file_push_rooted = func(userUID, appID, root, path string) {
 	if userUID == "" || appID == "" {
 		return
 	}
@@ -90,7 +105,7 @@ func replication_emit_file_push(userUID, appID, path string) {
 		return
 	}
 
-	base := file_user_app_base(userUID, appID)
+	base := file_push_base(userUID, appID, root)
 	full := filepath.Join(base, path)
 	stat, err := os.Stat(full)
 	if err != nil {
@@ -106,6 +121,7 @@ func replication_emit_file_push(userUID, appID, path string) {
 		App:  appID,
 		Path: path,
 		Size: stat.Size(),
+		Root: root,
 	})
 
 	empty_content := cbor_encode(map[string]any{})
@@ -150,6 +166,37 @@ func replication_emit_file_push_delete(userUID, appID, path string) {
 // Mirrors api_file_base for code paths that don't have a User struct.
 func file_user_app_base(userUID, appID string) string {
 	return filepath.Join(data_dir, "users", userUID, appID, "files")
+}
+
+// file_push_root_app is the FilePushHeader.Root value for app-rooted pushes (app data
+// outside files/, i.e. the repositories app's bare git trees).
+const file_push_root_app = "app"
+
+// file_push_base returns the directory a file/push Path is resolved against, given the
+// header's Root. Default ("" / unknown) is the files/ dir, preserving the original
+// behaviour. "app" is the per-(user,app) dir itself, so git objects/refs stored at
+// <app>/<repo>/... replicate live (#105).
+func file_push_base(userUID, appID, root string) string {
+	if root == file_push_root_app {
+		return filepath.Join(data_dir, "users", userUID, appID)
+	}
+	return file_user_app_base(userUID, appID)
+}
+
+// file_push_path_allowed gates which paths an app-rooted file/push may write —
+// defense-in-depth on top of os.OpenRoot's containment. It refuses anything under the
+// app's db/ directory, so a push can never overwrite a replicated SQLite DB
+// out-of-band (the DBs replicate via the op log, not file bytes). The files/ root needs
+// no extra gate; it is already confined below files/.
+func file_push_path_allowed(root, path string) bool {
+	if root != file_push_root_app {
+		return true
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		return false // escapes the app dir (also caught by valid()/os.OpenRoot; belt-and-braces)
+	}
+	return clean != "db" && !strings.HasPrefix(clean, "db/")
 }
 
 // replication_file_push_event handles an inbound file/push: reads the
@@ -197,7 +244,12 @@ func replication_file_push_event(e *Event) {
 		return
 	}
 
-	base := file_user_app_base(header.User, header.App)
+	if !file_push_path_allowed(header.Root, header.Path) {
+		info("Replication file-push: path %q not allowed for root %q from peer %q", header.Path, header.Root, e.peer)
+		e.stream.close_read()
+		return
+	}
+	base := file_push_base(header.User, header.App, header.Root)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		warn("Replication file-push: cannot create base %q: %v", base, err)
 		e.stream.close_read()

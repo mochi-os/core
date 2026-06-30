@@ -1450,6 +1450,16 @@ func replication_pending_warn_stalled() {
 // orphan the GC will clear, with nothing for an operator to act on. A stall from
 // a live/known peer is left to alert.
 func stall_alert_suppress(s StalledStream) bool {
+	// Self-healing transient streams (sessions/queue/peers) re-derive after loss —
+	// sessions by re-auth, queue from per-app journals, peers by re-discovery — so a
+	// stalled one is benign and needs no operator action, the same reason the
+	// convergence audit ignores them. A reseed would be wrong here anyway: these live
+	// in shared host-local core DBs, so reseeding would clobber this host's own rows.
+	for _, t := range db_transient_dbs {
+		if s.Database == "system:"+t {
+			return true
+		}
+	}
 	rdb := db_open("db/replication.db")
 	if rdb == nil {
 		return false

@@ -5514,7 +5514,7 @@ func TestStallAlertSuppress(t *testing.T) {
 	pdb.exec("create table if not exists peers (id text not null, address text not null, updated integer not null, primary key (id, address))")
 
 	stream := func(peer string) StalledStream {
-		return StalledStream{Peer: peer, Scope: "app", User: "u1", Database: "system:sessions"}
+		return StalledStream{Peer: peer, Scope: "app", User: "u1", Database: "app:feeds"}
 	}
 
 	if !stall_alert_suppress(stream("defunctpeer")) {
@@ -5531,9 +5531,19 @@ func TestStallAlertSuppress(t *testing.T) {
 		t.Error("per-user host peer should NOT be suppressed")
 	}
 
-	rdb.exec("insert into irreparable (peer, scope, user, db, reason, since) values ('irrpeer', 'app', 'u1', 'system:sessions', 'stalled', 0)")
+	rdb.exec("insert into irreparable (peer, scope, user, db, reason, since) values ('irrpeer', 'app', 'u1', 'app:feeds', 'stalled', 0)")
 	if !stall_alert_suppress(stream("irrpeer")) {
 		t.Error("stream already marked irreparable should be suppressed")
+	}
+
+	// Self-healing transient streams (sessions/queue/peers) are always suppressed,
+	// even from a known peer — they re-derive after loss, so a stall is benign.
+	if !stall_alert_suppress(StalledStream{Peer: "knownpeer", Scope: "app", User: "u1", Database: "system:sessions"}) {
+		t.Error("transient system:sessions stream should be suppressed")
+	}
+	// A non-transient system stream (a cold/critical DB) is NOT suppressed.
+	if stall_alert_suppress(StalledStream{Peer: "knownpeer", Scope: "app", User: "u1", Database: "system:users"}) {
+		t.Error("system:users (cold DB) should NOT be suppressed")
 	}
 }
 

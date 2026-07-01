@@ -27,6 +27,7 @@ import (
 // run of BootstrapRowBatch followed by one BootstrapTableDone.
 type BootstrapSchema struct {
 	Tables  []string `cbor:"tables"`  // CREATE TABLE statements (applied first)
+	Views   []string `cbor:"views,omitempty"` // CREATE VIEW statements (applied after tables)
 	Indexes []string `cbor:"indexes"` // CREATE INDEX statements (applied after rows)
 	Version int      `cbor:"version"` // app schema version
 	// AUTOINCREMENT high-water marks (sqlite_sequence: table -> seq). Its sql is
@@ -86,6 +87,8 @@ func bootstrap_ddl_allowed(ddl, kind string) bool {
 		return strings.HasPrefix(u, "CREATE TABLE")
 	case "index":
 		return strings.HasPrefix(u, "CREATE INDEX") || strings.HasPrefix(u, "CREATE UNIQUE INDEX")
+	case "view":
+		return strings.HasPrefix(u, "CREATE VIEW")
 	}
 	return false
 }
@@ -115,7 +118,7 @@ func bootstrap_logical_dump(db *DB, skip map[string]bool, batchSize int, version
 		schema.Version = userVersion
 	}
 	var tables []string
-	rows, err := tx.Query("select type, name, tbl_name, sql from sqlite_master where type in ('table','index') and sql is not null and name not like 'sqlite_%' order by case type when 'table' then 0 else 1 end")
+	rows, err := tx.Query("select type, name, tbl_name, sql from sqlite_master where type in ('table','index','view') and sql is not null and name not like 'sqlite_%' order by case type when 'table' then 0 else 1 end")
 	if err != nil {
 		return fmt.Errorf("bootstrap-dump: read schema: %w", err)
 	}
@@ -131,6 +134,8 @@ func bootstrap_logical_dump(db *DB, skip map[string]bool, batchSize int, version
 		if typ == "table" {
 			schema.Tables = append(schema.Tables, ddl)
 			tables = append(tables, name)
+		} else if typ == "view" {
+			schema.Views = append(schema.Views, ddl)
 		} else {
 			schema.Indexes = append(schema.Indexes, ddl)
 		}
@@ -307,6 +312,18 @@ func (l *bootstrapLoader) applySchema(s *BootstrapSchema) error {
 		}
 		if _, err := l.d.Exec(ddl); err != nil {
 			return fmt.Errorf("bootstrap-load: create table: %w", err)
+		}
+	}
+	// Views are created after tables (they reference them) but carry no row data.
+	// The dump ships them because a view otherwise never reaches a replica: the
+	// bootstrap only copies table/index DDL + rows, and the replicated schema-version
+	// stamp means the app migration that created the view never re-runs here.
+	for _, ddl := range s.Views {
+		if !bootstrap_ddl_allowed(ddl, "view") {
+			return fmt.Errorf("bootstrap-load: rejected non-CREATE-VIEW schema statement")
+		}
+		if _, err := l.d.Exec(ddl); err != nil {
+			return fmt.Errorf("bootstrap-load: create view: %w", err)
 		}
 	}
 	l.indexes = append(l.indexes, s.Indexes...)

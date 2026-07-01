@@ -3021,6 +3021,13 @@ func replication_emit_user_core_exec(user *User, sql string, args []any) {
 // has since dropped the `left` column). They are quarantined
 // (replication_deadletter), not retried and not emailed — a rolling
 // schema upgrade legitimately produces them.
+//
+// "cannot modify X because it is a view" is the same class produced by the
+// LWW-Register conversions (a table becomes a <t>_all register table plus a
+// removed=0 view under the old name): an un-upgraded peer emits a raw
+// `insert into <t>` that lands on a host where <t> is now a view. The reverse
+// direction (the upgraded host's `insert into <t>_all` reaching an un-upgraded
+// peer) already matches "no such table".
 func replication_exec_forward_incompatible(err error) bool {
 	if err == nil {
 		return false
@@ -3028,7 +3035,8 @@ func replication_exec_forward_incompatible(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "no such column") ||
 		strings.Contains(msg, "no such table") ||
-		strings.Contains(msg, "has no column named")
+		strings.Contains(msg, "has no column named") ||
+		strings.Contains(msg, "because it is a view")
 }
 
 // replication_exec_idempotent_reapply reports whether an apply error is a UNIQUE

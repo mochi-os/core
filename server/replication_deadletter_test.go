@@ -25,6 +25,7 @@ func TestReplicationExecForwardIncompatible(t *testing.T) {
 		{errors.New("no such column: left"), true},
 		{errors.New("no such table: chats"), true},
 		{errors.New("table chats has no column named left"), true},
+		{errors.New("cannot modify crms because it is a view"), true}, // LWW-Register table->view: old-schema peer's raw insert
 		{errors.New("FOREIGN KEY constraint failed"), false},
 		{errors.New("database is locked"), false},
 		{errors.New("UNIQUE constraint failed: chats.id"), false},

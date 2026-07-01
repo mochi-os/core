@@ -94,3 +94,28 @@ func TestMergeTombstone(t *testing.T) {
 		t.Errorf("re-add v3 should win: got %q present=%v, want Y true", n, ok)
 	}
 }
+
+// TestMergeReservedWordColumn: a register table whose column is named after a SQL
+// reserved word (`order`, as in comptroller's threads/reviews) merges without a
+// syntax error — db_merge_statement quotes identifiers.
+func TestMergeReservedWordColumn(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+	db.exec(`create table reviews ( id text not null, "order" text not null default '', writer text not null default '', version integer not null, removed integer not null default 0, primary key ( id ) )`)
+
+	q := db_merge_statement("reviews", []string{"id"}, []string{"order"})
+	if err := db.exec_e(q, "r1", "o1", "hostA", 1, 0); err != nil {
+		t.Fatalf("merge with reserved-word column failed: %v", err)
+	}
+	// A newer merge updates the reserved-word column in place.
+	if err := db.exec_e(q, "r1", "o2", "hostA", 2, 0); err != nil {
+		t.Fatalf("second merge failed: %v", err)
+	}
+	var r struct{ Order string }
+	if !db.scan(&r, `select "order" from reviews where id=? and removed=0`, "r1") {
+		t.Fatal("row absent after merge")
+	}
+	if r.Order != "o2" {
+		t.Errorf("reserved-word column merge: got %q, want o2", r.Order)
+	}
+}

@@ -42,8 +42,19 @@ func sql_identifier_ok(s string) bool { return sql_identifier_re.MatchString(s) 
 // same set of ops in any order on any host converges. Factored out so the merge
 // semantics are unit-testable without the Starlark machinery.
 func db_merge_statement(table string, keyCols []string, fieldCols []string) string {
-	insCols := append([]string{}, keyCols...)
-	insCols = append(insCols, fieldCols...)
+	// Quote the caller-supplied identifiers (already sql_identifier_ok-validated,
+	// so no embedded quote/NUL is possible) so a column named after a SQL reserved
+	// word — e.g. `order` in a register table — is a legal identifier rather than a
+	// syntax error. writer/version/removed are our own fixed names, never reserved.
+	q := func(s string) string { return `"` + s + `"` }
+	qt := q(table)
+	insCols := make([]string, 0, len(keyCols)+len(fieldCols)+3)
+	for _, c := range keyCols {
+		insCols = append(insCols, q(c))
+	}
+	for _, c := range fieldCols {
+		insCols = append(insCols, q(c))
+	}
 	insCols = append(insCols, "writer", "version", "removed")
 	placeholders := make([]string, len(insCols))
 	for i := range placeholders {
@@ -51,13 +62,17 @@ func db_merge_statement(table string, keyCols []string, fieldCols []string) stri
 	}
 	sets := make([]string, 0, len(fieldCols)+3)
 	for _, c := range fieldCols {
-		sets = append(sets, c+"=excluded."+c)
+		sets = append(sets, q(c)+"=excluded."+q(c))
 	}
 	sets = append(sets, "writer=excluded.writer", "version=excluded.version", "removed=excluded.removed")
-	return "insert into " + table + " ( " + strings.Join(insCols, ", ") + " ) values ( " + strings.Join(placeholders, ", ") + " )" +
-		" on conflict ( " + strings.Join(keyCols, ", ") + " ) do update set " + strings.Join(sets, ", ") +
-		" where excluded.version > " + table + ".version" +
-		" or ( excluded.version = " + table + ".version and excluded.writer > " + table + ".writer )"
+	qkeys := make([]string, len(keyCols))
+	for i, c := range keyCols {
+		qkeys[i] = q(c)
+	}
+	return "insert into " + qt + " ( " + strings.Join(insCols, ", ") + " ) values ( " + strings.Join(placeholders, ", ") + " )" +
+		" on conflict ( " + strings.Join(qkeys, ", ") + " ) do update set " + strings.Join(sets, ", ") +
+		" where excluded.version > " + qt + ".version" +
+		" or ( excluded.version = " + qt + ".version and excluded.writer > " + qt + ".writer )"
 }
 
 // mochi.db.merge(table, keys, row) -> int: Versioned LWW-Register upsert. `keys`
@@ -142,10 +157,10 @@ func db_merge_builtin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, removed int) 
 	// carried as a literal — never recomputed on apply, which would diverge.
 	where := make([]string, len(keyCols))
 	for i, k := range keyCols {
-		where[i] = k + "=?"
+		where[i] = `"` + k + `"=?`
 	}
 	var seen int64
-	if r, err := conn.QueryContext(ctx, "select coalesce( max( version ), 0 ) from "+table+" where "+strings.Join(where, " and "), keyVals...); err == nil {
+	if r, err := conn.QueryContext(ctx, `select coalesce( max( version ), 0 ) from "`+table+`" where `+strings.Join(where, " and "), keyVals...); err == nil {
 		if r.Next() {
 			r.Scan(&seen)
 		}

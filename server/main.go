@@ -180,6 +180,7 @@ func main_serve(ready func()) int {
 	go bootstrap_retry_incomplete_manager()
 	go replication_link_resume_pending_activations()
 	go restore_cleanup_orphans()
+	go db_app_system_sweep()
 	go sessions_manager()
 	go update_manager()
 	// Register the configured [web] domain (if any) before the web server

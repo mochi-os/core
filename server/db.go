@@ -714,6 +714,59 @@ func db_app_system(u *User, app *App) *DB {
 	return db
 }
 
+// db_app_system_sweep walks every existing app.db at startup and runs the
+// idempotent app-system setups (access / attachments / journal, including the
+// access-table register migration). Without it, a (user, app) pair's app.db
+// migrates only when something calls db_app_system for it, and on a passive
+// pair member a dormant pair keeps the legacy schema indefinitely — so the
+// first register op emitted after the ACTIVE side migrated used to be
+// deadlettered ("table access has no column named removed"). The apply path
+// now migrates on demand (db_app_system + the system_setup gate), so this
+// sweep is the proactive half: it clears the dormant backlog at startup
+// instead of leaving each pair to heal on its next inbound op, and stops the
+// convergence audit reporting those pairs as schema-skew in the meantime.
+func db_app_system_sweep() {
+	users_root := filepath.Join(data_dir, "users")
+	users, err := os.ReadDir(users_root)
+	if err != nil {
+		return
+	}
+	count := 0
+	for _, u := range users {
+		if !u.IsDir() {
+			continue
+		}
+		apps, err := os.ReadDir(filepath.Join(users_root, u.Name()))
+		if err != nil {
+			continue
+		}
+		for _, a := range apps {
+			if !a.IsDir() {
+				continue
+			}
+			path := fmt.Sprintf("users/%s/%s/app.db", u.Name(), a.Name())
+			if !file_exists(filepath.Join(data_dir, path)) {
+				continue
+			}
+			db, _, _ := db_open_work(path)
+			if db == nil || db.system_setup {
+				continue
+			}
+			l := lock(path)
+			l.Lock()
+			if !db.system_setup {
+				db.access_setup()
+				db.attachments_setup()
+				db.journal_setup()
+				db.system_setup = true
+				count++
+			}
+			l.Unlock()
+		}
+	}
+	debug("App-system sweep: setups run on %d app.db files", count)
+}
+
 // db_app_schema_get reads the app database schema version from user_version pragma
 func db_app_schema_get(db *DB) int {
 	return db.integer("pragma user_version")

@@ -1147,6 +1147,7 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 			res.Scope, res.Prefix, originPeer, err)
 		return
 	}
+	info("Bootstrap-diag: manifest scope=%q prefix=%q from=%q needed=%d done=%v", res.Scope, res.Prefix, originPeer, len(needed), res.Done)
 	// Manifests are paginated. Each page contributes its own needed-
 	// files count to the pending counter; the per-scope driver
 	// decrements it as each file lands. The final page (Done=true)
@@ -1187,6 +1188,7 @@ func replication_bootstrap_file_manifest_result_apply(originPeer string, res *Bo
 		var settledState string
 		if settle {
 			settledState = bootstrap_settled_state(res.Scope, originPeer)
+			info("Bootstrap-diag: scope=%q settling -> state=%q from=%q", res.Scope, settledState, originPeer)
 			bootstrap_set_state(res.Scope, originPeer, settledState, "")
 			if settledState == bootstrap_state_done {
 				audit_replication_bootstrap_scope_done(originPeer, res.Scope)
@@ -1251,6 +1253,7 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 		warn("Bootstrap: refusing scope %q from per-user peer %q (authorized for user %q only)", scope, peer, uid)
 		return
 	}
+	debug("Bootstrap-diag: file-scope driver start scope=%q peer=%q uid=%q files=%d", scope, peer, uid, len(needed))
 	for _, entry := range needed {
 		ok := true
 		var size int64
@@ -1280,6 +1283,7 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 		}
 		if ok {
 			bootstrap_progress_transfer(peer, "file", size)
+			debug("Bootstrap-diag: file done scope=%q path=%q bytes=%d/%d from=%q", scope, entry.Path, size, entry.Size, peer)
 		} else {
 			// Failed file: bump the failed counter so the settle path
 			// chooses 'incomplete' instead of 'done'. The pending
@@ -2218,6 +2222,20 @@ func bootstrap_retry_incomplete_once() {
 	if err != nil || len(rows) == 0 {
 		return
 	}
+	// Diagnostic heartbeat: while any bootstrap scope is not done, emit one
+	// status line per 30s pass so a stuck user-user sync leaves a timeline —
+	// which scope, idle seconds since last forward progress, and retry attempts.
+	{
+		parts := make([]string, 0, len(rows))
+		for _, r := range rows {
+			sc, _ := r["scope"].(string)
+			st, _ := r["state"].(string)
+			pg, _ := r["progressed"].(int64)
+			at, _ := r["attempts"].(int64)
+			parts = append(parts, fmt.Sprintf("%s:%s(idle=%ds,att=%d)", sc, st, now()-pg, at))
+		}
+		info("Bootstrap-diag: %d scope(s) not done: %s", len(rows), strings.Join(parts, " "))
+	}
 	for _, r := range rows {
 		peer, _ := r["peer"].(string)
 		scope, _ := r["scope"].(string)
@@ -2894,6 +2912,7 @@ func replication_bootstrap_db_manifest_result_apply(originPeer string, res *Boot
 		var settledState string
 		if settle {
 			settledState = bootstrap_settled_state(res.Scope, originPeer)
+			info("Bootstrap-diag: scope=%q settling -> state=%q from=%q", res.Scope, settledState, originPeer)
 			bootstrap_set_state(res.Scope, originPeer, settledState, "")
 			if settledState == bootstrap_state_done {
 				audit_replication_bootstrap_scope_done(originPeer, res.Scope)

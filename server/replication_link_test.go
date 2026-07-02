@@ -11,6 +11,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -793,6 +795,87 @@ func TestReplicationJoinApprovedApplyReplacesPair(t *testing.T) {
 	}
 	if peers := []string{rows[0]["peer"].(string), rows[1]["peer"].(string)}; peers[0] != "peer-A" || peers[1] != "peer-C" {
 		t.Errorf("pair set = %v, want [peer-A peer-C]", peers)
+	}
+}
+
+// segment_event builds an Event whose stream reader carries a single
+// cbor-encoded payload, so the *_event handlers' e.segment(...) decode
+// succeeds. Mirrors the file_push_test wiring.
+func segment_event(peer string, payload any) *Event {
+	return &Event{
+		peer:   peer,
+		stream: &Stream{reader: io.NopCloser(bytes.NewReader(cbor_encode(payload)))},
+	}
+}
+
+// TestReplicationJoinApprovedEventGate: the join/approved handler must only
+// honour an approval from the source we actually asked to join (or an existing
+// pair member on re-join). An approval from any other peer is dropped without
+// touching the pair table — otherwise a stranger rewrites our pair set and
+// makes us bulk-bootstrap from them (#143).
+func TestReplicationJoinApprovedEventGate(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	orig := bootstrap_start
+	bootstrap_start = func(string) {} // don't touch the network on the accepted path
+	defer func() { bootstrap_start = orig }()
+
+	db_open("db/settings.db").exec("create table if not exists settings (name text primary key, value text not null)")
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('incumbent', 0, '')")
+
+	// 1. Attacker (no pending join, not a pair member) — must be dropped.
+	replication_join_approved_event(segment_event("attacker",
+		&JoinApproved{Members: []string{"attacker", "self"}}))
+	if has, _ := rdb.exists("select 1 from pair where peer='attacker'"); has {
+		t.Fatal("join/approved from a non-pending, non-pair peer must be rejected — attacker entered the pair set")
+	}
+	if has, _ := rdb.exists("select 1 from pair where peer='incumbent'"); !has {
+		t.Fatal("rejected join/approved must not disturb the existing pair set")
+	}
+
+	// 2. The source we actually asked to join — must be applied.
+	setting_set("replica.join.peer", "source")
+	replication_join_approved_event(segment_event("source",
+		&JoinApproved{Members: []string{"source", "self"}}))
+	if has, _ := rdb.exists("select 1 from pair where peer='source'"); !has {
+		t.Fatal("join/approved from our pending-join source must be applied")
+	}
+}
+
+// TestReplicationPairMembershipEventGate: the pair/membership/change handler
+// must only accept an announcement from an existing pair member. A stranger's
+// change (even with a huge Sequence) is dropped, so it can neither insert
+// itself nor empty our pair set (#143).
+func TestReplicationPairMembershipEventGate(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('member', 0, '')")
+	pair_membership_refresh() // load the in-memory pair_members map peer_is_pair reads
+
+	// 1. Attacker with a maxed-out Sequence — must be dropped, and must not
+	// poison the seen-sequence high-water mark for legitimate later changes.
+	replication_pair_membership_change_event(segment_event("attacker",
+		&PairMembershipChange{Members: []string{"attacker", "self"}, Sequence: 1 << 40}))
+	if has, _ := rdb.exists("select 1 from pair where peer='attacker'"); has {
+		t.Fatal("pair/membership/change from a non-member must be rejected — attacker entered the pair set")
+	}
+	if has, _ := rdb.exists("select 1 from pair where peer='member'"); !has {
+		t.Fatal("rejected pair/membership/change must not disturb the existing pair set")
+	}
+	if seen, _ := rdb.exists("select 1 from seen where scope='pair-membership'"); seen {
+		t.Fatal("a rejected pair/membership/change must not record its Sequence in seen (would poison staleness)")
+	}
+
+	// 2. An existing pair member's announcement — must be applied.
+	replication_pair_membership_change_event(segment_event("member",
+		&PairMembershipChange{Members: []string{"member", "peer-B", "self"}, Sequence: 5}))
+	if has, _ := rdb.exists("select 1 from pair where peer='peer-B'"); !has {
+		t.Fatal("pair/membership/change from an existing pair member must be applied")
 	}
 }
 

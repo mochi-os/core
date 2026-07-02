@@ -1122,6 +1122,18 @@ func replication_join_approved_event(e *Event) {
 		info("Replication join-approved dropping: cannot decode payload")
 		return
 	}
+	// Only honour an approval from the source we actually asked to join, or
+	// from a peer already in our pair set (the disk-loss re-join recovery,
+	// where the source is still a member and the join-status poller may have
+	// cleared replica.join.peer). e.peer is the transport-authenticated origin
+	// (protocol2_stream.go), so this binding stops any other peer from
+	// rewriting our pair table and making us bulk-bootstrap from them. Mirrors
+	// the pending-join gate join/denied already applies.
+	pending := setting_get("replica.join.peer", "")
+	if pending != e.peer && !peer_is_pair(e.peer) {
+		info("Replication join-approved dropping: peer %q is neither our pending join (%q) nor a pair member", e.peer, pending)
+		return
+	}
 	replication_join_approved_apply(e.peer, &ja)
 }
 
@@ -1180,6 +1192,17 @@ func replication_pair_membership_change_event(e *Event) {
 	var pmc PairMembershipChange
 	if !e.segment(&pmc) {
 		info("Replication pair-membership-change dropping: cannot decode payload")
+		return
+	}
+	// Only an existing pair member may announce a pair-set change. e.peer is
+	// the transport-authenticated origin, so this alone stops a stranger from
+	// inserting itself into (or emptying) our pair set — the monotonic Sequence
+	// below is a dedup/staleness guard, NOT an authorization one. A legitimate
+	// announcement always comes from a peer already in our pair set: the source
+	// that approved a new replica was paired with us before the change, and a
+	// fresh replica receives join/approved, never pair/membership/change.
+	if !peer_is_pair(e.peer) {
+		info("Replication pair-membership-change dropping: peer %q is not a pair member", e.peer)
 		return
 	}
 	replication_pair_membership_apply(e.peer, &pmc)

@@ -2579,8 +2579,9 @@ func bootstrap_progress_touch(peer, scope string) {
 // replication_pair_backfill (row-by-row, fired from join-approved).
 //
 // Bootstrap is fully asynchronous: bootstrap_start returns
-// immediately after firing the entry-point emits.
-func bootstrap_start(peer string) {
+// immediately after firing the entry-point emits. Package-level var (like
+// bootstrap_start_user) so tests exercising callers can stub out the network.
+var bootstrap_start = func(peer string) {
 	if peer == "" {
 		return
 	}

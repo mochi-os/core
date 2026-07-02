@@ -176,7 +176,7 @@ const file_push_root_app = "app"
 // (well above any real attachment) that rejects an absurd/overflow value before
 // the receiver commits to streaming that many bytes. Defence in depth behind the
 // per-user authorization gate (#145).
-const file_push_max_size = 8 << 30 // 8 GiB
+const file_push_max_size int64 = 8 << 30 // 8 GiB
 
 // file_push_base returns the directory a file/push Path is resolved against, given the
 // header's Root. Default ("" / unknown) is the files/ dir, preserving the original

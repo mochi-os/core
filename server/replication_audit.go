@@ -677,6 +677,11 @@ func replication_audit_request_hashes(peer string, keys []AuditKey) (map[string]
 		return nil, err
 	}
 	defer s.close()
+	// The peer computes db_replicated_content_hash for each candidate DB, which
+	// loads whole tables into memory (a large feeds.db takes many seconds). The
+	// default 30s read deadline trips on that, so give it the same 300s window as
+	// every other replication transfer instead of failing the audit round (#168).
+	s.timeout.read = bootstrap_stream_timeout
 	if err := s.write(&AuditHashRequest{Keys: keys}); err != nil {
 		return nil, err
 	}
@@ -700,6 +705,10 @@ func replication_audit_hash_event(e *Event) {
 	if err := e.stream.read(&req); err != nil {
 		return
 	}
+	// Computing the hashes loads whole tables into memory and can take many
+	// seconds on a large DB; match the requester's bumped read deadline so the
+	// write back isn't cut off by the default 30s (#168).
+	e.stream.timeout.write = bootstrap_stream_timeout
 	res := &AuditHashResult{Hashes: replication_audit_hashes(req.Keys)}
 	if err := e.stream.write(res); err != nil {
 		info("Replication audit-hash: failed to write response: %v", err)

@@ -1628,11 +1628,21 @@ func TestLeaderMembershipFromScopePrefix(t *testing.T) {
 	db.exec("insert into hosts (user, peer, added) values ('user-x', 'host-peer', ?)", now())
 	db.exec("insert into hosts (user, peer, added) values ('user-x', ?, ?)", net_id, now()) // self filtered
 
-	if m := replication_leader_membership("user:user-x"); len(m) != 1 || m[0] != "host-peer" {
-		t.Errorf("user-scoped membership: got %v, want [host-peer]", m)
+	// User-scoped membership is the UNION of the user's hosts AND the operator pair
+	// (#133): a paired host serves the user via `pair`, not the per-user `hosts`
+	// table, so the pair partner must be in the membership or the two pair members
+	// won't coordinate their user-scoped leases (both claim → duplicate work).
+	m := replication_leader_membership("user:user-x")
+	set := map[string]bool{}
+	for _, p := range m {
+		set[p] = true
 	}
-	if m := replication_leader_membership("user:unknown"); len(m) != 0 {
-		t.Errorf("unknown user membership: got %v, want empty", m)
+	if len(m) != 2 || !set["host-peer"] || !set["pair-peer"] {
+		t.Errorf("user-scoped membership: got %v, want {host-peer, pair-peer}", m)
+	}
+	// A user with no hosts row still coordinates across the pair.
+	if m := replication_leader_membership("user:unknown"); len(m) != 1 || m[0] != "pair-peer" {
+		t.Errorf("unknown-user membership must still include the pair; got %v, want [pair-peer]", m)
 	}
 	if m := replication_leader_membership("platform"); len(m) != 1 || m[0] != "pair-peer" {
 		t.Errorf("platform membership: got %v, want [pair-peer]", m)

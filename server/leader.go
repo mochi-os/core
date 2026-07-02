@@ -323,7 +323,19 @@ func replication_leader_membership(scope string) []string {
 	var rows []map[string]any
 	if strings.HasPrefix(scope, "user:") {
 		uid := strings.TrimPrefix(scope, "user:")
-		rows, _ = db.rows("select peer from hosts where user=? and peer != ?", uid, net_id)
+		// The user's own host set PLUS the operator pair. A paired host serves every
+		// user via the `pair` relationship, NOT the per-user `hosts` table, so a
+		// user-scoped lease that consulted only `hosts` left the two pair members
+		// invisible to each other: both claimed leadership and duplicated the work —
+		// e.g. each pair member emitted the "replica offline" notification stamped
+		// with its own now(), diverging the user's notifications.db (the #133 class,
+		// seen live on yuzu/wasabi 2026-07-02). Union both so the pair partner is in
+		// the membership and the lease actually serialises across it. A non-paired
+		// per-user setup has an empty `pair`, so the union is a no-op there.
+		rows, _ = db.rows(
+			"select peer from hosts where user=? and peer != ? "+
+				"union select peer from pair where peer != ?",
+			uid, net_id, net_id)
 	} else {
 		rows, _ = db.rows("select peer from pair where peer != ?", net_id)
 	}

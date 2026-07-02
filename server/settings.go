@@ -7,6 +7,8 @@
 package main
 
 import (
+	"strings"
+
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -587,6 +589,15 @@ func setting_get(name string, def string) string {
 func setting_local(name string) bool {
 	switch name {
 	case "schema", "server_started":
+		return true
+	}
+	// replica.join.* is THIS host's in-flight pair-join state (which source it is
+	// joining, the poll state/reason). It is meaningless on another member and no
+	// request-serving path reads it, so it must not replicate — otherwise an
+	// already-paired host initiating a join fans its join-state to existing
+	// members (who then show a phantom in-flight join), and setting_delete never
+	// emitting leaves those phantoms forever (#150).
+	if strings.HasPrefix(name, "replica.join.") {
 		return true
 	}
 	return false

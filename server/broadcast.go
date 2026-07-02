@@ -195,8 +195,13 @@ func broadcast_next_local(db *DB, key, peer string) int64 {
 	}
 	if db.user != nil && db.user.UID != "" && db.app != nil {
 		if av := db.app.active(db.user); av != nil {
-			const mirror = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1"
-			replication_emit_sql_command(db.user, db.app, av, mirror, []any{key, peer})
+			// Mirror the LITERAL allocated value, not a relative `+1`: replaying a
+			// relative increment diverges the paired host's takeover counter if a
+			// mirror op is lost or reordered (the counter-arithmetic anti-pattern).
+			// A max-merge of the absolute value is idempotent and order-independent
+			// (#150).
+			const mirror = "insert into sequence (key, peer, last) values (?, ?, ?) on conflict(key, peer) do update set last = max(sequence.last, excluded.last)"
+			replication_emit_sql_command(db.user, db.app, av, mirror, []any{key, peer, seq})
 		}
 	}
 	return seq

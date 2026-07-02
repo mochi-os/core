@@ -3158,6 +3158,69 @@ func setup_users_row_apply_test(t *testing.T) (cleanup func(), uid string) {
 	return
 }
 
+// TestReplicationUsersCredentialsPartialApply: a rename/sign_count op carries
+// only the mutable columns (no public_key). The apply must update in place, not
+// run a whole-row insert-or-replace that binds a NULL public_key against NOT
+// NULL and drops the op — the bug that made passkey renames never converge and
+// logged a background error on every peer (#150). sign_count stays monotonic.
+func TestReplicationUsersCredentialsPartialApply(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+	udb := db_open("db/users.db")
+	id := []byte("cred-1")
+
+	// A full registration op establishes the row (public_key present).
+	full := &UsersRow{Table: "credentials", KeyBytes: map[string][]byte{"id": id},
+		Cols:      map[string]string{"sign_count": "5", "name": "Old", "created": "1700000000"},
+		ColsBytes: map[string][]byte{"public_key": []byte("PKPKPK")}}
+	if got := replication_users_row_apply(uid, full); got != ApplyApplied {
+		t.Fatalf("credentials register apply: %v", got)
+	}
+
+	// Rename partial (name only) must update in place and preserve public_key.
+	rename := &UsersRow{Table: "credentials", KeyBytes: map[string][]byte{"id": id},
+		Cols: map[string]string{"name": "New"}}
+	if got := replication_users_row_apply(uid, rename); got != ApplyApplied {
+		t.Fatalf("credentials rename apply: %v", got)
+	}
+	row, _ := udb.row("select name from credentials where id=?", id)
+	if row == nil {
+		t.Fatal("credentials row must survive the rename (not dropped by a NULL public_key upsert)")
+	}
+	if n, _ := row["name"].(string); n != "New" {
+		t.Errorf("name after rename = %q, want New", n)
+	}
+	// public_key must be preserved (the whole point: the partial update must not
+	// null it). Check via SQL length to avoid Go blob type-assertion noise.
+	if l := udb.integer("select length(public_key) from credentials where id=?", id); l != 6 {
+		t.Errorf("rename must preserve public_key (length %d, want 6)", l)
+	}
+
+	// sign_count partial: advances, but never rewinds (monotonic).
+	bump := func(v string) { replication_users_row_apply(uid, &UsersRow{Table: "credentials", KeyBytes: map[string][]byte{"id": id}, Cols: map[string]string{"sign_count": v}}) }
+	bump("9")
+	if sc := udb.integer("select sign_count from credentials where id=?", id); sc != 9 {
+		t.Errorf("sign_count after bump = %d, want 9", sc)
+	}
+	bump("7") // stale — must not rewind
+	if sc := udb.integer("select sign_count from credentials where id=?", id); sc != 9 {
+		t.Errorf("stale sign_count bump must not rewind, got %d, want 9", sc)
+	}
+}
+
+// TestSettingLocalReplicaJoin: replica.join.* is per-host pair-join state and
+// must be host-local (not replicated), while an ordinary setting still is not (#150).
+func TestSettingLocalReplicaJoin(t *testing.T) {
+	for _, n := range []string{"replica.join.peer", "replica.join.state", "replica.join.reason"} {
+		if !setting_local(n) {
+			t.Errorf("%q must be host-local (not replicated)", n)
+		}
+	}
+	if setting_local("email_from") {
+		t.Error("an ordinary setting must still replicate (not host-local)")
+	}
+}
+
 // TestReplicationUsersOauthApply covers the oauth link/profile/unlink apply
 // path (#150): an upsert lands the row keyed on (provider, subject), a second
 // upsert updates the mutable profile columns, and an unlink (delete, no subject)

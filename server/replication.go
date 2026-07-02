@@ -4932,6 +4932,32 @@ func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) A
 		return ApplyApplied
 	}
 	pk := r.ColsBytes["public_key"]
+	if len(pk) == 0 {
+		// Partial update: only mutable columns were sent (a rename, or a
+		// sign_count bump), NOT the immutable public_key. A whole-row
+		// insert-or-replace would bind a NULL public_key against `public_key blob
+		// not null` and drop the op in exec_bg, so renames/sign_count never
+		// converged and logged a background error on every peer (#150). Update in
+		// place, keyed on id. Ops are in-order per stream, so the registration
+		// that carries public_key always precedes these.
+		updated := false
+		if name, ok := r.Cols["name"]; ok {
+			udb.exec_bg("users-row credentials rename apply", "update credentials set name=? where id=? and user=?", name, id, userUID)
+			updated = true
+		}
+		if sc, ok := r.Cols["sign_count"]; ok {
+			var n int64
+			_, _ = fmt.Sscanf(sc, "%d", &n)
+			// Monotonic: never rewind the WebAuthn counter (the same invariant
+			// the auth path enforces), so a reordered stale bump is a no-op.
+			udb.exec_bg("users-row credentials sign_count apply", "update credentials set sign_count=? where id=? and user=? and sign_count<?", n, id, userUID, n)
+			updated = true
+		}
+		if !updated {
+			return ApplyInvalid
+		}
+		return ApplyApplied
+	}
 	var signCount, created int64
 	_, _ = fmt.Sscanf(r.Cols["sign_count"], "%d", &signCount)
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)

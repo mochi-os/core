@@ -363,9 +363,21 @@ func domain_update(name string, updates map[string]any) error {
 // delete op so pair members drop their copy too.
 func domain_delete(name string) error {
 	db := db_open("db/domains.db")
+	// Capture the routes before deleting so we can replicate their removal. The
+	// domains FK's ON DELETE CASCADE drops the local routes, but the pair
+	// member's apply deletes only the domain row (the cascade doesn't fire on the
+	// replica), leaving orphaned routes that resurrect with divergent state if
+	// the domain is re-registered — so emit a per-route delete too (#150).
+	routes, _ := db.rows("select path from routes where domain=?", name)
 	db.exec("delete from routes where domain=?", name)
 	db.exec("delete from domains where domain=?", name)
 
+	for _, r := range routes {
+		if path, ok := r["path"].(string); ok {
+			replication_emit_system_row("domains", "routes",
+				map[string]string{"domain": name, "path": path}, nil, true)
+		}
+	}
 	replication_emit_system_row("domains", "domains",
 		map[string]string{"domain": name}, nil, true)
 

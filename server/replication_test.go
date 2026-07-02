@@ -1822,9 +1822,17 @@ func TestLeaderGrantedNoticeMirrors(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	// Build a synthetic Event for the granted handler.
+	// The granting peer must be a member of the (platform → pair) leadership
+	// group for the notice to be honoured (#145).
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('remote-leader', 1, '')")
+	pair_membership_refresh()
+
+	// Build a synthetic Event for the granted handler. The stored leader is the
+	// transport-authenticated e.peer, so it must carry the granting peer.
 	expires := now() + 60
 	e := &Event{
+		peer: "remote-leader",
 		content: map[string]any{
 			"scope":   "platform",
 			"key":     "k1",

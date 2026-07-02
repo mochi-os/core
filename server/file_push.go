@@ -172,6 +172,12 @@ func file_user_app_base(userUID, appID string) string {
 // outside files/, i.e. the repositories app's bare git trees).
 const file_push_root_app = "app"
 
+// file_push_max_size caps a single file/push's declared size — a sanity bound
+// (well above any real attachment) that rejects an absurd/overflow value before
+// the receiver commits to streaming that many bytes. Defence in depth behind the
+// per-user authorization gate (#145).
+const file_push_max_size = 8 << 30 // 8 GiB
+
 // file_push_base returns the directory a file/push Path is resolved against, given the
 // header's Root. Default ("" / unknown) is the files/ dir, preserving the original
 // behaviour. "app" is the per-(user,app) dir itself, so git objects/refs stored at
@@ -230,8 +236,8 @@ func replication_file_push_event(e *Event) {
 		e.stream.close_read()
 		return
 	}
-	if header.Size < 0 {
-		info("Replication file-push: negative size %d", header.Size)
+	if header.Size < 0 || header.Size > file_push_max_size {
+		info("Replication file-push: rejecting size %d (limit %d)", header.Size, file_push_max_size)
 		e.stream.close_read()
 		return
 	}
@@ -240,6 +246,17 @@ func replication_file_push_event(e *Event) {
 		// Defer: user hasn't arrived yet. We don't (in v1) buffer the
 		// transfer — the sender's queue retries on NACK.
 		info("Replication file-push deferred: user %q not yet local", header.User)
+		e.stream.close_read()
+		return
+	}
+
+	// Authorize the writer: a signed e.from proves an entity minted the envelope
+	// (self-minted, so worthless alone), but nothing above checks the SENDING
+	// PEER may write this user's files. Gate on the same authority sql/op uses —
+	// a pair member, or a peer in this user's host set — so a stranger can't
+	// plant or overwrite files in an arbitrary user's tree (#145).
+	if !replication_op_authorized(e.peer, header.User) {
+		info("Replication file-push: peer %q not authorized for user %q", e.peer, header.User)
 		e.stream.close_read()
 		return
 	}
@@ -397,6 +414,14 @@ func replication_file_delete_event(e *Event) {
 
 	if !user_exists(fd.User) {
 		// User isn't local yet; nothing to delete.
+		return
+	}
+
+	// Same authority as file-push / sql/op: only a pair member or a peer in this
+	// user's host set may delete this user's files, so a stranger can't wipe an
+	// arbitrary user's attachments (#145).
+	if !replication_op_authorized(e.peer, fd.User) {
+		info("Replication file-delete: peer %q not authorized for user %q", e.peer, fd.User)
 		return
 	}
 

@@ -482,10 +482,21 @@ func replication_leader_notify_impl(scope, key string, fence, expires int64) {
 func replica_leader_granted_event(e *Event) {
 	scope, _ := e.content["scope"].(string)
 	key, _ := e.content["key"].(string)
-	peer, _ := e.content["peer"].(string)
 	fence := event_int64(e.content["fence"])
 	expires := event_int64(e.content["expires"])
-	if scope == "" || key == "" || peer == "" || expires <= 0 {
+	if scope == "" || key == "" || expires <= 0 {
+		return
+	}
+	// Authorize: the notice must come from a member of this (scope) leadership
+	// group — a pair member for server scopes, or a peer in the user's host set
+	// for "user:<uid>" scopes — the same set replication_leader_notify emits to.
+	// Store the transport-authenticated e.peer as the leader, NEVER the payload's
+	// peer field: unauthorized, that field let any network peer install a
+	// far-future / max-fence leader for any (scope,key), permanently fast-path-
+	// denying all leader-gated scheduled work with no legitimate claim able to
+	// supersede it (#145).
+	if !replication_leader_is_member(scope, e.peer) {
+		info("Replication leader-granted dropping: peer %q is not a member of leadership scope %q", e.peer, scope)
 		return
 	}
 	db := db_open("db/replication.db")
@@ -495,5 +506,23 @@ func replica_leader_granted_event(e *Event) {
 			expires = excluded.expires,
 			fence = excluded.fence
 		where excluded.expires > leadership.expires or excluded.fence > leadership.fence`,
-		scope, key, peer, expires, fence)
+		scope, key, e.peer, expires, fence)
+}
+
+// replication_leader_is_member reports whether peer belongs to the (scope)
+// leadership group — the same membership replication_leader_membership fans
+// grants out to. "user:<uid>" scopes are gated on the user's host set; every
+// other scope is the operator pair. Used to authorize an inbound
+// replica/leader/granted notice.
+func replication_leader_is_member(scope, peer string) bool {
+	if peer == "" || peer == net_id {
+		return false
+	}
+	if strings.HasPrefix(scope, "user:") {
+		uid := strings.TrimPrefix(scope, "user:")
+		db := db_open("db/replication.db")
+		has, _ := db.exists("select 1 from hosts where user=? and peer=?", uid, peer)
+		return has
+	}
+	return peer_is_pair(peer)
 }

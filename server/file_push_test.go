@@ -361,6 +361,12 @@ func TestFilePushReceiverResume(t *testing.T) {
 			udb.exec("create table if not exists users (uid text, username text)")
 			udb.exec("insert into users (uid, username) values ('u1', 'u1@example.com')")
 
+			// Authorize the pushing peer for u1 (#145): a file/push is now gated
+			// on replication_op_authorized, so peerX must be in u1's host set.
+			rdb := db_open("db/replication.db")
+			rdb.exec("create table if not exists hosts (user text, peer text, added integer, ack integer)")
+			rdb.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peerX', 1, 0)")
+
 			base := file_user_app_base("u1", "app1")
 			target := filepath.Join(base, "dir", "f.bin")
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -407,5 +413,101 @@ func TestFilePushReceiverResume(t *testing.T) {
 				t.Fatalf("completed file mismatch: %d bytes, want %d", len(got), size)
 			}
 		})
+	}
+}
+
+// TestFilePushRejectsUnauthorizedPeer: a file/push (and file/delete) from a peer
+// that is neither a pair member nor in the target user's host set must be
+// refused, so a stranger can't plant or delete files in an arbitrary user's tree
+// (#145). Also checks the size sanity cap.
+func TestFilePushRejectsUnauthorizedPeer(t *testing.T) {
+	orig := data_dir
+	data_dir = t.TempDir()
+	defer func() { data_dir = orig }()
+
+	udb := db_open("db/users.db")
+	udb.exec("create table if not exists users (uid text, username text)")
+	udb.exec("insert into users (uid, username) values ('u1', 'u1@example.com')")
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists hosts (user text, peer text, added integer, ack integer)")
+	// u1's only authorized host is 'goodpeer'. 'stranger' is in neither hosts nor pair.
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u1', 'goodpeer', 1, 0)")
+
+	base := file_user_app_base("u1", "app1")
+	target := filepath.Join(base, "f.bin")
+
+	// 1. Unauthorized push must not create the file.
+	body := bytes.Repeat([]byte("Z"), 1000)
+	var wire bytes.Buffer
+	wire.Write(cbor_encode(&FilePushHeader{User: "u1", App: "app1", Path: "f.bin", Size: int64(len(body))}))
+	wire.Write(body)
+	var reply bytes.Buffer
+	replication_file_push_event(&Event{from: "signer", peer: "stranger",
+		stream: &Stream{reader: io.NopCloser(bytes.NewReader(wire.Bytes())), writer: filePushTestWriteCloser{&reply}}})
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("unauthorized file/push must not write the file")
+	}
+
+	// 2. Oversized declared size is rejected outright (sanity cap).
+	var big bytes.Buffer
+	big.Write(cbor_encode(&FilePushHeader{User: "u1", App: "app1", Path: "f.bin", Size: file_push_max_size + 1}))
+	var breply bytes.Buffer
+	replication_file_push_event(&Event{from: "signer", peer: "goodpeer",
+		stream: &Stream{reader: io.NopCloser(bytes.NewReader(big.Bytes())), writer: filePushTestWriteCloser{&breply}}})
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("oversized file/push must be rejected")
+	}
+
+	// 3. Unauthorized delete must be a no-op even if the file exists.
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replication_file_delete_event(&Event{from: "signer", peer: "stranger",
+		stream: &Stream{reader: io.NopCloser(bytes.NewReader(cbor_encode(&FileDelete{User: "u1", App: "app1", Path: "f.bin"})))}})
+	if _, err := os.Stat(target); err != nil {
+		t.Fatal("unauthorized file/delete must not remove the file")
+	}
+}
+
+// TestLeaderGrantedRejectsNonMember: replica/leader/granted from a peer outside
+// the (scope) leadership group is dropped, and the stored leader is the
+// authenticated e.peer, not the payload's peer field — so a stranger can't
+// install a max-fence leader for an arbitrary peer/scope (#145).
+func TestLeaderGrantedRejectsNonMember(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into pair (peer, added, role) values ('member', 1, '')")
+	pair_membership_refresh()
+
+	leaderOf := func() (string, int64) {
+		row, _ := rdb.row("select peer, fence from leadership where scope='s' and key='k'")
+		if row == nil {
+			return "", 0
+		}
+		p, _ := row["peer"].(string)
+		f, _ := row["fence"].(int64)
+		return p, f
+	}
+
+	// Stranger tries to install itself (or an arbitrary peer) as a max-fence leader.
+	replica_leader_granted_event(&Event{peer: "stranger", content: map[string]any{
+		"scope": "s", "key": "k", "peer": "victimpeer", "fence": int64(1) << 40, "expires": int64(1) << 40,
+	}})
+	if p, _ := leaderOf(); p != "" {
+		t.Fatalf("non-member leader/granted must be dropped, but leadership row was written (peer=%q)", p)
+	}
+
+	// A real pair member's grant is applied — and stored as e.peer, ignoring the
+	// (spoofable) payload peer field.
+	replica_leader_granted_event(&Event{peer: "member", content: map[string]any{
+		"scope": "s", "key": "k", "peer": "someoneelse", "fence": int64(5), "expires": int64(9999999999),
+	}})
+	if p, f := leaderOf(); p != "member" || f != 5 {
+		t.Fatalf("member grant: leader=%q fence=%d, want member/5 (payload peer must be ignored)", p, f)
 	}
 }

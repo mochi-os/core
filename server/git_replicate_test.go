@@ -143,6 +143,10 @@ func TestFilePushReceiverAppRooted(t *testing.T) {
 	udb := db_open("db/users.db")
 	udb.exec("create table if not exists users (uid text, username text)")
 	udb.exec("insert into users (uid, username) values ('u1', 'u1@example.com')")
+	// Authorize the pushing peer for u1's files (#145 file/push gate).
+	rdb := db_open("db/replication.db")
+	rdb.exec("create table if not exists hosts (user text, peer text, added integer, ack integer)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('u1', 'peerX', 1, 0)")
 
 	const size = int64(2000)
 	body := bytes.Repeat([]byte("G"), int(size))

@@ -587,7 +587,14 @@ func bootstrap_receiver_complete(peer string) {
 	if rdb == nil {
 		return
 	}
-	if remaining, _ := rdb.exists("select 1 from bootstrap where peer=? and state!=?", peer, bootstrap_state_done); remaining {
+	// A scope that is 'done' OR abandoned to 'irreparable' is terminal — it will
+	// not pull any more on its own. Treating irreparable as still-pulling here (the
+	// old `state != done`) meant one abandoned scope wedged this handshake forever:
+	// our outbound epoch was never bumped and the source's epoch baseline never set
+	// pending, so ops from the peer stalled/dropped — silent divergence (#170). The
+	// abandoned scope's gap is tracked by its irreparable marker + alert; resume/
+	// resync fills it and re-runs this hook.
+	if remaining, _ := rdb.exists("select 1 from bootstrap where peer=? and state not in (?, ?)", peer, bootstrap_state_done, bootstrap_state_irreparable); remaining {
 		return // more scopes still pulling — not complete yet
 	}
 	// Bump OUR outbound generation only if our outbound sequence space was
@@ -2375,6 +2382,14 @@ func bootstrap_retry_incomplete_once() {
 		if bootstrap_should_abandon(attempts, now()-progressed) {
 			rdb.exec("update bootstrap set state=? where scope=? and peer=?", bootstrap_state_irreparable, scope, peer)
 			warn("Replication bootstrap abandoned: scope=%q peer=%q uid=%q — %d retries with no forward progress for %ds; marked irreparable and stopped retrying. The source is unreachable or no longer holds this data; an operator resume/resync (or the source returning) revives it.", scope, peer, bootstrap_peer_user(peer), attempts, now()-progressed)
+			// Abandoning a scope must NOT wedge the handshake (#170): ack the source
+			// so it clears its served row + reconciles (the peer stops showing
+			// "Syncing" forever), and run the receiver-complete epoch handshake now
+			// that this scope no longer blocks it (the other scopes may already be
+			// done). The gap this scope leaves is tracked by its irreparable marker;
+			// resume/resync fills it and re-runs both sides.
+			go replication_bootstrap_emit_scope_done(peer, scope)
+			bootstrap_receiver_complete(peer)
 			continue
 		}
 		if !bootstrap_retry_eligible(state, now()-progress, attempts) {

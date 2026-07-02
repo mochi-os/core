@@ -310,6 +310,46 @@ func replication_audit_local_manifest() []AuditStream {
 			Tail:   replication_tail(e.User, repl_scope_app, stream),
 		})
 	}
+	out = append(out, audit_system_streams()...)
+	return out
+}
+
+// audit_system_streams emits the per-user SYSTEM-scope streams
+// (system:users/sessions/schedule). The server-level core tables replicate as
+// per-user op streams, NOT as files, so the file walk above never produces them —
+// leaving the auth-critical system:users liveness check (audit_stream_is_critical)
+// with nothing to check: dead code (#151). These entries carry the emitted Tail so
+// the cursor-vs-tail liveness pass works, Count 0, and are excluded from content
+// hashing (audit_content_candidates skips system scope): the shared core DBs carry
+// per-host columns (sign_count, autoincrement ids) that a content hash would flag
+// as false divergence, so content stays with the manual --core sweep. Emitted for
+// EVERY local user so both hosts' manifests are symmetric (no spurious
+// present-on-one-host divergence in the count compare).
+func audit_system_streams() []AuditStream {
+	udb := db_open("db/users.db")
+	if udb == nil {
+		return nil
+	}
+	users, err := udb.rows("select uid from users")
+	if err != nil {
+		return nil
+	}
+	out := make([]AuditStream, 0, len(users)*3)
+	for _, u := range users {
+		uid, _ := u["uid"].(string)
+		if uid == "" {
+			continue
+		}
+		for _, name := range []string{"users", "sessions", "schedule"} {
+			stream := repl_stream_key(repl_stream_class_system, name)
+			out = append(out, AuditStream{
+				User:   uid,
+				Stream: stream,
+				Count:  0,
+				Tail:   replication_tail(uid, repl_scope_app, stream),
+			})
+		}
+	}
 	return out
 }
 
@@ -352,6 +392,13 @@ func audit_content_candidates(local, remote map[string]int64) []AuditKey {
 	for key, lc := range local {
 		if rc, ok := remote[key]; ok && rc == lc {
 			if parts := strings.SplitN(key, "|", 2); len(parts) == 2 {
+				// System-scope streams are count/liveness-only in the audit: their
+				// shared core DBs carry per-host columns that a content hash would
+				// flag as false divergence (#151), so never content-hash them —
+				// they exist in the manifest for the cursor-vs-tail liveness pass.
+				if strings.HasPrefix(parts[1], repl_stream_class_system+":") {
+					continue
+				}
 				out = append(out, AuditKey{User: parts[0], Stream: parts[1]})
 			}
 		}
@@ -363,9 +410,42 @@ func audit_content_candidates(local, remote map[string]int64) []AuditKey {
 func audit_hash_map(entries []AuditHashEntry) map[string]string {
 	m := make(map[string]string, len(entries))
 	for _, e := range entries {
-		m[e.User+"|"+e.Stream] = e.Hash
+		key := e.User + "|" + e.Stream
+		// AGGREGATE, don't clobber: bootstrap_stream_key derives the stream key
+		// from the app id and ignores the DB filename, so every `.db` under an
+		// app's db/ dir collapses to one key. If an app has >1 DB file, keeping
+		// only the last silently drops the others from the audit (#151). Fold the
+		// colliding hashes (order-independent) so the whole stream is compared.
+		if prev, ok := m[key]; ok {
+			m[key] = audit_hash_combine(prev, e.Hash)
+		} else {
+			m[key] = e.Hash
+		}
 	}
 	return m
+}
+
+// audit_hash_combine folds two hex content hashes into one with a 256-bit add
+// (mod 2^256) — commutative, so the result is independent of DB-walk order across
+// hosts, and not self-inverse. Used to aggregate the DBs that share a stream key.
+func audit_hash_combine(a, b string) string {
+	ab, aerr := hex.DecodeString(a)
+	bb, berr := hex.DecodeString(b)
+	if aerr != nil || berr != nil || len(ab) != len(bb) {
+		// Shouldn't happen (both are sha256 hex); fall back to a stable order so
+		// both hosts still combine identically.
+		if a <= b {
+			return a + b
+		}
+		return b + a
+	}
+	var carry uint16
+	for i := len(ab) - 1; i >= 0; i-- {
+		sum := uint16(ab[i]) + uint16(bb[i]) + carry
+		ab[i] = byte(sum)
+		carry = sum >> 8
+	}
+	return hex.EncodeToString(ab)
 }
 
 // audit_local_tables are the core-created host-local infrastructure tables that
@@ -573,8 +653,16 @@ func db_replicated_content_hash(rel string) string {
 		var acc [sha256.Size]byte
 		for _, r := range rows {
 			rh := audit_row_hash(r, exclude)
-			for i := range acc {
-				acc[i] ^= rh[i]
+			// Additive fold (256-bit add mod 2^256), NOT XOR. XOR is self-inverse,
+			// so a row present an even number of times cancels to zero — a
+			// count-matched table of {X,X,Y,Y} vs {Z,Z,W,W} would hash identical
+			// and the audit would call genuine divergence "converged" (#151). Add
+			// is equally order-independent but not self-cancelling.
+			var carry uint16
+			for i := sha256.Size - 1; i >= 0; i-- {
+				sum := uint16(acc[i]) + uint16(rh[i]) + carry
+				acc[i] = byte(sum)
+				carry = sum >> 8
 			}
 		}
 		outer.Write([]byte(name))
@@ -672,7 +760,9 @@ func replication_audit_manifest_event(e *Event) {
 func audit_manifest_map(streams []AuditStream) map[string]int64 {
 	m := make(map[string]int64, len(streams))
 	for _, s := range streams {
-		m[s.User+"|"+s.Stream] = s.Count
+		// Sum, don't overwrite: multiple DB files can share one stream key, so
+		// the stream's count is the total across them, not the last one (#151).
+		m[s.User+"|"+s.Stream] += s.Count
 	}
 	return m
 }

@@ -1011,6 +1011,39 @@ func db_error_is_corruption(err error) bool {
 		strings.Contains(msg, "corrupt")
 }
 
+// db_error_is_transient reports whether err is a RETRYABLE write failure — lock
+// contention or storage pressure — rather than a permanent one (schema drift,
+// constraint, malformed SQL). A replicated apply that hits one of these must
+// retry (ApplyDeferred), not report success and drop the op, or the write is
+// lost with no retry and the replica silently diverges (#159). Parallel-queue
+// delivery applies N ops to one peer concurrently, so a lock timeout is a normal
+// transient event under load, not a bug.
+func db_error_is_transient(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "SQLITE_LOCKED") ||
+		strings.Contains(msg, "disk I/O error") ||
+		strings.Contains(msg, "database or disk is full") ||
+		strings.Contains(msg, "disk is full")
+}
+
+// ExecResult is the outcome of a background write (exec_bg), so a replicated
+// apply can decide whether to retry. ExecRetryable must defer; ExecWrote and
+// ExecSkipped must NOT retry (success is done; a skipped/quarantined or
+// permanently-failing write won't succeed on retry — a quarantined DB reseeds).
+type ExecResult int
+
+const (
+	ExecWrote     ExecResult = iota // the write executed successfully
+	ExecRetryable                   // transient failure (lock / disk) — safe to retry
+	ExecSkipped                     // nil / quarantined DB, or a permanent error — retry won't help
+)
+
 // db_recover_background is a deferred backstop for a long-lived background loop:
 // a corruption panic that escaped exec_bg (a shared write still on db.exec, or
 // any unconverted site) is logged + swallowed so the loop and the whole process
@@ -2705,17 +2738,25 @@ func (db *DB) exec_e(query string, values ...any) error {
 // DB — skipping all further ops on it — and alerts the admin once; any other
 // error is logged. The caller keeps serving every other user. `context` names
 // the operation for the alert/log.
-func (db *DB) exec_bg(context, query string, values ...any) {
+func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	if db == nil || db_quarantined(db.path) {
-		return
+		return ExecSkipped
 	}
 	if err := db.exec_e(query, values...); err != nil {
 		if db_error_is_corruption(err) {
 			db_quarantine(db.path, context, err)
-		} else {
-			warn("Background DB write failed (%s) on %q: %v", context, db.path, err)
+			return ExecSkipped
 		}
+		if db_error_is_transient(err) {
+			// Retryable: a replicated apply defers on this so the op stays in
+			// the pending buffer and re-applies next drain tick (#159).
+			warn("Background DB write failed (%s, retryable) on %q: %v", context, db.path, err)
+			return ExecRetryable
+		}
+		warn("Background DB write failed (%s) on %q: %v", context, db.path, err)
+		return ExecSkipped
 	}
+	return ExecWrote
 }
 
 // exec_replicated runs a write against the local DB and, if the handle

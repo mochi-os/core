@@ -47,6 +47,19 @@ const (
 	ApplyInvalid                     // unknown shape; drop silently
 )
 
+// apply_result maps a background write's outcome to an apply verdict (#159): a
+// retryable failure (lock / disk) defers so the pending drain re-applies the op
+// next tick; success or a permanent/quarantine skip is accepted as applied (a
+// quarantined DB reseeds; a permanent error won't succeed on retry). Without
+// this, exec_bg swallowed a transient failure and the apply reported
+// ApplyApplied, so the op was dropped from pending and the write silently lost.
+func apply_result(r ExecResult) ApplyResult {
+	if r == ExecRetryable {
+		return ApplyDeferred
+	}
+	return ApplyApplied
+}
+
 // ReplicationOp is the wire format for a single replication operation sent
 // between hosts in a user's host set. One ReplicationOp travels in the
 // content/data segments of a `replication`/`op` message.
@@ -1097,12 +1110,12 @@ func replication_session_apply_insert(p *SessionInsert) ApplyResult {
 	}
 
 	sdb := db_open("db/sessions.db")
-	sdb.exec_bg(
+	res := sdb.exec_bg(
 		"sessions apply insert",
 		"replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)",
 		p.UserUID, p.Code, p.Secret, p.Expires, p.Created, p.Accessed, p.Address, p.Agent)
 	debug("Replication session-insert applied: user_uid=%q code=%q", p.UserUID, p.Code)
-	return ApplyApplied
+	return apply_result(res)
 }
 
 // replication_session_apply_delete removes a session by code on the
@@ -1110,9 +1123,9 @@ func replication_session_apply_insert(p *SessionInsert) ApplyResult {
 // session-revocation layer.
 func replication_session_apply_delete(p *SessionDelete) ApplyResult {
 	sdb := db_open("db/sessions.db")
-	sdb.exec_bg("sessions apply delete", "delete from sessions where code=?", p.Code)
+	res := sdb.exec_bg("sessions apply delete", "delete from sessions where code=?", p.Code)
 	debug("Replication session-delete applied: code=%q", p.Code)
-	return ApplyApplied
+	return apply_result(res)
 }
 
 // web_replication_health serves /_/replication/health: a JSON snapshot of
@@ -1849,9 +1862,9 @@ func replication_webpush_delivered_apply(userUID string, w *WebpushDelivered) Ap
 	u := &User{UID: userUID}
 
 	db := webpush_dedup_db(u)
-	db.exec_bg("webpush dedup apply", "insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", w.Endpoint, w.EventID, w.TS)
+	res := db.exec_bg("webpush dedup apply", "insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", w.Endpoint, w.EventID, w.TS)
 	debug("Replication webpush_delivered apply: user_uid=%q endpoint=%q event_id=%q", userUID, w.Endpoint, w.EventID)
-	return ApplyApplied
+	return apply_result(res)
 }
 
 // replication_email_delivered_apply lands a remote email_delivered row.
@@ -1867,9 +1880,9 @@ func replication_email_delivered_apply(userUID string, em *EmailDelivered) Apply
 	u := &User{UID: userUID}
 
 	db := email_dedup_db(u)
-	db.exec_bg("email dedup apply", "insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", em.Address, em.EventID, em.TS)
+	res := db.exec_bg("email dedup apply", "insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", em.Address, em.EventID, em.TS)
 	debug("Replication email_delivered apply: user_uid=%q address=%q event_id=%q", userUID, em.Address, em.EventID)
-	return ApplyApplied
+	return apply_result(res)
 }
 
 // user_exists returns true when the given user UID has a local users.db
@@ -4091,6 +4104,14 @@ func replication_apply_sql_command(op *ReplicationOp) ApplyResult {
 			debug("Replication exec idempotent re-apply (row already present): user=%q app=%q sql=%q", op.User, op.Database, cmd.Statement)
 			return ApplyApplied
 		}
+		if db_error_is_transient(err) {
+			// Lock contention or storage pressure — the write didn't land but a
+			// retry can succeed. Defer so the op stays in pending and re-applies
+			// next drain tick, instead of dropping it and silently diverging
+			// (#159). Parallel-queue delivery makes a lock timeout routine.
+			debug("Replication exec deferred (retryable) on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
+			return ApplyDeferred
+		}
 		warn("Replication exec failed on user=%q app=%q sql=%q: %v", op.User, op.Database, cmd.Statement, err)
 		return ApplyApplied
 	}
@@ -4854,20 +4875,18 @@ func replication_users_entities_apply(udb *DB, userUID string, r *UsersRow) Appl
 		return ApplyInvalid
 	}
 	if r.Delete {
-		udb.exec_bg("users-row entities delete apply", "delete from entities where id=? and user=?", id, userUID)
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row entities delete apply", "delete from entities where id=? and user=?", id, userUID))
 	}
 	// A full-row create carries "private" (immutable post-create).
 	if _, full := r.Cols["private"]; full {
 		var published int64
 		_, _ = fmt.Sscanf(r.Cols["published"], "%d", &published)
-		udb.exec_bg("users-row entities insert apply", `insert or ignore into entities
+		return apply_result(udb.exec_bg("users-row entities insert apply", `insert or ignore into entities
 			(id, private, fingerprint, user, parent, class, name, privacy, data, published)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, r.Cols["private"], r.Cols["fingerprint"], userUID,
 			r.Cols["parent"], r.Cols["class"], r.Cols["name"],
-			r.Cols["privacy"], r.Cols["data"], published)
-		return ApplyApplied
+			r.Cols["privacy"], r.Cols["data"], published))
 	}
 	// Partial update: whitelist mutable columns.
 	sets := []string{}
@@ -4890,8 +4909,7 @@ func replication_users_entities_apply(udb *DB, userUID string, r *UsersRow) Appl
 		return ApplyInvalid
 	}
 	vals = append(vals, id, userUID)
-	udb.exec_bg("users-row entities update apply", "update entities set "+strings.Join(sets, ", ")+" where id=? and user=?", vals...)
-	return ApplyApplied
+	return apply_result(udb.exec_bg("users-row entities update apply", "update entities set "+strings.Join(sets, ", ")+" where id=? and user=?", vals...))
 }
 
 // replication_users_users_apply lands a partial UPDATE against
@@ -4918,8 +4936,7 @@ func replication_users_users_apply(udb *DB, userUID string, r *UsersRow) ApplyRe
 		return ApplyInvalid
 	}
 	vals = append(vals, userUID)
-	udb.exec_bg("users-row users update apply", "update users set "+strings.Join(sets, ", ")+" where uid=?", vals...)
-	return ApplyApplied
+	return apply_result(udb.exec_bg("users-row users update apply", "update users set "+strings.Join(sets, ", ")+" where uid=?", vals...))
 }
 
 func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
@@ -4928,8 +4945,7 @@ func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) A
 		return ApplyInvalid
 	}
 	if r.Delete {
-		udb.exec_bg("users-row credentials delete apply", "delete from credentials where id=? and user=?", id, userUID)
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row credentials delete apply", "delete from credentials where id=? and user=?", id, userUID))
 	}
 	pk := r.ColsBytes["public_key"]
 	if len(pk) == 0 {
@@ -4941,8 +4957,11 @@ func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) A
 		// place, keyed on id. Ops are in-order per stream, so the registration
 		// that carries public_key always precedes these.
 		updated := false
+		res := ExecWrote
 		if name, ok := r.Cols["name"]; ok {
-			udb.exec_bg("users-row credentials rename apply", "update credentials set name=? where id=? and user=?", name, id, userUID)
+			if udb.exec_bg("users-row credentials rename apply", "update credentials set name=? where id=? and user=?", name, id, userUID) == ExecRetryable {
+				res = ExecRetryable
+			}
 			updated = true
 		}
 		if sc, ok := r.Cols["sign_count"]; ok {
@@ -4950,13 +4969,15 @@ func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) A
 			_, _ = fmt.Sscanf(sc, "%d", &n)
 			// Monotonic: never rewind the WebAuthn counter (the same invariant
 			// the auth path enforces), so a reordered stale bump is a no-op.
-			udb.exec_bg("users-row credentials sign_count apply", "update credentials set sign_count=? where id=? and user=? and sign_count<?", n, id, userUID, n)
+			if udb.exec_bg("users-row credentials sign_count apply", "update credentials set sign_count=? where id=? and user=? and sign_count<?", n, id, userUID, n) == ExecRetryable {
+				res = ExecRetryable
+			}
 			updated = true
 		}
 		if !updated {
 			return ApplyInvalid
 		}
-		return ApplyApplied
+		return apply_result(res)
 	}
 	var signCount, created int64
 	_, _ = fmt.Sscanf(r.Cols["sign_count"], "%d", &signCount)
@@ -4968,11 +4989,10 @@ func replication_users_credentials_apply(udb *DB, userUID string, r *UsersRow) A
 	if r.Cols["backup_state"] == "1" {
 		bs = 1
 	}
-	udb.exec_bg("users-row credentials upsert apply", `insert or replace into credentials
+	return apply_result(udb.exec_bg("users-row credentials upsert apply", `insert or replace into credentials
 		(id, user, public_key, sign_count, name, transports, backup_eligible, backup_state, created)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, userUID, pk, signCount, r.Cols["name"], r.Cols["transports"], be, bs, created)
-	return ApplyApplied
+		id, userUID, pk, signCount, r.Cols["name"], r.Cols["transports"], be, bs, created))
 }
 
 func replication_users_recovery_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
@@ -4985,19 +5005,16 @@ func replication_users_recovery_apply(udb *DB, userUID string, r *UsersRow) Appl
 		// code, or by user only when wiping all codes ahead of a fresh
 		// regenerate. r.Cols["hash"] is empty for the second shape.
 		if hash == "*" {
-			udb.exec_bg("users-row recovery wipe apply", "delete from recovery where user=?", userUID)
-		} else {
-			udb.exec_bg("users-row recovery delete apply", "delete from recovery where user=? and hash=?", userUID, hash)
+			return apply_result(udb.exec_bg("users-row recovery wipe apply", "delete from recovery where user=?", userUID))
 		}
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row recovery delete apply", "delete from recovery where user=? and hash=?", userUID, hash))
 	}
 	if exists, _ := udb.exists("select 1 from recovery where user=? and hash=?", userUID, hash); exists {
 		return ApplyApplied
 	}
 	var created int64
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
-	udb.exec_bg("users-row recovery insert apply", "insert into recovery (user, hash, created) values (?, ?, ?)", userUID, hash, created)
-	return ApplyApplied
+	return apply_result(udb.exec_bg("users-row recovery insert apply", "insert into recovery (user, hash, created) values (?, ?, ?)", userUID, hash, created))
 }
 
 func replication_users_tokens_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
@@ -5006,23 +5023,20 @@ func replication_users_tokens_apply(udb *DB, userUID string, r *UsersRow) ApplyR
 		return ApplyInvalid
 	}
 	if r.Delete {
-		udb.exec_bg("users-row tokens delete apply", "delete from tokens where hash=?", hash)
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row tokens delete apply", "delete from tokens where hash=?", hash))
 	}
 	var created, expires int64
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
 	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
-	udb.exec_bg("users-row tokens upsert apply", `insert or replace into tokens
+	return apply_result(udb.exec_bg("users-row tokens upsert apply", `insert or replace into tokens
 		(hash, user, app, name, scopes, created, expires)
 		values (?, ?, ?, ?, ?, ?, ?)`,
-		hash, userUID, r.Cols["app"], r.Cols["name"], r.Cols["scopes"], created, expires)
-	return ApplyApplied
+		hash, userUID, r.Cols["app"], r.Cols["name"], r.Cols["scopes"], created, expires))
 }
 
 func replication_users_totp_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
 	if r.Delete {
-		udb.exec_bg("users-row totp delete apply", "delete from totp where user=?", userUID)
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row totp delete apply", "delete from totp where user=?", userUID))
 	}
 	secret := r.Cols["secret"]
 	if secret == "" {
@@ -5034,9 +5048,8 @@ func replication_users_totp_apply(udb *DB, userUID string, r *UsersRow) ApplyRes
 	}
 	var created int64
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
-	udb.exec_bg("users-row totp upsert apply", `insert or replace into totp (user, secret, verified, created) values (?, ?, ?, ?)`,
-		userUID, secret, verified, created)
-	return ApplyApplied
+	return apply_result(udb.exec_bg("users-row totp upsert apply", `insert or replace into totp (user, secret, verified, created) values (?, ?, ?, ?)`,
+		userUID, secret, verified, created))
 }
 
 // replication_users_oauth_apply lands a replicated oauth link / profile / unlink
@@ -5054,11 +5067,9 @@ func replication_users_oauth_apply(udb *DB, userUID string, r *UsersRow) ApplyRe
 	subject := r.Key["subject"]
 	if r.Delete {
 		if subject == "" {
-			udb.exec_bg("users-row oauth unlink apply", "delete from oauth where user=? and provider=?", userUID, provider)
-		} else {
-			udb.exec_bg("users-row oauth delete apply", "delete from oauth where user=? and provider=? and subject=?", userUID, provider, subject)
+			return apply_result(udb.exec_bg("users-row oauth unlink apply", "delete from oauth where user=? and provider=?", userUID, provider))
 		}
-		return ApplyApplied
+		return apply_result(udb.exec_bg("users-row oauth delete apply", "delete from oauth where user=? and provider=? and subject=?", userUID, provider, subject))
 	}
 	if subject == "" {
 		return ApplyInvalid
@@ -5066,11 +5077,10 @@ func replication_users_oauth_apply(udb *DB, userUID string, r *UsersRow) ApplyRe
 	var verified, created int64
 	_, _ = fmt.Sscanf(r.Cols["verified"], "%d", &verified)
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
-	udb.exec_bg("users-row oauth upsert apply",
+	return apply_result(udb.exec_bg("users-row oauth upsert apply",
 		`insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)
 		 on conflict(provider, subject) do update set email=excluded.email, verified=excluded.verified, name=excluded.name`,
-		userUID, provider, subject, r.Cols["email"], verified, r.Cols["name"], created)
-	return ApplyApplied
+		userUID, provider, subject, r.Cols["email"], verified, r.Cols["name"], created))
 }
 
 // users_row_decode_and_apply is the entry point called from
@@ -5207,9 +5217,8 @@ func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult 
 	}
 	sdb := schedule_db()
 	if r.Delete {
-		sdb.exec_bg("schedule-row delete apply", "delete from schedule where user=? and app=? and event=? and created=?",
-			user, app, event, created)
-		return ApplyApplied
+		return apply_result(sdb.exec_bg("schedule-row delete apply", "delete from schedule where user=? and app=? and event=? and created=?",
+			user, app, event, created))
 	}
 	exists, _ := sdb.exists(
 		"select 1 from schedule where user=? and app=? and event=? and created=?",
@@ -5220,12 +5229,12 @@ func replication_schedule_row_apply(userUID string, r *ScheduleRow) ApplyResult 
 	var due, interval int64
 	_, _ = fmt.Sscanf(r.Cols["due"], "%d", &due)
 	_, _ = fmt.Sscanf(r.Cols["interval"], "%d", &interval)
-	sdb.exec_bg(
+	res := sdb.exec_bg(
 		"schedule-row insert apply",
 		"insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user, app, due, event, r.Cols["data"], interval, created)
 	schedule_notify()
-	return ApplyApplied
+	return apply_result(res)
 }
 
 // ============================================================
@@ -5291,14 +5300,12 @@ func replication_sessions_partial_apply(sdb *DB, r *SessionsRow) ApplyResult {
 		return ApplyInvalid
 	}
 	if r.Delete {
-		sdb.exec_bg("sessions-row partial delete apply", "delete from partial where id=?", id)
-		return ApplyApplied
+		return apply_result(sdb.exec_bg("sessions-row partial delete apply", "delete from partial where id=?", id))
 	}
 	var expires int64
 	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
-	sdb.exec_bg("sessions-row partial upsert apply", `insert or replace into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)`,
-		id, r.Cols["user"], r.Cols["completed"], r.Cols["remaining"], expires)
-	return ApplyApplied
+	return apply_result(sdb.exec_bg("sessions-row partial upsert apply", `insert or replace into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)`,
+		id, r.Cols["user"], r.Cols["completed"], r.Cols["remaining"], expires))
 }
 
 func replication_sessions_codes_apply(sdb *DB, r *SessionsRow) ApplyResult {
@@ -5308,14 +5315,12 @@ func replication_sessions_codes_apply(sdb *DB, r *SessionsRow) ApplyResult {
 		return ApplyInvalid
 	}
 	if r.Delete {
-		sdb.exec_bg("sessions-row codes delete apply", "delete from codes where code=? and username=?", code, username)
-		return ApplyApplied
+		return apply_result(sdb.exec_bg("sessions-row codes delete apply", "delete from codes where code=? and username=?", code, username))
 	}
 	var expires int64
 	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
-	sdb.exec_bg("sessions-row codes replace apply", "replace into codes (code, username, expires) values (?, ?, ?)",
-		code, username, expires)
-	return ApplyApplied
+	return apply_result(sdb.exec_bg("sessions-row codes replace apply", "replace into codes (code, username, expires) values (?, ?, ?)",
+		code, username, expires))
 }
 
 func replication_sessions_reauthentication_apply(sdb *DB, r *SessionsRow) ApplyResult {
@@ -5324,14 +5329,12 @@ func replication_sessions_reauthentication_apply(sdb *DB, r *SessionsRow) ApplyR
 		return ApplyInvalid
 	}
 	if r.Delete {
-		sdb.exec_bg("sessions-row reauthentication delete apply", "delete from reauthentication where id=?", id)
-		return ApplyApplied
+		return apply_result(sdb.exec_bg("sessions-row reauthentication delete apply", "delete from reauthentication where id=?", id))
 	}
 	var expires int64
 	_, _ = fmt.Sscanf(r.Cols["expires"], "%d", &expires)
-	sdb.exec_bg("sessions-row reauthentication upsert apply", "insert or replace into reauthentication (id, user, methods, expires) values (?, ?, ?, ?)",
-		id, r.Cols["user"], r.Cols["methods"], expires)
-	return ApplyApplied
+	return apply_result(sdb.exec_bg("sessions-row reauthentication upsert apply", "insert or replace into reauthentication (id, user, methods, expires) values (?, ?, ?, ?)",
+		id, r.Cols["user"], r.Cols["methods"], expires))
 }
 
 func sessions_row_decode_and_apply(payload []byte, user string) ApplyResult {
@@ -5392,14 +5395,12 @@ func link_row_decode_and_apply(payload []byte, user string) ApplyResult {
 	}
 	rdb := db_open("db/replication.db")
 	if r.Delete {
-		rdb.exec_bg("link-row delete apply", "delete from links where user=? and peer=?", user, r.Peer)
-		return ApplyApplied
+		return apply_result(rdb.exec_bg("link-row delete apply", "delete from links where user=? and peer=?", user, r.Peer))
 	}
-	rdb.exec_bg(
+	return apply_result(rdb.exec_bg(
 		"link-row upsert apply",
 		"insert or replace into links (user, peer, label, placeholder, received, expires) values (?, ?, ?, ?, ?, ?)",
-		user, r.Peer, r.Label, r.Placeholder, r.Received, r.Expires)
-	return ApplyApplied
+		user, r.Peer, r.Label, r.Placeholder, r.Received, r.Expires))
 }
 
 // partial_create wraps the insert into sessions.db.partial + the

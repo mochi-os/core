@@ -1701,6 +1701,21 @@ func replication_bootstrap_db_fetch_event(e *Event) {
 // Package-level alias so tests can stub the network call.
 var bootstrap_db_fetch = bootstrap_db_fetch_impl
 
+// bootstrap_fetch_locks holds one mutex per DB target path, serializing
+// concurrent fetches/reseeds of the same database so they can't race on the
+// shared "<target>.rebuild" scratch (#146). Entries are keyed on the resolved
+// target path; the set is bounded by the number of DBs on the host.
+var bootstrap_fetch_locks sync.Map // string(target) -> *sync.Mutex
+
+// bootstrap_fetch_lock acquires the per-target build lock and returns its
+// release function (for `defer unlock()`).
+func bootstrap_fetch_lock(target string) func() {
+	m, _ := bootstrap_fetch_locks.LoadOrStore(target, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if peer == "" {
 		return fmt.Errorf("bootstrap-db-fetch: empty peer")
@@ -1721,6 +1736,18 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: target path: %w", err)
 	}
+	// Serialize all fetches/reseeds for this target. The four entry points (bulk
+	// driver, admin reseed, auto-reseed, reanchor) each build the shared
+	// "<target>.rebuild" scratch and only auto-reseed/reanchor dedup, and only
+	// against themselves. Two overlapping builds race on that scratch inode: the
+	// logical loader unlinks+recreates it, so the loser's build verifies on its
+	// own now-detached inode while the winner's swap renames the OTHER build's
+	// half-written journal_mode=off file over the live DB — the exact corruption
+	// the rebuild-and-swap design exists to prevent (#146). One lock per target
+	// means at most one build runs at a time; a second waits, then re-fetches.
+	unlock := bootstrap_fetch_lock(target)
+	defer unlock()
+
 	scratch := target + ".rebuild"
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("bootstrap-db-fetch: mkdir for %q: %w", target, err)

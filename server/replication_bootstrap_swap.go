@@ -99,10 +99,25 @@ func bootstrap_db_swap(target, scratch string) error {
 		}
 	}
 
+	// The scratch was built with synchronous=off for speed, so its pages may
+	// still sit in the page cache. fsync the data before the rename, and fsync
+	// the parent dir after, so a crash right after the swap can't leave a torn
+	// file as the live DB — which would carry a 'done' scope and no re-fetch
+	// trigger (#146). Best-effort: a failed sync still leaves the (unsynced but
+	// complete) data in cache, and aborting a verified swap would be worse.
+	if f, err := os.Open(scratch); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+
 	// Replace the file content. The old DB's open fds keep serving the old
 	// inode, so in-flight borrowers are unaffected.
 	if err := os.Rename(scratch, target); err != nil {
 		return fmt.Errorf("bootstrap-swap: rename %q -> %q: %w", scratch, target, err)
+	}
+	if d, err := os.Open(filepath.Dir(target)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	// The old inode's WAL/SHM still sit at target-wal / target-shm on disk; the
 	// freshly-renamed content has none. Remove them so the new pool can't try to

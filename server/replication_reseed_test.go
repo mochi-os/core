@@ -9,8 +9,63 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// TestBootstrapFetchLockSerializesSameTarget proves the per-target build lock
+// (#146) makes two concurrent fetches/reseeds of the SAME target run one at a
+// time (so they can't race on the shared "<target>.rebuild" scratch), while two
+// DIFFERENT targets are free to run concurrently.
+func TestBootstrapFetchLockSerializesSameTarget(t *testing.T) {
+	// Same target: observed concurrency must never exceed 1.
+	var live, peak int32
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock := bootstrap_fetch_lock("/data/users/u/feeds/db/feeds.db")
+			defer unlock()
+			n := atomic.AddInt32(&live, 1)
+			for {
+				p := atomic.LoadInt32(&peak)
+				if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			atomic.AddInt32(&live, -1)
+		}()
+	}
+	wg.Wait()
+	if peak != 1 {
+		t.Fatalf("same-target fetches must serialize, but observed %d running at once", peak)
+	}
+
+	// Different targets must NOT block each other: both enter their critical
+	// section and rendezvous; a shared/global lock would deadlock here.
+	both := make(chan struct{}, 2)
+	proceed := make(chan struct{})
+	for _, target := range []string{"/data/a.db", "/data/b.db"} {
+		go func(tg string) {
+			unlock := bootstrap_fetch_lock(tg)
+			defer unlock()
+			both <- struct{}{}
+			<-proceed
+		}(target)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-both:
+		case <-time.After(2 * time.Second):
+			t.Fatal("distinct-target fetches must not block each other (both should hold their lock simultaneously)")
+		}
+	}
+	close(proceed)
+}
 
 // TestReseedSourceMissingOps (#9) covers the direction-aware re-seed safety gate.
 // A re-seed overwrites the local DB with the source's snapshot, so it must block

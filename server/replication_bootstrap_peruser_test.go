@@ -19,9 +19,9 @@ func TestBootstrapPerUserClamp(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	rdb := db_open("db/replication.db")
-	// 'puser' is a per-user host authorized for alice. 'pother' is in neither
-	// hosts nor pair, so bootstrap_peer_user returns "" — i.e. unrestricted,
-	// the whole-server/pair case.
+	// 'puser' is a per-user host authorized for alice. 'ppair' (added below) is
+	// a real pair member — unrestricted. 'pstranger' is in neither hosts nor
+	// pair and must be served nothing (#144).
 	rdb.exec("insert into hosts (user, peer, added, ack) values ('alice', 'puser', 1, 0)")
 
 	// Path authorizer (uid level).
@@ -64,12 +64,30 @@ func TestBootstrapPerUserClamp(t *testing.T) {
 		t.Error("per-user serve: sysdbs must be refused")
 	}
 
-	// Unrestricted peer (pair/whole-server) keeps full scope.
-	if !bootstrap_serve_files_ok("pother", bootstrap_scope_apps, "anything") {
-		t.Error("unrestricted serve: apps ok")
+	// A real pair member (whole-server) keeps full scope.
+	rdb.exec("insert into pair (peer, added, role) values ('ppair', 1, '')")
+	pair_membership_refresh()
+	if !bootstrap_serve_files_ok("ppair", bootstrap_scope_apps, "anything") {
+		t.Error("pair serve: apps ok")
 	}
-	if !bootstrap_serve_db_ok("pother", bootstrap_scope_sysdbs, "anyuser") {
-		t.Error("unrestricted serve: sysdbs ok")
+	if !bootstrap_serve_db_ok("ppair", bootstrap_scope_sysdbs, "anyuser") {
+		t.Error("pair serve: sysdbs ok")
+	}
+
+	// A stranger — in NEITHER hosts nor pair — must be served NOTHING. Before
+	// #144 this peer's uid=="" was conflated with the pair case and it was
+	// served the sysdbs scope (sessions.db/users.db) and every user's data.
+	if bootstrap_serve_db_ok("pstranger", bootstrap_scope_sysdbs, "alice") {
+		t.Error("stranger serve: sysdbs (sessions.db/users.db) must be refused")
+	}
+	if bootstrap_serve_db_ok("pstranger", bootstrap_scope_userdbs, "alice") {
+		t.Error("stranger serve: another user's userdbs must be refused")
+	}
+	if bootstrap_serve_files_ok("pstranger", bootstrap_scope_files, "alice/feeds/files/x") {
+		t.Error("stranger serve: files must be refused")
+	}
+	if bootstrap_serve_files_ok("pstranger", bootstrap_scope_apps, "anything") {
+		t.Error("stranger serve: apps must be refused")
 	}
 
 	// Receiver db-fetch rejects a per-user peer fetching another user / sysdbs,

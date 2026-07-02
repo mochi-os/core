@@ -2091,10 +2091,19 @@ func bootstrap_files_relpath_authorized(uid, relpath string) bool {
 // gets only the files scope and only its own user's subtree — so it can neither
 // enumerate nor pull another user's files (privacy + integrity mirror of the
 // receiver-side clamp, #19).
+//
+// bootstrap_peer_user returns "" for BOTH a pair member (whole-server) and an
+// unknown orphan peer in neither `pair` nor `hosts`. Those must not be
+// conflated on the serve side: a stranger reaching this with uid=="" would
+// otherwise be served every user's files. Gate the unrestricted branch on real
+// pair membership; a non-pair peer with no per-user host row gets nothing (#144).
 func bootstrap_serve_files_ok(peer, scope, relpath string) bool {
+	if peer_is_pair(peer) {
+		return true
+	}
 	uid := bootstrap_peer_user(peer)
 	if uid == "" {
-		return true
+		return false // stranger: not a pair member and hosts no user here
 	}
 	return scope == bootstrap_scope_files && bootstrap_files_relpath_authorized(uid, relpath)
 }
@@ -2102,10 +2111,17 @@ func bootstrap_serve_files_ok(peer, scope, relpath string) bool {
 // bootstrap_serve_db_ok gates a db-scope SERVE to a requesting peer. A pair
 // member is unrestricted; a per-user host gets only the userdbs scope and only
 // its own user's DBs (never another user's, never the server-wide sysdbs).
+//
+// Same pair-vs-orphan disambiguation as bootstrap_serve_files_ok: without it a
+// stranger (uid=="") is served the sysdbs scope — including sessions.db (live
+// tokens) and users.db (credentials) — plus every user's DBs (#144).
 func bootstrap_serve_db_ok(peer, scope, user string) bool {
+	if peer_is_pair(peer) {
+		return true
+	}
 	uid := bootstrap_peer_user(peer)
 	if uid == "" {
-		return true
+		return false // stranger: not a pair member and hosts no user here
 	}
 	return scope == bootstrap_scope_userdbs && user == uid
 }

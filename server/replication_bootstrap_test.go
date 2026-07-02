@@ -251,7 +251,7 @@ func TestBootstrapWriteChunkPartialThenRename(t *testing.T) {
 	partial := final + ".partial"
 
 	// First chunk — not EOF.
-	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 0, []byte("hello "), false); err != nil {
+	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 0, []byte("hello "), false, ""); err != nil {
 		t.Fatalf("write chunk 1: %v", err)
 	}
 	// Partial exists, final doesn't.
@@ -263,7 +263,7 @@ func TestBootstrapWriteChunkPartialThenRename(t *testing.T) {
 	}
 
 	// Second chunk — EOF.
-	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 6, []byte("world"), true); err != nil {
+	if err := bootstrap_write_chunk(bootstrap_scope_files, "alice/feed/files/post.md", 6, []byte("world"), true, ""); err != nil {
 		t.Fatalf("write chunk 2: %v", err)
 	}
 	// Final exists, partial gone.
@@ -285,11 +285,11 @@ func TestBootstrapWriteChunkRejectsTraversal(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	err := bootstrap_write_chunk(bootstrap_scope_files, "../../../etc/passwd", 0, []byte("malicious"), true)
+	err := bootstrap_write_chunk(bootstrap_scope_files, "../../../etc/passwd", 0, []byte("malicious"), true, "")
 	if err == nil {
 		t.Error("expected error for parent-dir traversal, got nil")
 	}
-	err = bootstrap_write_chunk(bootstrap_scope_files, "/etc/passwd", 0, []byte("malicious"), true)
+	err = bootstrap_write_chunk(bootstrap_scope_files, "/etc/passwd", 0, []byte("malicious"), true, "")
 	if err == nil {
 		t.Error("expected error for absolute path, got nil")
 	}
@@ -489,7 +489,7 @@ func TestBootstrapFileTransferEndToEnd(t *testing.T) {
 			// the source mid-test. Rewrite the path so the receiver
 			// puts the file under "bob" instead of "alice".
 			recv_path := "bob/" + entry.Path[len("alice/"):]
-			if err := bootstrap_write_chunk(bootstrap_scope_files, recv_path, offset, data, eof); err != nil {
+			if err := bootstrap_write_chunk(bootstrap_scope_files, recv_path, offset, data, eof, ""); err != nil {
 				t.Fatalf("write %q at %d: %v", recv_path, offset, err)
 			}
 			if eof {

@@ -3296,7 +3296,26 @@ func db_starlark_sql_blocked(query string) string {
 	case "ANALYZE":
 		return "ANALYZE is not allowed"
 	}
+	// Block app writes to core-reserved tables. The replication `journal` lives in
+	// every app data DB (journal_setup) and is populated by core in the SAME
+	// transaction as each replicated write; an app that DELETEs its journal drops
+	// its own un-shipped ops (silent divergence) or forges/UPDATEs rows to
+	// manipulate the op stream (#152). An authorizer deny can't be used here — core's
+	// db_execute_journal runs on this same starlark connection — so gate on the
+	// app's query string instead. No app can own a `journal` table anyway: core's
+	// `create table if not exists journal` already claims the name.
+	if t := sql_target_table(query); t != "" && db_reserved_app_table[strings.ToLower(t)] {
+		return fmt.Sprintf("table %q is reserved for replication and cannot be written by app SQL", t)
+	}
 	return ""
+}
+
+// db_reserved_app_table names the core-created tables that live inside an app's
+// own (mochi.db-reachable) data DB and must never be written by app SQL. Only the
+// replication journal qualifies today — the other host-local infra tables
+// (pending, sequence, journal_delivery, …) live in core DBs an app can't reach.
+var db_reserved_app_table = map[string]bool{
+	"journal": true,
 }
 
 // TransactionHandle is the Starlark value returned by mochi.db.transaction(). It

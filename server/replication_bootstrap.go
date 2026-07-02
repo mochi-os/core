@@ -221,6 +221,11 @@ type BootstrapDBFetchRequest struct {
 type BootstrapDBManifestRequest struct {
 	Scope string `cbor:"scope"`          // bootstrap_scope_userdbs | bootstrap_scope_sysdbs
 	User  string `cbor:"user,omitempty"` // optional per-user filter (uid)
+	// Paginated signals the requester reads multiple result pages until Done=true
+	// (#152). Back-compat: an old requester omits it, so the server sends the whole
+	// list in one message (the pre-pagination behaviour); an old server ignores it
+	// and sends one message, which a new requester ends on read-EOF.
+	Paginated bool `cbor:"paginated,omitempty"`
 }
 
 // BootstrapDBManifestResult lists every DB the source has at the
@@ -229,6 +234,7 @@ type BootstrapDBManifestRequest struct {
 type BootstrapDBManifestResult struct {
 	Scope   string             `cbor:"scope"`
 	Entries []BootstrapDBEntry `cbor:"entries"`
+	Done    bool               `cbor:"done,omitempty"` // false → another result page follows (#152)
 }
 
 // BootstrapDBEntry is one DB the source has. Comparable to a row of
@@ -960,8 +966,10 @@ func bootstrap_read_chunk(scope, path string, offset, length int64) ([]byte, boo
 // apps scope on a fully-populated server is 21k+ files (every published
 // app's web/dist tree), so a single-page manifest is not viable. 5000
 // entries per page gives ~3-5 pages for the apps scope, each ~500-900
-// KB CBOR.
-const bootstrap_manifest_page_size = 5000
+// KB CBOR. The DB manifest paginates on the same size (#152) — a fleet with
+// >10,000 user×app DBs would otherwise exceed cbor_max_elements and fail the
+// decode outright, not just strain memory. A var so a test can shrink it.
+var bootstrap_manifest_page_size = 5000
 
 // replication_bootstrap_file_manifest_event is the sender's stream
 // handler for sync-RPC manifest fetch. Reads the request from the
@@ -1276,12 +1284,12 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 	// never drive the server-wide `apps` scope, and every path it serves must
 	// sit under users/<uid>/ (enforced again at the write below, against the
 	// path the sender actually returns). uid comes from the local hosts table.
-	uid := bootstrap_peer_user(peer)
-	if uid != "" && scope != bootstrap_scope_files {
-		warn("Bootstrap: refusing scope %q from per-user peer %q (authorized for user %q only)", scope, peer, uid)
+	isPair := peer_is_pair(peer)
+	if !isPair && scope != bootstrap_scope_files {
+		warn("Bootstrap: refusing scope %q from per-user peer %q (files scope only)", scope, peer)
 		return
 	}
-	debug("Bootstrap-diag: file-scope driver start scope=%q peer=%q uid=%q files=%d", scope, peer, uid, len(needed))
+	debug("Bootstrap-diag: file-scope driver start scope=%q peer=%q pair=%v files=%d", scope, peer, isPair, len(needed))
 	for _, entry := range needed {
 		ok := true
 		var size int64
@@ -1293,12 +1301,12 @@ func bootstrap_file_scope_driver_impl(peer, scope string, needed []BootstrapFile
 				ok = false
 				break
 			}
-			if !bootstrap_files_relpath_authorized(uid, resp.Path) {
-				warn("Bootstrap: per-user peer %q returned files path %q outside users/%s/ — rejecting", peer, resp.Path, uid)
+			if !isPair && !bootstrap_peer_hosts_user(peer, bootstrap_path_user(resp.Path)) {
+				warn("Bootstrap: per-user peer %q returned files path %q for a user it does not host — rejecting", peer, resp.Path)
 				ok = false
 				break
 			}
-			if err := bootstrap_write_chunk(scope, resp.Path, resp.Offset, resp.Data, resp.EOF); err != nil {
+			if err := bootstrap_write_chunk(scope, resp.Path, resp.Offset, resp.Data, resp.EOF, entry.Sha256); err != nil {
 				info("Bootstrap file-scope driver: write failed (scope=%q path=%q offset=%d): %v",
 					scope, resp.Path, resp.Offset, err)
 				ok = false
@@ -1467,7 +1475,7 @@ const bootstrap_stream_max_bytes = 50 * 1024 * 1024 * 1024
 // Caller is responsible for matching the (scope, path) tuple to the
 // expected file from the sender's manifest — bootstrap_write_chunk
 // trusts the input and only guards against path traversal.
-func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bool) error {
+func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bool, expected string) error {
 	root, err := bootstrap_file_scope_root(scope)
 	if err != nil {
 		return err
@@ -1499,6 +1507,22 @@ func bootstrap_write_chunk(scope, path string, offset int64, data []byte, eof bo
 	}
 
 	if eof {
+		// Verify the fully-assembled file against the manifest's expected sha256
+		// BEFORE exposing it at its final path. The chunk protocol guarantees only
+		// size, so without this a corrupted, truncated, or tampered transfer would
+		// land silently as the real file (#152). On mismatch drop the .partial and
+		// error, so the driver marks the file failed and the resync re-fetches it.
+		if expected != "" {
+			got, herr := bootstrap_file_sha256(partial)
+			if herr != nil {
+				os.Remove(partial)
+				return fmt.Errorf("bootstrap: hash assembled %q: %w", partial, herr)
+			}
+			if got != expected {
+				os.Remove(partial)
+				return fmt.Errorf("bootstrap: assembled %q failed hash check (want %s got %s)", path, expected, got)
+			}
+		}
 		if err := os.Rename(partial, final); err != nil {
 			return fmt.Errorf("bootstrap: rename %q -> %q: %w", partial, final, err)
 		}
@@ -1730,12 +1754,12 @@ func bootstrap_db_fetch_impl(peer, scope, path, user, app, db string) error {
 	// server-wide sysdbs scope. uid is the local hosts-table authorization, not
 	// the wire, so a malicious peer can't fetch (and overwrite) another user's
 	// DBs — including their app.db access table (#19).
-	if uid := bootstrap_peer_user(peer); uid != "" {
+	if !peer_is_pair(peer) {
 		if scope != bootstrap_scope_userdbs {
-			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q (user %q) may not fetch scope %q", peer, uid, scope)
+			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q may not fetch scope %q", peer, scope)
 		}
-		if user != uid {
-			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q authorized for user %q, refused db for user %q", peer, uid, user)
+		if !bootstrap_peer_hosts_user(peer, user) {
+			return fmt.Errorf("bootstrap-db-fetch: per-user peer %q does not host user %q, refused", peer, user)
 		}
 	}
 	target, err := bootstrap_db_target_path(scope, path, user, app, db)
@@ -2102,21 +2126,35 @@ func bootstrap_peer_user(peer string) string {
 	return uid
 }
 
-// bootstrap_files_relpath_authorized reports whether a files-scope path
-// (relative to data_dir/users) may be written for this peer. Pair members
-// (uid == "") replicate the whole server, so any user's subtree is allowed —
-// the scope-root containment in bootstrap_safe_path is the only bound. A
-// per-user host (uid != "", read from the local hosts table via
-// bootstrap_peer_user — never from the wire) is confined to its one user: the
-// path must lie within "<uid>/". This narrows bootstrap_safe_path's "anywhere
-// under users/" to "under users/<uid>/", so a malicious per-user peer can't
-// tunnel into another user's data (#19).
-func bootstrap_files_relpath_authorized(uid, relpath string) bool {
-	if uid == "" {
-		return true
+// bootstrap_peer_hosts_user reports whether `peer` legitimately hosts `user` on
+// this server — i.e. a hosts row (user, peer) exists locally. A peer can be in
+// MULTIPLE users' host sets (several people each opting into the same server as a
+// per-user replication host); the older single-user bootstrap_peer_user returned
+// only the first, so every other user dead-ended and could never bootstrap from
+// that peer (#152). This is the set-membership form of the SAME #19 confinement —
+// read from the LOCAL hosts table, never the wire, so a peer can still only reach
+// users it actually hosts.
+func bootstrap_peer_hosts_user(peer, user string) bool {
+	if peer == "" || user == "" {
+		return false
 	}
+	ok, _ := db_open("db/replication.db").exists("select 1 from hosts where peer=? and user=?", peer, user)
+	return ok
+}
+
+// bootstrap_path_user returns the owning user (leading path segment) of a
+// scope-relative files path like "<uid>/<app>/files/…". "" for an empty path or a
+// bare "." — which bootstrap_peer_hosts_user then rejects, so an empty/whole-server
+// prefix from a per-user peer is refused (it can't enumerate other users).
+func bootstrap_path_user(relpath string) string {
 	clean := filepath.Clean(relpath)
-	return clean == uid || strings.HasPrefix(clean, uid+"/")
+	if clean == "." || clean == "/" || clean == "" {
+		return ""
+	}
+	if i := strings.IndexByte(clean, '/'); i >= 0 {
+		return clean[:i]
+	}
+	return clean
 }
 
 // bootstrap_serve_files_ok gates a files-scope SERVE (manifest prefix or chunk
@@ -2134,11 +2172,9 @@ func bootstrap_serve_files_ok(peer, scope, relpath string) bool {
 	if peer_is_pair(peer) {
 		return true
 	}
-	uid := bootstrap_peer_user(peer)
-	if uid == "" {
-		return false // stranger: not a pair member and hosts no user here
-	}
-	return scope == bootstrap_scope_files && bootstrap_files_relpath_authorized(uid, relpath)
+	// Per-user host: only the files scope, and only a path under a user this peer
+	// hosts (a peer can host several users, #152). A stranger hosts none → refused.
+	return scope == bootstrap_scope_files && bootstrap_peer_hosts_user(peer, bootstrap_path_user(relpath))
 }
 
 // bootstrap_serve_db_ok gates a db-scope SERVE to a requesting peer. A pair
@@ -2152,11 +2188,9 @@ func bootstrap_serve_db_ok(peer, scope, user string) bool {
 	if peer_is_pair(peer) {
 		return true
 	}
-	uid := bootstrap_peer_user(peer)
-	if uid == "" {
-		return false // stranger: not a pair member and hosts no user here
-	}
-	return scope == bootstrap_scope_userdbs && user == uid
+	// Per-user host: only the userdbs scope, and only a user this peer hosts (a
+	// peer can host several users, #152). A stranger hosts none → refused.
+	return scope == bootstrap_scope_userdbs && bootstrap_peer_hosts_user(peer, user)
 }
 
 // bootstrap_refire_manifest re-fires the appropriate manifest fetch for
@@ -2903,17 +2937,34 @@ func replication_bootstrap_db_manifest_fetch_impl(peer, scope, user string) {
 	// the same generous deadline as the file manifest + bulk transfers.
 	s.timeout.read = bootstrap_stream_timeout
 
-	if err := s.write(&BootstrapDBManifestRequest{Scope: scope, User: user}); err != nil {
+	if err := s.write(&BootstrapDBManifestRequest{Scope: scope, User: user, Paginated: true}); err != nil {
 		info("Replication bootstrap-db-manifest-fetch: write request (scope=%q peer=%q): %v", scope, peer, err)
 		return
 	}
 
-	var res BootstrapDBManifestResult
-	if err := s.read(&res); err != nil {
-		info("Replication bootstrap-db-manifest-fetch: read response (scope=%q peer=%q): %v", scope, peer, err)
-		return
+	// Read result pages until Done=true (#152). Accumulate into one manifest and
+	// apply once so the diff sees the whole list. Back-compat: an old server sends
+	// a single result with Done omitted (false) then closes the stream — treat a
+	// read-EOF after at least one page as the end and apply what arrived.
+	var all BootstrapDBManifestResult
+	all.Scope = scope
+	pages := 0
+	for {
+		var res BootstrapDBManifestResult
+		if err := s.read(&res); err != nil {
+			if pages == 0 {
+				info("Replication bootstrap-db-manifest-fetch: read response (scope=%q peer=%q): %v", scope, peer, err)
+				return
+			}
+			break // old server: one result then EOF
+		}
+		pages++
+		all.Entries = append(all.Entries, res.Entries...)
+		if res.Done {
+			break
+		}
 	}
-	replication_bootstrap_db_manifest_result_apply(peer, &res)
+	replication_bootstrap_db_manifest_result_apply(peer, &all)
 }
 
 // replication_bootstrap_db_manifest_event is the sender-side stream
@@ -2929,6 +2980,7 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 	// would EOF because only one request segment was written).
 	scope, _ := e.content["scope"].(string)
 	user, _ := e.content["user"].(string)
+	paginated, _ := e.content["paginated"].(bool)
 	if !bootstrap_serve_db_ok(e.peer, scope, user) {
 		info("Replication bootstrap-db-manifest: refusing scope=%q user=%q to per-user peer %q", scope, user, e.peer)
 		return
@@ -2942,10 +2994,29 @@ func replication_bootstrap_db_manifest_event(e *Event) {
 	if err != nil {
 		info("Replication bootstrap-db-manifest: walk failed (scope=%q user=%q from=%q): %v",
 			scope, user, e.peer, err)
-		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope})
+		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Done: true})
 		return
 	}
-	_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
+	if !paginated {
+		// Old requester: one message, whole list (pre-#152 behaviour).
+		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Entries: entries})
+		return
+	}
+	// Paginate so a large fleet's DB list (many users x app DBs) can't produce a
+	// single oversized message (#152). The final page carries Done=true; an empty
+	// manifest sends one empty Done page.
+	for i := 0; i < len(entries); i += bootstrap_manifest_page_size {
+		end := i + bootstrap_manifest_page_size
+		if end > len(entries) {
+			end = len(entries)
+		}
+		if err := e.stream.write(&BootstrapDBManifestResult{Scope: scope, Entries: entries[i:end], Done: end == len(entries)}); err != nil {
+			return
+		}
+	}
+	if len(entries) == 0 {
+		_ = e.stream.write(&BootstrapDBManifestResult{Scope: scope, Done: true})
+	}
 }
 
 // replication_bootstrap_db_manifest_result_apply seeds the pending-DB

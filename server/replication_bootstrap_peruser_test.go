@@ -19,29 +19,26 @@ func TestBootstrapPerUserClamp(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	rdb := db_open("db/replication.db")
-	// 'puser' is a per-user host authorized for alice. 'ppair' (added below) is
-	// a real pair member — unrestricted. 'pstranger' is in neither hosts nor
-	// pair and must be served nothing (#144).
+	// 'puser' is a per-user host authorized for alice AND carol (a peer can host
+	// several users, #152). 'ppair' (added below) is a real pair member —
+	// unrestricted. 'pstranger' is in neither hosts nor pair and must be served
+	// nothing (#144).
 	rdb.exec("insert into hosts (user, peer, added, ack) values ('alice', 'puser', 1, 0)")
+	rdb.exec("insert into hosts (user, peer, added, ack) values ('carol', 'puser', 2, 0)")
 
-	// Path authorizer (uid level).
-	if !bootstrap_files_relpath_authorized("", "anything/at/all") {
-		t.Error("pair (uid==\"\"): every path allowed")
+	// Set-membership authorizer: a peer may reach the users it hosts, and only
+	// those (the #19 confinement, generalised from one user to the host set, #152).
+	if !bootstrap_peer_hosts_user("puser", "alice") || !bootstrap_peer_hosts_user("puser", "carol") {
+		t.Error("per-user: both hosted users must be authorized (multi-user peer, #152)")
 	}
-	if !bootstrap_files_relpath_authorized("alice", "alice/feeds/files/x") {
-		t.Error("per-user: own subtree allowed")
+	if bootstrap_peer_hosts_user("puser", "bob") {
+		t.Error("per-user: a non-hosted user must be rejected (#19)")
 	}
-	if !bootstrap_files_relpath_authorized("alice", "alice") {
-		t.Error("per-user: own root allowed")
+	if bootstrap_peer_hosts_user("puser", "") {
+		t.Error("per-user: empty user must be rejected")
 	}
-	if bootstrap_files_relpath_authorized("alice", "bob/feeds/files/x") {
-		t.Error("per-user: another user's subtree must be rejected")
-	}
-	if bootstrap_files_relpath_authorized("alice", "") {
-		t.Error("per-user: empty/all-users path must be rejected")
-	}
-	if bootstrap_files_relpath_authorized("alice", "alicebob/x") {
-		t.Error("per-user: prefix-collision (alicebob) must be rejected")
+	if bootstrap_path_user("alicebob/x") != "alicebob" || bootstrap_path_user("alice/feeds/x") != "alice" || bootstrap_path_user("") != "" {
+		t.Error("bootstrap_path_user: wrong leading-segment extraction")
 	}
 
 	// Serve gates (peer level).
@@ -62,6 +59,13 @@ func TestBootstrapPerUserClamp(t *testing.T) {
 	}
 	if bootstrap_serve_db_ok("puser", bootstrap_scope_sysdbs, "alice") {
 		t.Error("per-user serve: sysdbs must be refused")
+	}
+	// The SECOND hosted user (carol) must also be served — the dead-end #152 fixes.
+	if !bootstrap_serve_db_ok("puser", bootstrap_scope_userdbs, "carol") {
+		t.Error("per-user serve: a second hosted user's userdbs must be allowed (#152)")
+	}
+	if !bootstrap_serve_files_ok("puser", bootstrap_scope_files, "carol/feeds/files/x") {
+		t.Error("per-user serve: a second hosted user's files must be allowed (#152)")
 	}
 
 	// A real pair member (whole-server) keeps full scope.

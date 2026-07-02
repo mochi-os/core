@@ -2274,11 +2274,27 @@ const bootstrap_retry_escalate_attempts = 10
 var bootstrap_retry_abandon_attempts int64 = 48
 var bootstrap_retry_abandon_seconds int64 = 6 * 3600
 
-// bootstrap_should_abandon reports whether a non-done bootstrap row has retried
-// past the cap with no real progress for the no-progress window — a clearly-dead
-// source to mark irreparable rather than retry forever. sinceProgress is
+// bootstrap_retry_abandon_hardcap: a bootstrap that has retried this many times
+// without reaching 'done' is abandoned even if each retry made byte progress. The
+// no-progress gate above never fires for a whole-DB snapshot that transfers fully
+// but fails to SETTLE (a swap that OOMs or a genuine subset divergence): each
+// re-transfer stamps `progressed`, so the row re-transfers a multi-GB DB forever
+// (#169). The hardcap breaks that loop. Generously above _attempts (~2 days at the
+// 30-min ceiling) so a flaky-but-eventually-completing link isn't cut off, and
+// abandonment stays recoverable — resume/resync revives it (#170). A var so tests
+// can lower it.
+var bootstrap_retry_abandon_hardcap int64 = 96
+
+// bootstrap_should_abandon reports whether a non-done bootstrap row should be
+// marked irreparable rather than retried forever: either it retried past the cap
+// with no real progress for the no-progress window (a clearly-dead source), OR it
+// hit the hard attempts cap (a transfer that makes byte progress every pass but
+// never settles — the byte-stall gate can't catch it). sinceProgress is
 // now()-progressed.
 func bootstrap_should_abandon(attempts, sinceProgress int64) bool {
+	if attempts >= bootstrap_retry_abandon_hardcap {
+		return true
+	}
 	return attempts >= bootstrap_retry_abandon_attempts && sinceProgress >= bootstrap_retry_abandon_seconds
 }
 

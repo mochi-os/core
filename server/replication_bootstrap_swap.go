@@ -221,25 +221,31 @@ func bootstrap_swap_subset_ok(target, scratch string) (bool, string) {
 			return audit_row_hash(key, nil)
 		}
 
-		srows, err := db_file_rows(scratch, "select * from \""+name+"\"")
-		if err != nil {
+		// Stream both tables rather than loading them as []map[string]any: the
+		// `have` multiset holds only 32-byte identity hashes, so peak memory is
+		// O(rows)*~40B instead of O(rows)*full-row — a multi-GB feeds.db no longer
+		// OOMs the swap (#169).
+		have := map[[sha256.Size]byte]int{}
+		if err := db_file_each(scratch, "select * from \""+name+"\"", func(r map[string]any) error {
+			have[identity(r)]++
+			return nil
+		}); err != nil {
 			return false, "read scratch." + name + ": " + err.Error()
 		}
-		have := make(map[[sha256.Size]byte]int, len(srows))
-		for _, r := range srows {
-			have[identity(r)]++
-		}
-
-		trows, err := db_file_rows(target, "select * from \""+name+"\"")
-		if err != nil {
-			return false, "read target." + name + ": " + err.Error()
-		}
-		for _, r := range trows {
+		missing := ""
+		if err := db_file_each(target, "select * from \""+name+"\"", func(r map[string]any) error {
 			h := identity(r)
 			if have[h] <= 0 {
-				return false, "table " + name + " holds a row whose key is absent from the source"
+				missing = "table " + name + " holds a row whose key is absent from the source"
+				return errSubsetStop
 			}
 			have[h]--
+			return nil
+		}); err != nil && err != errSubsetStop {
+			return false, "read target." + name + ": " + err.Error()
+		}
+		if missing != "" {
+			return false, missing
 		}
 	}
 	return true, ""
@@ -250,6 +256,51 @@ func bootstrap_swap_subset_ok(target, scratch string) (bool, string) {
 // live target and the scratch through this one path so the same logical row produces
 // the same audit_row_hash on both sides. Uses sql.Open, never db_open, so it never
 // contends with databases_lock (which the swap takes).
+// errSubsetStop is the sentinel db_file_each's callback returns to stop iteration
+// early once the subset check has already failed (a stable package value so it can
+// be compared by identity).
+var errSubsetStop = fmt.Errorf("subset stop")
+
+// db_file_each streams a read-only query over a DB file, invoking fn per row
+// WITHOUT accumulating the whole result set in memory. The subset guard uses it so
+// a multi-GB table isn't materialised as one []map[string]any and OOMs the process
+// (#169). The row map handed to fn is reused-safe (a fresh map per row); fn
+// returning an error stops iteration and is returned to the caller.
+func db_file_each(path, query string, fn func(map[string]any) error) error {
+	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	rows, err := d.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		m := make(map[string]any, len(cols))
+		for i, c := range cols {
+			m[c] = vals[i]
+		}
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 func db_file_rows(path, query string) ([]map[string]any, error) {
 	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {

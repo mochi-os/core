@@ -58,18 +58,27 @@ func TestBootstrapActiveKeepsRetryAttemptsMonotonic(t *testing.T) {
 // real forward progress (a dead/nonexistent source) is abandoned, while a
 // slow-but-progressing transfer is NEVER abandoned regardless of attempts.
 func TestBootstrapShouldAbandon(t *testing.T) {
-	origA, origS := bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds
-	bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds = 48, 6*3600
-	defer func() { bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds = origA, origS }()
+	origA, origS, origH := bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds, bootstrap_retry_abandon_hardcap
+	bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds, bootstrap_retry_abandon_hardcap = 48, 6*3600, 96
+	defer func() {
+		bootstrap_retry_abandon_attempts, bootstrap_retry_abandon_seconds, bootstrap_retry_abandon_hardcap = origA, origS, origH
+	}()
 
 	if !bootstrap_should_abandon(48, 7*3600) {
 		t.Error("dead source (>= cap attempts, long no-progress) should be abandoned")
 	}
-	if bootstrap_should_abandon(200, 60) {
-		t.Error("slow-but-progressing (recent progress) must NEVER be abandoned, whatever the attempts")
+	if bootstrap_should_abandon(60, 60) {
+		t.Error("recent progress below the hard cap must not be abandoned")
 	}
 	if bootstrap_should_abandon(47, 99*3600) {
 		t.Error("below the attempts cap should not abandon yet (give it a fair chance)")
+	}
+	// #169: a snapshot that transfers fully every pass but never SETTLES (a swap
+	// that OOMs, or a genuine subset divergence) stamps byte progress each retry,
+	// so the no-progress gate never fires — the hard attempts cap must abandon it
+	// anyway, or it re-transfers a multi-GB DB forever.
+	if !bootstrap_should_abandon(96, 60) {
+		t.Error("hard attempts cap must abandon a never-settling transfer even with recent byte progress (#169)")
 	}
 }
 

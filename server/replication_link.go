@@ -180,6 +180,25 @@ func replication_link_request_apply(originPeer string, lr *LinkRequest) {
 // gone (timed out via B's 24h safety net, or a duplicate signup
 // orphaned it), the approval is dropped — the user has already moved
 // on; their session reflects whatever current state B has.
+// replication_link_peer_bound reports whether `peer` is the source peer this
+// host (B) recorded when it created `placeholder` and emitted the link-request.
+// A link-approved / link-denied for the placeholder is honoured only when this
+// is true — see replication.db.placeholders and #153 / #154. The comparison is
+// done in SQL (fail closed: no matching row — never requested here, already
+// applied, expired, or wrong peer — returns false).
+func replication_link_peer_bound(placeholder, peer string) bool {
+	rdb := db_open("db/replication.db")
+	ok, _ := rdb.exists("select 1 from placeholders where placeholder=? and peer=?", placeholder, peer)
+	return ok
+}
+
+// replication_link_clear_placeholder drops the placeholder->source-peer bind once
+// the link outcome has applied, so a replayed approved/denied can't be honoured
+// a second time.
+func replication_link_clear_placeholder(placeholder string) {
+	db_open("db/replication.db").exec("delete from placeholders where placeholder=?", placeholder)
+}
+
 func replication_link_approved_event(e *Event) {
 	var la LinkApproved
 	if !e.segment(&la) {
@@ -203,6 +222,17 @@ func replication_link_approved_event(e *Event) {
 		return
 	}
 
+	// Peer bind: only the source peer B sent the link-request to may approve
+	// this placeholder. e.peer is the transport-authenticated (unforgeable)
+	// libp2p origin; without this check any connectable peer could apply its
+	// own keys to the pending account (pending-account hijack, #153). Fail
+	// closed — a missing/expired bind (expected == "") also drops.
+	if !replication_link_peer_bound(la.Placeholder, e.peer) {
+		info("Replication link-approved dropping: peer %q is not the bound source for placeholder %q",
+			e.peer, la.Placeholder)
+		return
+	}
+
 	// Apply the keys via the shared code path. The signer (e.from)
 	// is empty for server-to-server messages, but keys-transfer-apply
 	// is set up to check the signer is in the transferred entity set
@@ -211,6 +241,7 @@ func replication_link_approved_event(e *Event) {
 	// Use a dedicated apply that doesn't enforce the signer check
 	// since server-to-server messages don't carry one.
 	replication_link_apply_keys(e.peer, la.Placeholder, &la.Keys)
+	replication_link_clear_placeholder(la.Placeholder)
 }
 
 // replication_link_apply_keys is the placeholder-aware variant of the
@@ -537,12 +568,24 @@ func replication_link_denied_apply(originPeer string, ld *LinkDenied) {
 		return
 	}
 
+	// Peer bind: only the source peer B sent the link-request to may deny this
+	// placeholder. Without it any connectable peer could send a link-denied for
+	// a known pending placeholder and tear down an in-flight signup (DoS, #154).
+	// The legitimate denials (user clicked Deny, A's expiry sweep) all originate
+	// from that same peer. Fail closed on a missing/expired bind.
+	if !replication_link_peer_bound(ld.Placeholder, originPeer) {
+		info("Replication link-denied dropping: peer %q is not the bound source for placeholder %q",
+			originPeer, ld.Placeholder)
+		return
+	}
+
 	// Same cleanup as user_delete but scoped to the placeholder; the
 	// placeholder has no replicated data yet (no keys arrived), so
 	// the cleanup is degenerate — just drop the users row and the
 	// per-user disk dir if anything got scaffolded.
 	udb.exec("delete from users where uid=?", ld.Placeholder)
 	udb.exec("delete from entities where user=?", ld.Placeholder)
+	replication_link_clear_placeholder(ld.Placeholder)
 
 	debug("Replication link-denied applied: placeholder=%q reason=%q (from peer %q)",
 		ld.Placeholder, ld.Reason, originPeer)

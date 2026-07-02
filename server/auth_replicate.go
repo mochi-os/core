@@ -129,6 +129,17 @@ func web_auth_replicate(c *gin.Context) {
 	// Replication page will pick it up; alice approves there.
 	admin_replica_emit_link_request(input.Source, input.SourceUsername, "", source_uid)
 
+	// Bind the expected source peer to this placeholder: only input.Source —
+	// the peer we just sent the request to — may later approve or deny it. Without
+	// this bind, any connectable peer could send a link-approved carrying its own
+	// keys (pending-account hijack, #153) or a link-denied (signup DoS, #154) for
+	// a known placeholder uid in pending-replication. 1h TTL mirrors the A-side
+	// links row; the row is cleared when the approval/denial applies.
+	rdb := db_open("db/replication.db")
+	created := now()
+	rdb.exec("insert or replace into placeholders (placeholder, peer, created, expires) values (?, ?, ?, ?)",
+		source_uid, input.Source, created, created+3600)
+
 	// Session for the placeholder. The frontend renders a waiting
 	// banner when it sees status='pending-replication' on the user
 	// object; once the placeholder flips to active (link-approved

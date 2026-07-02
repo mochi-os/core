@@ -284,12 +284,78 @@ func TestReplicationLinkDeniedApplyCleansPlaceholder(t *testing.T) {
 
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username, status) values ('ph-1', 'placeholder-name', 'pending-replication')")
+	// Bind the placeholder to peer-A (as auth_replicate does at request time),
+	// so the denial from peer-A is honoured (#154).
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into placeholders (placeholder, peer, created, expires) values ('ph-1', 'peer-A', 0, 9999999999)")
 
 	replication_link_denied_apply("peer-A", &LinkDenied{Placeholder: "ph-1", Reason: "denied"})
 
 	exists, _ := udb.exists("select 1 from users where uid='ph-1'")
 	if exists {
 		t.Error("denied placeholder row should be deleted")
+	}
+	// The peer bind must also be cleared so a replay can't be honoured again.
+	if bound, _ := rdb.exists("select 1 from placeholders where placeholder='ph-1'"); bound {
+		t.Error("placeholder bind should be cleared after denial")
+	}
+}
+
+// TestReplicationLinkDeniedApplyRejectsWrongPeer: a link-denied from a peer that
+// is NOT the bound source must be dropped, leaving the in-flight signup intact —
+// otherwise any connectable peer could tear down a pending account (DoS, #154).
+func TestReplicationLinkDeniedApplyRejectsWrongPeer(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username, status) values ('ph-1', 'placeholder-name', 'pending-replication')")
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into placeholders (placeholder, peer, created, expires) values ('ph-1', 'peer-A', 0, 9999999999)")
+
+	// Attacker peer sends the denial.
+	replication_link_denied_apply("attacker", &LinkDenied{Placeholder: "ph-1", Reason: "denied"})
+
+	if exists, _ := udb.exists("select 1 from users where uid='ph-1'"); !exists {
+		t.Error("placeholder must survive a link-denied from the wrong peer")
+	}
+	if bound, _ := rdb.exists("select 1 from placeholders where placeholder='ph-1'"); !bound {
+		t.Error("bind must survive so the legitimate source can still deny")
+	}
+}
+
+// TestReplicationLinkApprovedEventRejectsWrongPeer: a link-approved from a peer
+// that is NOT the bound source must be dropped — no keys applied, placeholder
+// left pending — otherwise any connectable peer could seed its own keys into a
+// pending account (pending-account hijack, #153).
+func TestReplicationLinkApprovedEventRejectsWrongPeer(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username, status) values ('ph-1', 'placeholder-name', 'pending-replication')")
+	rdb := db_open("db/replication.db")
+	rdb.exec("insert into placeholders (placeholder, peer, created, expires) values ('ph-1', 'peer-A', 0, 9999999999)")
+
+	// Attacker peer sends an approved carrying its own entity.
+	replication_link_approved_event(segment_event("attacker", &LinkApproved{
+		Placeholder: "ph-1",
+		Keys:        KeysTransfer{Username: "alice", Entities: []KeysEntity{{ID: "attacker-entity", Class: "person", Name: "x"}}},
+	}))
+
+	// Nothing applied: still pending, no entity, bind intact for the real source.
+	var u User
+	udb.scan(&u, "select uid, username, role, methods, status from users where uid=?", "ph-1")
+	if u.Status != "pending-replication" {
+		t.Errorf("status = %q, want pending-replication (approved from wrong peer must not apply)", u.Status)
+	}
+	if has, _ := udb.exists("select 1 from entities where id='attacker-entity'"); has {
+		t.Error("attacker entity must not be inserted from an unbound approved")
+	}
+	if bound, _ := rdb.exists("select 1 from placeholders where placeholder='ph-1'"); !bound {
+		t.Error("bind must survive so the legitimate source can still approve")
 	}
 }
 

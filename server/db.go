@@ -75,7 +75,7 @@ const (
 )
 
 const (
-	schema_version = 91
+	schema_version = 92
 )
 
 var (
@@ -478,6 +478,15 @@ func db_create() {
 	// in claude/plans/replication.md.
 	replication.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
 	replication.exec("create index if not exists links_expires on links(expires)")
+	// placeholders: the OUTBOUND half of the link flow. One row per pending-
+	// replication placeholder this host (B) created, recording the source peer
+	// (A) we sent the link-request to. A link-approved / link-denied for the
+	// placeholder is honoured only from that exact peer — the bind that stops a
+	// third peer approving a pending signup with its own keys (pending-account
+	// hijack, #153) or denying it (signup DoS, #154). Keyed on placeholder; 1h
+	// expiry mirroring the A-side links row; cleared when the outcome applies.
+	replication.exec("create table if not exists placeholders (placeholder text not null primary key, peer text not null, created integer not null, expires integer not null)")
+	replication.exec("create index if not exists placeholders_expires on placeholders(expires)")
 	// Whole-server pair join-requests awaiting Approve / Deny on the Pair
 	// page. One row per source peer; newest wins via INSERT OR REPLACE.
 	// Expiry is 10 minutes from receipt; periodic sweep emits
@@ -1347,6 +1356,8 @@ func db_upgrade() {
 			db_upgrade_90()
 		case 91:
 			db_upgrade_91()
+		case 92:
+			db_upgrade_92()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1893,6 +1904,17 @@ func db_upgrade_91() {
 		r.exec("alter table bootstrap add column progressed integer not null default 0")
 		r.exec("update bootstrap set progressed=? where state != 'done'", now())
 	}
+}
+
+// db_upgrade_92 adds replication.db.placeholders: the outbound half of the
+// per-user link flow. One row per pending-replication placeholder this host (B)
+// created, recording the source peer (A) the link-request was sent to, so a
+// link-approved / link-denied is honoured only from that peer (bind for #153 /
+// #154). Keyed on placeholder; 1h expiry. Idempotent.
+func db_upgrade_92() {
+	r := db_open("db/replication.db")
+	r.exec("create table if not exists placeholders (placeholder text not null primary key, peer text not null, created integer not null, expires integer not null)")
+	r.exec("create index if not exists placeholders_expires on placeholders(expires)")
 }
 
 // db_upgrade_89 adds the replication generation (epoch) tables (#65): the host's

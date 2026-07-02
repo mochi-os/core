@@ -49,6 +49,7 @@ func setup_replication_test(t *testing.T) func() {
 	db_upgrade_87() // bootstrap: progress + attempts columns (universal retry)
 	db_upgrade_89() // epoch + peer_epoch tables (replication generations, #65)
 	db_upgrade_90() // journal_sequence/journal_delivery (replication.db) + journal_inflight (queue.db), #28/#424
+	db_upgrade_92() // placeholders: link source-peer bind (#153/#154)
 
 	// queue.db is touched by Message.send_work via send_peer goroutines —
 	// approve / deny tests fire emits asynchronously and would otherwise

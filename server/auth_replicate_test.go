@@ -228,6 +228,16 @@ func TestAuthReplicateSuccess(t *testing.T) {
 		t.Errorf("emit_calls = %d, want 1", emit_calls)
 	}
 
+	// The placeholder must be bound to the source peer we sent the request to,
+	// so only that peer can later approve/deny it (#153/#154). The bind carries
+	// the source peer ("peer-A"), not the placeholder uid.
+	if !replication_link_peer_bound("u-alice", "peer-A") {
+		t.Error("placeholder should be bound to source peer-A")
+	}
+	if replication_link_peer_bound("u-alice", "attacker") {
+		t.Error("placeholder must NOT be bound to an arbitrary peer")
+	}
+
 	// Session cookie should be set (look for the Set-Cookie header).
 	if got := w.Header().Get("Set-Cookie"); got == "" || !strings.Contains(got, "session=") {
 		t.Errorf("Set-Cookie header should include session; got %q", got)

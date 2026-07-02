@@ -624,9 +624,31 @@ func replication_bootstrap_scope_done_event(e *Event) {
 	if done.Scope == "" {
 		return
 	}
+	replication_bootstrap_scope_done(e.peer, done.Scope)
+}
+
+// replication_bootstrap_scope_done clears the served-scope row a
+// bootstrap/scope/done ack refers to, and reconciles the peer once its last
+// row clears. The reconcile — which RESETS our inbound cursors, seen-dedup
+// and pending buffer for the peer — runs ONLY when this ack actually cleared
+// a row we were serving: bootstrap_served rows exist only for the pair-join
+// bulk bootstrap, the one flow where the peer provably wiped its state and
+// restarted its sequence space. PER-USER bootstraps never populate
+// bootstrap_served, so their acks used to fall through the "no rows remain"
+// check and wipe the whole peer's inbound state while its sequence space was
+// untouched — an ordinary signup's per-user fetch orphaned all 94
+// wasabi->yuzu streams into the missing-cursor stall class (2026-07-02).
+// Ignoring acks that cleared nothing confines the reset to real rejoins.
+func replication_bootstrap_scope_done(peer, scope string) {
 	rdb := db_open("db/replication.db")
-	rdb.exec("delete from bootstrap_served where peer=? and scope=?", e.peer, done.Scope)
-	replication_bootstrap_reconcile_on_complete(e.peer)
+	res, err := rdb.internal.Exec("delete from bootstrap_served where peer=? and scope=?", peer, scope)
+	if err != nil {
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return
+	}
+	replication_bootstrap_reconcile_on_complete(peer)
 }
 
 // replication_bootstrap_reconcile_on_complete re-runs the point-in-time

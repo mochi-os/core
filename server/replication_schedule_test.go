@@ -177,3 +177,60 @@ func TestReplicationBootstrapReconcileOnComplete(t *testing.T) {
 		t.Error("must reconcile (full backfill) once a pair peer's bulk bootstrap is fully acked")
 	}
 }
+
+// TestReplicationBootstrapScopeDoneGating: a bootstrap/scope/done ack triggers
+// the inbound reset + reconcile ONLY when it clears a bootstrap_served row (a
+// pair-join bulk bootstrap we were serving). A per-user bootstrap never
+// populates bootstrap_served, and its ack must be a no-op — the old code let
+// it fall through to the whole-peer inbound reset, so an ordinary signup's
+// per-user fetch wiped every inbound cursor for the peer (2026-07-02: 94
+// wasabi->yuzu streams orphaned into the missing-cursor stall class).
+func TestReplicationBootstrapScopeDoneGating(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	rdb := db_open("db/replication.db")
+
+	calls := make(chan string, 4)
+	orig := replication_pair_backfill
+	replication_pair_backfill = func(peer string) { calls <- peer }
+	defer func() { replication_pair_backfill = orig }()
+
+	fired := func() bool {
+		select {
+		case <-calls:
+			return true
+		case <-time.After(200 * time.Millisecond):
+			return false
+		}
+	}
+
+	rdb.exec("insert into pair (peer, added) values ('p1', 1)")
+	rdb.exec("insert into cursor (peer, scope, user, db, sequence) values ('p1', 'app', 'u1', 'app:d1', 42)")
+
+	// A per-user bootstrap ack (no bootstrap_served row) must neither reset
+	// the peer's inbound state nor reconcile.
+	replication_bootstrap_scope_done("p1", "files")
+	if fired() {
+		t.Error("per-user bootstrap ack must not trigger the reconcile")
+	}
+	if n := rdb.integer("select count(*) from cursor where peer='p1'"); n != 1 {
+		t.Errorf("per-user bootstrap ack wiped the peer's inbound cursors (%d rows, want 1)", n)
+	}
+
+	// A real pair-join served scope: the ack that clears the last row resets
+	// inbound state and reconciles.
+	rdb.exec("insert into bootstrap_served (peer, scope, started) values ('p1', 'files', 1)")
+	replication_bootstrap_scope_done("p1", "files")
+	select {
+	case got := <-calls:
+		if got != "p1" {
+			t.Errorf("reconcile backfilled %q, want p1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("clearing the last served scope must reconcile")
+	}
+	if n := rdb.integer("select count(*) from cursor where peer='p1'"); n != 0 {
+		t.Errorf("bulk-bootstrap completion must reset inbound cursors (%d rows, want 0)", n)
+	}
+}

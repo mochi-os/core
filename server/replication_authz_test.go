@@ -107,6 +107,55 @@ func TestReplicationOpEventAuthzGate(t *testing.T) {
 	}
 }
 
+// #156: the convergence-audit RPCs (audit/manifest, audit/hash) are
+// event_anonymous but the manifest is the host's full user roster + row counts +
+// write-activity tails, and the hash is a content confirmation / change-detection
+// oracle. Only a pair member ever audits, so the handlers must answer a pair
+// member and drop everyone else (no bytes written back).
+func TestReplicationAuditHandlersRequirePair(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	set_pair := func(m map[string]bool) func() {
+		pair_members_lock.Lock()
+		orig := pair_members
+		pair_members = m
+		pair_members_lock.Unlock()
+		return func() {
+			pair_members_lock.Lock()
+			pair_members = orig
+			pair_members_lock.Unlock()
+		}
+	}
+	hash_stream := func(reply *bytes.Buffer) *Stream {
+		req := cbor_encode(&AuditHashRequest{Keys: []AuditKey{{User: "u1", Stream: "app"}}})
+		return &Stream{reader: io.NopCloser(bytes.NewReader(req)), writer: filePushTestWriteCloser{reply}}
+	}
+
+	// Non-pair peer: both handlers drop without writing anything.
+	restore := set_pair(map[string]bool{})
+	var mReply, hReply bytes.Buffer
+	replication_audit_manifest_event(&Event{peer: "attacker", stream: &Stream{writer: filePushTestWriteCloser{&mReply}}})
+	if mReply.Len() != 0 {
+		t.Errorf("audit-manifest answered a non-pair peer (%d bytes) — user roster leaked", mReply.Len())
+	}
+	replication_audit_hash_event(&Event{peer: "attacker", stream: hash_stream(&hReply)})
+	if hReply.Len() != 0 {
+		t.Errorf("audit-hash answered a non-pair peer (%d bytes) — content-hash oracle leaked", hReply.Len())
+	}
+	restore()
+
+	// Pair member: the manifest handler responds (bytes written), proving the
+	// gate doesn't over-block the legitimate audit.
+	restore = set_pair(map[string]bool{"peer-pair": true})
+	defer restore()
+	var okReply bytes.Buffer
+	replication_audit_manifest_event(&Event{peer: "peer-pair", stream: &Stream{writer: filePushTestWriteCloser{&okReply}}})
+	if okReply.Len() == 0 {
+		t.Error("audit-manifest gave a pair member nothing; gate over-blocks")
+	}
+}
+
 // End-to-end wiring (#89): the server-global system event handlers drop ops from a
 // non-pair peer and admit them from a pair member.
 func TestReplicationSystemEventRequiresPair(t *testing.T) {

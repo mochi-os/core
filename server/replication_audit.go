@@ -654,6 +654,15 @@ func replication_audit_manifest_event(e *Event) {
 		info("Replication audit-manifest: no stream (queued retry?) — dropping")
 		return
 	}
+	// Pair-only: the manifest is the host's full roster of (user, stream, count,
+	// tail) — every user uid, which apps they use, row counts and write-activity.
+	// The handler is event_anonymous (unsigned senders allowed for join-time
+	// flows), but only an established pair member ever audits, so drop any other
+	// caller instead of handing out that roster to anyone who can dial us (#156).
+	if !peer_is_pair(e.peer) {
+		info("Replication audit-manifest dropping: peer %q is not a pair member", e.peer)
+		return
+	}
 	res := &AuditManifestResult{Streams: replication_audit_local_manifest()}
 	if err := e.stream.write(res); err != nil {
 		warn("Replication audit-manifest: failed to write response: %v", err)
@@ -699,6 +708,13 @@ func replication_audit_request_hashes(peer string, keys []AuditKey) (map[string]
 // itself (once a hash is obtained) is what alerts (#47).
 func replication_audit_hash_event(e *Event) {
 	if e.stream == nil {
+		return
+	}
+	// Pair-only: the content hash of a named (user, stream) is a confirmation /
+	// change-detection oracle over the host's data. Same reasoning as the
+	// manifest handler — only a pair member audits, so drop anyone else (#156).
+	if !peer_is_pair(e.peer) {
+		info("Replication audit-hash dropping: peer %q is not a pair member", e.peer)
 		return
 	}
 	var req AuditHashRequest

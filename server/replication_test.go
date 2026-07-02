@@ -3158,6 +3158,56 @@ func setup_users_row_apply_test(t *testing.T) (cleanup func(), uid string) {
 	return
 }
 
+// TestReplicationUsersOauthApply covers the oauth link/profile/unlink apply
+// path (#150): an upsert lands the row keyed on (provider, subject), a second
+// upsert updates the mutable profile columns, and an unlink (delete, no subject)
+// removes every subject for the provider — so a link or a revoked login reaches
+// the other DNS-round-robin pair member.
+func TestReplicationUsersOauthApply(t *testing.T) {
+	cleanup, uid := setup_users_row_apply_test(t)
+	defer cleanup()
+	udb := db_open("db/users.db")
+
+	upsert := func(email, verified, name string) *UsersRow {
+		return &UsersRow{Table: "oauth",
+			Key:  map[string]string{"provider": "github", "subject": "gh-123"},
+			Cols: map[string]string{"email": email, "verified": verified, "name": name, "created": "1700000000"}}
+	}
+
+	// 1. Link lands.
+	if got := replication_users_row_apply(uid, upsert("a@x.com", "1", "Alice")); got != ApplyApplied {
+		t.Fatalf("oauth link apply: want ApplyApplied, got %v", got)
+	}
+	row, _ := udb.row("select user, email, verified, name from oauth where provider='github' and subject='gh-123'")
+	if row == nil {
+		t.Fatal("oauth link must create the row")
+	}
+	if u, _ := row["user"].(string); u != uid {
+		t.Errorf("oauth row user = %q, want %q", u, uid)
+	}
+
+	// 2. Profile update lands on the same (provider, subject).
+	if got := replication_users_row_apply(uid, upsert("b@y.com", "0", "Alice B")); got != ApplyApplied {
+		t.Fatalf("oauth profile apply: want ApplyApplied, got %v", got)
+	}
+	row, _ = udb.row("select email, verified, name from oauth where provider='github' and subject='gh-123'")
+	if e, _ := row["email"].(string); e != "b@y.com" {
+		t.Errorf("email after update = %q, want b@y.com", e)
+	}
+	if n := udb.integer("select count(*) from oauth where provider='github'"); n != 1 {
+		t.Errorf("update must not duplicate the row, got %d rows", n)
+	}
+
+	// 3. Unlink (delete, no subject) removes the provider link.
+	if got := replication_users_row_apply(uid, &UsersRow{Table: "oauth",
+		Key: map[string]string{"provider": "github"}, Delete: true}); got != ApplyApplied {
+		t.Fatalf("oauth unlink apply: want ApplyApplied, got %v", got)
+	}
+	if n := udb.integer("select count(*) from oauth where user=? and provider='github'", uid); n != 0 {
+		t.Errorf("unlink must delete the row, got %d remaining", n)
+	}
+}
+
 // TestReplicationUsersUsersApplyRoleIgnoredOnPerUserPath asserts that
 // role does NOT flow via the per-user (host-set) path - it must arrive
 // via the pair-only system-row pipeline so it doesn't leak across

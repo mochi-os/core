@@ -4832,6 +4832,8 @@ func replication_users_row_apply(userUID string, r *UsersRow) ApplyResult {
 		return replication_users_tokens_apply(udb, userUID, r)
 	case "totp":
 		return replication_users_totp_apply(udb, userUID, r)
+	case "oauth":
+		return replication_users_oauth_apply(udb, userUID, r)
 	case "users":
 		return replication_users_users_apply(udb, userUID, r)
 	case "entities":
@@ -5008,6 +5010,40 @@ func replication_users_totp_apply(udb *DB, userUID string, r *UsersRow) ApplyRes
 	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
 	udb.exec_bg("users-row totp upsert apply", `insert or replace into totp (user, secret, verified, created) values (?, ?, ?, ?)`,
 		userUID, secret, verified, created)
+	return ApplyApplied
+}
+
+// replication_users_oauth_apply lands a replicated oauth link / profile / unlink
+// on this host (#150). Keyed on the (provider, subject) unique constraint. A
+// delete with no subject is the unlink shape (removes every subject for the
+// provider, mirroring api_user_oauth_unlink's `delete ... where user, provider`);
+// a subject-scoped delete is also honoured. The row's `id` autoincrement PK is
+// assigned locally on insert — sessions.db `verifications` referencing it is
+// host-local and re-derivable, so a per-host id divergence is benign.
+func replication_users_oauth_apply(udb *DB, userUID string, r *UsersRow) ApplyResult {
+	provider := r.Key["provider"]
+	if provider == "" {
+		return ApplyInvalid
+	}
+	subject := r.Key["subject"]
+	if r.Delete {
+		if subject == "" {
+			udb.exec_bg("users-row oauth unlink apply", "delete from oauth where user=? and provider=?", userUID, provider)
+		} else {
+			udb.exec_bg("users-row oauth delete apply", "delete from oauth where user=? and provider=? and subject=?", userUID, provider, subject)
+		}
+		return ApplyApplied
+	}
+	if subject == "" {
+		return ApplyInvalid
+	}
+	var verified, created int64
+	_, _ = fmt.Sscanf(r.Cols["verified"], "%d", &verified)
+	_, _ = fmt.Sscanf(r.Cols["created"], "%d", &created)
+	udb.exec_bg("users-row oauth upsert apply",
+		`insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)
+		 on conflict(provider, subject) do update set email=excluded.email, verified=excluded.verified, name=excluded.name`,
+		userUID, provider, subject, r.Cols["email"], verified, r.Cols["name"], created)
 	return ApplyApplied
 }
 

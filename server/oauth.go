@@ -472,6 +472,7 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 		db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
 			user_id, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 		oauth_verification_record(db, provider, p.Subject, user_id)
+		oauth_replicate(db, provider, p.Subject)
 	case owner == user_id:
 		oauth_update_profile(db, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user_id)
@@ -598,6 +599,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 	oauth_verification_record(db, provider, p.Subject, user.UID)
+	oauth_replicate(db, provider, p.Subject)
 
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
@@ -998,6 +1000,49 @@ func oauth_update_profile(db *DB, provider string, p *oauth_profile) {
 		p.Email, p.Name, verified,
 		provider, p.Subject,
 		p.Email, p.Name, verified)
+	oauth_replicate(db, provider, p.Subject)
+}
+
+// oauth_replicate fans the current (provider, subject) oauth row to the owning
+// user's host set — which unconditionally includes both operator-pair members
+// (see recipients), so an oauth link or profile change reaches the other
+// DNS-round-robin member instead of only the host that served the request
+// (#150). Reads the persisted row so the replicated state is always accurate.
+// No-op off a pair / with no other hosts.
+func oauth_replicate(db *DB, provider, subject string) {
+	row, _ := db.row("select user, email, verified, name, created from oauth where provider=? and subject=?", provider, subject)
+	if row == nil {
+		return
+	}
+	user, _ := row["user"].(string)
+	if user == "" {
+		return
+	}
+	email, _ := row["email"].(string)
+	name, _ := row["name"].(string)
+	verified, _ := row["verified"].(int64)
+	created, _ := row["created"].(int64)
+	replication_emit_users_row(user, &UsersRow{
+		Table: "oauth",
+		Key:   map[string]string{"provider": provider, "subject": subject},
+		Cols: map[string]string{
+			"email":    email,
+			"verified": fmt.Sprintf("%d", verified),
+			"name":     name,
+			"created":  fmt.Sprintf("%d", created),
+		},
+	})
+}
+
+// oauth_replicate_unlink fans an oauth unlink (every subject for the provider)
+// to the user's host set / pair, so a revoked login can't keep working on the
+// other DNS-round-robin member (#150).
+func oauth_replicate_unlink(userUID, provider string) {
+	replication_emit_users_row(userUID, &UsersRow{
+		Table:  "oauth",
+		Key:    map[string]string{"provider": provider},
+		Delete: true,
+	})
 }
 
 // oauth_verification_record upserts the last-used timestamp for a (provider,
@@ -1060,6 +1105,7 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	row, _ := db.row("select id from oauth where user=? and provider=?", user.UID, provider)
 	db.exec("delete from oauth where user=? and provider=?", user.UID, provider)
+	oauth_replicate_unlink(user.UID, provider)
 	if row != nil {
 		if oauth_id, ok := row["id"].(int64); ok {
 			db_open("db/sessions.db").exec("delete from verifications where oauth=?", oauth_id)

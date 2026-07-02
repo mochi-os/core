@@ -2,6 +2,78 @@ package main
 
 import "testing"
 
+// TestReplicationEpochPendingClearedByEpochZeroOp: a source that has never reset
+// emits epoch-0 ops, and the post-bootstrap `pending` marker must be cleared by
+// its FIRST op regardless of epoch. Before the #149 fix the clear was gated on
+// op.Epoch>0, so an epoch-0 source kept pending=1 forever, and its first-ever
+// reset then hit the pending branch and adopted the new generation WITHOUT the
+// inbound reset — silently dropping its restarted low-sequence ops.
+func TestReplicationEpochPendingClearedByEpochZeroOp(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rdb := db_open("db/replication.db")
+
+	op := func(epoch, seq, prev int64) *ReplicationOp {
+		return &ReplicationOp{Scope: repl_scope_app, User: "u1", Database: "epochtest",
+			Table: "x", Operation: "noop", Sequence: seq, Prev: prev, Epoch: epoch}
+	}
+
+	peer := "peerZ"
+	// Exactly what bootstrap_receiver_complete writes: epoch 0, pending 1.
+	rdb.exec("insert into peer_epoch (peer, epoch, pending) values (?, 0, 1)", peer)
+	// A stale seen row to witness whether an inbound reset fires.
+	rdb.exec("insert into seen (peer, scope, user, sequence, applied) values (?, ?, 'u1', 999, 1)", peer, repl_scope_app)
+
+	// (1) The source's first op is epoch 0 → clears pending by adoption, NO reset.
+	replication_op_receive(peer, op(0, 10, 0))
+	if p := rdb.integer("select pending from peer_epoch where peer=?", peer); p != 0 {
+		t.Fatal("an epoch-0 first op must clear the pending marker (#149) — it stayed set")
+	}
+	if has, _ := rdb.exists("select 1 from seen where peer=? and sequence=999", peer); !has {
+		t.Fatal("pending adoption must NOT reset inbound state (stale seen should survive)")
+	}
+
+	// (2) The source's first-ever reset (epoch bumps above 0) MUST now trigger the
+	// inbound reset — with the marker already cleared, it takes the epoch>recorded
+	// branch. Before the fix it hit the still-set pending branch and adopted
+	// without resetting, so the stale seen survived and the restarted ops dropped.
+	replication_op_receive(peer, op(5, 1, 0))
+	if has, _ := rdb.exists("select 1 from seen where peer=? and sequence=999", peer); has {
+		t.Fatal("the source's first reset must reset inbound state (stale seen must clear) (#149)")
+	}
+	if e := rdb.integer64("select epoch from peer_epoch where peer=?", peer); e != 5 {
+		t.Fatalf("epoch should advance to 5 after the reset, got %d", e)
+	}
+}
+
+// TestReplicationStaleFenceAdvancesCursor: a leader-stamped op whose fence is
+// stale (a newer leader superseded the sender) is dropped, and the cursor must
+// advance past it — the op consumed a real sequence in the shared per-db chain,
+// so leaving the cursor behind wedges the successor (Prev=this) forever (#149).
+func TestReplicationStaleFenceAdvancesCursor(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	rdb := db_open("db/replication.db")
+
+	peer := "peerF"
+	rdb.exec("create table if not exists fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
+	rdb.exec("insert into fence_witness (scope, key, fence) values ('lscope', 'lkey', 100)")
+
+	op := &ReplicationOp{Scope: repl_scope_app, User: "u1", Database: "fencetest",
+		Table: "x", Operation: "noop", Sequence: 7, Prev: 6,
+		LeaderScope: "lscope", LeaderKey: "lkey", Fence: 50} // stale: 50 < witnessed 100
+
+	replication_op_receive(peer, op)
+
+	if has, _ := rdb.exists("select 1 from seen where peer=? and sequence=7", peer); !has {
+		t.Fatal("stale-fence op should be marked seen")
+	}
+	stream := repl_op_stream(op)
+	if c := rdb.integer64("select sequence from cursor where peer=? and scope=? and user='u1' and db=?", peer, repl_scope_app, stream); c != 7 {
+		t.Fatalf("stale-fence drop must advance the cursor to seq 7, got %d — the successor would wedge (#149)", c)
+	}
+}
+
 // TestReplicationEpochCurrentBump covers the sender's outbound generation store
 // (#65): 0 until bumped, then now()-based and monotonic across bumps.
 func TestReplicationEpochCurrentBump(t *testing.T) {

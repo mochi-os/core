@@ -536,21 +536,39 @@ func replication_op_receive(peer string, op *ReplicationOp) {
 	// fall straight through to today's behaviour. The recorded epoch is seeded at
 	// bootstrap (replication_bootstrap.go) so a freshly-bootstrapped mid-stream
 	// peer at a non-zero epoch does NOT trip a spurious reset.
-	if op.Epoch > 0 {
-		recorded := db.integer64("select coalesce(epoch, 0) from peer_epoch where peer = ?", peer)
-		pending := db.integer("select coalesce(pending, 0) from peer_epoch where peer = ?", peer) != 0
+	// Read the peer's recorded generation + the post-bootstrap `pending` marker in
+	// one shot. The marker must be cleared by the peer's FIRST op REGARDLESS of
+	// that op's epoch: a source that has never reset emits epoch-0 ops, so gating
+	// the clear on op.Epoch>0 (as the code once did) left the marker set forever,
+	// and the source's first-ever reset then hit the `pending` branch and adopted
+	// the new generation WITHOUT the inbound reset — silently dropping its
+	// restarted low-sequence ops below our stale-high cursor (#149, a sibling of
+	// the #34/#140 misalignment classes). So evaluate this on every op; peer_epoch
+	// is one tiny row per peer.
+	{
+		var recorded int64
+		pendingMark := false
+		if row, _ := db.row("select coalesce(epoch, 0) as epoch, coalesce(pending, 0) as pending from peer_epoch where peer = ?", peer); row != nil {
+			recorded, _ = row["epoch"].(int64)
+			p, _ := row["pending"].(int64)
+			pendingMark = p != 0
+		}
 		switch {
-		case pending:
-			// We just bootstrapped FROM this peer; its cursors are freshly seeded
-			// at its current generation, so adopt that generation as our baseline
-			// without an inbound reset (a reset would clear the good seed and
-			// stall a mid-stream peer). Clears the marker.
+		case pendingMark:
+			// First op after bootstrapping FROM this peer: its cursors are freshly
+			// seeded at its current generation, so adopt that generation (whatever
+			// op.Epoch is, including 0) as our baseline and clear the marker — no
+			// inbound reset (a reset would clear the good seed and stall a
+			// mid-stream peer).
 			db.exec_bg("peer epoch apply", "update peer_epoch set epoch = ?, pending = 0 where peer = ?", op.Epoch, peer)
 		case op.Epoch > recorded:
+			// A genuine generation bump (op.Epoch > recorded, hence > 0): the peer
+			// reset its outbound sequence space near zero, so reset our inbound
+			// state or its low sequences drop as duplicates.
 			replication_inbound_reset(db, peer)
 			db.exec_bg("peer epoch apply", "insert into peer_epoch (peer, epoch, pending) values (?, ?, 0) on conflict(peer) do update set epoch = max(epoch, ?), pending = 0", peer, op.Epoch, op.Epoch)
 			info("Replication generation advanced: peer=%q epoch=%d (was %d) — inbound state reset, accepting its restarted sequence space", peer, op.Epoch, recorded)
-		case op.Epoch < recorded:
+		case op.Epoch > 0 && op.Epoch < recorded:
 			debug("Replication op from superseded generation: peer=%q epoch=%d < recorded=%d — dropped", peer, op.Epoch, recorded)
 			return
 		}
@@ -578,6 +596,12 @@ func replication_op_receive(peer string, op *ReplicationOp) {
 			"replication seen mark on stale fence",
 			"insert or ignore into seen (peer, scope, user, sequence, applied) values (?, ?, ?, ?, ?)",
 			peer, op.Scope, op.User, op.Sequence, now())
+		// Advance the cursor past the dropped op, exactly as the ApplyInvalid path
+		// does. A leader-stamped op consumes a real sequence in the shared per-db
+		// chain, so leaving the cursor behind it means the NEXT op (Prev = this
+		// sequence) can never chain — it buffers unanchored forever and wedges the
+		// whole stream (#149).
+		replication_cursor_set(db, peer, op.Scope, op.User, repl_op_stream(op), op.Sequence)
 		return
 	}
 

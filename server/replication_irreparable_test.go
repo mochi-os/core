@@ -95,10 +95,15 @@ func TestIrreparableClearedOnBootstrapDone(t *testing.T) {
 		t.Fatal("stream should be marked irreparable")
 	}
 
-	bootstrap_set_state(repl_scope_app, "peer-b", bootstrap_state_done, "")
+	// A real re-bootstrap completes a BOOTSTRAP scope ("userdbs"), NOT the
+	// replication scope ("app") the marker is stored under. Passing the bootstrap
+	// scope is what production does; the clear must still remove the marker
+	// (#147 — the old scope-matched delete matched nothing here and the marker
+	// survived, silently re-diverging the repaired peer).
+	bootstrap_set_state(bootstrap_scope_userdbs, "peer-b", bootstrap_state_done, "")
 
-	if marked, _ := db.exists("select 1 from irreparable where peer='peer-b' and scope=?", repl_scope_app); marked {
-		t.Error("a completed re-bootstrap must clear the irreparable marker")
+	if marked, _ := db.exists("select 1 from irreparable where peer='peer-b'"); marked {
+		t.Error("a completed re-bootstrap must clear the peer's irreparable marker regardless of scope namespace")
 	}
 }
 

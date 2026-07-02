@@ -329,12 +329,18 @@ func bootstrap_set_state(scope, peer, state, position string) {
 				"on conflict(scope, peer) do update set state=excluded.state, position=excluded.position",
 			scope, peer, state, position)
 	}
-	// A completed (re-)bootstrap re-seeds this scope's streams from the
-	// peer, which is the only recovery for a stream marked irreparable
-	// past T_forget. Clear the terminal marker so its UI badge and the
-	// notify-dedup reset. See replication_irreparable.go.
+	// A completed (re-)bootstrap re-seeds this peer's streams, which is the
+	// only recovery for a stream marked irreparable past T_forget. Clear the
+	// terminal markers so their UI badge, emit-skip suppression, and the
+	// notify-dedup reset. Clear by PEER, scope-agnostic: `scope` here is a
+	// BOOTSTRAP scope ("files"/"apps"/"userdbs"), but the irreparable table is
+	// keyed on REPLICATION scopes ("app"/"core") — passing the bootstrap scope
+	// matched nothing, so the marker survived the repair and emit_skip
+	// permanently withheld the just-re-seeded peer's ops (silent re-divergence).
+	// A full re-bootstrap re-pulls every scope, so clearing all of the peer's
+	// markers on completion is correct. See replication_irreparable.go.
 	if state == bootstrap_state_done {
-		replication_irreparable_clear(peer, scope)
+		replication_irreparable_clear(peer, "")
 	}
 }
 

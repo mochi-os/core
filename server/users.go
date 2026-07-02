@@ -1341,6 +1341,10 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	rdb.exec("delete from sequence where user=?", id)
 	rdb.exec("delete from tail where user=?", id)
 	rdb.exec("delete from cursor where user=?", id)
+	// Drop any irreparable markers for the purged user too; otherwise a ghost
+	// marker for a deleted user keeps replication_irreparable_count() > 0 and
+	// /_/health degraded forever, with no path to clear it (#147).
+	rdb.exec("delete from irreparable where user=?", id)
 
 	return target.Username, nil
 }

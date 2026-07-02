@@ -67,6 +67,14 @@ func replication_irreparable_scan() {
 		if s.Oldest > cutoff {
 			continue // broken, but not yet past T_forget
 		}
+		// Stand down while a bootstrap from this peer is in flight: a large-DB
+		// re-bootstrap takes hours, during which the old pending rows still look
+		// stalled. Marking irreparable + notifying here would raise a false alarm
+		// on a recovery that is actively landing (the same guard the wiped-replica
+		// re-bootstrap added after the yuzu 2026-06-15 false alarm) (#147).
+		if bootstrap_in_progress(s.Peer) {
+			continue
+		}
 		exists, _ := db.exists("select 1 from irreparable where peer=? and scope=? and user=? and db=?",
 			s.Peer, s.Scope, s.User, s.Database)
 		if !exists {

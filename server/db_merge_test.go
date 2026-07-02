@@ -11,7 +11,62 @@
 
 package main
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
+
+// TestMergeAllocateConcurrentSameKeyNoLoss drives the extracted merge allocation
+// (db_merge_allocate) from many goroutines writing the SAME key at once. The
+// per-key lock (#148) must make every version allocation strictly monotonic, so
+// all N writes land (none silently dropped by an equal-version/equal-writer
+// conflict) and the surviving row's version equals N. Before the fix, two
+// goroutines would read the same max(version), both write version+1, and the
+// loser's upsert returned affected=0 — a lost write.
+func TestMergeAllocateConcurrentSameKeyNoLoss(t *testing.T) {
+	db, cleanup := create_test_db(t)
+	defer cleanup()
+	db.exec(members_schema)
+
+	const n = 50
+	keyCols := []string{"chat", "member"}
+	fieldCols := []string{"name"}
+	keyVals := []any{"c", "m"}
+
+	var wg sync.WaitGroup
+	var landed int64
+	var mu sync.Mutex
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			row := map[string]any{"chat": "c", "member": "m", "name": "v"}
+			// av=nil, suppressed=true → the non-replicating local write path.
+			affected, err := db_merge_allocate(db, "members", keyCols, fieldCols, row, keyVals, 0, nil, true)
+			if err != nil {
+				t.Errorf("merge %d: %v", i, err)
+				return
+			}
+			if affected >= 1 {
+				mu.Lock()
+				landed++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if landed != n {
+		t.Errorf("%d of %d concurrent same-key merges landed; the rest were silently dropped (affected=0)", landed, n)
+	}
+	var got struct{ Version int64 }
+	if !db.scan(&got, "select version from members where chat='c' and member='m'") {
+		t.Fatal("row missing after concurrent merges")
+	}
+	if got.Version != n {
+		t.Errorf("final version = %d, want %d (each merge must allocate a distinct monotonic version)", got.Version, n)
+	}
+}
 
 const members_schema = "create table members ( chat text not null, member text not null, name text, writer text not null default '', version integer not null, removed integer not null default 0, primary key ( chat, member ) )"
 

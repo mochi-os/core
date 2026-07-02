@@ -22,14 +22,34 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	sl "go.starlark.net/starlark"
 )
 
 var sql_identifier_re = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// db_merge_locks serialises the per-key Lamport read-modify-write in
+// db_merge_builtin: the max(version) read and the version=seen+1 upsert are two
+// statements on a pooled connection, so two concurrent same-host merges of the
+// SAME key both read version N, both write N+1, and the second's conflict guard
+// (equal version AND equal writer) drops it with affected=0 — a silently lost
+// write, even though the hosts still converge (#148). One lock per (db, table,
+// key) makes the read+write atomic in-process. Cross-host concurrency needs no
+// lock: a different host is a different `writer`, so the merge order-resolves.
+var db_merge_locks sync.Map // string(db|table|key) -> *sync.Mutex
+
+func db_merge_lock(dbPath, table string, keyVals []any) func() {
+	k := dbPath + "\x1e" + table + "\x1e" + fmt.Sprint(keyVals...)
+	m, _ := db_merge_locks.LoadOrStore(k, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 // sql_identifier_ok guards table/column names that are interpolated into SQL
 // (they can't be bound parameters). Apps supply them, so reject anything that
@@ -69,10 +89,15 @@ func db_merge_statement(table string, keyCols []string, fieldCols []string) stri
 	for i, c := range keyCols {
 		qkeys[i] = q(c)
 	}
+	// coalesce the stored version/writer: a row written by plain execute or added
+	// via `ALTER TABLE ADD COLUMN version` carries NULL there, and `excluded.x >
+	// NULL` is NULL (never true), which would freeze the row against every future
+	// merge and tombstone. Treat NULL as version 0 / writer "" so a real merge
+	// always supersedes it (#148).
 	return "insert into " + qt + " ( " + strings.Join(insCols, ", ") + " ) values ( " + strings.Join(placeholders, ", ") + " )" +
 		" on conflict ( " + strings.Join(qkeys, ", ") + " ) do update set " + strings.Join(sets, ", ") +
-		" where excluded.version > " + qt + ".version" +
-		" or ( excluded.version = " + qt + ".version and excluded.writer > " + qt + ".writer )"
+		" where excluded.version > coalesce( " + qt + ".version, 0 )" +
+		" or ( excluded.version = coalesce( " + qt + ".version, 0 ) and excluded.writer > coalesce( " + qt + ".writer, '' ) )"
 }
 
 // mochi.db.merge(table, keys, row) -> int: Versioned LWW-Register upsert. `keys`
@@ -145,10 +170,37 @@ func db_merge_builtin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, removed int) 
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	u, _ := db_user_for_thread(t)
+	app, _ := t.Local("app").(*App)
+	var av *AppVersion
+	if u != nil && app != nil {
+		av = app.active(u)
+	}
+	suppressed, _ := t.Local("replication_suppressed").(bool)
+
+	affected, err := db_merge_allocate(db, table, keyCols, fieldCols, row, keyVals, removed, av, suppressed)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.MakeInt64(affected), nil
+}
+
+// db_merge_allocate performs one merge's per-key Lamport read-modify-write:
+// under the per-key lock, read the current max(version) for the key, then upsert
+// the row at version+1 with this host as `writer`. Extracted from
+// db_merge_builtin so the allocation — the atomicity the #148 fix depends on —
+// is unit-testable without the Starlark machinery.
+func db_merge_allocate(db *DB, table string, keyCols, fieldCols []string, row map[string]any, keyVals []any, removed int, av *AppVersion, suppressed bool) (int64, error) {
 	ctx := context.Background()
+
+	// Serialise the read-modify-write for this key against other same-host
+	// merges so the version each allocates is strictly monotonic (#148).
+	unlock := db_merge_lock(db.path, table, keyVals)
+	defer unlock()
+
 	conn, err := db.starlark.Connx(ctx)
 	if err != nil {
-		return sl_error(fn, "database error: %v", err)
+		return 0, fmt.Errorf("database error: %v", err)
 	}
 	defer conn.Close()
 
@@ -160,12 +212,19 @@ func db_merge_builtin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, removed int) 
 		where[i] = `"` + k + `"=?`
 	}
 	var seen int64
-	if r, err := conn.QueryContext(ctx, `select coalesce( max( version ), 0 ) from "`+table+`" where `+strings.Join(where, " and "), keyVals...); err == nil {
-		if r.Next() {
-			r.Scan(&seen)
-		}
-		r.Close()
+	r, err := conn.QueryContext(ctx, `select coalesce( max( version ), 0 ) from "`+table+`" where `+strings.Join(where, " and "), keyVals...)
+	if err != nil {
+		// A silent failure here would allocate version 1 and lose to any
+		// existing higher version — fail the merge instead.
+		return 0, fmt.Errorf("database error: %v", err)
 	}
+	if r.Next() {
+		if err := r.Scan(&seen); err != nil {
+			r.Close()
+			return 0, fmt.Errorf("database error: %v", err)
+		}
+	}
+	r.Close()
 
 	vals := append([]any{}, keyVals...)
 	for _, c := range fieldCols {
@@ -173,20 +232,13 @@ func db_merge_builtin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, removed int) 
 	}
 	vals = append(vals, net_id, seen+1, removed)
 
-	u, _ := db_user_for_thread(t)
-	app, _ := t.Local("app").(*App)
-	var av *AppVersion
-	if u != nil && app != nil {
-		av = app.active(u)
-	}
-	suppressed, _ := t.Local("replication_suppressed").(bool)
 	affected, recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, db_merge_statement(table, keyCols, fieldCols), vals)
 	if err != nil {
 		db_starlark_rollback(conn)
-		return sl_error(fn, "database error: %v", err)
+		return 0, fmt.Errorf("database error: %v", err)
 	}
 	if recorded {
 		journal_wake(db)
 	}
-	return sl.MakeInt64(affected), nil
+	return affected, nil
 }

@@ -845,6 +845,45 @@ func replication_pending_buffer(db *DB, peer string, op *ReplicationOp) {
 		"replication pending buffer",
 		"insert or ignore into pending (peer, scope, user, db, sequence, prev, schema, payload, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		peer, op.Scope, op.User, repl_op_stream(op), op.Sequence, op.Prev, op.Schema, cbor_encode(op), now())
+	// #161: on a multi-source stream two peers deliver the shared per-stream
+	// sequence concurrently, and there is no per-stream lock — op N's apply+drain
+	// (on peer A's goroutine) can run just BEFORE op N+1 is buffered here (on peer
+	// B's goroutine), which reads the cursor before A's async cursor write lands
+	// and so parks N+1. Nothing re-drains it until the 30s manager tick. Schedule
+	// a short debounced re-drain of just this stream so the follower applies in
+	// ~seconds instead of up to 30s; the periodic tick stays as the backstop.
+	replication_stream_kick_drain(peer, op.Scope, op.User, repl_op_stream(op))
+}
+
+// replication_stream_kick_drain schedules one near-term re-drain of a single
+// inbound stream, debounced per stream so a sustained gap (many buffered ops)
+// spawns at most one in-flight kick per stream rather than one per op. The short
+// delay lets a concurrent apply's async cursor write commit first, so the
+// re-drain sees the advanced cursor and chains the buffered follower (#161). A
+// genuine gap just no-ops the drain.
+var (
+	pending_kick_drain_delay = 2 * time.Second
+	pending_kick_scheduled   = map[string]bool{}
+	pending_kick_mu          sync.Mutex
+)
+
+func replication_stream_kick_drain(peer, scope, user, database string) {
+	key := peer + "|" + scope + "|" + user + "|" + database
+	pending_kick_mu.Lock()
+	if pending_kick_scheduled[key] {
+		pending_kick_mu.Unlock()
+		return
+	}
+	pending_kick_scheduled[key] = true
+	pending_kick_mu.Unlock()
+	go func() {
+		time.Sleep(pending_kick_drain_delay)
+		pending_kick_mu.Lock()
+		delete(pending_kick_scheduled, key)
+		pending_kick_mu.Unlock()
+		defer db_recover_background("replication stream kick drain")
+		replication_stream_drain(db_open("db/replication.db"), peer, scope, user, database)
+	}()
 }
 
 // replication_op_land applies one verified, fence-passed op, records it

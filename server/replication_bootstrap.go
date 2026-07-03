@@ -54,8 +54,10 @@
 //     aggregate bootstrap_pending; mochi.replication.bootstrap.progress()
 //     exposes the per-(peer, scope) drill-down. The Pair page renders
 //     this; mochictl wraps the admin HTTP equivalents.
-//   - Defensive: chunks from peers not actively bootstrapping the
-//     given scope are silently dropped (bootstrap_is_active_source).
+//   - Defensive: a chunk only ever lands as the RESPONSE to a fetch this
+//     receiver itself sent (pull/RPC, never an unsolicited push), and
+//     bootstrap_safe_path traversal-guards every written path — so a stray
+//     peer cannot inject data into our scope roots.
 //
 // Future polish (deferred to alpha-tuning):
 //   - Pending-ops buffer during DB snapshot so writes that land mid-
@@ -417,15 +419,6 @@ func bootstrap_settled_state(scope, peer string) string {
 	return bootstrap_state_done
 }
 
-// bootstrap_clear removes the (scope, peer) row entirely. Called when
-// the bootstrap completes successfully and we want to reclaim the
-// state-machine slot (vs leaving a 'done' row forever). Callers must
-// only invoke after every scope for the peer has reached 'done'.
-func bootstrap_clear(scope, peer string) {
-	rdb := db_open("db/replication.db")
-	rdb.exec("delete from bootstrap where scope=? and peer=?", scope, peer)
-}
-
 // bootstrap_pending_lock serialises every read-modify-write of a
 // (scope, peer) bootstrap row's `position` field. Paginated manifest
 // pagination spawns one driver per page; each driver decrements the
@@ -725,27 +718,6 @@ func replication_inbound_reset(rdb *DB, peer string) {
 	rdb.exec("delete from seen where peer=?", peer)
 	rdb.exec("delete from pending where peer=?", peer)
 	info("Replication inbound state reset for peer %q after serving its bootstrap — now accepts its fresh sequence space", peer)
-}
-
-// bootstrap_scopes_for_peer returns every (scope, state, position)
-// row for the given peer, in stable order. Used by the receiver-side
-// driver to find resumable work and by the admin / mochictl status
-// readout.
-func bootstrap_scopes_for_peer(peer string) []map[string]string {
-	rdb := db_open("db/replication.db")
-	rows, _ := rdb.rows("select scope, state, position from bootstrap where peer=? order by scope", peer)
-	out := make([]map[string]string, 0, len(rows))
-	for _, r := range rows {
-		scope, _ := r["scope"].(string)
-		state, _ := r["state"].(string)
-		position, _ := r["position"].(string)
-		out = append(out, map[string]string{
-			"scope":    scope,
-			"state":    state,
-			"position": position,
-		})
-	}
-	return out
 }
 
 // bootstrap_file_scope_root returns the absolute filesystem root for
@@ -2053,19 +2025,6 @@ func bootstrap_db_scope_driver_impl(peer, scope string, entries []BootstrapDBEnt
 		}
 		bootstrap_pending_decrement(scope, peer)
 	}
-}
-
-// bootstrap_is_active_source returns true if there's a (scope, peer)
-// row in replication.db.bootstrap that hasn't reached 'done'. Used
-// by the chunk handlers as a defensive check: a chunk for a scope
-// we're not actively bootstrapping from this peer is silently
-// dropped. Prevents a malicious or buggy peer from writing arbitrary
-// data into our scope roots (subject to bootstrap_safe_path's
-// existing traversal guard).
-func bootstrap_is_active_source(scope, peer string) bool {
-	rdb := db_open("db/replication.db")
-	exists, _ := rdb.exists("select 1 from bootstrap where scope=? and peer=? and state != 'done'", scope, peer)
-	return exists
 }
 
 // bootstrap_in_progress reports whether ANY scope is still bootstrapping
@@ -3559,10 +3518,6 @@ func replication_emit_session_insert_to_peer_impl(peer, user_uid, code, secret s
 // Package-level variable so tests can stub the wire emission.
 var replication_system_set_to_peer_var = replication_system_set_to_peer_impl
 
-func replication_system_set_to_peer(peer, database, table, row, field, value string) {
-	replication_system_set_to_peer_var(peer, database, table, row, field, value)
-}
-
 func replication_system_set_to_peer_impl(peer, database, table, row, field, value string) {
 	if peer == "" || peer == net_id {
 		return
@@ -3577,10 +3532,6 @@ func replication_system_set_to_peer_impl(peer, database, table, row, field, valu
 // replication_system_row_to_peer_var is the row-level companion to
 // replication_system_set_to_peer_var.
 var replication_system_row_to_peer_var = replication_system_row_to_peer_impl
-
-func replication_system_row_to_peer(peer, database, table string, key, cols map[string]string, del bool) {
-	replication_system_row_to_peer_var(peer, database, table, key, cols, del)
-}
 
 func replication_system_row_to_peer_impl(peer, database, table string, key, cols map[string]string, del bool) {
 	if peer == "" || peer == net_id {

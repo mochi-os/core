@@ -51,21 +51,6 @@ func TestBootstrapSetAndGetState(t *testing.T) {
 	}
 }
 
-// TestBootstrapClear: removes the row entirely; subsequent reads
-// behave as if the (scope, peer) was never tracked.
-func TestBootstrapClear(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	bootstrap_set_state(bootstrap_scope_apps, "peer-A", bootstrap_state_done, "cursor-final")
-	bootstrap_clear(bootstrap_scope_apps, "peer-A")
-
-	state, pos := bootstrap_get_state(bootstrap_scope_apps, "peer-A")
-	if state != "" || pos != "" {
-		t.Errorf("after clear: got state=%q pos=%q, want both empty", state, pos)
-	}
-}
-
 // TestBootstrapSafePathRejectsTraversal: ../ segments, absolute paths,
 // and symlink escapes are all rejected.
 func TestBootstrapSafePathRejectsTraversal(t *testing.T) {
@@ -874,42 +859,6 @@ func TestBootstrapStartUserRejectsEmpty(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if calls != 0 {
 		t.Errorf("bootstrap_start_user fired fetches with empty peer/uid (%d calls); both args are required", calls)
-	}
-}
-
-// TestBootstrapIsActiveSource: returns true only for (scope, peer)
-// rows whose state isn't 'done'; missing row → false.
-func TestBootstrapIsActiveSource(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	// Missing row → false.
-	if bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
-		t.Error("missing row reported as active source")
-	}
-
-	// queued → true (we haven't started yet but it's authorized).
-	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_queued, "")
-	if !bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
-		t.Error("queued row reported as not active")
-	}
-
-	// active → true.
-	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_active, "42")
-	if !bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
-		t.Error("active row reported as not active")
-	}
-
-	// done → false (no longer authorized to receive chunks).
-	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_done, "")
-	if bootstrap_is_active_source(bootstrap_scope_files, "peer-A") {
-		t.Error("done row reported as active source")
-	}
-
-	// Different peer → false even if the scope has rows for someone else.
-	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_active, "1")
-	if bootstrap_is_active_source(bootstrap_scope_files, "peer-B") {
-		t.Error("different peer reported as active source for the same scope")
 	}
 }
 
@@ -1754,45 +1703,6 @@ func TestBootstrapFileScopeAutoDone(t *testing.T) {
 	state, pos := bootstrap_get_state(bootstrap_scope_files, "source-A")
 	if state != bootstrap_state_done {
 		t.Errorf("after driver: state=%q pos=%q, want done", state, pos)
-	}
-}
-
-// TestBootstrapScopesForPeer: every scope for a peer is returned in
-// stable order; rows for other peers are excluded.
-func TestBootstrapScopesForPeer(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-
-	bootstrap_set_state(bootstrap_scope_files, "peer-A", bootstrap_state_done, "f")
-	bootstrap_set_state(bootstrap_scope_apps, "peer-A", bootstrap_state_active, "a")
-	bootstrap_set_state(bootstrap_scope_userdbs, "peer-A", bootstrap_state_queued, "")
-	bootstrap_set_state(bootstrap_scope_files, "peer-OTHER", bootstrap_state_done, "x")
-
-	rows := bootstrap_scopes_for_peer("peer-A")
-	if len(rows) != 3 {
-		t.Fatalf("rows for peer-A: got %d, want 3", len(rows))
-	}
-	// Stable order = ORDER BY scope ASC → apps, files, userdbs.
-	want := []string{bootstrap_scope_apps, bootstrap_scope_files, bootstrap_scope_userdbs}
-	for i, w := range want {
-		if rows[i]["scope"] != w {
-			t.Errorf("row[%d].scope = %q, want %q", i, rows[i]["scope"], w)
-		}
-	}
-
-	// Spot-check the states came through.
-	if rows[0]["state"] != bootstrap_state_active {
-		t.Errorf("apps state = %q, want active", rows[0]["state"])
-	}
-	if rows[1]["position"] != "f" {
-		t.Errorf("files position = %q, want %q", rows[1]["position"], "f")
-	}
-
-	// peer-OTHER's row not included.
-	for _, r := range rows {
-		if r["scope"] == "" {
-			t.Errorf("got an empty-scope row: %+v", r)
-		}
 	}
 }
 

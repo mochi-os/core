@@ -2060,7 +2060,7 @@ func (e *Event) attachment_event_data() {
 			// owns a local copy. Deliberately NOT replicated — entity="" means
 			// "bytes are local", which is only true on this host; a partner that
 			// applied it would look for bytes it never fetched. Keep on plain exec.
-			e.db.exec("update attachments set entity = '' where id = ?", id)
+			e.db.exec("update attachments set entity = '' where id = ?", id) // exec-ok: host-local cache promotion, entity="" is true only on the fetching host
 			info("Attachment %s fetched from uploader and stored locally", id)
 		}
 		// File now exists locally — serve it below

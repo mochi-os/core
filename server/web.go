@@ -1766,7 +1766,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 				return true
 			}
 			// Clear entity so future requests serve from local storage
-			db.exec(`update attachments set entity = '' where id = ?`, id)
+			db.exec(`update attachments set entity = '' where id = ?`, id) // exec-ok: host-local cache promotion, entity="" is true only on the fetching host
 			info("Attachment %s fetched and stored locally on demand", id)
 		} else {
 			respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)

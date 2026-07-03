@@ -262,7 +262,7 @@ func permission_granted(u *User, app_id string, permission string) bool {
 		if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); !seeded {
 			for _, p := range apps_default_get(app_id) {
 				if p.Permission == name && p.Object == object {
-					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object)
+					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object) // exec-ok: transient bootstrap-window seed of a re-derivable default grant; the authoritative grant replicates via app_user_setup
 					return true
 				}
 			}

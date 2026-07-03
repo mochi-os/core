@@ -18,6 +18,13 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Replication-write guard
+        # A plain db.exec write to a replicated core table (access/attachments/
+        # permissions/log/acknowledged) never journals, so it silently doesn't
+        # replicate (#166). Use db.exec_replicated/exec_app_user, or annotate an
+        # intentional host-local write with `// exec-ok: <reason>`.
+        run: python3 .github/scripts/check-core-replicated-writes.py --check
+
       - name: Build
         run: make
 

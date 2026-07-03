@@ -790,7 +790,11 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				}
 				d["endpoint"] = endpoint
 				j, _ := json.Marshal(d)
-				db.exec("update accounts set data=?, identifier=? where id=?", string(j), endpoint, id)
+				// Route through account_set so the write respects the account's type
+				// (device → local, replicated → versioned register) rather than a raw,
+				// un-versioned update that would leave a non-device account's endpoint
+				// unreplicated and its register revision stale (#176).
+				db.account_set(id, map[string]any{"data": string(j), "identifier": endpoint})
 			}
 		}
 	}

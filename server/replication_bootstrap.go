@@ -1983,22 +1983,21 @@ func reseed_source_missing_ops(rel, peer string) bool {
 	return true
 }
 
-// reseed_finalize clears the two things a re-seed leaves stale. First,
-// the inherited journal: the snapshot carries the SOURCE's sender-state,
-// and the receiver must not drain and re-ship those ops as if it had
-// originated them — so the landed journal is emptied (the receiver
-// starts fresh, recording its own ops only if it later writes that DB).
-// Second, the stream's pending rows at or below the new cursor — ops
-// that buffered behind the gap we just jumped, now dead.
-// bootstrap_db_fetch_impl has already re-anchored the cursor and drained
-// anything that chains onto it.
+// reseed_finalize clears the stream's pending rows at or below the new cursor —
+// ops that buffered behind the gap we just jumped, now dead.
+// bootstrap_db_fetch_impl has already re-anchored the cursor and drained anything
+// that chains onto it.
+//
+// It deliberately does NOT touch the journal (#171). The old logic emptied the
+// "inherited" journal on the premise that the snapshot carried the SOURCE's
+// sender-state — but the logical bootstrap SKIPS journal/journal_delivery on the
+// wire (bootstrap_db_skip_tables) and the swap rebuilds the DB with a fresh empty
+// journal (journal_setup, replication_bootstrap_swap.go). So there is nothing
+// inherited to clear, and a blanket `delete from journal` here could only destroy
+// the receiver's OWN ops — e.g. a local write that journaled a pending row in the
+// window between the swap releasing databases_lock and this call.
 func reseed_finalize(peer, target string) {
 	rel := strings.TrimPrefix(target, data_dir+string(os.PathSeparator))
-	if db := db_open(rel); db != nil {
-		if has, _ := db.exists("select 1 from sqlite_master where type = 'table' and name = 'journal'"); has {
-			db.exec("delete from journal")
-		}
-	}
 	stream := bootstrap_stream_key(rel)
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	if stream == "" || len(parts) < 2 || parts[0] != "users" {

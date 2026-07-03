@@ -214,7 +214,10 @@ func TestReseedFinalize(t *testing.T) {
 	peer := "peerX"
 	stream := bootstrap_stream_key(rel)
 
-	// App DB carries an inherited journal (from the source snapshot).
+	// The app DB's journal is the receiver's OWN (the logical bootstrap skips
+	// journal on the wire, so a reseed never carries the source's). finalize must
+	// NOT wipe it — that would only destroy the receiver's own ops (#171). Model a
+	// row a local write journaled just after the swap.
 	app := db_open(rel)
 	app.exec("create table journal (id text primary key, state text)")
 	app.exec("insert into journal (id, state) values ('a', 'shipped'), ('b', 'pending')")
@@ -229,8 +232,8 @@ func TestReseedFinalize(t *testing.T) {
 
 	reseed_finalize(peer, full)
 
-	if n := app.integer("select count(*) from journal"); n != 0 {
-		t.Fatalf("inherited journal not cleared: %d rows remain", n)
+	if n := app.integer("select count(*) from journal"); n != 2 {
+		t.Fatalf("receiver's own journal wrongly touched (#171): want 2 rows, got %d", n)
 	}
 	if n := rdb.integer("select count(*) from pending where sequence <= 100"); n != 0 {
 		t.Fatalf("stale pending not cleared: %d rows remain", n)

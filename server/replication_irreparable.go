@@ -7,7 +7,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -740,6 +742,18 @@ func replication_notify_members(scope, user, topic, title, body string) {
 	}
 }
 
+// replication_notify_event_id derives a stable notification event id from
+// cross-host-deterministic inputs only (the topic + recipient uid) - never a
+// per-host timestamp or uid - so both pair members compute the SAME id for the
+// same logical alert. The notifications app de-dups its `sends` row on this id
+// (insert-or-ignore), so a leader-gate race that emits on both hosts converges
+// instead of diverging. A given (topic, recipient) is one persistent alert
+// (object="" collapses distinct peers into it anyway), so a stable id is right.
+func replication_notify_event_id(topic, uid string) string {
+	sum := sha256.Sum256([]byte("replication-notify|" + topic + "|" + uid))
+	return hex.EncodeToString(sum[:16])
+}
+
 // replication_notify_user delivers one replication notification to a user
 // uid, resolving the title and body label keys in that user's language and
 // showing the sender as "Mochi server" (object=""). Shared by the
@@ -758,6 +772,12 @@ func replication_notify_user(uid, topic, title, body, url string) {
 		"url":    url,
 		"label":  resolve_core_label(lang, "replica.irreparable.topic", nil),
 		"count":  int64(1),
+		// Deterministic event_id so both pair members produce the identical
+		// notifications-app `sends` row if the leader gate ever races (belt-and-
+		// suspenders on #133): derived only from cross-host-stable inputs (topic +
+		// recipient), never a per-host now()/uid, so the send de-dups on
+		// insert-or-ignore instead of diverging. See #185.
+		"event_id": replication_notify_event_id(topic, uid),
 	}
 	if err := service_call_as_server(uid, "notifications", "send", args); err != nil {
 		info("Replication notify user %q topic %q: %v", uid, topic, err)

@@ -305,7 +305,7 @@ func TestJournalPruneRetainsRecentAndPending(t *testing.T) {
 	ins("recent", "shipped", recent)
 	ins("oldpending", "pending", old)
 
-	journal_prune(db)
+	journal_prune(db, "u1")
 
 	if n := db.integer("select count(*) from journal where id='old'"); n != 0 {
 		t.Fatalf("old shipped op not pruned (count=%d)", n)

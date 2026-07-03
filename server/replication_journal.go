@@ -499,12 +499,25 @@ func journal_sweep() {
 					if has, _ := db.exists("select 1 from journal where state='pending' limit 1"); has {
 						journal_drain(userUID, appID, db)
 					}
-					journal_prune(db)
+					journal_prune(db, userUID)
 				})
 			}
 		}
 	}
 	journal_inflight_sweep() // drop inflight rows whose message never acked (#28)
+
+	// #162: periodically re-ship unconfirmed ops to CONNECTED peers, not only on
+	// reconnect. journal_drain marks a row shipped once its sequence is assigned
+	// (even when journal_ship_real sent to nobody), and the sole re-ship trigger is
+	// peer reconnect — so a send dropped to a peer that stays continuously connected
+	// is otherwise never retried until it happens to reconnect. journal_backfill_to_peer
+	// is delivery-cursor-gated (a caught-up peer gets nothing) and filters to users
+	// the peer actually replicates, so a connected non-recipient is a cheap no-op.
+	if net_me != nil {
+		for _, p := range net_me.Network().Peers() {
+			go journal_backfill_to_peer(p.String())
+		}
+	}
 }
 
 // Retention bounds for shipped journal ops. A shipped op is kept so a
@@ -512,32 +525,64 @@ func journal_sweep() {
 // pruned and a peer that far behind falls back to bootstrap. Tunable later;
 // generous defaults so normal outages are covered.
 var (
-	journal_retention_age     int64 = 7 * 24 * 60 * 60 // seconds
-	journal_retention_minimum       = 1000             // most-recent rows kept regardless of age
+	journal_retention_age      int64 = 7 * 24 * 60 * 60  // seconds — a CONFIRMED op is pruned past this
+	journal_retention_hard_age int64 = 30 * 24 * 60 * 60 // seconds — even an UNconfirmed op is pruned past this (#163); a peer that far behind re-bootstraps
+	journal_retention_minimum        = 1000              // most-recent rows kept regardless of age
 )
 
 // journal_prune deletes shipped journal ops older than the retention age,
 // always keeping the most recent journal_retention_minimum rows so a recently
 // active stream stays backfillable. Pending rows are never pruned. The
 // matching idempotency binding in replication.db is dropped with each row.
-func journal_prune(db *DB) {
+func journal_prune(db *DB, userUID string) {
 	if db == nil {
 		return
 	}
-	cutoff := now() - journal_retention_age
-	ids, err := db.rows(
-		"select id from journal where state='shipped' and created < ? "+
+	softCutoff := now() - journal_retention_age
+	rows, err := db.rows(
+		"select id, created from journal where state='shipped' and created < ? "+
 			"and id not in (select id from journal where state='shipped' order by created desc limit ?)",
-		cutoff, journal_retention_minimum)
-	if err != nil || len(ids) == 0 {
+		softCutoff, journal_retention_minimum)
+	if err != nil || len(rows) == 0 {
 		return
 	}
 	rdb := db_open("db/replication.db")
+	hardCutoff := now() - journal_retention_hard_age
+	recips := recipients(userUID)
+	// #163: don't prune a shipped op a still-paired peer hasn't confirmed. Per
+	// stream, minConfirmed is the LOWEST delivery cursor across the user's current
+	// recipients (#28); an op at or below it is delivered to everyone, so it's safe
+	// to drop; above it a peer still needs it via the reconnect/periodic backfill,
+	// and pruning it here would strand that peer with an unfillable gap. Past the
+	// hard cap we prune anyway — a peer that far behind falls back to a full
+	// bootstrap (accepting the intervening per-op deltas, fine for LWW-registers).
+	// The binding's stream == the delivery cursor's stream (both repl_op_stream(op)).
+	minConfirmed := map[string]int64{}
 	pruned := 0
-	for _, r := range ids {
+	for _, r := range rows {
 		id, _ := r["id"].(string)
 		if id == "" {
 			continue
+		}
+		created, _ := r["created"].(int64)
+		if len(recips) > 0 && created >= hardCutoff {
+			if b, _ := rdb.row("select sequence, stream from journal_sequence where id=?", id); b != nil {
+				seq, _ := b["sequence"].(int64)
+				stream, _ := b["stream"].(string)
+				mc, seen := minConfirmed[stream]
+				if !seen {
+					mc = -1
+					for _, peer := range recips {
+						if c := journal_delivery_cursor(rdb, userUID, peer, stream); mc < 0 || c < mc {
+							mc = c
+						}
+					}
+					minConfirmed[stream] = mc
+				}
+				if mc >= 0 && seq > mc {
+					continue // a still-paired peer hasn't confirmed this op — keep it backfillable
+				}
+			}
 		}
 		db.exec("delete from journal where id=?", id)
 		rdb.exec("delete from journal_sequence where id=?", id)

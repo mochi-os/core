@@ -3819,8 +3819,96 @@ func sql_is_mutating(sql string) bool {
 	return false
 }
 
+// sql_skip_paren_group consumes a balanced ( ... ) at the start of s and returns
+// the remainder after the matching ")". String literals ('...') and quoted
+// identifiers ("...", [...], `...`) are skipped so parens inside them don't
+// miscount. Returns "" if s doesn't start with "(" or the parens are unbalanced.
+func sql_skip_paren_group(s string) string {
+	if s == "" || s[0] != '(' {
+		return ""
+	}
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[i+1:]
+			}
+		case '\'', '"', '`':
+			q := s[i]
+			i++
+			for i < len(s) && s[i] != q {
+				i++
+			}
+		case '[':
+			i++
+			for i < len(s) && s[i] != ']' {
+				i++
+			}
+		}
+	}
+	return "" // unbalanced
+}
+
+// sql_skip_cte returns the terminal statement of a CTE query — the text after a
+// leading "WITH [RECURSIVE] <name> [(cols)] AS [NOT] [MATERIALIZED] ( <subquery> )
+// [, ...]" clause — so the verb/target parsers below see the real INSERT / UPDATE
+// / DELETE (or SELECT) instead of stopping at WITH and misclassifying a CTE write
+// as a non-replicating read (#164). Input must already be lead-stripped. A
+// non-CTE statement is returned unchanged; anything that fails to parse cleanly
+// returns "" so callers fall back to their empty-target (non-write) default —
+// never a wrong table.
+func sql_skip_cte(s string) string {
+	word, rest := sql_take_word(s)
+	if !strings.EqualFold(word, "WITH") {
+		return s
+	}
+	rest = sql_strip_lead(rest)
+	if w, after := sql_take_word(rest); strings.EqualFold(w, "RECURSIVE") {
+		rest = sql_strip_lead(after)
+	}
+	for {
+		name, after := sql_take_ident(rest)
+		if name == "" {
+			return "" // malformed — no CTE name
+		}
+		rest = sql_strip_lead(after)
+		if strings.HasPrefix(rest, "(") { // optional (column, ...) list
+			if rest = sql_skip_paren_group(rest); rest == "" {
+				return ""
+			}
+			rest = sql_strip_lead(rest)
+		}
+		if w, next := sql_take_word(rest); strings.EqualFold(w, "AS") {
+			rest = sql_strip_lead(next)
+		} else {
+			return "" // malformed — CTE without AS
+		}
+		for { // optional NOT / MATERIALIZED hint(s)
+			w, next := sql_take_word(rest)
+			if strings.EqualFold(w, "NOT") || strings.EqualFold(w, "MATERIALIZED") {
+				rest = sql_strip_lead(next)
+				continue
+			}
+			break
+		}
+		if rest = sql_skip_paren_group(rest); rest == "" { // the ( subquery )
+			return ""
+		}
+		rest = sql_strip_lead(rest)
+		if strings.HasPrefix(rest, ",") {
+			rest = sql_strip_lead(rest[1:])
+			continue // another CTE
+		}
+		return rest // the terminal statement
+	}
+}
+
 func sql_target_table(sql string) string {
-	s := sql_strip_lead(sql)
+	s := sql_skip_cte(sql_strip_lead(sql))
 	verb, rest := sql_take_word(s)
 	switch strings.ToUpper(verb) {
 	case "INSERT", "REPLACE":
@@ -3882,7 +3970,7 @@ func sql_target_table(sql string) string {
 // back to the empty-uid behaviour (commit hooks still fire on
 // replication apply, just without a specific row identifier).
 func sql_target_uid(sql string, args []any) string {
-	s := sql_strip_lead(sql)
+	s := sql_skip_cte(sql_strip_lead(sql))
 	verb, rest := sql_take_word(s)
 	switch strings.ToUpper(verb) {
 	case "INSERT", "REPLACE":
@@ -3922,8 +4010,10 @@ func sql_target_uid(sql string, args []any) string {
 
 	case "UPDATE", "DELETE":
 		// Recognised only when the WHERE clause is exactly "id = ?".
-		// The bound value is then the last entry in args.
-		lower := strings.ToLower(sql)
+		// The bound value is then the last entry in args. Search the terminal
+		// statement (post-CTE), so a CTE subquery's own WHERE can't be mistaken
+		// for the write's (#164).
+		lower := strings.ToLower(s)
 		where := strings.LastIndex(lower, " where ")
 		if where < 0 {
 			return ""

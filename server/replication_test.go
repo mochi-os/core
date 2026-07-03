@@ -4004,8 +4004,21 @@ func TestSQLTargetTable(t *testing.T) {
 		{"DROP TABLE posts", ""},
 		{"ALTER TABLE posts ADD COLUMN x", ""},
 
-		// CTE: deliberately not recognised; caller must reshape.
-		{"WITH cte AS (SELECT 1) INSERT INTO posts SELECT * FROM cte", ""},
+		// CTE writes: parse past the WITH clause to the terminal verb (#164).
+		{"WITH cte AS (SELECT 1) INSERT INTO posts SELECT * FROM cte", "posts"},
+		{"with cte as (select 1) update posts set x = 1 where id = ?", "posts"},
+		{"WITH cte AS (SELECT 1) DELETE FROM posts WHERE id = ?", "posts"},
+		{"WITH RECURSIVE cte AS (SELECT 1) INSERT INTO posts VALUES (1)", "posts"},
+		{"WITH a AS (SELECT 1), b AS (SELECT 2) INSERT INTO posts VALUES (1)", "posts"},
+		{"WITH cte(x, y) AS (SELECT 1, 2) INSERT INTO posts VALUES (1)", "posts"},
+		{"WITH cte AS (SELECT count(*) FROM (SELECT 1)) INSERT INTO posts VALUES (1)", "posts"},
+		{"WITH cte AS (SELECT ')' AS x) INSERT INTO posts VALUES (1)", "posts"},
+		{"WITH cte AS NOT MATERIALIZED (SELECT 1) INSERT INTO posts VALUES (1)", "posts"},
+		// CTE reads stay non-writes.
+		{"WITH cte AS (SELECT 1) SELECT * FROM cte", ""},
+		// Malformed CTE falls back to the empty (non-write) default, never a wrong table.
+		{"WITH cte AS (SELECT 1", ""},
+		{"WITH cte (SELECT 1) INSERT INTO posts VALUES (1)", ""},
 
 		// Garbled input.
 		{"", ""},
@@ -4115,6 +4128,26 @@ func TestSQLTargetUID(t *testing.T) {
 		{"insert integer pk",
 			"INSERT INTO posts (id, title) VALUES (?, ?)",
 			[]any{int64(42), "t"},
+			""},
+
+		// CTE writes: uid extracted from the terminal statement (#164).
+		{"cte insert id-first",
+			"WITH cte AS (SELECT 1) INSERT INTO posts (id, title) VALUES (?, ?)",
+			[]any{"cte1", "t"},
+			"cte1"},
+		{"cte update where id",
+			"WITH cte AS (SELECT 1) UPDATE posts SET title = ? WHERE id = ?",
+			[]any{"t", "cte2"},
+			"cte2"},
+		{"cte read select",
+			"WITH cte AS (SELECT 1) SELECT * FROM posts WHERE id = ?",
+			[]any{"x"},
+			""},
+		// A WHERE inside a (param-free) CTE subquery must not be mistaken for the
+		// terminal update's absent WHERE — searching the post-CTE statement yields "".
+		{"cte subquery where, terminal update no where",
+			"WITH cte AS (SELECT 1 WHERE flag = 1) UPDATE posts SET title = ?",
+			[]any{"t"},
 			""},
 
 		// Empty / unparseable input.

@@ -4,7 +4,7 @@
 // replicated table must not write it with `replace into` / `delete`: those are
 // last-ARRIVAL-wins under multi-master and diverge (a concurrent add+remove can
 // leave the two hosts disagreeing, or a stale write resurrect a removed row).
-// mochi.db.merge / mochi.db.tombstone make such a table a converging register:
+// mochi.db.merge / mochi.db.remove make such a table a converging register:
 // each row carries a per-key Lamport `version` and an originating-host `writer`,
 // and the merge keeps the higher version (ties broken deterministically by
 // writer), so every host converges regardless of arrival order. A removal is a
@@ -107,11 +107,11 @@ func api_db_merge(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return db_merge_builtin(t, fn, args, 0)
 }
 
-// mochi.db.tombstone(table, keys, row) -> int: Versioned removal — writes a
+// mochi.db.remove(table, keys, row) -> int: Versioned removal — writes a
 // removed=1 tombstone (the `row` dict need only carry the key columns) instead
 // of DELETE, so a stale concurrent write can't resurrect the row and the removal
 // converges. Pair with mochi.db.merge.
-func api_db_tombstone(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_db_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return db_merge_builtin(t, fn, args, 1)
 }
 

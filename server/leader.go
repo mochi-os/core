@@ -534,7 +534,13 @@ func replication_leader_is_member(scope, peer string) bool {
 		uid := strings.TrimPrefix(scope, "user:")
 		db := db_open("db/replication.db")
 		has, _ := db.exists("select 1 from hosts where user=? and peer=?", uid, peer)
-		return has
+		// Union the operator pair, exactly like replication_leader_membership: a
+		// paired host serves every user via the `pair` relationship, not the
+		// per-user `hosts` table, so without this the two pair members reject each
+		// other's leader grants for user-scoped scopes and leadership never
+		// coordinates (#133). Grant-receive must accept the same set the claim side
+		// emits to.
+		return has || peer_is_pair(peer)
 	}
 	return peer_is_pair(peer)
 }

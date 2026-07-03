@@ -1045,6 +1045,19 @@ func replication_audit_liveness(peer string, local map[string]int64, remote []Au
 	stuck := map[string]bool{}
 	var alert []frozenStream
 	for _, f := range frozen {
+		// A system: per-user stream (users/sessions/schedule) is a liveness marker
+		// over a SHARED sysdb (db/users.db etc.): it has no per-user file to reseed,
+		// and audit_stream_converged can't hash it (replication_audit_hashes only
+		// walks per-user DB files), so it always looked "unconverged" — leaving it a
+		// permanent frozen candidate that re-alerted every round and drove a no-op
+		// file reseed (#190). The sysdb's actual content convergence is covered by
+		// the separate core-DB audit, not this per-user cursor, so heal the liveness
+		// signal directly: re-anchor the cursor to the peer's tail. A genuine
+		// users/sessions/schedule divergence still surfaces via the core-DB audit.
+		if strings.HasPrefix(f.s.Stream, repl_stream_class_system+":") {
+			replication_cursor_set(rdb, peer, repl_scope_app, f.s.User, f.s.Stream, f.s.Tail)
+			continue
+		}
 		if audit_stream_converged(peer, f.s, local) {
 			continue // content matches — not a real gap; leave out of `stuck` so any prior alert clears
 		}

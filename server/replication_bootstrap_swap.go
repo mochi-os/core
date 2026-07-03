@@ -49,11 +49,19 @@ func bootstrap_db_swap(target, scratch string) error {
 	// "subset" verdict would auto-wipe data (#42). Run BEFORE databases_lock so the
 	// full scan doesn't stall every db_open; only for a populated target (a fresh
 	// replica's empty target has nothing to lose, and the #27 guard covers empty).
+	var watch *db_change_watch
 	if db_file_has_rows(target) {
 		if ok, detail := bootstrap_swap_subset_ok(target, scratch); !ok {
 			_ = os.Remove(scratch)
 			return fmt.Errorf("bootstrap-db-swap: refusing reseed of %q — the live target is NOT a subset of the source (%s); a swap would lose data the target uniquely holds (subset guard #101)", target, detail)
 		}
+		// The subset scan above ran BEFORE the lock (for availability), so a write
+		// landing between it and the rename below would add a row the scan never
+		// verified and the scratch lacks — silently wiped by the swap (TOCTOU #172).
+		// Hold a connection to detect any such commit at the last moment before the
+		// rename.
+		watch = db_watch_target(target)
+		defer watch.close()
 	}
 
 	databases_lock.Lock()
@@ -108,6 +116,17 @@ func bootstrap_db_swap(target, scratch string) error {
 	if f, err := os.Open(scratch); err == nil {
 		_ = f.Sync()
 		_ = f.Close()
+	}
+
+	// #172: final TOCTOU check, as late as possible before the rename. The subset
+	// scan ran before the lock, so re-verify (via the held connection's
+	// data_version) that no commit landed on the target since. Fail closed — a
+	// window write is a row the scan never saw and the scratch lacks, which the
+	// rename would silently wipe. The reseed aborts and falls back to the operator
+	// / a later retry, exactly as the subset/no-shrink guards do.
+	if watch != nil && watch.changed() {
+		_ = os.Remove(scratch)
+		return fmt.Errorf("bootstrap-db-swap: refusing reseed of %q — the live target changed between the subset scan and the swap; a write in that window would be lost (subset-guard TOCTOU #172)", target)
 	}
 
 	// Replace the file content. The old DB's open fds keep serving the old

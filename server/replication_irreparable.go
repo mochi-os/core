@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -16,6 +17,66 @@ import (
 	"strings"
 	"sync"
 )
+
+// db_change_watch holds ONE read-only connection open across a critical section so
+// a later data_version read on the SAME connection detects any commit another
+// connection made in between (PRAGMA data_version is per-connection — two fresh
+// connections aren't comparable). Used to close the subset-guard TOCTOU: the swap's
+// row-level subset scan runs BEFORE databases_lock for availability, so a write
+// landing between that scan and the rename would add a row the scan never verified
+// and the scratch lacks — silently wiped. This catches it and fails the swap (#172).
+type db_change_watch struct {
+	db      *sql.DB
+	conn    *sql.Conn
+	version int64
+	ok      bool
+}
+
+// db_watch_target opens a held read-only connection to path and records its current
+// data_version. If the file can't be opened/read, ok stays false and changed()
+// fails CLOSED (true) — "can't verify" is treated as "changed", matching the swap
+// guard's never-wipe policy. Caller MUST call close().
+func db_watch_target(path string) *db_change_watch {
+	w := &db_change_watch{}
+	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return w
+	}
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		d.Close()
+		return w
+	}
+	if err := conn.QueryRowContext(context.Background(), "pragma data_version").Scan(&w.version); err != nil {
+		conn.Close()
+		d.Close()
+		return w
+	}
+	w.db, w.conn, w.ok = d, conn, true
+	return w
+}
+
+// changed reports whether a commit landed on the watched file since db_watch_target.
+// Fails closed (true) if the watch never opened or the re-read errors.
+func (w *db_change_watch) changed() bool {
+	if !w.ok {
+		return true
+	}
+	var v int64
+	if err := w.conn.QueryRowContext(context.Background(), "pragma data_version").Scan(&v); err != nil {
+		return true
+	}
+	return v != w.version
+}
+
+func (w *db_change_watch) close() {
+	if w.conn != nil {
+		w.conn.Close()
+	}
+	if w.db != nil {
+		w.db.Close()
+	}
+}
 
 // A replication stream broken (stalled on an unfillable gap, or a member
 // gone) for longer than T_forget can no longer be recovered without data

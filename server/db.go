@@ -2762,6 +2762,25 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	return ExecWrote
 }
 
+// begin_tx_retry opens a transaction on the internal pool, retrying a few times
+// to ride out a TRANSIENT open failure (momentary pool contention). A replicated
+// write must journal its op ATOMICALLY with the data, so its callers fail rather
+// than fall through to a non-atomic write + separate emit when this can't open
+// (#167): tx-open failing is the trouble signal (pool exhaustion / closing DB)
+// under which a crash between a separate write and emit — silently persisting the
+// data without ever emitting the op — is most likely.
+func (db *DB) begin_tx_retry() (*sqlx.Tx, error) {
+	var tx *sqlx.Tx
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if tx, err = db.internal.Beginx(); err == nil {
+			return tx, nil
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+	return nil, err
+}
+
 // exec_replicated runs a write against the local DB and, if the handle
 // is tagged with a replicating kind (app-system, user-core), fans the
 // statement out to the user's host set. Used by Go-side APIs
@@ -2777,25 +2796,33 @@ func (db *DB) exec_replicated(query string, values ...any) {
 	// legacy emit (core-scope signing isn't wired; #34).
 	if db.kind == db_kind_app_system && db.user != nil && db.user.UID != "" && db.app != nil &&
 		journal_table_replicates(sql_target_table(query)) {
-		if tx, err := db.internal.Beginx(); err == nil {
-			if _, err := tx.Exec(query, values...); err != nil {
-				tx.Rollback()
-				must[any](nil, err)
-				return
-			}
-			if err := journal_record_tx(tx, repl_op_exec_app_system, 0, query, values); err != nil {
-				tx.Rollback()
-				must[any](nil, err)
-				return
-			}
-			if err := tx.Commit(); err != nil {
-				must[any](nil, err)
-				return
-			}
-			journal_wake(db)
+		tx, err := db.begin_tx_retry()
+		if err != nil {
+			// Can't open a tx to journal the op ATOMICALLY with the data. FAIL
+			// rather than fall through to a non-atomic write + separate legacy
+			// emit, which would silently reopen the write->emit gap (#34/#167): a
+			// crash between the two would persist the data without ever emitting
+			// the op, diverging the paired host. must() surfaces this as the
+			// write's error (recoverable), matching the SQL-error contract below.
+			must[any](nil, fmt.Errorf("exec_replicated: cannot open tx for atomic journal: %w", err))
 			return
 		}
-		// tx open failed: fall through to the non-atomic write + legacy emit.
+		if _, err := tx.Exec(query, values...); err != nil {
+			tx.Rollback()
+			must[any](nil, err)
+			return
+		}
+		if err := journal_record_tx(tx, repl_op_exec_app_system, 0, query, values); err != nil {
+			tx.Rollback()
+			must[any](nil, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			must[any](nil, err)
+			return
+		}
+		journal_wake(db)
+		return
 	}
 
 	must(db.internal.Exec(query, values...))
@@ -2847,11 +2874,14 @@ func (db *DB) exec_app_user(query string, values ...any) {
 	// write, then wake the drainer — same atomicity guarantee as
 	// mochi.db.execute (claude/plans/replication-journal.md). The journal table
 	// is created eagerly at DB open (db_app), so it already exists here.
-	tx, err := db.internal.Beginx()
+	tx, err := db.begin_tx_retry()
 	if err != nil {
-		// Can't open a tx: fall back to the non-atomic write so the broadcast
-		// helper still makes progress (panics on a real SQL error, as before).
-		must(db.internal.Exec(query, values...))
+		// Can't open a tx to journal the op ATOMICALLY with the data. FAIL rather
+		// than fall through to a non-atomic write with NO emit, which would apply
+		// the write locally but never replicate it (#167) — diverging a paired
+		// host's broadcast log. must() surfaces it, matching the SQL-error
+		// contract below.
+		must[any](nil, fmt.Errorf("exec_app_user: cannot open tx for atomic journal: %w", err))
 		return
 	}
 	if _, err := tx.Exec(query, values...); err != nil {

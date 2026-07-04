@@ -58,6 +58,7 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/config", admin_config)
 	admin.GET("/identity", admin_identity)
 	admin.GET("/health", admin_health)
+	admin.POST("/migrate", admin_migrate)
 	admin.POST("/snapshot", admin_snapshot)
 	admin.POST("/vacuum", admin_vacuum)
 	admin.GET("/backup", admin_backup)

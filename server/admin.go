@@ -12,7 +12,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"core/common/ini"
@@ -109,4 +112,57 @@ func admin_restart(c *gin.Context) {
 	default:
 		respond_error(c, http.StatusConflict, "shutdown_in_progress", "errors.shutdown_in_progress", nil)
 	}
+}
+
+// admin_migrate walks every user and opens every installed app's data DB,
+// which runs any pending database migrations (per-user app DBs migrate on
+// demand, so rarely-touched users lag behind). Run before a schema baseline
+// change so every database reaches the current schema while the migration
+// code still exists. Synchronous; reports per-user counts.
+func admin_migrate(c *gin.Context) {
+	users := db_open("db/users.db")
+	rows, err := users.rows("select uid from users")
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	apps_lock.Lock()
+	names := make([]string, 0, len(apps))
+	for id := range apps {
+		names = append(names, id)
+	}
+	apps_lock.Unlock()
+	opened := 0
+	failed := 0
+	for _, r := range rows {
+		uid, _ := r["uid"].(string)
+		u := user_by_uid(uid)
+		if u == nil {
+			continue
+		}
+		for _, id := range names {
+			a := app_by_id(id)
+			if a == nil {
+				continue
+			}
+			av := a.active(u)
+			if av == nil || av.Database.File == "" {
+				continue
+			}
+			// Only migrate databases that already exist - opening creates
+			// on demand, and we don't want to mint empty DBs for every
+			// (user, app) pair.
+			path := fmt.Sprintf("users/%s/%s/db/%s", u.UID, a.id, av.Database.File)
+			if _, err := os.Stat(filepath.Join(data_dir, path)); err != nil {
+				continue
+			}
+			if db := db_app(u, a); db != nil {
+				opened++
+			} else {
+				failed++
+			}
+		}
+	}
+	info("Admin migrate: %d databases opened/migrated, %d failed", opened, failed)
+	c.JSON(200, gin.H{"opened": opened, "failed": failed})
 }

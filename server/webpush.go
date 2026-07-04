@@ -170,10 +170,7 @@ func webpush_mark_delivered(u *User, endpoint, event_id string) {
 // webpush_dedup_db opens the per-user notifications DB and lazily
 // creates the webpush_delivered table.
 func webpush_dedup_db(u *User) *DB {
-	db := db_user(u, "notifications")
-	db.exec("create table if not exists webpush_delivered (endpoint text not null, event_id text not null, ts integer not null, primary key (endpoint, event_id))")
-	db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
-	return db
+	return db_user(u, "notifications")
 }
 
 // Dedup TTL — slightly longer than the typical replication window so

@@ -43,7 +43,6 @@ var api_qid = sls.FromStringDict(sl.String("mochi.qid"), sl.StringDict{
 })
 
 var (
-	qid_db_once       sync.Once
 	qid_regex         = regexp.MustCompile(`^Q[0-9]+$`)
 	qid_rate_lock     sync.Mutex
 	qid_rate_last     time.Time
@@ -54,11 +53,6 @@ var (
 
 // qid_db opens external.db and creates the qids and qid_searches tables on first use
 func qid_db() *DB {
-	qid_db_once.Do(func() {
-		db := db_open("db/external.db")
-		db.exec("create table if not exists qids (qid text not null, lang text not null, label text not null, fetched integer not null, primary key (qid, lang))")
-		db.exec("create table if not exists qid_searches (query text not null, lang text not null, results text not null, fetched integer not null, primary key (query, lang))")
-	})
 	return db_open("db/external.db")
 }
 

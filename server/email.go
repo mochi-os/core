@@ -47,10 +47,7 @@ func email_send_dedup(u *User, event_id, to, subject, body string) {
 // email_dedup_db opens the per-user notifications DB (shared with
 // webpush_delivered) and lazily creates the email_delivered table.
 func email_dedup_db(u *User) *DB {
-	db := db_user(u, "notifications")
-	db.exec("create table if not exists email_delivered (address text not null, event_id text not null, ts integer not null, primary key (address, event_id))")
-	db.exec("create index if not exists email_delivered_ts on email_delivered(ts)")
-	return db
+	return db_user(u, "notifications")
 }
 
 // email_already_delivered consults the per-user dedup table. Returns

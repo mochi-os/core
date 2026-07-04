@@ -373,6 +373,11 @@ func db_create() {
 	schedule.exec("create index if not exists schedule_due on schedule(due)")
 	schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
 
+	// External-data caches (Wikidata qid labels + searches)
+	external := db_open("db/external.db")
+	external.exec("create table if not exists qids (qid text not null, lang text not null, label text not null, fetched integer not null, primary key (qid, lang))")
+	external.exec("create table if not exists qid_searches (query text not null, lang text not null, results text not null, fetched integer not null, primary key (query, lang))")
+
 }
 
 // db_apps opens the apps.db database, creating tables if needed.
@@ -422,6 +427,16 @@ func db_user(u *User, name string) *DB {
 		// Internal key-value settings (Go-only, no Starlark API)
 		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
 
+		// Per-user app state (permission setup tracking)
+		db.apps_setup()
+	}
+
+	// Per-user notification-delivery dedup (email + web push)
+	if name == "notifications" {
+		db.exec("create table if not exists email_delivered (address text not null, event_id text not null, ts integer not null, primary key (address, event_id))")
+		db.exec("create index if not exists email_delivered_ts on email_delivered(ts)")
+		db.exec("create table if not exists webpush_delivered (endpoint text not null, event_id text not null, ts integer not null, primary key (endpoint, event_id))")
+		db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
 	}
 
 	return db
@@ -520,6 +535,17 @@ func db_app(u *User, app *App) *DB {
 			audit_app_schema_migrated(av.app.id, version, version-1)
 		}
 	}
+
+	// Create the core-managed infrastructure tables on this data DB eagerly at
+	// open — like db_app_system's access/attachments setup — not lazily on
+	// first use (#424). Idempotent; covers both fresh and pre-existing files,
+	// and runs once per process per (path, version).
+	broadcast_sequence_table_create(db)
+	broadcast_received_table_create(db)
+	broadcast_log_table_create(db)
+	broadcast_acknowledged_table_create(db)
+	broadcast_pending_table_create(db)
+	commits_table_create(db)
 
 	// Create the core-managed replication journal on this data DB eagerly at
 	// open — like db_app_system's access/attachments setup — not lazily on the

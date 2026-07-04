@@ -22,9 +22,6 @@ func TestAccountsMigrate(t *testing.T) {
 
 	db.accounts_migrate()
 
-	if !db.has_column("accounts", "revision") {
-		t.Fatal("migrate did not add the register bookkeeping columns")
-	}
 	if db.has_column("accounts", "id") {
 		// id stays — but it must now be text, not integer autoincrement.
 	}
@@ -43,44 +40,30 @@ func TestAccountsMigrate(t *testing.T) {
 	}
 }
 
-// account_set must version a replicated (email) account through the register, but
-// keep a per-device (browser) account a local write — and a delete tombstones the
-// replicated row while hard-deleting the device one.
-func TestAccountSetGating(t *testing.T) {
+// account_set must update both account kinds, and row_remove must delete.
+func TestAccountSet(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
 	db := db_user(&User{UID: "u-acct"}, "user")
-	db.exec("insert into accounts (id, type, label, created, revision) values ('e1', 'email', 'old', 100, 1)")
-	db.exec("insert into accounts (id, type, label, created, revision) values ('b1', 'browser', 'dev', 100, 1)")
+	db.exec("insert into accounts (id, type, label, created) values ('e1', 'email', 'old', 100)")
+	db.exec("insert into accounts (id, type, label, created) values ('b1', 'browser', 'dev', 100)")
 
 	db.account_set("e1", map[string]any{"label": "new"})
-	var e struct {
-		Label    string
-		Revision int64
-	}
-	db.scan(&e, "select label, revision from accounts where id='e1'")
+	var e struct{ Label string }
+	db.scan(&e, "select label from accounts where id='e1'")
 	if e.Label != "new" {
 		t.Errorf("email label not updated: %q", e.Label)
 	}
-	if e.Revision != 2 {
-		t.Errorf("replicated update should bump revision to 2, got %d", e.Revision)
-	}
 
 	db.account_set("b1", map[string]any{"label": "dev2"})
-	var b struct {
-		Label    string
-		Revision int64
-	}
-	db.scan(&b, "select label, revision from accounts where id='b1'")
+	var b struct{ Label string }
+	db.scan(&b, "select label from accounts where id='b1'")
 	if b.Label != "dev2" {
 		t.Errorf("device label not updated: %q", b.Label)
 	}
-	if b.Revision != 1 {
-		t.Errorf("device update must NOT bump revision (host-local), got %d", b.Revision)
-	}
 
-	db.register_remove(reg_accounts, map[string]any{"id": "e1"})
-	if n := db.integer("select count(*) from accounts where id='e1' and removed=0"); n != 0 {
-		t.Errorf("tombstoned email account still visible in the live view")
+	db.row_remove(reg_accounts, map[string]any{"id": "e1"})
+	if n := db.integer("select count(*) from accounts where id='e1'"); n != 0 {
+		t.Errorf("removed email account still present")
 	}
 }

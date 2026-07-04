@@ -33,7 +33,6 @@ var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict
 	"cancel": sl.NewBuiltin("mochi.schedule.cancel", api_schedule_cancel),
 	"every":  sl.NewBuiltin("mochi.schedule.every", api_schedule_every),
 	"get":    sl.NewBuiltin("mochi.schedule.get", api_schedule_get),
-	"leader": sl.NewBuiltin("mochi.schedule.leader", api_schedule_leader_shim),
 	"list":   sl.NewBuiltin("mochi.schedule.list", api_schedule_list),
 })
 
@@ -829,8 +828,3 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.NewList(result), nil
 }
 
-// api_schedule_leader_shim: replication is removed, so a single host always
-// leads. Kept until every app drops its mochi.schedule.leader calls.
-func api_schedule_leader_shim(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	return sl.Bool(true), nil
-}

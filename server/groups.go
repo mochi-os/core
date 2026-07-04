@@ -44,8 +44,8 @@ var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 // (parent, member). Both are versioned LWW-Registers so the account's groups and
 // memberships converge across the user's hosts. created is ordinary domain payload.
 var (
-	reg_groups  = register_def{"groups", []string{"id"}, []string{"name", "description", "created"}}
-	reg_members = register_def{"group_members", []string{"parent", "member"}, []string{"type", "created"}}
+	reg_groups  = upsert_def{"groups", []string{"id"}, []string{"name", "description", "created"}}
+	reg_members = upsert_def{"group_members", []string{"parent", "member"}, []string{"type", "created"}}
 )
 
 // Create group tables
@@ -53,17 +53,15 @@ func (db *DB) groups_setup() {
 	db.exec("create table if not exists groups ( id text not null primary key, name text not null, description text not null default '', created integer not null)")
 	db.exec("create table if not exists group_members ( parent text not null, member text not null, type text not null, created integer not null, primary key( parent, member ) )")
 	db.exec("create index if not exists group_members_member on group_members( member )")
-	db.register_columns(reg_groups)
-	db.register_columns(reg_members)
 }
 
 // group_members_tombstone soft-deletes every group_members row matching the
 // predicate, so a multi-row removal (deleting a group, or all of a member's
 // memberships) converges as a set of tombstones rather than a hard delete.
 func (db *DB) group_members_tombstone(where string, args ...any) {
-	rows, _ := db.rows("select parent, member from group_members where ("+where+") and deleted=0", args...)
+	rows, _ := db.rows("select parent, member from group_members where ("+where+")", args...)
 	for _, r := range rows {
-		db.register_remove(reg_members, map[string]any{"parent": r["parent"], "member": r["member"]})
+		db.row_remove(reg_members, map[string]any{"parent": r["parent"], "member": r["member"]})
 	}
 }
 
@@ -91,7 +89,7 @@ func (db *DB) group_memberships(user string) []string {
 		}
 		args[len(current)] = current_type
 
-		query := fmt.Sprintf("select parent, member, type, created from group_members where member in (%s) and type=? and deleted=0", placeholders)
+		query := fmt.Sprintf("select parent, member, type, created from group_members where member in (%s) and type=?", placeholders)
 		var gms []GroupMember
 		err := db.scans(&gms, query, args...)
 		if err != nil {
@@ -120,7 +118,7 @@ func (db *DB) group_memberships(user string) []string {
 // Get members of a group
 func (db *DB) group_members(group string, recursive bool) []map[string]any {
 	if !recursive {
-		rows, _ := db.rows("select member, type from group_members where parent=? and deleted=0", group)
+		rows, _ := db.rows("select member, type from group_members where parent=?", group)
 		return rows
 	}
 
@@ -135,7 +133,7 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 		}
 
 		var gms []GroupMember
-		err := db.scans(&gms, "select member, type from group_members where parent=? and deleted=0", group)
+		err := db.scans(&gms, "select member, type from group_members where parent=?", group)
 		if err != nil {
 			warn("Database error expanding group %q: %v", group, err)
 			return
@@ -181,7 +179,7 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 			seen[g] = true
 
 			var gms []GroupMember
-			err := db.scans(&gms, "select parent, member, type, created from group_members where member=? and type='group' and deleted=0", g)
+			err := db.scans(&gms, "select parent, member, type, created from group_members where member=? and type='group'", g)
 			if err != nil {
 				warn("Database error checking group containment: %v", err)
 				return false
@@ -231,7 +229,7 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
-	db.register_write(reg_groups, map[string]any{"id": id, "name": name, "description": description, "created": now()}, 0)
+	db.row_write(reg_groups, map[string]any{"id": id, "name": name, "description": description, "created": now()})
 
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
 }
@@ -253,7 +251,7 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_user(owner, "user")
-	row, err := db.row("select * from groups where id=? and deleted=0", id)
+	row, err := db.row("select * from groups where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -271,7 +269,7 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_user(owner, "user")
-	rows, err := db.rows("select * from groups where deleted=0 order by name")
+	rows, err := db.rows("select * from groups order by name")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -304,7 +302,7 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// Whole-row read-modify-write: a partial-column update on a versioned register
 	// reads the current row, applies the changed fields, and writes the whole row
 	// at the next version so it converges across the account's hosts.
-	row, _ := db.row("select name, description, created from groups where id=? and deleted=0", id)
+	row, _ := db.row("select name, description, created from groups where id=?", id)
 	if row == nil {
 		return sl.None, nil
 	}
@@ -318,7 +316,7 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 			row["description"] = val
 		}
 	}
-	db.register_write(reg_groups, map[string]any{"id": id, "name": row["name"], "description": row["description"], "created": row["created"]}, 0)
+	db.row_write(reg_groups, map[string]any{"id": id, "name": row["name"], "description": row["description"], "created": row["created"]})
 
 	return sl.None, nil
 }
@@ -346,7 +344,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	db := db_user(owner, "user")
 
-	db.register_remove(reg_groups, map[string]any{"id": id})
+	db.row_remove(reg_groups, map[string]any{"id": id})
 	db.group_members_tombstone("parent=?", id)
 	db.group_members_tombstone("member=? and type='group'", id)
 
@@ -393,7 +391,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 
-	db.register_write(reg_members, map[string]any{"parent": group, "member": member, "type": member_type, "created": now()}, 0)
+	db.row_write(reg_members, map[string]any{"parent": group, "member": member, "type": member_type, "created": now()})
 
 	return sl.None, nil
 }
@@ -425,7 +423,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
-	db.register_remove(reg_members, map[string]any{"parent": group, "member": member})
+	db.row_remove(reg_members, map[string]any{"parent": group, "member": member})
 
 	return sl.None, nil
 }

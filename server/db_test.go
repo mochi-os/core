@@ -1431,15 +1431,12 @@ func TestDbUserForThread(t *testing.T) {
 	}
 }
 
-// TestDbCreateIdempotentOverPreservedDB (#30) regression: `mochictl replica
-// reset` preserves directory.db (and other local-only DBs), then a restart runs
-// the fresh-install db_create. db_create used non-idempotent CREATE TABLE, so it
-// panicked ("table entries already exists") on the preserved directory.db and
-// aborted BEFORE creating replication.db's schema — leaving the replica
-// unbootable (workers panic-looped on "no such table: pair/leadership" and
-// replication was dead). Hit live on wasabi 2026-06-18. db_create must now be
-// idempotent: run cleanly over a preserved directory.db AND still create
-// replication.db's full schema, and be safely re-runnable.
+// TestDbCreateIdempotentOverPreservedDB (#30) regression: a restore can preserve
+// directory.db (and other local-only DBs), then a restart runs the fresh-install
+// db_create. db_create used non-idempotent CREATE TABLE, so it panicked ("table
+// entries already exists") on the preserved directory.db and aborted before
+// finishing the rest of the schema. Hit live on wasabi 2026-06-18. db_create must
+// run cleanly over a preserved directory.db and be safely re-runnable.
 func TestDbCreateIdempotentOverPreservedDB(t *testing.T) {
 	orig := data_dir
 	data_dir = t.TempDir()
@@ -1448,22 +1445,13 @@ func TestDbCreateIdempotentOverPreservedDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate the reset having preserved directory.db with its (full) entries
+	// Simulate the restore having preserved directory.db with its (full) entries
 	// table — schema matches db_create so its indexes resolve.
 	d := db_open("db/directory.db")
 	d.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
 
 	// Used to panic on the preserved entries table; must complete now.
 	db_create()
-
-	// replication.db must have its full schema — the tables that were never
-	// created in the live incident.
-	r := db_open("db/replication.db")
-	for _, tbl := range []string{"pair", "leadership", "seen", "cursor", "pending", "tail", "sequence", "bootstrap", "fence_witness"} {
-		if has, _ := r.exists("select 1 from sqlite_master where type='table' and name=?", tbl); !has {
-			t.Fatalf("replication.db missing table %q after db_create over a preserved directory.db", tbl)
-		}
-	}
 
 	// Fully re-runnable: a second db_create is a no-op, not a panic.
 	db_create()

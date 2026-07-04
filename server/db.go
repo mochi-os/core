@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,7 @@ const (
 )
 
 const (
-	schema_version = 92
+	schema_version = 93
 )
 
 var (
@@ -89,12 +90,7 @@ var (
 		"row":         sl.NewBuiltin("mochi.db.row", api_db_query),
 		"rows":        sl.NewBuiltin("mochi.db.rows", api_db_query),
 		"indexes":     sl.NewBuiltin("mochi.db.indexes", api_db_indexes),
-		"merge":       sl.NewBuiltin("mochi.db.merge", api_db_merge),
-		"remove":      sl.NewBuiltin("mochi.db.remove", api_db_remove),
 		"table":       sl.NewBuiltin("mochi.db.table", api_db_table),
-		// Deprecated alias for mochi.db.remove, kept so already-deployed register
-		// apps keep working during rollout; drop once all apps are redeployed.
-		"tombstone": sl.NewBuiltin("mochi.db.tombstone", api_db_remove),
 		"tables":      sl.NewBuiltin("mochi.db.tables", api_db_tables),
 		"transaction": sl.NewBuiltin("mochi.db.transaction", api_db_transaction),
 	})
@@ -195,7 +191,6 @@ func db_authorise_starlark_strict(action sqlite3.AuthorizerActionCode, name3rd, 
 	}
 	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
 }
-
 
 func db_create() {
 	db_migrating.Add(1)
@@ -378,106 +373,6 @@ func db_create() {
 	schedule.exec("create index if not exists schedule_due on schedule(due)")
 	schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
 
-	// Replication: per-origin-peer dedup, schema-coordination buffer,
-	// per-user opt-in set, outbound sequence counters, server-pair members,
-	// lease-based leadership with fencing, bulk-bootstrap progress, paired
-	// server compatibility tracking. See claude/plans/replication.md.
-	replication := db_open("db/replication.db")
-	replication.exec("create table if not exists seen (peer text not null, scope text not null, user text not null default '', sequence integer not null, applied integer not null, primary key (peer, scope, user, sequence))")
-	replication.exec("create index if not exists seen_applied on seen(applied)")
-	replication.exec("create table if not exists pending (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null, prev integer not null default 0, schema integer not null default 0, payload blob not null, received integer not null, primary key (peer, scope, user, sequence))")
-	replication.exec("create index if not exists pending_received on pending(received)")
-	replication.exec("create index if not exists pending_chain on pending(peer, scope, user, db, prev)")
-	// relayed: cross-hop dedup for the transit relay - one row per origin
-	// op this host has applied-and-relayed, so a copy arriving by another
-	// path (or bouncing back) is dropped instead of re-relayed forever.
-	replication.exec("create table if not exists relayed (user text not null, origin text not null, seen integer not null, primary key (user, origin))")
-	replication.exec("create index if not exists relayed_seen on relayed(seen)")
-	// hosts: a user's per-user replica set, one row per hosting peer. Each
-	// row is that peer's self-assertion that it hosts the user, carrying its
-	// libp2p-key attestation and a `seen` refresh timestamp. A peer can only
-	// add or remove its own membership; rows age out when un-refreshed.
-	replication.exec("create table if not exists hosts (user text not null, peer text not null, added integer not null, ack integer not null default 0, seen integer not null default 0, attestation text not null default '', primary key (user, peer))")
-	replication.exec("create table if not exists sequence (user text not null default '', scope text not null, next integer not null default 0, primary key (user, scope))")
-	// cursor: the contiguous in-order apply watermark per inbound
-	// (peer, scope, user, db) stream. Each op chains onto its db
-	// stream via op.Prev so a same-row op chain can't be reordered
-	// by a backlog drain. See claude/plans/replication-test.md
-	// Stage 19.
-	replication.exec("create table if not exists cursor (peer text not null, scope text not null, user text not null default '', db text not null default '', sequence integer not null default 0, primary key (peer, scope, user, db))")
-	// (#65) Replication generation (epoch) tables. epoch: this host's outbound
-	// generation — a 1-row counter bumped to now() when the host resets its
-	// outbound sequence space (a replica reset / rejoin, detected at the
-	// receiver's bootstrap completion). Stamped on every emitted op. peer_epoch:
-	// the highest generation seen from each peer; a higher epoch than recorded
-	// triggers a one-time inbound reset of that peer's stream state, so a restart
-	// is self-announced to ANY host, not just the one that served the bootstrap
-	// (#34 for N>=3). See claude/plans/replication-epoch.md.
-	replication.exec("create table if not exists epoch (singleton integer primary key check (singleton = 1), value integer not null default 0)")
-	// peer_epoch.pending=1 marks a peer we just bootstrapped FROM: its cursors are
-	// freshly seeded at its current generation, so the first op from it adopts
-	// that generation as our baseline WITHOUT an inbound reset (which would clear
-	// the good seed and stall a mid-stream peer). Cleared on adoption.
-	replication.exec("create table if not exists peer_epoch (peer text primary key, epoch integer not null default 0, pending integer not null default 0)")
-	// tail: sender-side last-emitted sequence per (user, scope, db),
-	// stamped onto each outbound op as Prev — the per-db ordering chain.
-	replication.exec("create table if not exists tail (user text not null default '', scope text not null, db text not null default '', last integer not null default 0, primary key (user, scope, db))")
-	// journal_sequence binds each journal op id to its allocated (sequence,
-	// prev) so a post-crash re-drain reuses the binding instead of consuming
-	// a fresh sequence (#28). journal_delivery is the per-(user, peer, stream)
-	// delivery cursor — the highest sequence a peer has acked — so reconnect
-	// backfill ships only the delta above it.
-	replication.exec("create table if not exists journal_sequence (id text primary key, user text not null, scope text not null, stream text not null, sequence integer not null, prev integer not null)")
-	replication.exec("create table if not exists journal_delivery (user text not null default '', peer text not null, stream text not null, sequence integer not null default 0, primary key (user, peer, stream))")
-	replication.exec("create table if not exists pair (peer text primary key, added integer not null, role text not null default '')")
-	replication.exec("create table if not exists leadership (scope text not null, key text not null, peer text not null, expires integer not null, fence integer not null default 0, primary key (scope, key))")
-	replication.exec("create index if not exists leadership_expires on leadership(expires)")
-	replication.exec("create table if not exists fence_witness (scope text not null, key text not null, fence integer not null default 0, peer text not null default '', seen integer not null default 0, primary key (scope, key))")
-	replication.exec("create table if not exists bootstrap (scope text not null, peer text not null, position text not null default '', state text not null default 'queued', failed integer not null default 0, progress integer not null default 0, progressed integer not null default 0, attempts integer not null default 0, primary key (scope, peer))")
-	// bootstrap_served: source-side tracking of scopes we're currently
-	// serving to each joined peer. Inserted on join approval (one row
-	// per scope), deleted when the receiver acks `bootstrap/scope/done`.
-	// Symmetry with the receiver's `bootstrap` table — the receiver
-	// sees "syncing" while it pulls; the source sees "syncing" while
-	// these rows exist.
-	replication.exec("create table if not exists bootstrap_served (peer text not null, scope text not null, started integer not null, primary key (peer, scope))")
-	replication.exec("create table if not exists schemas (peer text primary key, core integer not null default 0, apps text not null default '')")
-	// Per-user link-requests awaiting Approve / Deny in Settings → Replication.
-	// One row per (target user on this host, source peer); newest wins via
-	// INSERT OR REPLACE. Expiry is 1h from receipt; periodic sweep emits
-	// link-denied(reason="expired") to the source side. See "Per-user trigger"
-	// in claude/plans/replication.md.
-	replication.exec("create table if not exists links (user text not null, peer text not null, label text not null default '', placeholder text not null, received integer not null, expires integer not null, primary key (user, peer))")
-	replication.exec("create index if not exists links_expires on links(expires)")
-	// placeholders: the OUTBOUND half of the link flow. One row per pending-
-	// replication placeholder this host (B) created, recording the source peer
-	// (A) we sent the link-request to. A link-approved / link-denied for the
-	// placeholder is honoured only from that exact peer — the bind that stops a
-	// third peer approving a pending signup with its own keys (pending-account
-	// hijack, #153) or denying it (signup DoS, #154). Keyed on placeholder; 1h
-	// expiry mirroring the A-side links row; cleared when the outcome applies.
-	replication.exec("create table if not exists placeholders (placeholder text not null primary key, peer text not null, created integer not null, expires integer not null)")
-	replication.exec("create index if not exists placeholders_expires on placeholders(expires)")
-	// Whole-server pair join-requests awaiting Approve / Deny on the Pair
-	// page. One row per source peer; newest wins via INSERT OR REPLACE.
-	// Expiry is 10 minutes from receipt; periodic sweep emits
-	// join-denied(reason="expired") to the replica. See "Operator UI" in
-	// claude/plans/replication.md.
-	replication.exec("create table if not exists joins (peer text not null primary key, label text not null default '', received integer not null, expires integer not null)")
-	replication.exec("create index if not exists joins_expires on joins(expires)")
-	// irreparable: a stream broken (stalled on an unfillable gap, or a
-	// member offline) past T_forget, when no lossless recovery remains.
-	// One row per (peer, scope, user, db); `notified` flips to 1 once the
-	// dual-side notification has fired so the manager neither re-notifies
-	// nor keeps warning. Cleared when the stream recovers or the operator
-	// removes the relationship. See replication_irreparable.go.
-	replication.exec("create table if not exists irreparable (peer text not null, scope text not null, user text not null default '', db text not null default '', reason text not null, since integer not null, notified integer not null default 0, primary key (peer, scope, user, db))")
-	// unreachable: persisted "this peer's Sender has been failing to deliver
-	// since `since`" — set when a peer crosses the stall threshold, cleared on
-	// the next ack. notified guards the 24h offline notification. Survives
-	// restarts so a member offline past T_forget is recognised even across
-	// server bounces. See peer_progress.go + replication_irreparable.go.
-	replication.exec("create table if not exists unreachable (peer text not null primary key, since integer not null, notified integer not null default 0)")
 }
 
 // db_apps opens the apps.db database, creating tables if needed.
@@ -504,7 +399,6 @@ func db_user(u *User, name string) *DB {
 	// Create tables for user.db
 	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
-		db.register_columns(reg_preferences)
 		db.groups_setup()
 		db.permissions_setup()
 
@@ -513,23 +407,17 @@ func db_user(u *User, name string) *DB {
 		db.exec("create table if not exists services (service text not null primary key, app text not null)")
 		db.exec("create table if not exists paths (path text not null primary key, app text not null)")
 		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
-		db.register_columns(reg_classes)
-		db.register_columns(reg_services)
-		db.register_columns(reg_paths)
-		db.register_columns(reg_versions)
 
 		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, deleted integer not null default 0, writer text not null default '', revision integer not null default 1)")
+		db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0)")
 		db.exec("create index if not exists accounts_type on accounts(type)")
 		if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='last_delivered'"); !exists {
 			db.exec("alter table accounts add column last_delivered integer not null default 0")
 		}
 		db.accounts_migrate()
-		db.register_columns(reg_accounts)
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
-		db.register_columns(reg_interests)
 
 		// Internal key-value settings (Go-only, no Starlark API)
 		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
@@ -723,7 +611,7 @@ func db_app_system_sweep() {
 			if !db.system_setup {
 				db.access_setup()
 				db.attachments_setup()
-							db.system_setup = true
+				db.system_setup = true
 				count++
 			}
 			l.Unlock()
@@ -1347,6 +1235,8 @@ func db_upgrade() {
 			db_upgrade_91()
 		case 92:
 			db_upgrade_92()
+		case 93:
+			db_upgrade_93()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1904,6 +1794,73 @@ func db_upgrade_92() {
 	r := db_open("db/replication.db")
 	r.exec("create table if not exists placeholders (placeholder text not null primary key, peer text not null, created integer not null, expires integer not null)")
 	r.exec("create index if not exists placeholders_expires on placeholders(expires)")
+}
+
+// db_upgrade_93 removes the replication layer's persistent state: replication.db
+// itself, the per-DB op journals, the queue journal-tracking table, and the CRDT
+// bookkeeping columns (writer / version-or-revision / deleted-or-removed) that the
+// register conversion added to core-managed tables. Data columns are untouched.
+// The walk covers every SQLite file under users/ (per-user user.db, app data DBs,
+// per-user app.db) exactly once at upgrade time; fresh DBs are created plain.
+func db_upgrade_93() {
+	// 1. The replication engine's own database.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		os.Remove(filepath.Join(data_dir, "db", "replication.db"+suffix))
+	}
+
+	// 2. queue.db: journal-inflight tracking.
+	db_open("db/queue.db").exec("drop table if exists journal_inflight")
+
+	// 3. Every user-tree SQLite DB: drop op journals; on user.db, drop the
+	// register bookkeeping columns.
+	registers := map[string][]string{
+		"preferences":   {"deleted", "writer", "revision"},
+		"classes":       {"deleted", "writer", "revision"},
+		"services":      {"deleted", "writer", "revision"},
+		"paths":         {"deleted", "writer", "revision"},
+		"versions":      {"deleted", "writer", "revision"},
+		"accounts":      {"deleted", "writer", "revision"},
+		"interests":     {"deleted", "writer", "revision"},
+		"groups":        {"deleted", "writer", "revision"},
+		"group_members": {"deleted", "writer", "revision"},
+		"permissions":   {"writer", "version"},
+	}
+	root := filepath.Join(data_dir, "users")
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".db") {
+			return nil
+		}
+		relative, e := filepath.Rel(data_dir, path)
+		if e != nil {
+			return nil
+		}
+		db := db_open(relative)
+		db.exec("drop table if exists journal")
+		db.exec("drop table if exists journal_delivery")
+		if filepath.Base(path) == "user.db" {
+			for table, columns := range registers {
+				for _, column := range columns {
+					if db.has_column(table, column) {
+						db.exec("alter table " + table + " drop column " + column)
+					}
+				}
+			}
+		}
+		// attachments + access live in the per-user app.db.
+		if filepath.Base(path) == "app.db" {
+			for _, column := range []string{"deleted", "writer", "revision"} {
+				if db.has_column("attachments", column) {
+					db.exec("alter table attachments drop column " + column)
+				}
+			}
+			for _, column := range []string{"removed", "writer", "version"} {
+				if db.has_column("access", column) {
+					db.exec("alter table access drop column " + column)
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // db_upgrade_89 adds the replication generation (epoch) tables (#65): the host's
@@ -2715,7 +2672,6 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	return ExecWrote
 }
 
-
 // exec_replicated is a plain local write. The name is historical (it used to
 // fan the statement out to the user's host set); it collapses into exec at the
 // register cleanup stage.
@@ -3478,6 +3434,7 @@ func valid_sql_identifier(name string) bool {
 	}
 	return true
 }
+
 // row_string / row_int unpack scalar SQL row values defensively. The
 // nil checks let api_replication_* return an empty list cleanly when
 // a row was scanned with an unexpected column type instead of
@@ -3516,6 +3473,7 @@ func row_int(r map[string]any, key string) int64 {
 	}
 	return 0
 }
+
 // sql_strip_lead skips over leading whitespace and line / block comments.
 func sql_strip_lead(s string) string {
 	for {

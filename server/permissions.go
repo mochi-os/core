@@ -344,58 +344,22 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 // of replication arrival order. A revoke is `granted=0` (not a row delete), and on
 // a version tie a deny beats a grant (fail-closed).
 func (db *DB) permissions_setup() {
-	db.exec("create table if not exists permissions ( app text not null, permission text not null, object text not null default '', granted integer not null default 0, writer text not null default '', version integer not null default 1, created integer not null default 0, primary key ( app, permission, object ) )")
-	db.permissions_migrate()
+	db.exec("create table if not exists permissions ( app text not null, permission text not null, object text not null default '', granted integer not null default 0, created integer not null default 0, primary key ( app, permission, object ) )")
 }
 
-// permissions_migrate rebuilds a legacy permissions table (no `version` column,
-// host-local direct writes) into the versioned register. Each host runs it locally
-// over its own rows, seeding version=1 / writer='' deterministically. No-op once
-// migrated.
-func (db *DB) permissions_migrate() {
-	if db.has_column("permissions", "version") {
-		return
-	}
-	db.exec("create table permissions_new ( app text not null, permission text not null, object text not null default '', granted integer not null default 0, writer text not null default '', version integer not null default 1, created integer not null default 0, primary key ( app, permission, object ) )")
-	db.exec("insert into permissions_new ( app, permission, object, granted ) select app, permission, object, granted from permissions")
-	db.exec("drop table permissions")
-	db.exec("alter table permissions_new rename to permissions")
-}
-
-// permissions_upsert applies one versioned-register write (grant granted=1 / revoke
-// granted=0) for an explicit user decision and replicates it. The version is
-// computed here (seen + 1) and carried as a literal — never recomputed on apply,
-// which would diverge per host. Conflict resolution mirrors access_upsert: higher
-// version wins; on a tie a deny (granted=0) beats a grant; any remaining tie is
-// settled by the higher writer.
+// permissions_upsert applies one explicit user decision (grant granted=1 /
+// revoke granted=0).
 func (db *DB) permissions_upsert(app string, permission string, object string, granted int) {
-	var seen struct{ Version int64 }
-	db.scan(&seen, "select coalesce( max( version ), 0 ) as version from permissions where app=? and permission=? and object=?", app, permission, object)
-	db.exec_replicated(permissions_upsert_sql, app, permission, object, granted, net_id, seen.Version+1, now())
+	db.exec("insert into permissions ( app, permission, object, granted, created ) values ( ?, ?, ?, ?, ? ) on conflict ( app, permission, object ) do update set granted=excluded.granted, created=excluded.created", app, permission, object, granted, now())
 }
 
-// permissions_default replicates an app's default-permission grant at the baseline
-// version 1, so it lands on every host of the account (a passive replica that never
-// runs the app's local setup still gets it) yet can never override an explicit user
-// grant or revoke, which carry version >= 2. Re-running setup after the user
-// revoked a default re-emits this v1 grant, which loses to the user's v2 revoke —
-// the user's decision sticks.
+// permissions_default seeds an app's default-permission grant. Insert-or-ignore:
+// it never overrides an explicit user grant or revoke, so re-running setup after
+// the user revoked a default leaves the revoke in place — the user's decision
+// sticks.
 func (db *DB) permissions_default(app string, permission string, object string) {
-	db.exec_replicated(permissions_upsert_sql, app, permission, object, 1, net_id, 1, now())
+	db.exec("insert or ignore into permissions ( app, permission, object, granted, created ) values ( ?, ?, ?, 1, ? )", app, permission, object, now())
 }
-
-const permissions_upsert_sql = `insert into permissions ( app, permission, object, granted, writer, version, created )
-values ( ?, ?, ?, ?, ?, ?, ? )
-on conflict ( app, permission, object ) do update set
-	granted=excluded.granted, writer=excluded.writer, version=excluded.version, created=excluded.created
-where excluded.version > permissions.version
-	or ( excluded.version = permissions.version
-		and ( case when excluded.granted=1 then 0 else 1 end )
-		> ( case when permissions.granted=1 then 0 else 1 end ) )
-	or ( excluded.version = permissions.version
-		and ( case when excluded.granted=1 then 0 else 1 end )
-		= ( case when permissions.granted=1 then 0 else 1 end )
-		and excluded.writer > permissions.writer )`
 
 // apps_setup creates the apps table in user.db for tracking per-user app state
 func (db *DB) apps_setup() {

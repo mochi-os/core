@@ -38,11 +38,6 @@ type Attachment struct {
 	Description string `db:"description"`
 	Rank        int    `db:"rank"`
 	Created     int64  `db:"created"`
-	// Versioned-register bookkeeping (see reg_attachments) — scanned by the
-	// `select *` reads, never exposed in the API (to_map maps fields explicitly).
-	Deleted  int    `db:"deleted"`
-	Writer   string `db:"writer"`
-	Revision int64  `db:"revision"`
 }
 
 var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.StringDict{
@@ -96,13 +91,12 @@ func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple
 // user's hosts. `entity` is the host-local owned-vs-foreign pointer (audit-excluded)
 // and `rank` is maintained by reorder counter-arithmetic, so both are kept OUT of
 // the replicated payload — the register touches neither.
-var reg_attachments = register_def{"attachments", []string{"id"}, []string{"object", "name", "size", "content_type", "creator", "caption", "description", "created"}}
+var reg_attachments = upsert_def{"attachments", []string{"id"}, []string{"object", "name", "size", "content_type", "creator", "caption", "description", "created"}}
 
 // Create attachments table in the system database (app.db)
 func (db *DB) attachments_setup() {
 	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
 	db.exec("create index if not exists attachments_object on attachments( object )")
-	db.register_columns(reg_attachments)
 
 	// Add rank column if missing (for databases created before rank was added)
 	has_rank, _ := db.exists("select 1 from pragma_table_info('attachments') where name='rank'")
@@ -137,7 +131,7 @@ func attachment_filename(id string, name string) string {
 // Get the next rank for an object
 func (db *DB) attachment_next_rank(object string) int {
 	var max_rank int
-	row, _ := db.row("select max(rank) as max_rank from attachments where object=? and deleted=0", object)
+	row, _ := db.row("select max(rank) as max_rank from attachments where object=?", object)
 	if row != nil && row["max_rank"] != nil {
 		switch v := row["max_rank"].(type) {
 		case int64:
@@ -184,14 +178,14 @@ func attachment_record_write(db *DB, att *Attachment) {
 // tombstoned.
 func (db *DB) attachment_meta_set(id, caption, description string) {
 	var att Attachment
-	if !db.scan(&att, "select id, object, name, size, content_type, creator, caption, description, created from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select id, object, name, size, content_type, creator, caption, description, created from attachments where id = ?", id) {
 		return
 	}
-	db.register_write(reg_attachments, map[string]any{
+	db.row_write(reg_attachments, map[string]any{
 		"id": id, "object": att.Object, "name": att.Name, "size": att.Size,
 		"content_type": att.ContentType, "creator": att.Creator,
 		"caption": caption, "description": description, "created": att.Created,
-	}, 0)
+	})
 }
 
 // Create attachment record for file already at final path.
@@ -915,7 +909,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Get updated record
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -968,7 +962,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get current attachment
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl_error(fn, "attachment not found")
 	}
 
@@ -987,7 +981,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Get updated record
-	db.scan(&att, "select * from attachments where id = ? and deleted=0", id)
+	db.scan(&att, "select * from attachments where id = ?", id)
 	result := att.to_map(app.url_path(owner))
 
 	// Handle federation notify. Build the absolute-rank list of every
@@ -998,7 +992,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	// REPLACE per id; last-arrival wins per id.
 	if len(notify) > 0 {
 		var ranks []map[string]any
-		if rows, err := db.rows("select id, rank from attachments where object = ? and deleted=0", att.Object); err == nil {
+		if rows, err := db.rows("select id, rank from attachments where object = ?", att.Object); err == nil {
 			for _, r := range rows {
 				row_id, _ := r["id"].(string)
 				row_rank, _ := r["rank"].(int64)
@@ -1048,7 +1042,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Get attachment to delete
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		debug("attachment_delete: attachment %s not found in user %q database", id, owner.UID)
 		return sl.False, nil
 	}
@@ -1068,7 +1062,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Tombstone the record (versioned, so the deletion converges and a concurrent
 	// edit can't resurrect it) and shift ranks.
-	db.register_remove(reg_attachments, map[string]any{"id": id})
+	db.row_remove(reg_attachments, map[string]any{"id": id})
 	db.attachment_shift_down(att.Object, att.Rank)
 
 	// Owner-owned bytes were pushed to the user's other hosts on save, so
@@ -1119,7 +1113,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Get all attachments for object
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from attachments where object = ? and deleted=0", object)
+	err := db.scans(&attachments, "select * from attachments where object = ?", object)
 	if err != nil {
 		warn("Database error loading attachments for deletion: %v", err)
 	}
@@ -1143,7 +1137,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// owner-owned byte files on the user's other hosts (foreign cached references
 	// have no pushed bytes to remove).
 	for _, att := range attachments {
-		db.register_remove(reg_attachments, map[string]any{"id": att.ID})
+		db.row_remove(reg_attachments, map[string]any{"id": att.ID})
 		if att.Entity == "" {
 		}
 	}
@@ -1193,7 +1187,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	db.attachments_setup()
 
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from attachments where object = ? and deleted=0 order by rank", object)
+	err := db.scans(&attachments, "select * from attachments where object = ? order by rank", object)
 	if err != nil {
 		return sl.None, fmt.Errorf("database error: %v", err)
 	}
@@ -1234,7 +1228,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1268,7 +1262,7 @@ func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	db.attachments_setup()
 
-	exists, _ := db.exists("select 1 from attachments where id = ? and deleted=0", id)
+	exists, _ := db.exists("select 1 from attachments where id = ?", id)
 	return sl.Bool(exists), nil
 }
 
@@ -1300,7 +1294,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1372,7 +1366,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1422,7 +1416,7 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	db.attachments_setup()
 
 	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !db.scan(&att, "select * from attachments where id = ?", id) {
 		return sl.None, nil
 	}
 
@@ -1934,7 +1928,7 @@ func (e *Event) attachment_event_delete() {
 
 	// Get attachment before deleting (may have empty entity if stored locally)
 	var att Attachment
-	if e.db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if e.db.scan(&att, "select * from attachments where id = ?", id) {
 		e.db.exec_replicated("delete from attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
@@ -1977,7 +1971,7 @@ func (e *Event) attachment_event_clear() {
 
 	// Get all attachments to delete cached files
 	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = ? and deleted=0", object, source)
+	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = ?", object, source)
 	if err != nil {
 		warn("Database error loading attachments for cache deletion: %v", err)
 	}
@@ -2015,7 +2009,7 @@ func (e *Event) attachment_event_data() {
 
 	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
-	if !e.db.scan(&att, "select * from attachments where id = ? and deleted=0", id) {
+	if !e.db.scan(&att, "select * from attachments where id = ?", id) {
 		debug("attachment_event_data: attachment not found in db, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
 		return
@@ -2238,7 +2232,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Get existing attachments for object
 	var attachments []Attachment
-	err := db.scans(&attachments, "select * from attachments where object = ? and deleted=0 order by rank", object)
+	err := db.scans(&attachments, "select * from attachments where object = ? order by rank", object)
 	if err != nil {
 		return sl.None, fmt.Errorf("database error: %v", err)
 	}
@@ -2353,7 +2347,7 @@ func (e *Event) attachment_event_fetch() {
 
 	// Get attachments for this object that we own (entity is empty)
 	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = '' and deleted=0 order by rank", object)
+	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = '' order by rank", object)
 	if err != nil {
 		warn("Database error loading attachments: %v", err)
 		e.stream.write([]map[string]any{})

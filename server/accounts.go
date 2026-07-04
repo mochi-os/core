@@ -231,8 +231,8 @@ func account_redact(row map[string]any) map[string]any {
 // (mochi.uid() for new accounts; the legacy integer rendered as a string for
 // migrated ones); last_delivered is host-local (per-device delivery cursor) so it
 // is NOT in the replicated payload. (The register payload is used when versioning
-// the edit paths; register_columns only needs the def's table name.)
-var reg_accounts = register_def{"accounts", []string{"id"}, []string{"type", "label", "identifier", "data", "created", "verified", "enabled", "default"}}
+// the edit paths.)
+var reg_accounts = upsert_def{"accounts", []string{"id"}, []string{"type", "label", "identifier", "data", "created", "verified", "enabled", "default"}}
 
 // accounts_migrate rebuilds a legacy accounts table (integer autoincrement id) into
 // the text-id form. Existing rows keep their identity as id=str(old id) — a
@@ -242,10 +242,10 @@ var reg_accounts = register_def{"accounts", []string{"id"}, []string{"type", "la
 // multi-master collision hazard (two hosts assigning the same integer); a uid key
 // removes it. No-op once migrated.
 func (db *DB) accounts_migrate() {
-	if db.has_column("accounts", "revision") {
+	if kind, _ := db.exists("select 1 from pragma_table_info('accounts') where name='id' and type='text' collate nocase"); kind {
 		return
 	}
-	db.exec("create table accounts_new (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, deleted integer not null default 0, writer text not null default '', revision integer not null default 1)")
+	db.exec("create table accounts_new (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0)")
 	rows, _ := db.rows("select id, type, label, identifier, data, created, verified, enabled, \"default\", last_delivered from accounts")
 	for _, r := range rows {
 		db.exec("insert into accounts_new (id, type, label, identifier, data, created, verified, enabled, \"default\", last_delivered) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -283,7 +283,7 @@ func account_device(ptype string) bool {
 // converge; a per-device account is updated locally. No-op if the account is absent
 // or tombstoned.
 func (db *DB) account_set(id string, updates map[string]any) {
-	row, _ := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\" from accounts where id=? and deleted=0", id)
+	row, _ := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\" from accounts where id=?", id)
 	if row == nil {
 		return
 	}
@@ -295,11 +295,11 @@ func (db *DB) account_set(id string, updates map[string]any) {
 			row["label"], row["identifier"], row["data"], row["verified"], row["enabled"], row["default"], id)
 		return
 	}
-	db.register_write(reg_accounts, map[string]any{
+	db.row_write(reg_accounts, map[string]any{
 		"id": id, "type": row["type"], "label": row["label"], "identifier": row["identifier"],
 		"data": row["data"], "created": row["created"], "verified": row["verified"],
 		"enabled": row["enabled"], "default": row["default"],
-	}, 0)
+	})
 }
 
 // mochi.account.providers(capability?) -> list: Get available providers
@@ -374,7 +374,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		capability = cap
 	}
 
-	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts where deleted=0 order by created desc")
+	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts order by created desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -415,7 +415,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
-	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts where id=? and deleted=0", id)
+	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -502,7 +502,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 
 		// Check for existing subscription with same endpoint
-		existing, _ := db.row("select id from accounts where type='browser' and identifier=? and deleted=0", endpoint)
+		existing, _ := db.row("select id from accounts where type='browser' and identifier=?", endpoint)
 		if existing != nil {
 			// Update existing instead of creating duplicate
 			auth, _ := fields["auth"].(string)
@@ -513,7 +513,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			data_json, _ := json.Marshal(data)
 
 			db.exec("update accounts set data=?, created=? where id=?", string(data_json), now, existing["id"])
-			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=? and deleted=0", existing["id"])
+			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
 			return sl_encode(account_redact(row)), nil
 		}
 
@@ -587,14 +587,14 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		// case: update the existing row in place when a row with the
 		// same endpoint already exists.
 		if endpoint != "" {
-			existing, _ := db.row("select id from accounts where type='unifiedpush' and identifier=? and deleted=0", endpoint)
+			existing, _ := db.row("select id from accounts where type='unifiedpush' and identifier=?", endpoint)
 			if existing != nil {
 				data["endpoint"] = endpoint
 				data["auth"] = auth
 				data["p256dh"] = p256dh
 				data_json, _ := json.Marshal(data)
 				db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
-				row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=? and deleted=0", existing["id"])
+				row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
 				return sl_encode(account_redact(row)), nil
 			}
 		}
@@ -620,12 +620,12 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if install_id == "" {
 			return sl_error(fn, "required field %q is missing", "install_id")
 		}
-		existing, _ := db.row("select id from accounts where type='fcm' and identifier=? and deleted=0", install_id)
+		existing, _ := db.row("select id from accounts where type='fcm' and identifier=?", install_id)
 		if existing != nil {
 			data["token"] = token
 			data_json, _ := json.Marshal(data)
 			db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
-			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=? and deleted=0", existing["id"])
+			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
 			return sl_encode(account_redact(row)), nil
 		}
 		identifier = install_id
@@ -700,7 +700,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db := db_user(user, "user")
 
 	// Check account exists
-	exists, _ := db.exists("select 1 from accounts where id=? and deleted=0", id)
+	exists, _ := db.exists("select 1 from accounts where id=?", id)
 	if !exists {
 		return sl.False, nil
 	}
@@ -730,7 +730,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			val, _ := sl.AsString(kv[1])
 			if val != "" {
 				// Clear the flag on any other account currently holding this default.
-				rows, _ := db.rows("select id from accounts where \"default\"=? and deleted=0", val)
+				rows, _ := db.rows("select id from accounts where \"default\"=?", val)
 				for _, r := range rows {
 					if other, ok := r["id"].(string); ok {
 						db.account_set(other, map[string]any{"default": ""})
@@ -741,7 +741,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 		case "model":
 			model, _ := sl.AsString(kv[1])
-			row, err := db.row("select type, data from accounts where id=? and deleted=0", id)
+			row, err := db.row("select type, data from accounts where id=?", id)
 			if err == nil && row != nil {
 				raw, _ := row["data"].(string)
 				var d map[string]any
@@ -775,7 +775,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			// to write back the canonical path-only endpoint that
 			// embeds the just-allocated account id.
 			endpoint, _ := sl.AsString(kv[1])
-			row, err := db.row("select data from accounts where id=? and deleted=0", id)
+			row, err := db.row("select data from accounts where id=?", id)
 			if err == nil && row != nil {
 				raw, _ := row["data"].(string)
 				var d map[string]any
@@ -822,7 +822,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db := db_user(user, "user")
 
 	// Check account exists (and learn its type, to delete the right way).
-	row, _ := db.row("select type from accounts where id=? and deleted=0", id)
+	row, _ := db.row("select type from accounts where id=?", id)
 	if row == nil {
 		return sl.False, nil
 	}
@@ -831,7 +831,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		db.exec("delete from accounts where id=?", id)
 	} else {
 		// Replicated account: versioned tombstone so the removal converges.
-		db.register_remove(reg_accounts, map[string]any{"id": id})
+		db.row_remove(reg_accounts, map[string]any{"id": id})
 	}
 	return sl.True, nil
 }
@@ -868,7 +868,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db := db_user(user, "user")
 
 	// Get account with data
-	row, err := db.row("select id, type, identifier, data, verified from accounts where id=? and deleted=0", id)
+	row, err := db.row("select id, type, identifier, data, verified from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -1048,7 +1048,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	db := db_user(user, "user")
 
 	// Get account with data
-	row, err := db.row("select id, type, identifier, label, data from accounts where id=? and deleted=0", id)
+	row, err := db.row("select id, type, identifier, label, data from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -1588,9 +1588,9 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	var rows []map[string]any
 	var err error
 	if account != "" {
-		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0 and deleted=0 and id = ?", account)
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0 and id = ?", account)
 	} else {
-		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0 and deleted=0")
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0")
 	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)

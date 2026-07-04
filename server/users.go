@@ -488,16 +488,16 @@ func (u *User) administrator() bool {
 // to. Versioned LWW-Registers so a routing change on one host converges on every
 // host of the account.
 var (
-	reg_classes  = register_def{"classes", []string{"class"}, []string{"app"}}
-	reg_services = register_def{"services", []string{"service"}, []string{"app"}}
-	reg_paths    = register_def{"paths", []string{"path"}, []string{"app"}}
-	reg_versions = register_def{"versions", []string{"app"}, []string{"version", "track"}}
+	reg_classes  = upsert_def{"classes", []string{"class"}, []string{"app"}}
+	reg_services = upsert_def{"services", []string{"service"}, []string{"app"}}
+	reg_paths    = upsert_def{"paths", []string{"path"}, []string{"app"}}
+	reg_versions = upsert_def{"versions", []string{"app"}, []string{"version", "track"}}
 )
 
 // class_app returns the user's preferred app for a class, or empty string if not set
 func (u *User) class_app(class string) string {
 	db := db_user(u, "user")
-	row, _ := db.row("select app from classes where class = ? and deleted=0", class)
+	row, _ := db.row("select app from classes where class = ?", class)
 	if row == nil {
 		return ""
 	}
@@ -511,9 +511,9 @@ func (u *User) class_app(class string) string {
 func (u *User) set_class_app(class, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.register_remove(reg_classes, map[string]any{"class": class})
+		db.row_remove(reg_classes, map[string]any{"class": class})
 	} else {
-		db.register_write(reg_classes, map[string]any{"class": class, "app": app}, 0)
+		db.row_write(reg_classes, map[string]any{"class": class, "app": app})
 	}
 	audit_user_routing_changed(u.Username, "class", class, app)
 	resolution_invalidate() // user class binding changed
@@ -522,7 +522,7 @@ func (u *User) set_class_app(class, app string) {
 // service_app returns the user's preferred app for a service, or empty string if not set
 func (u *User) service_app(service string) string {
 	db := db_user(u, "user")
-	row, _ := db.row("select app from services where service = ? and deleted=0", service)
+	row, _ := db.row("select app from services where service = ?", service)
 	if row == nil {
 		return ""
 	}
@@ -534,9 +534,9 @@ func (u *User) service_app(service string) string {
 func (u *User) set_service_app(service, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.register_remove(reg_services, map[string]any{"service": service})
+		db.row_remove(reg_services, map[string]any{"service": service})
 	} else {
-		db.register_write(reg_services, map[string]any{"service": service, "app": app}, 0)
+		db.row_write(reg_services, map[string]any{"service": service, "app": app})
 	}
 	audit_user_routing_changed(u.Username, "service", service, app)
 	resolution_invalidate() // user service binding changed
@@ -545,7 +545,7 @@ func (u *User) set_service_app(service, app string) {
 // path_app returns the user's preferred app for a path, or empty string if not set
 func (u *User) path_app(path string) string {
 	db := db_user(u, "user")
-	row, _ := db.row("select app from paths where path = ? and deleted=0", path)
+	row, _ := db.row("select app from paths where path = ?", path)
 	if row == nil {
 		return ""
 	}
@@ -557,9 +557,9 @@ func (u *User) path_app(path string) string {
 func (u *User) set_path_app(path, app string) {
 	db := db_user(u, "user")
 	if app == "" {
-		db.register_remove(reg_paths, map[string]any{"path": path})
+		db.row_remove(reg_paths, map[string]any{"path": path})
 	} else {
-		db.register_write(reg_paths, map[string]any{"path": path, "app": app}, 0)
+		db.row_write(reg_paths, map[string]any{"path": path, "app": app})
 	}
 	audit_user_routing_changed(u.Username, "path", path, app)
 	resolution_invalidate() // user path binding changed
@@ -568,7 +568,7 @@ func (u *User) set_path_app(path, app string) {
 // app_version returns the user's preferred version and track for an app
 func (u *User) app_version(app string) (version, track string) {
 	db := db_user(u, "user")
-	row, _ := db.row("select version, track from versions where app = ? and deleted=0", app)
+	row, _ := db.row("select version, track from versions where app = ?", app)
 	if row == nil {
 		return "", ""
 	}
@@ -581,9 +581,9 @@ func (u *User) app_version(app string) (version, track string) {
 func (u *User) set_app_version(app, version, track string) {
 	db := db_user(u, "user")
 	if version == "" && track == "" {
-		db.register_remove(reg_versions, map[string]any{"app": app})
+		db.row_remove(reg_versions, map[string]any{"app": app})
 	} else {
-		db.register_write(reg_versions, map[string]any{"app": app, "version": version, "track": track}, 0)
+		db.row_write(reg_versions, map[string]any{"app": app, "version": version, "track": track})
 	}
 	audit_user_version_changed(u.Username, app, version, track)
 	resolution_invalidate() // user version preference changed
@@ -1816,7 +1816,7 @@ func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 // a.user.app.class.list() -> dict: List all user class bindings
 func (p *UserAppClass) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	db := db_user(p.user, "user")
-	rows, _ := db.rows("select class, app from classes where deleted=0")
+	rows, _ := db.rows("select class, app from classes")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {
 		result.SetKey(sl.String(row["class"].(string)), sl.String(row["app"].(string)))
@@ -1890,7 +1890,7 @@ func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 // a.user.app.service.list() -> dict: List all user service bindings
 func (p *UserAppService) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	db := db_user(p.user, "user")
-	rows, _ := db.rows("select service, app from services where deleted=0")
+	rows, _ := db.rows("select service, app from services")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {
 		result.SetKey(sl.String(row["service"].(string)), sl.String(row["app"].(string)))
@@ -1964,7 +1964,7 @@ func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // a.user.app.path.list() -> dict: List all user path bindings
 func (p *UserAppPath) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	db := db_user(p.user, "user")
-	rows, _ := db.rows("select path, app from paths where deleted=0")
+	rows, _ := db.rows("select path, app from paths")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {
 		result.SetKey(sl.String(row["path"].(string)), sl.String(row["app"].(string)))

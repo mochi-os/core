@@ -497,13 +497,13 @@ func setting_signup_enabled() bool {
 // reg_preferences is the user.db preferences register: a (name → value) versioned
 // LWW-Register so a preference (language, theme, …) the user changes on one host
 // converges on every host of the account.
-var reg_preferences = register_def{"preferences", []string{"name"}, []string{"value"}}
+var reg_preferences = upsert_def{"preferences", []string{"name"}, []string{"value"}}
 
 // user_preferences_load loads all preferences for a user
 func user_preferences_load(u *User) map[string]string {
 	prefs := map[string]string{}
 	db := db_user(u, "user")
-	rows, err := db.rows("select * from preferences where deleted=0")
+	rows, err := db.rows("select * from preferences")
 	if err != nil {
 		return prefs
 	}
@@ -550,7 +550,7 @@ func user_preference_get(u *User, name, def string) string {
 // (Caught 2026-05-21: language changed on mochi1 didn't reach mochi2.)
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
-	db.register_write(reg_preferences, map[string]any{"name": name, "value": value}, 0)
+	db.row_write(reg_preferences, map[string]any{"name": name, "value": value})
 	if u.Preferences == nil {
 		u.Preferences = map[string]string{}
 	}
@@ -565,7 +565,7 @@ func user_preference_delete(u *User, name string) bool {
 		return false
 	}
 	db := db_user(u, "user")
-	db.register_remove(reg_preferences, map[string]any{"name": name})
+	db.row_remove(reg_preferences, map[string]any{"name": name})
 	delete(u.Preferences, name)
 	return true
 }

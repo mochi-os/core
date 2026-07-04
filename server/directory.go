@@ -333,34 +333,16 @@ func directory_request_event(e *Event) {
 	}
 }
 
-// directory_sync pulls rows from one reachable pair member AND one
-// reachable bootstrap peer — the categories see different slices of the
-// network (a pair member mirrors this server's neighbourhood; a bootstrap
-// peer accumulates the wider fleet), so succeeding at one must not skip
-// the other. Within each category the first success wins.
+// directory_sync pulls rows from one reachable bootstrap peer (a bootstrap
+// peer accumulates the wider fleet). The first success wins.
 func directory_sync() {
-	pair := []string{}
-	rdb := db_open("db/replication.db")
-	if rows, err := rdb.rows("select peer from pair"); err == nil {
-		for _, r := range rows {
-			if p, _ := r["peer"].(string); p != "" {
-				pair = append(pair, p)
-			}
-		}
-	}
-	bootstrap := []string{}
 	for _, p := range peers_bootstrap {
-		bootstrap = append(bootstrap, p.ID)
-	}
-	for _, category := range [][]string{pair, bootstrap} {
-		for _, peer := range category {
-			if peer == net_id {
-				continue // Don't sync from self
-			}
-			if directory_sync_from_peer(peer) {
-				directory_push_to_peer(peer)
-				break
-			}
+		if p.ID == net_id {
+			continue // Don't sync from self
+		}
+		if directory_sync_from_peer(p.ID) {
+			directory_push_to_peer(p.ID)
+			break
 		}
 	}
 }

@@ -33,7 +33,7 @@ var api_interests = sls.FromStringDict(sl.String("mochi.interests"), sl.StringDi
 // LWW-Register so the account-global interest profile converges across the user's
 // hosts. `updated` is informational payload; the register's own version (not that
 // timestamp) drives conflict resolution.
-var reg_interests = register_def{"interests", []string{"qid"}, []string{"weight", "updated"}}
+var reg_interests = upsert_def{"interests", []string{"qid"}, []string{"weight", "updated"}}
 
 // mochi.interests.list() -> list: List all user interests sorted by weight descending
 func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
@@ -47,7 +47,7 @@ func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
-	rows, err := db.rows("select qid, weight, updated from interests where deleted=0 order by weight desc")
+	rows, err := db.rows("select qid, weight, updated from interests order by weight desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -96,7 +96,7 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// the user's personalised ranking should follow them to every host
 	// of their account. Timestamps are computed in Go and passed as
 	// bound parameters, so the replayed statement stays deterministic.
-	db.register_write(reg_interests, map[string]any{"qid": qid, "weight": weight, "updated": now()}, 0)
+	db.row_write(reg_interests, map[string]any{"qid": qid, "weight": weight, "updated": now()})
 
 	return sl.None, nil
 }
@@ -122,7 +122,7 @@ func api_interests_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
-	db.register_remove(reg_interests, map[string]any{"qid": qid})
+	db.row_remove(reg_interests, map[string]any{"qid": qid})
 
 	return sl.None, nil
 }
@@ -187,7 +187,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	ts := now()
 
 	for _, qid := range qids {
-		row, err := db.row("select weight from interests where qid=? and deleted=0", qid)
+		row, err := db.row("select weight from interests where qid=?", qid)
 		if err == nil && row != nil {
 			// Existing interest: adjust and clamp
 			current, _ := row["weight"].(int64)
@@ -198,7 +198,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			if w > 100 {
 				w = 100
 			}
-			db.register_write(reg_interests, map[string]any{"qid": qid, "weight": w, "updated": ts}, 0)
+			db.row_write(reg_interests, map[string]any{"qid": qid, "weight": w, "updated": ts})
 		} else if delta != 0 {
 			// New (or previously removed) interest: delta as initial weight (clamped)
 			w := delta
@@ -208,7 +208,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			if w > 100 {
 				w = 100
 			}
-			db.register_write(reg_interests, map[string]any{"qid": qid, "weight": w, "updated": ts}, 0)
+			db.row_write(reg_interests, map[string]any{"qid": qid, "weight": w, "updated": ts})
 		}
 	}
 
@@ -236,7 +236,7 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(user, "user")
-	rows, err := db.rows("select qid, weight from interests where weight > 0 and deleted=0 order by weight desc limit ?", n)
+	rows, err := db.rows("select qid, weight from interests where weight > 0 order by weight desc limit ?", n)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -268,7 +268,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
-	rows, err := db.rows("select qid, weight from interests where weight < 0 and deleted=0 order by weight asc limit ?", n)
+	rows, err := db.rows("select qid, weight from interests where weight < 0 order by weight asc limit ?", n)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -331,7 +331,7 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // both fetched in that language; the non-AI fallback uses translatable
 // label keys (`interests.summary.liked`, `interests.summary.disliked`).
 func interests_generate_summary(user *User, db *DB) string {
-	rows, err := db.rows("select qid from interests where weight > 0 and deleted=0 order by weight desc limit 30")
+	rows, err := db.rows("select qid from interests where weight > 0 order by weight desc limit 30")
 	if err != nil || len(rows) == 0 {
 		rows = []map[string]any{}
 	}
@@ -344,7 +344,7 @@ func interests_generate_summary(user *User, db *DB) string {
 		}
 	}
 
-	neg_rows, err := db.rows("select qid from interests where weight < 0 and deleted=0 order by weight asc limit 15")
+	neg_rows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
 	if err != nil {
 		neg_rows = []map[string]any{}
 	}

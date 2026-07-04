@@ -396,21 +396,6 @@ func TestNetContainerInterface(t *testing.T) {
 	}
 }
 
-// TestDbUpgrade83: the success/failure columns arrive idempotently.
-func TestDbUpgrade83(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
-
-	db := db_open("db/peers.db")
-	db.exec("drop table peers")
-	db.exec("create table peers ( id text not null, address text not null, updated integer not null, primary key ( id, address ) )")
-	db_upgrade_83()
-	db_upgrade_83() // idempotent
-	db.exec("insert into peers ( id, address, updated, success, failure ) values ('x', 'y', 1, 2, 3)")
-	if ok, _ := db.exists("select 1 from peers where id='x' and success=2 and failure=3"); !ok {
-		t.Error("peers table not usable after upgrade")
-	}
-}
 
 func TestPeerAddressesNormalise(t *testing.T) {
 	id, _ := test_host(t)

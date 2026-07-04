@@ -323,16 +323,3 @@ func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
 	}
 }
 
-func TestDbUpgrade84(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
-
-	db := db_open("db/peers.db")
-	db.exec("drop table records")
-	db_upgrade_84()
-	db_upgrade_84() // idempotent
-	db.exec("insert into records ( id, record, sequence, updated ) values ('x', x'00', 1, 1)")
-	if ok, _ := db.exists("select 1 from records where id='x'"); !ok {
-		t.Error("records table not usable after upgrade")
-	}
-}

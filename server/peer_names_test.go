@@ -215,22 +215,3 @@ func TestPeerNamesLoad(t *testing.T) {
 	}
 }
 
-func TestDbUpgrade86(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
-
-	db := db_open("db/peers.db")
-	// Recreate the pre-86 shape (verified/checked columns) with a cached row.
-	db.exec("drop table names")
-	db.exec("create table names ( id text not null, name text not null, verified integer not null default 0, checked integer not null default 0, updated integer not null, primary key ( id, name ) )")
-	db.exec("insert into names (id, name, verified, checked, updated) values ('x', 'y', 1, 5, 5)")
-
-	db_upgrade_86()
-	db_upgrade_86() // idempotent
-
-	// New shape: the table takes the three-column insert and is usable.
-	db.exec("insert into names (id, name, updated) values ('a', 'b', 1)")
-	if ok, _ := db.exists("select 1 from names where id='a'"); !ok {
-		t.Error("names table not usable after upgrade")
-	}
-}

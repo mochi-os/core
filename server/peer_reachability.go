@@ -141,11 +141,6 @@ func peer_mark_send_failed(id string) {
 	peer_reachability_lock.Unlock()
 	if crossed {
 		peer_schedule_reconnect(id)
-		// Persist "unreachable since" for a replication member we can't even
-		// connect to (powered off / partitioned) — the companion to the
-		// inflight-timeout stamp in peer_mark_no_progress and the
-		// disconnect-event stamp in peer_disconnected.
-		replication_member_unreachable(id)
 	}
 }
 

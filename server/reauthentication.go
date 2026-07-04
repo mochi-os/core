@@ -26,7 +26,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	sl "go.starlark.net/starlark"
@@ -113,15 +112,6 @@ func reauthentication_advance(user *User, factor string) (string, []string) {
 		id = uid()
 		sessions.exec("insert into reauthentication ( id, user, methods, expires ) values ( ?, ?, ?, ? )", id, user.UID, methods, expires)
 	}
-	replication_emit_sessions_row(user.UID, &SessionsRow{
-		Table: "reauthentication",
-		Key:   map[string]string{"id": id},
-		Cols: map[string]string{
-			"user":    user.UID,
-			"methods": methods,
-			"expires": fmt.Sprintf("%d", expires),
-		},
-	})
 
 	if remaining := reauthentication_remaining(user, methods); len(remaining) > 0 {
 		return "", remaining
@@ -145,11 +135,6 @@ func reauthentication_consume(user *User, token string) bool {
 	if len(reauthentication_remaining(user, r.Methods)) != 0 {
 		return false
 	}
-	replication_emit_sessions_row(user.UID, &SessionsRow{
-		Table:  "reauthentication",
-		Key:    map[string]string{"id": token},
-		Delete: true,
-	})
 	return true
 }
 

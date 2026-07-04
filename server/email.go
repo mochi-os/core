@@ -72,7 +72,6 @@ func email_mark_delivered(u *User, address, event_id string) {
 	db.exec("delete from email_delivered where ts < ?", ts-email_dedup_ttl)
 
 	if u.UID != "" {
-		replication_emit_email_delivered(u.UID, address, event_id, ts)
 	}
 }
 

@@ -367,18 +367,8 @@ func web_passkey_login_finish(c *gin.Context) {
 func passkey_credential_finalize(user *User, credential *webauthn.Credential) {
 	db_open("db/users.db").exec("update credentials set sign_count=? where id=?",
 		credential.Authenticator.SignCount, credential.ID)
-	// Replicate the monotonic sign_count bump to the user's host set / pair so the
-	// other DNS-round-robin member enforces the same replay counter (#150). A
-	// partial users-row (no public_key) — applied in place by the credentials
-	// apply, monotonically.
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:    "credentials",
-		KeyBytes: map[string][]byte{"id": credential.ID},
-		Cols:     map[string]string{"sign_count": fmt.Sprintf("%d", credential.Authenticator.SignCount)},
-	})
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
 		credential.ID, user.UID, now())
-	replication_leader_claim("credential", base64.StdEncoding.EncodeToString(credential.ID), false)
 }
 
 // ============================================================================
@@ -707,19 +697,6 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		credential.Flags.BackupEligible, credential.Flags.BackupState, created)
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, 0)",
 		credential.ID, user.UID)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:    "credentials",
-		KeyBytes: map[string][]byte{"id": credential.ID},
-		Cols: map[string]string{
-			"sign_count":      fmt.Sprintf("%d", credential.Authenticator.SignCount),
-			"name":            name,
-			"transports":      transports,
-			"backup_eligible": boolint01(credential.Flags.BackupEligible),
-			"backup_state":    boolint01(credential.Flags.BackupState),
-			"created":         fmt.Sprintf("%d", created),
-		},
-		ColsBytes: map[string][]byte{"public_key": credential.PublicKey},
-	})
 
 	audit_password_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
@@ -762,11 +739,6 @@ func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	db.exec("update credentials set name=? where id=? and user=?", name, id, user.UID)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:    "credentials",
-		KeyBytes: map[string][]byte{"id": id},
-		Cols:     map[string]string{"name": name},
-	})
 	return sl.True, nil
 }
 
@@ -815,11 +787,6 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	db.exec("delete from credentials where id=? and user=?", id, user.UID)
 	db_open("db/sessions.db").exec("delete from passkeys where credential=?", id)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:    "credentials",
-		KeyBytes: map[string][]byte{"id": id},
-		Delete:   true,
-	})
 	audit_password_changed(user.Username, "passkey_deleted")
 	return sl.True, nil
 }

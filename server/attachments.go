@@ -174,7 +174,6 @@ func attachment_record_write(db *DB, att *Attachment) {
 	db.exec_replicated("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 	if att.Entity == "" && db.user != nil && db.app != nil {
-		replication_emit_file_push(db.user.UID, db.app.id, attachment_filename(att.ID, att.Name))
 	}
 }
 
@@ -1076,7 +1075,6 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// remove them there too. Foreign cached references (Entity set) have no
 	// pushed bytes — each host fetched its own copy on demand.
 	if att.Entity == "" {
-		replication_emit_file_push_delete(owner.UID, app.id, attachment_filename(att.ID, att.Name))
 	}
 
 	// Handle federation notify
@@ -1147,7 +1145,6 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	for _, att := range attachments {
 		db.register_remove(reg_attachments, map[string]any{"id": att.ID})
 		if att.Entity == "" {
-			replication_emit_file_push_delete(owner.UID, app.id, attachment_filename(att.ID, att.Name))
 		}
 	}
 

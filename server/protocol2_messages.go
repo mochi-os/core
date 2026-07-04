@@ -85,9 +85,9 @@ type Receiver struct {
 func receive_messages(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 
-	// Rate limit incoming streams per peer (skip bootstrap and paired
-	// peers — both are trusted infrastructure, not anonymous senders).
-	if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_p2p.allow(peer) {
+	// Rate limit incoming streams per peer (skip bootstrap peers — trusted
+	// infrastructure, not anonymous senders).
+	if !peer_is_bootstrap(peer) && !rate_limit_p2p.allow(peer) {
 		debug("Messages rate limited peer %q", peer)
 		s.Reset()
 		return

@@ -280,7 +280,6 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
 	db.exec_bg("queue ack delete", "delete from queue where id = ?", id)
-	journal_inflight_acked([]string{id}) // advance the delivery cursor if this was a journal op (#28)
 	//debug("Queue ACK received for %q", id)
 }
 
@@ -396,7 +395,6 @@ func queue_ack_flush(ids []string) {
 		args[i] = id
 	}
 	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
-	journal_inflight_acked(ids) // advance delivery cursors for any journal ops in the batch (#28)
 }
 
 // queue_drain_entity waits up to `wait` for every queued message from
@@ -994,8 +992,6 @@ func queue_process() int {
 			switch {
 			case q.Type == "broadcast":
 				ok = queue_send_broadcast(&q)
-			case q.Event == "file/push":
-				ok = queue_send_file_push(&q)
 			default:
 				ok = queue_send_direct(&q)
 			}

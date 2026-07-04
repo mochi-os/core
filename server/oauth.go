@@ -1018,31 +1018,12 @@ func oauth_replicate(db *DB, provider, subject string) {
 	if user == "" {
 		return
 	}
-	email, _ := row["email"].(string)
-	name, _ := row["name"].(string)
-	verified, _ := row["verified"].(int64)
-	created, _ := row["created"].(int64)
-	replication_emit_users_row(user, &UsersRow{
-		Table: "oauth",
-		Key:   map[string]string{"provider": provider, "subject": subject},
-		Cols: map[string]string{
-			"email":    email,
-			"verified": fmt.Sprintf("%d", verified),
-			"name":     name,
-			"created":  fmt.Sprintf("%d", created),
-		},
-	})
 }
 
 // oauth_replicate_unlink fans an oauth unlink (every subject for the provider)
 // to the user's host set / pair, so a revoked login can't keep working on the
 // other DNS-round-robin member (#150).
 func oauth_replicate_unlink(userUID, provider string) {
-	replication_emit_users_row(userUID, &UsersRow{
-		Table:  "oauth",
-		Key:    map[string]string{"provider": provider},
-		Delete: true,
-	})
 }
 
 // oauth_verification_record upserts the last-used timestamp for a (provider,

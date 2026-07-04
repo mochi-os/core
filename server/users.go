@@ -156,11 +156,6 @@ func code_send(email string, c *gin.Context) string {
 	// on any host. Skip if the user doesn't exist yet (brand-new
 	// signup — single-host flow until first login).
 	if u != nil {
-		replication_emit_sessions_row(u.UID, &SessionsRow{
-			Table: "codes",
-			Key:   map[string]string{"code": code, "username": email},
-			Cols:  map[string]string{"expires": fmt.Sprintf("%d", expires)},
-		})
 	}
 	email_login_code(u, email, code, request_language(c, u))
 	return ""
@@ -182,11 +177,6 @@ func code_consume(user *User, code string) bool {
 	if !sessions.scan(&c, "delete from codes where code=? and username=? and expires>=? returning *", code, user.Username, now()) {
 		return false
 	}
-	replication_emit_sessions_row(user.UID, &SessionsRow{
-		Table:  "codes",
-		Key:    map[string]string{"code": code, "username": user.Username},
-		Delete: true,
-	})
 	return true
 }
 
@@ -277,7 +267,6 @@ func login_create(user string, address string, agent string) string {
 	// Replicate the new session to every peer in the user's host set so a
 	// cookie issued here is honoured by every replica.
 	if user != "" {
-		replication_emit_session_insert(user, code, secret, expires, created, created, address, agent)
 	}
 
 	return code
@@ -296,7 +285,6 @@ func login_delete(code string) {
 	db.exec("delete from sessions where code=?", code)
 
 	if userUID != "" {
-		replication_emit_session_delete(userUID, code)
 	}
 }
 
@@ -417,11 +405,6 @@ func user_from_code(code string) (*User, string) {
 		// Fan the consume out to peers so other hosts in the user's
 		// host set drop their copy of the code too — prevents replay
 		// on a second host within the 1-hour TTL.
-		replication_emit_sessions_row(u.UID, &SessionsRow{
-			Table:  "codes",
-			Key:    map[string]string{"code": code, "username": c.Username},
-			Delete: true,
-		})
 		if u.Status == "suspended" {
 			return nil, "suspended"
 		}
@@ -464,9 +447,6 @@ func user_create(username string) (*User, string) {
 		// carry it; without this the row is absent on the partner and a
 		// replicated session won't resolve there under active-active / failover
 		// (#34). Entity-bearing replication later carries the full identity.
-		replication_emit_users_users_pair_set(u.UID, map[string]string{
-			"username": u.Username, "role": u.Role,
-		})
 		return &u, ""
 	}
 
@@ -1080,7 +1060,6 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		db.exec("update users set username=? where uid=?", username, id)
 		if old != username {
 			audit_email_changed(user.Username, id, old, username)
-			replication_emit_users_users_pair_set(id, map[string]string{"username": username})
 		}
 	}
 
@@ -1097,7 +1076,6 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		db.exec("update users set role=? where uid=?", role, id)
 		if old != role {
-			replication_emit_users_users_pair_set(id, map[string]string{"role": role})
 			if role == "administrator" {
 				audit_admin_escalation(user.Username, id, "promote")
 			} else if old == "administrator" {
@@ -1222,13 +1200,7 @@ func user_remove(id string) (string, error) {
 	}
 
 	if foreign {
-		// Eviction: drop the user from the operator's own pair via a
-		// host-signed evict (honoured only by pair members), and purge the
-		// local copy with leave semantics. The user's own hosts on other
-		// operators are untouched.
-		if len(pairs) > 0 {
-			replication_membership_evict(id)
-		}
+		// Eviction: purge the local copy with leave semantics.
 		return user_purge_local(id, false)
 	}
 
@@ -1236,11 +1208,6 @@ func user_remove(id string) (string, error) {
 		db := db_open("db/users.db")
 		due := now()
 		db.exec("update users set status='closing', purge=? where uid=?", due, id)
-		replication_emit_users_users_set(id, map[string]string{
-			"status": "closing",
-			"purge":  fmt.Sprintf("%d", due),
-		})
-		replication_emit_user_purge(id)
 	}
 	return user_delete(id)
 }
@@ -1284,9 +1251,7 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	// the user on the other hosts — incoming user-row deletes are a no-op in
 	// the apply path. Deleting the account everywhere (closure / admin delete)
 	// is a separate propagated operation; see claude/plans/account-deletion.md.
-	replication_membership_depart(id)
-
-	// Farewell messages (the depart above; the user/purge op when called
+	// Farewell messages (the user/purge op when called
 	// from closure) are queued asynchronously but signed with the identity
 	// key the loop below deletes. Drain them first or the queue sender
 	// loses the race and silently drops them at claim time.
@@ -1464,7 +1429,6 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db.exec("update users set status='suspended' where uid=?", id)
-	replication_emit_users_users_set(id, map[string]string{"status": "suspended"})
 	return sl.True, nil
 }
 
@@ -1494,7 +1458,6 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db.exec("update users set status='active' where uid=?", id)
-	replication_emit_users_users_set(id, map[string]string{"status": "active"})
 	return sl.True, nil
 }
 
@@ -1594,7 +1557,6 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 			return sl_error(fn, "session not found")
 		}
 		db.exec("delete from sessions where user=? and code=?", target, found)
-		replication_emit_session_delete(target, found)
 		count = 1
 	} else {
 		count = sessions_revoke_all(target)
@@ -1615,7 +1577,6 @@ func sessions_revoke_all(uid string) int {
 	db.exec("delete from sessions where user=?", uid)
 	for _, row := range codes {
 		if code, ok := row["code"].(string); ok && code != "" {
-			replication_emit_session_delete(uid, code)
 		}
 	}
 	return len(codes)

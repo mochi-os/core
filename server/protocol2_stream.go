@@ -38,7 +38,7 @@ import (
 func receive_stream(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 
-	if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_p2p.allow(peer) {
+	if !peer_is_bootstrap(peer) && !rate_limit_p2p.allow(peer) {
 		debug("Stream rate limited peer %q", peer)
 		s.Reset()
 		return

@@ -63,24 +63,6 @@ func admin_register_routes(r *gin.Engine) {
 	admin.GET("/backup", admin_backup)
 	admin.POST("/stop", admin_stop)
 	admin.POST("/restart", admin_restart)
-	admin.POST("/replica/join", admin_replica_join)
-	admin.POST("/replica/approve", admin_replica_approve)
-	admin.POST("/replica/leave", admin_replica_leave)
-	admin.GET("/replica/status", admin_replica_status)
-	admin.GET("/replication/status", admin_replication_status)
-	admin.GET("/replication/pair", admin_replication_pair)
-	admin.GET("/replication/pairs", admin_replication_pairs)
-	admin.GET("/replication/progress", admin_replication_progress)
-	admin.GET("/replication/ops", admin_replication_ops)
-	admin.GET("/replication/stalled", admin_replication_stalled)
-	admin.GET("/replication/irreparable", admin_replication_irreparable)
-	admin.POST("/replication/pair/remove", admin_replication_pair_remove)
-	admin.POST("/replication/pending/gc", admin_replication_pending_gc)
-	admin.POST("/replication/resync", admin_replication_resync)
-	admin.POST("/replication/resume", admin_replication_resume)
-	admin.POST("/replication/backfill", admin_replication_backfill)
-	admin.POST("/replication/reseed", admin_replication_reseed)
-	admin.GET("/replication/audit", admin_replication_audit)
 	admin.GET("/broadcast/lag", admin_broadcast_lag)
 	admin.POST("/broadcast/pending/gc", admin_broadcast_pending_gc)
 	admin.GET("/pipelining/status", admin_pipelining_status)
@@ -88,7 +70,7 @@ func admin_register_routes(r *gin.Engine) {
 
 	// pprof endpoints — admin-socket only, no separate port. The transport's
 	// connection-level auth gates access. Useful for diagnosing memory bloat /
-	// goroutine leaks during replication tests:
+	// goroutine leaks:
 	//   mochictl -s admin.sock raw GET /_/admin/debug/pprof/heap > heap.pb.gz
 	//   go tool pprof heap.pb.gz
 	// curl -s --unix-socket admin.sock http://x/_/admin/debug/pprof/<profile>

@@ -94,7 +94,7 @@ func pubsub_manager() {
 		}
 		// Rate limit inbound per peer. Bootstrap and paired peers are
 		// trusted and skip the limit.
-		if !peer_is_bootstrap(peer) && !peer_is_pair(peer) && !rate_limit_pubsub_in.allow(peer) {
+		if !peer_is_bootstrap(peer) && !rate_limit_pubsub_in.allow(peer) {
 			debug("Pubsub rate limited peer %q", peer)
 			continue
 		}

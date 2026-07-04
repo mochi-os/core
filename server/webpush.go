@@ -164,7 +164,6 @@ func webpush_mark_delivered(u *User, endpoint, event_id string) {
 	db.exec("delete from webpush_delivered where ts < ?", ts-webpush_dedup_ttl)
 
 	if u.UID != "" {
-		replication_emit_webpush_delivered(u.UID, endpoint, event_id, ts)
 	}
 }
 

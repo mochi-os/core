@@ -565,9 +565,6 @@ func directory_cleanup_dead_peers() {
 		if peer_is_bootstrap(peer) {
 			continue
 		}
-		if peer_is_pair(peer) {
-			continue
-		}
 		if !peer_is_silent(peer) {
 			// Stale `seen` but the silent-cache hasn't confirmed
 			// unreachable. Could be transient (we just restarted and

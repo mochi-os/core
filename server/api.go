@@ -69,7 +69,6 @@ func init() {
 			"permission":  api_permission,
 			"qid":         api_qid,
 			"remote":      api_remote,
-			"replication": api_replication,
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
 			}),

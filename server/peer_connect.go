@@ -217,7 +217,6 @@ func peer_disconnected(id string) {
 	// A replication member dropping at the libp2p level is the event-driven
 	// "offline" signal that fires even when there is no traffic to it - the
 	// gap the send-failure stamp alone misses for an idle member.
-	replication_member_unreachable(id)
 
 	peer_schedule_reconnect(id)
 }
@@ -259,7 +258,6 @@ func peer_reconnected(id string) {
 	// Reachable again at the libp2p level: clear the offline mark so an idle
 	// member that reconnects without resuming traffic doesn't keep showing
 	// the offline badge.
-	replication_member_reachable(id)
 }
 
 // peer_reconnect_parallel caps how many reconnect attempts can run
@@ -297,7 +295,6 @@ func peer_reconnect_manager() {
 					debug("Peer %q reconnected successfully", id)
 					// Re-ship any retained journal ops the peer missed while
 					// it was gone (#23). Receiver dedups what it already has.
-					go journal_backfill_to_peer(id)
 					return
 				}
 				// The peer may be unreachable because our addresses for

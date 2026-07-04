@@ -607,7 +607,6 @@ func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
 	if !setting_local(name) {
-		replication_emit_system_set("settings", "settings", name, "value", value)
 	}
 }
 

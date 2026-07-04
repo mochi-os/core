@@ -1071,7 +1071,7 @@ func TestAppForServiceForResolution(t *testing.T) {
 }
 
 // TestAppForServiceInternalFastPath verifies that core internal services
-// (replication, directory, peers) resolve directly to their built-in
+// (directory, peers) resolve directly to their built-in
 // handler — ahead of, and immune to, user/system bindings — so a
 // user-installed app cannot shadow a core service by declaring its name,
 // and so core P2P traffic never triggers the O(apps) fallback scan. It
@@ -1080,10 +1080,10 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
 
-	// Registered at startup by directory.go / peer_connect.go /
-	// replication.go init(); present in internal_services even though
-	// create_test_routing_env swapped out the apps map.
-	for _, svc := range []string{"replication", "directory", "peers"} {
+	// Registered at startup by directory.go / peer_connect.go; present in
+	// internal_services even though create_test_routing_env swapped out the
+	// apps map.
+	for _, svc := range []string{"directory", "peers"} {
 		got := app_for_service(nil, svc)
 		if got == nil || got.id != svc {
 			t.Fatalf("app_for_service(%q) = %v, want internal app %q", svc, got, svc)
@@ -1093,16 +1093,16 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 		}
 	}
 
-	// Shadow protection: a user-installed app declaring "replication",
+	// Shadow protection: a user-installed app declaring "directory",
 	// with BOTH a system binding and a user binding pointing at it, must
 	// still lose to the built-in handler.
-	imposterAV := &AppVersion{Version: "1.0", Services: []string{"replication"}}
+	imposterAV := &AppVersion{Version: "1.0", Services: []string{"directory"}}
 	apps["imposter-app"] = &App{id: "imposter-app", versions: map[string]*AppVersion{"1.0": imposterAV}, latest: imposterAV}
-	apps_service_set("replication", "imposter-app")
+	apps_service_set("directory", "imposter-app")
 	user := &User{UID: "u1", Username: "user1@example.com"}
-	user.set_service_app("replication", "imposter-app")
-	if got := app_for_service(user, "replication"); got == nil || got.id != "replication" {
-		t.Errorf("app_for_service(replication) with imposter bindings = %v, want internal replication", got)
+	user.set_service_app("directory", "imposter-app")
+	if got := app_for_service(user, "directory"); got == nil || got.id != "directory" {
+		t.Errorf("app_for_service(directory) with imposter bindings = %v, want internal directory", got)
 	}
 
 	// Regression: an ordinary (non-internal) service still resolves via
@@ -2176,31 +2176,6 @@ func TestAppIsLogin(t *testing.T) {
 	}
 }
 
-// TestAppsPublisherOp (#52) covers the predicate that recognises a replicated
-// write to the publisher catalog — the trigger that wakes apps_manager early so
-// a replica-pair host installs a freshly published version without waiting out
-// the 24-hour poll. It must fire only for an app-scope op whose db is the
-// resolved publisher id, and never when the publisher id is unknown.
-func TestAppsPublisherOp(t *testing.T) {
-	pub := "12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3"
-	cases := []struct {
-		name      string
-		op        *ReplicationOp
-		publisher string
-		want      bool
-	}{
-		{"match", &ReplicationOp{Scope: repl_scope_app, Database: pub}, pub, true},
-		{"other app", &ReplicationOp{Scope: repl_scope_app, Database: "12someotherappentityid"}, pub, false},
-		{"wrong scope", &ReplicationOp{Scope: "user", Database: pub}, pub, false},
-		{"publisher unknown", &ReplicationOp{Scope: repl_scope_app, Database: pub}, "", false},
-		{"nil op", nil, pub, false},
-	}
-	for _, c := range cases {
-		if got := apps_publisher_op(c.op, c.publisher); got != c.want {
-			t.Errorf("%s: apps_publisher_op = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
 
 // TestAppsManagerSignal (#52) checks the wake channel coalesces: repeated
 // signals while a pass is pending collapse into a single queued wake (buffer of

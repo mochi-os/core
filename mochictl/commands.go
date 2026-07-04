@@ -131,91 +131,6 @@ func init() {
 				return post_action("/_/admin/restart", "Restarting server")
 			},
 		},
-		"replica reset": {
-			help: "Wipe replicated DBs + per-user trees and print the rejoin command. Server must be stopped. Use when a replica is too far behind to catch up via incremental replication. Args: --from=<peer-id> --confirm",
-			run:  cmd_replica_reset,
-		},
-		"replica join": {
-			help: "Join an existing server as a pair replica (fresh installs only). Args: <source-peer-id> [--address=<multiaddr>]... to supply the source's address when discovery cannot find it",
-			run:  cmd_replica_join,
-		},
-		"replica leave": {
-			help: "Leave the pair set (stops sync; does not wipe local data)",
-			run:  cmd_replica_leave,
-		},
-		"replica approve": {
-			help: "Approve a pending pair-join request from <peer-id> (headless equivalent of the settings Approve button). Args: <peer-id>",
-			run:  cmd_replica_approve,
-		},
-		"replica status": {
-			help: "Show current pair / pending-join state",
-			run:  cmd_replica_status,
-		},
-		"replication status": {
-			help: "Summarise pair set + per-user host counts + pending requests",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/status",
-					"peer", "pair", "hosts_count", "links_pending", "joins_pending", "bootstrap_pending")
-			},
-		},
-		"replication pair list": {
-			help: "List current pair members",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/pair", "members")
-			},
-		},
-		"replication pairs": {
-			help: "Per-pair health rollup (bootstrap, cursors, pending, leases) - what each pair partner looks like from here",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/pairs", "host", "now", "pairs")
-			},
-		},
-		"replication progress": {
-			help: "Per-(peer, scope) bulk-bootstrap progress",
-			run:  cmd_replication_progress,
-		},
-		"replication stalled": {
-			help: "Per-stream pending-buffer stalls (replication drift not healing on its own)",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/stalled", "stalled")
-			},
-		},
-		"replication irreparable": {
-			help: "Run the irreparable scan on demand (same logic the manager runs hourly) and list relationships broken past T_forget. Reason is 'stalled' (unfillable gap) or 'offline' (member unreachable too long).",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/irreparable", "irreparable")
-			},
-		},
-		"replication pending gc": {
-			help: "On-demand purge of aged unfillable pending rows (same logic the manager runs hourly). Reports count dropped.",
-			run:  cmd_replication_pending_gc,
-		},
-		"replication pair remove": {
-			help: "Kick a specific peer from the pair set",
-			run:  cmd_replication_pair_remove,
-		},
-		"replication resync": {
-			help: "Force a bulk-bootstrap re-run against the given peer",
-			run:  cmd_replication_resync,
-		},
-		"replication resume": {
-			help: "Re-drive only the not-yet-done bootstrap scopes for a peer (safe on a populated server, unlike resync)",
-			run:  cmd_replication_resume,
-		},
-		"replication backfill": {
-			help: "Re-run the pair-join system-row backfill against the given peer",
-			run:  cmd_replication_backfill,
-		},
-		"replication reseed": {
-			help: "Re-seed ONE stalled stream's DB from a source peer on a live populated replica (targeted alternative to a full 'replica reset'). Refuses if the local DB has un-shipped local writes unless --force. Args: <peer-id> <db-path> [--force]",
-			run:  cmd_replication_reseed,
-		},
-		"replication audit": {
-			help: "Convergence audit findings: apps running stale on-disk code (apps.db claims a version not on disk, e.g. a restricted app frozen on a replica) + cross-host content divergences confirmed stable across rounds",
-			run: func(args []string) error {
-				return get_dump("/_/admin/replication/audit", "stale", "divergences", "stuck")
-			},
-		},
 		"broadcast lag": {
 			help: "Per-(user, app, peer, key) broadcast subscriber lag (received_last vs owner _log.max when this host owns the stream)",
 			run:  cmd_broadcast_lag,
@@ -479,31 +394,19 @@ func cmd_restore(args []string) error {
 		return err
 	}
 
-	// Strip replication.db (and its WAL / SHM siblings if present).
-	// The server creates a fresh one on startup. Any previously-paired
-	// state - pair members, cursors, seen dedup table, sequence
-	// counters, leadership rows - is gone. The host comes back
-	// unpaired.
+	// Remove any legacy replication.db left by a pre-removal backup (and its
+	// WAL / SHM siblings); the server no longer uses it.
 	replication_path := filepath.Join(root, "db", "replication.db")
-	stripped := false
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		path := replication_path + suffix
 		if _, err := os.Stat(path); err == nil {
 			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("strip replication state %s: %w", path, err)
+				return fmt.Errorf("remove legacy replication state %s: %w", path, err)
 			}
-			stripped = true
 		}
 	}
 
 	fmt.Printf("Renamed %d snapshot file(s) under %s\n", count, root)
-	if stripped {
-		fmt.Println()
-		fmt.Println("Replication state stripped: the restored host will come back unpaired.")
-		fmt.Println("To re-establish replication, see the backup-restore wiki page for the")
-		fmt.Println("post-restore procedure (decide which side is canonical, reinstall the")
-		fmt.Println("others as fresh replicas, mochictl replica join against the canonical).")
-	}
 	return nil
 }
 

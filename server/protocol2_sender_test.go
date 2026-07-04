@@ -16,7 +16,6 @@
 package main
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -359,34 +358,6 @@ func TestSendersSweepTimesOutInflight(t *testing.T) {
 	}
 }
 
-// TestSendersSweepStampsPeerUnreachable: the real sweep path, repeated past
-// the stall threshold, persists a unreachable row — the signal the
-// offline-irreparable detector reads. Closes the Sender->DB loop that the
-// irreparable unit tests stub by calling peer_mark_no_progress directly.
-func TestSendersSweepStampsPeerUnreachable(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
-	peer_progress = map[string]PeerProgress{}
-
-	s := new_test_sender(t, "sweep-stamp-peer")
-	restore := stash_sender(t, "sweep-stamp-peer", s)
-	defer restore()
-
-	db := db_open("db/replication.db")
-	db.exec("insert into pair (peer, added, role) values ('sweep-stamp-peer', 0, '')") // a replication member
-	// Each sweep removes the stale inflight, so re-arm one before each of
-	// peer_stall_threshold sweeps to cross into stalled.
-	for i := 0; i < peer_stall_threshold; i++ {
-		id := fmt.Sprintf("stale-stamp-%d", i)
-		install_queue_row(t, id)
-		s.inflight[id] = &pending{queue: id, sent: now() - 3600}
-		senders_sweep_all()
-	}
-
-	if ok, _ := db.exists("select 1 from unreachable where peer=?", "sweep-stamp-peer"); !ok {
-		t.Error("repeated sweep timeouts must stamp unreachable for the offline detector")
-	}
-}
 
 func TestSendersSweepTimesOutPings(t *testing.T) {
 	cleanup := setup_replication_test(t)

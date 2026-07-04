@@ -42,19 +42,6 @@ type UserPurge struct {
 	AccountGone bool
 }
 
-// replication_emit_user_purge propagates an authoritative account-gone purge of
-// `user` to every replica that holds the account — recipients(user) = the
-// per-user host set ∪ all server pairs. Each recipient applies it via
-// replication_user_purge_event, which re-checks local state before deleting.
-// Must be called while the user's identity entities still exist (the op is
-// signed by one of them).
-func replication_emit_user_purge(user string) {
-	peers := recipients(user)
-	if len(peers) == 0 {
-		return
-	}
-	replication_send_user_purge(user, peers)
-}
 
 // replication_send_user_purge signs an account-gone UserPurge with one of the
 // user's identity entities and sends it to each peer. Only the account-gone
@@ -187,10 +174,6 @@ func user_close(user *User, language string) (int64, error) {
 
 	purge := now() + int64(account_closing_days())*86400
 	db.exec("update users set status='closing', purge=? where uid=? and status='active'", purge, user.UID)
-	replication_emit_users_users_set(user.UID, map[string]string{
-		"status": "closing",
-		"purge":  fmt.Sprintf("%d", purge),
-	})
 
 	// Soft delete: drop every active session so the account looks gone
 	// immediately. The user re-authenticates to reach the reactivation
@@ -219,7 +202,6 @@ func web_auth_close_cancel(c *gin.Context) {
 
 	db := db_open("db/users.db")
 	db.exec("update users set status='active', purge=0 where uid=? and status='closing'", u.UID)
-	replication_emit_users_users_set(u.UID, map[string]string{"status": "active", "purge": "0"})
 
 	audit_account_reactivated(u.Username, rate_limit_client_ip(c))
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -282,7 +264,6 @@ func closure_run_due(t int64) {
 		// recipient re-checks its own closing/purge state before acting, and
 		// the op is idempotent, so it's safe for several hosts to emit it and
 		// for it to reach a host that has already purged.
-		replication_emit_user_purge(uid)
 		if _, err := user_delete(uid); err != nil {
 			info("Account closure purge failed for %q: %v", uid, err)
 			continue

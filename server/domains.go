@@ -273,15 +273,6 @@ func domain_register(name string) (*domain, error) {
 
 	db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 0, ?, 1, ?, ?)", name, token, n, n)
 
-	replication_emit_system_row("domains", "domains",
-		map[string]string{"domain": name},
-		map[string]string{
-			"verified": "0",
-			"token":    token,
-			"tls":      "1",
-			"created":  fmt.Sprintf("%d", n),
-			"updated":  fmt.Sprintf("%d", n),
-		}, false)
 
 	// Served domains are part of the peers/publish announcement.
 	peers_publish_request()
@@ -346,15 +337,6 @@ func domain_update(name string, updates map[string]any) error {
 	db.exec("update domains set "+strings.Join(sets, ", ")+" where domain=?", args...)
 
 	if d := domain_get(name); d != nil {
-		replication_emit_system_row("domains", "domains",
-			map[string]string{"domain": d.Domain},
-			map[string]string{
-				"verified": fmt.Sprintf("%d", d.Verified),
-				"token":    d.Token,
-				"tls":      fmt.Sprintf("%d", d.TLS),
-				"created":  fmt.Sprintf("%d", d.Created),
-				"updated":  fmt.Sprintf("%d", d.Updated),
-			}, false)
 	}
 	return nil
 }
@@ -365,21 +347,8 @@ func domain_delete(name string) error {
 	db := db_open("db/domains.db")
 	// Capture the routes before deleting so we can replicate their removal. The
 	// domains FK's ON DELETE CASCADE drops the local routes, but the pair
-	// member's apply deletes only the domain row (the cascade doesn't fire on the
-	// replica), leaving orphaned routes that resurrect with divergent state if
-	// the domain is re-registered — so emit a per-route delete too (#150).
-	routes, _ := db.rows("select path from routes where domain=?", name)
 	db.exec("delete from routes where domain=?", name)
 	db.exec("delete from domains where domain=?", name)
-
-	for _, r := range routes {
-		if path, ok := r["path"].(string); ok {
-			replication_emit_system_row("domains", "routes",
-				map[string]string{"domain": name, "path": path}, nil, true)
-		}
-	}
-	replication_emit_system_row("domains", "domains",
-		map[string]string{"domain": name}, nil, true)
 
 	// Served domains are part of the peers/publish announcement.
 	peers_publish_request()
@@ -407,15 +376,6 @@ func domain_verify(name string) (bool, error) {
 			n := now()
 			db.exec("update domains set verified=1, updated=? where domain=?", n, name)
 			if updated := domain_get(name); updated != nil {
-				replication_emit_system_row("domains", "domains",
-					map[string]string{"domain": updated.Domain},
-					map[string]string{
-						"verified": fmt.Sprintf("%d", updated.Verified),
-						"token":    updated.Token,
-						"tls":      fmt.Sprintf("%d", updated.TLS),
-						"created":  fmt.Sprintf("%d", updated.Created),
-						"updated":  fmt.Sprintf("%d", updated.Updated),
-					}, false)
 			}
 			return true, nil
 		}
@@ -475,18 +435,6 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	n := now()
 	db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, owner, priority, n, n)
 
-	replication_emit_system_row("domains", "routes",
-		map[string]string{"domain": domain_name, "path": path},
-		map[string]string{
-			"method":   method,
-			"target":   target,
-			"context":  context,
-			"owner":    owner,
-			"priority": fmt.Sprintf("%d", priority),
-			"enabled":  "1",
-			"created":  fmt.Sprintf("%d", n),
-			"updated":  fmt.Sprintf("%d", n),
-		}, false)
 
 	return route_get(domain_name, path), nil
 }
@@ -519,18 +467,6 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	db.exec("update routes set "+strings.Join(sets, ", ")+" where domain=? and path=?", args...)
 
 	if r := route_get(domain_name, path); r != nil {
-		replication_emit_system_row("domains", "routes",
-			map[string]string{"domain": r.Domain, "path": r.Path},
-			map[string]string{
-				"method":   r.Method,
-				"target":   r.Target,
-				"context":  r.Context,
-				"owner":    r.Owner,
-				"priority": fmt.Sprintf("%d", r.Priority),
-				"enabled":  fmt.Sprintf("%d", r.Enabled),
-				"created":  fmt.Sprintf("%d", r.Created),
-				"updated":  fmt.Sprintf("%d", r.Updated),
-			}, false)
 	}
 	return nil
 }
@@ -539,8 +475,6 @@ func route_update(domain_name, path string, updates map[string]any) error {
 func route_delete(domain_name, path string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from routes where domain=? and path=?", domain_name, path)
-	replication_emit_system_row("domains", "routes",
-		map[string]string{"domain": domain_name, "path": path}, nil, true)
 	return nil
 }
 
@@ -567,12 +501,6 @@ func delegation_create(domain_name, path string, owner string) (*delegation, err
 	n := now()
 	db.exec("insert into delegations (domain, path, owner, created, updated) values (?, ?, ?, ?, ?)", domain_name, path, owner, n, n)
 
-	replication_emit_system_row("domains", "delegations",
-		map[string]string{"domain": domain_name, "path": path, "owner": owner},
-		map[string]string{
-			"created": fmt.Sprintf("%d", n),
-			"updated": fmt.Sprintf("%d", n),
-		}, false)
 
 	return delegation_get(domain_name, path, owner), nil
 }
@@ -582,9 +510,6 @@ func delegation_delete(domain_name, path string, owner string) error {
 	db := db_open("db/domains.db")
 	db.exec("delete from delegations where domain=? and path=? and owner=?", domain_name, path, owner)
 
-	replication_emit_system_row("domains", "delegations",
-		map[string]string{"domain": domain_name, "path": path, "owner": owner},
-		nil, true)
 	return nil
 }
 

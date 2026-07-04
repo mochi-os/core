@@ -222,13 +222,8 @@ func (a *App) set_default_version(version, track, admin string) {
 	db := db_apps()
 	if version == "" && track == "" {
 		db.exec("delete from versions where app = ?", a.id)
-		replication_emit_system_row("apps", "versions",
-			map[string]string{"app": a.id}, nil, true)
 	} else {
 		db.exec("replace into versions (app, version, track) values (?, ?, ?)", a.id, version, track)
-		replication_emit_system_row("apps", "versions",
-			map[string]string{"app": a.id},
-			map[string]string{"version": version, "track": track}, false)
 	}
 	if admin != "" {
 		audit_default_version_changed(admin, a.id, version, track)
@@ -252,13 +247,8 @@ func (a *App) set_track(name, version, admin string) {
 	db := db_apps()
 	if version == "" {
 		db.exec("delete from tracks where app = ? and track = ?", a.id, name)
-		replication_emit_system_row("apps", "tracks",
-			map[string]string{"app": a.id, "track": name}, nil, true)
 	} else {
 		db.exec("replace into tracks (app, track, version) values (?, ?, ?)", a.id, name, version)
-		replication_emit_system_row("apps", "tracks",
-			map[string]string{"app": a.id, "track": name},
-			map[string]string{"version": version}, false)
 	}
 	if admin != "" {
 		audit_default_track_changed(admin, a.id, name, version)
@@ -1201,7 +1191,6 @@ func apps_class_get(class string) string {
 func apps_class_set(class, app string) {
 	db := db_apps()
 	db.exec("replace into classes (class, app) values (?, ?)", class, app)
-	replication_emit_system_set("apps", "classes", class, "app", app)
 	resolution_invalidate() // system class binding changed
 }
 
@@ -1210,7 +1199,6 @@ func apps_class_set(class, app string) {
 func apps_class_delete(class string) {
 	db := db_apps()
 	db.exec("delete from classes where class = ?", class)
-	replication_emit_system_set("apps", "classes", class, "app", "")
 	resolution_invalidate() // system class binding removed
 }
 
@@ -1228,7 +1216,6 @@ func apps_service_get(service string) string {
 func apps_service_set(service, app string) {
 	db := db_apps()
 	db.exec("replace into services (service, app) values (?, ?)", service, app)
-	replication_emit_system_set("apps", "services", service, "app", app)
 	resolution_invalidate() // system service binding changed
 }
 
@@ -1236,7 +1223,6 @@ func apps_service_set(service, app string) {
 func apps_service_delete(service string) {
 	db := db_apps()
 	db.exec("delete from services where service = ?", service)
-	replication_emit_system_set("apps", "services", service, "app", "")
 	resolution_invalidate() // system service binding removed
 }
 
@@ -1254,7 +1240,6 @@ func apps_path_get(path string) string {
 func apps_path_set(path, app string) {
 	db := db_apps()
 	db.exec("replace into paths (path, app) values (?, ?)", path, app)
-	replication_emit_system_set("apps", "paths", path, "app", app)
 	resolution_invalidate() // system path binding changed
 }
 
@@ -1262,7 +1247,6 @@ func apps_path_set(path, app string) {
 func apps_path_delete(path string) {
 	db := db_apps()
 	db.exec("delete from paths where path = ?", path)
-	replication_emit_system_set("apps", "paths", path, "app", "")
 	resolution_invalidate() // system path binding removed
 }
 
@@ -1275,7 +1259,6 @@ func apps_record(app string) {
 	db := db_apps()
 	ts := now()
 	db.exec("replace into apps (app, installed) values (?, ?)", app, ts)
-	replication_emit_system_set("apps", "apps", app, "installed", fmt.Sprintf("%d", ts))
 }
 
 // apps_installed returns the installation timestamp for an app, or 0 if not recorded
@@ -1443,11 +1426,6 @@ func apps_publisher_id_set(id string) {
 	apps_publisher_lock.Unlock()
 }
 
-// apps_publisher_op reports whether a replicated op is a write to the publisher
-// app's catalog — the signal that a peer published a new app version.
-func apps_publisher_op(op *ReplicationOp, publisher string) bool {
-	return op != nil && publisher != "" && op.Scope == repl_scope_app && op.Database == publisher
-}
 
 // Manage which apps and their versions are installed
 func apps_manager() {

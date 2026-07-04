@@ -514,7 +514,6 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	// this lands bytes in the per-user files tree (api_file_base), so without
 	// the push the file is present on this host and absent on the replicas.
 	if user.UID != "" {
-		replication_emit_file_push(user.UID, app.id, file)
 	}
 
 	return sl.MakeInt64(n), nil

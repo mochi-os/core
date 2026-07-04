@@ -100,29 +100,7 @@ func main() {
 		cmd, ok = commands["config show"]
 		args = args[1:]
 	}
-	// Allow 'replica join|leave|status' as two-word subcommands.
-	if !ok && name == "replica" && len(args) > 0 {
-		if c, found := commands["replica "+args[0]]; found {
-			cmd, ok = c, true
-			args = args[1:]
-		}
-	}
-	// Allow 'replication status', 'replication resync', 'replication backfill', 'replication pair list', 'replication pair remove'.
-	if !ok && name == "replication" && len(args) > 0 {
-		if len(args) >= 2 {
-			if c, found := commands["replication "+args[0]+" "+args[1]]; found {
-				cmd, ok = c, true
-				args = args[2:]
-			}
-		}
-		if !ok {
-			if c, found := commands["replication "+args[0]]; found {
-				cmd, ok = c, true
-				args = args[1:]
-			}
-		}
-	}
-	// Allow 'broadcast lag'. Same shape as the replication two-token
+	// Allow 'broadcast lag'. Two-token
 	// dispatch; one subcommand today, the conditional grows as more
 	// land.
 	if !ok && name == "broadcast" && len(args) > 0 {

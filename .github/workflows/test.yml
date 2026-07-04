@@ -18,13 +18,6 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Replication-write guard
-        # A plain db.exec write to a replicated core table (access/attachments/
-        # permissions/log/acknowledged) never journals, so it silently doesn't
-        # replicate (#166). Use db.exec_replicated/exec_app_user, or annotate an
-        # intentional host-local write with `// exec-ok: <reason>`.
-        run: python3 .github/scripts/check-core-replicated-writes.py --check
-
       - name: Build
         run: make
 
@@ -41,7 +34,6 @@ jobs:
           go-version: '1.25'
 
       - name: Test (race detector)
-        # Race detector catches concurrent-write bugs in shared state -
-        # the kind that show up under multi-master replication. Slower
-        # (~8x) and requires cgo, so run as a separate job.
+        # Race detector catches concurrent-write bugs in shared state.
+        # Slower (~8x) and requires cgo, so run as a separate job.
         run: make test-race

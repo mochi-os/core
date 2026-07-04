@@ -685,7 +685,6 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// this path handles arbitrarily large files; the file/push pusher
 	// streams the on-disk copy to each peer the same way.
 	if a.user != nil && a.user.UID != "" {
-		replication_emit_file_push(a.user.UID, app.id, file)
 	}
 
 	return sl.None, nil

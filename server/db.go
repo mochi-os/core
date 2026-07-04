@@ -196,38 +196,6 @@ func db_authorise_starlark_strict(action sqlite3.AuthorizerActionCode, name3rd, 
 	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
 }
 
-// exec_replicated_apply runs an inbound replicated SQL statement under the strict
-// authorizer (the base deny-list PLUS DDL). Every replication APPLY path routes
-// through it, so a malicious peer's op cannot DROP/ALTER the user's schema — nor,
-// on the core and app-system paths (which historically ran on the no-authorizer
-// `internal` pool), ATTACH another DB or run PRAGMA. The authorizer fires per
-// ACTION, so this is multi-statement-safe; a leading-verb check is not, because
-// db.starlark.Exec runs every statement in the string. The strict authorizer is set
-// on one checked-out connection for the duration of the apply and restored before
-// that connection returns to the pool, so app migrations — which legitimately run
-// DDL through the same pool — are unaffected.
-func (db *DB) exec_replicated_apply(statement string, args ...any) (sql.Result, error) {
-	ctx := context.Background()
-	conn, err := db.starlark.Conn(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	setauth := func(cb func(sqlite3.AuthorizerActionCode, string, string, string, string) sqlite3.AuthorizerReturnCode) error {
-		return conn.Raw(func(dc any) error {
-			raw, ok := dc.(interface{ Raw() *sqlite3.Conn })
-			if !ok {
-				return fmt.Errorf("replication apply: driver connection does not expose *sqlite3.Conn")
-			}
-			return raw.Raw().SetAuthorizer(cb)
-		})
-	}
-	if err := setauth(db_authorise_starlark_strict); err != nil {
-		return nil, err
-	}
-	defer setauth(db_authorise_starlark)
-	return conn.ExecContext(ctx, statement, args...)
-}
 
 func db_create() {
 	db_migrating.Add(1)
@@ -670,19 +638,6 @@ func db_app(u *User, app *App) *DB {
 	// first journaled write (#424). Idempotent; covers both fresh and
 	// pre-existing files. Only on the non-reused open, so it runs once per
 	// process per (path, version).
-	db.journal_setup()
-
-	// Opportunistic resync probe: kick the replication pending-buffer
-	// drain for this (user, app) tuple in the background. If a sender's
-	// ops were deferred for schema-skew and the migration above just
-	// caught us up, the drain finds them and applies without waiting
-	// for the 30s manager tick. No-op when there's nothing pending.
-	//
-	// Routed through a package-level variable so test harnesses that
-	// mutate data_dir (integration_setup, harness) can install a
-	// no-op stub - the production goroutine reads data_dir
-	// asynchronously, which races with the harness's host switches.
-	post_migration_drain_async(u.UID, app.id)
 
 	return db
 }
@@ -720,7 +675,6 @@ func db_app_system(u *User, app *App) *DB {
 
 	db.access_setup()
 	db.attachments_setup()
-	db.journal_setup()
 	db.system_setup = true
 
 	return db
@@ -769,8 +723,7 @@ func db_app_system_sweep() {
 			if !db.system_setup {
 				db.access_setup()
 				db.attachments_setup()
-				db.journal_setup()
-				db.system_setup = true
+							db.system_setup = true
 				count++
 			}
 			l.Unlock()
@@ -2762,143 +2715,19 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	return ExecWrote
 }
 
-// begin_tx_retry opens a transaction on the internal pool, retrying a few times
-// to ride out a TRANSIENT open failure (momentary pool contention). A replicated
-// write must journal its op ATOMICALLY with the data, so its callers fail rather
-// than fall through to a non-atomic write + separate emit when this can't open
-// (#167): tx-open failing is the trouble signal (pool exhaustion / closing DB)
-// under which a crash between a separate write and emit — silently persisting the
-// data without ever emitting the op — is most likely.
-func (db *DB) begin_tx_retry() (*sqlx.Tx, error) {
-	var tx *sqlx.Tx
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if tx, err = db.internal.Beginx(); err == nil {
-			return tx, nil
-		}
-		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
-	}
-	return nil, err
-}
 
-// exec_replicated runs a write against the local DB and, if the handle
-// is tagged with a replicating kind (app-system, user-core), fans the
-// statement out to the user's host set. Used by Go-side APIs
-// (mochi.access.*, mochi.group.*, …) so their writes converge across
-// hosts the same way mochi.db.execute does for app-defined tables.
-//
-// Schema DDL (create table, create index, alter table) must keep using
-// the plain exec — receivers create their own tables on first open.
+// exec_replicated is a plain local write. The name is historical (it used to
+// fan the statement out to the user's host set); it collapses into exec at the
+// register cleanup stage.
 func (db *DB) exec_replicated(query string, values ...any) {
-	// App-system writes (access, attachments in app.db) journal the op in the
-	// same transaction as the data, so it can't be lost relative to the data
-	// (Gap A/B) — same guarantee as mochi.db.execute. user-core stays on the
-	// legacy emit (core-scope signing isn't wired; #34).
-	if db.kind == db_kind_app_system && db.user != nil && db.user.UID != "" && db.app != nil &&
-		journal_table_replicates(sql_target_table(query)) {
-		tx, err := db.begin_tx_retry()
-		if err != nil {
-			// Can't open a tx to journal the op ATOMICALLY with the data. FAIL
-			// rather than fall through to a non-atomic write + separate legacy
-			// emit, which would silently reopen the write->emit gap (#34/#167): a
-			// crash between the two would persist the data without ever emitting
-			// the op, diverging the paired host. must() surfaces this as the
-			// write's error (recoverable), matching the SQL-error contract below.
-			must[any](nil, fmt.Errorf("exec_replicated: cannot open tx for atomic journal: %w", err))
-			return
-		}
-		if _, err := tx.Exec(query, values...); err != nil {
-			tx.Rollback()
-			must[any](nil, err)
-			return
-		}
-		if err := journal_record_tx(tx, repl_op_exec_app_system, 0, query, values); err != nil {
-			tx.Rollback()
-			must[any](nil, err)
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			must[any](nil, err)
-			return
-		}
-		journal_wake(db)
-		return
-	}
-
 	must(db.internal.Exec(query, values...))
-	if db.user == nil || db.user.UID == "" {
-		return
-	}
-	switch db.kind {
-	case db_kind_app_system:
-		if db.app != nil {
-			replication_emit_app_system_exec(db.user, db.app, query, values)
-		}
-	case db_kind_user_core:
-		replication_emit_user_core_exec(db.user, query, values)
-	}
 }
 
-// exec_app_user runs a write against a per-user app DB and emits a
-// sql/op so the same statement re-executes on every paired host.
-// Used by Go-side internals that need to mutate per-user app DBs and
-// have those changes converge across hosts — currently the broadcast
-// SENDER-side helpers (sequence / log / acknowledged), so a paired
-// host can take over emission and serve resync requests with a
-// consistent log.
-//
-// NOTE: broadcast RECEIVER-side state (received, pending) deliberately
-// does NOT use this helper. Each paired host applies inbound
-// broadcasts independently; pair-replicating received caused the
-// gap detector on the partner to dedup events it never actually
-// applied (task #91). receiver-side writes go through plain db.exec.
-//
-// Schema DDL stays on plain exec — receivers create their own tables
-// on first open via the `create table if not exists` helpers.
+// exec_app_user is a plain local write. The name is historical (it used to
+// journal the statement for host-set replication); it collapses into exec at
+// the register cleanup stage.
 func (db *DB) exec_app_user(query string, values ...any) {
-	if db.user == nil || db.user.UID == "" || db.app == nil {
-		must(db.internal.Exec(query, values...))
-		return
-	}
-	av := db.app.active(db.user)
-	if av == nil {
-		must(db.internal.Exec(query, values...))
-		return
-	}
-	if !journal_replicates(false, av, query) {
-		must(db.internal.Exec(query, values...))
-		return
-	}
-
-	// Record the op in the data DB's journal in the same transaction as the
-	// write, then wake the drainer — same atomicity guarantee as
-	// mochi.db.execute (claude/plans/replication-journal.md). The journal table
-	// is created eagerly at DB open (db_app), so it already exists here.
-	tx, err := db.begin_tx_retry()
-	if err != nil {
-		// Can't open a tx to journal the op ATOMICALLY with the data. FAIL rather
-		// than fall through to a non-atomic write with NO emit, which would apply
-		// the write locally but never replicate it (#167) — diverging a paired
-		// host's broadcast log. must() surfaces it, matching the SQL-error
-		// contract below.
-		must[any](nil, fmt.Errorf("exec_app_user: cannot open tx for atomic journal: %w", err))
-		return
-	}
-	if _, err := tx.Exec(query, values...); err != nil {
-		tx.Rollback()
-		must[any](nil, err) // preserve the panic-on-SQL-error contract
-		return
-	}
-	if err := journal_record_tx(tx, repl_op_exec, av.Database.Schema, query, values); err != nil {
-		tx.Rollback()
-		must[any](nil, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		must[any](nil, err)
-		return
-	}
-	journal_wake(db)
+	must(db.internal.Exec(query, values...))
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {
@@ -3127,7 +2956,6 @@ func db_replicate_after_exec(t *sl.Thread, sql string, args []any) {
 	if av == nil {
 		return
 	}
-	replication_emit_sql_command(u, app, av, sql, args)
 }
 
 // db_for_thread resolves the correct per-user database for the current Starlark
@@ -3167,14 +2995,14 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "%s", reason)
 	}
 
-	// The read APIs must not smuggle a write: a mutation run through
-	// row/rows/exists executes but is never journaled, so it would never
-	// replicate (silent divergence). Reject it — the write must go through
-	// mochi.db.execute (or mochi.db.transaction), which journals the op.
+	// The read APIs must not smuggle a write: reads and writes have distinct
+	// semantics (return values, hooks), so a mutation through row/rows/exists
+	// is always a mistake. Reject it — writes go through mochi.db.execute (or
+	// mochi.db.transaction).
 	switch fn.Name() {
 	case "mochi.db.exists", "mochi.db.row", "mochi.db.rows":
 		if sql_is_mutating(query) {
-			return sl_error(fn, "%s cannot run a mutating statement (INSERT/UPDATE/DELETE/REPLACE); use mochi.db.execute so the write replicates", fn.Name())
+			return sl_error(fn, "%s cannot run a mutating statement (INSERT/UPDATE/DELETE/REPLACE); use mochi.db.execute", fn.Name())
 		}
 	}
 
@@ -3210,31 +3038,15 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 
 	switch fn.Name() {
 	case "mochi.db.execute":
-		// Replicated app-scope write: record the op in the data DB's journal
-		// in the SAME transaction as the mutation (db_execute_journal), then
-		// wake the drainer. The old direct emit (db_replicate_after_exec) is
-		// retired for this path — replication is driven by the journal so a
-		// crash can't leave the data committed with the op unrecorded, and a
-		// write made with no live peer is still journaled. See
-		// claude/plans/replication-journal.md.
-		u, _ := db_user_for_thread(t)
-		app, _ := t.Local("app").(*App)
-		var av *AppVersion
-		if u != nil && app != nil {
-			av = app.active(u)
-		}
-		suppressed, _ := t.Local("replication_suppressed").(bool)
-		affected, recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, query, as)
+		res, err := conn.ExecContext(ctx, query, as...)
 		if err != nil {
 			db_starlark_rollback(conn)
 			return sl_error(fn, "database error: %v", err)
 		}
-		if recorded {
-			journal_wake(db)
-		}
 		// Return the number of rows the statement changed (insert/update/
 		// delete count), so apps can branch on whether a conditional write
-		// took effect. Previously returned None.
+		// took effect.
+		affected, _ := res.RowsAffected()
 		return sl.MakeInt64(affected), nil
 
 	case "mochi.db.exists":
@@ -3329,26 +3141,7 @@ func db_starlark_sql_blocked(query string) string {
 	case "ANALYZE":
 		return "ANALYZE is not allowed"
 	}
-	// Block app writes to core-reserved tables. The replication `journal` lives in
-	// every app data DB (journal_setup) and is populated by core in the SAME
-	// transaction as each replicated write; an app that DELETEs its journal drops
-	// its own un-shipped ops (silent divergence) or forges/UPDATEs rows to
-	// manipulate the op stream (#152). An authorizer deny can't be used here — core's
-	// db_execute_journal runs on this same starlark connection — so gate on the
-	// app's query string instead. No app can own a `journal` table anyway: core's
-	// `create table if not exists journal` already claims the name.
-	if t := sql_target_table(query); t != "" && db_reserved_app_table[strings.ToLower(t)] {
-		return fmt.Sprintf("table %q is reserved for replication and cannot be written by app SQL", t)
-	}
 	return ""
-}
-
-// db_reserved_app_table names the core-created tables that live inside an app's
-// own (mochi.db-reachable) data DB and must never be written by app SQL. Only the
-// replication journal qualifies today — the other host-local infra tables
-// (pending, sequence, journal_delivery, …) live in core DBs an app can't reach.
-var db_reserved_app_table = map[string]bool{
-	"journal": true,
 }
 
 // TransactionHandle is the Starlark value returned by mochi.db.transaction(). It
@@ -3543,27 +3336,6 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	if h.closed {
 		return sl_error(fn, "transaction is closed")
 	}
-	// Record journal rows for the buffered replicated writes INSIDE this
-	// transaction, so the data and the ops it emits commit atomically. The
-	// drainer assigns sequences and ships post-commit (see
-	// claude/plans/replication-journal.md). Replaces the old post-commit
-	// replication_emit_sql_command flush, whose emit could be lost if the
-	// process died after the data committed.
-	recorded := false
-	if !h.suppressed {
-		for _, e := range h.pending_emits {
-			if !journal_replicates(false, h.av, e.sql) {
-				continue
-			}
-			if err := journal_record_tx(h.tx, repl_op_exec, h.av.Database.Schema, e.sql, e.args); err != nil {
-				h.tx.Rollback()
-				h.closed = true
-				h.pending_emits = nil
-				return sl_error(fn, "commit failed: %v", err)
-			}
-			recorded = true
-		}
-	}
 
 	if err := h.tx.Commit(); err != nil {
 		h.closed = true
@@ -3572,9 +3344,6 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	}
 	h.closed = true
 	h.pending_emits = nil
-	if recorded {
-		journal_wake_app(h.user, h.app)
-	}
 	return sl.None, nil
 }
 
@@ -3708,4 +3477,123 @@ func valid_sql_identifier(name string) bool {
 		}
 	}
 	return true
+}
+// row_string / row_int unpack scalar SQL row values defensively. The
+// nil checks let api_replication_* return an empty list cleanly when
+// a row was scanned with an unexpected column type instead of
+// panicking the action.
+func row_string(r map[string]any, key string) string {
+	if v, ok := r[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// row_int extracts a numeric field from a map[string]any returned by
+// a CBOR-decoded payload or a sqlite row scan. The cbor library
+// decodes non-negative integers into uint64 (not int64) when the
+// target is interface{}, so callers like the bootstrap chunk-fetch
+// handler would see length=0 for every non-empty file because the
+// uint64(903) case wasn't matched and fell through to the zero
+// return. That broke file-chunk delivery — every file landed as a
+// zero-byte file on the receiver, including 21,612 entity-id app
+// files whose empty app.json then made the published-apps loader
+// silently skip the entire installed-app set.
+func row_int(r map[string]any, key string) int64 {
+	switch v := r[key].(type) {
+	case int64:
+		return v
+	case uint64:
+		return int64(v)
+	case int:
+		return int64(v)
+	case uint:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case uint32:
+		return int64(v)
+	}
+	return 0
+}
+// sql_strip_lead skips over leading whitespace and line / block comments.
+func sql_strip_lead(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		if strings.HasPrefix(s, "--") {
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				s = s[i+1:]
+				continue
+			}
+			return ""
+		}
+		if strings.HasPrefix(s, "/*") {
+			if i := strings.Index(s, "*/"); i >= 0 {
+				s = s[i+2:]
+				continue
+			}
+			return ""
+		}
+		return s
+	}
+}
+
+// sql_take_word reads the next contiguous run of letters as a single
+// keyword. Stops at the first non-letter, returning the word and the
+// remainder.
+func sql_take_word(s string) (string, string) {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			break
+		}
+		i++
+	}
+	return s[:i], s[i:]
+}
+
+// sql_target_table extracts the target table from a mutating SQL
+// statement. Returns "" for read-only statements (SELECT, PRAGMA …)
+// and for schema statements (CREATE/DROP/ALTER) — neither replicates.
+// The parser is intentionally simple: skip leading comments + whitespace,
+// match the verb, then take the next identifier as the table name. CTE
+// (WITH …) prefixes are not recognised and stay local; apps that need
+// CTE writes to replicate should reshape to a plain INSERT/UPDATE/DELETE.
+// sql_is_mutating reports whether sql is a row-changing statement
+// (INSERT / REPLACE / UPDATE / DELETE, including the INSERT OR ... forms).
+// Used to keep mutations out of the read-only mochi.db.row/rows/exists APIs,
+// which run the write but do NOT journal it — so the change would never
+// replicate (silent divergence). Such writes must go through mochi.db.execute.
+// CTE-prefixed mutations (WITH ... DELETE) are not detected — no app uses them
+// and the CI grep gate (#8) covers the literal case.
+func sql_is_mutating(sql string) bool {
+	verb, _ := sql_take_word(sql_strip_lead(sql))
+	switch strings.ToUpper(verb) {
+	case "INSERT", "REPLACE", "UPDATE", "DELETE":
+		return true
+	}
+	return false
+}
+
+// repl_stream_migrate_key maps a legacy bare stream key (pre-class-
+// qualification) to its class-qualified form for db_upgrade_85. The schema
+// migration has no op.Operation, so it derives the class from the bare name
+// alone: the "/app" per-app-system suffix, the system-row set, and the
+// file-backed core names are recognised; everything else is per-app data.
+// A conflated bare "notifications"/"user" row resolves to the core stream;
+// any colliding app-data stream re-anchors on its next Prev==0 op.
+func repl_stream_migrate_key(old string) string {
+	// Inlined historical stream-key format ("<class>:<name>"); the live
+	// constants were removed with the replication engine.
+	if strings.HasSuffix(old, "/app") {
+		return "app:" + strings.TrimSuffix(old, "/app") + "/system"
+	}
+	switch old {
+	case "users", "sessions", "schedule":
+		return "system:" + old
+	case "user", "notifications":
+		return "core:" + old
+	}
+	return "app:" + old
 }

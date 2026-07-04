@@ -251,7 +251,6 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	defer root.Close()
 
 	root.Remove(file)
-	replication_emit_file_push_delete(user.UID, app.id, file)
 	return sl.None, nil
 }
 
@@ -469,7 +468,6 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	// file from disk and streams it via the file/push event handler.
 	// No size threshold.
 	if user.UID != "" {
-		replication_emit_file_push(user.UID, app.id, file)
 	}
 
 	return sl.None, nil

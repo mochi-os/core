@@ -665,9 +665,6 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	case "browser", "unifiedpush", "fcm":
 		// host-local
 	default:
-		replication_emit_user_core_exec(user,
-			"insert or replace into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
-			[]any{id, ptype, label, identifier, data_json, now, verified})
 	}
 
 	return sl_encode(map[string]any{

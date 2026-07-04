@@ -101,7 +101,6 @@ func peer_mark_progress(id string) {
 	}
 	peer_progress_lock.Unlock()
 	// The peer just acked, so it is reachable again: clear the offline mark.
-	replication_member_reachable(id)
 	if stalled {
 		queue_resurrect_peer(id)
 	}
@@ -120,13 +119,6 @@ func peer_mark_no_progress(id string) {
 	if p.Timeouts >= peer_stall_threshold {
 		p.StalledUntil = now() + peer_stall_window
 	}
-	crossed := p.Timeouts == peer_stall_threshold
 	peer_progress[id] = p
 	peer_progress_lock.Unlock()
-	// On the first crossing into stalled, stamp the member as unreachable: a
-	// replication member that connects but never acks (wiped replica). An ack
-	// clears it.
-	if crossed {
-		replication_member_unreachable(id)
-	}
 }

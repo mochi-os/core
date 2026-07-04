@@ -628,7 +628,6 @@ func user_methods_configure(user *User, method, state string) string {
 	off := methods_join(disabled)
 	db := db_open("db/users.db")
 	db.exec("update users set methods=?, disabled=? where uid=?", methods, off, user.UID)
-	replication_emit_users_users_set(user.UID, map[string]string{"methods": methods, "disabled": off})
 	audit_password_changed(user.Username, "methods_changed")
 	return ""
 }
@@ -783,23 +782,6 @@ func web_auth_mfa(c *gin.Context) {
 		pending_string := strings.Join(pending, ",")
 		db.exec("update partial set completed=?, remaining=? where id=?",
 			completed, pending_string, input.Partial)
-		// Look up the row's expires + user to include in the replace emit.
-		if row, _ := db.row("select user, expires from partial where id=?", input.Partial); row != nil {
-			row_user, _ := row["user"].(string)
-			row_expires, _ := row["expires"].(int64)
-			if row_user != "" {
-				replication_emit_sessions_row(row_user, &SessionsRow{
-					Table: "partial",
-					Key:   map[string]string{"id": input.Partial},
-					Cols: map[string]string{
-						"user":      row_user,
-						"completed": completed,
-						"remaining": pending_string,
-						"expires":   fmt.Sprintf("%d", row_expires),
-					},
-				})
-			}
-		}
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   input.Partial,
@@ -809,7 +791,7 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	// All methods complete - delete partial session and create full session.
-	partial_delete(db, input.Partial, user.UID)
+	partial_delete(db, input.Partial)
 
 	// Load identity for the response
 	user.Identity = user.identity()
@@ -966,7 +948,6 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// not required becomes allowed.
 	csv := strings.Join(methods, ",")
 	db.exec("update users set methods=?, disabled='' where uid=?", csv, user.UID)
-	replication_emit_users_users_set(user.UID, map[string]string{"methods": csv, "disabled": ""})
 	audit_password_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
@@ -1006,7 +987,6 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		target_name = target.Username
 	}
 	db.exec("update users set methods='email', disabled='' where uid=?", id)
-	replication_emit_users_users_set(id, map[string]string{"methods": "email", "disabled": ""})
 	audit_password_changed(target_name, "admin_reset")
 	return sl.True, nil
 }
@@ -1038,11 +1018,6 @@ func email_code_consume(code string) {
 	}
 	sessions.exec("delete from codes where code=?", code)
 	if u := user_by_username(username); u != nil {
-		replication_emit_sessions_row(u.UID, &SessionsRow{
-			Table:  "codes",
-			Key:    map[string]string{"code": code, "username": username},
-			Delete: true,
-		})
 	}
 }
 
@@ -1088,14 +1063,6 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	created := now()
 	db.exec("replace into totp (user, secret, verified, created) values (?, ?, 0, ?)",
 		user.UID, key.Secret(), created)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table: "totp",
-		Cols: map[string]string{
-			"secret":   key.Secret(),
-			"verified": "0",
-			"created":  fmt.Sprintf("%d", created),
-		},
-	})
 
 	// Return secret and otpauth URL for QR code
 	return sl_encode(map[string]any{
@@ -1158,15 +1125,6 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 	// Mark as verified (setup completion)
 	db.exec("update totp set verified=1 where user=?", user.UID)
-	created, _ := row["created"].(int64)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table: "totp",
-		Cols: map[string]string{
-			"secret":   secret,
-			"verified": "1",
-			"created":  fmt.Sprintf("%d", created),
-		},
-	})
 	audit_password_changed(user.Username, "totp_enabled")
 	return sl.True, nil
 }
@@ -1211,11 +1169,6 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	db.exec("delete from totp where user=?", user.UID)
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:  "totp",
-		Cols:   map[string]string{"secret": ""}, // key for the per-user row is implicit
-		Delete: true,
-	})
 	audit_password_changed(user.Username, "totp_disabled")
 	return sl.True, nil
 }
@@ -1257,12 +1210,10 @@ func web_recovery_login(c *gin.Context) {
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)
 	var matched int64 = -1
-	var matchedHash string
 	for _, row := range rows {
 		hash, _ := row["hash"].(string)
 		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(code)) == nil {
 			matched = row["id"].(int64)
-			matchedHash = hash
 			break
 		}
 	}
@@ -1294,11 +1245,6 @@ func web_recovery_login(c *gin.Context) {
 	// Delete used code (after suspension check to avoid consuming codes for suspended users)
 	db.exec("delete from recovery where id=?", matched)
 	// Cross-host: integer PK is local; replicate by (user, hash) instead.
-	replication_emit_users_row(user_id, &UsersRow{
-		Table:  "recovery",
-		Cols:   map[string]string{"hash": matchedHash},
-		Delete: true,
-	})
 
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
@@ -1329,11 +1275,6 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	db.exec("delete from recovery where user=?", user.UID)
 	// Tell peers to wipe their existing codes too. The hash="*" sentinel
 	// is recognised by the apply path as "delete all for user".
-	replication_emit_users_row(user.UID, &UsersRow{
-		Table:  "recovery",
-		Cols:   map[string]string{"hash": "*"},
-		Delete: true,
-	})
 	audit_password_changed(user.Username, "recovery_regenerated")
 
 	// Generate new codes
@@ -1348,13 +1289,6 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		created := now()
 		db.exec("insert into recovery (user, hash, created) values (?, ?, ?)",
 			user.UID, string(hash), created)
-		replication_emit_users_row(user.UID, &UsersRow{
-			Table: "recovery",
-			Cols: map[string]string{
-				"hash":    string(hash),
-				"created": fmt.Sprintf("%d", created),
-			},
-		})
 	}
 
 	return sl_encode(codes), nil
@@ -1377,4 +1311,17 @@ func api_user_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl.MakeInt(0), nil
 	}
 	return sl.MakeInt(int(row["count"].(int64))), nil
+}
+
+// partial_create inserts an MFA partial-login session. Wrapping keeps the
+// insert SQL in one place across the five call sites.
+func partial_create(sdb *DB, partialID, userUID, completed, remaining string, expires int64) {
+	sdb.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)",
+		partialID, userUID, completed, remaining, expires)
+}
+
+// partial_delete removes an MFA partial-login session by id (the random
+// 32-char id is globally unique).
+func partial_delete(sdb *DB, partialID string) {
+	sdb.exec("delete from partial where id=?", partialID)
 }

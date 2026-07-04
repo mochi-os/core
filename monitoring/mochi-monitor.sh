@@ -25,9 +25,8 @@
 set -u
 
 # --- config (override via environment) -------------------------------------
-SERVERS="${MOCHI_MONITOR_SERVERS:-https://yuzu.mochi-os.org https://wasabi.mochi-os.org}"
+SERVERS="${MOCHI_MONITOR_SERVERS:-https://yuzu.mochi-os.org}"
 ALERT_TO="${MOCHI_MONITOR_TO:-alistair@acunningham.org}"
-MANAGER_STALL="${MOCHI_MONITOR_MANAGER_STALL:-180}" # seconds; the manager ticks every 30s
 TIMEOUT="${MOCHI_MONITOR_TIMEOUT:-15}"
 STATE="${MOCHI_MONITOR_STATE:-/var/lib/mochi-monitor/state}" # dedup state file
 REALERT="${MOCHI_MONITOR_REALERT:-21600}"                    # re-alert an UNCHANGED problem at most every 6h
@@ -46,16 +45,8 @@ for url in $SERVERS; do
 	fi
 
 	status=$(printf '%s' "$body" | jq -r '.status // "?"')
-	repl=$(printf '%s' "$body" | jq -r '.replication // "?"')
-	mage=$(printf '%s' "$body" | jq -r '.manager_age // -1')
-	irr=$(printf '%s' "$body" | jq -r '.irreparable // 0')
 
 	[ "$status" != "ok" ] && note "$host: liveness status=$status (database/network degraded)."
-	[ "$repl" != "ok" ] && note "$host: replication=DEGRADED (irreparable=$irr) — a stall / not-advancing / divergence / stale-app alert is active, or a peer is dead. Check: mochictl replication audit / stalled."
-	# manager_age: seconds since the last manager tick; -1 = never started.
-	if [ "$mage" -lt 0 ] || [ "$mage" -gt "$MANAGER_STALL" ]; then
-		note "$host: replication MANAGER HUNG — last tick ${mage}s ago (threshold ${MANAGER_STALL}s). The server's own alerting is DEAD; restart mochi-server."
-	fi
 done
 
 # send: subject as $1, body on stdin -> ALERT_CMD (if set), else mail.

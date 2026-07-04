@@ -2483,7 +2483,6 @@ func git_replicate_repo_delta(owner *User, app *App, entity_id, repo_path string
 		return
 	}
 	emit := func(rel string) {
-		replication_emit_file_push_rooted(owner.UID, app.id, file_push_root_app, filepath.ToSlash(filepath.Join(entity_id, rel)))
 	}
 	// Always (re)ship the small top-level pointers even if they predate `since`: a new
 	// repo's HEAD/config are written at init, before any push, so a pure mtime delta

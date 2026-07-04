@@ -33,7 +33,7 @@ var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict
 	"cancel": sl.NewBuiltin("mochi.schedule.cancel", api_schedule_cancel),
 	"every":  sl.NewBuiltin("mochi.schedule.every", api_schedule_every),
 	"get":    sl.NewBuiltin("mochi.schedule.get", api_schedule_get),
-	"leader": sl.NewBuiltin("mochi.schedule.leader", api_schedule_leader),
+	"leader": sl.NewBuiltin("mochi.schedule.leader", api_schedule_leader_shim),
 	"list":   sl.NewBuiltin("mochi.schedule.list", api_schedule_list),
 })
 
@@ -60,7 +60,6 @@ func schedule_create(user string, app string, due int64, event string, data stri
 		return 0
 	}
 
-	replication_emit_schedule_insert(user, app, due, event, data, interval, created)
 
 	// Wake up the scheduler to check for the new event
 	schedule_notify()
@@ -83,19 +82,7 @@ func schedule_get(id int64) *ScheduledEvent {
 // drop the matching row. Looks the row up first because the
 // autoincrement id is local-only.
 func schedule_delete(id int64) {
-	db := schedule_db()
-	var user, app, event string
-	var created int64
-	if row, _ := db.row("select user, app, event, created from schedule where id=?", id); row != nil {
-		user, _ = row["user"].(string)
-		app, _ = row["app"].(string)
-		event, _ = row["event"].(string)
-		created, _ = row["created"].(int64)
-	}
-	db.exec("delete from schedule where id=?", id)
-	if user != "" && app != "" && event != "" {
-		replication_emit_schedule_delete(user, app, event, created)
-	}
+	schedule_db().exec("delete from schedule where id=?", id)
 }
 
 // schedule_list returns all scheduled events for an app and user
@@ -299,22 +286,9 @@ func schedule_claim(id int64, interval int64) bool {
 			result, err = res.RowsAffected()
 		}
 	} else {
-		// One-shot: look up natural-key fields first so we can emit a
-		// keyed delete after the local DELETE commits.
-		var user, app, event string
-		var created int64
-		if row, _ := db.row("select user, app, event, created from schedule where id=?", id); row != nil {
-			user, _ = row["user"].(string)
-			app, _ = row["app"].(string)
-			event, _ = row["event"].(string)
-			created, _ = row["created"].(int64)
-		}
 		res, e := db.internal.Exec("delete from schedule where id = ? and due <= ?", id, now())
 		if e == nil {
 			result, err = res.RowsAffected()
-		}
-		if err == nil && result > 0 && user != "" && app != "" && event != "" {
-			replication_emit_schedule_delete(user, app, event, created)
 		}
 	}
 
@@ -853,4 +827,10 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	return sl.NewList(result), nil
+}
+
+// api_schedule_leader_shim: replication is removed, so a single host always
+// leads. Kept until every app drops its mochi.schedule.leader calls.
+func api_schedule_leader_shim(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.Bool(true), nil
 }

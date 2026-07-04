@@ -137,25 +137,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Block app actions for users whose per-user replication bootstrap
-	// hasn't completed. The /login app stays reachable so the user can
-	// see the /login/replicating waiting page (it polls /_/identity, not
-	// an /<app>/-/action, so it doesn't hit this code path). Without
-	// this gate the user could navigate to /<app>/ while bootstrap is
-	// still rename(2)-ing DBs and either (a) corrupt the running DB
-	// connection (the "disk image malformed" panic caught 2026-05-20),
-	// or (b) see a half-empty dashboard with no signal that anything
-	// is wrong (the 35%-files-missing case from the same incident).
-	// The /login/-/* paths are the only ones that need to work while
-	// pending — the user has to be able to cancel or wait.
+	// Block app actions for users whose restore hasn't completed. The /login
+	// app stays reachable so the user can see the waiting page. Without this
+	// gate the user could navigate to /<app>/ while the restore is still
+	// rename(2)-ing DBs and either (a) corrupt the running DB connection (the
+	// "disk image malformed" panic caught 2026-05-20), or (b) see a half-empty
+	// dashboard with no signal that anything is wrong.
 	if user_pending(user) && !app_is_login(a) {
-		// A browser navigating to a gated app loads HTML, not XHR —
-		// returning a JSON error there dumps raw JSON in the page, because
-		// the SPA (which would route to the waiting screen) never runs. So
-		// redirect HTML navigations to the matching /login waiting page,
-		// which explains the state (e.g. "approve the request on the source
-		// server") and offers cancel; API/XHR callers still get the JSON
-		// their request layer expects.
+		// A browser navigating to a gated app loads HTML, not XHR — returning
+		// a JSON error there dumps raw JSON in the page, because the SPA
+		// (which would route to the waiting screen) never runs. So redirect
+		// HTML navigations to the /login waiting page; API/XHR callers still
+		// get the JSON their request layer expects.
 		accept := c.GetHeader("Accept")
 		html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 		if user.Status == "pending-restore" {
@@ -165,10 +158,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
 			}
 		} else {
+			// Legacy pending states (pre-removal replication links) can no
+			// longer complete; send the user to /login.
 			if html {
-				c.Redirect(http.StatusFound, app_login_route("replicating"))
+				c.Redirect(http.StatusFound, app_login_route(""))
 			} else {
-				respond_error(c, http.StatusServiceUnavailable, "replication_in_progress", "errors.replication_in_progress", nil)
+				respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.restore_in_progress", nil)
 			}
 		}
 		c.Abort()
@@ -1632,7 +1627,6 @@ func web_start() {
 	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
 	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
 	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
-	r.POST("/_/auth/replicate", rate_limit_login_middleware, web_auth_replicate)
 	r.POST("/_/auth/restore", rate_limit_login_middleware, web_auth_restore)
 	r.GET("/_/auth/restore/progress", web_auth_restore_progress)
 	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_oauth_begin)
@@ -1649,8 +1643,6 @@ func web_start() {
 	r.POST("/_/abandon", web_abandon)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/health", web_health)
-	r.GET("/_/replication/health", web_replication_health)
-	r.GET("/_/replication/progress", web_replication_progress)
 	r.GET("/_/p2p/info", web_p2p_info)
 	r.GET("/sw.js", webpush_service_worker)
 	r.GET("/robots.txt", web_robots)

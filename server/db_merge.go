@@ -232,13 +232,11 @@ func db_merge_allocate(db *DB, table string, keyCols, fieldCols []string, row ma
 	}
 	vals = append(vals, net_id, seen+1, removed)
 
-	affected, recorded, err := db_execute_journal(ctx, conn, db, av, suppressed, db_merge_statement(table, keyCols, fieldCols), vals)
+	res, err := conn.ExecContext(ctx, db_merge_statement(table, keyCols, fieldCols), vals...)
 	if err != nil {
 		db_starlark_rollback(conn)
 		return 0, fmt.Errorf("database error: %v", err)
 	}
-	if recorded {
-		journal_wake(db)
-	}
+	affected, _ := res.RowsAffected()
 	return affected, nil
 }

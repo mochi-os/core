@@ -201,7 +201,6 @@ func broadcast_next_local(db *DB, key, peer string) int64 {
 			// A max-merge of the absolute value is idempotent and order-independent
 			// (#150).
 			const mirror = "insert into sequence (key, peer, last) values (?, ?, ?) on conflict(key, peer) do update set last = max(sequence.last, excluded.last)"
-			replication_emit_sql_command(db.user, db.app, av, mirror, []any{key, peer, seq})
 		}
 	}
 	return seq

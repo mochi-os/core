@@ -499,30 +499,17 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
-	# Publish to both hosts by name (not the packages.mochi-os.org alias) so the
-	# target is deterministic regardless of where that record points. Upload the
-	# full tree to yuzu (primary) once, then have yuzu relay it to wasabi
-	# (secondary) over the datacenter link — so the local uplink (the release
-	# bottleneck) carries the ~200 MB tree once, not twice. If yuzu can't reach
-	# wasabi (ssh trust not yet provisioned), fall back to pushing wasabi
-	# directly from here, so a release never breaks. Both hosts then serve the
-	# same signed tree from a local file:/srv/apt source.
+	# Publish to yuzu by name (not the packages.mochi-os.org alias) so the
+	# target is deterministic regardless of where that record points. Wasabi is
+	# frozen as a pre-decouple backup and receives no packages.
 	@t0=$$(date +%s); \
 	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
-	echo ">>> rsync local->yuzu: $$(($$(date +%s)-t0))s" | tee -a $(timing); \
-	t1=$$(date +%s); \
-	if ssh -o BatchMode=yes -o ConnectTimeout=8 root@yuzu.mochi-os.org 'rsync -av --delete /srv/packages/ root@wasabi.mochi-os.org:/srv/packages/'; then \
-	    echo ">>> rsync yuzu->wasabi (server-side relay): $$(($$(date +%s)-t1))s" | tee -a $(timing); \
-	else \
-	    echo ">>> yuzu->wasabi relay unavailable; falling back to direct local->wasabi" | tee -a $(timing); \
-	    rsync -av --delete ../packages/ root@wasabi.mochi-os.org:/srv/packages/ || exit 1; \
-	    echo ">>> rsync local->wasabi (fallback): $$(($$(date +%s)-t1))s" | tee -a $(timing); \
-	fi
+	echo ">>> rsync local->yuzu: $$(($$(date +%s)-t0))s" | tee -a $(timing)
 
-# Install the published version on the production hosts (wasabi secondary first,
-# then yuzu primary, each verified). Separate from `release` (which only
-# publishes packages) so deploying stays an explicit step. Pass apt flags via
-# `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical version.
+# Install the published version on yuzu (verified). Separate from `release`
+# (which only publishes packages) so deploying stays an explicit step. Pass apt
+# flags via `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical
+# version.
 deploy:
 	./build/scripts/deploy $(DEPLOY_FLAGS)
 

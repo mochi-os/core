@@ -89,7 +89,7 @@ func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, 
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_max)
 		return false
 	}
-	// Plain db.exec (NOT exec_app_user) - pending is receiver-side
+	// Plain db.exec - pending is receiver-side
 	// apply-buffer state and each paired host must track its own.
 	// Pair-replicating the buffer would cross-pollute drain
 	// expectations between hosts that have applied different subsets

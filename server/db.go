@@ -171,25 +171,6 @@ func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _
 	return sqlite3.AUTH_OK
 }
 
-// db_authorise_starlark_strict is db_authorise_starlark plus a DDL deny-list, used
-// ONLY by the replication apply path (exec_replicated_apply). A replicated op is
-// always DML — schema changes go through the suppressed migration system, never the
-// wire — so an inbound CREATE/DROP/ALTER of a table/index/view (or REINDEX) is a
-// malicious op (e.g. a compromised host sending "DROP TABLE posts") and is denied.
-func db_authorise_starlark_strict(action sqlite3.AuthorizerActionCode, name3rd, name4th, schema, inner string) sqlite3.AuthorizerReturnCode {
-	switch action {
-	case sqlite3.AUTH_CREATE_TABLE, sqlite3.AUTH_CREATE_TEMP_TABLE,
-		sqlite3.AUTH_DROP_TABLE, sqlite3.AUTH_DROP_TEMP_TABLE,
-		sqlite3.AUTH_ALTER_TABLE,
-		sqlite3.AUTH_CREATE_INDEX, sqlite3.AUTH_CREATE_TEMP_INDEX,
-		sqlite3.AUTH_DROP_INDEX, sqlite3.AUTH_DROP_TEMP_INDEX,
-		sqlite3.AUTH_CREATE_VIEW, sqlite3.AUTH_CREATE_TEMP_VIEW,
-		sqlite3.AUTH_DROP_VIEW, sqlite3.AUTH_DROP_TEMP_VIEW,
-		sqlite3.AUTH_REINDEX:
-		return sqlite3.AUTH_DENY
-	}
-	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
-}
 
 func db_create() {
 	db_migrating.Add(1)
@@ -1361,19 +1342,6 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	return ExecWrote
 }
 
-// exec_replicated is a plain local write. The name is historical (it used to
-// fan the statement out to the user's host set); it collapses into exec at the
-// register cleanup stage.
-func (db *DB) exec_replicated(query string, values ...any) {
-	must(db.internal.Exec(query, values...))
-}
-
-// exec_app_user is a plain local write. The name is historical (it used to
-// journal the statement for host-set replication); it collapses into exec at
-// the register cleanup stage.
-func (db *DB) exec_app_user(query string, values ...any) {
-	must(db.internal.Exec(query, values...))
-}
 
 func (db *DB) exists(query string, values ...any) (bool, error) {
 	var r *sql.Rows

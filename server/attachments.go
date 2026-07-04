@@ -148,24 +148,17 @@ func (db *DB) attachment_next_rank(object string) int {
 // entity's rows that didn't replicate) the re-executed UPDATE matches nothing
 // and is a harmless no-op.
 func (db *DB) attachment_shift_up(object string, from_rank int) {
-	db.exec_replicated("update attachments set rank = rank + 1 where object = ? and rank >= ?", object, from_rank)
+	db.exec("update attachments set rank = rank + 1 where object = ? and rank >= ?", object, from_rank)
 }
 
 // Shift ranks down from a position. Replicated (see attachment_shift_up).
 func (db *DB) attachment_shift_down(object string, from_rank int) {
-	db.exec_replicated("update attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
+	db.exec("update attachments set rank = rank - 1 where object = ? and rank > ?", object, from_rank)
 }
 
-// attachment_record_write inserts an attachment row and, for owner-owned
-// attachments (Entity == ""), eagerly pushes its byte file to the user's other
-// hosts. The attachments table lives in the per-app system DB (db_kind_app_system),
-// so exec_replicated fans the metadata to the host set; replication_emit_file_push
-// streams the bytes the same way mochi.file.* does, so the attachment renders on
-// a paired replica without a source-entity round-trip. Foreign cached references
-// (Entity set) get metadata only — their bytes are fetched on demand from the
-// source entity by api_attachment_data, so they must not be pushed here.
+// attachment_record_write inserts an attachment row in the per-app system DB.
 func attachment_record_write(db *DB, att *Attachment) {
-	db.exec_replicated("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
 	if att.Entity == "" && db.user != nil && db.app != nil {
 	}
@@ -972,12 +965,12 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if old_rank != new_rank {
 		if new_rank < old_rank {
 			// Moving up: shift items in [new_rank, old_rank) up by 1
-			db.exec_replicated("update attachments set rank = rank + 1 where object = ? and rank >= ? and rank < ?", att.Object, new_rank, old_rank)
+			db.exec("update attachments set rank = rank + 1 where object = ? and rank >= ? and rank < ?", att.Object, new_rank, old_rank)
 		} else {
 			// Moving down: shift items in (old_rank, new_rank] down by 1
-			db.exec_replicated("update attachments set rank = rank - 1 where object = ? and rank > ? and rank <= ?", att.Object, old_rank, new_rank)
+			db.exec("update attachments set rank = rank - 1 where object = ? and rank > ? and rank <= ?", att.Object, old_rank, new_rank)
 		}
-		db.exec_replicated("update attachments set rank = ? where id = ?", new_rank, id)
+		db.exec("update attachments set rank = ? where id = ?", new_rank, id)
 	}
 
 	// Get updated record
@@ -1742,7 +1735,7 @@ func (e *Event) attachment_event_create() {
 		}
 		name, _ := att["name"].(string)
 
-		e.db.exec_replicated(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 	}
 }
@@ -1793,7 +1786,7 @@ func (e *Event) attachment_event_insert() {
 
 	name, _ := att["name"].(string)
 
-	e.db.exec_replicated(`insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	e.db.exec(`insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
 }
 
@@ -1819,7 +1812,7 @@ func (e *Event) attachment_event_update() {
 	}
 
 	// Only update if we have this attachment and it's from this source
-	e.db.exec_replicated(`update attachments set caption = ?, description = ? where id = ? and entity = ?`,
+	e.db.exec(`update attachments set caption = ?, description = ? where id = ? and entity = ?`,
 		att["caption"], att["description"], id, source)
 }
 
@@ -1873,7 +1866,7 @@ func (e *Event) attachment_event_move() {
 				row_rank = int64(v)
 			}
 			if row_rank > 0 {
-				e.db.exec_replicated("update attachments set rank = ? where id = ? and entity = ?", row_rank, row_id, source)
+				e.db.exec("update attachments set rank = ? where id = ? and entity = ?", row_rank, row_id, source)
 			}
 		}
 		return
@@ -1901,11 +1894,11 @@ func (e *Event) attachment_event_move() {
 	old_rank := int(atoi(e.get("old_rank", ""), 0))
 	if old_rank > 0 && new_rank > 0 && old_rank != new_rank {
 		if new_rank < old_rank {
-			e.db.exec_replicated("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)
+			e.db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)
 		} else {
-			e.db.exec_replicated("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, source, old_rank, new_rank)
+			e.db.exec("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, source, old_rank, new_rank)
 		}
-		e.db.exec_replicated("update attachments set rank = ? where id = ? and entity = ?", new_rank, id, source)
+		e.db.exec("update attachments set rank = ? where id = ? and entity = ?", new_rank, id, source)
 	}
 }
 
@@ -1929,7 +1922,7 @@ func (e *Event) attachment_event_delete() {
 	// Get attachment before deleting (may have empty entity if stored locally)
 	var att Attachment
 	if e.db.scan(&att, "select * from attachments where id = ?", id) {
-		e.db.exec_replicated("delete from attachments where id = ?", id)
+		e.db.exec("delete from attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
 		// Delete local file and thumbnail using os.Root for traversal protection
@@ -1981,7 +1974,7 @@ func (e *Event) attachment_event_clear() {
 		_ = os.Remove(cache_path)
 	}
 
-	e.db.exec_replicated("delete from attachments where object = ? and entity = ?", object, source)
+	e.db.exec("delete from attachments where object = ? and entity = ?", object, source)
 }
 
 // Event handler: _attachment/data (responds with file bytes)
@@ -2190,7 +2183,7 @@ func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			created = now()
 		}
 
-		db.exec_replicated(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 		count++
 	}
@@ -2324,7 +2317,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		rank, _ := att["rank"].(float64)
 		created, _ := att["created"].(float64)
 
-		db.exec_replicated(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
+		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, obj, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
 	}

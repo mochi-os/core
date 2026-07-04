@@ -129,7 +129,7 @@ func broadcast_received_table_create(db *DB) {
 //     ops chain correctly from where the snapshot ended. The new member
 //     can serve resync requests for any of the (key, peer) streams the
 //     existing pair members had logged.
-//   - Live: each broadcast_log_append uses exec_app_user, which
+//   - Live: each broadcast_log_append uses db.exec, which
 //     emits a sql/op that replays as the same insert on every paired
 //     host. Both pair members converge in steady state.
 //
@@ -290,14 +290,14 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	// a replicated re-apply of a row already present (e.g. the snapshot/cursor
 	// overlap after a stream reseed). Ignoring it makes the re-apply a clean no-op
 	// instead of a UNIQUE error that the replication apply path emails about.
-	db.exec_app_user("insert or ignore into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
+	db.exec("insert or ignore into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
 	return sequence
 }
 
 // broadcast_log_age_trim deletes log rows older than the age cap for
 // the given (key, peer). Called on send; no-op when nothing's aged out.
 func broadcast_log_age_trim(db *DB, key, peer string) {
-	db.exec_app_user("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
+	db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
 }
 
 // broadcast_log_ack_trim deletes log rows below the min ack across all
@@ -312,7 +312,7 @@ func broadcast_log_ack_trim(db *DB, key, peer string) {
 	if !ok || last <= 0 {
 		return
 	}
-	db.exec_app_user("delete from log where key=? and peer=? and sequence < ?", key, peer, last)
+	db.exec("delete from log where key=? and peer=? and sequence < ?", key, peer, last)
 }
 
 // mochi.broadcast.next(key) -> int: allocate the next outbound sequence
@@ -664,7 +664,7 @@ func (e *Event) broadcast_acknowledge() error {
 	}
 
 	broadcast_acknowledged_table_create(e.db)
-	e.db.exec_app_user("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
+	e.db.exec("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
 	return nil
 }

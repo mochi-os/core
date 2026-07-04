@@ -541,13 +541,6 @@ func user_preference_get(u *User, name, def string) string {
 
 // user_preference_set sets a user preference.
 //
-// Uses exec_replicated, not exec: preferences (language, theme,
-// timezone, …) are account-global, not host-local — the user expects a
-// preference changed on one host of their account to take effect on
-// every host. The user.db handle is tagged db_kind_user_core, so the
-// replicated write fans the statement out to the account's host set,
-// the same path mochi.access.* / mochi.group.* writes already use.
-// (Caught 2026-05-21: language changed on mochi1 didn't reach mochi2.)
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
 	db.row_write(reg_preferences, map[string]any{"name": name, "value": value})

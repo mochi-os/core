@@ -77,6 +77,12 @@ func email_mark_delivered(u *User, address, event_id string) {
 const email_dedup_ttl int64 = 24 * 3600
 
 func email_send(to string, subject string, body string) {
+	// [email] send = false disables all outbound mail (dev instances, where
+	// test harnesses sign up throwaway @example.com users whose verification
+	// codes would otherwise bounce off the reserved domain). Default true.
+	if !ini_bool("email", "send", true) {
+		return
+	}
 	m := gm.NewMsg()
 
 	from := setting_get("email_from", "mochi-server@localhost")

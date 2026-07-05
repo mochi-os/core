@@ -446,8 +446,14 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // `from` is the sender entity ID (must be owned by the calling user).
 // `key` is the broadcast stream key (typically the same entity ID;
 // apps that want multiple streams per scope can use other keys).
-// `subscribers` is a list of recipient entity IDs. `exclude` skips a
-// single entity (typically the original event author).
+// `subscribers` is a list of recipients: each element is either an
+// entity ID string, or a {"id": entity, "peer": peer} dictionary. A
+// non-empty peer pins delivery to that peer instead of resolving the
+// entity via the directory — required when the recipient is a private
+// entity (not directory-listed), such as a wiki replica; the app
+// stores the peer at subscribe time from the event's peer header.
+// `exclude` skips a single entity (typically the original event
+// author).
 func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var from, key, service, event, exclude string
 	var subscribers *sl.List
@@ -520,6 +526,13 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	var item sl.Value
 	for iter.Next(&item) {
 		sub, _ := sl.AsString(item)
+		peer := ""
+		if sub == "" {
+			if recipient, ok := sl_decode(item).(map[string]any); ok {
+				sub, _ = recipient["id"].(string)
+				peer, _ = recipient["peer"].(string)
+			}
+		}
 		if sub == "" || sub == exclude {
 			continue
 		}
@@ -527,7 +540,11 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		m.FromApp = app.id
 		m.Services = services
 		m.content = content
-		m.send()
+		if peer != "" {
+			m.send_peer(peer)
+		} else {
+			m.send()
+		}
 	}
 
 	return sl.MakeInt64(sequence), nil

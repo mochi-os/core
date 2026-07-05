@@ -86,11 +86,10 @@ func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple
 	return api_attachment_create(thread, nil, args, kwargs)
 }
 
-// reg_attachments versions the attachment metadata rows (in the app-system app.db)
-// as an LWW-Register so a caption/description edit or a delete converges across the
-// user's hosts. `entity` is the host-local owned-vs-foreign pointer (audit-excluded)
-// and `rank` is maintained by reorder counter-arithmetic, so both are kept OUT of
-// the replicated payload — the register touches neither.
+// reg_attachments is the upsert definition for attachment metadata rows in the
+// app-system app.db. `entity` (the owned-vs-foreign pointer) and `rank`
+// (maintained by reorder arithmetic) are kept out of the payload so whole-row
+// writes leave them untouched.
 var reg_attachments = upsert_def{"attachments", []string{"id"}, []string{"object", "name", "size", "content_type", "creator", "caption", "description", "created"}}
 
 // Create attachments table in the system database (app.db)
@@ -143,10 +142,7 @@ func (db *DB) attachment_next_rank(object string) int {
 	return max_rank + 1
 }
 
-// Shift ranks up from a position. Replicated so reorders converge on the
-// user's other hosts. On a host that lacks the affected rows (e.g. a foreign
-// entity's rows that didn't replicate) the re-executed UPDATE matches nothing
-// and is a harmless no-op.
+// Shift ranks up from a position.
 func (db *DB) attachment_shift_up(object string, from_rank int) {
 	db.exec("update attachments set rank = rank + 1 where object = ? and rank >= ?", object, from_rank)
 }
@@ -160,15 +156,12 @@ func (db *DB) attachment_shift_down(object string, from_rank int) {
 func attachment_record_write(db *DB, att *Attachment) {
 	db.exec("insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		att.ID, att.Object, att.Entity, att.Name, att.Size, att.ContentType, att.Creator, att.Caption, att.Description, att.Rank, att.Created)
-	if att.Entity == "" && db.user != nil && db.app != nil {
-	}
 }
 
-// attachment_meta_set versions a caption/description edit as a whole-row
-// read-modify-write through the register, so concurrent edits from the user's hosts
-// converge. entity (host-local) and rank (reorder-managed) are not in the payload,
-// so the register leaves them untouched. No-op if the attachment is absent or
-// tombstoned.
+// attachment_meta_set applies a caption/description edit as a whole-row
+// upsert. entity (owned-vs-foreign pointer) and rank (reorder-managed) are
+// not in the payload, so the write leaves them untouched. No-op if the
+// attachment is absent.
 func (db *DB) attachment_meta_set(id, caption, description string) {
 	var att Attachment
 	if !db.scan(&att, "select id, object, name, size, content_type, creator, caption, description, created from attachments where id = ?", id) {
@@ -897,7 +890,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	db.attachments_setup()
 
-	// Update record (versioned so concurrent edits from the user's hosts converge)
+	// Update record
 	db.attachment_meta_set(id, caption, description)
 
 	// Get updated record
@@ -1053,16 +1046,9 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		root.Close()
 	}
 
-	// Tombstone the record (versioned, so the deletion converges and a concurrent
-	// edit can't resurrect it) and shift ranks.
+	// Delete the record and shift ranks.
 	db.row_remove(reg_attachments, map[string]any{"id": id})
 	db.attachment_shift_down(att.Object, att.Rank)
-
-	// Owner-owned bytes were pushed to the user's other hosts on save, so
-	// remove them there too. Foreign cached references (Entity set) have no
-	// pushed bytes — each host fetched its own copy on demand.
-	if att.Entity == "" {
-	}
 
 	// Handle federation notify
 	if len(notify) > 0 {
@@ -1126,13 +1112,9 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		root.Close()
 	}
 
-	// Tombstone the records (versioned, so the deletion converges) and remove
-	// owner-owned byte files on the user's other hosts (foreign cached references
-	// have no pushed bytes to remove).
+	// Delete the records.
 	for _, att := range attachments {
 		db.row_remove(reg_attachments, map[string]any{"id": att.ID})
-		if att.Entity == "" {
-		}
 	}
 
 	// Handle federation notify
@@ -1982,10 +1964,10 @@ func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: called with content=%v", e.content)
 
 	if e.db == nil {
-		// No app DB for this (user, app) on this host. Under replication a
-		// peer can legitimately request an attachment for a user/app not
-		// (yet) present here — that's "I don't have it", not a server fault.
-		// Answer 404 like the not-found case below, at debug, so it doesn't
+		// No app DB for this (user, app) on this host. A peer can
+		// legitimately request an attachment for a user/app not present
+		// here — that's "I don't have it", not a server fault. Answer 404
+		// like the not-found case below, at debug, so it doesn't
 		// warn-email the admin on every such request.
 		debug("attachment_event_data: no database for this context, returning 404")
 		e.stream.write(map[string]string{"status": "404"})
@@ -2040,11 +2022,9 @@ func (e *Event) attachment_event_data() {
 				e.stream.write(map[string]string{"status": "500"})
 				return
 			}
-			// Host-local cache promotion: this host fetched the bytes and now
-			// owns a local copy. Deliberately NOT replicated — entity="" means
-			// "bytes are local", which is only true on this host; a partner that
-			// applied it would look for bytes it never fetched. Keep on plain exec.
-			e.db.exec("update attachments set entity = '' where id = ?", id) // exec-ok: host-local cache promotion, entity="" is true only on the fetching host
+			// Cache promotion: this host fetched the bytes and now owns a
+			// local copy — entity="" means "bytes are local".
+			e.db.exec("update attachments set entity = '' where id = ?", id)
 			info("Attachment %s fetched from uploader and stored locally", id)
 		}
 		// File now exists locally — serve it below

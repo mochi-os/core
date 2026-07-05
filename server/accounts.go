@@ -227,11 +227,10 @@ func account_redact(row map[string]any) map[string]any {
 	}
 }
 
-// reg_accounts is the user.db accounts register. The key is a string id
+// reg_accounts is the user.db accounts upsert. The key is a string id
 // (mochi.uid() for new accounts; the legacy integer rendered as a string for
-// migrated ones); last_delivered is host-local (per-device delivery cursor) so it
-// is NOT in the replicated payload. (The register payload is used when versioning
-// the edit paths.)
+// migrated ones); last_delivered (the per-device delivery cursor) is deliberately
+// not in the payload so account edits never clobber it.
 var reg_accounts = upsert_def{"accounts", []string{"id"}, []string{"type", "label", "identifier", "data", "created", "verified", "enabled", "default"}}
 
 // accounts_migrate rebuilds a legacy accounts table (integer autoincrement id) into
@@ -269,19 +268,16 @@ func account_id_arg(v sl.Value) (string, bool) {
 	return "", false
 }
 
-// account_device reports whether an account type is per-device (host-local). Its
-// row is NOT replicated — each browser/phone registers its own push endpoint per
-// host — so an edit must stay a local update, never a versioned register write
-// (whose upsert would insert the row on a replica that doesn't hold it).
+// account_device reports whether an account type is per-device: each browser /
+// phone registers its own push-endpoint row, edited in place rather than through
+// the whole-row upsert.
 func account_device(ptype string) bool {
 	return ptype == "browser" || ptype == "unifiedpush" || ptype == "fcm"
 }
 
-// account_set applies field changes to one account as a whole-row read-modify-write
-// and persists it the right way for its type: a replicated (user-facing) account
-// goes through the versioned register so concurrent edits from different hosts
-// converge; a per-device account is updated locally. No-op if the account is absent
-// or tombstoned.
+// account_set applies field changes to one account as a whole-row read-modify-write:
+// user-facing accounts persist through the accounts upsert, per-device rows update
+// in place. No-op if the account is absent.
 func (db *DB) account_set(id string, updates map[string]any) {
 	row, _ := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\" from accounts where id=?", id)
 	if row == nil {
@@ -645,9 +641,8 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Insert account. The id is a mochi.uid() generated here, NOT an
-	// autoincrement integer: two hosts creating accounts concurrently would
-	// otherwise both be assigned the same integer and collide when the row
-	// replicates (insert-or-replace would drop one). A uid is unique per host.
+	// autoincrement integer: destinations.target references it, and externally
+	// referenced rows get text uids (stable across export/restore).
 	id := uid()
 	_, err := db.internal.Exec(
 		"insert into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
@@ -655,16 +650,6 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
-	}
-
-	// Replicate user-facing account inserts so the other host has the same row
-	// (destinations.target references this id and is replicated independently).
-	// Per-device types stay host-local — each browser / phone registers its own
-	// push endpoint per host.
-	switch ptype {
-	case "browser", "unifiedpush", "fcm":
-		// host-local
-	default:
 	}
 
 	return sl_encode(map[string]any{
@@ -788,9 +773,8 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				d["endpoint"] = endpoint
 				j, _ := json.Marshal(d)
 				// Route through account_set so the write respects the account's type
-				// (device → local, replicated → versioned register) rather than a raw,
-				// un-versioned update that would leave a non-device account's endpoint
-				// unreplicated and its register revision stale (#176).
+				// (device rows update in place, user-facing rows go through the
+				// whole-row upsert) rather than a raw column update.
 				db.account_set(id, map[string]any{"data": string(j), "identifier": endpoint})
 			}
 		}

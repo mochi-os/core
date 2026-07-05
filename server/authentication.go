@@ -419,7 +419,7 @@ func methods_parse(csv string) map[string]bool {
 
 // methods_join renders a method set back to a comma-separated string in
 // canonical (auth_method_list) order, so the stored value is deterministic
-// regardless of update order — important for replication convergence.
+// regardless of update order.
 func methods_join(set map[string]bool) string {
 	var out []string
 	for _, m := range auth_method_list {
@@ -1244,7 +1244,6 @@ func web_recovery_login(c *gin.Context) {
 
 	// Delete used code (after suspension check to avoid consuming codes for suspended users)
 	db.exec("delete from recovery where id=?", matched)
-	// Cross-host: integer PK is local; replicate by (user, hash) instead.
 
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))

@@ -1545,31 +1545,6 @@ func db_user_for_thread(t *sl.Thread) (*User, error) {
 	return user, nil
 }
 
-// db_replicate_after_exec emits a replication op for a successful local
-// app-DB write. Called from api_db_query (mochi.db.execute) and from
-// TransactionHandle's deferred-emit flush at commit. The decision on
-// whether to actually emit (table not excluded, user has UID, app
-// resolvable) lives in replication_emit_sql_command.
-func db_replicate_after_exec(t *sl.Thread, sql string, args []any) {
-	// Migrations (database_create/upgrade/downgrade) run with this flag set so
-	// their writes don't replicate — every replica migrates itself. See
-	// (*AppVersion).starlark_db.
-	if suppressed, _ := t.Local("replication_suppressed").(bool); suppressed {
-		return
-	}
-	u, err := db_user_for_thread(t)
-	if err != nil || u == nil {
-		return
-	}
-	app, _ := t.Local("app").(*App)
-	if app == nil {
-		return
-	}
-	av := app.active(u)
-	if av == nil {
-		return
-	}
-}
 
 // db_for_thread resolves the correct per-user database for the current Starlark
 // thread, applying the same authentication-vs-routing rules used by
@@ -1763,24 +1738,9 @@ func db_starlark_sql_blocked(query string) string {
 // the cleanup hook in starlark.go rolls back any uncommitted handles when the
 // Starlark thread tears down (script return, error, or timeout).
 //
-// Pending replication ops accumulate in pending_emits as each execute()
-// lands; commit() flushes them after the SQL commit succeeds, rollback()
-// drops them. This way a discarded transaction never leaves emitted ops
-// without matching local state on the source.
 type TransactionHandle struct {
-	tx            *sqlx.Tx
-	closed        bool
-	pending_emits []sql_pending_emit
-	suppressed    bool // set when opened inside a migration: commit emits nothing
-	user          *User
-	app           *App
-	av            *AppVersion
-}
-
-// sql_pending_emit is one buffered (sql, args) tuple awaiting commit.
-type sql_pending_emit struct {
-	sql  string
-	args []any
+	tx     *sqlx.Tx
+	closed bool
 }
 
 func (h *TransactionHandle) String() string { return "mochi.db.transaction" }
@@ -1823,7 +1783,6 @@ func transaction_close(t *sl.Thread) {
 		if !h.closed {
 			h.tx.Rollback()
 			h.closed = true
-			h.pending_emits = nil
 		}
 	}
 	t.SetLocal("transactions", nil)
@@ -1865,7 +1824,6 @@ func (h *TransactionHandle) sl_execute(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
-	h.pending_emits = append(h.pending_emits, sql_pending_emit{sql: query, args: params})
 	// Return rows affected, matching mochi.db.execute, so conditional writes
 	// inside a transaction can branch on whether they took effect.
 	affected, _ := res.RowsAffected()
@@ -1952,11 +1910,9 @@ func (h *TransactionHandle) sl_commit(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 
 	if err := h.tx.Commit(); err != nil {
 		h.closed = true
-		h.pending_emits = nil
 		return sl_error(fn, "commit failed: %v", err)
 	}
 	h.closed = true
-	h.pending_emits = nil
 	return sl.None, nil
 }
 
@@ -1966,7 +1922,6 @@ func (h *TransactionHandle) sl_rollback(t *sl.Thread, fn *sl.Builtin, args sl.Tu
 	}
 	h.tx.Rollback()
 	h.closed = true
-	h.pending_emits = nil
 	return sl.None, nil
 }
 
@@ -2001,16 +1956,6 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	h := &TransactionHandle{tx: tx}
-	if suppressed, _ := t.Local("replication_suppressed").(bool); suppressed {
-		h.suppressed = true
-	}
-	if user, _ := db_user_for_thread(t); user != nil {
-		if app, _ := t.Local("app").(*App); app != nil {
-			h.user = user
-			h.app = app
-			h.av = app.active(user)
-		}
-	}
 	t.SetLocal("transactions", append(existing, h))
 	return h, nil
 }

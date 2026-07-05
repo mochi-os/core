@@ -87,7 +87,7 @@ func nack_reason_from_error(err error) string {
 // against `received`, NACKs on gap (with async resync request),
 // advances `received` after a successful handler.
 //
-// Tables (per app DB, lazy-created):
+// Tables (per app DB, created at db_app open):
 //
 //	sequence(key, peer, last)               — sender outbound counter per (key, this_host)
 //	log(key, peer, sequence, event, data, created)
@@ -119,19 +119,8 @@ func broadcast_received_table_create(db *DB) {
 	}
 }
 
-// broadcast_log_table_create lazily creates log for an app DB on
-// first emission. Replication carries the table to paired hosts two
-// ways:
-//   - Bulk bootstrap: a new pair member rebuilds the per-app DB from
-//     logical row batches (replication_bootstrap_logical.go), so log's
-//     rows come over with the rest; the snapshot's op-stream sequence
-//     (the final "complete" message) seeds the cursor, so subsequent live
-//     ops chain correctly from where the snapshot ended. The new member
-//     can serve resync requests for any of the (key, peer) streams the
-//     existing pair members had logged.
-//   - Live: each broadcast_log_append uses db.exec, which
-//     emits a sql/op that replays as the same insert on every paired
-//     host. Both pair members converge in steady state.
+// broadcast_log_table_create creates the log table for an app DB. Called
+// eagerly from db_app open and defensively from the append/replay paths.
 //
 // Apps that adopt mochi.broadcast.send after their per-app DB
 // already has data don't get a retroactive log for pre-upgrade
@@ -148,26 +137,6 @@ func broadcast_acknowledged_table_create(db *DB) {
 	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 }
 
-// broadcast_infra_table_ensure lazily creates the broadcast infra table
-// named by a replicated op's target before the receiver re-executes the
-// op's row write. These tables (sequence/log/acknowledged) are created
-// on the sender via plain local exec; the matching CREATE never reaches
-// the receiver because schema statements don't replicate (sql_target_table
-// returns "" for CREATE). Their row ops (insert/delete) do replicate, so a
-// receiver that has never itself sent a broadcast for this app lacks the
-// table and the row op fails with "no such table". No-op for any other
-// table name, and idempotent (create ... if not exists), so it converges
-// partners broken before this fix on their next inbound broadcast op.
-func broadcast_infra_table_ensure(db *DB, table string) {
-	switch table {
-	case "sequence":
-		broadcast_sequence_table_create(db)
-	case "log":
-		broadcast_log_table_create(db)
-	case "acknowledged":
-		broadcast_acknowledged_table_create(db)
-	}
-}
 
 // broadcast_next_local allocates and returns the next outbound sequence
 // number on the given DB for (key, peer). Per-(key, peer) PK gives each

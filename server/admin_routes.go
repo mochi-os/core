@@ -96,19 +96,10 @@ func admin_register_routes(r *gin.Engine) {
 // admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label
 // to record. Anything not in this map is not audited.
 var admin_audited_routes = map[string]string{
-	"POST /_/admin/snapshot":                "admin.snapshot",
-	"POST /_/admin/vacuum":                  "admin.vacuum",
-	"POST /_/admin/stop":                    "admin.stop",
-	"POST /_/admin/restart":                 "admin.restart",
-	"POST /_/admin/replica/join":            "admin.replica.join",
-	"POST /_/admin/replica/approve":         "admin.replica.approve",
-	"POST /_/admin/replica/leave":           "admin.replica.leave",
-	"POST /_/admin/replication/pair/remove": "admin.replication.pair.remove",
-	"POST /_/admin/replication/resync":      "admin.replication.resync",
-	"POST /_/admin/replication/resume":      "admin.replication.resume",
-	"POST /_/admin/replication/backfill":    "admin.replication.backfill",
-	"POST /_/admin/replication/reseed":      "admin.replication.reseed",
-	"GET /_/admin/replication/audit":        "admin.replication.audit",
+	"POST /_/admin/snapshot": "admin.snapshot",
+	"POST /_/admin/vacuum":   "admin.vacuum",
+	"POST /_/admin/stop":     "admin.stop",
+	"POST /_/admin/restart":  "admin.restart",
 }
 
 // admin_audit_middleware records a daemon-facility audit row after each

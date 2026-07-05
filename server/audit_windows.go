@@ -133,20 +133,6 @@ func audit_message_rejected(from string, reason string) {
 	audit_write("AUTH", fmt.Sprintf("message_rejected from=%s reason=%s", from, reason))
 }
 
-// audit_replication_pending_purged logs a unfillable-pending row drop
-// from the GC. See the Linux counterpart for the field set.
-func audit_replication_pending_purged(peer, scope, user, database string, sequence int64, age int64) {
-	audit_write("OPS", fmt.Sprintf("replication_pending_purged peer=%s scope=%s user=%s db=%s sequence=%d age=%d",
-		peer, scope, user, database, sequence, age))
-}
-
-// audit_replication_deadletter logs a forward-incompatible op the receiver
-// can't apply. See the Linux counterpart for the field set.
-func audit_replication_deadletter(scope, user, database string, sequence int64, errText string) {
-	audit_write("OPS", fmt.Sprintf("replication_deadletter scope=%s user=%s db=%s sequence=%d error=%q",
-		scope, user, database, sequence, errText))
-}
-
 // audit_broadcast_pending_purged logs a skipped-gap broadcast GC
 // event. See the Linux counterpart for the field set.
 func audit_broadcast_pending_purged(user, app, peer, key string, from_seq, to_seq, gap_size int64) {

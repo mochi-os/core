@@ -2222,19 +2222,6 @@ func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error
 	s.set("app", av.app)
 	s.set("user", u)
 	s.set("owner", u)
-	// database_create / database_upgrade / database_downgrade run with full
-	// app/user context so they can write the app DB, but their writes must NOT
-	// emit replication ops: every replica runs the migration itself on first
-	// request, so emitting would double-apply on the partner (and a
-	// non-deterministic migration — e.g. minting mochi.uid() ids — can't replay
-	// identically anyway, so the ops would diverge). Suppress emit for the whole
-	// migration; both the direct (db_replicate_after_exec) and the
-	// transaction-commit emit paths honour this thread-local. Convergence across
-	// replicas is the migration's own responsibility: deterministic migrations
-	// converge by each replica running them; non-deterministic ones (the
-	// comptroller uid migration) converge via a file-level re-seed of the
-	// partner — see claude/plans/comptroller-uid-cutover.md.
-	s.set("replication_suppressed", true)
 	_, err := s.call(function, args)
 	return err
 }

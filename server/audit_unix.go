@@ -146,25 +146,6 @@ func audit_message_rejected(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("message_rejected from=%s reason=%s", from, reason))
 }
 
-// audit_replication_pending_purged logs a unfillable-pending row drop
-// from the GC. One entry per dropped row so operators investigating
-// "what did we lose" can grep the audit trail by (peer, scope, user,
-// db, sequence). age is the row's lifetime in pending before drop.
-func audit_replication_pending_purged(peer, scope, user, database string, sequence int64, age int64) {
-	audit_log_ops(fmt.Sprintf("replication_pending_purged peer=%s scope=%s user=%s db=%s sequence=%d age=%d",
-		peer, scope, user, database, sequence, age))
-}
-
-// audit_replication_deadletter logs a forward-incompatible op the receiver
-// can't apply — its newer schema dropped a column/table the op references.
-// One entry per op so an operator can grep "what did this user/app lose
-// to schema skew" by (scope, user, db, sequence), mirroring how
-// audit_replication_pending_purged records dropped pending rows.
-func audit_replication_deadletter(scope, user, database string, sequence int64, errText string) {
-	audit_log_ops(fmt.Sprintf("replication_deadletter scope=%s user=%s db=%s sequence=%d error=%q",
-		scope, user, database, sequence, errText))
-}
-
 // audit_broadcast_pending_purged logs a skipped-gap broadcast GC
 // event. One entry per stalled stream that got its gap skipped, with
 // the start/end sequences and the gap size so an operator can grep

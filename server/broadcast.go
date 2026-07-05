@@ -31,6 +31,40 @@ const (
 	nack_reason_pending_full  = "pending-full"
 )
 
+// Wire content keys for broadcast metadata riding alongside the app's own
+// payload fields in an event's content map. Underscore-prefixed so an app
+// payload field named "key" or "sequence" can't collide. Shared constants
+// because the sender (api_broadcast_send, broadcast_resync replay) and the
+// receiver (events.go gap detection) MUST agree: a 2026-05-26 table-rename
+// find/replace turned the sender's "_sequence" into "sequence" and silently
+// disabled all sequencing for six weeks — with these constants that class
+// of divergence no longer compiles.
+const (
+	broadcast_content_key      = "_key"
+	broadcast_content_sequence = "_sequence"
+)
+
+// broadcast_inbound_class classifies an inbound sequenced event against the
+// receiver's stream watermark. "apply" covers three cases: the in-order next
+// event (bseq == last+1), a fresh stream starting at 1, and ANCHOR ADOPTION —
+// last == 0 with bseq > 1 means this receiver has never applied a sequenced
+// event for the stream (legacy pre-sequencing stream, rebuilt app.db, or a
+// subscriber added mid-stream). Treating that first arrival as a gap would
+// wedge the stream forever: resync replays `sequence > 0` from a log whose
+// early rows are age/ack-trimmed, so the replay can never reach seq 1 and
+// nothing ever applies. Adopting the event as the anchor loses nothing the
+// pre-sequencing behaviour had (history is the app's own catch-up problem),
+// and gaps after the anchor heal via the normal buffer + resync machinery.
+func broadcast_inbound_class(last, bseq int64) string {
+	if bseq <= last {
+		return "duplicate"
+	}
+	if bseq > last+1 && last > 0 {
+		return "gap"
+	}
+	return "apply"
+}
+
 // ErrBroadcastGap is the sentinel the gap detector wraps its returned
 // error with so the stream-layer NACK responder can map it to the
 // nack_reason_broadcast_gap wire hint without parsing the (info-only)
@@ -486,8 +520,8 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	for k, v := range payload {
 		content[k] = v
 	}
-	content["_key"] = key
-	content["sequence"] = sequence
+	content[broadcast_content_key] = key
+	content[broadcast_content_sequence] = sequence
 
 	services := app_services(app, user)
 	iter := subscribers.Iterate()
@@ -617,8 +651,11 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		for k, v := range payload {
 			content[k] = v
 		}
-		content["_key"] = key
-		content["sequence"] = sequence
+		content[broadcast_content_key] = key
+		// Same wire keys as the live send path: replayed events must engage
+		// the receiver's gap detection so broadcast_advance_local moves the
+		// watermark and the pending buffer drains behind it.
+		content[broadcast_content_sequence] = sequence
 
 		m := message(e.to, e.from, e.service, event_name)
 		m.FromApp = a.id

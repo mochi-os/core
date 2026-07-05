@@ -214,3 +214,50 @@ func TestQueueAddDirectPriorityOverride(t *testing.T) {
 		t.Errorf("priority override: got %d, want %d (priority_replay)", got, priority_replay)
 	}
 }
+
+// TestBroadcastWireKeys pins the wire content-key literals. The sender
+// (api_broadcast_send, broadcast_resync replay) and the receiver
+// (events.go gap detection) share these constants, so they cannot
+// diverge at compile time; this test additionally pins the underscore
+// prefix itself, because a 2026-05-26 table-rename find/replace once
+// rewrote the sender's "_sequence" to "sequence" and silently disabled
+// dedup, gap buffering, and watermarks for six weeks.
+func TestBroadcastWireKeys(t *testing.T) {
+	if broadcast_content_key != "_key" {
+		t.Errorf("broadcast_content_key = %q, want %q", broadcast_content_key, "_key")
+	}
+	if broadcast_content_sequence != "_sequence" {
+		t.Errorf("broadcast_content_sequence = %q, want %q", broadcast_content_sequence, "_sequence")
+	}
+}
+
+// TestBroadcastInboundClass covers the receiver's classification of an
+// inbound sequenced event against the stream watermark, including the
+// anchor-adoption rule: a stream with no watermark (last == 0) accepts
+// its first event at any sequence instead of gap-buffering, because
+// resync replay can never reach back past the sender's log trim, so a
+// "gap" verdict on an unknown stream would wedge it permanently.
+func TestBroadcastInboundClass(t *testing.T) {
+	cases := []struct {
+		name string
+		last int64
+		bseq int64
+		want string
+	}{
+		{"fresh stream first event", 0, 1, "apply"},
+		{"anchor adoption mid-stream", 0, 70, "apply"},
+		{"in-order next", 5, 6, "apply"},
+		{"exact duplicate", 5, 5, "duplicate"},
+		{"stale retry below watermark", 5, 3, "duplicate"},
+		{"gap on established stream", 5, 8, "gap"},
+		{"gap of one", 5, 7, "gap"},
+		{"duplicate of anchor", 70, 70, "duplicate"},
+		{"next after anchor", 70, 71, "apply"},
+		{"gap after anchor", 70, 80, "gap"},
+	}
+	for _, c := range cases {
+		if got := broadcast_inbound_class(c.last, c.bseq); got != c.want {
+			t.Errorf("%s: broadcast_inbound_class(%d, %d) = %q, want %q", c.name, c.last, c.bseq, got, c.want)
+		}
+	}
+}

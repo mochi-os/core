@@ -370,8 +370,8 @@ func (e *Event) route() error {
 	// mochi.db.* calls reach the app's own tables. Two DBs open
 	// during a broadcast event; the system DB closes when route()
 	// returns.
-	bkey, _ := e.content["_key"].(string)
-	bseq := event_int64(e.content["_sequence"])
+	bkey, _ := e.content[broadcast_content_key].(string)
+	bseq := event_int64(e.content[broadcast_content_sequence])
 	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.user != nil
 	var bdb *DB
 	if broadcast_check {
@@ -382,11 +382,15 @@ func (e *Event) route() error {
 		}
 		defer bdb.close()
 		last := broadcast_received_get(bdb, e.peer, bkey)
-		if bseq <= last {
+		class := broadcast_inbound_class(last, bseq)
+		if class == "duplicate" {
 			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
 			return nil
 		}
-		if bseq > last+1 {
+		// "apply" falls through: the in-order next event, a fresh stream at
+		// seq 1, or anchor adoption of an unknown stream — see
+		// broadcast_inbound_class for the anchor rationale.
+		if class == "gap" {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
 			stored := broadcast_pending_insert(bdb, e.peer, bkey, bseq,

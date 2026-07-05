@@ -1269,10 +1269,12 @@ func web_login_identity(c *gin.Context) {
 	}
 
 	// Simple notification hook. Deduped per (admin_address, new_user_uid)
-	// so two replicas processing the same signup don't email the admin
-	// twice.
+	// so a repeated signup event doesn't email the admin twice.
+	// [email] signups = false silences these notices without disabling
+	// the admin address for error mail — set it on development instances,
+	// where test harnesses create throwaway users in bulk.
 	admin := ini_string("email", "admin", "")
-	if admin != "" {
+	if admin != "" && ini_bool("email", "signups", true) {
 		event_id := "new-user:" + u.UID
 		admin_user := user_by_username(admin)
 		if admin_user != nil {

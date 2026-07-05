@@ -144,11 +144,11 @@ func TestEntityPeersForMerge(t *testing.T) {
 	}
 }
 
-// A private local entity must not be reachable via the bare self-loop by an
-// unrelated caller (ping/request/stream) — it would confirm existence the
-// unlisting is meant to hide. Its owner still reaches it; a public local
-// entity is unaffected.
-func TestFailoverForPrivateLocalGate(t *testing.T) {
+// mochi.remote.ping's gate predicate: a private local entity is "foreign" to an
+// unrelated caller (blocked), but not to its owner; public entities and remote
+// entities are never foreign. request/stream and delivery are NOT gated — only
+// the bare liveness probe.
+func TestPrivateLocalForeign(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
 	db := db_open("db/users.db")
@@ -158,24 +158,33 @@ func TestFailoverForPrivateLocalGate(t *testing.T) {
 	pub := strings.Repeat("b", 50)
 	owner_ent := strings.Repeat("c", 50)
 	other_ent := strings.Repeat("d", 50)
+	remote := strings.Repeat("e", 50) // not in entities -> not local
 	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'feed', 'private')", priv)
 	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'feed', 'public')", pub)
 	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'person', 'public')", owner_ent)
 	db.exec("insert into entities (id, user, class, privacy) values (?, 'other', 'person', 'public')", other_ent)
 
-	// Unrelated caller: private local entity is NOT reachable.
-	if got := entity_peers_failover_for(other_ent, priv); len(got) != 0 {
-		t.Errorf("private local entity reachable by an unrelated caller: %v", got)
+	if !entity_private_local_foreign(other_ent, priv) {
+		t.Error("private local entity should be foreign to an unrelated caller (ping blocked)")
 	}
-	// Owner reaching their own private entity: self-loop stands.
-	if got := entity_peers_failover_for(owner_ent, priv); len(got) != 1 || got[0] != net_id {
-		t.Errorf("owner cannot reach their own private entity: %v", got)
+	if entity_private_local_foreign(owner_ent, priv) {
+		t.Error("a private entity must NOT be foreign to its own owner")
 	}
-	// Public local entity: reachable by anyone (unchanged).
-	if got := entity_peers_failover_for(other_ent, pub); len(got) != 1 || got[0] != net_id {
-		t.Errorf("public local entity not reachable: %v", got)
+	if entity_private_local_foreign(other_ent, pub) {
+		t.Error("a public entity is never foreign")
 	}
-	// Delivery resolver is deliberately NOT gated (app handler is the gate).
+	if entity_private_local_foreign(other_ent, remote) {
+		t.Error("a non-local (remote/unknown) entity is never foreign")
+	}
+	if !entity_private_local_foreign("", priv) {
+		t.Error("anonymous caller must be treated as foreign to a private entity")
+	}
+
+	// The general resolvers are deliberately UN-gated (request/stream/delivery
+	// must reach a private local entity; the app handler is the access gate).
+	if got := entity_peers_failover_for(other_ent, priv); len(got) != 1 || got[0] != net_id {
+		t.Errorf("request/stream resolution must still self-loop to a private local entity: %v", got)
+	}
 	if got := entity_peers_for(other_ent, priv); len(got) != 1 || got[0] != net_id {
 		t.Errorf("delivery to a private local entity must still self-loop: %v", got)
 	}

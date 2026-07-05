@@ -410,14 +410,24 @@ func entity_peers_failover(id string) []string {
 	return out
 }
 
-// entity_owned_by_sender reports whether the sending entity `from` belongs to
-// the same user as `ent` — the owner reaching their own private entity.
-func entity_owned_by_sender(from string, ent *Entity) bool {
-	if from == "" || ent == nil {
+// entity_private_local_foreign reports whether `id` is a PRIVATE entity local
+// to this server owned by a DIFFERENT user than the caller `from`. Used to
+// gate mochi.remote.ping: a private entity is unlisted precisely so its
+// existence is unknowable, but the bare local self-loop let any co-tenant
+// confirm one it knew the id of via a liveness probe. Only ping is gated —
+// request/stream run the receiving app's handler, which does its own access
+// control, so they stay reachable for legitimate cross-user calls (a member's
+// access/check on a private forum). The entity's owner is never blocked.
+func entity_private_local_foreign(from string, id string) bool {
+	ent := entity_by_any(id)
+	if ent == nil || ent.Privacy != "private" {
 		return false
 	}
+	if from == "" {
+		return true
+	}
 	sender := entity_by_any(from)
-	return sender != nil && sender.User == ent.User
+	return sender == nil || sender.User != ent.User
 }
 
 // entity_peers_failover_for is entity_peers_failover plus the sending
@@ -428,21 +438,6 @@ func entity_owned_by_sender(from string, ent *Entity) bool {
 // are tried regardless of age.
 func entity_peers_failover_for(from string, id string) []string {
 	out := entity_peers_failover(id)
-	// Gate the bare self-loop for a PRIVATE local entity on the caller-
-	// observable resolution paths (ping / request / stream). A private entity
-	// is not directory-listed precisely so its existence is unknown; the
-	// unconditional local short-circuit let any co-tenant confirm one it knew
-	// the id of, reachable where the same entity on another server is not.
-	// Only the owner reaches a private entity via the bare self-loop; another
-	// user must supply an explicit peer (remote_connect handles that branch
-	// before this is reached — the bootstrap path, mirroring a remote private
-	// entity) or hold a learned relationship row (appended below). Delivery
-	// fan-out is unaffected: it resolves through entity_peers_for, never here.
-	if len(out) == 1 && out[0] == net_id {
-		if ent := entity_by_any(id); ent != nil && ent.Privacy == "private" && !entity_owned_by_sender(from, ent) {
-			out = nil
-		}
-	}
 	if from == "" {
 		return out
 	}

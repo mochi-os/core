@@ -316,6 +316,15 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		caller = user.Identity.ID
 	}
 
+	// A bare ping (no explicit peer) must not confirm the existence of a
+	// private local entity to an unrelated caller — its unlisting is meant to
+	// hide exactly that. An explicit peer is a deliberate probe of a known
+	// location and is allowed. request/stream are not gated: their receiving
+	// handler is the access boundary.
+	if peer == "" && entity_private_local_foreign(caller, entity_id) {
+		return sl_encode(map[string]any{"reachable": false}), nil
+	}
+
 	// Try to connect
 	peer, err := remote_connect(caller, entity_id, peer)
 	if err != nil {

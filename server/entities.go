@@ -410,6 +410,16 @@ func entity_peers_failover(id string) []string {
 	return out
 }
 
+// entity_owned_by_sender reports whether the sending entity `from` belongs to
+// the same user as `ent` — the owner reaching their own private entity.
+func entity_owned_by_sender(from string, ent *Entity) bool {
+	if from == "" || ent == nil {
+		return false
+	}
+	sender := entity_by_any(from)
+	return sender != nil && sender.User == ent.User
+}
+
 // entity_peers_failover_for is entity_peers_failover plus the sending
 // user's learned directory as a final tier — for streams and RPC to
 // private entities (a subscriber's sync pull from a private project).
@@ -418,6 +428,21 @@ func entity_peers_failover(id string) []string {
 // are tried regardless of age.
 func entity_peers_failover_for(from string, id string) []string {
 	out := entity_peers_failover(id)
+	// Gate the bare self-loop for a PRIVATE local entity on the caller-
+	// observable resolution paths (ping / request / stream). A private entity
+	// is not directory-listed precisely so its existence is unknown; the
+	// unconditional local short-circuit let any co-tenant confirm one it knew
+	// the id of, reachable where the same entity on another server is not.
+	// Only the owner reaches a private entity via the bare self-loop; another
+	// user must supply an explicit peer (remote_connect handles that branch
+	// before this is reached — the bootstrap path, mirroring a remote private
+	// entity) or hold a learned relationship row (appended below). Delivery
+	// fan-out is unaffected: it resolves through entity_peers_for, never here.
+	if len(out) == 1 && out[0] == net_id {
+		if ent := entity_by_any(id); ent != nil && ent.Privacy == "private" && !entity_owned_by_sender(from, ent) {
+			out = nil
+		}
+	}
 	if from == "" {
 		return out
 	}

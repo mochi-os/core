@@ -143,3 +143,40 @@ func TestEntityPeersForMerge(t *testing.T) {
 		t.Fatalf("anonymous resolution leaked user rows: %v", peers)
 	}
 }
+
+// A private local entity must not be reachable via the bare self-loop by an
+// unrelated caller (ping/request/stream) — it would confirm existence the
+// unlisting is meant to hide. Its owner still reaches it; a public local
+// entity is unaffected.
+func TestFailoverForPrivateLocalGate(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+	db := db_open("db/users.db")
+	db.exec("create table if not exists entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+
+	priv := strings.Repeat("a", 50)
+	pub := strings.Repeat("b", 50)
+	owner_ent := strings.Repeat("c", 50)
+	other_ent := strings.Repeat("d", 50)
+	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'feed', 'private')", priv)
+	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'feed', 'public')", pub)
+	db.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'person', 'public')", owner_ent)
+	db.exec("insert into entities (id, user, class, privacy) values (?, 'other', 'person', 'public')", other_ent)
+
+	// Unrelated caller: private local entity is NOT reachable.
+	if got := entity_peers_failover_for(other_ent, priv); len(got) != 0 {
+		t.Errorf("private local entity reachable by an unrelated caller: %v", got)
+	}
+	// Owner reaching their own private entity: self-loop stands.
+	if got := entity_peers_failover_for(owner_ent, priv); len(got) != 1 || got[0] != net_id {
+		t.Errorf("owner cannot reach their own private entity: %v", got)
+	}
+	// Public local entity: reachable by anyone (unchanged).
+	if got := entity_peers_failover_for(other_ent, pub); len(got) != 1 || got[0] != net_id {
+		t.Errorf("public local entity not reachable: %v", got)
+	}
+	// Delivery resolver is deliberately NOT gated (app handler is the gate).
+	if got := entity_peers_for(other_ent, priv); len(got) != 1 || got[0] != net_id {
+		t.Errorf("delivery to a private local entity must still self-loop: %v", got)
+	}
+}

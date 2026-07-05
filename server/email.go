@@ -9,6 +9,7 @@ package main
 import (
 	"html"
 	"net/mail"
+	"strings"
 
 	gm "github.com/wneessen/go-mail"
 )
@@ -76,11 +77,40 @@ func email_mark_delivered(u *User, address, event_id string) {
 // rolloff is uniform from the user's point of view.
 const email_dedup_ttl int64 = 24 * 3600
 
+// email_deliverable reports whether an address could ever receive mail. It
+// returns false for the RFC 2606 / RFC 6761 reserved domains — mail to them is
+// guaranteed to bounce, so attempting it only spams the admin with failures.
+func email_deliverable(address string) bool {
+	at := strings.LastIndex(address, "@")
+	if at < 0 {
+		return false
+	}
+	domain := strings.ToLower(strings.TrimSpace(address[at+1:]))
+	if domain == "" {
+		return false
+	}
+	for _, d := range []string{"example.com", "example.net", "example.org"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return false
+		}
+	}
+	for _, tld := range []string{".test", ".example", ".invalid", ".localhost"} {
+		if strings.HasSuffix(domain, tld) {
+			return false
+		}
+	}
+	return true
+}
+
 func email_send(to string, subject string, body string) {
-	// [email] send = false disables all outbound mail (dev instances, where
-	// test harnesses sign up throwaway @example.com users whose verification
-	// codes would otherwise bounce off the reserved domain). Default true.
-	if !ini_bool("email", "send", true) {
+	// Never attempt delivery to a reserved / non-deliverable domain (RFC 2606
+	// + 6761): example.com/.net/.org and the .test/.example/.invalid/.localhost
+	// TLDs can never receive mail, so a send only produces a bounce back to the
+	// admin. Test harnesses sign up throwaway @example.com users; this stops
+	// their verification codes from bouncing, on every instance, while real
+	// addresses (including the admin error-mail recipient) are unaffected.
+	if !email_deliverable(to) {
+		debug("Email suppressed to reserved/undeliverable address %q", to)
 		return
 	}
 	m := gm.NewMsg()

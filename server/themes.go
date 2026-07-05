@@ -206,11 +206,9 @@ func web_user_theme_style(user *User) string {
 	user_font := user_preference_get(user, "font", "theme")
 
 	var t *AppTheme
-	var theme_app_id string
 	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", system_settings["default_theme"].Default)); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
 			t = app_theme_get(user, parts[0], parts[1])
-			theme_app_id = parts[0]
 		}
 	}
 
@@ -235,23 +233,16 @@ func web_user_theme_style(user *User) string {
 		append_radius_variables_from_base(&style_parts, radius)
 	}
 
-	// Background image, suppressed when the user opts out.
-	if t != nil && user_background != "off" && t.Background != "" && theme_app_id != "" {
-		apps_lock.Lock()
-		a := apps[theme_app_id]
-		apps_lock.Unlock()
-		if a != nil {
-			av := a.active(user)
-			if av != nil && len(av.Paths) > 0 {
-				base := av.Paths[0]
-				if !strings.ContainsAny(t.Background, `<>"`) {
-					style_parts = append(style_parts, fmt.Sprintf("--background-image: url(/%s/backgrounds/%s)", base, t.Background))
-				}
-				if t.BackgroundDark != "" && !strings.ContainsAny(t.BackgroundDark, `<>"`) {
-					style_parts = append(style_parts, fmt.Sprintf("--background-image-dark: url(/%s/backgrounds/%s)", base, t.BackgroundDark))
-				}
-			}
-		}
+	// Background: the standard gentle gradient, suppressed when the user opts
+	// out. One design for every theme - it tints itself through var(--primary),
+	// so it follows the active theme (and appearance) automatically. Replaces
+	// the per-theme SVG backgrounds (decision 2026-07-05).
+	if user_background != "off" {
+		style_parts = append(style_parts,
+			"--background-image: radial-gradient(ellipse at top, color-mix(in oklch, var(--primary) 12%, transparent), transparent 70%)",
+			"--background-size: 100% 420px",
+			"--background-position: top center",
+			"--background-repeat: no-repeat")
 	}
 
 	if t != nil {

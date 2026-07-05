@@ -276,9 +276,19 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now(), queue_priority(service, event))
 }
 
-// Mark a message as acknowledged (remove from queue)
+// Mark a message as acknowledged (remove from queue). A successful
+// delivery also confirms the target peer in the sender's learned
+// directory (directory_user_confirm is throttled and cheap; the batch
+// ack-flush path skips this — partial confirm coverage is fine, the
+// learned rows never age out).
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
+	var q QueueEntry
+	if db.scan(&q, "select from_entity, to_entity, target from queue where id = ?", id) && q.Target != "" {
+		if user := user_owning_entity(q.FromEntity); user != nil {
+			directory_user_confirm(user, q.ToEntity, q.Target)
+		}
+	}
 	db.exec_bg("queue ack delete", "delete from queue where id = ?", id)
 	//debug("Queue ACK received for %q", id)
 }
@@ -580,6 +590,14 @@ func queue_fail(id string, err string) {
 	if age > queue_max_age {
 		//warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q", attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec_bg("queue fail drop aged", "delete from queue where id = ?", id)
+		// The retry budget is exhausted: the learned route (if any) is
+		// proven dead, not merely old — evict it so future sends surface
+		// undeliverable immediately instead of burning another budget.
+		if q.Target != "" {
+			if user := user_owning_entity(q.FromEntity); user != nil {
+				directory_user_forget(user, q.ToEntity, q.Target)
+			}
+		}
 		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
 	} else {
 		// Schedule retry
@@ -599,7 +617,7 @@ func queue_fail(id string, err string) {
 // Split out from queue_send_direct so the expansion logic is unit-
 // testable without dragging in libp2p.
 func queue_expand_empty_target(q *QueueEntry) string {
-	peers := entity_peers(q.ToEntity)
+	peers := entity_peers_for(q.FromEntity, q.ToEntity)
 	if len(peers) == 0 {
 		return ""
 	}

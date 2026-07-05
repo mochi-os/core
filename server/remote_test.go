@@ -146,7 +146,7 @@ func TestRemoteConnectDirectoryLookup(t *testing.T) {
 	// With a non-existent entity, entity_peer returns empty string
 
 	valid_entity_id := strings.Repeat("a", 50) // 50-char entity ID
-	_, err := remote_connect(valid_entity_id, "")
+	_, err := remote_connect("", valid_entity_id, "")
 
 	if err == nil {
 		t.Error("expected error for non-existent entity in directory")
@@ -164,7 +164,7 @@ func TestRemoteConnectInvalidPeer(t *testing.T) {
 	t.Skip("requires Net subsystem initialization")
 
 	valid_entity_id := strings.Repeat("a", 50)
-	_, err := remote_connect(valid_entity_id, "invalid-peer-id")
+	_, err := remote_connect("", valid_entity_id, "invalid-peer-id")
 
 	if err == nil {
 		t.Error("expected error for invalid peer")

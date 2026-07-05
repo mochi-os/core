@@ -248,7 +248,7 @@ func (m *Message) send_work() {
 		return
 	}
 
-	peers := entity_peers(m.To)
+	peers := entity_peers_for(m.From, m.To)
 	if len(peers) == 0 {
 		// Unknown entity — queue one row with empty target so the
 		// retry loop can re-resolve later. Same as before.

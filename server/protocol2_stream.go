@@ -106,6 +106,11 @@ func receive_stream(s p2p_network.Stream) {
 
 	// Resolve target entity (may be a fingerprint) and the owning user.
 	to, user, ok := stream_resolve(open.To)
+	if ok && user != nil {
+		// Same learning as the messages path: open.From passed the claim
+		// check above, so record its verified location for the recipient.
+		directory_user_learn(user, open.From, peer)
+	}
 	if !ok {
 		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unknown_user})
 		s.Close()

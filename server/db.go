@@ -407,6 +407,9 @@ func db_user(u *User, name string) *DB {
 		// Internal key-value settings (Go-only, no Starlark API)
 		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
 
+		// The user's learned directory: private routing memory (directory_user.go)
+		directory_user_table(db)
+
 		// Per-user app state (permission setup tracking)
 		db.apps_setup()
 	}

@@ -73,7 +73,7 @@ var (
 // interval) sorted oldest-seen first, then stale peers as a last
 // resort. Stops at the first peer that completes the handshake.
 func stream(from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
-	peers := entity_peers_failover(to)
+	peers := entity_peers_failover_for(from, to)
 	if len(peers) == 0 {
 		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
 	}

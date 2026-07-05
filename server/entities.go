@@ -314,6 +314,63 @@ func entity_peers(id string) []string {
 	return out
 }
 
+// entity_peers_for is entity_peers plus the sending user's learned
+// directory, for delivery to private entities (never directory-listed).
+// `from` is the sending entity; its owner's directory is consulted. The
+// merge is ordered freshest-seen first across both sources, deduplicated
+// per peer — so a stale public entry loses to yesterday's verified
+// contact, and vice versa. User rows carry no age filter (see
+// directory_user.go). Sends with no resolvable owner (system, anonymous)
+// degrade to the public directory alone.
+func entity_peers_for(from string, id string) []string {
+	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+		return []string{net_id}
+	}
+	type located struct {
+		peer string
+		seen int64
+	}
+	candidates := []located{}
+	rows, _ := db_open("db/directory.db").rows("select peer, seen from entries where entity=? and peer!=? and seen > ? order by seen desc", id, net_id, now()-30*86400)
+	for _, r := range rows {
+		if peer, ok := r["peer"].(string); ok && peer != "" {
+			candidates = append(candidates, located{peer, row_int(r, "seen")})
+		}
+	}
+	if from != "" {
+		if user := user_owning_entity(from); user != nil {
+			public := len(candidates)
+			for _, r := range directory_user_peers(user, id) {
+				if peer, ok := r["peer"].(string); ok && peer != "" {
+					candidates = append(candidates, located{peer, row_int(r, "seen")})
+				}
+			}
+			if public == 0 && len(candidates) > 0 {
+				debug("Directory user rows resolved %q for %q (not publicly listed)", id, from)
+			}
+		}
+	}
+	out := make([]string, 0, len(candidates))
+	seen_peer := map[string]bool{}
+	for {
+		best := -1
+		for i, c := range candidates {
+			if seen_peer[c.peer] {
+				continue
+			}
+			if best < 0 || c.seen > candidates[best].seen {
+				best = i
+			}
+		}
+		if best < 0 {
+			break
+		}
+		seen_peer[candidates[best].peer] = true
+		out = append(out, candidates[best].peer)
+	}
+	return out
+}
+
 // entity_peers_failover returns peers hosting `id` ordered for
 // stream / RPC failover.
 //
@@ -348,6 +405,37 @@ func entity_peers_failover(id string) []string {
 		if p, ok := r["peer"].(string); ok && p != "" && !seen_peer[p] {
 			seen_peer[p] = true
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// entity_peers_failover_for is entity_peers_failover plus the sending
+// user's learned directory as a final tier — for streams and RPC to
+// private entities (a subscriber's sync pull from a private project).
+// Public tiers first: they carry live attestation the learned rows
+// lack. Learned rows are the only lead for a private entity, so they
+// are tried regardless of age.
+func entity_peers_failover_for(from string, id string) []string {
+	out := entity_peers_failover(id)
+	if from == "" {
+		return out
+	}
+	user := user_owning_entity(from)
+	if user == nil {
+		return out
+	}
+	seen_peer := map[string]bool{}
+	for _, p := range out {
+		seen_peer[p] = true
+	}
+	for _, r := range directory_user_peers(user, id) {
+		if peer, ok := r["peer"].(string); ok && peer != "" && !seen_peer[peer] {
+			if len(out) == 0 {
+				debug("Directory user rows resolved %q for %q (not publicly listed)", id, from)
+			}
+			out = append(out, peer)
+			seen_peer[peer] = true
 		}
 	}
 	return out

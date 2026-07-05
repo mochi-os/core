@@ -276,6 +276,11 @@ func (r *Receiver) dispatch_message(f *Frame) {
 	if to != "" {
 		if u := user_owning_entity(to); u != nil {
 			user = u.UID
+			// Learn the claim-verified (sender entity, peer) pair into the
+			// recipient's directory — the routing memory that makes private
+			// entities deliverable (directory_user.go). The claim check
+			// above is the gate: f.From is proven, not just asserted.
+			directory_user_learn(u, f.From, r.peer)
 		}
 	}
 

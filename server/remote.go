@@ -103,7 +103,7 @@ func peer_connect_url(url string) (string, error) {
 // after a single resolution. If only `entity_id` is given, tries each
 // location from entity_peers_failover in order, returning the first
 // peer we can reach. Same multi-host failover policy as stream().
-func remote_connect(entity_id string, peer string) (string, error) {
+func remote_connect(from string, entity_id string, peer string) (string, error) {
 	if peer != "" {
 		// If peer is an entity ID, resolve it first (single shot —
 		// caller asked for that specific entity's location).
@@ -121,8 +121,9 @@ func remote_connect(entity_id string, peer string) (string, error) {
 		return peer, nil
 	}
 
-	// Look up entity in directory and try peers in failover order.
-	peers := entity_peers_failover(entity_id)
+	// Look up entity in directory (public tiers, then the calling
+	// user's learned rows) and try peers in failover order.
+	peers := entity_peers_failover_for(from, entity_id)
 	if len(peers) == 0 {
 		return "", fmt.Errorf("entity not found in directory")
 	}
@@ -185,7 +186,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Connect to remote
-	peer, err := remote_connect(entity_id, peer)
+	peer, err := remote_connect(user.Identity.ID, entity_id, peer)
 	if err != nil {
 		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
 	}
@@ -257,9 +258,13 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		from_app = app.id
 		services = app_services(app, user)
 	}
+	caller := ""
+	if user != nil && user.Identity != nil {
+		caller = user.Identity.ID
+	}
 
 	// Connect to remote
-	peer, err := remote_connect(entity_id, peer)
+	peer, err := remote_connect(caller, entity_id, peer)
 	if err != nil {
 		return sl.None, nil
 	}
@@ -306,9 +311,13 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if len(args) > 1 {
 		peer, _ = sl.AsString(args[1])
 	}
+	caller := ""
+	if user, _ := t.Local("user").(*User); user != nil && user.Identity != nil {
+		caller = user.Identity.ID
+	}
 
 	// Try to connect
-	peer, err := remote_connect(entity_id, peer)
+	peer, err := remote_connect(caller, entity_id, peer)
 	if err != nil {
 		return sl_encode(map[string]any{"reachable": false, "error": err.Error()}), nil
 	}

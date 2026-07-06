@@ -143,6 +143,10 @@ func email_send(to string, subject string, body string) {
 
 // email_send_html sends an HTML email.
 func email_send_html(to string, subject string, html string) {
+	if !email_deliverable(to) {
+		debug("Email suppressed to reserved/undeliverable address %q", to)
+		return
+	}
 	m := gm.NewMsg()
 
 	from := setting_get("email_from", "mochi-server@localhost")
@@ -236,6 +240,10 @@ func email_login_code(user *User, to string, code string, language string) {
 
 // email_send_multipart sends an email with both plain text and HTML parts.
 func email_send_multipart(to string, subject string, text string, html string) {
+	if !email_deliverable(to) {
+		debug("Email suppressed to reserved/undeliverable address %q", to)
+		return
+	}
 	m := gm.NewMsg()
 
 	from := setting_get("email_from", "mochi-server@localhost")

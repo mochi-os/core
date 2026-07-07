@@ -151,28 +151,42 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 		return true, false, ""
 	}
 	body_bytes, _ := io.ReadAll(resp.Body)
-	warn("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
-	// Permanent-failure classification — drop the row so the next
-	// register from the phone creates a fresh one rather than the upsert
-	// path resurrecting the dead token. 404 UNREGISTERED is the canonical
-	// "the app was uninstalled or the token was rotated by Google"
-	// signal; INVALID_ARGUMENT on the token field means malformed.
-	retire = resp.StatusCode == 404 ||
-		(resp.StatusCode == 400 && bytes.Contains(body_bytes, []byte("INVALID_ARGUMENT")))
+	retire = fcm_retire(resp.StatusCode, body_bytes)
+	if retire {
+		// Expected end-of-life for a device token: the retire plus the
+		// phone's next register is the renewal cycle, so no warn email.
+		debug("FCM: send returned %d %s, retiring token", resp.StatusCode, fcm_error_code(body_bytes))
+	} else {
+		warn("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
+	}
 	return false, retire, fcm_summarise_error(resp.StatusCode, body_bytes)
 }
 
-// fcm_summarise_error extracts the most useful identifier from an FCM v1
-// error response so the connected-accounts "Test" surface shows
-// "UNREGISTERED" rather than the generic "Push notification failed".
-// Falls back to the HTTP status when the body doesn't parse.
-func fcm_summarise_error(status int, body []byte) string {
+// fcm_retire reports whether a non-200 FCM response names the token
+// itself as permanently dead, so the caller should drop the row and let
+// the phone's next register create a fresh one. That is 404 UNREGISTERED
+// ("the app was uninstalled or the token was rotated by Google") or 400
+// INVALID_ARGUMENT whose message blames the registration token. A 404
+// without UNREGISTERED means the request path was rejected (wrong project
+// in fcm.service_account) and a blanket INVALID_ARGUMENT can be a payload
+// bug — retiring on those would delete live registrations one send at a
+// time.
+func fcm_retire(status int, body []byte) bool {
+	code := fcm_error_code(body)
+	return (status == 404 && code == "UNREGISTERED") ||
+		(status == 400 && code == "INVALID_ARGUMENT" &&
+			bytes.Contains(body, []byte("registration token")))
+}
+
+// fcm_error_code returns the FCM v1 error identifier from a non-200
+// response body: the details' errorCode (e.g. UNREGISTERED) when present,
+// else the top-level error status (e.g. NOT_FOUND). Empty when the body
+// doesn't parse.
+func fcm_error_code(body []byte) string {
 	var parsed struct {
 		Error struct {
 			Status  string `json:"status"`
-			Message string `json:"message"`
 			Details []struct {
-				Type      string `json:"@type"`
 				ErrorCode string `json:"errorCode"`
 			} `json:"details"`
 		} `json:"error"`
@@ -180,12 +194,21 @@ func fcm_summarise_error(status int, body []byte) string {
 	if json.Unmarshal(body, &parsed) == nil {
 		for _, d := range parsed.Error.Details {
 			if d.ErrorCode != "" {
-				return fmt.Sprintf("FCM %d %s", status, d.ErrorCode)
+				return d.ErrorCode
 			}
 		}
-		if parsed.Error.Status != "" {
-			return fmt.Sprintf("FCM %d %s", status, parsed.Error.Status)
-		}
+		return parsed.Error.Status
+	}
+	return ""
+}
+
+// fcm_summarise_error extracts the most useful identifier from an FCM v1
+// error response so the connected-accounts "Test" surface shows
+// "UNREGISTERED" rather than the generic "Push notification failed".
+// Falls back to the HTTP status when the body doesn't parse.
+func fcm_summarise_error(status int, body []byte) string {
+	if code := fcm_error_code(body); code != "" {
+		return fmt.Sprintf("FCM %d %s", status, code)
 	}
 	return fmt.Sprintf("FCM %d", status)
 }

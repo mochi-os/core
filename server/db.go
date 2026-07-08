@@ -47,6 +47,15 @@ type DB struct {
 	// the legacy schema and inbound new-schema access ops fail + deadletter (#111).
 	// Guarded by lock(path) at the setup site.
 	system_setup bool
+	// ready is set once db_app has finished database_create/upgrade and the
+	// core infra tables on this handle. The reused fast-path requires it, so
+	// a concurrent opener waits on lock(path) for the creator instead of
+	// querying a schema that doesn't exist yet ("no such table" on a fresh
+	// user's first concurrent requests, #227). The creating goroutine's own
+	// mochi.db.* calls never reach db_app — starlark_db hands the lifecycle
+	// connection to the Starlark thread — so waiting here cannot
+	// self-deadlock. Guarded by databases_lock, like closed.
+	ready bool
 	// closed is the unix timestamp when this handle was last marked
 	// idle, or 0 while in use. Always read and written under
 	// databases_lock - same primitive that guards the cache map this
@@ -169,6 +178,39 @@ func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _
 		}
 	}
 	return sqlite3.AUTH_OK
+}
+
+// db_setup_conn_lifecycle configures the dedicated connection that runs an
+// app's database lifecycle functions (database_create / database_upgrade /
+// database_downgrade). Same rules as the Starlark pool, with two additions:
+//
+//   - `pragma user_version = N`: starlark_db stamps the schema version inside
+//     the same transaction as the app's DDL so creation and each migration
+//     step are atomic on disk (#227). Apps cannot reach PRAGMA through
+//     mochi.db.* (string check in api_db_query), and even a smuggled
+//     multi-statement user_version write is overwritten by the server's own
+//     stamp before commit, so the allowance grants apps nothing.
+//   - `pragma table_info(x)` / `pragma index_list(x)`: read-only
+//     introspection, needed because mochi.db.table/indexes must run on THIS
+//     connection during a migration to see its uncommitted DDL (feeds and
+//     wikis use them as idempotency guards). The pragma_* virtual-table forms
+//     are no alternative: their internal prepare re-fires AUTH_PRAGMA, and a
+//     denial there silently yields zero rows.
+func db_setup_conn_lifecycle(c *sqlite3.Conn) error {
+	if err := db_setup_conn(c); err != nil {
+		return err
+	}
+	return c.SetAuthorizer(db_authorise_lifecycle)
+}
+
+func db_authorise_lifecycle(action sqlite3.AuthorizerActionCode, name3rd, name4th, schema, inner string) sqlite3.AuthorizerReturnCode {
+	if action == sqlite3.AUTH_PRAGMA {
+		switch strings.ToLower(name3rd) {
+		case "user_version", "table_info", "index_list":
+			return sqlite3.AUTH_OK
+		}
+	}
+	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
 }
 
 
@@ -462,10 +504,14 @@ func db_app(u *User, app *App) *DB {
 	if db == nil {
 		return nil
 	}
-	db.user = u
-	db.app = app
+	db_bind(db, u, app, "")
 
-	if reused {
+	// Fast path: a reused handle whose schema this process has already
+	// verified or created. Gated on ready, not reuse alone — a concurrent
+	// opener can be handed the pooled handle before the first goroutine has
+	// run database_create, and would otherwise query a table that doesn't
+	// exist yet (#227).
+	if reused && db_ready(db) {
 		return db
 	}
 
@@ -473,6 +519,12 @@ func db_app(u *User, app *App) *DB {
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
+
+	// Re-check under the lock: the creator may have finished (or failed —
+	// in which case this opener retries the creation itself) while we waited.
+	if db_ready(db) {
+		return db
+	}
 
 	// Get schema version from user_version pragma
 	schema := db_app_schema_get(db)
@@ -485,36 +537,47 @@ func db_app(u *User, app *App) *DB {
 		debug("Database app creating %q", path)
 
 		if av.Database.Create.Function != "" {
-			if err := av.starlark_db(u, av.Database.Create.Function, nil); err != nil {
+			// starlark_db stamps user_version inside the same transaction as
+			// the app's DDL, so a crash at any point leaves an empty file
+			// (rolled back) rather than a partial schema the has_tables
+			// check above would mistake for a complete one (#227).
+			if err := av.starlark_db(db, u, av.Database.Create.Function, nil, av.Database.Schema); err != nil {
 				warn("App %q version %q database create error: %v", av.app.id, av.Version, err)
 				return nil
 			}
 		} else if av.Database.create_function != nil {
+			// Go create functions are core-internal and idempotent; they keep
+			// the plain pool path.
 			av.Database.create_function(db)
+			db_app_schema_set(db, av.Database.Schema)
 		} else {
 			warn("App %q version %q has no way to create database file %q", av.app.id, av.Version, av.Database.File)
 			return nil
 		}
-		db_app_schema_set(db, av.Database.Schema)
 		schema = av.Database.Schema
 	}
 
 	if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
 		for version := schema + 1; version <= av.Database.Schema; version++ {
 			debug("Database %q upgrading to schema version %d", path, version)
-			if err := av.starlark_db(u, av.Database.Upgrade.Function, sl_encode_tuple(version)); err != nil {
+			if err := av.starlark_db(db, u, av.Database.Upgrade.Function, sl_encode_tuple(version), version); err != nil {
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
+				// A failed migration still consumes the version number (the
+				// established repair convention: the fix ships as the NEXT
+				// version) — but its partial DDL rolled back with the
+				// transaction, so the repair starts from the clean previous
+				// shape rather than a half-applied step.
+				db_app_schema_set(db, version)
 			}
-			db_app_schema_set(db, version)
 			audit_app_schema_migrated(av.app.id, version-1, version)
 		}
 	} else if schema > av.Database.Schema && av.Database.Downgrade.Function != "" {
 		for version := schema; version > av.Database.Schema; version-- {
 			debug("Database %q downgrading from schema version %d", path, version)
-			if err := av.starlark_db(u, av.Database.Downgrade.Function, sl_encode_tuple(version)); err != nil {
+			if err := av.starlark_db(db, u, av.Database.Downgrade.Function, sl_encode_tuple(version), version-1); err != nil {
 				warn("App %q version %q database downgrade error: %v", av.app.id, av.Version, err)
+				db_app_schema_set(db, version-1)
 			}
-			db_app_schema_set(db, version-1)
 			audit_app_schema_migrated(av.app.id, version, version-1)
 		}
 	}
@@ -530,11 +593,10 @@ func db_app(u *User, app *App) *DB {
 	broadcast_pending_table_create(db)
 	commits_table_create(db)
 
-	// Create the core-managed replication journal on this data DB eagerly at
-	// open — like db_app_system's access/attachments setup — not lazily on the
-	// first journaled write (#424). Idempotent; covers both fresh and
-	// pre-existing files. Only on the non-reused open, so it runs once per
-	// process per (path, version).
+	// Schema and infra tables are in place; open the reused fast-path. Never
+	// set on the error returns above, so a failed create is retried by the
+	// next opener instead of wedging the handle (#227).
+	db_ready_set(db)
 
 	return db
 }
@@ -552,9 +614,7 @@ func db_app_system(u *User, app *App) *DB {
 	if db == nil {
 		return nil
 	}
-	db.user = u
-	db.app = app
-	db.kind = db_kind_app_system
+	db_bind(db, u, app, db_kind_app_system)
 
 	// Run the platform system-table setups (and the access-table migration) the
 	// first time THIS handle is used as an app-system DB — even if a raw db_open
@@ -1161,6 +1221,39 @@ func (db *DB) close() {
 	databases_lock.Unlock()
 }
 
+// db_ready reports whether db_app has finished schema create/upgrade and the
+// infra tables on this handle (#227). See the DB.ready field comment.
+func db_ready(db *DB) bool {
+	databases_lock.Lock()
+	r := db.ready
+	databases_lock.Unlock()
+	return r
+}
+
+func db_ready_set(db *DB) {
+	databases_lock.Lock()
+	db.ready = true
+	databases_lock.Unlock()
+}
+
+// db_bind associates a pooled handle with its user/app identity once. The
+// pool key embeds both, so the values never change for a given handle;
+// binding under databases_lock replaces the old unconditional per-open field
+// writes, which raced every other goroutine holding the handle (#227). Also
+// heals handles first cached by a raw db_open or the app-system sweep, which
+// carry no binding.
+func db_bind(db *DB, u *User, app *App, kind string) {
+	databases_lock.Lock()
+	if db.user == nil {
+		db.user = u
+		db.app = app
+	}
+	if kind != "" && db.kind == "" {
+		db.kind = kind
+	}
+	databases_lock.Unlock()
+}
+
 // db_purge_prefix closes and evicts every cached DB whose on-disk path lives
 // under the given directory. Use this before removing a directory (e.g. a
 // user's data dir) so that stale handles can't be reused for I/O against
@@ -1549,11 +1642,84 @@ func db_user_for_thread(t *sl.Thread) (*User, error) {
 }
 
 
+// starlark_db runs one of the app's database lifecycle functions
+// (database_create / database_upgrade / database_downgrade) and stamps
+// user_version, both inside a single transaction on a dedicated connection.
+// Either the function's DDL and the stamp commit together, or (error, panic,
+// process death) nothing persists — a crash can no longer leave a partial
+// schema that db_app's has_tables check mistakes for a complete one (#227).
+// The connection is handed to the Starlark thread as the "lifecycle" local:
+// mochi.db.* calls inside the function run on it directly, which both joins
+// them to the transaction and keeps them from re-entering db_app, whose
+// lock(path) this goroutine already holds (re-entry would self-deadlock).
+func (av *AppVersion) starlark_db(db *DB, u *User, function string, args sl.Tuple, stamp int) error {
+	pool, err := sqlitedrv.Open(db.path, db_setup_conn_lifecycle)
+	if err != nil {
+		return fmt.Errorf("lifecycle open: %w", err)
+	}
+	lifecycle := sqlx.NewDb(pool, "sqlite3")
+	defer lifecycle.Close()
+
+	ctx := context.Background()
+	conn, err := lifecycle.Connx(ctx)
+	if err != nil {
+		return fmt.Errorf("lifecycle connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "begin immediate"); err != nil {
+		return fmt.Errorf("lifecycle begin: %w", err)
+	}
+	committed := false
+	// Roll back on any failure or panic. A no-op error after a successful
+	// commit, silently dropped.
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "rollback")
+		}
+	}()
+
+	s := av.starlark()
+	s.set("app", av.app)
+	s.set("user", u)
+	s.set("owner", u)
+	s.set("database", db)
+	s.set("lifecycle", conn)
+	if _, err := s.call(function, args); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("pragma user_version=%d", stamp)); err != nil {
+		return fmt.Errorf("lifecycle stamp: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "commit"); err != nil {
+		return fmt.Errorf("lifecycle commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// db_lifecycle_conn returns the dedicated lifecycle connection when the
+// current Starlark call is a database lifecycle function, else nil. The
+// mochi.db builtins prefer it so their statements join the lifecycle
+// transaction (and see its uncommitted DDL) instead of running on the pool.
+func db_lifecycle_conn(t *sl.Thread) *sqlx.Conn {
+	conn, _ := t.Local("lifecycle").(*sqlx.Conn)
+	return conn
+}
+
 // db_for_thread resolves the correct per-user database for the current Starlark
 // thread, applying the same authentication-vs-routing rules used by
 // mochi.db.execute and mochi.db.transaction. Returns the DB, or an error
 // describing why the lookup failed.
 func db_for_thread(t *sl.Thread) (*DB, error) {
+	// Inside a database lifecycle function the handle is already resolved —
+	// and this goroutine holds lock(path), so re-entering db_app below would
+	// self-deadlock. The query builtins check db_lifecycle_conn first and
+	// never reach this; the local is insurance for any other resolver caller.
+	if db, ok := t.Local("database").(*DB); ok && db != nil {
+		return db, nil
+	}
+
 	db_user, err := db_user_for_thread(t)
 	if err != nil {
 		return nil, err
@@ -1610,28 +1776,39 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 	as = flat
 
-	db, err := db_for_thread(t)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	// Check out a dedicated connection so a failed multi-statement
-	// query (e.g. `BEGIN; bad-sql; COMMIT;` where bad-sql is denied by
-	// the authoriser at prepare) can't return a half-open transaction
-	// to the shared pool. On error we issue a defensive ROLLBACK on
-	// the same connection before releasing it.
 	ctx := context.Background()
-	conn, err := db.starlark.Connx(ctx)
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
+	// Inside a database lifecycle function, statements run on the dedicated
+	// lifecycle connection so they join its transaction (and don't re-enter
+	// db_app, whose lock this goroutine holds — #227). Its rollback is owned
+	// by starlark_db, not the per-call defensive rollback below.
+	conn := db_lifecycle_conn(t)
+	lifecycle := conn != nil
+	if !lifecycle {
+		db, err := db_for_thread(t)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+
+		// Check out a dedicated connection so a failed multi-statement
+		// query (e.g. `BEGIN; bad-sql; COMMIT;` where bad-sql is denied by
+		// the authoriser at prepare) can't return a half-open transaction
+		// to the shared pool. On error we issue a defensive ROLLBACK on
+		// the same connection before releasing it.
+		pooled, err := db.starlark.Connx(ctx)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		defer pooled.Close()
+		conn = pooled
 	}
-	defer conn.Close()
 
 	switch fn.Name() {
 	case "mochi.db.execute":
 		res, err := conn.ExecContext(ctx, query, as...)
 		if err != nil {
-			db_starlark_rollback(conn)
+			if !lifecycle {
+				db_starlark_rollback(conn)
+			}
 			return sl_error(fn, "database error: %v", err)
 		}
 		// Return the number of rows the statement changed (insert/update/
@@ -1643,7 +1820,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	case "mochi.db.exists":
 		r, err := conn.QueryContext(ctx, query, as...)
 		if err != nil {
-			db_starlark_rollback(conn)
+			if !lifecycle {
+				db_starlark_rollback(conn)
+			}
 			return sl_error(fn, "database error: %v", err)
 		}
 		defer r.Close()
@@ -1655,7 +1834,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	case "mochi.db.row":
 		r, err := conn.QueryxContext(ctx, query, as...)
 		if err != nil {
-			db_starlark_rollback(conn)
+			if !lifecycle {
+				db_starlark_rollback(conn)
+			}
 			return sl_error(fn, "database error: %v", err)
 		}
 		defer r.Close()
@@ -1676,7 +1857,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	case "mochi.db.rows":
 		r, err := conn.QueryxContext(ctx, query, as...)
 		if err != nil {
-			db_starlark_rollback(conn)
+			if !lifecycle {
+				db_starlark_rollback(conn)
+			}
 			return sl_error(fn, "database error: %v", err)
 		}
 		defer r.Close()
@@ -1940,6 +2123,12 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: mochi.db.transaction()")
 	}
 
+	// Database lifecycle functions already run inside a transaction on the
+	// lifecycle connection; a second one would block on its write lock.
+	if db_lifecycle_conn(t) != nil {
+		return sl_error(fn, "mochi.db.transaction is not available inside database create, upgrade, or downgrade functions (they already run in a transaction)")
+	}
+
 	// Block nested transactions
 	existing, _ := t.Local("transactions").([]*TransactionHandle)
 	for _, h := range existing {
@@ -1963,6 +2152,36 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return h, nil
 }
 
+// db_conn_rows runs a read query on a specific connection and returns rows in
+// the same map shape as DB.rows. Used by the introspection builtins when a
+// database lifecycle transaction is active: they must run on the lifecycle
+// connection to see its uncommitted DDL (feeds and wikis migrations use
+// mochi.db.table as column-existence idempotency guards). The direct PRAGMA
+// forms are used — the lifecycle authoriser allows table_info/index_list —
+// because the pragma_* virtual-table forms silently return zero rows on an
+// authorised connection (their internal prepare re-fires AUTH_PRAGMA).
+func db_conn_rows(conn *sqlx.Conn, query string, args ...any) ([]map[string]any, error) {
+	r, err := conn.QueryxContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	var results []map[string]any
+	for r.Next() {
+		row := make(map[string]any)
+		if err := r.MapScan(row); err != nil {
+			return nil, err
+		}
+		for k, v := range row {
+			if b, ok := v.([]byte); ok {
+				row[k] = string(b)
+			}
+		}
+		results = append(results, row)
+	}
+	return results, nil
+}
+
 // mochi.db.table(name) -> list: Return column info for a table via PRAGMA table_info
 func api_db_table(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
@@ -1971,6 +2190,14 @@ func api_db_table(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	name, ok := sl.AsString(args[0])
 	if !ok || !valid_sql_identifier(name) {
 		return sl_error(fn, "invalid table name %q", name)
+	}
+
+	if conn := db_lifecycle_conn(t); conn != nil {
+		rows, err := db_conn_rows(conn, "PRAGMA table_info("+name+")")
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(rows), nil
 	}
 
 	db, err := db_for_thread(t)
@@ -1990,13 +2217,23 @@ func api_db_tables(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	if len(args) != 0 {
 		return sl_error(fn, "syntax: mochi.db.tables()")
 	}
-	db, err := db_for_thread(t)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-	rows, err := db.rows("select name from sqlite_schema where type='table' and name not like 'sqlite_%' and name not like '\\_%' escape '\\' order by name")
-	if err != nil {
-		return sl_error(fn, "database error: %v", err)
+	const query = "select name from sqlite_schema where type='table' and name not like 'sqlite_%' and name not like '\\_%' escape '\\' order by name"
+	var rows []map[string]any
+	if conn := db_lifecycle_conn(t); conn != nil {
+		var err error
+		rows, err = db_conn_rows(conn, query)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+	} else {
+		db, err := db_for_thread(t)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		rows, err = db.rows(query)
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
 	}
 	names := make([]any, 0, len(rows))
 	for _, r := range rows {
@@ -2015,6 +2252,13 @@ func api_db_indexes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	name, ok := sl.AsString(args[0])
 	if !ok || !valid_sql_identifier(name) {
 		return sl_error(fn, "invalid table name %q", name)
+	}
+	if conn := db_lifecycle_conn(t); conn != nil {
+		rows, err := db_conn_rows(conn, "PRAGMA index_list("+name+")")
+		if err != nil {
+			return sl_error(fn, "database error: %v", err)
+		}
+		return sl_encode(rows), nil
 	}
 	db, err := db_for_thread(t)
 	if err != nil {

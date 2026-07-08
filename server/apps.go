@@ -2214,16 +2214,6 @@ func (av *AppVersion) starlark() *Starlark {
 	}
 }
 
-// Call a Starlark database function (create, upgrade, downgrade)
-func (av *AppVersion) starlark_db(u *User, function string, args sl.Tuple) error {
-	s := av.starlark()
-	s.set("app", av.app)
-	s.set("user", u)
-	s.set("owner", u)
-	_, err := s.call(function, args)
-	return err
-}
-
 // Reload app.json and labels from disk (for development).
 // Gated on app.json mtime so normal dev reload callers skip unchanged manifests.
 func (av *AppVersion) reload() {

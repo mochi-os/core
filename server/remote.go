@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -97,6 +98,56 @@ func peer_connect_url(url string) (string, error) {
 	return info.Peer, nil
 }
 
+// remote_address_wait bounds how long a synchronous remote request
+// waits for the mesh to answer a peers/request about a peer we hold no
+// addresses for (first contact: the entity resolved via the directory,
+// but we have never exchanged traffic with its server). Record-holding
+// relays answer a peers/request on the target's behalf, so a live
+// target's addresses normally arrive well inside a second; five
+// seconds is headroom for slow relayed paths, matching the hole-punch
+// and shutdown-drain bounds.
+var remote_address_wait = 5 * time.Second
+
+// remote_reach connects to the first reachable of `candidates` (peer
+// ids in failover order). When no candidate connects from stored
+// addresses, it broadcasts a peers/request for each and retries as
+// answers arrive, all within one shared remote_address_wait budget.
+// Without this recovery a synchronous request to a never-seen peer
+// fails instantly — peer_connect requires prior discovery — while
+// queued events to the same peer self-heal through the queue's retry
+// loop. Returns the connected peer id, or "".
+func remote_reach(candidates []string) string {
+	for _, p := range candidates {
+		if peer_connect(p) {
+			return p
+		}
+	}
+	for _, p := range candidates {
+		peer_request_addresses(p)
+	}
+	deadline := time.Now().Add(remote_address_wait)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ""
+		}
+		// Wake early when the primary candidate's addresses arrive.
+		// The 500ms floor also catches answers for the other
+		// candidates and connects completed by concurrent callers,
+		// neither of which signals this waiter.
+		wait := 500 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		peer_await_addresses(candidates[0], wait)
+		for _, p := range candidates {
+			if peer_connect(p) {
+				return p
+			}
+		}
+	}
+}
+
 // Connect to a remote entity, returning the peer ID.
 //
 // If `peer` is explicitly given (libp2p id or entity id), uses that
@@ -115,7 +166,7 @@ func remote_connect(from string, entity_id string, peer string) (string, error) 
 		}
 
 		// Peer ID provided, ensure we're connected
-		if !peer_connect(peer) {
+		if remote_reach([]string{peer}) == "" {
 			return "", fmt.Errorf("failed to connect to peer %s", peer)
 		}
 		return peer, nil
@@ -127,10 +178,8 @@ func remote_connect(from string, entity_id string, peer string) (string, error) 
 	if len(peers) == 0 {
 		return "", fmt.Errorf("entity not found in directory")
 	}
-	for _, p := range peers {
-		if peer_connect(p) {
-			return p, nil
-		}
+	if p := remote_reach(peers); p != "" {
+		return p, nil
 	}
 	return "", fmt.Errorf("failed to connect to any peer for entity %s", entity_id)
 }

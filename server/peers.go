@@ -559,11 +559,73 @@ func peer_discovered_work(id string, address string) {
 	peers[id] = p
 	peers_lock.Unlock()
 
+	peer_addresses_arrived(id)
+
 	if save {
 		// Upsert, not replace: a replace would wipe the row's
 		// success/failure evidence.
 		db := db_open("db/peers.db")
 		db.exec("insert into peers ( id, address, updated ) values ( ?, ?, ? ) on conflict ( id, address ) do update set updated=excluded.updated", id, address, t)
+	}
+}
+
+// Waiters blocked in peer_await_addresses, keyed by peer id. Signalled
+// by peer_addresses_arrived each time a discovered address lands in the
+// peers map.
+var (
+	peer_waiters      = map[string][]chan struct{}{}
+	peer_waiters_lock sync.Mutex
+)
+
+// peer_await_addresses blocks until a discovered address lands for `id`
+// or `timeout` elapses, reporting which. It turns the asynchronous
+// peers/request answer into a bounded inline wait for synchronous
+// request paths (remote_reach); the queue's equivalent recovery is its
+// retry loop, re-woken by queue_check_peer.
+func peer_await_addresses(id string, timeout time.Duration) bool {
+	arrival := make(chan struct{})
+	peer_waiters_lock.Lock()
+	peer_waiters[id] = append(peer_waiters[id], arrival)
+	peer_waiters_lock.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-arrival:
+		return true
+	case <-timer.C:
+		peer_waiters_lock.Lock()
+		waiters := peer_waiters[id]
+		for i, w := range waiters {
+			if w == arrival {
+				peer_waiters[id] = append(waiters[:i], waiters[i+1:]...)
+				break
+			}
+		}
+		if len(peer_waiters[id]) == 0 {
+			delete(peer_waiters, id)
+		}
+		peer_waiters_lock.Unlock()
+		// An arrival may race the timeout: signalled after the timer
+		// fired but before deregistration. Report it either way.
+		select {
+		case <-arrival:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// peer_addresses_arrived wakes every peer_await_addresses call blocked
+// on `id`. Companion to peer_addresses_failed.
+func peer_addresses_arrived(id string) {
+	peer_waiters_lock.Lock()
+	waiters := peer_waiters[id]
+	delete(peer_waiters, id)
+	peer_waiters_lock.Unlock()
+	for _, w := range waiters {
+		close(w)
 	}
 }
 

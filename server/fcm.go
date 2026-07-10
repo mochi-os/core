@@ -132,19 +132,31 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	}
 
 	url := fmt.Sprintf(fcm_send_url_format, sa.ProjectID)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
-	if err != nil {
-		warn("FCM: build request: %v", err)
-		return false, false, fmt.Sprintf("Request build failed: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+access_token)
-	req.Header.Set("Content-Type", "application/json")
-
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		warn("FCM: send: %v", err)
-		return false, false, fmt.Sprintf("Network error: %v", err)
+	var resp *http.Response
+	// A 5xx from FCM (INTERNAL, UNAVAILABLE) is a transient Google-side
+	// error that Google documents as retriable; one retry recovers the
+	// notification instead of dropping it. Only a failure on the final
+	// attempt reaches the warn below.
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			warn("FCM: build request: %v", err)
+			return false, false, fmt.Sprintf("Request build failed: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+access_token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = client.Do(req)
+		if err != nil {
+			warn("FCM: send: %v", err)
+			return false, false, fmt.Sprintf("Network error: %v", err)
+		}
+		if resp.StatusCode < 500 || attempt > 1 {
+			break
+		}
+		resp.Body.Close()
+		debug("FCM: send returned %d, retrying once", resp.StatusCode)
+		time.Sleep(2 * time.Second)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {

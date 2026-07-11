@@ -1303,18 +1303,20 @@ func web_abandon(c *gin.Context) {
 		return
 	}
 
-	session := web_cookie_get(c, "session", "")
-	if session != "" {
-		login_delete(session)
-	}
-	web_cookie_unset(c, "session")
-
+	// Delete the half-finished account first. Only once that succeeds do we
+	// tear down the session cookie — reversing the order would leave the
+	// browser with no session but a still-live account on any delete failure,
+	// and every following request would then 401.
 	target, err := user_delete(u.UID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
 		return
 	}
 	audit_user_deleted(target, target)
+
+	// user_delete already removed this user's session rows; clear the browser
+	// cookie so the now-orphaned session id doesn't linger.
+	web_cookie_unset(c, "session")
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

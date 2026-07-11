@@ -211,7 +211,7 @@ func entity_name_set(e *Entity, name string) error {
 func (e *Entity) delete() {
 	// Get user for audit logging
 	db := db_open("db/users.db")
-	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.id", e.ID)
+	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.uid", e.ID)
 	username := ""
 	if row != nil {
 		username = row["username"].(string)
@@ -230,15 +230,8 @@ func (e *Entity) delete() {
 		udb.exec("delete from group_members where member=? and type='user'", e.ID)
 	}
 
-	// Remove entity. During an account purge each host deletes its own
-	// entities, so the row deletion must NOT replicate: it would strip the
-	// surviving copies' identity keys while their account is still live and
-	// break the user/purge signer check on receivers. Outside teardown — a
-	// user deleting one identity from a live account — the change must
-	// propagate.
+	// Remove the entity row.
 	db.exec("delete from entities where id=?", e.ID)
-	if _, teardown := purging.Load(e.User); !teardown {
-	}
 
 	// Audit log entity deletion
 	audit_identity_deleted(username, e.ID)
@@ -252,7 +245,7 @@ func (e *Entity) delete() {
 // rows keep the entity resolvable.
 func (e *Entity) delete_local() {
 	db := db_open("db/users.db")
-	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.id", e.ID)
+	row, _ := db.row("select u.username from users u, entities en where en.id=? and en.user=u.uid", e.ID)
 	username := ""
 	if row != nil {
 		username, _ = row["username"].(string)

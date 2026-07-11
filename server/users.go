@@ -13,7 +13,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1154,7 +1153,7 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "cannot delete self")
 	}
 
-	target, err := user_remove(id)
+	target, err := user_delete(id)
 	if err != nil {
 		return sl_error(fn, err.Error())
 	}
@@ -1169,92 +1168,26 @@ func user_delete(id string) (string, error) {
 	return user_purge_local(id, true)
 }
 
-// user_remove deletes a user on the admin's authority, immediately. That
-// authority covers the operator's own infrastructure — this server and its
-// server-server pair members — and nothing else:
+// user_purge_local removes THIS host's copy of a user: entities, sessions,
+// passkeys, totp, recovery, oauth, app DBs and the on-disk tree. Returns the
+// deleted username for audit.
 //
-//   - The user has no foreign (user-user) replicas: full account deletion.
-//     The account is marked closing with the deadline already due (the row
-//     op replicates to the pair members), the signed account-gone purge is
-//     emitted (pair members honor it once their row shows closing-and-due,
-//     or purge at their next sweep), and the local copy is purged with
-//     entity tombstones.
-//
-//   - The user has foreign replicas on other operators' servers: an
-//     eviction, not a deletion. The pair members are told to drop their
-//     copies via the leave-set purge, the local copy is purged with leave
-//     semantics, and the account survives untouched on the user's own
-//     hosts. The closing status is deliberately NOT set here — its row op
-//     would replicate to the foreign hosts and schedule deletion of copies
-//     the admin has no authority over.
-func user_remove(id string) (string, error) {
-	rdb := db_open("db/replication.db")
-	foreign, _ := rdb.exists("select 1 from hosts where user=? limit 1", id)
-	pairs := []string{}
-	if rows, err := rdb.rows("select peer from pair"); err == nil {
-		for _, r := range rows {
-			if p, _ := r["peer"].(string); p != "" && p != net_id {
-				pairs = append(pairs, p)
-			}
-		}
-	}
-
-	if foreign {
-		// Eviction: purge the local copy with leave semantics.
-		return user_purge_local(id, false)
-	}
-
-	if len(pairs) > 0 {
-		db := db_open("db/users.db")
-		due := now()
-		db.exec("update users set status='closing', purge=? where uid=?", due, id)
-	}
-	return user_delete(id)
-}
-
-// user_purge_local removes THIS host's copy of a user (entities, sessions,
-// passkeys, totp, recovery, oauth, app DBs, on-disk tree, replication
-// metadata) and announces this host's departure from the user's host set.
-// Returns the deleted username for audit.
-//
-// accountGone selects the directory side effect, which is the only thing that
-// differs between the two deletion intents:
+// accountGone selects the entity directory side effect:
 //   - true  (close / admin delete): broadcast the signed entity directory
-//     tombstone and replicate the entity deletion — the account is gone
-//     everywhere.
-//   - false (leave-set / "delete this replica"): remove the entities locally
-//     only; they survive on the other hosts, so no tombstone, no replicate.
-//
-// purging tracks users whose local copy is mid-teardown. Row deletions
-// during the teardown can trigger replication emits after the user's
-// identity entities are already gone; the emit's missing-signing-entity
-// warning is expected then, not an anomaly, so it checks this set.
-var purging sync.Map
-
+//     tombstone — the account is gone everywhere.
+//   - false (leave-set / "delete this replica"): withdraw the directory row
+//     locally only.
 func user_purge_local(id string, accountGone bool) (string, error) {
-	purging.Store(id, true)
-	defer purging.Delete(id)
-
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
 		return "", fmt.Errorf("user not found")
 	}
 
-	// Announce this host's departure from the user's per-user host set before
-	// the entity rows are deleted (the membership op is signed by one of the
-	// user's identity entities). Broadcasts the set WITHOUT self so the
-	// remaining peers drop this host — the self-leaving case that
-	// replication_membership_update mishandles by re-adding self.
-	//
-	// Note: this is the LOCAL removal of one host's copy. It does not delete
-	// the user on the other hosts — incoming user-row deletes are a no-op in
-	// the apply path. Deleting the account everywhere (closure / admin delete)
-	// is a separate propagated operation; see claude/plans/account-deletion.md.
-	// Farewell messages (the user/purge op when called
-	// from closure) are queued asynchronously but signed with the identity
-	// key the loop below deletes. Drain them first or the queue sender
-	// loses the race and silently drops them at claim time.
+	// Drain any queued outbound P2P messages signed by one of the user's
+	// identity entities before the entity rows (and their signing keys) are
+	// deleted below — otherwise the queue sender loses the race and silently
+	// drops them at claim time.
 	if row, err := db.row("select id from entities where user=? order by id limit 1", id); err == nil && row != nil {
 		if signer, _ := row["id"].(string); signer != "" {
 			queue_drain_entity(signer, 2*time.Second)
@@ -1291,25 +1224,6 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	db.exec("delete from users where uid=?", id)
 	db_purge_prefix(fmt.Sprintf("users/%s", id))
 	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
-
-	// Clean up replication.db user-keyed rows now that the user is gone.
-	// `tail` and `cursor` matter as much as `sequence`: a host that later
-	// re-replicates this user starts a fresh op-stream incarnation, and a
-	// stale outbound tail stamps the first new op with the dead
-	// incarnation's prev (receivers buffer it unanchored forever), while a
-	// stale receive cursor silently drops the peer's re-sent ops.
-	rdb := db_open("db/replication.db")
-	rdb.exec("delete from hosts where user=?", id)
-	rdb.exec("delete from seen where user=?", id)
-	rdb.exec("delete from relayed where user=?", id)
-	rdb.exec("delete from pending where user=?", id)
-	rdb.exec("delete from sequence where user=?", id)
-	rdb.exec("delete from tail where user=?", id)
-	rdb.exec("delete from cursor where user=?", id)
-	// Drop any irreparable markers for the purged user too; otherwise a ghost
-	// marker for a deleted user keeps replication_irreparable_count() > 0 and
-	// /_/health degraded forever, with no path to clear it (#147).
-	rdb.exec("delete from irreparable where user=?", id)
 
 	return target.Username, nil
 }

@@ -2,13 +2,14 @@ module core
 
 go 1.25.0
 
-// Build with go1.25.11+ — it fixes the stdlib HIGH CVEs the nightly Trivy
-// scan flagged (CVE-2026-27145 cert hostname verification, plus the
-// net/url, crypto/x509, crypto/tls, net, net/mail DoS issues, all fixed by
-// 1.25.11). GOTOOLCHAIN=auto treats this as a floor: a newer host Go is used
-// as-is; an older one (e.g. the 1.25.7 on this host) auto-downloads 1.25.11.
+// Build with go1.25.12+ — it fixes the stdlib HIGH CVEs the nightly Trivy
+// scan flagged (CVE-2026-39822 os.Root symlink-following directory traversal,
+// plus the earlier CVE-2026-27145 cert hostname verification and the net/url,
+// crypto/x509, crypto/tls, net, net/mail DoS issues). GOTOOLCHAIN=auto treats
+// this as a floor: a newer host Go is used as-is; an older one (e.g. the
+// 1.25.7 on this host) auto-downloads 1.25.12.
 // Re-evaluate when bumping the go directive or moving to the 1.26 line.
-toolchain go1.25.11
+toolchain go1.25.12
 
 require (
 	filippo.io/age v1.3.1

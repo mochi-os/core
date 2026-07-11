@@ -74,6 +74,17 @@ var (
 		window:  60,
 	}
 
+	// Directory ghost-withdrawal rate limiter: 1 broadcast per hour per
+	// entity. Until a withdrawal propagates, every directory sync echoes
+	// the same ghost row back (5-minute cadence); this bounds the
+	// duplicate delete broadcasts entry_store would otherwise answer
+	// each echo with.
+	rate_limit_entry_withdraw = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   1,
+		window:  3600,
+	}
+
 	// URL request rate limiter: 100 requests per minute per app
 	rate_limit_url = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -181,6 +192,7 @@ func ratelimit_manager() {
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_peer_request.cleanup()
 		rate_limit_record_relay.cleanup()
+		rate_limit_entry_withdraw.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()
 	}

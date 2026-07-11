@@ -170,8 +170,21 @@ func entry_store(en *Entry, source string) bool {
 		return false
 	}
 	// This host is authoritative for its own rows; they are rebuilt only by
-	// directory_create. A replayed copy must not override local state.
+	// directory_create. A replayed copy must not override local state — but
+	// it is evidence: a row naming this host for an entity that no longer
+	// exists locally is a pre-wipe ghost other servers still hold, invisible
+	// to the daily orphan sweep (which scans only the local table), and only
+	// this host's key can withdraw it. Answer the echo with a deletion. The
+	// existence check protects every live entity, and a row naming this peer
+	// cannot be forged (it carries this host's attestation), so the echo is
+	// always a claim a previous incarnation of this server really made.
 	if en.Peer == net_id {
+		users := db_open("db/users.db")
+		exists, _ := users.exists("select 1 from entities where id=?", en.Entity)
+		if !exists && rate_limit_entry_withdraw.allow(en.Entity) {
+			info("Directory withdrawing ghost row for %q echoed by %s: entity no longer exists here", en.Entity, source)
+			entry_delete_self(en.Entity)
+		}
 		return false
 	}
 	if !entry_verify(en) {

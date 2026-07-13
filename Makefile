@@ -468,12 +468,27 @@ docker-clean:
 # reports where the time goes (grep the output for `>>>`). The build phase
 # figure includes the docker build+push; the publish figure includes the apt /
 # rpm reindex and the rsync to both hosts, each timed individually below.
+#
+# The whole run executes in one shell with an EXIT trap so release-clean fires
+# whether the release finishes or fails partway; release-clean also runs up
+# front to remove strays from a previous run that was killed before its trap
+# could fire.
 release:
 	@: > $(timing)
-	@t=$$(date +%s); $(MAKE) clean && echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing)
-	@t=$$(date +%s); $(MAKE) -j$(JOBS) release-build && echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing)
-	@t=$$(date +%s); $(MAKE) release-publish && echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing)
-	@echo; echo "=== release $(version) timing summary ==="; cat $(timing)
+	@trap '$(MAKE) release-clean' EXIT; \
+	t=$$(date +%s); $(MAKE) clean release-clean || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) -j$(JOBS) release-build || exit 1; echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) release-publish || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	echo; echo "=== release $(version) timing summary ==="; cat $(timing)
+
+# Remove the release temporaries from /tmp: staging trees, rpmbuild trees, and
+# the packaged artefacts, which release-publish only copies into ../packages.
+# Every path is versioned, so this scrubs all versions, not just the current
+# one — stranded packages from earlier releases are what filled /tmp. $(timing)
+# is deliberately kept: fixed name, a few hundred bytes, and the post-release
+# report reads it after this target has run.
+release-clean:
+	-rm -rf /tmp/mochi-server_* /tmp/mochi-server-*.rpm /tmp/mochi-rpmbuild-*
 
 # Parallel-safe build of every release artefact. The deb/rpm/msi/pkg/docker
 # branches are independent: each rpm target has its own _topdir, each deb its

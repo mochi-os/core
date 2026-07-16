@@ -1,6 +1,6 @@
 # Mochi Trademark Policy
 
-This policy covers the name "Mochi", the Mochi logo, and any confusingly similar names or marks (together, the "Mochi Marks"), which are trademarks of Mochi OÜ.
+This policy covers the name "Mochi", the Mochi logo, and any confusingly similar names or marks (together, the "Mochi Marks"), which are trademarks of Mochisoft OÜ.
 
 The Mochi software is free and open source, licensed under the GNU AGPL version 3. That licence covers the code. It does not grant rights to the Mochi Marks - trademark rights are separate from copyright, and this policy explains how the Mochi Marks may and may not be used. Our aim is simple: people should always know whether the software they are using is Mochi as we publish it, or someone else's version of it.
 
@@ -14,7 +14,7 @@ The Mochi software is free and open source, licensed under the GNU AGPL version 
 ## You may not, without our written permission
 
 - Use any Mochi Mark as the name or identity of a modified version of the Mochi software, or of any derived work. A modified version must be distributed under its own name.
-- Use any Mochi Mark in a way that suggests your software, service, or organisation is published, endorsed, certified, or operated by Mochi OÜ.
+- Use any Mochi Mark in a way that suggests your software, service, or organisation is published, endorsed, certified, or operated by Mochisoft OÜ.
 - Use the Mochi logo in or as part of your own logo or branding.
 - Register any Mochi Mark, or any confusingly similar name or mark, as a trademark, company name, domain name, or social media handle.
 - Use any Mochi Mark in connection with software or services unrelated to Mochi.

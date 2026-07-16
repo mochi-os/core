@@ -11,7 +11,7 @@
 // handler's mochi.db.* resolves to db_app(user, app) via the user/app
 // thread-locals.
 //
-// Copyright © 2026 Mochi OÜ
+// Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.

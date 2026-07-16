@@ -10,5 +10,5 @@ Application Interface Exception - see [license.txt](license.txt) and
 [license-exception.md](license-exception.md). Applications written for Mochi may
 be licensed however their authors choose.
 
-"Mochi" is a trademark of Mochi OÜ - see [trademarks.md](trademarks.md).
+"Mochi" is a trademark of Mochisoft OÜ - see [trademarks.md](trademarks.md).
 Contributions are by invitation - see [contributing.md](contributing.md).

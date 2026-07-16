@@ -42,7 +42,37 @@ const (
 const (
 	broadcast_content_key      = "_key"
 	broadcast_content_sequence = "_sequence"
+	broadcast_content_exclude  = "_exclude"
 )
+
+// broadcast_skip_for reports whether a sequenced broadcast event must be
+// acknowledged WITHOUT running the app handler at this receiver. Two cases:
+//
+//   - The receiving user owns the `from` entity: their DB is where the
+//     event originated, and running a subscriber-side handler against the
+//     canonical copy destroys it — a resync-replayed post/edit ran feeds'
+//     attachment clear+store on the owner and deleted its files from disk
+//     (2026-07-15). Holds for every broadcast app because app DBs are
+//     per-user: for chat, `from` is the member identity, and even two
+//     identities of one user share one DB, so dropping the echo is right.
+//
+//   - The recipient is the excluded actor named in _exclude: they already
+//     applied their own action locally. Exclusion used to skip the send,
+//     which left a permanent hole at that sequence in their stream —
+//     resync, blind to the exclusion, then redelivered the event anyway.
+//
+// Applies only to sequenced broadcasts (the caller is inside the
+// _key/_sequence wrapper); plain direct events may have legitimate
+// self-sends.
+func broadcast_skip_for(user *User, from, to string, content map[string]any) bool {
+	if owner := user_owning_entity(from); owner != nil && user != nil && owner.UID == user.UID {
+		return true
+	}
+	if excluded, _ := content[broadcast_content_exclude].(string); excluded != "" && excluded == to {
+		return true
+	}
+	return false
+}
 
 // broadcast_inbound_class classifies an inbound sequenced event against the
 // receiver's stream watermark. "apply" covers three cases: the in-order next
@@ -581,6 +611,17 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if payload == nil {
 		payload = map[string]any{}
 	}
+	// The exclusion rides IN the payload, before the log append, so the
+	// log row and every delivery and resync replay carry it identically;
+	// the receive wrapper skips the handler for the excluded actor.
+	// Send-time skipping (the old mechanism) left a permanent hole at
+	// this sequence in the excluded subscriber's stream, and resync —
+	// blind to the exclusion — replayed the event to them anyway: the
+	// echoed post/edit ran feeds' subscriber handler against the OWNER's
+	// canonical DB and destroyed its attachment files (2026-07-15).
+	if exclude != "" {
+		payload[broadcast_content_exclude] = exclude
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return sl_error(fn, "payload not JSON-encodable: %v", err)
@@ -611,7 +652,18 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				peer, _ = recipient["peer"].(string)
 			}
 		}
-		if sub == "" || sub == exclude {
+		if sub == "" {
+			continue
+		}
+		// Never enqueue to a recipient owned by the sending user: their
+		// DB is the canonical copy the event was written to, so delivery
+		// is at best a no-op and at worst destructive (the owner guard in
+		// events.go is the backstop). Safe for stream continuity — gap
+		// detection only fires on arrival, so a never-delivered stream
+		// cannot resync. The excluded actor, by contrast, IS still sent
+		// to (when remote): the delivery advances their watermark and the
+		// receive wrapper skips their handler via _exclude.
+		if owner := user_owning_entity(sub); owner != nil && owner.UID == user.UID {
 			continue
 		}
 		m := message(from, sub, service, event)

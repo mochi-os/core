@@ -389,6 +389,18 @@ func (e *Event) route() error {
 			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
 			return nil
 		}
+		// Owner and actor guards (2026-07-15 attachment destruction):
+		// advance + ack WITHOUT running the app handler when this
+		// receiver must not apply the event — see broadcast_skip_for.
+		// Checked before the gap branch (a gapped stream needs none of
+		// this content either), and receive-side deliberately, not just
+		// send-side: existing logs already hold destructive events that
+		// any replay would re-emit.
+		if broadcast_skip_for(e.user, e.from, e.to, e.content) {
+			broadcast_advance_local(bdb, e.peer, bkey, bseq)
+			broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
+			return nil
+		}
 		// "apply" falls through: the in-order next event, a fresh stream at
 		// seq 1, or anchor adoption of an unknown stream — see
 		// broadcast_inbound_class for the anchor rationale.
